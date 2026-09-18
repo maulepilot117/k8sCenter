@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import type { JSX } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 // Registers every shipped widget before first render.
@@ -44,11 +44,24 @@ export default function DashboardV2() {
   // somewhere deliberate, and where editing started is the only place the user
   // asked for.
   const editButton = useRef<HTMLButtonElement | null>(null);
+  /** Set by Escape, read by the effect below. Only that exit needs to move
+   * focus: clicking "Done" leaves it on the button already. */
+  const returnFocus = useRef(false);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     dashboardData.ensure(SOURCES, timeRange.value);
   }, [timeRange.value]);
+
+  // After the render that ended edit mode, not during the key press that asked
+  // for it. Focusing first leaves the browser about to run its own focus
+  // fix-up on the widget it is removing from the tab order, and that lands on
+  // the document rather than on the button we just moved to.
+  useLayoutEffect(() => {
+    if (!IS_BROWSER || editing.value || !returnFocus.current) return;
+    returnFocus.current = false;
+    editButton.current?.focus();
+  }, [editing.value]);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -187,8 +200,8 @@ export default function DashboardV2() {
         initial={DEFAULT_OVERVIEW_LAYOUT}
         editable={editing.value}
         onExitEdit={() => {
+          returnFocus.current = true;
           editing.value = false;
-          editButton.current?.focus();
         }}
       />
     </div>

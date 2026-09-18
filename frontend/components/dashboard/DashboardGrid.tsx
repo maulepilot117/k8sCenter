@@ -676,15 +676,30 @@ export default function DashboardGrid({
           />
         ))}
       </div>
-      {/* Outside the grid, so an absolutely positioned child cannot take part
-          in its auto-placement. A widget's own name carries its position too,
-          but a name that changes under an already-focused element is not
-          reliably re-announced; this is. */}
+      {/* A widget's own name carries its position too, but a name that changes
+          under an already-focused element is not reliably re-announced; this
+          is.
+
+          Hidden by clipping a one-pixel box, NOT by Tailwind's `sr-only`.
+          That utility positions absolutely, and the page's scroll container
+          (`main`) is not itself positioned -- so the region's containing block
+          would be the initial one, parking it at the grid's bottom in document
+          coordinates and extending the *document's* scrollable area by the
+          grid's full height. On the default layout that is 539px of empty
+          scroll below a dashboard that should not scroll at all, and a pointer
+          drag near the viewport edge auto-scrolls the page into it. Staying in
+          flow costs one pixel and nothing else. */}
       <div
         data-testid="grid-announcement"
         role="status"
         aria-live="polite"
-        class="sr-only"
+        style={{
+          width: "1px",
+          height: "1px",
+          overflow: "hidden",
+          clipPath: "inset(50%)",
+          whiteSpace: "nowrap",
+        }}
       >
         {announcement.value}
       </div>
