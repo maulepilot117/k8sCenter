@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   cellFromPoint,
   compact,
+  dragTarget,
   layoutHeight,
+  metricsFrom,
   moveItem,
   overlaps,
   resizeItem,
@@ -476,6 +478,59 @@ describe("layoutHeight", () => {
 
   test("an empty layout has height 0", () => {
     expect(layoutHeight([])).toBe(0);
+  });
+});
+
+describe("metricsFrom", () => {
+  test("columns share what the gaps leave", () => {
+    // 12 columns, 11 gaps of 16 = 176px of gutter.
+    const m = metricsFrom({ left: 40, top: 100, width: 1076 });
+    expect(m.cellWidth).toBe(75);
+    expect([m.left, m.top, m.rowHeight, m.gap]).toEqual([40, 100, 40, 16]);
+  });
+
+  test("a container narrower than its gaps reports a negative cell", () => {
+    // Left as measured: cellFromPoint owns the "not laid out yet" decision,
+    // and clamping here would hide a zero-size grid from it.
+    expect(metricsFrom({ left: 0, top: 0, width: 0 }).cellWidth).toBeLessThan(
+      0,
+    );
+  });
+
+  test("feeds cellFromPoint: the grid's own corner is cell 0,0", () => {
+    const m = metricsFrom({ left: 40, top: 100, width: 1076 });
+    expect(cellFromPoint(40, 100, m)).toEqual({ x: 0, y: 0 });
+    // One column stride right, one row stride down.
+    expect(cellFromPoint(40 + 75 + 16, 100 + 40 + 16, m)).toEqual({
+      x: 1,
+      y: 1,
+    });
+  });
+});
+
+describe("dragTarget", () => {
+  test("translates the item by the pointer's travel, not to the pointer", () => {
+    // Grabbed at cell (5,3) on an item at (4,2): two cells right and one down
+    // moves the item to (6,3), keeping the grab offset.
+    expect(dragTarget({ x: 4, y: 2 }, { x: 5, y: 3 }, { x: 7, y: 4 })).toEqual({
+      x: 6,
+      y: 3,
+    });
+  });
+
+  test("no travel leaves the item where it started", () => {
+    expect(dragTarget({ x: 4, y: 2 }, { x: 5, y: 3 }, { x: 5, y: 3 })).toEqual({
+      x: 4,
+      y: 2,
+    });
+  });
+
+  test("travel up and left is negative, for moveItem to clamp", () => {
+    // Off the top-left corner: moveItem clamps, so this stays raw.
+    expect(dragTarget({ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 0 })).toEqual({
+      x: -1,
+      y: -1,
+    });
   });
 });
 
