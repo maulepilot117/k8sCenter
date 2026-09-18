@@ -36,6 +36,17 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  */
 export const NARROW_GRID_WIDTH = 900;
 
+/**
+ * Once collapsed, the grid needs this much width to expand again.
+ *
+ * The gap is a scrollbar wide on purpose. Collapsing to one column makes the
+ * page taller, which can add the scroll bar, which takes ~15px off the grid --
+ * and a single threshold would then flip the mode straight back, and again,
+ * and again. Mid-drag that is worse than cosmetic: a mode flip cancels the
+ * drag the user is still holding.
+ */
+export const WIDE_GRID_WIDTH = 916;
+
 /** Height of the drag handle: the widget card's title row. */
 const DRAG_HANDLE_HEIGHT = 40;
 
@@ -164,7 +175,10 @@ export default function DashboardGrid({
     const el = gridRef.current;
     if (!el) return;
     const measure = () => {
-      narrow.value = el.clientWidth < NARROW_GRID_WIDTH;
+      // Which threshold applies depends on which mode is showing, so the
+      // width has to move a scrollbar's worth to change the answer.
+      narrow.value =
+        el.clientWidth < (narrow.value ? WIDE_GRID_WIDTH : NARROW_GRID_WIDTH);
     };
     const ro = new ResizeObserver(measure);
     ro.observe(el);

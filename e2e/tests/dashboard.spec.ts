@@ -126,9 +126,18 @@ test.describe("Dashboard widget registry", () => {
     const grid = page.getByTestId("dashboard-grid");
     // The threshold is the grid's own width, not the viewport's, so the test
     // derives the expected mode from the measurement rather than from a
-    // viewport size that depends on the sidebar. A resize reaches the grid
-    // through a ResizeObserver, which delivers on its own schedule, so read
-    // both halves together until they agree rather than once and hope.
+    // viewport size that depends on the sidebar. The grid collapses below
+    // 900 and expands again at 916, so between those either mode is correct:
+    // which one shows depends on the side the grid arrived from. A resize
+    // also reaches the grid through a ResizeObserver, which delivers on its
+    // own schedule, so read both halves together until they agree rather than
+    // once and hope.
+    const agrees = (seen: { mode: string; width: number }) => {
+      if (seen.width < 900) return seen.mode === "narrow";
+      if (seen.width >= 916) return seen.mode === "wide";
+      return seen.mode === "narrow" || seen.mode === "wide";
+    };
+
     const observed = async () => {
       let seen = { mode: "", width: 0 };
       await expect
@@ -138,7 +147,7 @@ test.describe("Dashboard widget registry", () => {
               mode: el.getAttribute("data-grid-mode") ?? "",
               width: el.clientWidth,
             }));
-            return seen.mode === (seen.width < 900 ? "narrow" : "wide");
+            return agrees(seen);
           },
           { message: `grid mode never matched its width: ${JSON.stringify(seen)}` },
         )
