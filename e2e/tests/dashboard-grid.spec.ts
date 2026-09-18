@@ -71,6 +71,45 @@ async function editableDashboard(page: Page) {
   );
 }
 
+/**
+ * TEMPORARY (2026-09-18): records every pointer event that could end a drag,
+ * so a CI failure says which one fired. Remove once the mid-drag failure in
+ * `Escape during a drag puts the layout back` is understood.
+ */
+async function recordDragEvents(page: Page) {
+  await page.evaluate(() => {
+    const log: string[] = [];
+    (window as unknown as { __dragLog: string[] }).__dragLog = log;
+    for (const type of [
+      "pointerdown",
+      "pointerup",
+      "pointercancel",
+      "lostpointercapture",
+      "gotpointercapture",
+      "dragstart",
+      "keydown",
+      "blur",
+      "visibilitychange",
+    ]) {
+      globalThis.addEventListener(
+        type,
+        (ev) => {
+          const target = ev.target as HTMLElement | null;
+          log.push(
+            `${Math.round(performance.now())} ${type} ${target?.dataset?.testid ?? target?.nodeName ?? "?"}`,
+          );
+        },
+        true,
+      );
+    }
+  });
+}
+
+const dragLog = (page: Page): Promise<string[]> =>
+  page.evaluate(
+    () => (window as unknown as { __dragLog?: string[] }).__dragLog ?? [],
+  );
+
 /** Drags `id` by its handle to a point, in steps, so pointermove fires. */
 async function dragTo(page: Page, id: string, to: { x: number; y: number }) {
   await handle(page, id).hover();
@@ -131,12 +170,17 @@ test.describe("Dashboard grid drag", () => {
     const alerts = at(before, "d-active-alerts");
     const health = at(before, "d-cluster-health");
 
+    await recordDragEvents(page);
     await handle(page, "d-active-alerts").hover();
     await page.mouse.down();
     await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
-    await expect(
-      page.locator('[data-instance-id="d-active-alerts"]'),
-    ).toHaveAttribute("data-dragging", "true");
+    const midDrag = await page
+      .locator('[data-instance-id="d-active-alerts"]')
+      .getAttribute("data-dragging");
+    expect(
+      midDrag,
+      `drag ended before the assertion; events: ${(await dragLog(page)).join(" | ")}`,
+    ).toBe("true");
     // The widget has actually moved: without this the test could certify a
     // restore that had nothing to restore.
     expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
@@ -160,10 +204,14 @@ test.describe("Dashboard grid drag", () => {
     const alerts = at(before, "d-active-alerts");
     const health = at(before, "d-cluster-health");
 
+    await recordDragEvents(page);
     await handle(page, "d-active-alerts").hover();
     await page.mouse.down();
     await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
-    expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
+    expect(
+      at(await cells(page), "d-active-alerts").x,
+      `drag did not move the widget; events: ${(await dragLog(page)).join(" | ")}`,
+    ).not.toBe(alerts.x);
 
     // What the OS taking the pointer looks like to the page: a system
     // gesture, or a touch the browser decided was a scroll. Chrome gives a
