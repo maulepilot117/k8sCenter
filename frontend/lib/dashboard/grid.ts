@@ -273,6 +273,67 @@ export function resizeItem(
   }));
 }
 
+/**
+ * How many times `resizeItemToCell` re-aims within one call. Two settles every
+ * case the tests and review probes found; the rest is headroom.
+ */
+const RESIZE_AIM_PASSES = 4;
+
+/**
+ * Resizes one item so its bottom-right corner covers `cell`, and settles the
+ * result.
+ *
+ * The size is measured from the item's own top-left and is inclusive of `cell`:
+ * releasing on the corner cell an item already occupies means "unchanged", not
+ * "one cell". Clamping is `resizeItem`'s, so the declared minimum and the right
+ * edge are honored here too.
+ *
+ * It applies more than once when it has to. Narrowing an item off the one it
+ * rested on lets gravity lift it, and the height just applied was measured from
+ * the y it had *before* that lift -- leaving the bottom edge stranded above the
+ * pointer. A caller re-applying on every pointermove would eventually correct
+ * it, which is the problem: whether the correction happened at all depended on
+ * whether one more event arrived before the release, so the same pointer
+ * position committed two different sizes. Re-aiming here makes the result a
+ * function of `cell` alone.
+ *
+ * That holds whether or not the aim converges: the pass count is fixed, so the
+ * same layout and cell always produce the same output. In practice it settles
+ * on the second pass, because the only thing changing after the first is the
+ * height, and a height change cannot alter which columns the item occupies.
+ */
+export function resizeItemToCell(
+  items: readonly LayoutItem[],
+  instanceId: string,
+  cell: Cell,
+  bounds: Bounds,
+): LayoutItem[] {
+  let current = items.find((i) => i.instanceId === instanceId);
+  if (!current) return items.map((i) => ({ ...i }));
+
+  let out = resizeItem(
+    items,
+    instanceId,
+    cell.x - current.x + 1,
+    cell.y - current.y + 1,
+    bounds,
+  );
+  for (let pass = 1; pass < RESIZE_AIM_PASSES; pass++) {
+    const settled = findTarget(out, instanceId);
+    // x cannot move during a resize, so only a lift needs a second look.
+    if (settled.y === current.y) return out;
+    current = settled;
+    out = resizeItem(
+      out,
+      instanceId,
+      cell.x - current.x + 1,
+      cell.y - current.y + 1,
+      bounds,
+    );
+  }
+  return out;
+}
+
 /** Translates a viewport point to a grid cell, clamped into the grid. */
 export function cellFromPoint(px: number, py: number, m: GridMetrics): Cell {
   // Before first layout the grid reports zero-size cells, and a container

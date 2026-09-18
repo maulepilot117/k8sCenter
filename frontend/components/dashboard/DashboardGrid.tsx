@@ -10,7 +10,7 @@ import {
   layoutHeight,
   metricsFrom,
   moveItem,
-  resizeItem,
+  resizeItemToCell,
   resolveRenderable,
 } from "@/lib/dashboard/grid.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
@@ -59,6 +59,13 @@ const DRAG_HANDLE_HEIGHT = 40;
  * in a card corner, but WCAG 2.2 AA Target Size (Minimum) wants 24px and the
  * mobile app was held to that bar in M5 PR-5h. So the button is 24 and the
  * grip is painted in its bottom-right 16.
+ *
+ * 24 here and 40 for the drag handle also have to fit one above the other
+ * without touching, which 2.5.8 requires of adjacent targets. The smallest
+ * `minH` any widget declares today is 2, which is a 96px card, so they are 32px
+ * apart. A `minH: 1` widget would be a 40px card, and the grip would sit inside
+ * the title row; `registry_test.ts` only guards `minH >= 1`, so that is an
+ * invariant to keep in mind rather than one the types enforce.
  */
 const RESIZE_HANDLE_SIZE = 24;
 const RESIZE_GRIP_SIZE = 16;
@@ -71,8 +78,12 @@ interface GridItemProps {
   def: WidgetDef;
   /** One-column mode: keep the height, discard x and w. */
   narrow: boolean;
-  /** Whether this item offers its drag and resize handles. */
-  editable: boolean;
+  /**
+   * Whether this item offers its drag and resize handles. Narrower than the
+   * grid's own `editable`: one column has nothing to arrange, so the grid
+   * gates this on being wide as well.
+   */
+  handlesVisible: boolean;
   /** True while this item is the one being dragged. */
   dragging: boolean;
   /** True while this item is the one being resized. */
@@ -92,7 +103,7 @@ export function GridItem({
   item,
   def,
   narrow,
-  editable,
+  handlesVisible,
   dragging,
   resizing,
   onDragStart,
@@ -104,6 +115,12 @@ export function GridItem({
         gridColumn: `${item.x + 1} / span ${item.w}`,
         gridRow: `${item.y + 1} / span ${item.h}`,
       };
+
+  // A grip is a UI component, so WCAG 1.4.11 asks 3:1 of it against the card
+  // behind it. --text-muted does not have it: 2.1:1 on a dark card, 1.9:1 on a
+  // light one at a dimmed opacity, and still 2.96:1 against a light glass card
+  // at full strength. Both of these clear 3:1 on all four card backgrounds.
+  const gripColor = resizing ? "var(--accent)" : "var(--text-secondary)";
 
   return (
     <div
@@ -120,7 +137,7 @@ export function GridItem({
         zIndex: dragging || resizing ? 2 : undefined,
       }}
     >
-      {editable && (
+      {handlesVisible && (
         // The handle is the card's title row, not the whole card: several
         // widgets have links in their body, and a card-wide drag target would
         // swallow those clicks. A button, not a bare div, so the handle is
@@ -152,7 +169,7 @@ export function GridItem({
           }}
         />
       )}
-      {editable && (
+      {handlesVisible && (
         // The bottom-right corner, the one convention every resizable surface
         // shares. Drawn as two edges rather than a filled square so it reads
         // against whatever widget body it sits on, and kept small: it overlays
@@ -183,10 +200,9 @@ export function GridItem({
             style={{
               width: `${RESIZE_GRIP_SIZE}px`,
               height: `${RESIZE_GRIP_SIZE}px`,
-              borderRight: "2px solid var(--text-muted)",
-              borderBottom: "2px solid var(--text-muted)",
+              borderRight: `2px solid ${gripColor}`,
+              borderBottom: `2px solid ${gripColor}`,
               borderBottomRightRadius: "4px",
-              opacity: resizing ? 1 : 0.6,
             }}
           />
         </button>
@@ -435,29 +451,20 @@ export default function DashboardGrid({
     def: WidgetDef,
     event: JSX.TargetedPointerEvent<HTMLElement>,
   ) {
-    startSession("resize", instanceId, event, (start) => {
-      // The pointer starts on the item's own bottom-right cell, so the size it
-      // names there is the size the item already has. Seeding the comparison
-      // with that keeps a press-and-release from re-resolving the layout.
-      let last = { w: start.w, h: start.h };
+    startSession("resize", instanceId, event, (_start, origin) => {
+      let last = origin;
       return (cell) => {
-        // Measured from the item's *current* top-left, not the one captured at
-        // pointerdown: narrowing an item off the one it rested on lets gravity
-        // lift it, and a captured y would leave the bottom edge trailing the
-        // pointer for the rest of the session. x cannot move during a resize,
-        // but it is read from the same place so there is one rule here, not
-        // two.
-        const current = items.value.find((i) => i.instanceId === instanceId);
-        if (!current) return;
-        // Inclusive of the cell under the pointer: releasing on the corner the
-        // item already occupies has to mean "unchanged", not "one cell".
-        const w = cell.x - current.x + 1;
-        const h = cell.y - current.y + 1;
-        if (w === last.w && h === last.h) return;
-        last = { w, h };
-        // The clamp comes from the registry rather than a magic number: a
-        // widget is the only thing that knows how small it still renders.
-        items.value = resizeItem(items.value, instanceId, w, h, {
+        // Same reason the drag dedupes: a cell is tens of pixels wide, so most
+        // moves ask for the layout that is already on screen.
+        if (cell.x === last.x && cell.y === last.y) return;
+        last = cell;
+        // The whole size calculation -- measuring from the item's top-left,
+        // the inclusive corner cell, the clamp, and re-aiming when gravity
+        // lifts the item mid-resize -- belongs to the engine, which is where
+        // it can be unit tested. The bounds come from the registry rather than
+        // a constant here: a widget is the only thing that knows how small it
+        // still renders.
+        items.value = resizeItemToCell(items.value, instanceId, cell, {
           minW: def.minW,
           minH: def.minH,
         });
@@ -469,6 +476,15 @@ export default function DashboardGrid({
   // back in reading order -- which is also the keyboard and screen-reader
   // order. The wide grid places items by coordinates, but DOM order still
   // decides tab order, so it renders in that order too.
+  //
+  // The pointer sessions above read `items.value`, not this, so the two have to
+  // agree on where a widget is. They do today: the only layout this component
+  // is ever given is the default one, whose ids are all known and which is
+  // already compacted, so resolving it changes nothing. P3 brings stored
+  // layouts, which can name a retired widget -- and then every item below the
+  // skipped one renders a row above where `items.value` says it is, which is a
+  // different coordinate frame than the one the user is pointing at. P3 has to
+  // resolve once and keep the result, rather than resolve per render.
   const ordered = resolveRenderable(items.value, getWidget);
   const active = session.value;
 
@@ -505,7 +521,7 @@ export default function DashboardGrid({
           // One column has no columns to drag between and no width to size, so
           // edit mode offers no handles there; D10's keyboard is the
           // narrow-screen path.
-          editable={editable && !narrow.value}
+          handlesVisible={editable && !narrow.value}
           dragging={
             active?.kind === "drag" && active.instanceId === item.instanceId
           }

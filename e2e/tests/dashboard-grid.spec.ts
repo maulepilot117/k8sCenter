@@ -1,5 +1,16 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "../fixtures/base.ts";
+// The grid's own constants, imported rather than copied: a change to the row
+// height or the gap has to break these tests loudly, not make them assert the
+// wrong geometry in silence. Importing across the project boundary is the
+// established pattern here -- security-headers, websocket-channels and
+// websocket-rejection all do it -- and types.ts's only import is a type-only
+// one, which the transpiler erases.
+import {
+  DASHBOARD_COLUMNS,
+  DASHBOARD_GRID_GAP,
+  DASHBOARD_ROW_HEIGHT,
+} from "../../frontend/lib/dashboard/types.ts";
 
 // Drag and resize behaviour on the dashboard's snapping grid. The geometry
 // itself is unit tested in frontend/lib/dashboard/grid_test.ts; these tests
@@ -126,23 +137,37 @@ async function resizeTo(page: Page, id: string, to: { x: number; y: number }) {
 }
 
 /**
+ * A point a fifth of the way into the cell `right` columns and `down` rows from
+ * `item`'s top-left -- the cell its bottom-right corner must land on to make it
+ * `right + 1` wide and `down + 1` tall.
+ *
+ * Inside that cell, deliberately, rather than on its far edge. On the far edge
+ * the snapped size and the raw pointer distance are the same number to the
+ * pixel, so a widget that followed the pointer continuously -- the one thing a
+ * snapping grid must not do -- would satisfy every size assertion below.
+ */
+function cornerCell(g: Geometry, item: Cell, right: number, down: number) {
+  return {
+    x: item.x + right * (g.cellWidth + g.gap) + 0.2 * g.cellWidth,
+    y: item.y + down * (g.rowHeight + g.gap) + 0.2 * g.rowHeight,
+  };
+}
+
+/**
  * The live grid's cell geometry in CSS pixels, so a test can express a resize
  * as "two columns wider" rather than as a pixel count that only holds at one
- * viewport size. Mirrors `metricsFrom` in frontend/lib/dashboard/grid.ts; the
- * constants are DASHBOARD_COLUMNS, _GRID_GAP and _ROW_HEIGHT from
- * frontend/lib/dashboard/types.ts, which this project cannot import.
+ * viewport size. Mirrors `metricsFrom` in frontend/lib/dashboard/grid.ts.
  */
 async function geometry(page: Page) {
   const width = await page
     .getByTestId("dashboard-grid")
     .evaluate((el) => el.getBoundingClientRect().width);
-  const columns = 12;
-  const gap = 16;
-  const rowHeight = 40;
   return {
-    gap,
-    rowHeight,
-    cellWidth: (width - gap * (columns - 1)) / columns,
+    gap: DASHBOARD_GRID_GAP,
+    rowHeight: DASHBOARD_ROW_HEIGHT,
+    cellWidth:
+      (width - DASHBOARD_GRID_GAP * (DASHBOARD_COLUMNS - 1)) /
+      DASHBOARD_COLUMNS,
   };
 }
 
@@ -159,10 +184,15 @@ function blockSize(g: Geometry, w: number, h: number) {
 /**
  * Asserts a measured size is the one `blockSize` predicts.
  *
- * Within half a cell, not to the pixel: bounding boxes round to whole pixels,
- * a column is a fraction of the container, and a widget growing can add the
- * page's scroll bar, which moves every column edge a little. Half a cell still
- * tells six columns from five or seven, which is what these tests are about.
+ * Within half a cell, not to the pixel: a column is a fraction of whatever the
+ * container is wide, and a multi-column span accumulates that rounding. Half a
+ * cell still tells six columns from five or seven -- they are a whole column
+ * stride apart, some 2.5x the tolerance -- which is what these tests are about.
+ *
+ * Not because the page's scroll bar might appear mid-test: the scrolling box is
+ * a fixed-height `overflow-y: auto` `main`, and the grid is taller than it from
+ * the first paint, so every column edge holds still for the whole run. That is
+ * what lets the tests around this one compare positions with exact equality.
  */
 function expectBlock(
   got: Cell,
@@ -404,7 +434,7 @@ test.describe("Dashboard grid drag", () => {
     expect(order(await cells(page))).toEqual(order(before));
   });
 
-  test("one column offers no handles to drag", async ({ page }) => {
+  test("one column offers no handles at all", async ({ page }) => {
     // Well under the 900px grid-width breakpoint once the sidebar is counted.
     await page.setViewportSize({ width: 700, height: 900 });
     await page.goto("/");
@@ -483,12 +513,9 @@ test.describe("Dashboard grid resize", () => {
     const cpu = at(before, "d-cpu-tile");
     const memory = at(before, "d-memory-tile");
 
-    // The CPU tile is three columns by three rows. Two cells right and two
-    // rows down makes it five by five.
-    await resizeTo(page, "d-cpu-tile", {
-      x: cpu.x + cpu.width + 2 * (g.cellWidth + g.gap),
-      y: cpu.y + cpu.height + 2 * (g.rowHeight + g.gap),
-    });
+    // The CPU tile is three by three, so the cell four columns right and four
+    // rows down of its top-left is the corner of a five by five.
+    await resizeTo(page, "d-cpu-tile", cornerCell(g, cpu, 4, 4));
 
     const grown = await cells(page);
     expectBlock(at(grown, "d-cpu-tile"), g, 5, 5, "grown CPU tile");
@@ -503,38 +530,66 @@ test.describe("Dashboard grid resize", () => {
     expect(grown).toHaveLength(10);
     // The release ended the session.
     await expect(page.locator('[data-resizing="true"]')).toHaveCount(0);
+  });
 
-    // Back to three by three: the corner goes to the cell it started on. What
-    // the grow pushed down, gravity lifts again.
-    await resizeTo(page, "d-cpu-tile", {
-      x: cpu.x + cpu.width - 8,
-      y: cpu.y + cpu.height - 8,
-    });
+  test("shrinking a widget lets the neighbours it displaced rise again", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const before = await grabCorner(page, "d-cpu-tile");
+    const g = await geometry(page);
+    const cpu = at(before, "d-cpu-tile");
+    const memory = at(before, "d-memory-tile");
+
+    await resizeTo(page, "d-cpu-tile", cornerCell(g, cpu, 4, 4));
+    // The grow really did push something down, or the restore below would be
+    // certifying nothing.
+    expect(at(await cells(page), "d-memory-tile").y).toBeGreaterThan(memory.y);
+
+    // Back to three by three. Gravity is what lifts the Memory tile home: it
+    // no longer shares a column with anything above it.
+    await resizeTo(page, "d-cpu-tile", cornerCell(g, cpu, 2, 2));
 
     const shrunk = await cells(page);
     expectBlock(at(shrunk, "d-cpu-tile"), g, 3, 3, "shrunk CPU tile");
     expect(at(shrunk, "d-memory-tile").y).toBe(memory.y);
+    // The whole layout comes back, not just the tile that moved: every widget
+    // the cascade displaced settles where it started.
     expect(shrunk).toEqual(before);
   });
 
-  test("a resize stops at the widget's declared minimum", async ({ page }) => {
+  test("a resize stops at each widget's own declared minimum", async ({
+    page,
+  }) => {
     await editableDashboard(page);
 
     const before = await grabCorner(page, "d-active-alerts");
     const g = await geometry(page);
     const alerts = at(before, "d-active-alerts");
 
-    // Active Alerts is three by five and declares minW 2 / minH 3. Dragging
-    // its corner to the top-left of the viewport asks for a negative size in
-    // both directions -- as far past the minimum as a pointer can get. The
-    // clamp is what stops a user producing a widget too small to render its
-    // own content, and it comes from the registry, not from the island.
+    // Dragging a corner to the top-left of the viewport asks for a negative
+    // size in both directions -- as far past any minimum as a pointer can get.
+    // The clamp is what stops a user producing a widget too small to render
+    // its own content.
     await resizeTo(page, "d-active-alerts", { x: 4, y: 4 });
 
+    const clamped = await cells(page);
+    // Active Alerts declares minW 2 / minH 3.
+    expectBlock(at(clamped, "d-active-alerts"), g, 2, 3, "Active Alerts");
+    // However far left the pointer went, the widget did not follow it, and
+    // nothing lifted it: resizeItem may change y, and here it must not.
+    expect(at(clamped, "d-active-alerts").x).toBe(alerts.x);
+    expect(at(clamped, "d-active-alerts").y).toBe(alerts.y);
+
+    // The same gesture on a widget with different minima has to stop
+    // somewhere else. One widget alone cannot tell a registry lookup from a
+    // pair of constants that happen to match it.
+    await resizeTo(page, "d-resource-utilization", { x: 4, y: 4 });
+
     const after = await cells(page);
-    expectBlock(at(after, "d-active-alerts"), g, 2, 3, "clamped Active Alerts");
-    // However far left the pointer went, the widget did not follow it.
-    expect(at(after, "d-active-alerts").x).toBe(alerts.x);
+    // Resource Utilization declares minW 4 / minH 4.
+    expectBlock(at(after, "d-resource-utilization"), g, 4, 4, "Utilization");
     expect(overlapping(after)).toEqual([]);
     expect(after).toHaveLength(10);
   });
@@ -579,8 +634,8 @@ test.describe("Dashboard grid resize", () => {
     await corner(page, "d-cpu-tile").hover();
     await page.mouse.down();
     await page.mouse.move(
-      cpu.x + cpu.width + 2 * (g.cellWidth + g.gap),
-      cpu.y + cpu.height,
+      cornerCell(g, cpu, 4, 4).x,
+      cornerCell(g, cpu, 4, 4).y,
       { steps: 12 },
     );
     await expect(page.locator('[data-resizing="true"]')).toHaveCount(1);
@@ -602,7 +657,42 @@ test.describe("Dashboard grid resize", () => {
     });
 
     await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
-    await expect(page.locator('[data-resizing="true"]')).toHaveCount(1);
+    await expect(
+      page.locator('[data-instance-id="d-cpu-tile"][data-resizing="true"]'),
+    ).toHaveCount(1);
+    await page.mouse.up();
+  });
+
+  test("a resize cannot start while a drag is in flight", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await grab(page, "d-active-alerts");
+    const health = at(before, "d-cluster-health");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down();
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(1);
+
+    // The same guard as the test above, from the other side: a corner grip
+    // pressed mid-drag must not open a second session either.
+    await corner(page, "d-nodes").evaluate((el) => {
+      el.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          pointerId: 99,
+          isPrimary: false,
+          button: 0,
+          buttons: 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    await expect(page.locator('[data-resizing="true"]')).toHaveCount(0);
+    await expect(
+      page.locator('[data-instance-id="d-active-alerts"][data-dragging="true"]'),
+    ).toHaveCount(1);
     await page.mouse.up();
   });
 });
