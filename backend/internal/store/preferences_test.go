@@ -767,7 +767,11 @@ func TestPreferenceStore_UnknownKindRejected(t *testing.T) {
 	owner := testOwnerID(t)
 
 	rec := savedView(owner, "bogus")
-	rec.Kind = PreferenceKind("dashboard_layout")
+	// Deliberately a value no migration will ever add to the CHECK. This read
+	// "dashboard_layout" until 000019 made that a real kind and turned this
+	// test red -- which is the CHECK proving it is enforced, but it also means
+	// the sentinel has to be something the allowlist cannot grow into.
+	rec.Kind = PreferenceKind("not_a_preference_kind")
 
 	if _, err := s.Create(t.Context(), rec, testMaxPerKind); err == nil {
 		t.Fatal("Create with an unknown kind succeeded; want the DDL kind check to reject it")
