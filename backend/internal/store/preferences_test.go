@@ -78,6 +78,22 @@ func pinRecord(ownerID, resourceKind, namespace, name, uid string) PreferenceRec
 	}
 }
 
+// dashboardLayout builds an unsaved dashboard-layout record. The dedup key is
+// the scope, so "one layout per owner per cluster per scope" falls out of the
+// unique index 000018 already created (Release G, D-11).
+func dashboardLayout(ownerID, clusterID, scope string) PreferenceRecord {
+	return PreferenceRecord{
+		OwnerID:       ownerID,
+		Kind:          PreferenceKindDashboardLayout,
+		Name:          scope,
+		ClusterID:     clusterID,
+		DedupKey:      scope,
+		SchemaVersion: 1,
+		Config: json.RawMessage(fmt.Sprintf(
+			`{"schemaVersion":1,"scope":%q,"columns":12,"items":[]}`, scope)),
+	}
+}
+
 // mustCreate creates a record and fails the test on any error.
 func mustCreate(t *testing.T, s *PreferenceStore, rec PreferenceRecord, maxPerKind int) *PreferenceRecord {
 	t.Helper()
@@ -626,6 +642,143 @@ func TestPreferenceStore_LimitIsOwnerScoped(t *testing.T) {
 	}
 	if _, err := s.Create(t.Context(), savedView(bob, "view-0"), limit); err != nil {
 		t.Fatalf("bob's first Create under alice's saturated quota: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Address-by-dedup-key and per-cluster quota (Release G, D13)
+// ---------------------------------------------------------------------------
+
+// TestPreferenceStore_GetByDedupKey proves every component of the key is
+// load-bearing. A dashboard layout is addressed by its scope rather than by an
+// id, so this read is the whole of "does this user have a layout here" — a
+// component dropped from the WHERE clause would serve another cluster's
+// layout, or another user's.
+func TestPreferenceStore_GetByDedupKey(t *testing.T) {
+	s := newPreferenceStore(t)
+	owner := testOwnerID(t)
+	ctx := t.Context()
+
+	created := mustCreate(t, s, dashboardLayout(owner, "local", "overview"), testMaxPerKind)
+
+	got, err := s.GetByDedupKey(ctx, owner, PreferenceKindDashboardLayout, "local", "overview")
+	if err != nil {
+		t.Fatalf("GetByDedupKey: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("id = %s; want %s", got.ID, created.ID)
+	}
+	if string(got.Config) != string(created.Config) {
+		t.Errorf("config = %s; want %s", got.Config, created.Config)
+	}
+
+	// Each of these addresses a row that exists, changing exactly one
+	// component of its key, and must still miss.
+	for _, tc := range []struct {
+		name    string
+		owner   string
+		kind    PreferenceKind
+		cluster string
+		dedup   string
+	}{
+		{"another owner", owner + "-someone-else", PreferenceKindDashboardLayout, "local", "overview"},
+		{"another cluster", owner, PreferenceKindDashboardLayout, "prod-east", "overview"},
+		{"another kind", owner, PreferenceKindSavedView, "local", "overview"},
+		{"another scope", owner, PreferenceKindDashboardLayout, "local", "networking"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.GetByDedupKey(ctx, tc.owner, tc.kind, tc.cluster, tc.dedup); !errors.Is(err, ErrPreferenceNotFound) {
+				t.Fatalf("GetByDedupKey = %v; want ErrPreferenceNotFound", err)
+			}
+		})
+	}
+}
+
+// TestPreferenceStore_CreateInCluster_CountsPerCluster is the whole difference
+// between the two create entry points.
+//
+// A dashboard layout's ceiling is the number of scopes, which is exactly right
+// for one cluster and catastrophically wrong across them: counting every
+// cluster's rows would mean one saved layout anywhere locks the user out of
+// every other cluster's dashboard.
+func TestPreferenceStore_CreateInCluster_CountsPerCluster(t *testing.T) {
+	s := newPreferenceStore(t)
+	owner := testOwnerID(t)
+	ctx := t.Context()
+
+	// One scope, so one layout per cluster.
+	const limit = 1
+
+	if _, err := s.CreateInCluster(ctx, dashboardLayout(owner, "local", "overview"), limit); err != nil {
+		t.Fatalf("first cluster: %v", err)
+	}
+	if _, err := s.CreateInCluster(ctx, dashboardLayout(owner, "prod-east", "overview"), limit); err != nil {
+		t.Fatalf("second cluster under a per-cluster ceiling: %v", err)
+	}
+
+	// Inside one cluster the ceiling still bites. A second scope is used so
+	// the unique index cannot be what refuses it.
+	if _, err := s.CreateInCluster(ctx, dashboardLayout(owner, "local", "networking"), limit); !errors.Is(err, ErrPreferenceLimit) {
+		t.Fatalf("second layout in one cluster = %v; want ErrPreferenceLimit", err)
+	}
+
+	// And Create still counts across clusters, which is what the saved-view
+	// and pin ceilings rely on.
+	if _, err := s.Create(ctx, dashboardLayout(owner, "prod-west", "overview"), limit); !errors.Is(err, ErrPreferenceLimit) {
+		t.Fatalf("Create across clusters = %v; want ErrPreferenceLimit", err)
+	}
+}
+
+// TestPreferenceStore_ConcurrentCreateInClusterRespectsLimit proves the
+// per-cluster ceiling holds under a race, which is the property the sequential
+// test above cannot see. The advisory lock has to cover the same key the count
+// does: narrowing the count to a cluster without narrowing the lock with it
+// would leave the ceiling unserialized for exactly the kind that has the
+// tightest one.
+func TestPreferenceStore_ConcurrentCreateInClusterRespectsLimit(t *testing.T) {
+	s := newPreferenceStore(t)
+	owner := testOwnerID(t)
+	ctx := t.Context()
+
+	const (
+		limit  = 1
+		racers = 8
+		rounds = 25 // the unserialized window is short; one round rarely catches it
+	)
+
+	for round := range rounds {
+		owner := fmt.Sprintf("%s-round-%d", owner, round)
+
+		var (
+			wg      sync.WaitGroup
+			start   = make(chan struct{})
+			results = make([]error, racers)
+		)
+		for i := range racers {
+			wg.Go(func() {
+				<-start // release all racers together
+				// Distinct scopes, so the unique index cannot mask the result.
+				_, results[i] = s.CreateInCluster(ctx,
+					dashboardLayout(owner, "local", fmt.Sprintf("racer-%d", i)), limit)
+			})
+		}
+		close(start)
+		wg.Wait()
+
+		var created int
+		for i, err := range results {
+			switch {
+			case err == nil:
+				created++
+			case errors.Is(err, ErrPreferenceLimit):
+				// Expected for every racer that lost.
+			default:
+				t.Fatalf("round %d, racer %d: unexpected error: %v", round, i, err)
+			}
+		}
+		if created != limit {
+			t.Fatalf("round %d: %d racers created a row; want %d", round, created, limit)
+		}
 	}
 }
 
