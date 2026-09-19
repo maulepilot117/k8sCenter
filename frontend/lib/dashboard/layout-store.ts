@@ -224,8 +224,14 @@ export async function loadLayout(
   scope: DashboardScope,
   signal?: AbortSignal,
 ): Promise<void> {
-  // Cancel any previous load so a slow response for the old cluster cannot
-  // land late and present another cluster's layout as this one's.
+  // Cancel any previous load so a slow response cannot land after a newer one
+  // and overwrite it with staler state.
+  //
+  // One controller for the module, not one per scope, because exactly one
+  // scope ships. A second scope makes this wrong rather than merely coarse:
+  // two dashboards loading at once would abort each other. Key this by scope
+  // in the unit that adds the second one -- doing it now would be machinery no
+  // test could reach.
   inFlight?.abort();
   const ac = new AbortController();
   inFlight = ac;
@@ -244,6 +250,12 @@ export async function loadLayout(
     // object -- and re-mounting the grid for a layout identical to the one it
     // is already showing would throw away a drag the user had begun before the
     // response landed, for no change at all.
+    //
+    // Reference equality, so it only skips the case it can prove. A load that
+    // DID find a stored layout always rebuilds the config and so always counts
+    // as replaced, even for identical content: today nothing can observe that,
+    // because the only caller loads once on mount. A reload affordance would,
+    // and would want a content comparison here rather than this one.
     const replaced = loaded.config !== layout.value;
 
     layout.value = loaded.config;

@@ -94,6 +94,13 @@ export default function DashboardV2() {
 
   // The stored layout decides which sources are fetched, so this re-runs when
   // the load replaces the default with the user's arrangement.
+  //
+  // It runs first against the default, before that load has landed, and that
+  // is the trade wanted: first paint does not wait on the layout round trip.
+  // For the unsaved-dashboard case the two source sets are identical anyway.
+  // For a customized one it can fetch a source only a default widget reads --
+  // `ensure` is keyed per source and range, so the cost is those few requests
+  // once, not a refetch of everything.
   useEffect(() => {
     if (!IS_BROWSER) return;
     dashboardData.ensure(sourcesFor(layout.value), timeRange.value);
