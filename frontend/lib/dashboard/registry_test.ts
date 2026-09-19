@@ -12,6 +12,7 @@ import { join } from "node:path";
 // file without listing it fails here rather than silently shrinking what the
 // invariants cover.
 import "@/components/dashboard/widgets/index.ts";
+import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
 import {
   allWidgets,
   getWidget,
@@ -220,6 +221,106 @@ test("optionalSources is always a subset of sources", () => {
       if (!w.sources.includes(k)) {
         offenders.push(`${w.id} marks ${k} optional but does not declare it`);
       }
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
+test("registry ids are pinned to the server-side allowlist", () => {
+  // The other half of a cross-language contract. The server validates a saved
+  // layout against `allowedWidgetIDs` in
+  // backend/internal/preferences/dashboard.go, which is a Go map and cannot
+  // read this registry -- so a widget added here and not there produces a
+  // layout the user can build in the editor and the server then refuses on
+  // save, with no test failing anywhere.
+  //
+  // Pinning both sides to the same literal turns that into a red test on
+  // whichever side was forgotten. The Go half is TestContractParity in
+  // backend/internal/preferences/parity_test.go; adding a widget means
+  // editing three places, and forgetting any one of them fails here or there.
+  //
+  // `fixture-*` ids are filtered out: `bun test` shares module state across
+  // files and the registry is append-only, so the registration tests above
+  // leave their fixtures behind (see the note at the top of this file).
+  const ids = allWidgets()
+    .map((w) => w.id)
+    .filter((id) => !id.startsWith("fixture-"))
+    .sort();
+  expect(ids).toEqual([
+    "active-alerts",
+    "cluster-health",
+    "cpu-tile",
+    "memory-tile",
+    "network-tile",
+    "nodes",
+    "pod-status",
+    "pods-tile",
+    "recent-events",
+    "resource-utilization",
+  ]);
+});
+
+test("registry minimums are pinned to the server-side catalog", () => {
+  // The other half of the size contract. The server refuses a placement below
+  // a widget's declared minimum, using its own copy of these numbers in
+  // `allowedWidgets` (backend/internal/preferences/dashboard.go) because it
+  // cannot read this registry. A minimum changed here and not there produces
+  // an editor that lets the user resize to something the server then rejects,
+  // citing a bound the client never showed -- or the reverse, an editor that
+  // refuses a size the server would have taken.
+  //
+  // The Go half is TestContractParity/"widget specs" in
+  // backend/internal/preferences/parity_test.go, which pins the same pairs.
+  const mins = Object.fromEntries(
+    allWidgets()
+      .filter((w) => !w.id.startsWith("fixture-"))
+      .map((w) => [w.id, [w.minW, w.minH]]),
+  );
+  expect(mins).toEqual({
+    "active-alerts": [2, 3],
+    "cluster-health": [3, 4],
+    "cpu-tile": [2, 2],
+    "memory-tile": [2, 2],
+    "network-tile": [2, 2],
+    nodes: [3, 4],
+    "pod-status": [3, 4],
+    "pods-tile": [2, 2],
+    "recent-events": [3, 3],
+    "resource-utilization": [4, 4],
+  });
+});
+
+test("no shipped widget declares parameters yet", () => {
+  // The server refuses any parameter on a widget that declares none, which is
+  // every widget today. This test is the tripwire for that changing: the day a
+  // widget gains a `params` spec, this fails and so does the Go side's
+  // parameterless assertion, forcing the ParamSpec to be written in both
+  // catalogs rather than the server quietly accepting whatever arrives.
+  const parameterized = allWidgets()
+    .filter((w) => !w.id.startsWith("fixture-"))
+    .filter((w) => w.params !== undefined)
+    .map((w) => w.id);
+  expect(parameterized).toEqual([]);
+});
+
+test("the default layout satisfies every widget's declared minimum", () => {
+  // The default is the one layout every user starts from, and it is now
+  // validated server-side against these minimums -- so a minimum raised above
+  // what the default uses would make the starting dashboard unsavable. The Go
+  // side runs the same layout through the real validator; this catches the
+  // mismatch at its source, where the numbers actually live.
+  const offenders: string[] = [];
+  for (const item of DEFAULT_OVERVIEW_LAYOUT.items) {
+    const def = getWidget(item.id);
+    if (!def) {
+      offenders.push(`${item.id} is not registered`);
+      continue;
+    }
+    if (item.w < def.minW) {
+      offenders.push(`${item.id} w=${item.w} below minW=${def.minW}`);
+    }
+    if (item.h < def.minH) {
+      offenders.push(`${item.id} h=${item.h} below minH=${def.minH}`);
     }
   }
   expect(offenders).toEqual([]);

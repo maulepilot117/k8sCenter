@@ -49,8 +49,9 @@ test("preferenceReason: a non-ApiError is undefined", () => {
 
 test("PREFERENCE_REASONS covers the handler's reason codes", () => {
   // Pinned to the WriteErrorWithReason call sites in
-  // backend/internal/preferences/handler.go and types.go. Adding a reason
-  // there without adding it here means the UI silently stops classifying it.
+  // backend/internal/preferences/handler.go, types.go and dashboard.go.
+  // Adding a reason there without adding it here means the UI silently stops
+  // classifying it.
   expect([...PREFERENCE_REASONS].sort()).toEqual([
     "already_pinned",
     "database_unavailable",
@@ -61,6 +62,7 @@ test("PREFERENCE_REASONS covers the handler's reason codes", () => {
     "limit_reached",
     "revision_conflict",
     "unknown_resource_kind",
+    "unknown_widget_id",
     "unsupported_schema_version",
   ]);
 });

@@ -398,6 +398,23 @@ func ValidateDashboardLayout(raw json.RawMessage) (DashboardLayoutConfig, json.R
 				"items[%d].id %q is not a widget this server knows", i, it.ID)
 		}
 
+		// AMENDED 2026-09-19, as shipped: the block below OVERFLOWS and must
+		// not be copied. `x+w > columns` wraps -- x=math.MaxInt64 with w=1
+		// folds to a large negative, passes this test, and stores a widget
+		// quintillions of columns off a twelve-column grid. Found by Step 4's
+		// own fuzz target, which is why Step 4 gained a fourth oracle (see the
+		// amendment note at the end of this task). Bound each component
+		// against the grid FIRST, then take the sums:
+		//
+		//	if it.W < 1 || it.W > cfg.Columns          { reject }
+		//	if it.H < 1 || it.H > maxDashboardRows     { reject }
+		//	if it.X < 0 || it.X > cfg.Columns          { reject }
+		//	if it.X+it.W > cfg.Columns                 { reject }
+		//	if it.Y < 0 || it.Y > maxDashboardRows     { reject }
+		//	if it.Y+it.H > maxDashboardRows            { reject }
+		//
+		// Bounding the components first is also what makes the sums in the
+		// error messages and in itemsOverlap safe.
 		if it.W < 1 || it.H < 1 {
 			return cfg, nil, invalidf("invalid_config", "items[%d] has a non-positive size", i)
 		}
@@ -540,6 +557,66 @@ refused on write; overlapping or out-of-bounds items are refused; params cannot
 carry control characters or exceed their bounds; unlisted fields are dropped;
 the fuzz target runs in CI via a real `fuzz.yml` row.
 
+**AMENDED 2026-09-19 — what D12 actually shipped (PR #467).** Three divergences
+from the text above, each deliberate:
+
+1. **The Step 1 bounds check overflowed.** See the amendment comment inside the
+   code block. Fixed in the shipped code; four integer-ceiling cases are pinned
+   in the table as regressions.
+
+2. **Step 4 gained a fourth oracle.** Oracles A (no panic) and B (round-trip
+   fixed point) were *all satisfied* by the overflowing layout — it does not
+   panic, it re-marshals to exactly the envelope keys, and it round-trips
+   byte-stably. Only an independent restatement of the bound, in arithmetic
+   that cannot wrap, detects it. **Generalize this:** an oracle that reuses the
+   code under test's own arithmetic cannot find a bug in that arithmetic. D13's
+   and D14's oracles should be written against the *property*, not against the
+   implementation's expression of it.
+
+3. **The unit is 8 files, not 5 (G2).** The file list above omits Step 2's two
+   frontend files and the "widget-id allowlist problem" section's TS pinned-list
+   test; the Go-side pin went into the existing `parity_test.go` rather than a
+   parallel mechanism. Each piece is half a contract on its own, so splitting
+   would have shipped a drift guard that does not guard. D13's file list is
+   likely to be similarly optimistic — count Step 4's `allEndpoints()` edit and
+   the handler tests before assuming it fits.
+
+**AMENDED again 2026-09-19, after review.** The three notes above were written
+from what the implementation changed, not from what the spec required, and that
+is exactly how the gap below survived: `/ce:review` found **two of spec §7's ten
+rejection rules missing entirely** — `w < minW` / `h < minH`, and the per-widget
+`ParamSpec` enum — neither recorded as deferred, because the amendment only ever
+listed divergences its author had already noticed. **Write the next one by
+walking the spec's list, not the diff.**
+
+Both are now implemented rather than deferred. `allowedWidgetIDs` became
+`allowedWidgets map[string]widgetSpec`, carrying each widget's `MinW`/`MinH` and
+its declared `Params` (key → closed value set; empty means "any value within the
+generic bounds", absent means the widget takes none). `WidgetDef` gained an
+optional `params` field so the registry stays the source of truth, and
+`TestContractParity/"widget specs"` pins every minimum and asserts every shipped
+widget is still parameterless — so the first parameterized widget cannot ship
+without a `ParamSpec` on both sides.
+
+Four other defects the review surfaced, all fixed here: an accepted layout could
+normalize to `"items":null`, which the TypeScript mirror declares impossible and
+every client consumer throws on; `canonicalParams` was not injective (an `=` in
+a param key collided two distinct layouts, and it is now length-prefixed, which
+depends on no precondition at all); the geometry rejection messages stated
+exclusive bounds as inclusive; and `maxDashboardRows` had no client mirror, so
+the editor let users drag past a cap the server enforced.
+
+**Two lessons for D13 and D14, both about guards rather than code:**
+
+- Adding a rule can silently un-cover an existing one. Enforcing per-widget
+  minimums made several fuzz seeds and table cases stop at the new size check
+  before reaching the overlap and param rules they were written for. Mutation
+  testing caught it — the guards had gone quiet without any test turning red.
+  After adding a validation rule, re-run the mutations for the rules that came
+  before it.
+- `go test` caches results. A mutation run that prints `ok (cached)` proved
+  nothing; use `-count=1` for every mutation check.
+
 ---
 
 ### Task D13: Endpoints
@@ -622,6 +699,19 @@ PR title: `feat(preferences): dashboard layout endpoints`
 with an incrementing revision; a stale revision is 409 `revision_conflict`; a
 no-database deployment answers 503 `database_unavailable` on both routes;
 layouts are invisible across owners and across clusters.
+
+**Added 2026-09-19 after review of D12.** Spec §7 carries one read-path
+obligation that appears nowhere in D11–D14 and would otherwise be lost: the GET
+handler must **re-authorize every namespace parameter at read time via
+`CanAccessGroupResource`** — never `CanAccess`, which short-circuits to allow in
+predicate-fake mode (`access.go:111`) — and drop or mark the items it cannot
+authorize before returning a layout. A stored parameter is evidence of what the
+user could see when they saved it, never of what they may see now: a layout
+saved while the user had access to `prod` must not keep showing `prod` data
+after that access is revoked. D12 deliberately does not discharge this, because
+the write path is not where it belongs; this line exists so D13 inherits the
+obligation rather than the gap. The same applies to retired widget ids, which
+D14 drops quietly on read while the server keeps accepting them on write.
 
 ---
 
