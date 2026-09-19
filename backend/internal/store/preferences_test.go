@@ -31,6 +31,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -773,8 +774,19 @@ func TestPreferenceStore_UnknownKindRejected(t *testing.T) {
 	// the sentinel has to be something the allowlist cannot grow into.
 	rec.Kind = PreferenceKind("not_a_preference_kind")
 
-	if _, err := s.Create(t.Context(), rec, testMaxPerKind); err == nil {
+	_, err := s.Create(t.Context(), rec, testMaxPerKind)
+	if err == nil {
 		t.Fatal("Create with an unknown kind succeeded; want the DDL kind check to reject it")
+	}
+	// The CHECK specifically, not merely "something went wrong". Asserting only
+	// err != nil would let a connection failure or a typo'd column stand in for
+	// the constraint and quietly stop testing what this test is named for.
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != pgCheckViolation {
+		t.Fatalf("Create with an unknown kind = %v; want a %s check_violation", err, pgCheckViolation)
+	}
+	if pgErr.ConstraintName != "user_preferences_kind_check" {
+		t.Errorf("violated constraint = %q; want user_preferences_kind_check", pgErr.ConstraintName)
 	}
 }
 
@@ -816,60 +828,14 @@ func TestPreferenceStore_ContextCancelled(t *testing.T) {
 // under them. Instead this test creates its own throwaway database on the
 // same server, migrates it in isolation, and drops it in cleanup.
 func TestPreferenceMigration_UpDownUp(t *testing.T) {
-	baseURL := migrationTestBaseURL(t)
+	m, pool := migrationScratchDB(t)
 	ctx := t.Context()
-
-	adminConn, err := pgx.Connect(ctx, baseURL)
-	if err != nil {
-		t.Fatalf("connecting to the test server: %v", err)
-	}
-	// Registered as a cleanup rather than a defer: deferred calls run when
-	// the test function returns, which is BEFORE t.Cleanup functions. A
-	// deferred close would shut this connection down while the DROP
-	// DATABASE cleanup below still needs it. Cleanups run last-in-first-out,
-	// so registering the close first makes it run last.
-	t.Cleanup(func() { adminConn.Close(context.Background()) })
-
-	dbName := "kc_migtest_" + randomSuffix(t)
-	quoted := pgx.Identifier{dbName}.Sanitize()
-	if _, err := adminConn.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
-		if testDatabaseRequired(os.LookupEnv) {
-			t.Fatalf("creating throwaway database %s: %v", dbName, err)
-		}
-		t.Skipf("cannot CREATE DATABASE on this server (%v); skipping the migration round-trip", err)
-	}
-	t.Cleanup(func() {
-		// FORCE (PostgreSQL 13+) evicts any connection the migrator left
-		// behind so cleanup cannot hang on a lingering session.
-		if _, err := adminConn.Exec(context.Background(),
-			"DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)"); err != nil {
-			t.Errorf("dropping throwaway database %s: %v", dbName, err)
-		}
-	})
-
-	scratchURL := withDatabase(t, baseURL, dbName)
-
-	source, err := iofs.New(migrationsFS, "migrations")
-	if err != nil {
-		t.Fatalf("creating migration source: %v", err)
-	}
-	m, err := migrate.NewWithSourceInstance("iofs", source, scratchURL)
-	if err != nil {
-		t.Fatalf("creating migrator: %v", err)
-	}
-	defer m.Close()
 
 	// 1. Bring the scratch database up to the migration immediately before
 	//    this one, then seed a row in an unrelated table.
 	if err := m.Migrate(17); err != nil {
 		t.Fatalf("migrating to 000017: %v", err)
 	}
-
-	pool, err := pgxpool.New(ctx, scratchURL)
-	if err != nil {
-		t.Fatalf("opening scratch pool: %v", err)
-	}
-	defer pool.Close()
 
 	seedUser := testOwnerID(t)
 	if _, err := pool.Exec(ctx,
@@ -943,51 +909,12 @@ func TestPreferenceMigration_UpDownUp(t *testing.T) {
 // shared harness one, because it deliberately drives a migration failure and
 // leaves the version table dirty in the middle.
 func TestMigration_DashboardLayoutKind_RoundTrip(t *testing.T) {
-	baseURL := migrationTestBaseURL(t)
+	m, pool := migrationScratchDB(t)
 	ctx := t.Context()
-
-	adminConn, err := pgx.Connect(ctx, baseURL)
-	if err != nil {
-		t.Fatalf("connecting to the test server: %v", err)
-	}
-	t.Cleanup(func() { adminConn.Close(context.Background()) })
-
-	dbName := "kc_migtest_" + randomSuffix(t)
-	quoted := pgx.Identifier{dbName}.Sanitize()
-	if _, err := adminConn.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
-		if testDatabaseRequired(os.LookupEnv) {
-			t.Fatalf("creating throwaway database %s: %v", dbName, err)
-		}
-		t.Skipf("cannot CREATE DATABASE on this server (%v); skipping the migration round-trip", err)
-	}
-	t.Cleanup(func() {
-		if _, err := adminConn.Exec(context.Background(),
-			"DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)"); err != nil {
-			t.Errorf("dropping throwaway database %s: %v", dbName, err)
-		}
-	})
-
-	scratchURL := withDatabase(t, baseURL, dbName)
-
-	source, err := iofs.New(migrationsFS, "migrations")
-	if err != nil {
-		t.Fatalf("creating migration source: %v", err)
-	}
-	m, err := migrate.NewWithSourceInstance("iofs", source, scratchURL)
-	if err != nil {
-		t.Fatalf("creating migrator: %v", err)
-	}
-	defer m.Close()
 
 	if err := m.Migrate(18); err != nil {
 		t.Fatalf("migrating to 000018: %v", err)
 	}
-
-	pool, err := pgxpool.New(ctx, scratchURL)
-	if err != nil {
-		t.Fatalf("opening scratch pool: %v", err)
-	}
-	defer pool.Close()
 
 	owner := testOwnerID(t)
 	// The kind is bound from the Go constant, not written into the SQL, so the
@@ -1095,6 +1022,141 @@ func TestMigration_DashboardLayoutKind_RoundTrip(t *testing.T) {
 	}
 	if survived != 1 {
 		t.Errorf("seeded saved_view count = %d after down+up; want 1 -- the pair touched another kind", survived)
+	}
+}
+
+// migrationScratchDB creates a throwaway database on the test server and
+// returns a migrator and a pool pointed at it, both closed and the database
+// dropped in cleanup.
+//
+// Migration tests cannot use testDB(t). The shared harness database is
+// migrated once per process and other tests in this binary hold live pools
+// against it, so stepping it to an older version would delete the schema out
+// from under them. Each of these tests owns its database outright instead,
+// which is also what lets them delete rows and force versions freely.
+func migrationScratchDB(t *testing.T) (*migrate.Migrate, *pgxpool.Pool) {
+	t.Helper()
+
+	baseURL := migrationTestBaseURL(t)
+	ctx := t.Context()
+
+	adminConn, err := pgx.Connect(ctx, baseURL)
+	if err != nil {
+		t.Fatalf("connecting to the test server: %v", err)
+	}
+	// Registered first so it runs last: cleanups are LIFO, and the DROP
+	// DATABASE below still needs this connection.
+	t.Cleanup(func() { adminConn.Close(context.Background()) })
+
+	dbName := "kc_migtest_" + randomSuffix(t)
+	quoted := pgx.Identifier{dbName}.Sanitize()
+	if _, err := adminConn.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
+		if testDatabaseRequired(os.LookupEnv) {
+			t.Fatalf("creating throwaway database %s: %v", dbName, err)
+		}
+		t.Skipf("cannot CREATE DATABASE on this server (%v); skipping the migration test", err)
+	}
+	t.Cleanup(func() {
+		// FORCE (PostgreSQL 13+) evicts any connection the migrator left
+		// behind so cleanup cannot hang on a lingering session.
+		if _, err := adminConn.Exec(context.Background(),
+			"DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)"); err != nil {
+			t.Errorf("dropping throwaway database %s: %v", dbName, err)
+		}
+	})
+
+	scratchURL := withDatabase(t, baseURL, dbName)
+
+	source, err := iofs.New(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("creating migration source: %v", err)
+	}
+	m, err := migrate.NewWithSourceInstance("iofs", source, scratchURL)
+	if err != nil {
+		t.Fatalf("creating migrator: %v", err)
+	}
+	t.Cleanup(func() { m.Close() })
+
+	pool, err := pgxpool.New(ctx, scratchURL)
+	if err != nil {
+		t.Fatalf("opening scratch pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	return m, pool
+}
+
+// TestMigration_DashboardLayoutKind_RequiresExpectedConstraintName proves the
+// up migration's guard fires rather than silently doing nothing.
+//
+// The guard exists because DROP CONSTRAINT by a name nothing holds succeeds
+// quietly. Without it, a database whose kind CHECK had been renamed out of
+// band would record 000019 as applied while the original narrow constraint
+// went on rejecting every dashboard layout.
+func TestMigration_DashboardLayoutKind_RequiresExpectedConstraintName(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+
+	if err := m.Migrate(18); err != nil {
+		t.Fatalf("migrating to 000018: %v", err)
+	}
+
+	// Rename the constraint out from under the migration, which is the only
+	// way this database can differ from the one 000018 built.
+	if _, err := pool.Exec(ctx,
+		`ALTER TABLE user_preferences
+		   RENAME CONSTRAINT user_preferences_kind_check TO kind_check_renamed`); err != nil {
+		t.Fatalf("renaming the kind constraint: %v", err)
+	}
+
+	err := m.Migrate(19)
+	if err == nil {
+		t.Fatal("000019 applied against a renamed kind constraint; it would have left the narrow CHECK in force while recording clean")
+	}
+	// The message has to name the constraint, or the operator cannot act on it.
+	if !strings.Contains(err.Error(), "user_preferences_kind_check") {
+		t.Errorf("migration error = %q; want it to name user_preferences_kind_check", err)
+	}
+
+	// And the documented recovery works: force back, put the name right, re-run.
+	if err := m.Force(18); err != nil {
+		t.Fatalf("forcing back to 000018 after the guarded failure: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`ALTER TABLE user_preferences
+		   RENAME CONSTRAINT kind_check_renamed TO user_preferences_kind_check`); err != nil {
+		t.Fatalf("restoring the constraint name: %v", err)
+	}
+	if err := m.Migrate(19); err != nil {
+		t.Fatalf("re-running 000019 after restoring the name: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_preferences (owner_id, kind, name, dedup_key, config)
+		 VALUES ($1, $2, 'Overview', 'overview', '{}'::jsonb)`,
+		testOwnerID(t), string(PreferenceKindDashboardLayout)); err != nil {
+		t.Errorf("inserting a layout after the recovered migration: %v", err)
+	}
+}
+
+// TestMigration_FullChain_AcceptsDashboardLayout runs every migration in one
+// m.Up(), the way a first deploy against an empty database does.
+//
+// The round-trip test starts at 000018 because that is this unit's boundary,
+// so nothing else covers the path where 000019 arrives as part of the whole
+// chain rather than as a step onto an already-migrated database.
+func TestMigration_FullChain_AcceptsDashboardLayout(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+
+	if err := m.Up(); err != nil {
+		t.Fatalf("running the full migration chain: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_preferences (owner_id, kind, name, dedup_key, config)
+		 VALUES ($1, $2, 'Overview', 'overview', '{}'::jsonb)`,
+		testOwnerID(t), string(PreferenceKindDashboardLayout)); err != nil {
+		t.Errorf("inserting a dashboard_layout row on a freshly migrated database: %v", err)
 	}
 }
 

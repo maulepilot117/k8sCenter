@@ -19,9 +19,32 @@
 -- generated `user_preferences_kind_check` from the table and column names.
 -- Every other CHECK on the table was named explicitly there, so nothing else
 -- can hold that name.
+--
+-- That name is an assumption about a database this file cannot see, so it is
+-- checked rather than trusted. Dropping a CHECK by a name nothing holds is a
+-- silent no-op: the ADD below would then succeed, the migration would record
+-- clean, and the original narrow constraint would still be there rejecting
+-- every dashboard layout -- a failure that only shows up much later, as writes
+-- that should work but do not. Failing here instead turns that into one loud
+-- error at deploy time, naming what to do about it.
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'user_preferences'::regclass
+           AND conname  = 'user_preferences_kind_check'
+    ) THEN
+        RAISE EXCEPTION
+            'user_preferences_kind_check not found: the kind CHECK is under a different name on this database, so dropping it by name would silently leave the narrow constraint in force. Find it with: SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = ''user_preferences''::regclass AND contype = ''c''; drop that constraint, then re-run this migration.';
+    END IF;
+END
+$$;
+
+-- Plain DROP, not DROP IF EXISTS: the guard above has already established that
+-- it is there, and IF EXISTS is exactly the silence this migration must not have.
 ALTER TABLE user_preferences
-    DROP CONSTRAINT IF EXISTS user_preferences_kind_check;
+    DROP CONSTRAINT user_preferences_kind_check;
 
 ALTER TABLE user_preferences
     ADD CONSTRAINT user_preferences_kind_check

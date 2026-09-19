@@ -122,7 +122,23 @@ Adds 'dashboard_layout' to the user_preferences.kind CHECK. Additive: no
 columns change, nothing is backfilled, and no existing row is touched.
 
 Operator action required:
-  None on the way up.
+  None on the way up, on any database this project created.
+
+  The up migration first checks that the CHECK it is about to replace is
+  actually named user_preferences_kind_check, and stops with that name in the
+  error if it is not. That only happens on a database where the constraint was
+  renamed out of band; dropping it by a name nothing holds would otherwise be
+  a silent no-op, leaving the old narrow CHECK rejecting every dashboard
+  layout while the migration recorded clean. If you hit it:
+
+      SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+       WHERE conrelid = 'user_preferences'::regclass AND contype = 'c';
+
+  drop whichever constraint holds the kind CHECK, then re-run. A failed up
+  leaves the version dirty at 19 the same way the refused rollback below
+  does, so force it back to 18 before re-running:
+
+      migrate -path <migrations> -database <url> force 18
 
 Rollback:
   The down migration narrows the CHECK and WILL FAIL if any dashboard_layout

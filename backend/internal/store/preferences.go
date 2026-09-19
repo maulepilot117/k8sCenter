@@ -37,6 +37,10 @@ var (
 // pgUniqueViolation is PostgreSQL's SQLSTATE for a unique-constraint breach.
 const pgUniqueViolation = "23505"
 
+// pgCheckViolation is PostgreSQL's SQLSTATE for a CHECK-constraint breach.
+// The kind allowlist is a CHECK, so this is how a rejected kind arrives.
+const pgCheckViolation = "23514"
+
 // PreferenceRecord is one row of user_preferences.
 //
 // Three fields are server-derived and must never be taken from a request
