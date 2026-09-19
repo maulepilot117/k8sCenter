@@ -36,6 +36,10 @@ var wantPreferenceRoutes = map[string]bool{
 	"GET /preferences/pins":          true,
 	"POST /preferences/pins":         true,
 	"DELETE /preferences/pins/{id}":  true,
+	// Layouts are addressed by scope, not by id: one layout per scope, so
+	// there is no POST and no collection route.
+	"GET /preferences/layouts/{scope}": true,
+	"PUT /preferences/layouts/{scope}": true,
 }
 
 // preferencesRouter builds a router through the production registration
@@ -89,8 +93,11 @@ func TestPreferencesRoutes_GuardedByRealChain(t *testing.T) {
 
 	for route := range wantPreferenceRoutes {
 		method, path, _ := strings.Cut(route, " ")
-		// Substitute a concrete id for the path parameter.
+		// Substitute concrete values for the path parameters. The scope has to
+		// be one the handler serves, or it would answer 400 before it ever
+		// reached the nil-store check this test is about.
 		path = strings.Replace(path, "{id}", "0f6a0000-0000-4000-8000-000000000001", 1)
+		path = strings.Replace(path, "{scope}", "overview", 1)
 
 		t.Run(route, func(t *testing.T) {
 			// Without the CSRF header, a state-changing method is refused.
