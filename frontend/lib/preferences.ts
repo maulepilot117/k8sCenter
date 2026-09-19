@@ -14,6 +14,10 @@
  */
 import { type ApiError, api } from "@/lib/api.ts";
 import type {
+  DashboardLayoutConfig,
+  DashboardScope,
+} from "@/lib/dashboard/types.ts";
+import type {
   PinConfig,
   PreferenceRecord,
   SavedViewConfig,
@@ -21,9 +25,30 @@ import type {
 
 export type SavedViewRecord = PreferenceRecord<SavedViewConfig>;
 export type PinRecord = PreferenceRecord<PinConfig>;
+export type LayoutRecord = PreferenceRecord<DashboardLayoutConfig>;
+
+/**
+ * What both layout endpoints return: the stored record, plus anything the
+ * server removed from it on the way out.
+ *
+ * `withheld` names the instanceIds the read dropped because the caller can no
+ * longer see their namespace, and it is `omitempty` on the Go side — an
+ * unfiltered response omits the key entirely, which is why it is optional
+ * here rather than an always-present empty array.
+ *
+ * It is not cosmetic. A client that saw only the survivors could not tell a
+ * filtered layout from one the user arranged that way, so it would render a
+ * dashboard quietly missing widgets and the first save after that would make
+ * the loss permanent. Mirrors LayoutResponse in
+ * backend/internal/preferences/handler.go.
+ */
+export interface LayoutResponse extends LayoutRecord {
+  withheld?: string[];
+}
 
 const VIEWS = "/v1/preferences/views";
 const PINS = "/v1/preferences/pins";
+const LAYOUTS = "/v1/preferences/layouts";
 
 export const preferencesApi = {
   listViews: async (signal?: AbortSignal): Promise<SavedViewRecord[]> =>
@@ -87,6 +112,52 @@ export const preferencesApi = {
       signal,
     });
   },
+
+  /**
+   * The caller's layout for one dashboard scope, or null when they have not
+   * customized it.
+   *
+   * Null is a 204, which api() surfaces as `data: undefined`. It is a normal
+   * state — "this dashboard is still the shipped default" — and distinct from
+   * the 400 a scope this server does not serve answers with, which arrives
+   * here as a thrown ApiError. A client that collapsed the two could not tell
+   * an unsaved dashboard from a mistyped one.
+   */
+  getLayout: async (
+    scope: DashboardScope,
+    signal?: AbortSignal,
+  ): Promise<LayoutResponse | null> =>
+    (
+      await api<LayoutResponse>(`${LAYOUTS}/${encodeURIComponent(scope)}`, {
+        method: "GET",
+        signal,
+      })
+    ).data ?? null,
+
+  /**
+   * Creates or replaces the layout for one scope. 201 and 200 respectively,
+   * both carrying the record.
+   *
+   * The body carries no `name`: the scope is the path and the record's name is
+   * derived from it server-side, so sending one is a 400 naming the field.
+   * `revision` is a claim about what is stored — 0 means "I believe none
+   * exists" — and a wrong claim in either direction is a 409 rather than an
+   * overwrite, so two tabs arranging the same dashboard cannot silently
+   * discard each other's work.
+   */
+  saveLayout: async (
+    scope: DashboardScope,
+    revision: number,
+    config: DashboardLayoutConfig,
+    signal?: AbortSignal,
+  ): Promise<LayoutResponse> =>
+    (
+      await api<LayoutResponse>(`${LAYOUTS}/${encodeURIComponent(scope)}`, {
+        method: "PUT",
+        body: JSON.stringify({ revision, config }),
+        signal,
+      })
+    ).data,
 };
 
 /**

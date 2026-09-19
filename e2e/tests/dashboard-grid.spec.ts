@@ -289,7 +289,9 @@ test.describe("Dashboard grid drag", () => {
     await page.mouse.up();
 
     await expect(
-      page.locator('[data-instance-id="d-active-alerts"][data-dragging="true"]'),
+      page.locator(
+        '[data-instance-id="d-active-alerts"][data-dragging="true"]',
+      ),
     ).toHaveCount(0);
     const after = await cells(page);
     expect(at(after, "d-active-alerts").x).toBe(alerts.x);
@@ -423,7 +425,9 @@ test.describe("Dashboard grid drag", () => {
 
     await expect(page.locator('[data-dragging="true"]')).toHaveCount(1);
     await expect(
-      page.locator('[data-instance-id="d-active-alerts"][data-dragging="true"]'),
+      page.locator(
+        '[data-instance-id="d-active-alerts"][data-dragging="true"]',
+      ),
     ).toHaveCount(1);
     await page.mouse.up();
   });
@@ -750,7 +754,9 @@ test.describe("Dashboard grid resize", () => {
     await page.mouse.down();
     const to = cornerCell(g, cpu, 4, 4);
     await page.mouse.move(to.x, to.y, { steps: 12 });
-    expect(at(await cells(page), "d-cpu-tile").width).toBeGreaterThan(cpu.width);
+    expect(at(await cells(page), "d-cpu-tile").width).toBeGreaterThan(
+      cpu.width,
+    );
 
     const pointerId = await startedPointerId(page);
     await corner(page, "d-cpu-tile").evaluate((el, id) => {
@@ -775,7 +781,9 @@ test.describe("Dashboard grid resize", () => {
     await page.mouse.down();
     const to = cornerCell(g, cpu, 4, 4);
     await page.mouse.move(to.x, to.y, { steps: 12 });
-    expect(at(await cells(page), "d-cpu-tile").width).toBeGreaterThan(cpu.width);
+    expect(at(await cells(page), "d-cpu-tile").width).toBeGreaterThan(
+      cpu.width,
+    );
 
     // "Edit layout" still has focus -- the session suppresses the press that
     // would have moved it -- so Space toggles edit mode off and every handle
@@ -824,7 +832,9 @@ test.describe("Dashboard grid resize", () => {
 
     await expect(page.locator('[data-resizing="true"]')).toHaveCount(0);
     await expect(
-      page.locator('[data-instance-id="d-active-alerts"][data-dragging="true"]'),
+      page.locator(
+        '[data-instance-id="d-active-alerts"][data-dragging="true"]',
+      ),
     ).toHaveCount(1);
     await page.mouse.up();
   });
@@ -1143,5 +1153,67 @@ test.describe("Dashboard grid keyboard", () => {
     await page.keyboard.press("Alt+ArrowRight");
 
     expect(await cells(page)).toEqual(before);
+  });
+});
+
+test.describe("layout load gating", () => {
+  // The Edit affordance is withheld until the stored layout has landed. That
+  // gate exists because adopting a stored layout re-mounts the grid, which
+  // discards the private working copy a drag lives in -- so editing during the
+  // load window is the one case where offering the button destroys work rather
+  // than merely wasting it. The protection is otherwise untested at any level,
+  // and a regression would silently reopen exactly that bug.
+  test("Edit is withheld until the stored layout lands", async ({ page }) => {
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await page.route(
+      "**/api/v1/preferences/layouts/overview",
+      async (route) => {
+        await held;
+        await route.fulfill({ status: 204, body: "" });
+      },
+    );
+
+    await page.goto("/");
+
+    const edit = page.getByTestId("edit-layout");
+    await expect(edit).toBeDisabled();
+    await expect(edit).toHaveAttribute("title", "Loading your saved layout...");
+
+    release?.();
+
+    await expect(edit).toBeEnabled();
+    await expect(edit).not.toHaveAttribute(
+      "title",
+      "Loading your saved layout...",
+    );
+  });
+
+  test("a layout the server cannot supply leaves the grid read-only", async ({
+    page,
+  }) => {
+    await page.route("**/api/v1/preferences/layouts/overview", (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: 503,
+            message: "no database",
+            reason: "database_unavailable",
+          },
+        }),
+      }),
+    );
+
+    await page.goto("/");
+
+    // The default dashboard still renders -- a failed load must not look like
+    // an empty one -- but arranging it would be work the user loses on reload.
+    await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
+    await expect(page.getByTestId("edit-layout")).toBeDisabled();
   });
 });

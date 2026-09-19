@@ -9,8 +9,9 @@ import { fileURLToPath } from "node:url";
  * codifies: its module-level variables are process-global singletons in
  * Deno/Node, so "a server-side import would leak auth state across SSR
  * requests." The same banner (word for word or in substance) sits on
- * frontend/lib/auth.ts and every signal store U13 ported
- * (cluster.ts, namespace.ts, pin-store.ts, resource-counts.ts, ws.ts).
+ * frontend/lib/auth.ts, every signal store U13 ported
+ * (cluster.ts, namespace.ts, pin-store.ts, resource-counts.ts, ws.ts), and
+ * lib/dashboard/layout-store.ts, added with P3's layout persistence.
  *
  * A lint keyed on *direct* imports would pass a file that imports
  * frontend/lib/api.ts (which looks innocuous -- it's "just the API
@@ -53,6 +54,7 @@ export const FORBIDDEN_MODULES: ReadonlySet<string> = new Set([
   "lib/api.ts",
   "lib/auth.ts",
   "lib/cluster.ts",
+  "lib/dashboard/layout-store.ts",
   "lib/namespace.ts",
   "lib/pin-store.ts",
   "lib/resource-counts.ts",
@@ -60,6 +62,7 @@ export const FORBIDDEN_MODULES: ReadonlySet<string> = new Set([
   "src/lib/api.ts",
   "src/lib/auth.ts",
   "src/lib/cluster.ts",
+  "src/lib/dashboard/layout-store.ts",
   "src/lib/namespace.ts",
   "src/lib/pin-store.ts",
   "src/lib/resource-counts.ts",
