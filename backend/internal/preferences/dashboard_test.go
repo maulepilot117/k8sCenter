@@ -65,16 +65,47 @@ func layoutWithItems(t *testing.T, items ...map[string]any) json.RawMessage {
 	return layoutJSON(t, map[string]any{"items": as})
 }
 
+// testParamWidgetID / testParamWidgetSpec stand in for the parameterized
+// widgets the spec describes (a Grafana dashboard uid, a PromQL preset) and
+// that a later phase will add. Every widget shipped today declares no
+// parameters, so without a stand-in the entire param half of the validator --
+// membership, value enums, and the identity derivation that exists only to
+// tell two parameterizations of one widget apart -- would be untestable.
+//
+// Its minimums are 1x1 so size is never the reason a param case fails.
+const testParamWidgetID = "test-param-widget"
+
+var testParamWidgetSpec = widgetSpec{
+	MinW: 1, MinH: 1,
+	Params: map[string][]string{
+		"namespace": {},                  // open set: any value inside the generic bounds
+		"mode":      {"compact", "full"}, // closed set
+		"n":         {},
+	},
+}
+
+func withParamWidget(t *testing.T) func() {
+	t.Helper()
+	return withTestWidget(t, testParamWidgetID, testParamWidgetSpec)
+}
+
 func TestValidateDashboardLayout_Accepts(t *testing.T) {
 	cases := []struct {
 		name string
-		raw  json.RawMessage
+		// setup installs any catalog entry the case needs and returns its
+		// restore func. Nil means the case runs against the real catalog.
+		setup func(t *testing.T) func()
+		raw   json.RawMessage
 	}{
-		{"empty layout", layoutJSON(t, nil)},
-		{"one widget", layoutWithItems(t, item(nil))},
+		{name: "empty layout", raw: layoutJSON(t, nil)},
+		{name: "one widget", raw: layoutWithItems(t, item(nil))},
 		{
-			"two widgets side by side",
-			layoutWithItems(t,
+			name: "items key absent normalizes rather than failing",
+			raw:  layoutJSON(t, map[string]any{"items": nil}),
+		},
+		{
+			name: "two widgets side by side",
+			raw: layoutWithItems(t,
 				item(map[string]any{"instanceId": "a", "x": 0, "w": 6}),
 				item(map[string]any{"instanceId": "b", "id": "nodes", "x": 6, "w": 6}),
 			),
@@ -82,33 +113,53 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 		{
 			// Edge-exact placement: the right edge and the bottom row cap are
 			// inclusive bounds, so a widget landing exactly on them is legal.
-			"widget flush against both bounds",
-			layoutWithItems(t, item(map[string]any{
-				"x": 8, "w": 4, "y": maxDashboardRows - 2, "h": 2,
+			// cpu-tile is used because its 2x2 minimum is the smallest any
+			// shipped widget declares, which is what lets h=2 sit flush
+			// against the row cap.
+			name: "widget flush against both bounds",
+			raw: layoutWithItems(t, item(map[string]any{
+				"id": "cpu-tile", "x": 8, "w": 4, "y": maxDashboardRows - 2, "h": 2,
+			})),
+		},
+		{
+			name:  "widget exactly at its declared minimum size",
+			setup: nil,
+			raw: layoutWithItems(t, item(map[string]any{
+				"id": "nodes", "x": 0, "y": 0, "w": 3, "h": 4,
 			})),
 		},
 		{
 			// Same widget twice is legitimate when the params differ -- prod
 			// beside staging. This is the reason instanceId exists.
-			"same widget with different params",
-			layoutWithItems(t,
+			name:  "same widget with different params",
+			setup: withParamWidget,
+			raw: layoutWithItems(t,
 				item(map[string]any{
-					"instanceId": "prod", "x": 0, "w": 6,
+					"instanceId": "prod", "id": testParamWidgetID, "x": 0, "w": 6,
 					"params": map[string]string{"namespace": "prod"},
 				}),
 				item(map[string]any{
-					"instanceId": "staging", "x": 6, "w": 6,
+					"instanceId": "staging", "id": testParamWidgetID, "x": 6, "w": 6,
 					"params": map[string]string{"namespace": "staging"},
 				}),
 			),
 		},
 		{
-			"full item count",
-			func() json.RawMessage {
+			name:  "value drawn from a closed enum",
+			setup: withParamWidget,
+			raw: layoutWithItems(t, item(map[string]any{
+				"id": testParamWidgetID, "params": map[string]string{"mode": "compact"},
+			})),
+		},
+		{
+			name:  "full item count",
+			setup: withParamWidget,
+			raw: func() json.RawMessage {
 				items := make([]map[string]any, 0, maxDashboardItems)
 				for i := 0; i < maxDashboardItems; i++ {
 					items = append(items, item(map[string]any{
 						"instanceId": "w" + strconv.Itoa(i),
+						"id":         testParamWidgetID,
 						"params":     map[string]string{"n": strconv.Itoa(i)},
 						"x":          0, "w": 12, "y": i, "h": 1,
 					}))
@@ -120,6 +171,9 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.setup != nil {
+				defer tc.setup(t)()
+			}
 			if _, _, err := ValidateDashboardLayout(tc.raw); err != nil {
 				t.Fatalf("ValidateDashboardLayout: %v", err)
 			}
@@ -130,11 +184,6 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 func TestValidateDashboardLayout_Rejects(t *testing.T) {
 	longID := strings.Repeat("a", maxWidgetIDLen+1)
 	longInstance := strings.Repeat("a", maxInstanceIDLen+1)
-
-	manyParams := map[string]string{}
-	for i := 0; i <= maxDashboardParams; i++ {
-		manyParams["k"+strconv.Itoa(i)] = "v"
-	}
 
 	cases := []struct {
 		name       string
@@ -314,42 +363,40 @@ func TestValidateDashboardLayout_Rejects(t *testing.T) {
 			"invalid_config",
 		},
 		{
-			"too many params",
-			layoutWithItems(t, item(map[string]any{"params": manyParams})),
-			"invalid_config",
-		},
-		{
-			"empty param name",
+			// Every shipped widget declares no parameters, so any param on one
+			// is a client bug. This is the only param rule that belongs in
+			// this table; the rest need a widget that actually takes params
+			// and live in TestValidateDashboardLayout_RejectsParams.
+			"params on a widget that declares none",
 			layoutWithItems(t, item(map[string]any{
-				"params": map[string]string{"": "v"},
+				"params": map[string]string{"namespace": "prod"},
 			})),
 			"invalid_config",
 		},
 		{
-			"over-long param name",
+			// Below the widget's own declared minimum. nodes registers
+			// minW: 3, minH: 4, so 2x4 and 3x3 each violate exactly one bound
+			// while staying comfortably inside the grid -- which is what the
+			// generic 1..columns / 1..rows checks would have let through.
+			"width below the widget's declared minimum",
 			layoutWithItems(t, item(map[string]any{
-				"params": map[string]string{strings.Repeat("k", maxParamKeyLen+1): "v"},
+				"id": "nodes", "x": 0, "y": 0, "w": 2, "h": 4,
 			})),
 			"invalid_config",
 		},
 		{
-			"control character in a param name",
+			"height below the widget's declared minimum",
 			layoutWithItems(t, item(map[string]any{
-				"params": map[string]string{"na\u0000me": "v"},
+				"id": "nodes", "x": 0, "y": 0, "w": 3, "h": 3,
 			})),
 			"invalid_config",
 		},
 		{
-			"control character in a param value",
+			// The case the spec names directly: a nodes widget at 1x1 is well
+			// inside the grid and was accepted before minimums were enforced.
+			"widget at 1x1 when it declares 3x4",
 			layoutWithItems(t, item(map[string]any{
-				"params": map[string]string{"namespace": "pr\u000bod"},
-			})),
-			"invalid_config",
-		},
-		{
-			"over-long param value",
-			layoutWithItems(t, item(map[string]any{
-				"params": map[string]string{"namespace": strings.Repeat("v", maxParamValueLen+1)},
+				"id": "nodes", "x": 0, "y": 0, "w": 1, "h": 1,
 			})),
 			"invalid_config",
 		},
@@ -399,6 +446,238 @@ func TestValidateDashboardLayout_Rejects(t *testing.T) {
 			}
 			if normalized != nil {
 				t.Fatalf("a rejected layout returned %d bytes to store; want nil", len(normalized))
+			}
+		})
+	}
+}
+
+// TestValidateDashboardLayout_RejectsParams covers the param rules that need a
+// widget which actually declares parameters. No shipped widget does, so these
+// cases run against the stand-in; without it every one of them would trip the
+// "takes no parameters" branch instead of the rule it names, and would pass
+// while testing nothing.
+func TestValidateDashboardLayout_RejectsParams(t *testing.T) {
+	manyParams := map[string]string{}
+	for i := 0; i <= maxDashboardParams; i++ {
+		manyParams["n"+strconv.Itoa(i)] = "v"
+	}
+
+	cases := []struct {
+		name       string
+		params     map[string]string
+		wantReason string
+	}{
+		{"too many params", manyParams, "invalid_config"},
+		{"empty param name", map[string]string{"": "v"}, "invalid_config"},
+		{
+			"over-long param name",
+			map[string]string{strings.Repeat("k", maxParamKeyLen+1): "v"},
+			"invalid_config",
+		},
+		{"control character in a param name", map[string]string{"na\u0000me": "v"}, "invalid_config"},
+		{"control character in a param value", map[string]string{"namespace": "pr\u000bod"}, "invalid_config"},
+		{
+			"over-long param value",
+			map[string]string{"namespace": strings.Repeat("v", maxParamValueLen+1)},
+			"invalid_config",
+		},
+		{
+			// Declared-surface rules: a key the widget never named, and a
+			// value outside the closed set it did name.
+			"param the widget does not declare",
+			map[string]string{"cluster": "prod"},
+			"invalid_config",
+		},
+		{
+			"value outside the declared enum",
+			map[string]string{"mode": "enormous"},
+			"invalid_config",
+		},
+		{
+			// KTD4 in its concrete form: a URL and a query are refused because
+			// the value is not in the widget's closed set, not because anyone
+			// pattern-matched what a dangerous value looks like.
+			"url in a closed-enum param",
+			map[string]string{"mode": "https://evil.example/x"},
+			"invalid_config",
+		},
+		{
+			"promql fragment in a closed-enum param",
+			map[string]string{"mode": `sum(rate(x[5m])) by (y)`},
+			"invalid_config",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer withParamWidget(t)()
+
+			raw := layoutWithItems(t, item(map[string]any{
+				"id": testParamWidgetID, "params": tc.params,
+			}))
+			_, normalized, err := ValidateDashboardLayout(raw)
+			if got := reasonOf(err); got != tc.wantReason {
+				t.Fatalf("reason = %q (err %v); want %q", got, err, tc.wantReason)
+			}
+			if normalized != nil {
+				t.Fatalf("a rejected layout returned %d bytes to store; want nil", len(normalized))
+			}
+		})
+	}
+}
+
+// TestValidateDashboardLayout_ItemsIsAlwaysAnArray guards the one value the
+// TypeScript mirror declares cannot occur.
+//
+// Items carries no omitempty, so a nil slice marshals to `"items":null` while
+// an empty slice marshals to `"items":[]`. The client type is
+// `items: LayoutItem[]` -- required and non-nullable -- so a stored null is a
+// value every consumer is entitled to assume impossible, and iterating it
+// throws on the user's own saved layout at every load.
+//
+// Length checks cannot see the difference (len(nil) == len([]) == 0), which is
+// why this asserts on the bytes.
+func TestValidateDashboardLayout_ItemsIsAlwaysAnArray(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{
+			"items key absent",
+			json.RawMessage(`{"schemaVersion":1,"scope":"overview","columns":12}`),
+		},
+		{
+			"items explicitly null",
+			json.RawMessage(`{"schemaVersion":1,"scope":"overview","columns":12,"items":null}`),
+		},
+		{
+			"items an empty array",
+			json.RawMessage(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[]}`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, normalized, err := ValidateDashboardLayout(tc.raw)
+			if err != nil {
+				t.Fatalf("ValidateDashboardLayout: %v", err)
+			}
+			if cfg.Items == nil {
+				t.Error("typed config still carries a nil Items slice")
+			}
+
+			var envelope map[string]json.RawMessage
+			if err := json.Unmarshal(normalized, &envelope); err != nil {
+				t.Fatalf("normalized config is not valid JSON: %v", err)
+			}
+			if got := string(envelope["items"]); got != "[]" {
+				t.Fatalf("stored items = %s; want [] (a JSON null breaks every client consumer)", got)
+			}
+		})
+	}
+}
+
+// TestValidateDashboardLayout_AcceptsShippedDefaultLayout feeds the client's
+// own default through the server's validator.
+//
+// That layout is the arrangement every user starts from and the one "Reset"
+// restores, and it is authored in TypeScript on the other side of the
+// contract this package pins. Nothing else checks it against these rules, so a
+// tightening here -- per-widget minimums being the immediate example -- could
+// make the default itself unsavable, and the first symptom would be a user
+// unable to save a dashboard they never edited.
+//
+// The fixture is a transcription of DEFAULT_OVERVIEW_LAYOUT in
+// frontend/lib/dashboard/default-layout.ts. Keep the two in step.
+func TestValidateDashboardLayout_AcceptsShippedDefaultLayout(t *testing.T) {
+	const defaultLayout = `{
+		"schemaVersion": 1,
+		"scope": "overview",
+		"columns": 12,
+		"items": [
+			{"instanceId":"d-cluster-health","id":"cluster-health","x":0,"y":0,"w":6,"h":6},
+			{"instanceId":"d-cpu-tile","id":"cpu-tile","x":6,"y":0,"w":3,"h":3},
+			{"instanceId":"d-memory-tile","id":"memory-tile","x":9,"y":0,"w":3,"h":3},
+			{"instanceId":"d-pods-tile","id":"pods-tile","x":6,"y":3,"w":3,"h":3},
+			{"instanceId":"d-network-tile","id":"network-tile","x":9,"y":3,"w":3,"h":3},
+			{"instanceId":"d-resource-utilization","id":"resource-utilization","x":0,"y":6,"w":7,"h":4},
+			{"instanceId":"d-pod-status","id":"pod-status","x":7,"y":6,"w":5,"h":4},
+			{"instanceId":"d-nodes","id":"nodes","x":0,"y":10,"w":4,"h":5},
+			{"instanceId":"d-recent-events","id":"recent-events","x":4,"y":10,"w":5,"h":10},
+			{"instanceId":"d-active-alerts","id":"active-alerts","x":9,"y":10,"w":3,"h":5}
+		]
+	}`
+
+	cfg, _, err := ValidateDashboardLayout(json.RawMessage(defaultLayout))
+	if err != nil {
+		t.Fatalf("the shipped default layout does not pass this server's own validator: %v", err)
+	}
+	if len(cfg.Items) != 10 {
+		t.Fatalf("default layout has %d items; the fixture is out of step with "+
+			"frontend/lib/dashboard/default-layout.ts", len(cfg.Items))
+	}
+}
+
+// TestValidateDashboardLayout_GeometryMessagesAreInclusive pins the numbers the
+// rejection messages actually print.
+//
+// These messages are the only explanation a client author or a user debugging
+// a refused save ever sees, and they were naming cells that are not legal: the
+// start message printed the column count (so "0-12" on a grid whose last legal
+// start is 11) and the span message printed the exclusive end (so a widget at
+// x=10 w=3 was reported as spanning 10-13 when it occupies 10, 11 and 12).
+//
+// The accept/reject decisions were correct throughout, which is exactly why
+// nothing caught this: every reason-code assertion passed. Only the message
+// text distinguishes the fixed version from the broken one.
+func TestValidateDashboardLayout_GeometryMessagesAreInclusive(t *testing.T) {
+	cases := []struct {
+		name    string
+		over    map[string]any
+		wantMsg string
+	}{
+		{
+			name:    "start past the last legal column",
+			over:    map[string]any{"id": "cpu-tile", "x": 12, "y": 0, "w": 2, "h": 2},
+			wantMsg: "items[0] starts at column 12, outside 0-11",
+		},
+		{
+			name:    "span past the right edge",
+			over:    map[string]any{"id": "cpu-tile", "x": 10, "y": 0, "w": 3, "h": 2},
+			wantMsg: "items[0] spans columns 10-12, outside 0-11",
+		},
+		{
+			name:    "start past the last legal row",
+			over:    map[string]any{"id": "cpu-tile", "x": 0, "y": maxDashboardRows, "w": 2, "h": 2},
+			wantMsg: "items[0] starts at row 200, outside 0-199",
+		},
+		{
+			name:    "span past the bottom",
+			over:    map[string]any{"id": "cpu-tile", "x": 0, "y": 199, "w": 2, "h": 2},
+			wantMsg: "items[0] spans rows 199-200, outside 0-199",
+		},
+		{
+			// The size messages name the widget, because the minimum is the
+			// widget's rather than the grid's.
+			name:    "below the widget's minimum width",
+			over:    map[string]any{"id": "nodes", "x": 0, "y": 0, "w": 2, "h": 4},
+			wantMsg: "items[0] is 2 columns wide; nodes accepts 3-12",
+		},
+		{
+			name:    "below the widget's minimum height",
+			over:    map[string]any{"id": "nodes", "x": 0, "y": 0, "w": 3, "h": 2},
+			wantMsg: "items[0] is 2 rows tall; nodes accepts 4-200",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := ValidateDashboardLayout(layoutWithItems(t, item(tc.over)))
+			if err == nil {
+				t.Fatal("layout was accepted; want a rejection")
+			}
+			if got := err.Error(); got != tc.wantMsg {
+				t.Fatalf("message =\n  %q\nwant\n  %q", got, tc.wantMsg)
 			}
 		})
 	}
@@ -513,17 +792,20 @@ func TestValidateDashboardLayout_DropsUnlistedFields(t *testing.T) {
 // not, a row would decode differently than it was written -- the stored bytes
 // would mean one thing on save and another on the next read.
 func TestValidateDashboardLayout_NormalizationIsAFixedPoint(t *testing.T) {
+	defer withParamWidget(t)()
+
 	raw := layoutWithItems(t,
 		item(map[string]any{
-			"instanceId": "a", "x": 0, "w": 6,
-			"params": map[string]string{"z": "1", "a": "2", "m": "3"},
+			"instanceId": "a", "id": testParamWidgetID, "x": 0, "w": 6,
+			"params": map[string]string{"namespace": "z", "n": "2", "mode": "full"},
 		}),
 		item(map[string]any{
 			"instanceId": "b", "id": "nodes", "x": 6, "w": 6,
 			// An empty param map is dropped by omitempty, so the second pass
 			// sees no params at all -- exactly the asymmetry that would break
 			// the fixed point if the validator treated nil and empty
-			// differently.
+			// differently. nodes declares no params, and an empty map is not
+			// a param, so this must still be accepted.
 			"params": map[string]string{},
 		}),
 	)
@@ -582,9 +864,85 @@ func TestCanonicalParams(t *testing.T) {
 		t.Fatalf("canonicalParams(empty) = %q; want empty", got)
 	}
 
-	// Values are separated from keys and from each other, so {"ab":"c"} and
-	// {"a":"bc"} cannot fold to the same string and collide as duplicates.
-	if canonicalParams(map[string]string{"ab": "c"}) == canonicalParams(map[string]string{"a": "bc"}) {
-		t.Fatal("canonicalParams collides on a shifted key/value boundary")
+	// Injectivity: two different param maps must never fold to one string,
+	// because that string IS the duplicate-detection identity and a collision
+	// refuses a legitimate second placement.
+	//
+	// These pairs are chosen to attack the separator itself, which is the only
+	// way this derivation can collide. An earlier version of this test used
+	// {"ab":"c"} vs {"a":"bc"} and passed against a '=' separator that did in
+	// fact collide -- the shift moved the '=' too, so the one pair it checked
+	// was the one pair that survived. Every pair below puts the candidate
+	// separator INSIDE a key or value, which is what a shift alone cannot do.
+	collisionPairs := []struct {
+		name string
+		a, b map[string]string
+	}{
+		{"shifted key/value boundary",
+			map[string]string{"ab": "c"}, map[string]string{"a": "bc"}},
+		{"equals sign inside a key vs inside a value",
+			map[string]string{"a=b": "c"}, map[string]string{"a": "b=c"}},
+		{"equals sign at the boundary",
+			map[string]string{"a": "=b"}, map[string]string{"a=": "b"}},
+		{"two pairs vs one pair spelling the same text",
+			map[string]string{"a": "b", "c": "d"}, map[string]string{"a": "b\x00c\x00d"}},
+		{"empty value vs absent second key",
+			map[string]string{"a": "", "b": ""}, map[string]string{"a": "", "b\x00": ""}},
+	}
+	for _, p := range collisionPairs {
+		t.Run(p.name, func(t *testing.T) {
+			if canonicalParams(p.a) == canonicalParams(p.b) {
+				t.Fatalf("canonicalParams collides: %v and %v both fold to %q",
+					p.a, p.b, canonicalParams(p.a))
+			}
+		})
+	}
+}
+
+// TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate is the
+// end-to-end form of the collision above: before the separator was fixed, two
+// placements of one widget carrying genuinely different params were refused as
+// duplicates of each other.
+//
+// It needs a widget that accepts parameters, and no shipped widget does, so it
+// installs one for the duration of the test. That is also the only way to
+// exercise the param-membership path at all today.
+func TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate(t *testing.T) {
+	restore := withTestWidget(t, "nodes", widgetSpec{
+		MinW: 3, MinH: 4,
+		Params: map[string][]string{"a=b": {}, "a": {}},
+	})
+	defer restore()
+
+	raw := layoutWithItems(t,
+		item(map[string]any{
+			"instanceId": "one", "id": "nodes", "x": 0, "w": 6, "h": 4,
+			"params": map[string]string{"a=b": "c"},
+		}),
+		item(map[string]any{
+			"instanceId": "two", "id": "nodes", "x": 6, "w": 6, "h": 4,
+			"params": map[string]string{"a": "b=c"},
+		}),
+	)
+
+	if _, _, err := ValidateDashboardLayout(raw); err != nil {
+		t.Fatalf("two placements with different params were refused: %v", err)
+	}
+}
+
+// withTestWidget temporarily replaces one catalog entry so the parameterized
+// paths can be exercised while every shipped widget is parameterless. It
+// restores the original entry, so the parity pins still see the real catalog.
+func withTestWidget(t *testing.T, id string, spec widgetSpec) func() {
+	t.Helper()
+
+	original, existed := allowedWidgets[id]
+	allowedWidgets[id] = spec
+	return func() {
+		if existed {
+			allowedWidgets[id] = original
+			return
+		}
+		delete(allowedWidgets, id)
 	}
 }

@@ -581,6 +581,42 @@ from the text above, each deliberate:
    likely to be similarly optimistic — count Step 4's `allEndpoints()` edit and
    the handler tests before assuming it fits.
 
+**AMENDED again 2026-09-19, after review.** The three notes above were written
+from what the implementation changed, not from what the spec required, and that
+is exactly how the gap below survived: `/ce:review` found **two of spec §7's ten
+rejection rules missing entirely** — `w < minW` / `h < minH`, and the per-widget
+`ParamSpec` enum — neither recorded as deferred, because the amendment only ever
+listed divergences its author had already noticed. **Write the next one by
+walking the spec's list, not the diff.**
+
+Both are now implemented rather than deferred. `allowedWidgetIDs` became
+`allowedWidgets map[string]widgetSpec`, carrying each widget's `MinW`/`MinH` and
+its declared `Params` (key → closed value set; empty means "any value within the
+generic bounds", absent means the widget takes none). `WidgetDef` gained an
+optional `params` field so the registry stays the source of truth, and
+`TestContractParity/"widget specs"` pins every minimum and asserts every shipped
+widget is still parameterless — so the first parameterized widget cannot ship
+without a `ParamSpec` on both sides.
+
+Four other defects the review surfaced, all fixed here: an accepted layout could
+normalize to `"items":null`, which the TypeScript mirror declares impossible and
+every client consumer throws on; `canonicalParams` was not injective (an `=` in
+a param key collided two distinct layouts, and it is now length-prefixed, which
+depends on no precondition at all); the geometry rejection messages stated
+exclusive bounds as inclusive; and `maxDashboardRows` had no client mirror, so
+the editor let users drag past a cap the server enforced.
+
+**Two lessons for D13 and D14, both about guards rather than code:**
+
+- Adding a rule can silently un-cover an existing one. Enforcing per-widget
+  minimums made several fuzz seeds and table cases stop at the new size check
+  before reaching the overlap and param rules they were written for. Mutation
+  testing caught it — the guards had gone quiet without any test turning red.
+  After adding a validation rule, re-run the mutations for the rules that came
+  before it.
+- `go test` caches results. A mutation run that prints `ok (cached)` proved
+  nothing; use `-count=1` for every mutation check.
+
 ---
 
 ### Task D13: Endpoints
@@ -663,6 +699,19 @@ PR title: `feat(preferences): dashboard layout endpoints`
 with an incrementing revision; a stale revision is 409 `revision_conflict`; a
 no-database deployment answers 503 `database_unavailable` on both routes;
 layouts are invisible across owners and across clusters.
+
+**Added 2026-09-19 after review of D12.** Spec §7 carries one read-path
+obligation that appears nowhere in D11–D14 and would otherwise be lost: the GET
+handler must **re-authorize every namespace parameter at read time via
+`CanAccessGroupResource`** — never `CanAccess`, which short-circuits to allow in
+predicate-fake mode (`access.go:111`) — and drop or mark the items it cannot
+authorize before returning a layout. A stored parameter is evidence of what the
+user could see when they saved it, never of what they may see now: a layout
+saved while the user had access to `prod` must not keep showing `prod` data
+after that access is revoked. D12 deliberately does not discharge this, because
+the write path is not where it belongs; this line exists so D13 inherits the
+obligation rather than the gap. The same applies to retired widget ids, which
+D14 drops quietly on read while the server keeps accepting them on write.
 
 ---
 

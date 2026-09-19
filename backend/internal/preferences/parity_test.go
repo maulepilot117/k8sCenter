@@ -72,8 +72,8 @@ func TestContractParity(t *testing.T) {
 				// editor lets the user build but the server refuses to store.
 				// The mirror assertion is "registry ids are pinned to the
 				// server-side allowlist" in the TS file named below.
-				name: "allowedWidgetIDs",
-				got:  allowedWidgetIDs,
+				name: "allowedWidgets (ids)",
+				got:  widgetIDSet(),
 				want: []string{
 					"active-alerts", "cluster-health", "cpu-tile", "memory-tile",
 					"network-tile", "nodes", "pod-status", "pods-tile",
@@ -101,6 +101,62 @@ func TestContractParity(t *testing.T) {
 						t.Fatalf("%s drift: got %v, want %v (update %s %s to match, or update this test)",
 							tc.name, got, tc.want, tc.tsFile, tc.tsConstName)
 					}
+				}
+			})
+		}
+	})
+
+	// Each widget's minimum size is a second cross-language contract, and a
+	// stricter one than the id list: an id present on both sides but sized
+	// differently produces an editor that lets a user drag to a size the
+	// server then refuses, with a message naming a minimum the client never
+	// showed. The mirror assertion is "registry minimums are pinned to the
+	// server-side catalog" in frontend/lib/dashboard/registry_test.ts.
+	//
+	// Parameters are pinned here too, by their absence. Every widget shipped
+	// today declares none, and the validator refuses params outright for such
+	// a widget -- so the day one declares some, this test fails and forces the
+	// ParamSpec to be written on both sides rather than the server quietly
+	// accepting whatever the client sends.
+	t.Run("widget specs", func(t *testing.T) {
+		want := map[string]widgetSpec{
+			"active-alerts":        {MinW: 2, MinH: 3},
+			"cluster-health":       {MinW: 3, MinH: 4},
+			"cpu-tile":             {MinW: 2, MinH: 2},
+			"memory-tile":          {MinW: 2, MinH: 2},
+			"network-tile":         {MinW: 2, MinH: 2},
+			"nodes":                {MinW: 3, MinH: 4},
+			"pod-status":           {MinW: 3, MinH: 4},
+			"pods-tile":            {MinW: 2, MinH: 2},
+			"recent-events":        {MinW: 3, MinH: 3},
+			"resource-utilization": {MinW: 4, MinH: 4},
+		}
+
+		for id, w := range want {
+			t.Run(id, func(t *testing.T) {
+				got, ok := allowedWidgets[id]
+				if !ok {
+					t.Fatalf("%s is missing from allowedWidgets", id)
+				}
+				if got.MinW != w.MinW || got.MinH != w.MinH {
+					t.Fatalf("%s minimum drift: got minW=%d minH=%d, want minW=%d minH=%d "+
+						"(update frontend/components/dashboard/widgets/ to match, or update this test)",
+						id, got.MinW, got.MinH, w.MinW, w.MinH)
+				}
+				if len(got.Params) != 0 {
+					t.Fatalf("%s now declares %d parameter(s); add the matching ParamSpec to "+
+						"frontend/lib/dashboard/types.ts and its registry entry, then update this test",
+						id, len(got.Params))
+				}
+				// A minimum below 1 would be a zero-area widget. The validator
+				// floors it independently, so this is the catalog's own bound.
+				if got.MinW < 1 || got.MinH < 1 {
+					t.Fatalf("%s declares a non-positive minimum: minW=%d minH=%d",
+						id, got.MinW, got.MinH)
+				}
+				// A widget that cannot fit the grid could never be placed.
+				if got.MinW > dashboardColumns {
+					t.Fatalf("%s minW=%d exceeds the %d-column grid", id, got.MinW, dashboardColumns)
 				}
 			})
 		}
@@ -134,6 +190,13 @@ func TestContractParity(t *testing.T) {
 			{"DashboardLayoutSchemaVersion", DashboardLayoutSchemaVersion, 1, "DASHBOARD_LAYOUT_SCHEMA_VERSION", dashTypes},
 			{"dashboardColumns", dashboardColumns, 12, "DASHBOARD_COLUMNS", dashTypes},
 			{"maxDashboardItems", maxDashboardItems, 40, "DASHBOARD_MAX_ITEMS", dashTypes},
+			// The row cap was the one enforced geometry bound with no client
+			// mirror: the editor clamped width against the column count but
+			// left height unbounded, so a drag past the cap produced a save
+			// the client had no way to predict would fail. It is also the one
+			// constant with no independent literal anywhere, which is what
+			// made the fuzz oracle's reuse of it undetectable.
+			{"maxDashboardRows", maxDashboardRows, 200, "DASHBOARD_MAX_ROWS", dashTypes},
 		}
 
 		for _, tc := range cases {
@@ -164,4 +227,16 @@ func TestContractParity(t *testing.T) {
 				got, want)
 		}
 	})
+}
+
+// widgetIDSet derives the catalog's id set for the allowlist table above,
+// which compares string sets. Deriving it rather than maintaining a second
+// literal keeps the id pin and the per-widget spec pin describing the same
+// map: a widget removed from allowedWidgets fails both, never just one.
+func widgetIDSet() map[string]struct{} {
+	ids := make(map[string]struct{}, len(allowedWidgets))
+	for id := range allowedWidgets {
+		ids[id] = struct{}{}
+	}
+	return ids
 }

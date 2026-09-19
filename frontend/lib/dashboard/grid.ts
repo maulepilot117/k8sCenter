@@ -25,6 +25,7 @@ import type { LayoutItem } from "./types.ts";
 import {
   DASHBOARD_COLUMNS,
   DASHBOARD_GRID_GAP,
+  DASHBOARD_MAX_ROWS,
   DASHBOARD_ROW_HEIGHT,
 } from "./types.ts";
 
@@ -234,7 +235,9 @@ export function moveItem(
   return settle(items, instanceId, (t) => ({
     ...t,
     x: clamp(col, 0, Math.max(0, DASHBOARD_COLUMNS - t.w)),
-    y: row,
+    // Bounded below the row cap the same way x is bounded below the column
+    // count, so a drag cannot place an item the server would then refuse.
+    y: clamp(row, 0, Math.max(0, DASHBOARD_MAX_ROWS - t.h)),
   }));
 }
 
@@ -333,7 +336,13 @@ export function resizeItem(
   return settle(items, instanceId, (t) => ({
     ...t,
     w: Math.max(1, clamp(width, bounds.minW, DASHBOARD_COLUMNS - t.x)),
-    h: height,
+    // Height is clamped against the row cap for the same reason width is
+    // clamped against the column count: the server refuses a placement whose
+    // y+h passes it, so letting the editor build one produces a rejected save
+    // the user cannot connect to anything they did. Never below 1 -- a
+    // target already at the cap has no room left, and a zero-height widget is
+    // worse than one that refuses to grow.
+    h: Math.max(1, Math.min(height, DASHBOARD_MAX_ROWS - t.y)),
   }));
 }
 

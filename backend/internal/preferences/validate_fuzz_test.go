@@ -82,7 +82,7 @@ func FuzzPreferencesValidators(f *testing.F) {
 // overlap, no two share an instanceId or an identity), which single-value
 // bounds checking cannot express.
 //
-// Three oracles:
+// Six oracles:
 //
 //	A. No panic. Errors and zero values are fine.
 //	B. Containment, at both levels. An accepted layout must re-marshal to an
@@ -101,39 +101,80 @@ func FuzzPreferencesValidators(f *testing.F) {
 //	   and C were all satisfied by that layout (no panic, exact keys, stable
 //	   round trip), so only an independent restatement of the bound could
 //	   catch it.
+//	E. The relationships between items hold: no repeated instanceId, no
+//	   repeated (id, params) identity, and no two items sharing a cell. B, C
+//	   and D all inspect one item at a time, so deleting any of the three
+//	   relationship checks left every oracle green — the rules were covered by
+//	   the table tests but not by this gate.
+//	F. `items` is a JSON array, never null. The client type declares it
+//	   non-nullable, and a length comparison cannot tell the two apart:
+//	   len(nil) == len([]) == 0 is exactly why oracle B passed on a stored
+//	   null.
+//
+// A note on what D, E and F have in common, because it is the lesson this
+// target keeps re-learning: each restates a property in terms the validator
+// does not itself use. An oracle written in the implementation's own idiom —
+// its arithmetic, its length checks, its constants — cannot fail when that
+// idiom is wrong.
 func FuzzValidateDashboardLayout(f *testing.F) {
+	// The param rules are unreachable while every shipped widget is
+	// parameterless -- a param on one of those is refused before any key or
+	// value is examined -- so the stand-in from dashboard_test.go is installed
+	// for the life of this target. Without it the param seeds below would all
+	// stop at the same branch and the bounds they were written for would never
+	// run. Installed here rather than inside the callback because test
+	// functions run sequentially, so the catalog is never mutated under
+	// another test.
+	defer withTestWidget(&testing.T{}, testParamWidgetID, testParamWidgetSpec)()
+
 	// Well-formed envelopes: the mutator explores around these.
+	//
+	// Every geometry seed below respects the minimum size of the widget it
+	// names, because a seed that trips the size check never reaches the rule
+	// it was written for. cpu-tile (2x2) is used wherever a seed needs to be
+	// small; nodes and pod-status are 3x4 and cluster-health 3x4.
 	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[]}`))
 	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cluster-health","x":0,"y":0,"w":4,"h":4}]}`))
 	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":6,"h":4},{"instanceId":"b","id":"pod-status","x":6,"y":0,"w":6,"h":4}]}`))
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"p","id":"nodes","x":0,"y":0,"w":6,"h":4,"params":{"namespace":"prod"}},{"instanceId":"s","id":"nodes","x":6,"y":0,"w":6,"h":4,"params":{"namespace":"staging"}}]}`))
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"p","id":"test-param-widget","x":0,"y":0,"w":6,"h":4,"params":{"namespace":"prod"}},{"instanceId":"s","id":"test-param-widget","x":6,"y":0,"w":6,"h":4,"params":{"namespace":"staging"}}]}`))
 
 	// Geometry teeth — mutated from the table cases in dashboard_test.go. Each
 	// is one integer away from an accepted layout, which is exactly the
 	// neighbourhood a bounds bug lives in.
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":8,"y":198,"w":4,"h":2}]}`))                  // flush against both bounds
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":9,"y":0,"w":4,"h":2}]}`))                    // one column past the edge
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":199,"w":4,"h":2}]}`))                  // one row past the cap
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":0,"h":0}]}`))                    // zero-area
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":-1,"y":-1,"w":4,"h":4}]}`))                  // negative origin
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":-9223372036854775808,"h":4}]}`)) // int64 min, to probe x+w overflow
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":9223372036854775807,"y":0,"w":1,"h":1}]}`))  // int64 max, same
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":9223372036854775807,"w":1,"h":1}]}`))  // int64 max on the other axis
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":9223372036854775807,"h":1}]}`))  // int64 max size
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":1,"h":9223372036854775807}]}`))
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":8,"y":198,"w":4,"h":2}]}`))                  // flush against both bounds
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":9,"y":0,"w":4,"h":2}]}`))                    // one column past the edge
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":0,"y":199,"w":4,"h":2}]}`))                  // one row past the cap
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":0,"y":0,"w":0,"h":0}]}`))                    // zero-area
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":-1,"y":-1,"w":4,"h":4}]}`))                  // negative origin
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":2,"h":4}]}`))                       // one column under the widget's minimum
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":3,"h":3}]}`))                       // one row under the widget's minimum
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":3,"h":4}]}`))                       // exactly at the minimum, must be accepted
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":0,"y":0,"w":-9223372036854775808,"h":4}]}`)) // int64 min, to probe x+w overflow
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":9223372036854775807,"y":0,"w":2,"h":2}]}`))  // int64 max, same
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":0,"y":9223372036854775807,"w":2,"h":2}]}`))  // int64 max on the other axis
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":0,"y":0,"w":9223372036854775807,"h":2}]}`))  // int64 max size
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"cpu-tile","x":0,"y":0,"w":2,"h":9223372036854775807}]}`))
 
-	// Relationship teeth: the checks that need two items to trip.
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":6,"h":4},{"instanceId":"a","id":"pod-status","x":6,"y":0,"w":6,"h":4}]}`))   // repeated instanceId
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":6,"h":4},{"instanceId":"b","id":"nodes","x":6,"y":0,"w":6,"h":4}]}`))        // identical identity
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":12,"h":10},{"instanceId":"b","id":"pod-status","x":4,"y":4,"w":2,"h":2}]}`)) // containment, not edge crossing
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":6,"h":4},{"instanceId":"b","id":"pod-status","x":6,"y":4,"w":6,"h":4}]}`))   // corners touch, must be accepted
+	// Relationship teeth: the checks that need two items to trip. Sizes here
+	// are all at or above each widget's minimum, so the seed reaches the
+	// relationship check rather than stopping at a size bound.
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":6,"h":4},{"instanceId":"a","id":"pod-status","x":6,"y":0,"w":6,"h":4}]}`))                                                                                          // repeated instanceId
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":6,"h":4},{"instanceId":"b","id":"nodes","x":6,"y":0,"w":6,"h":4}]}`))                                                                                               // identical identity
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":12,"h":10},{"instanceId":"b","id":"cpu-tile","x":4,"y":4,"w":2,"h":2}]}`))                                                                                          // containment, not edge crossing
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":6,"h":4},{"instanceId":"b","id":"cpu-tile","x":4,"y":2,"w":4,"h":4}]}`))                                                                                            // partial overlap
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"nodes","x":0,"y":0,"w":6,"h":4},{"instanceId":"b","id":"pod-status","x":6,"y":4,"w":6,"h":4}]}`))                                                                                          // corners touch, must be accepted
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"a","id":"test-param-widget","x":0,"y":0,"w":6,"h":4,"params":{"namespace":"a=b"}},{"instanceId":"b","id":"test-param-widget","x":6,"y":0,"w":6,"h":4,"params":{"namespace":"a","mode":"full"}}]}`)) // separator-collision shapes
 
-	// Param teeth: the only free-text a layout carries.
-	f.Add([]byte("{\"schemaVersion\":1,\"scope\":\"overview\",\"columns\":12,\"items\":[{\"instanceId\":\"w1\",\"id\":\"nodes\",\"x\":0,\"y\":0,\"w\":4,\"h\":4,\"params\":{\"ns\":\"\u0000\"}}]}")) // NUL in a value
-	f.Add([]byte("{\"schemaVersion\":1,\"scope\":\"overview\",\"columns\":12,\"items\":[{\"instanceId\":\"w1\",\"id\":\"nodes\",\"x\":0,\"y\":0,\"w\":4,\"h\":4,\"params\":{\"‮\":\"v\"}}]}"))       // bidi override in a key
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":4,"h":4,"params":{"":"v"}}]}`))
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":4,"h":4,"params":{"u":"javascript:alert(1)"}}]}`))
-	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":4,"h":4,"params":null}]}`))
+	// Param teeth: the only free-text a layout carries. These name the
+	// parameterized stand-in so they reach the key and value bounds; the
+	// last one checks that a shipped, parameterless widget refuses params.
+	f.Add([]byte("{\"schemaVersion\":1,\"scope\":\"overview\",\"columns\":12,\"items\":[{\"instanceId\":\"w1\",\"id\":\"test-param-widget\",\"x\":0,\"y\":0,\"w\":4,\"h\":4,\"params\":{\"namespace\":\"\u0000\"}}]}")) // NUL in a value
+	f.Add([]byte("{\"schemaVersion\":1,\"scope\":\"overview\",\"columns\":12,\"items\":[{\"instanceId\":\"w1\",\"id\":\"test-param-widget\",\"x\":0,\"y\":0,\"w\":4,\"h\":4,\"params\":{\"‮\":\"v\"}}]}"))              // bidi override in a key
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"test-param-widget","x":0,"y":0,"w":4,"h":4,"params":{"":"v"}}]}`))
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"test-param-widget","x":0,"y":0,"w":4,"h":4,"params":{"mode":"javascript:alert(1)"}}]}`)) // outside a closed enum
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"test-param-widget","x":0,"y":0,"w":4,"h":4,"params":{"unknown":"v"}}]}`))                // key the widget never declared
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"test-param-widget","x":0,"y":0,"w":4,"h":4,"params":null}]}`))
+	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":[{"instanceId":"w1","id":"nodes","x":0,"y":0,"w":4,"h":4,"params":{"namespace":"prod"}}]}`)) // params on a parameterless widget
 
 	// Structural teeth for the nesting itself.
 	f.Add([]byte(`{"schemaVersion":1,"scope":"overview","columns":12,"items":null}`))
@@ -168,6 +209,8 @@ func FuzzValidateDashboardLayout(f *testing.F) {
 		assertExactKeys(t, "dashboard layout", normalized, envelopeKeys)
 		assertLayoutItems(t, normalized, len(cfg.Items), itemRequired)
 		assertOnTheGrid(t, cfg)
+		assertItemsAreDistinct(t, cfg)
+		assertItemsIsAnArray(t, normalized)
 
 		// Oracle C. The validator is idempotent or the stored bytes are not
 		// trustworthy.
@@ -186,6 +229,75 @@ func FuzzValidateDashboardLayout(f *testing.F) {
 			t.Fatalf("dedup key %q does not match the validated scope %q", got, cfg.Scope)
 		}
 	})
+}
+
+// assertItemsAreDistinct is oracle E: the relationships the validator promises
+// between items actually hold in what it accepted.
+//
+// Each of the three is restated in terms the validator does not use. Identity
+// is compared by JSON-encoding the (id, params) pair rather than by calling
+// canonicalParams, so a bug in that derivation cannot hide behind itself --
+// which is precisely what happened when its '=' separator made two different
+// param maps compare equal. Overlap is recomputed cell by cell instead of
+// through itemsOverlap's four-comparison form.
+//
+// The cell walk is bounded: the grid is 12 columns and 200 rows and a layout
+// holds at most 40 items, so the worst case is well under 100k steps.
+func assertItemsAreDistinct(t *testing.T, cfg DashboardLayoutConfig) {
+	t.Helper()
+
+	seenInstance := make(map[string]int, len(cfg.Items))
+	seenIdentity := make(map[string]int, len(cfg.Items))
+	occupied := make(map[[2]int]int)
+
+	for i, it := range cfg.Items {
+		if prev, dup := seenInstance[it.InstanceID]; dup {
+			t.Fatalf("items[%d] and items[%d] share instanceId %q", prev, i, it.InstanceID)
+		}
+		seenInstance[it.InstanceID] = i
+
+		identity, err := json.Marshal([]any{it.ID, it.Params})
+		if err != nil {
+			t.Fatalf("items[%d]: could not encode identity: %v", i, err)
+		}
+		if prev, dup := seenIdentity[string(identity)]; dup {
+			t.Fatalf("items[%d] and items[%d] are the same widget with the same params: %s",
+				prev, i, identity)
+		}
+		seenIdentity[string(identity)] = i
+
+		for x := it.X; x < it.X+it.W; x++ {
+			for y := it.Y; y < it.Y+it.H; y++ {
+				cell := [2]int{x, y}
+				if prev, taken := occupied[cell]; taken {
+					t.Fatalf("items[%d] and items[%d] both occupy cell (%d,%d)", prev, i, x, y)
+				}
+				occupied[cell] = i
+			}
+		}
+	}
+}
+
+// assertItemsIsAnArray is oracle F: the stored `items` is a JSON array.
+//
+// The client type declares it non-nullable, so a stored null is a value every
+// consumer is entitled to treat as impossible. This has to inspect the bytes:
+// a nil slice and an empty slice are indistinguishable by length, which is why
+// the containment oracle passed on a layout that stored `"items":null`.
+func assertItemsIsAnArray(t *testing.T, normalized json.RawMessage) {
+	t.Helper()
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(normalized, &envelope); err != nil {
+		t.Fatalf("accepted layout did not re-marshal to a JSON object: %v", err)
+	}
+	items, ok := envelope["items"]
+	if !ok {
+		t.Fatal("accepted layout stored no items key")
+	}
+	if len(items) == 0 || items[0] != '[' {
+		t.Fatalf("stored items is %s; want a JSON array (null breaks every client consumer)", items)
+	}
 }
 
 // assertOnTheGrid is oracle D: every accepted placement genuinely fits inside

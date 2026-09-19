@@ -1,8 +1,11 @@
-// Package preferences serves per-user saved views and resource pins.
+// Package preferences serves per-user saved views, resource pins, and
+// dashboard layouts.
 //
 // The package is deliberately split: this file is pure — it holds the wire
-// types, the allowlists, and every validation rule, and imports no net/http —
-// so the rules can be tested without a server or a database. handler.go holds
+// types, the allowlists, and every validation rule for the first two kinds,
+// and imports no net/http — so the rules can be tested without a server or a
+// database. dashboard.go holds the third kind under the identical rule, kept
+// separate only so one file is not the home of all three. handler.go holds
 // the HTTP surface.
 //
 // The allowlists here are the first line of defence and the database's CHECK
