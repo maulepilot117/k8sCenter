@@ -225,6 +225,40 @@ test("optionalSources is always a subset of sources", () => {
   expect(offenders).toEqual([]);
 });
 
+test("registry ids are pinned to the server-side allowlist", () => {
+  // The other half of a cross-language contract. The server validates a saved
+  // layout against `allowedWidgetIDs` in
+  // backend/internal/preferences/dashboard.go, which is a Go map and cannot
+  // read this registry -- so a widget added here and not there produces a
+  // layout the user can build in the editor and the server then refuses on
+  // save, with no test failing anywhere.
+  //
+  // Pinning both sides to the same literal turns that into a red test on
+  // whichever side was forgotten. The Go half is TestContractParity in
+  // backend/internal/preferences/parity_test.go; adding a widget means
+  // editing three places, and forgetting any one of them fails here or there.
+  //
+  // `fixture-*` ids are filtered out: `bun test` shares module state across
+  // files and the registry is append-only, so the registration tests above
+  // leave their fixtures behind (see the note at the top of this file).
+  const ids = allWidgets()
+    .map((w) => w.id)
+    .filter((id) => !id.startsWith("fixture-"))
+    .sort();
+  expect(ids).toEqual([
+    "active-alerts",
+    "cluster-health",
+    "cpu-tile",
+    "memory-tile",
+    "network-tile",
+    "nodes",
+    "pod-status",
+    "pods-tile",
+    "recent-events",
+    "resource-utilization",
+  ]);
+});
+
 test("every widget module is listed in the manifest", () => {
   // The drift guard. Registration is an import side effect, so a widget file
   // the manifest does not import registers nothing -- and every invariant

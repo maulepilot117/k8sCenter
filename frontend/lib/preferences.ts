@@ -110,6 +110,7 @@ export const PREFERENCE_REASONS = [
   "revision_conflict",
   "invalid_name",
   "identity_too_long",
+  "unknown_widget_id",
 ] as const;
 
 export type PreferenceReason = (typeof PREFERENCE_REASONS)[number];

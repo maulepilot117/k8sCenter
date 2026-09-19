@@ -34,6 +34,7 @@ jobs:
           - { pkg: ./internal/gateway/, target: FuzzGatewayNormalizers }
           - { pkg: ./internal/velero/, target: FuzzVeleroParsers }
           - { pkg: ./internal/preferences/, target: FuzzPreferencesValidators }
+          - { pkg: ./internal/preferences/, target: FuzzValidateDashboardLayout }
     name: ${{ matrix.target }}
     defaults:
       run:
