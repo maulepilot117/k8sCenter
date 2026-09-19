@@ -11,6 +11,7 @@ import type { LayoutUnavailable } from "@/lib/dashboard/layout-store.ts";
 import {
   layout,
   layoutGeneration,
+  layoutLoaded,
   layoutUnavailable,
   layoutWarnings,
   layoutWithheld,
@@ -157,6 +158,11 @@ export default function DashboardV2() {
   const storageDown = unavailable !== undefined;
   const unavailableMessage = storageDown ? unavailableCopy(unavailable) : null;
   const withheldCount = layoutWithheld.value.length;
+  // The stored layout has not arrived yet. Adopting it re-mounts the grid,
+  // which throws away whatever the grid's private working copy holds -- so
+  // until it lands there must be nothing in that copy worth keeping.
+  const layoutPending = !layoutLoaded.value;
+  const editDisabled = storageDown || layoutPending;
   // Changes only when a load replaces the layout, which is when the grid has
   // to start over from a new arrangement. See the comment at its usage.
   const layoutKey = `layout-${layoutGeneration.value}`;
@@ -210,17 +216,30 @@ export default function DashboardV2() {
             type="button"
             data-testid="edit-layout"
             aria-pressed={editing.value}
-            // Arranging a dashboard that cannot be stored is work the user
-            // loses on the next reload, so the affordance is withdrawn rather
-            // than offered and then disappointed.
+            // Withdrawn in two states, for two different reasons.
+            //
+            // Storage down: arranging a dashboard that cannot be stored is
+            // work the user loses on the next reload, so the affordance is
+            // withdrawn rather than offered and then disappointed.
+            //
+            // Load pending: what is on screen is still the default, and
+            // adopting the stored layout re-mounts the grid. Editing in that
+            // window means a drag that vanishes the instant the response
+            // lands, with no warning -- the one case where offering the
+            // affordance actively destroys work rather than merely wasting it.
             //
             // Withheld placements do NOT disable it, although they also block
             // a save: there the layout on screen is the user's own and the
             // block is transient, so editing it for this session is still
-            // worth something. A failed load is different -- what is on screen
-            // is the shipped default, and nothing about arranging it survives.
-            disabled={storageDown}
-            title={storageDown ? (unavailableMessage ?? undefined) : undefined}
+            // worth something.
+            disabled={editDisabled}
+            title={
+              storageDown
+                ? (unavailableMessage ?? undefined)
+                : layoutPending
+                  ? "Loading your saved layout..."
+                  : undefined
+            }
             onClick={() => {
               editing.value = !editing.value;
             }}
@@ -228,8 +247,8 @@ export default function DashboardV2() {
               padding: "7px 14px",
               borderRadius: "8px",
               border: "1px solid var(--glass-border)",
-              cursor: storageDown ? "not-allowed" : "pointer",
-              opacity: storageDown ? 0.5 : 1,
+              cursor: editDisabled ? "not-allowed" : "pointer",
+              opacity: editDisabled ? 0.5 : 1,
               fontSize: "12px",
               fontWeight: 500,
               background: editing.value

@@ -4,13 +4,23 @@ import {
   dropUnknownWidgets,
   layout,
   layoutFromResponse,
+  layoutGeneration,
+  layoutLoaded,
   layoutRevision,
+  layoutUnavailable,
   layoutWithheld,
+  loadLayout,
+  StaleLayoutScopeError,
   saveLayout,
   WithheldLayoutError,
 } from "./layout-store.ts";
 import { registerWidget } from "./registry.ts";
-import type { DashboardLayoutConfig, LayoutItem, WidgetDef } from "./types.ts";
+import type {
+  DashboardLayoutConfig,
+  DashboardScope,
+  LayoutItem,
+  WidgetDef,
+} from "./types.ts";
 import { DASHBOARD_COLUMNS, DASHBOARD_LAYOUT_SCHEMA_VERSION } from "./types.ts";
 
 // The registry is append-only and `bun test` shares module state across test
@@ -86,6 +96,20 @@ test("dropUnknownWidgets: names every unknown id, not just the first", () => {
   expect(warnings).toHaveLength(2);
   expect(warnings.join(" ")).toContain("gone-one");
   expect(warnings.join(" ")).toContain("gone-two");
+});
+
+test("dropUnknownWidgets: one warning per missing widget, not per placement", () => {
+  // A parameterized widget may legitimately appear twice. Two identical
+  // sentences tell the user nothing the first did not, and they collide as
+  // list keys wherever the warnings are rendered.
+  const { config: kept, warnings } = dropUnknownWidgets(
+    config([item("a", "gone-one"), item("b", "gone-one"), item("c", KNOWN)]),
+  );
+
+  expect(kept.items.map((i) => i.instanceId)).toEqual(["c"]);
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("gone-one");
+  expect(new Set(warnings).size).toBe(warnings.length);
 });
 
 test("dropUnknownWidgets: dropping every widget yields an empty layout, not the default", () => {
@@ -191,6 +215,11 @@ test("layoutFromResponse: withheld instanceIds survive to the caller", () => {
 });
 
 test("saveLayout: refuses to write back a layout the server filtered", async () => {
+  // A real load first: the scope guard runs before the withheld guard, so
+  // without one this would refuse for the wrong reason and prove nothing.
+  await withFetch([() => new Response(null, { status: 204 })], () =>
+    loadLayout("overview"),
+  );
   const before = { layout: layout.value, revision: layoutRevision.value };
   layoutWithheld.value = ["b"];
 
@@ -216,6 +245,9 @@ test("saveLayout: refuses to write back a layout the server filtered", async () 
 });
 
 test("saveLayout: the refusal names what would have been lost", async () => {
+  await withFetch([() => new Response(null, { status: 204 })], () =>
+    loadLayout("overview"),
+  );
   layoutWithheld.value = ["d-prod-diagnostics"];
 
   try {
@@ -230,4 +262,225 @@ test("saveLayout: the refusal names what would have been lost", async () => {
   } finally {
     layoutWithheld.value = [];
   }
+});
+
+// ---------------------------------------------------------------------------
+// The async paths
+//
+// lib/preferences.ts is transport over lib/api.ts and has no injectable fetch,
+// so these stub `globalThis.fetch` around a real call, the way
+// preferences_test.ts does. The restore is in a `finally` because `bun test`
+// shares module state across files in one run: a stub left installed would
+// follow every later test file in the same run.
+//
+// The signals are module-global for the same reason, so each test below
+// establishes the state it needs through a real load rather than assuming the
+// state the previous test left behind.
+// ---------------------------------------------------------------------------
+
+function layoutRecord(
+  revision: number,
+  cfg: DashboardLayoutConfig,
+  withheld?: string[],
+) {
+  return {
+    id: "p1",
+    kind: "dashboard_layout",
+    name: "overview",
+    clusterId: "local",
+    schemaVersion: DASHBOARD_LAYOUT_SCHEMA_VERSION,
+    revision,
+    config: cfg,
+    createdAt: "2026-09-19T00:00:00Z",
+    updatedAt: "2026-09-19T00:00:00Z",
+    ...(withheld ? { withheld } : {}),
+  };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify({ data: body }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** Swaps in a fetch that answers with `responses` in order, and restores it. */
+async function withFetch<T>(
+  responses: Array<() => Response | Promise<Response>>,
+  run: () => Promise<T>,
+): Promise<{ result: T; calls: number }> {
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (() => {
+    const next = responses[calls] ?? responses[responses.length - 1];
+    calls += 1;
+    return Promise.resolve(next());
+  }) as unknown as typeof globalThis.fetch;
+  try {
+    return { result: await run(), calls };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+test("loadLayout: an unsaved scope keeps the default and does not re-mount the grid", async () => {
+  const before = layoutGeneration.value;
+  await withFetch([() => new Response(null, { status: 204 })], () =>
+    loadLayout("overview"),
+  );
+
+  expect(layout.value).toBe(DEFAULT_OVERVIEW_LAYOUT);
+  expect(layoutRevision.value).toBe(0);
+  expect(layoutLoaded.value).toBe(true);
+  expect(layoutUnavailable.value).toBe(undefined);
+  // The grid is already rendering this exact object. Re-mounting it would
+  // discard a drag the user began before the response landed.
+  expect(layoutGeneration.value).toBe(before);
+});
+
+test("loadLayout: a stored layout replaces the default and re-mounts once", async () => {
+  const before = layoutGeneration.value;
+  const stored = config([item("a", KNOWN)]);
+  await withFetch([() => jsonResponse(layoutRecord(7, stored))], () =>
+    loadLayout("overview"),
+  );
+
+  expect(layout.value.items.map((i) => i.instanceId)).toEqual(["a"]);
+  expect(layoutRevision.value).toBe(7);
+  expect(layoutWithheld.value).toEqual([]);
+  expect(layoutGeneration.value).toBe(before + 1);
+});
+
+test("loadLayout: a failed load settles, keeps the layout, and names the reason", async () => {
+  // Establish a known-good state first, so "left untouched" is a claim with
+  // something behind it rather than a coincidence of the default.
+  const stored = config([item("a", KNOWN)]);
+  await withFetch([() => jsonResponse(layoutRecord(3, stored))], () =>
+    loadLayout("overview"),
+  );
+  const kept = layout.value;
+
+  await withFetch(
+    [
+      () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 503,
+              message: "no database",
+              reason: "database_unavailable",
+            },
+          }),
+          { status: 503, headers: { "content-type": "application/json" } },
+        ),
+    ],
+    () => loadLayout("overview"),
+  );
+
+  expect(layoutUnavailable.value).toBe("database_unavailable");
+  // A transient failure must not blank a dashboard the user was looking at.
+  expect(layout.value).toBe(kept);
+  expect(layoutRevision.value).toBe(3);
+  // Settled, not still-loading: "asked, and could not be told" is an answer.
+  expect(layoutLoaded.value).toBe(true);
+});
+
+test("loadLayout: a reason-less failure is 'unknown', never undefined", async () => {
+  await withFetch(
+    [() => Promise.reject(new TypeError("Failed to fetch"))],
+    () => loadLayout("overview"),
+  );
+
+  // undefined would mean "nothing went wrong", which is the one thing this
+  // signal must never say about a failure.
+  expect(layoutUnavailable.value).toBe("unknown");
+});
+
+test("loadLayout: an already-aborted caller signal issues no request", async () => {
+  const ac = new AbortController();
+  ac.abort();
+
+  const { calls } = await withFetch(
+    [() => new Response(null, { status: 204 })],
+    () => loadLayout("overview", ac.signal),
+  );
+
+  // Not merely wasteful: falling through would also abort a healthy load
+  // already in flight on the way past.
+  expect(calls).toBe(0);
+});
+
+test("saveLayout: refuses a scope the store has not observed", async () => {
+  await withFetch([() => new Response(null, { status: 204 })], () =>
+    loadLayout("overview"),
+  );
+
+  // A stand-in scope, because only one ships and the guard is otherwise
+  // unreachable. The revision and withheld list in the store describe
+  // "overview"; against any other scope they are claims about another record.
+  const otherScope = "not-a-served-scope" as DashboardScope;
+  let threw: unknown;
+  await saveLayout(otherScope, config([item("a", KNOWN)])).catch((e) => {
+    threw = e;
+  });
+
+  expect(threw).toBeInstanceOf(StaleLayoutScopeError);
+  expect((threw as Error).message).toContain("not-a-served-scope");
+});
+
+test("saveLayout: a successful write commits the server's new revision", async () => {
+  const stored = config([item("a", KNOWN)]);
+  await withFetch([() => jsonResponse(layoutRecord(4, stored))], () =>
+    loadLayout("overview"),
+  );
+
+  const next = config([item("a", KNOWN), item("b", ALSO_KNOWN)]);
+  await withFetch([() => jsonResponse(layoutRecord(5, next))], () =>
+    saveLayout("overview", next),
+  );
+
+  expect(layout.value).toBe(next);
+  expect(layoutRevision.value).toBe(5);
+  expect(layoutLoaded.value).toBe(true);
+  expect(layoutUnavailable.value).toBe(undefined);
+});
+
+test("saveLayout: a read still in flight cannot roll the revision back", async () => {
+  const stored = config([item("a", KNOWN)]);
+  await withFetch([() => jsonResponse(layoutRecord(4, stored))], () =>
+    loadLayout("overview"),
+  );
+
+  // A load whose response is held open, so a save can complete underneath it.
+  let releaseRead!: () => void;
+  const readLanded = new Promise<void>((r) => {
+    releaseRead = r;
+  });
+
+  const realFetch = globalThis.fetch;
+  const next = config([item("a", KNOWN), item("b", ALSO_KNOWN)]);
+  try {
+    globalThis.fetch = ((_input: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return Promise.resolve(jsonResponse(layoutRecord(5, next)));
+      }
+      // The stale read: it describes revision 4, the state before the save.
+      return readLanded.then(() => jsonResponse(layoutRecord(4, stored)));
+    }) as unknown as typeof globalThis.fetch;
+
+    const pendingRead = loadLayout("overview");
+    await saveLayout("overview", next);
+    expect(layoutRevision.value).toBe(5);
+
+    releaseRead();
+    await pendingRead;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // The read resolved last, but it describes a state the save already moved
+  // past. Applying it would leave the next save claiming revision 4 against a
+  // record at 5 -- a 409 the user never caused, over a layout they did save.
+  expect(layoutRevision.value).toBe(5);
+  expect(layout.value).toBe(next);
 });

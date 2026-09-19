@@ -5,9 +5,10 @@
  * SSR: imported during a render, one request's layout would be visible to the
  * next one's. It also imports lib/preferences.ts, whose own banner says the
  * same thing about the access token behind it. Import this from islands only.
- * The SSR guard (server/check-no-signal-store-in-ssr.ts) already refuses any
- * non-island path that reaches here, because this module's import of
- * lib/preferences.ts reaches lib/api.ts, which the guard names directly.
+ * This module is named directly in the SSR guard's FORBIDDEN_MODULES
+ * (server/check-no-signal-store-in-ssr.ts), like every other signal store --
+ * it would also be caught transitively through lib/preferences.ts to
+ * lib/api.ts, but that coverage would vanish with the import that carries it.
  *
  * Deliberately NOT localStorage-backed, for the reason pin-store.ts:9-13
  * records: a layout is server state — the whole point is that it follows the
@@ -19,8 +20,10 @@
  * and `layoutFromResponse`, so the rules that matter — what an unsaved scope
  * means, what a filtered response means, which placements survive — are unit
  * tested without a transport seam. lib/preferences.ts has no injectable fetch
- * (its own header says why), so the thin async wrappers below are covered by
- * the editor unit that drives them rather than here.
+ * (its own header says why), so `loadLayout` and `saveLayout` are tested by
+ * stubbing `globalThis.fetch` around a real call, the way preferences_test.ts
+ * does; that is what covers the ordering rules below, which no pure function
+ * can express.
  */
 import { signal } from "@preact/signals";
 import {
@@ -153,17 +156,25 @@ export function dropUnknownWidgets(
   config: DashboardLayoutConfig,
 ): DroppedLayout {
   const kept: LayoutItem[] = [];
-  const warnings: string[] = [];
+  // One warning per distinct widget id, not per placement. A parameterized
+  // widget may legitimately sit on the dashboard twice, and two identical
+  // sentences tell the user nothing the first did not -- they also collide as
+  // list keys wherever the warnings are rendered, which is a rendering bug
+  // rather than a wording one. A Set preserves first-encounter order.
+  const missing = new Set<string>();
 
   for (const it of config.items) {
     if (getWidget(it.id) === undefined) {
-      warnings.push(
-        `Removed "${it.id}" from this dashboard: this build has no such widget.`,
-      );
+      missing.add(it.id);
       continue;
     }
     kept.push(it);
   }
+
+  const warnings = [...missing].map(
+    (id) =>
+      `Removed "${id}" from this dashboard: this build has no such widget.`,
+  );
 
   // Dropping everything yields an empty layout, never the shipped default.
   // Substituting the default would discard an arrangement the user spent time
@@ -213,6 +224,45 @@ export function layoutFromResponse(
 let inFlight: AbortController | null = null;
 
 /**
+ * The scope the signals above currently describe, or null before any load.
+ *
+ * `layoutRevision` and `layoutWithheld` are the two things a save reads, and
+ * neither carries the scope it was observed for. Without this, a save for one
+ * scope would claim another scope's revision and consult another scope's
+ * withheld list -- and the withheld list is the only thing standing between a
+ * revoked namespace and permanent deletion.
+ */
+let loadedScope: DashboardScope | null = null;
+
+/**
+ * Bumped by every committed write of the signals above.
+ *
+ * Loads and saves both write the same state, and a read is not cancelled by a
+ * write, so a GET issued before a successful PUT can resolve after it and
+ * restore the older config and revision. The next save would then claim a
+ * revision the server has already moved past and be refused, while the screen
+ * showed a layout the user had in fact already saved. A load captures this
+ * counter before awaiting and discards its own result if anything committed
+ * while it was in flight.
+ */
+let commitSeq = 0;
+
+/** Raised instead of saving state that describes a different scope. */
+export class StaleLayoutScopeError extends Error {
+  constructor(
+    public readonly requested: DashboardScope,
+    public readonly observed: DashboardScope | null,
+  ) {
+    super(
+      `refusing to save scope "${requested}": the store holds observations ` +
+        `for ${observed === null ? "no scope yet" : `"${observed}"`}, so its ` +
+        `revision and withheld list do not describe what is being written`,
+    );
+    this.name = "StaleLayoutScopeError";
+  }
+}
+
+/**
  * Loads the caller's layout for one scope.
  *
  * On failure `layout` is left exactly as it was: a transient error must not
@@ -224,6 +274,11 @@ export async function loadLayout(
   scope: DashboardScope,
   signal?: AbortSignal,
 ): Promise<void> {
+  // A caller whose signal is already aborted is asking for nothing. Falling
+  // through would issue a request only to discard it, and -- worse -- would
+  // abort a healthy load already in flight on the way past.
+  if (signal?.aborted) return;
+
   // Cancel any previous load so a slow response cannot land after a newer one
   // and overwrite it with staler state.
   //
@@ -235,6 +290,8 @@ export async function loadLayout(
   inFlight?.abort();
   const ac = new AbortController();
   inFlight = ac;
+  // Captured before the await: see `commitSeq`.
+  const startedAt = commitSeq;
 
   const onAbort = () => ac.abort();
   signal?.addEventListener("abort", onAbort, { once: true });
@@ -242,6 +299,9 @@ export async function loadLayout(
   try {
     const res = await preferencesApi.getLayout(scope, ac.signal);
     if (ac.signal.aborted) return;
+    // A save committed while this read was in flight. The read describes the
+    // state before that write, so applying it now would roll the write back.
+    if (commitSeq !== startedAt) return;
 
     const loaded = layoutFromResponse(res, scope);
     // Only a load that actually replaces the rendered layout counts as a new
@@ -258,6 +318,8 @@ export async function loadLayout(
     // and would want a content comparison here rather than this one.
     const replaced = loaded.config !== layout.value;
 
+    loadedScope = scope;
+    commitSeq += 1;
     layout.value = loaded.config;
     layoutRevision.value = loaded.revision;
     layoutWithheld.value = loaded.withheld;
@@ -273,9 +335,14 @@ export async function loadLayout(
       return;
     }
     layoutUnavailable.value = preferenceReason(err) ?? "unknown";
+    // A failure settles the load: the caller has its answer, which is that
+    // there isn't one. Leaving this false would make "still loading" and
+    // "asked, and could not be told" the same state to every consumer.
+    layoutLoaded.value = true;
     // layout.value is intentionally untouched: it is either the default the
     // module started at or the last layout that did load, and both are better
-    // than an empty dashboard.
+    // than an empty dashboard. loadedScope likewise stays as it was -- a
+    // failed read observed nothing, so it cannot claim to describe this scope.
   } finally {
     signal?.removeEventListener("abort", onAbort);
     if (inFlight === ac) inFlight = null;
@@ -304,6 +371,16 @@ export async function saveLayout(
   config: DashboardLayoutConfig,
   signal?: AbortSignal,
 ): Promise<LayoutResponse> {
+  // Scope first: until the observations are known to describe this scope, the
+  // withheld list below is a statement about some other dashboard and the
+  // revision is a claim about some other record. Refusing is also the right
+  // answer for a save with no load behind it at all -- revision 0 against an
+  // existing record is a conflict the server would reject anyway, and this
+  // says so without the round trip.
+  if (loadedScope !== scope) {
+    throw new StaleLayoutScopeError(scope, loadedScope);
+  }
+
   const withheld = layoutWithheld.value;
   if (withheld.length > 0) {
     throw new WithheldLayoutError(withheld);
@@ -316,6 +393,9 @@ export async function saveLayout(
     signal,
   );
 
+  // Before the signal writes, so a read that resolves after this point sees a
+  // changed counter and discards itself rather than restoring the old revision.
+  commitSeq += 1;
   layout.value = config;
   layoutRevision.value = saved.revision;
   layoutLoaded.value = true;
