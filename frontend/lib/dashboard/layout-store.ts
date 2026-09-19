@@ -26,6 +26,7 @@
  * can express.
  */
 import { signal } from "@preact/signals";
+import { selectedCluster } from "@/lib/cluster.ts";
 import {
   type LayoutResponse,
   type PreferenceReason,
@@ -224,15 +225,31 @@ export function layoutFromResponse(
 let inFlight: AbortController | null = null;
 
 /**
- * The scope the signals above currently describe, or null before any load.
+ * What the signals above currently describe, or null when they describe
+ * nothing a save may rely on.
  *
- * `layoutRevision` and `layoutWithheld` are the two things a save reads, and
- * neither carries the scope it was observed for. Without this, a save for one
- * scope would claim another scope's revision and consult another scope's
- * withheld list -- and the withheld list is the only thing standing between a
- * revoked namespace and permanent deletion.
+ * A stored layout is keyed by (owner, cluster, scope). `layoutRevision` and
+ * `layoutWithheld` are the two things a save reads and neither carries any of
+ * those three, so without this a save would claim one key's revision and
+ * consult another key's withheld list — and that list is the only thing
+ * standing between a revoked namespace and a permanent delete. Owner is not
+ * tracked here because the client never holds two identities at once; a
+ * sign-out navigates and tears the module down.
+ *
+ * Cleared when a read or a write FAILS, and deliberately NOT while one is
+ * merely in flight. A failed read teaches nothing, so the withheld list it
+ * left behind is a statement about a world that may have moved — that is the
+ * case worth refusing. A read still in flight is different: the previous
+ * observation is the best evidence there is, the revision under it is a real
+ * one the server checks, and refusing there would reject a save the user
+ * legitimately asked for while a background refresh happened to be running.
  */
-let loadedScope: DashboardScope | null = null;
+interface LayoutObservation {
+  scope: DashboardScope;
+  cluster: string;
+}
+
+let observed: LayoutObservation | null = null;
 
 /**
  * Bumped by every committed write of the signals above.
@@ -247,16 +264,21 @@ let loadedScope: DashboardScope | null = null;
  */
 let commitSeq = 0;
 
-/** Raised instead of saving state that describes a different scope. */
+/** Raised instead of saving state that describes a different layout. */
 export class StaleLayoutScopeError extends Error {
   constructor(
-    public readonly requested: DashboardScope,
-    public readonly observed: DashboardScope | null,
+    public readonly requestedScope: DashboardScope,
+    public readonly requestedCluster: string,
+    public readonly observed: LayoutObservation | null,
   ) {
     super(
-      `refusing to save scope "${requested}": the store holds observations ` +
-        `for ${observed === null ? "no scope yet" : `"${observed}"`}, so its ` +
-        `revision and withheld list do not describe what is being written`,
+      `refusing to save scope "${requestedScope}" on cluster ` +
+        `"${requestedCluster}": the store describes ` +
+        (observed === null
+          ? "no completed load"
+          : `scope "${observed.scope}" on cluster "${observed.cluster}"`) +
+        ", so its revision and withheld list do not describe what is being " +
+        "written",
     );
     this.name = "StaleLayoutScopeError";
   }
@@ -277,6 +299,13 @@ export async function loadLayout(
   // A caller whose signal is already aborted is asking for nothing. Falling
   // through would issue a request only to discard it, and -- worse -- would
   // abort a healthy load already in flight on the way past.
+  //
+  // This returns WITHOUT settling anything: no request was made, so there is
+  // nothing to report. `layoutLoaded` therefore stays as it was, which for a
+  // first load means the editor stays gated. That is correct for the only
+  // caller shape that exists -- an island aborting on unmount, which is gone --
+  // but a future caller that aborts while STAYING mounted must issue a
+  // replacement load, or it will wait on a load that was never made.
   if (signal?.aborted) return;
 
   // Cancel any previous load so a slow response cannot land after a newer one
@@ -318,7 +347,7 @@ export async function loadLayout(
     // and would want a content comparison here rather than this one.
     const replaced = loaded.config !== layout.value;
 
-    loadedScope = scope;
+    observed = { scope, cluster: selectedCluster.peek() };
     commitSeq += 1;
     layout.value = loaded.config;
     layoutRevision.value = loaded.revision;
@@ -334,6 +363,13 @@ export async function loadLayout(
     ) {
       return;
     }
+    // The same staleness check the success path makes, and for the same
+    // reason: a save committed while this read was in flight, so this read's
+    // failure describes a state the write already moved past. Without it a
+    // read that errors after a successful save tells the user their layout
+    // could not be loaded and disables the editor, seconds after they saved it.
+    if (commitSeq !== startedAt) return;
+
     layoutUnavailable.value = preferenceReason(err) ?? "unknown";
     // A failure settles the load: the caller has its answer, which is that
     // there isn't one. Leaving this false would make "still loading" and
@@ -341,8 +377,10 @@ export async function loadLayout(
     layoutLoaded.value = true;
     // layout.value is intentionally untouched: it is either the default the
     // module started at or the last layout that did load, and both are better
-    // than an empty dashboard. loadedScope likewise stays as it was -- a
-    // failed read observed nothing, so it cannot claim to describe this scope.
+    // than an empty dashboard. The observation, though, is dropped: a read
+    // that failed learned nothing, so the withheld list still in the signals
+    // describes a world that may have moved on, and no save may rely on it.
+    observed = null;
   } finally {
     signal?.removeEventListener("abort", onAbort);
     if (inFlight === ac) inFlight = null;
@@ -371,14 +409,19 @@ export async function saveLayout(
   config: DashboardLayoutConfig,
   signal?: AbortSignal,
 ): Promise<LayoutResponse> {
-  // Scope first: until the observations are known to describe this scope, the
-  // withheld list below is a statement about some other dashboard and the
-  // revision is a claim about some other record. Refusing is also the right
-  // answer for a save with no load behind it at all -- revision 0 against an
-  // existing record is a conflict the server would reject anyway, and this
-  // says so without the round trip.
-  if (loadedScope !== scope) {
-    throw new StaleLayoutScopeError(scope, loadedScope);
+  // Identity first: until the store's observations are known to describe this
+  // exact layout, the withheld list below is a statement about some other
+  // dashboard and the revision is a claim about some other record. Refusing is
+  // also the right answer for a save with no completed load behind it --
+  // revision 0 against an existing record is a conflict the server would
+  // reject anyway, and this says so without the round trip.
+  const cluster = selectedCluster.peek();
+  if (
+    observed === null ||
+    observed.scope !== scope ||
+    observed.cluster !== cluster
+  ) {
+    throw new StaleLayoutScopeError(scope, cluster, observed);
   }
 
   const withheld = layoutWithheld.value;
@@ -386,16 +429,30 @@ export async function saveLayout(
     throw new WithheldLayoutError(withheld);
   }
 
-  const saved = await preferencesApi.saveLayout(
-    scope,
-    layoutRevision.value,
-    config,
-    signal,
-  );
+  let saved: LayoutResponse;
+  try {
+    saved = await preferencesApi.saveLayout(
+      scope,
+      layoutRevision.value,
+      config,
+      signal,
+    );
+  } catch (err) {
+    // The request may have committed server-side and failed on the way back --
+    // an abort after the bytes went out, or a truncated success body. The
+    // stored revision would then be one ahead of ours, and a retry reusing
+    // layoutRevision would be refused as a conflict the user did not cause.
+    // Dropping the observation forces a fresh read before any further save.
+    observed = null;
+    throw err;
+  }
 
   // Before the signal writes, so a read that resolves after this point sees a
   // changed counter and discards itself rather than restoring the old revision.
   commitSeq += 1;
+  // The write is now what the store describes, so the observation is restored
+  // to this identity rather than left cleared by any load that raced it.
+  observed = { scope, cluster };
   layout.value = config;
   layoutRevision.value = saved.revision;
   layoutLoaded.value = true;

@@ -215,43 +215,56 @@ test("layoutFromResponse: withheld instanceIds survive to the caller", () => {
 });
 
 test("saveLayout: refuses to write back a layout the server filtered", async () => {
-  // A real load first: the scope guard runs before the withheld guard, so
-  // without one this would refuse for the wrong reason and prove nothing.
-  await withFetch([() => new Response(null, { status: 204 })], () =>
-    loadLayout("overview"),
+  // The withheld list is armed by a REAL filtered response travelling the whole
+  // chain -- server body -> layoutFromResponse -> loadLayout -> the signal --
+  // never by setting the signal by hand. Hand-setting it proves only that
+  // saveLayout reads a signal; it would keep passing if layoutFromResponse
+  // stopped propagating `withheld` at all, which is the one regression that
+  // would silently disarm the only guard standing between a revoked namespace
+  // and a permanent delete.
+  const stored = config([item("a", KNOWN)]);
+  await withFetch(
+    [() => jsonResponse(layoutRecord(6, stored, ["d-prod-diagnostics"]))],
+    () => loadLayout("overview"),
   );
-  const before = { layout: layout.value, revision: layoutRevision.value };
-  layoutWithheld.value = ["b"];
+  expect(layoutWithheld.value).toEqual(["d-prod-diagnostics"]);
 
+  const before = { layout: layout.value, revision: layoutRevision.value };
+
+  let threw: unknown;
+  let requests = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    requests += 1;
+    return Promise.resolve(jsonResponse(layoutRecord(7, stored)));
+  }) as unknown as typeof globalThis.fetch;
   try {
-    // No transport is reachable here and none is needed: the refusal happens
-    // before the request. That is the point — the stored layout still holds
-    // the withheld placements, and a PUT carrying the filtered config would
-    // pass the revision check and delete them permanently.
-    let threw: unknown;
-    await saveLayout("overview", config([item("a", KNOWN)])).catch((e) => {
+    await saveLayout("overview", stored).catch((e) => {
       threw = e;
     });
-    expect(threw).toBeInstanceOf(WithheldLayoutError);
-    // The working copy is untouched: a refused save must not look like an
-    // applied one.
-    expect(layout.value).toBe(before.layout);
-    expect(layoutRevision.value).toBe(before.revision);
   } finally {
-    layoutWithheld.value = [];
-    layout.value = before.layout;
-    layoutRevision.value = before.revision;
+    globalThis.fetch = realFetch;
   }
+
+  expect(threw).toBeInstanceOf(WithheldLayoutError);
+  // The refusal happens before the request: the stored layout still holds the
+  // withheld placements, and a PUT carrying the filtered config would pass the
+  // revision check and delete them permanently.
+  expect(requests).toBe(0);
+  // A refused save must not look like an applied one.
+  expect(layout.value).toBe(before.layout);
+  expect(layoutRevision.value).toBe(before.revision);
 });
 
 test("saveLayout: the refusal names what would have been lost", async () => {
-  await withFetch([() => new Response(null, { status: 204 })], () =>
-    loadLayout("overview"),
+  const stored = config([item("a", KNOWN)]);
+  await withFetch(
+    [() => jsonResponse(layoutRecord(2, stored, ["d-prod-diagnostics"]))],
+    () => loadLayout("overview"),
   );
-  layoutWithheld.value = ["d-prod-diagnostics"];
 
   try {
-    await saveLayout("overview", config([item("a", KNOWN)]));
+    await saveLayout("overview", stored);
     throw new Error("expected saveLayout to reject");
   } catch (err) {
     expect(err).toBeInstanceOf(WithheldLayoutError);
@@ -259,8 +272,6 @@ test("saveLayout: the refusal names what would have been lost", async () => {
       "d-prod-diagnostics",
     ]);
     expect((err as Error).message).toContain("d-prod-diagnostics");
-  } finally {
-    layoutWithheld.value = [];
   }
 });
 
@@ -324,6 +335,12 @@ async function withFetch<T>(
 }
 
 test("loadLayout: an unsaved scope keeps the default and does not re-mount the grid", async () => {
+  // Establish the precondition rather than inherit it. The claim here is that a
+  // 204 over a store ALREADY showing the default is a no-op for the grid's
+  // mount key; if an earlier test left a stored layout in place, the 204 really
+  // does replace it and the bump is correct. `bun test` shares module state
+  // across files, so this test must not depend on what ran before it.
+  layout.value = DEFAULT_OVERVIEW_LAYOUT;
   const before = layoutGeneration.value;
   await withFetch([() => new Response(null, { status: 204 })], () =>
     loadLayout("overview"),
@@ -359,6 +376,10 @@ test("loadLayout: a failed load settles, keeps the layout, and names the reason"
     loadLayout("overview"),
   );
   const kept = layout.value;
+  // Put the flag back to its pre-load value, so the assertion below can
+  // actually fail. Asserting `true` when the successful load above already set
+  // it proves nothing about the catch path, which is the whole subject here.
+  layoutLoaded.value = false;
 
   await withFetch(
     [
@@ -382,6 +403,7 @@ test("loadLayout: a failed load settles, keeps the layout, and names the reason"
   expect(layout.value).toBe(kept);
   expect(layoutRevision.value).toBe(3);
   // Settled, not still-loading: "asked, and could not be told" is an answer.
+  // This is the assertion the reset above makes meaningful.
   expect(layoutLoaded.value).toBe(true);
 });
 
@@ -483,4 +505,117 @@ test("saveLayout: a read still in flight cannot roll the revision back", async (
   // record at 5 -- a 409 the user never caused, over a layout they did save.
   expect(layoutRevision.value).toBe(5);
   expect(layout.value).toBe(next);
+});
+
+test("loadLayout: a failure that lost the race does not report itself", async () => {
+  // The catch path's mirror of the success path's staleness check. Without it,
+  // a read that errors after a save committed tells the user their layout could
+  // not be loaded and disables the editor, seconds after they saved it.
+  const stored = config([item("a", KNOWN)]);
+  await withFetch([() => jsonResponse(layoutRecord(4, stored))], () =>
+    loadLayout("overview"),
+  );
+
+  let releaseRead!: () => void;
+  const readFailed = new Promise<void>((r) => {
+    releaseRead = r;
+  });
+  const next = config([item("a", KNOWN), item("b", ALSO_KNOWN)]);
+
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = ((_input: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return Promise.resolve(jsonResponse(layoutRecord(5, next)));
+      }
+      return readFailed.then(() => Promise.reject(new TypeError("boom")));
+    }) as unknown as typeof globalThis.fetch;
+
+    const pendingRead = loadLayout("overview");
+    await saveLayout("overview", next);
+    releaseRead();
+    await pendingRead;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // The save stands, and nothing tells the user it failed.
+  expect(layoutUnavailable.value).toBe(undefined);
+  expect(layoutRevision.value).toBe(5);
+  expect(layout.value).toBe(next);
+});
+
+test("saveLayout: a request that fails after sending invalidates the observation", async () => {
+  // The server may have committed and failed on the way back. Reusing the old
+  // revision afterwards would be refused as a conflict the user did not cause,
+  // so the next save must be forced through a fresh read instead.
+  const stored = config([item("a", KNOWN)]);
+  await withFetch([() => jsonResponse(layoutRecord(8, stored))], () =>
+    loadLayout("overview"),
+  );
+
+  const realFetch = globalThis.fetch;
+  let threw: unknown;
+  try {
+    globalThis.fetch = (() =>
+      Promise.reject(
+        new TypeError("connection reset"),
+      )) as unknown as typeof globalThis.fetch;
+    await saveLayout("overview", stored).catch((e) => {
+      threw = e;
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(threw).toBeInstanceOf(TypeError);
+
+  // The observation is gone, so a retry is refused rather than replaying a
+  // revision the server may already have moved past.
+  let second: unknown;
+  await saveLayout("overview", stored).catch((e) => {
+    second = e;
+  });
+  expect(second).toBeInstanceOf(StaleLayoutScopeError);
+});
+
+test("saveLayout: a failed read drops the observation the guard depends on", async () => {
+  // A read that failed learned nothing, so the withheld list it left behind
+  // describes a world that may have moved on. That is the case the peer review
+  // named: without this, a failed reload goes on authorizing saves against a
+  // withheld list nobody has re-checked since access was last confirmed.
+  const stored = config([item("a", KNOWN)]);
+  await withFetch([() => jsonResponse(layoutRecord(9, stored))], () =>
+    loadLayout("overview"),
+  );
+
+  await withFetch([() => Promise.reject(new TypeError("boom"))], () =>
+    loadLayout("overview"),
+  );
+
+  let threw: unknown;
+  await saveLayout("overview", stored).catch((e) => {
+    threw = e;
+  });
+  expect(threw).toBeInstanceOf(StaleLayoutScopeError);
+});
+
+test("loadLayout: an already-aborted signal settles nothing", async () => {
+  // Pins the documented contract. No request is made, so there is nothing to
+  // report and layoutLoaded keeps whatever it held. A future caller that aborts
+  // while STAYING mounted has to issue a replacement load; this is the test
+  // that will go red if someone changes that without meaning to.
+  await withFetch([() => new Response(null, { status: 204 })], () =>
+    loadLayout("overview"),
+  );
+  const before = layoutLoaded.value;
+
+  const ac = new AbortController();
+  ac.abort();
+  const { calls } = await withFetch(
+    [() => new Response(null, { status: 204 })],
+    () => loadLayout("overview", ac.signal),
+  );
+
+  expect(calls).toBe(0);
+  expect(layoutLoaded.value).toBe(before);
 });

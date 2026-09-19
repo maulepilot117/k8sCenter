@@ -62,6 +62,7 @@ export const FORBIDDEN_MODULES: ReadonlySet<string> = new Set([
   "src/lib/api.ts",
   "src/lib/auth.ts",
   "src/lib/cluster.ts",
+  "src/lib/dashboard/layout-store.ts",
   "src/lib/namespace.ts",
   "src/lib/pin-store.ts",
   "src/lib/resource-counts.ts",
