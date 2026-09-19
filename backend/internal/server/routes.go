@@ -947,5 +947,11 @@ func (s *Server) registerPreferencesRoutes(ar chi.Router) {
 			pnr.Post("/", h.HandleCreatePin)
 			pnr.Delete("/{id}", h.HandleDeletePin)
 		})
+		// Layouts are a singleton per scope, so there is no POST and no {id}:
+		// the scope is the address. PUT creates or replaces.
+		pr.Route("/layouts", func(lr chi.Router) {
+			lr.Get("/{scope}", h.HandleGetLayout)
+			lr.Put("/{scope}", h.HandleSaveLayout)
+		})
 	})
 }

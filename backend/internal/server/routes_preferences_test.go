@@ -36,6 +36,10 @@ var wantPreferenceRoutes = map[string]bool{
 	"GET /preferences/pins":          true,
 	"POST /preferences/pins":         true,
 	"DELETE /preferences/pins/{id}":  true,
+	// Layouts are addressed by scope, not by id: one layout per scope, so
+	// there is no POST and no collection route.
+	"GET /preferences/layouts/{scope}": true,
+	"PUT /preferences/layouts/{scope}": true,
 }
 
 // preferencesRouter builds a router through the production registration
@@ -89,8 +93,16 @@ func TestPreferencesRoutes_GuardedByRealChain(t *testing.T) {
 
 	for route := range wantPreferenceRoutes {
 		method, path, _ := strings.Cut(route, " ")
-		// Substitute a concrete id for the path parameter.
+		// Substitute concrete values for the path parameters so each request
+		// URL is a real one a client could send.
+		//
+		// The 503 contract does not depend on the scope being served: both
+		// layout handlers call begin() first, and begin() runs requireStore
+		// before layoutScope ever sees the path parameter, so a nil store
+		// answers 503 for an unserved scope too. The substitution keeps the
+		// request realistic; it is not what makes the assertion reachable.
 		path = strings.Replace(path, "{id}", "0f6a0000-0000-4000-8000-000000000001", 1)
+		path = strings.Replace(path, "{scope}", "overview", 1)
 
 		t.Run(route, func(t *testing.T) {
 			// Without the CSRF header, a state-changing method is refused.
@@ -122,6 +134,40 @@ func TestPreferencesRoutes_GuardedByRealChain(t *testing.T) {
 			if rec.Code != http.StatusServiceUnavailable {
 				t.Fatalf("status = %d with a nil store; want 503 so a client can tell "+
 					"'cannot persist' from 'no such record'", rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), "database_unavailable") {
+				t.Errorf("503 body carries no database_unavailable reason: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestPreferencesRoutes_NoDatabaseOutranksAnUnservedScope pins the precondition
+// order the comment in the test above relies on, so that comment cannot quietly
+// become wrong.
+//
+// A scope this server does not serve answers 400, and a deployment with no
+// database answers 503. When both are true the 503 wins, because begin() runs
+// requireStore before the handler ever looks at the path parameter. That order
+// is what keeps "this server cannot persist preferences" distinguishable from
+// every client-side mistake, including a mistyped scope.
+func TestPreferencesRoutes_NoDatabaseOutranksAnUnservedScope(t *testing.T) {
+	user := &auth.User{ID: "routes-test-user", Username: "routes-test-user", Provider: "local"}
+	router := preferencesRouter(t) // built with a nil store
+
+	for _, e := range []struct{ method, path string }{
+		{http.MethodGet, "/preferences/layouts/not-a-served-scope"},
+		{http.MethodPut, "/preferences/layouts/not-a-served-scope"},
+	} {
+		t.Run(e.method+" "+e.path, func(t *testing.T) {
+			req := httptest.NewRequest(e.method, e.path, strings.NewReader(`{}`))
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+			req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d; want 503 -- the missing database outranks the unserved scope", rec.Code)
 			}
 			if !strings.Contains(rec.Body.String(), "database_unavailable") {
 				t.Errorf("503 body carries no database_unavailable reason: %s", rec.Body.String())

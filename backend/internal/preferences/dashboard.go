@@ -102,11 +102,44 @@ var allowedWidgets = map[string]widgetSpec{
 	"active-alerts":        {MinW: 2, MinH: 3},
 }
 
-// MaxDashboardLayoutsPerUser is the per-user, per-cluster ceiling the store
-// enforces inside its INSERT. One layout per scope and the scope set is
-// closed, so the ceiling IS the size of that set -- deriving it means adding a
-// scope cannot leave a stale constant behind that refuses the new layout.
+// MaxDashboardLayoutsPerUser is the per-user, per-cluster ceiling. One layout
+// per scope and the scope set is closed, so the ceiling IS the size of that
+// set -- deriving it means adding a scope cannot leave a stale constant behind
+// that refuses the new layout.
+//
+// "Per cluster" is load-bearing and is the caller's job to honour: the handler
+// saves through PreferenceStore.CreateInCluster, whose count is taken inside
+// one cluster. Passing this number to plain Create instead would count every
+// cluster's rows against a ceiling sized for one, and the user's first layout
+// anywhere would refuse their first layout everywhere else.
 var MaxDashboardLayoutsPerUser = len(allowedDashboardScopes)
+
+// paramKeyNamespace is the param key whose value names a Kubernetes namespace.
+//
+// It is a single well-known key rather than a per-widget declaration because
+// the read path has to recognise a namespace without knowing which widget it
+// came from: a parameter naming a namespace is re-authorized on every read
+// (spec 7), and a widget that spelled the key differently would quietly opt
+// out of that. A widget declaring this key in its spec is declaring that its
+// value is a namespace.
+const paramKeyNamespace = "namespace"
+
+// SaveLayoutRequest is the wire shape for PUT /preferences/layouts/{scope}.
+//
+// It carries no name and no scope, for the reason CreateRequest carries no
+// ownerId: a request type that cannot express a server-derived value is a
+// stronger guarantee than a handler that remembers to ignore one. The scope is
+// the path, the name is the scope, the owner is the session and the cluster is
+// the middleware's. The decoder rejects unknown fields, so a client that sends
+// any of them is told which one rather than having it silently dropped.
+//
+// Revision drives the optimistic-concurrency check. Zero means "I believe no
+// layout exists here", which is a claim like any other and is refused when it
+// turns out to be wrong.
+type SaveLayoutRequest struct {
+	Revision int64           `json:"revision"`
+	Config   json.RawMessage `json:"config"`
+}
 
 // DashboardLayoutItem is one widget placement inside a stored layout.
 //

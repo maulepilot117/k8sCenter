@@ -179,7 +179,40 @@ func (s *PreferenceStore) Get(ctx context.Context, ownerID string, id uuid.UUID)
 	return &rec, nil
 }
 
-// Create inserts a new record for rec.OwnerID and returns the stored row.
+// GetByDedupKey returns the one record an owner holds of a kind under a dedup
+// key in a cluster, or ErrPreferenceNotFound.
+//
+// This is how a record addressed by its own identity rather than by an id is
+// read — a dashboard layout's address is its scope, so the client never has to
+// learn an id to fetch or replace one. idx_user_preferences_dedup covers
+// exactly these four columns and is unique over them, so at most one row can
+// match; a second row under one key is not a case this has to resolve because
+// the database will not hold one.
+//
+// Every component is part of the key for the same reason every other statement
+// here carries owner_id: a record belonging to another owner, another cluster
+// or another kind must be indistinguishable from one that does not exist.
+func (s *PreferenceStore) GetByDedupKey(ctx context.Context, ownerID string,
+	kind PreferenceKind, clusterID, dedupKey string,
+) (*PreferenceRecord, error) {
+	rec, err := scanPreference(s.pool.QueryRow(ctx, `
+		SELECT `+preferenceColumns+`
+		FROM user_preferences
+		WHERE owner_id = $1 AND kind = $2 AND cluster_id = $3 AND dedup_key = $4`,
+		ownerID, kind, clusterID, dedupKey))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrPreferenceNotFound
+		}
+		return nil, fmt.Errorf("get user_preference by dedup key: %w", err)
+	}
+	return &rec, nil
+}
+
+// Create inserts a new record for rec.OwnerID and returns the stored row. The
+// ceiling counts every record of the kind the owner holds, across all clusters
+// — the shape saved views and pins want, because both are listed that way and
+// both carry a ceiling generous enough that the cluster is irrelevant to it.
 //
 // The per-user ceiling is enforced by counting the owner's existing records
 // inside the INSERT, under an advisory lock held for the transaction. The lock
@@ -189,38 +222,79 @@ func (s *PreferenceStore) Get(ctx context.Context, ownerID string, id uuid.UUID)
 // the owner ends up over the ceiling. UserStore.CreateFirstUser closes the
 // same INSERT-guarded-by-a-subquery hole the same way.
 //
-// The lock is keyed on owner and kind, so it only ever serializes one owner's
-// own creates of one kind; a hash collision between two unrelated keys costs a
-// brief wait and nothing else. It is released when the transaction ends.
+// The lock is keyed on exactly what the count covers, so it only ever
+// serializes one owner's own creates of one kind; a hash collision between two
+// unrelated keys costs a brief wait and nothing else. It is released when the
+// transaction ends.
 //
-// A row filtered out by the count surfaces as ErrPreferenceLimit; a dedup-key
-// collision as ErrPreferenceDuplicate.
+// A dedup-key collision surfaces as ErrPreferenceDuplicate whether or not the
+// owner is also at the ceiling, because it is the fact that blocks the write;
+// a filtered row with no collision surfaces as ErrPreferenceLimit.
 func (s *PreferenceStore) Create(ctx context.Context, rec PreferenceRecord, maxPerKind int) (*PreferenceRecord, error) {
+	return s.create(ctx, rec, maxPerKind, false)
+}
+
+// CreateInCluster is Create with the ceiling counted inside rec.ClusterID
+// rather than across every cluster.
+//
+// Dashboard layouts need this and saved views do not. A layout is a singleton
+// per (owner, cluster, scope), so its ceiling is the number of scopes — a
+// number that is exactly right within one cluster and catastrophically wrong
+// across them: counted globally, one saved layout anywhere would refuse the
+// user's first layout on every other cluster they manage. Narrowing the count
+// is what keeps that derived ceiling correct rather than coincidental.
+func (s *PreferenceStore) CreateInCluster(ctx context.Context, rec PreferenceRecord, maxPerKindPerCluster int) (*PreferenceRecord, error) {
+	return s.create(ctx, rec, maxPerKindPerCluster, true)
+}
+
+// create is the shared body of the two entry points. perCluster narrows both
+// the count and the advisory lock to rec.ClusterID; the two must move
+// together, or the tightest ceiling in the table is the one left unserialized.
+func (s *PreferenceStore) create(ctx context.Context, rec PreferenceRecord, maxPerKind int, perCluster bool) (*PreferenceRecord, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin create user_preference: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
+	lockKey := rec.OwnerID + ":" + string(rec.Kind)
+	if perCluster {
+		lockKey += ":" + rec.ClusterID
+	}
+
 	if _, err := tx.Exec(ctx,
-		`SELECT pg_advisory_xact_lock(hashtext($1))`,
-		rec.OwnerID+":"+string(rec.Kind)); err != nil {
+		`SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
 		return nil, fmt.Errorf("lock user_preference quota: %w", err)
 	}
 
 	created, err := scanPreference(tx.QueryRow(ctx, `
 		INSERT INTO user_preferences (owner_id, kind, name, cluster_id, dedup_key, schema_version, config)
 		SELECT $1, $2, $3, $4, $5, $6, $7
-		WHERE (SELECT count(*) FROM user_preferences WHERE owner_id = $1 AND kind = $2) < $8
+		WHERE (SELECT count(*) FROM user_preferences
+		        WHERE owner_id = $1 AND kind = $2
+		          AND (NOT $9::boolean OR cluster_id = $4)) < $8
 		RETURNING `+preferenceColumns,
 		rec.OwnerID, rec.Kind, rec.Name, rec.ClusterID, rec.DedupKey,
-		rec.SchemaVersion, configOrEmpty(rec.Config), maxPerKind))
+		rec.SchemaVersion, configOrEmpty(rec.Config), maxPerKind, perCluster))
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			// The WHERE clause filtered the row out: the owner is at the
-			// ceiling for this kind.
-			return nil, ErrPreferenceLimit
+			// The WHERE clause filtered the row out, which is ambiguous: the
+			// owner is at the ceiling, or a row already exists under this
+			// dedup key and would have collided with the unique index had it
+			// survived the filter. Both can be true at once, and for a kind
+			// whose ceiling equals its key space -- a dashboard layout, where
+			// the ceiling is the number of scopes -- re-creating an existing
+			// key ALWAYS exhausts the count first, so the collision would
+			// never be reported at all.
+			//
+			// Resolved here rather than by the caller, and inside this
+			// transaction, because this is where the answer is authoritative:
+			// the advisory lock is still held, so no concurrent create can
+			// change it between the INSERT and this read. A caller probing
+			// afterwards races that window and has to treat its own failure as
+			// an answer.
+			return nil, classifyFilteredInsert(ctx, tx, rec)
 		case isUniqueViolation(err):
 			return nil, ErrPreferenceDuplicate
 		default:
@@ -232,6 +306,37 @@ func (s *PreferenceStore) Create(ctx context.Context, rec PreferenceRecord, maxP
 		return nil, fmt.Errorf("commit create user_preference: %w", err)
 	}
 	return &created, nil
+}
+
+// classifyFilteredInsert decides which sentinel a count-filtered INSERT owes
+// the caller: a collision under this dedup key, or a genuine ceiling.
+//
+// It reads through tx, so it runs under the same advisory lock the INSERT did
+// and sees the same committed state. The four columns are exactly those of
+// idx_user_preferences_dedup, so "a row exists here" means precisely "the
+// INSERT would have violated that index".
+//
+// A collision outranks the ceiling because it is the blocking fact: the row
+// could not be inserted at any ceiling, and "you have reached the maximum"
+// would send the owner to delete something that would not help. An owner who
+// is at the ceiling AND sent a duplicate key is told about the duplicate, and
+// discovers the ceiling on their next distinct key.
+func classifyFilteredInsert(ctx context.Context, tx pgx.Tx, rec PreferenceRecord) error {
+	var exists int
+	err := tx.QueryRow(ctx, `
+		SELECT 1 FROM user_preferences
+		WHERE owner_id = $1 AND kind = $2 AND cluster_id = $3 AND dedup_key = $4`,
+		rec.OwnerID, rec.Kind, rec.ClusterID, rec.DedupKey).Scan(&exists)
+	switch {
+	case err == nil:
+		return ErrPreferenceDuplicate
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrPreferenceLimit
+	default:
+		// The classification itself failed, so neither sentinel is known to be
+		// true. Saying either one would be a guess presented as a diagnosis.
+		return fmt.Errorf("classify filtered user_preference insert: %w", err)
+	}
 }
 
 // Update rewrites a record's mutable fields if it still carries
