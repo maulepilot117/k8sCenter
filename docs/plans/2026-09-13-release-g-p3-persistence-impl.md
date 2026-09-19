@@ -713,6 +713,171 @@ the write path is not where it belongs; this line exists so D13 inherits the
 obligation rather than the gap. The same applies to retired widget ids, which
 D14 drops quietly on read while the server keeps accepting them on write.
 
+**AMENDED 2026-09-19 — what D13 shipped.** Written by walking this section's
+own list, per the lesson recorded on D12, not by reading the diff. Every step
+above is discharged; the divergences are below, then what D14 inherits.
+
+**Step 2 diverges twice from "follows `HandleCreateView` exactly".**
+
+1. **`CreateInCluster`, not `Create`.** The instruction to "pass a ceiling of
+   `len(allowedDashboardScopes)` into `Create`" is wrong, and wrong in a way
+   that only a multi-cluster test can see: `Create` counts the owner's records
+   of a kind **across every cluster**, which is right for saved views (generous
+   ceiling, listed across clusters) and catastrophic for a layout, whose
+   ceiling is exactly the number of scopes. Counted globally, the user's first
+   saved layout anywhere refuses their first layout on every other cluster they
+   manage. The store grew a second entry point whose count and advisory lock
+   are both narrowed to `rec.ClusterID`; `MaxDashboardLayoutsPerUser`'s doc now
+   says "per cluster" is the caller's obligation and names the method that
+   honours it. D13's own `IsClusterScoped` test is what catches the wrong one.
+
+2. **No `validName` call.** `HandleCreateView` validates a user-supplied label;
+   a layout's name IS its scope, which came from the closed allowlist two lines
+   earlier. Re-validating a value the allowlist already produced would be
+   ceremony.
+
+**Two defects the shape in this section would have shipped**, both found by
+running the tests it prescribes rather than by reading:
+
+- **`revision: 0` over an existing layout reported `limit_reached`.** With the
+  ceiling equal to the number of scopes, a second create of the SAME scope
+  exhausts the quota *before* it reaches the unique index, so the store answers
+  `ErrPreferenceLimit` and never `ErrPreferenceDuplicate`. The plan's "create
+  when absent and update when present" was left to the store to infer from an
+  error; it cannot. `HandleSaveLayout` now reads the scope first and decides
+  which write to attempt from what is stored. **Superseded by the review fix
+  below:** the limit-versus-collision question is no longer answered by the
+  handler at all.
+- **A revision claim for a scope with no layout would have been a create.** It
+  is a conflict: the client believes in a layout the server has no record of,
+  and honouring it resurrects one at a revision the client made up.
+
+**Three guards this section did not ask for, each because a test could not
+otherwise reach the rule:**
+
+- An unserved scope answers **400**, not 404, so it stays distinguishable from
+  the 204 a served-but-unsaved scope gives — the whole reason Step 1 chose 204.
+- The path's scope and `config.scope` must agree, and the path wins. Only one
+  scope ships, so `withTestScope` (a sibling of D12's `withTestWidget`) is what
+  makes the guard reachable at all.
+- `maxDashboardLayouts`' own ceiling is exercised through a stand-in scope,
+  because with one scope a real quota refusal cannot otherwise be produced.
+
+**Read-time re-authorization is discharged** as the 2026-09-19 note requires:
+`CanAccessGroupResource(verb=list, group="", resource=pods, ns)`, never
+`CanAccess`. A mutation swapping one for the other turns
+`TestHandler_GetLayout_ReauthorizesNamespaces` red, which is the point of the
+note — under a predicate fake, `CanAccess` short-circuits to allow, so the
+weaker call would have passed its own test while authorizing nothing.
+Unauthorized placements are **dropped from the response and named in it**; the
+stored row is never rewritten by a read, because access can come back and the
+layout has to come back with it. With no `AccessChecker` wired the read
+withholds every namespaced placement: "could not check" is not "allowed".
+
+**Eight files, not three** (G2 again, and for the reason D12 predicted).
+`allEndpoints()`, `wantPreferenceRoutes`, the two store methods and main.go's
+wiring each carry half of a guarantee: a route absent from the endpoint table
+has no 503 coverage and no CSRF coverage, and a checker nothing constructs
+re-authorizes nothing. Splitting them ships the guard without the thing it
+guards.
+
+**One mutation survives, deliberately.** Removing the `revision == 0` branch on
+the "layout exists" path changes no response: handing 0 to the UPDATE answers
+409 anyway, because no stored row can carry it (`revision >= 1` is a CHECK in
+000018). It stays, with a comment saying exactly that, because the rule is part
+of the endpoint's contract and belongs where it is read rather than inferred
+from a migration. **Generalize this:** a guard that cannot go red is either
+decoration or belt-and-braces over an enforced rule, and the difference is
+worth stating in the code rather than leaving for the next reader to rediscover.
+
+**What D14 inherits — three corrections to its own text, below:**
+
+1. **The PUT body is `{revision, config}`.** It carries **no `name`**. The
+   snippet in Step 1 of D14 sends `{name: scope, revision, config}`, which the
+   decoder refuses with a 400 naming the field: the scope is the path, and the
+   record's name is derived from it. `SaveLayoutRequest` is the Go shape.
+2. **GET returns `LayoutResponse`, not a bare record** — the stored record plus
+   `withheld?: string[]`, the instanceIds the server removed because the caller
+   can no longer see their namespace. `dropUnknownWidgets` handles the retired
+   ids; `withheld` is the other half, and a client that ignores it shows a
+   dashboard quietly missing widgets and then makes the loss permanent on the
+   next save. **D14 must not write back a layout it received with a non-empty
+   `withheld`** without saying so.
+3. **A create answers 201 and a replace answers 200**, both with the record in
+   `data`.
+
+D14's verification commands are also stale: `deno test lib/` and `deno task
+check` predate the Bun/Astro migration. The repo-canonical checks are
+`bun test` and `bun run check`.
+
+**AMENDED again 2026-09-19, after `/ce:code-review`.** Nine local reviewers plus
+an independent cross-model pass on Codex (`independence_verified: true`).
+Verdict **Ready with fixes** — no P0, no P1. Six primary findings; the validator
+confirmed two, rejected three, and one took the cross-model corroboration
+shortcut. All three actionable findings are fixed here rather than deferred.
+
+**The one real defect, and why the fix moved:** `createLayout` answered the
+limit-versus-collision question with a second read after the INSERT had already
+failed (`layoutExists`), and that helper returned `err == nil` — so any error
+from its own query, a connection blip or a cancelled context, read as
+"confirmed: not a race" and the loser of a concurrent save was told to free up
+quota. Both the `reliability` reviewer and the Codex peer landed on it
+independently, which is what promoted it to anchor 100.
+
+The fix is not a better probe. **The ambiguity is now resolved inside the
+store's own transaction, while the advisory lock is still held**
+(`classifyFilteredInsert`), and the handler-side probe is deleted. A
+count-filtered INSERT asks, under that lock, whether a row already exists under
+the same four columns the unique index covers, and answers
+`ErrPreferenceDuplicate` if one does. Nothing races the window, because there is
+no window: the caller cannot observe a state the lock holder has not settled.
+
+**This changes `PreferenceStore.Create`'s contract for all three kinds**, and
+deliberately: a dedup-key collision now outranks the ceiling whenever both are
+true. A saved view created at the cap under an existing name reports
+`duplicate_name` rather than `limit_reached`. That is the blocking fact — the
+row could not be inserted at any ceiling — and it is what the owner can act on.
+The generalization worth keeping: **when a guard fires before the constraint
+that would also have refused the write, the guard's error names only itself,
+and a caller asking afterwards is asking a question the answer has already
+moved past.**
+
+**The other two findings.** The race branch had no test — now
+`TestHandler_SaveLayout_ConcurrentFirstSaves_AreConflicts` races eight tabs at
+one unarranged scope and requires exactly one 201 with every loser a
+`revision_conflict`, never `limit_reached`. And a comment in
+`routes_preferences_test.go` stated the handlers' precondition order backwards;
+rather than only rewording it, the true order is now pinned by
+`TestPreferencesRoutes_NoDatabaseOutranksAnUnservedScope`, so the claim cannot
+quietly become wrong again. **A comment asserting an ordering is a claim; give
+it a test or do not make it.**
+
+**Three findings were rejected on inspected evidence**, recorded so they are not
+re-raised: a SAR error 500s the whole read instead of withholding one item, and
+the PUT response skips the read path's withholding — both rest on a path no
+shipped widget can reach, because every `allowedWidgets` entry declares no
+params and the validator refuses params on such a widget. The third, that the
+layout routes are hand-duplicated across four files, is already machine-guarded
+by the two-directional `chi.Walk` test in `routes_preferences_test.go`.
+
+**Carried forward as residual risks, not fixed here** (the full list is in the
+run's report; these are the ones a later unit inherits):
+
+- **D14 must not write back a layout it received with a non-empty `withheld`.**
+  The read returns the filtered config with the record's *unchanged* revision,
+  so a naive read-modify-write passes the concurrency check and deletes the
+  withheld placements permanently. The server enforces nothing; this is the
+  client's obligation and it is now the second time this plan records it.
+- **`withheld` is `omitempty`**, so an unfiltered response omits the key. D14's
+  TypeScript type declares it optional or every ordinary load throws.
+- **The namespace convention is a comment, not a constraint.** Re-authorization
+  recognises a namespace only by the param key being spelled exactly
+  `namespace`. Before the first parameterized widget ships, a pinned test beside
+  `TestContractParity` should fail on an open-valued param under any other key.
+- **The re-authorization fan-out is serial and unbounded** — one SAR per
+  namespaced placement, up to 40, no dedup by namespace. Dedupe and bound it in
+  the same unit that ships that first widget.
+
 ---
 
 ### Task D14: Client store

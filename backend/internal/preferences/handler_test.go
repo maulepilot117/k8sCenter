@@ -29,6 +29,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/pkg/api"
@@ -443,11 +444,17 @@ type endpoint struct {
 }
 
 // allEndpoints is every route registerPreferencesRoutes wires.
+//
+// It drives the G5 503 guard and the CSRF guard, so the table IS the coverage:
+// a route missing from here is a route with neither.
 func allEndpoints() []endpoint {
 	const viewBody = `{"name":"v","config":{"schemaVersion":1,"resourceKind":"pods","namespace":"","search":"","statusFilter":"all","sortKey":"name","sortDir":"asc"}}`
 	const pinBody = `{"name":"p","config":{"schemaVersion":1,"resourceKind":"deployments","group":"","version":"","namespace":"prod","name":"api","uid":"","displayKind":"Deployment"}}`
+	const layoutBody = `{"revision":0,"config":{"schemaVersion":1,"scope":"overview","columns":12,"items":[]}}`
 	id := uuid.New().String()
 	return []endpoint{
+		{http.MethodGet, "/preferences/layouts/overview", ""},
+		{http.MethodPut, "/preferences/layouts/overview", layoutBody},
 		{http.MethodGet, "/preferences/views", ""},
 		{http.MethodPost, "/preferences/views", viewBody},
 		{http.MethodPut, "/preferences/views/" + id, `{"name":"v","revision":1,"config":{"schemaVersion":1,"resourceKind":"pods","namespace":"","search":"","statusFilter":"all","sortKey":"name","sortDir":"asc"}}`},
@@ -539,6 +546,10 @@ func prefRouter(h *Handler) chi.Router {
 			pnr.Get("/", h.HandleListPins)
 			pnr.Post("/", h.HandleCreatePin)
 			pnr.Delete("/{id}", h.HandleDeletePin)
+		})
+		pr.Route("/layouts", func(lr chi.Router) {
+			lr.Get("/{scope}", h.HandleGetLayout)
+			lr.Put("/{scope}", h.HandleSaveLayout)
 		})
 	})
 	return r
@@ -1154,4 +1165,551 @@ func TestHandler_CrossUser_ListDoesNotLeak(t *testing.T) {
 	if out.Metadata == nil || out.Metadata.Total != 1 {
 		t.Errorf("metadata.total = %+v; want 1", out.Metadata)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard layouts (Release G, D13)
+// ---------------------------------------------------------------------------
+
+// layoutPath addresses the one scope this release serves.
+const layoutPath = "/preferences/layouts/overview"
+
+// putLayout issues one save. revision 0 means "I believe no layout exists".
+func putLayout(t *testing.T, h *Handler, u *auth.User, clusterID, scope string,
+	revision int64, config json.RawMessage,
+) *httptest.ResponseRecorder {
+	t.Helper()
+
+	return do(t, h, u, clusterID, endpoint{
+		http.MethodPut,
+		"/preferences/layouts/" + scope,
+		fmt.Sprintf(`{"revision":%d,"config":%s}`, revision, config),
+	})
+}
+
+// layoutOf decodes the record a layout endpoint returned.
+func layoutOf(t *testing.T, rec *httptest.ResponseRecorder) LayoutResponse {
+	t.Helper()
+
+	var out struct {
+		Data LayoutResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decoding layout response (%q): %v", rec.Body.String(), err)
+	}
+	return out.Data
+}
+
+// storedLayouts reads the caller's layouts straight from the store, so a test
+// can tell "the handler filtered the response" from "the handler rewrote the
+// row".
+func storedLayouts(t *testing.T, h *Handler, u *auth.User) []store.PreferenceRecord {
+	t.Helper()
+
+	got, err := h.Store.List(t.Context(), u.ID, store.PreferenceKindDashboardLayout)
+	if err != nil {
+		t.Fatalf("listing stored layouts: %v", err)
+	}
+	return got
+}
+
+// TestHandler_GetLayout_Unsaved_Returns204 pins the shape of "you have not
+// customized this dashboard". It is a normal state, not a miss: 404 would be
+// indistinguishable from a scope this server does not serve, and would send a
+// client looking for a bug instead of rendering the default layout.
+func TestHandler_GetLayout_Unsaved_Returns204(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	rec := do(t, h, user, "local", endpoint{http.MethodGet, layoutPath, ""})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s; want 204", rec.Code, rec.Body.String())
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("204 carried a body: %s", rec.Body.String())
+	}
+}
+
+// TestHandler_SaveLayout_CreatesThenUpdates is the whole point of PUT: the
+// scope is the address, so a client never has to know whether a layout exists
+// before saving one.
+func TestHandler_SaveLayout_CreatesThenUpdates(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	created := putLayout(t, h, user, "local", "overview", 0, layoutJSON(t, nil))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("first save: status = %d, body = %s; want 201", created.Code, created.Body.String())
+	}
+	first := layoutOf(t, created)
+	if first.Revision != 1 {
+		t.Errorf("revision = %d on create; want 1", first.Revision)
+	}
+	if first.Name != "overview" {
+		t.Errorf("name = %q; want the scope, which is the record's identity", first.Name)
+	}
+
+	updated := putLayout(t, h, user, "local", "overview", first.Revision,
+		layoutWithItems(t, item(nil)))
+	if updated.Code != http.StatusOK {
+		t.Fatalf("second save: status = %d, body = %s; want 200", updated.Code, updated.Body.String())
+	}
+	second := layoutOf(t, updated)
+	if second.ID != first.ID {
+		t.Errorf("second save produced record %s; want the first one, %s", second.ID, first.ID)
+	}
+	if second.Revision != first.Revision+1 {
+		t.Errorf("revision = %d after update; want %d", second.Revision, first.Revision+1)
+	}
+	if rows := storedLayouts(t, h, user); len(rows) != 1 {
+		t.Errorf("owner holds %d layouts; want 1 -- PUT replaces in place", len(rows))
+	}
+
+	// The second save's items really landed.
+	got := do(t, h, user, "local", endpoint{http.MethodGet, layoutPath, ""})
+	if got.Code != http.StatusOK {
+		t.Fatalf("read back: status = %d; want 200", got.Code)
+	}
+	if body := string(layoutOf(t, got).Config); !strings.Contains(body, `"cluster-health"`) {
+		t.Errorf("stored config = %s; want the widget the second save placed", body)
+	}
+}
+
+// TestHandler_SaveLayout_StaleRevision_Returns409 covers both ways a client's
+// belief about the stored revision can be wrong. Neither may overwrite.
+func TestHandler_SaveLayout_StaleRevision_Returns409(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	created := layoutOf(t, putLayout(t, h, user, "local", "overview", 0, layoutJSON(t, nil)))
+
+	t.Run("a revision that has moved on", func(t *testing.T) {
+		if rec := putLayout(t, h, user, "local", "overview", created.Revision,
+			layoutWithItems(t, item(nil))); rec.Code != http.StatusOK {
+			t.Fatalf("the fresh revision was refused: %d %s", rec.Code, rec.Body.String())
+		}
+		rec := putLayout(t, h, user, "local", "overview", created.Revision, layoutJSON(t, nil))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d; want 409", rec.Code)
+		}
+		if resp := decodeEnvelope(t, rec); resp.Error == nil || resp.Error.Reason != "revision_conflict" {
+			t.Fatalf("reason = %+v; want revision_conflict", resp.Error)
+		}
+	})
+
+	t.Run("a revision for a layout that does not exist", func(t *testing.T) {
+		// Same user, a cluster they have never arranged. Treating this as a
+		// create would resurrect, under a revision the client made up, a
+		// layout the server has no record of.
+		rec := putLayout(t, h, user, "never-arranged", "overview", 7, layoutJSON(t, nil))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, body = %s; want 409", rec.Code, rec.Body.String())
+		}
+		if resp := decodeEnvelope(t, rec); resp.Error == nil || resp.Error.Reason != "revision_conflict" {
+			t.Fatalf("reason = %+v; want revision_conflict", resp.Error)
+		}
+	})
+
+	t.Run("revision 0 when a layout already exists", func(t *testing.T) {
+		// "I believe none exists" is also a revision claim, and it is also
+		// wrong here. Answering anything but a conflict would let a second
+		// tab silently discard the first one's work.
+		rec := putLayout(t, h, user, "local", "overview", 0, layoutJSON(t, nil))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, body = %s; want 409", rec.Code, rec.Body.String())
+		}
+		if resp := decodeEnvelope(t, rec); resp.Error == nil || resp.Error.Reason != "revision_conflict" {
+			t.Fatalf("reason = %+v; want revision_conflict", resp.Error)
+		}
+	})
+}
+
+// TestHandler_SaveLayout_UnknownWidget_Returns400 proves the write path stays
+// the strict direction: an id this server does not know is a client bug, and
+// is named rather than dropped (spec D-7).
+func TestHandler_SaveLayout_UnknownWidget_Returns400(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	rec := putLayout(t, h, user, "local", "overview", 0, layoutWithItems(t,
+		item(map[string]any{"id": "widget-from-the-future"})))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400", rec.Code)
+	}
+	resp := decodeEnvelope(t, rec)
+	if resp.Error == nil || resp.Error.Reason != "unknown_widget_id" {
+		t.Fatalf("reason = %+v; want unknown_widget_id", resp.Error)
+	}
+	if !strings.Contains(resp.Error.Message, "widget-from-the-future") {
+		t.Errorf("message %q does not name the rejected id", resp.Error.Message)
+	}
+}
+
+// TestHandler_SaveLayout_OtherOwnersLayoutIsInvisible is the owner-isolation
+// guard for an endpoint addressed by scope rather than by id: every caller
+// asks for the same URL, so only the owner filter separates them.
+func TestHandler_SaveLayout_OtherOwnersLayoutIsInvisible(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	alice, bob := testUser(t), testUser(t)
+
+	putLayout(t, h, alice, "local", "overview", 0, layoutWithItems(t, item(nil)))
+
+	// Bob asks for the same URL on the same cluster and has no layout there.
+	if rec := do(t, h, bob, "local", endpoint{http.MethodGet, layoutPath, ""}); rec.Code != http.StatusNoContent {
+		t.Fatalf("bob's read of alice's scope = %d %s; want 204", rec.Code, rec.Body.String())
+	}
+	// And his own first save is a create, not a conflict with hers.
+	if rec := putLayout(t, h, bob, "local", "overview", 0, layoutJSON(t, nil)); rec.Code != http.StatusCreated {
+		t.Fatalf("bob's first save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+	if rows := storedLayouts(t, h, alice); len(rows) != 1 ||
+		!strings.Contains(string(rows[0].Config), `"cluster-health"`) {
+		t.Errorf("alice's layout changed under bob's save: %+v", rows)
+	}
+}
+
+// TestHandler_SaveLayout_IsClusterScoped proves D-3 holds end to end: the same
+// user on two clusters keeps two independent layouts.
+//
+// This is also the guard on the quota. A layout's ceiling is the number of
+// scopes, which is correct only when the count is taken inside one cluster --
+// counted across clusters, the first save anywhere would make every other
+// cluster's first save answer limit_reached.
+func TestHandler_SaveLayout_IsClusterScoped(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	east := putLayout(t, h, user, "prod-east", "overview", 0, layoutWithItems(t, item(nil)))
+	if east.Code != http.StatusCreated {
+		t.Fatalf("prod-east save = %d %s; want 201", east.Code, east.Body.String())
+	}
+	west := putLayout(t, h, user, "prod-west", "overview", 0, layoutJSON(t, nil))
+	if west.Code != http.StatusCreated {
+		t.Fatalf("prod-west save = %d %s; want 201 -- the ceiling counts inside a cluster",
+			west.Code, west.Body.String())
+	}
+	if layoutOf(t, east).ID == layoutOf(t, west).ID {
+		t.Fatal("both clusters share one layout record")
+	}
+
+	// Neither cluster's read sees the other's arrangement.
+	eastRead := do(t, h, user, "prod-east", endpoint{http.MethodGet, layoutPath, ""})
+	if !strings.Contains(string(layoutOf(t, eastRead).Config), `"cluster-health"`) {
+		t.Errorf("prod-east read = %s; want its own arrangement", eastRead.Body.String())
+	}
+	westRead := do(t, h, user, "prod-west", endpoint{http.MethodGet, layoutPath, ""})
+	if strings.Contains(string(layoutOf(t, westRead).Config), `"cluster-health"`) {
+		t.Errorf("prod-west read = %s; want its own empty arrangement", westRead.Body.String())
+	}
+}
+
+// TestHandler_SaveLayout_RejectsServerDerivedFields extends the U2 guard to
+// the layout body. Owner and cluster come from the session and the middleware;
+// the scope comes from the path, and the record's name is the scope. A body
+// that tries to choose any of them is refused with the field named rather than
+// having it silently dropped.
+func TestHandler_SaveLayout_RejectsServerDerivedFields(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	for _, field := range []string{
+		`"ownerId":"someone-else"`,
+		`"clusterId":"other-cluster"`,
+		`"name":"my layout"`,
+		`"scope":"networking"`,
+	} {
+		t.Run(field, func(t *testing.T) {
+			body := `{"revision":0,` + field + `,"config":` + string(layoutJSON(t, nil)) + `}`
+			rec := do(t, h, user, "local", endpoint{http.MethodPut, layoutPath, body})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d; want 400 for a body carrying a server-derived field", rec.Code)
+			}
+		})
+	}
+}
+
+// TestHandler_Layout_UnknownScope_Returns400 keeps a scope this server does not
+// serve distinguishable from one that is simply unsaved. A 404 on either route
+// would collapse the two, which is exactly what the 204 contract avoids.
+func TestHandler_Layout_UnknownScope_Returns400(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	for _, e := range []endpoint{
+		{http.MethodGet, "/preferences/layouts/networking", ""},
+		{http.MethodPut, "/preferences/layouts/networking",
+			`{"revision":0,"config":` + string(layoutJSON(t, nil)) + `}`},
+		{http.MethodGet, "/preferences/layouts/..%2Fviews", ""},
+	} {
+		t.Run(e.method+" "+e.path, func(t *testing.T) {
+			rec := do(t, h, user, "local", e)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s; want 400", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestHandler_SaveLayout_PathScopeWins pins the one place two scopes can
+// disagree: the path names the record, the config carries a scope of its own,
+// and a layout filed under one while claiming to be the other would come back
+// as the wrong dashboard on every later read.
+//
+// Only one scope ships today, so the stand-in is what makes the guard
+// reachable at all -- without it the config's own scope allowlist refuses the
+// mismatched value first and this check is never consulted.
+func TestHandler_SaveLayout_PathScopeWins(t *testing.T) {
+	defer withTestScope(t, "test-scope")()
+
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	rec := do(t, h, user, "local", endpoint{
+		http.MethodPut, "/preferences/layouts/test-scope",
+		`{"revision":0,"config":` + string(layoutJSON(t, nil)) + `}`, // the config says "overview"
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s; want 400", rec.Code, rec.Body.String())
+	}
+	if resp := decodeEnvelope(t, rec); resp.Error == nil ||
+		!strings.Contains(resp.Error.Message, "test-scope") {
+		t.Errorf("message %+v does not name the scope the path asked for", resp.Error)
+	}
+}
+
+// TestHandler_SaveLayout_ConcurrentFirstSaves_AreConflicts is the guard on the
+// one branch nothing else reaches: several tabs saving a dashboard nobody has
+// arranged yet.
+//
+// Every racer reads the scope, finds nothing, and tries to create. One wins.
+// Because a layout's ceiling is the number of scopes, each loser's INSERT is
+// filtered by the quota count BEFORE it reaches the unique index, so the store
+// has to tell "somebody else created this scope" apart from "you have too many
+// layouts" -- and only the first is true. A loser told to free up quota has
+// nothing to delete and no way to act; reloading and saving again is the whole
+// remedy, which is what revision_conflict says.
+//
+// Assertions run on the test goroutine: t.Fatalf from a racer would be a bug in
+// the test, so the racers only collect recorders.
+func TestHandler_SaveLayout_ConcurrentFirstSaves_AreConflicts(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	const racers = 8
+	body := layoutJSON(t, nil)
+
+	var (
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+		results = make([]*httptest.ResponseRecorder, racers)
+	)
+	for i := range racers {
+		wg.Go(func() {
+			<-start // release them together
+			results[i] = putLayout(t, h, user, "local", "overview", 0, body)
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	var created int
+	for i, rec := range results {
+		switch rec.Code {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			resp := decodeEnvelope(t, rec)
+			if resp.Error == nil || resp.Error.Reason != "revision_conflict" {
+				t.Errorf("racer %d: reason = %+v; want revision_conflict -- a loser has no quota to free",
+					i, resp.Error)
+			}
+		default:
+			t.Errorf("racer %d: status = %d, body = %s; want 201 or 409", i, rec.Code, rec.Body.String())
+		}
+	}
+	if created != 1 {
+		t.Fatalf("%d racers created a layout; want exactly 1", created)
+	}
+	if rows := storedLayouts(t, h, user); len(rows) != 1 {
+		t.Errorf("owner holds %d layouts after the race; want 1", len(rows))
+	}
+}
+
+// TestHandler_SaveLayout_QuotaExhausted_ReportsTheLimit keeps a real quota
+// refusal from being dressed up as a conflict.
+//
+// A collision under the requested scope outranks the ceiling, because it is
+// what actually blocks the write. That precedence must not swallow the genuine
+// case, which is a caller who has filled every scope the cluster allows and is
+// asking for one more under a scope they do not yet hold.
+func TestHandler_SaveLayout_QuotaExhausted_ReportsTheLimit(t *testing.T) {
+	defer withTestScope(t, "test-scope")()
+
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	// MaxDashboardLayoutsPerUser is fixed at package init, so the stand-in
+	// scope above does not widen it: one layout per cluster is still the
+	// ceiling, and the first save fills it.
+	if rec := putLayout(t, h, user, "local", "overview", 0, layoutJSON(t, nil)); rec.Code != http.StatusCreated {
+		t.Fatalf("first save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+
+	rec := do(t, h, user, "local", endpoint{
+		http.MethodPut, "/preferences/layouts/test-scope",
+		`{"revision":0,"config":` + string(layoutJSON(t, map[string]any{"scope": "test-scope"})) + `}`,
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s; want 409", rec.Code, rec.Body.String())
+	}
+	resp := decodeEnvelope(t, rec)
+	if resp.Error == nil || resp.Error.Reason != "limit_reached" {
+		t.Fatalf("reason = %+v; want limit_reached — there is no layout under this scope to conflict with", resp.Error)
+	}
+	if resp.Error.Extra["limit"] == nil {
+		t.Errorf("409 carries no limit for the client to show: %+v", resp.Error)
+	}
+}
+
+// TestHandler_SaveLayout_EmitsAudit extends the audit contract to the third
+// kind. Both writes are audited, the arrangement itself never is: a layout
+// names the namespaces a user watches, and copying that into a second,
+// longer-lived store is exactly what the saved-view rule exists to prevent.
+func TestHandler_SaveLayout_EmitsAudit(t *testing.T) {
+	recorder := &recordingAudit{}
+	h := &Handler{Store: testStore(t), AuditLogger: recorder}
+	user := testUser(t)
+
+	created := layoutOf(t, putLayout(t, h, user, "prod-east", "overview", 0, layoutJSON(t, nil)))
+	if rec := putLayout(t, h, user, "prod-east", "overview", created.Revision,
+		layoutWithItems(t, item(nil))); rec.Code != http.StatusOK {
+		t.Fatalf("update = %d %s; want 200", rec.Code, rec.Body.String())
+	}
+	// A read is not a write and leaves no entry behind.
+	do(t, h, user, "prod-east", endpoint{http.MethodGet, layoutPath, ""})
+
+	entries := recorder.snapshot()
+	if len(entries) != 2 {
+		t.Fatalf("recorded %d audit entries; want 2 (create + update)", len(entries))
+	}
+	if entries[0].Action != audit.ActionCreate || entries[1].Action != audit.ActionUpdate {
+		t.Errorf("actions = %q, %q; want create, update", entries[0].Action, entries[1].Action)
+	}
+	for _, e := range entries {
+		if e.ResourceKind != "dashboardLayout" {
+			t.Errorf("ResourceKind = %q; want dashboardLayout", e.ResourceKind)
+		}
+		if e.ClusterID != "prod-east" {
+			t.Errorf("ClusterID = %q; want the request's cluster prod-east", e.ClusterID)
+		}
+		if e.Result != audit.ResultSuccess {
+			t.Errorf("Result = %q; want success", e.Result)
+		}
+		if strings.Contains(e.Detail, "items") || strings.Contains(e.Detail, "cluster-health") {
+			t.Errorf("audit Detail leaked the arrangement: %q", e.Detail)
+		}
+	}
+}
+
+// TestHandler_GetLayout_ReauthorizesNamespaces is spec 7's read-path
+// obligation. A stored parameter is evidence of what the caller could see when
+// they saved it, never of what they may see now: access to a namespace can be
+// revoked between the save and the read, and the layout must not keep showing
+// it.
+//
+// The check has to go through CanAccessGroupResource. CanAccess short-circuits
+// to allow in predicate-fake mode (access.go:111), so a handler written
+// against it would pass this test without authorizing anything.
+func TestHandler_GetLayout_ReauthorizesNamespaces(t *testing.T) {
+	defer withTestWidget(t, testParamWidgetID, testParamWidgetSpec)()
+
+	h := &Handler{
+		Store: testStore(t),
+		AccessChecker: resources.NewPredicateAccessChecker(
+			func(_, _, _, namespace string) bool { return namespace == "staging" }),
+	}
+	user := testUser(t)
+
+	cfg := layoutWithItems(t,
+		item(map[string]any{
+			"instanceId": "revoked", "id": testParamWidgetID, "x": 0, "w": 4, "h": 4,
+			"params": map[string]string{"namespace": "prod"},
+		}),
+		item(map[string]any{
+			"instanceId": "kept", "id": testParamWidgetID, "x": 4, "w": 4, "h": 4,
+			"params": map[string]string{"namespace": "staging"},
+		}),
+	)
+	if rec := putLayout(t, h, user, "local", "overview", 0, cfg); rec.Code != http.StatusCreated {
+		t.Fatalf("save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+
+	got := do(t, h, user, "local", endpoint{http.MethodGet, layoutPath, ""})
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", got.Code)
+	}
+	resp := layoutOf(t, got)
+	if strings.Contains(string(resp.Config), `"prod"`) {
+		t.Errorf("read returned a namespace the caller cannot see: %s", resp.Config)
+	}
+	if !strings.Contains(string(resp.Config), `"staging"`) {
+		t.Errorf("read dropped a namespace the caller can see: %s", resp.Config)
+	}
+	// Saying nothing is worse than naming it: the client has to be able to
+	// tell the user which widget vanished and why.
+	if len(resp.Withheld) != 1 || resp.Withheld[0] != "revoked" {
+		t.Errorf("withheld = %v; want the one placement that was dropped", resp.Withheld)
+	}
+
+	// The row itself is untouched. Dropping on read is a response filter, not
+	// a rewrite: access can come back, and the layout has to come back with it.
+	rows := storedLayouts(t, h, user)
+	if len(rows) != 1 || !strings.Contains(string(rows[0].Config), `"prod"`) {
+		t.Errorf("the stored layout lost the revoked placement: %+v", rows)
+	}
+}
+
+// TestHandler_GetLayout_WithoutAccessCheckerWithholdsNamespacedItems pins the
+// direction this fails in. A deployment that never wired a checker cannot
+// re-authorize anything, and a placement it cannot authorize is one it must
+// not serve.
+func TestHandler_GetLayout_WithoutAccessCheckerWithholdsNamespacedItems(t *testing.T) {
+	defer withTestWidget(t, testParamWidgetID, testParamWidgetSpec)()
+
+	h := &Handler{Store: testStore(t)} // no AccessChecker
+	user := testUser(t)
+
+	cfg := layoutWithItems(t,
+		item(map[string]any{
+			"instanceId": "scoped", "id": testParamWidgetID, "x": 0, "w": 4, "h": 4,
+			"params": map[string]string{"namespace": "prod"},
+		}),
+		item(map[string]any{"instanceId": "unscoped", "id": "cluster-health", "x": 4, "w": 4, "h": 4}),
+	)
+	if rec := putLayout(t, h, user, "local", "overview", 0, cfg); rec.Code != http.StatusCreated {
+		t.Fatalf("save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+
+	resp := layoutOf(t, do(t, h, user, "local", endpoint{http.MethodGet, layoutPath, ""}))
+	if strings.Contains(string(resp.Config), `"prod"`) {
+		t.Errorf("an unauthorizable placement was served: %s", resp.Config)
+	}
+	// A placement that names no namespace needs no authorization, so it is
+	// unaffected -- otherwise every dashboard on such a deployment would come
+	// back empty.
+	if !strings.Contains(string(resp.Config), `"cluster-health"`) {
+		t.Errorf("a placement with no namespace was withheld: %s", resp.Config)
+	}
+}
+
+// withTestScope temporarily widens the scope allowlist, so the guards that can
+// only fire when more than one scope exists are reachable before P6 adds one.
+func withTestScope(t *testing.T, scope string) func() {
+	t.Helper()
+
+	if _, exists := allowedDashboardScopes[scope]; exists {
+		t.Fatalf("%q is already a real scope; pick a name that is not", scope)
+	}
+	allowedDashboardScopes[scope] = struct{}{}
+	return func() { delete(allowedDashboardScopes, scope) }
 }

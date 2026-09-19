@@ -890,6 +890,12 @@ func main() {
 		Store:       prefStore,
 		AuditLogger: auditLogger,
 		Logger:      logger,
+		// A dashboard layout can name a namespace as a widget parameter, and
+		// that parameter is re-authorized on every read: a layout saved while
+		// the user had access to a namespace must stop showing it once that
+		// access is gone. Without a checker the read path withholds every
+		// namespaced placement rather than serving one it cannot check.
+		AccessChecker: accessChecker,
 	}
 
 	// Ready state: true after informer sync, false during shutdown
