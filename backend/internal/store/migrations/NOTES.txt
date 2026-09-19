@@ -113,3 +113,67 @@ it races every other suite sharing the database.
 If you add a new table, prefer giving it an owner or cluster column so
 it falls under the normal unique-id isolation rule rather than becoming
 a second exception.
+
+------------------------------------------------------------------------
+000019_add_dashboard_layout_kind (Release G dashboard builder 2026-09-13)
+------------------------------------------------------------------------
+
+Adds 'dashboard_layout' to the user_preferences.kind CHECK. Additive: no
+columns change, nothing is backfilled, and no existing row is touched.
+
+Operator action required:
+  None on the way up, on any database this project created.
+
+  The up migration first checks that the CHECK it is about to replace is
+  actually named user_preferences_kind_check, and stops with that name in the
+  error if it is not. That only happens on a database where the constraint was
+  renamed out of band; dropping it by a name nothing holds would otherwise be
+  a silent no-op, leaving the old narrow CHECK rejecting every dashboard
+  layout while the migration recorded clean. If you hit it:
+
+      SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+       WHERE conrelid = 'user_preferences'::regclass AND contype = 'c';
+
+  drop whichever constraint holds the kind CHECK, then re-run. A failed up
+  leaves the version dirty at 19 the same way the refused rollback below
+  does, so force it back to 18 before re-running:
+
+      migrate -path <migrations> -database <url> force 18
+
+Rollback:
+  The down migration narrows the CHECK and WILL FAIL if any dashboard_layout
+  row still exists. This is deliberate -- a rollback that silently deleted
+  every user's dashboard is worse than one that stops. Inspect first:
+
+      SELECT owner_id, cluster_id, dedup_key, updated_at
+        FROM user_preferences WHERE kind = 'dashboard_layout';
+
+  and remove them explicitly if the rollback is intended:
+
+      DELETE FROM user_preferences WHERE kind = 'dashboard_layout';
+
+  IMPORTANT -- the refused rollback leaves the version table dirty. Recover
+  before restarting the backend:
+
+      The schema is untouched (PostgreSQL runs the down file's statements in
+      one implicit transaction, so the DROP CONSTRAINT rolls back with the
+      ADD that failed), but golang-migrate records the attempt before it
+      runs, so schema_migrations is left at version 18 with dirty = true
+      while the schema is really still at 19. The backend calls m.Up() on
+      start, which refuses on a dirty version, so the pod will crash-loop
+      until the version is corrected:
+
+          migrate -path <migrations> -database <url> force 19
+
+      or, equivalently, against the database directly:
+
+          UPDATE schema_migrations SET version = 19, dirty = false;
+
+      Do that first, then decide about the layout rows. The same applies in
+      reverse if you clear the rows and the rollback then succeeds: nothing
+      to force, because that run completes normally.
+
+Locking:
+  Recreating a CHECK constraint takes ACCESS EXCLUSIVE on user_preferences
+  while PostgreSQL validates the whole table. Milliseconds on a normal
+  preferences table; use a maintenance window on a very large one.
