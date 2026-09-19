@@ -745,9 +745,9 @@ running the tests it prescribes rather than by reading:
   `ErrPreferenceLimit` and never `ErrPreferenceDuplicate`. The plan's "create
   when absent and update when present" was left to the store to infer from an
   error; it cannot. `HandleSaveLayout` now reads the scope first and decides
-  which write to attempt from what is stored, and translates a limit into a
-  conflict only when a layout has appeared under that scope since the read — so
-  a genuine quota refusal still says so, with the limit in `extra`.
+  which write to attempt from what is stored. **Superseded by the review fix
+  below:** the limit-versus-collision question is no longer answered by the
+  handler at all.
 - **A revision claim for a scope with no layout would have been a create.** It
   is a conflict: the client believes in a layout the server has no record of,
   and honouring it resurrects one at a revision the client made up.
@@ -809,6 +809,74 @@ worth stating in the code rather than leaving for the next reader to rediscover.
 D14's verification commands are also stale: `deno test lib/` and `deno task
 check` predate the Bun/Astro migration. The repo-canonical checks are
 `bun test` and `bun run check`.
+
+**AMENDED again 2026-09-19, after `/ce:code-review`.** Nine local reviewers plus
+an independent cross-model pass on Codex (`independence_verified: true`).
+Verdict **Ready with fixes** — no P0, no P1. Six primary findings; the validator
+confirmed two, rejected three, and one took the cross-model corroboration
+shortcut. All three actionable findings are fixed here rather than deferred.
+
+**The one real defect, and why the fix moved:** `createLayout` answered the
+limit-versus-collision question with a second read after the INSERT had already
+failed (`layoutExists`), and that helper returned `err == nil` — so any error
+from its own query, a connection blip or a cancelled context, read as
+"confirmed: not a race" and the loser of a concurrent save was told to free up
+quota. Both the `reliability` reviewer and the Codex peer landed on it
+independently, which is what promoted it to anchor 100.
+
+The fix is not a better probe. **The ambiguity is now resolved inside the
+store's own transaction, while the advisory lock is still held**
+(`classifyFilteredInsert`), and the handler-side probe is deleted. A
+count-filtered INSERT asks, under that lock, whether a row already exists under
+the same four columns the unique index covers, and answers
+`ErrPreferenceDuplicate` if one does. Nothing races the window, because there is
+no window: the caller cannot observe a state the lock holder has not settled.
+
+**This changes `PreferenceStore.Create`'s contract for all three kinds**, and
+deliberately: a dedup-key collision now outranks the ceiling whenever both are
+true. A saved view created at the cap under an existing name reports
+`duplicate_name` rather than `limit_reached`. That is the blocking fact — the
+row could not be inserted at any ceiling — and it is what the owner can act on.
+The generalization worth keeping: **when a guard fires before the constraint
+that would also have refused the write, the guard's error names only itself,
+and a caller asking afterwards is asking a question the answer has already
+moved past.**
+
+**The other two findings.** The race branch had no test — now
+`TestHandler_SaveLayout_ConcurrentFirstSaves_AreConflicts` races eight tabs at
+one unarranged scope and requires exactly one 201 with every loser a
+`revision_conflict`, never `limit_reached`. And a comment in
+`routes_preferences_test.go` stated the handlers' precondition order backwards;
+rather than only rewording it, the true order is now pinned by
+`TestPreferencesRoutes_NoDatabaseOutranksAnUnservedScope`, so the claim cannot
+quietly become wrong again. **A comment asserting an ordering is a claim; give
+it a test or do not make it.**
+
+**Three findings were rejected on inspected evidence**, recorded so they are not
+re-raised: a SAR error 500s the whole read instead of withholding one item, and
+the PUT response skips the read path's withholding — both rest on a path no
+shipped widget can reach, because every `allowedWidgets` entry declares no
+params and the validator refuses params on such a widget. The third, that the
+layout routes are hand-duplicated across four files, is already machine-guarded
+by the two-directional `chi.Walk` test in `routes_preferences_test.go`.
+
+**Carried forward as residual risks, not fixed here** (the full list is in the
+run's report; these are the ones a later unit inherits):
+
+- **D14 must not write back a layout it received with a non-empty `withheld`.**
+  The read returns the filtered config with the record's *unchanged* revision,
+  so a naive read-modify-write passes the concurrency check and deletes the
+  withheld placements permanently. The server enforces nothing; this is the
+  client's obligation and it is now the second time this plan records it.
+- **`withheld` is `omitempty`**, so an unfiltered response omits the key. D14's
+  TypeScript type declares it optional or every ordinary load throws.
+- **The namespace convention is a comment, not a constraint.** Re-authorization
+  recognises a namespace only by the param key being spelled exactly
+  `namespace`. Before the first parameterized widget ships, a pinned test beside
+  `TestContractParity` should fail on an open-valued param under any other key.
+- **The re-authorization fan-out is serial and unbounded** — one SAR per
+  namespaced placement, up to 40, no dedup by namespace. Dedupe and bound it in
+  the same unit that ships that first widget.
 
 ---
 

@@ -227,8 +227,9 @@ func (s *PreferenceStore) GetByDedupKey(ctx context.Context, ownerID string,
 // unrelated keys costs a brief wait and nothing else. It is released when the
 // transaction ends.
 //
-// A row filtered out by the count surfaces as ErrPreferenceLimit; a dedup-key
-// collision as ErrPreferenceDuplicate.
+// A dedup-key collision surfaces as ErrPreferenceDuplicate whether or not the
+// owner is also at the ceiling, because it is the fact that blocks the write;
+// a filtered row with no collision surfaces as ErrPreferenceLimit.
 func (s *PreferenceStore) Create(ctx context.Context, rec PreferenceRecord, maxPerKind int) (*PreferenceRecord, error) {
 	return s.create(ctx, rec, maxPerKind, false)
 }
@@ -278,9 +279,22 @@ func (s *PreferenceStore) create(ctx context.Context, rec PreferenceRecord, maxP
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			// The WHERE clause filtered the row out: the owner is at the
-			// ceiling for this kind.
-			return nil, ErrPreferenceLimit
+			// The WHERE clause filtered the row out, which is ambiguous: the
+			// owner is at the ceiling, or a row already exists under this
+			// dedup key and would have collided with the unique index had it
+			// survived the filter. Both can be true at once, and for a kind
+			// whose ceiling equals its key space -- a dashboard layout, where
+			// the ceiling is the number of scopes -- re-creating an existing
+			// key ALWAYS exhausts the count first, so the collision would
+			// never be reported at all.
+			//
+			// Resolved here rather than by the caller, and inside this
+			// transaction, because this is where the answer is authoritative:
+			// the advisory lock is still held, so no concurrent create can
+			// change it between the INSERT and this read. A caller probing
+			// afterwards races that window and has to treat its own failure as
+			// an answer.
+			return nil, classifyFilteredInsert(ctx, tx, rec)
 		case isUniqueViolation(err):
 			return nil, ErrPreferenceDuplicate
 		default:
@@ -292,6 +306,37 @@ func (s *PreferenceStore) create(ctx context.Context, rec PreferenceRecord, maxP
 		return nil, fmt.Errorf("commit create user_preference: %w", err)
 	}
 	return &created, nil
+}
+
+// classifyFilteredInsert decides which sentinel a count-filtered INSERT owes
+// the caller: a collision under this dedup key, or a genuine ceiling.
+//
+// It reads through tx, so it runs under the same advisory lock the INSERT did
+// and sees the same committed state. The four columns are exactly those of
+// idx_user_preferences_dedup, so "a row exists here" means precisely "the
+// INSERT would have violated that index".
+//
+// A collision outranks the ceiling because it is the blocking fact: the row
+// could not be inserted at any ceiling, and "you have reached the maximum"
+// would send the owner to delete something that would not help. An owner who
+// is at the ceiling AND sent a duplicate key is told about the duplicate, and
+// discovers the ceiling on their next distinct key.
+func classifyFilteredInsert(ctx context.Context, tx pgx.Tx, rec PreferenceRecord) error {
+	var exists int
+	err := tx.QueryRow(ctx, `
+		SELECT 1 FROM user_preferences
+		WHERE owner_id = $1 AND kind = $2 AND cluster_id = $3 AND dedup_key = $4`,
+		rec.OwnerID, rec.Kind, rec.ClusterID, rec.DedupKey).Scan(&exists)
+	switch {
+	case err == nil:
+		return ErrPreferenceDuplicate
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrPreferenceLimit
+	default:
+		// The classification itself failed, so neither sentinel is known to be
+		// true. Saying either one would be a guess presented as a diagnosis.
+		return fmt.Errorf("classify filtered user_preference insert: %w", err)
+	}
 }
 
 // Update rewrites a record's mutable fields if it still carries

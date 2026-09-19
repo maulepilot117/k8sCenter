@@ -534,6 +534,46 @@ func TestPreferenceStore_PinIdentityIgnoresUID(t *testing.T) {
 	}
 }
 
+// TestPreferenceStore_DuplicateAtCeilingReportsDuplicate pins which sentinel a
+// count-filtered INSERT owes the caller when both explanations are true at once.
+//
+// The ceiling is enforced by a count in the INSERT's WHERE clause, so a row
+// that would ALSO have collided with the unique index never reaches it: the
+// filter fires first and the collision is invisible. Reporting that as
+// "limit reached" tells the owner to delete something to make room for a row
+// that could not have been inserted at any ceiling. The collision is the
+// blocking fact and is what the caller is told.
+func TestPreferenceStore_DuplicateAtCeilingReportsDuplicate(t *testing.T) {
+	s := newPreferenceStore(t)
+	owner := testOwnerID(t)
+	ctx := t.Context()
+
+	const limit = 2
+	mustCreate(t, s, savedView(owner, "first"), limit)
+	mustCreate(t, s, savedView(owner, "second"), limit)
+
+	if _, err := s.Create(ctx, savedView(owner, "first"), limit); !errors.Is(err, ErrPreferenceDuplicate) {
+		t.Fatalf("Create(duplicate key at the ceiling) = %v; want ErrPreferenceDuplicate", err)
+	}
+
+	// A genuinely new key at the ceiling is still a limit: the classification
+	// must not swallow the quota it sits behind.
+	if _, err := s.Create(ctx, savedView(owner, "third"), limit); !errors.Is(err, ErrPreferenceLimit) {
+		t.Fatalf("Create(new key at the ceiling) = %v; want ErrPreferenceLimit", err)
+	}
+
+	// The same distinction holds for a per-cluster ceiling, which is the one a
+	// dashboard layout runs into: there, the ceiling equals the number of
+	// scopes, so re-creating an existing scope ALWAYS exhausts the count before
+	// reaching the index, and the ambiguity is the normal case rather than a
+	// corner of one.
+	layoutOwner := owner + "-layouts"
+	mustCreate(t, s, dashboardLayout(layoutOwner, "local", "overview"), testMaxPerKind)
+	if _, err := s.CreateInCluster(ctx, dashboardLayout(layoutOwner, "local", "overview"), 1); !errors.Is(err, ErrPreferenceDuplicate) {
+		t.Fatalf("CreateInCluster(existing scope at the ceiling) = %v; want ErrPreferenceDuplicate", err)
+	}
+}
+
 func TestPreferenceStore_LimitReached(t *testing.T) {
 	s := newPreferenceStore(t)
 	owner := testOwnerID(t)

@@ -448,19 +448,16 @@ func (h *Handler) createLayout(w http.ResponseWriter, r *http.Request, user *aut
 	}
 	// CreateInCluster, never Create: the ceiling is the number of scopes,
 	// which is the right number only when it is counted inside one cluster.
+	// The ceiling is the number of scopes, so a second save of the SAME scope
+	// exhausts the quota before it ever reaches the unique index. The store
+	// tells those two apart inside the transaction that holds the quota lock
+	// and answers ErrPreferenceDuplicate for the collision, which mapLayoutError
+	// turns into the conflict the caller can act on. Asking again from here
+	// would race that window and would have to read its own failure as an
+	// answer.
 	created, err := h.Store.CreateInCluster(r.Context(), rec, h.layoutCeiling())
 	if err != nil {
 		h.audit(r, user, audit.ActionCreate, "dashboardLayout", scope, audit.ResultFailure, "")
-		// The caller was told there was no layout here a moment ago. If there
-		// is one now, another save won the race, and that is a conflict
-		// whichever sentinel the store reached for -- the ceiling is the
-		// number of scopes, so a second save of the SAME scope exhausts the
-		// quota before it ever reaches the unique index, and would otherwise
-		// be reported as a limit the user has no way to act on.
-		if errors.Is(err, store.ErrPreferenceLimit) && h.layoutExists(r.Context(), user.ID, rec.ClusterID, dedup) {
-			h.writeLayoutConflict(w)
-			return
-		}
 		h.mapLayoutError(w, err)
 		return
 	}
@@ -542,13 +539,6 @@ func (h *Handler) writeLayoutConflict(w http.ResponseWriter) {
 	httputil.WriteErrorWithReason(w, http.StatusConflict,
 		"this dashboard layout changed since you loaded it; reload before saving",
 		"revision_conflict", nil)
-}
-
-// layoutExists reports whether a layout is stored under this key right now. It
-// is asked only on an error path, to tell a race apart from a real quota.
-func (h *Handler) layoutExists(ctx context.Context, ownerID, clusterID, dedup string) bool {
-	_, err := h.Store.GetByDedupKey(ctx, ownerID, store.PreferenceKindDashboardLayout, clusterID, dedup)
-	return err == nil
 }
 
 // withholdUnauthorized re-authorizes the namespaces a stored layout names and

@@ -1477,14 +1477,71 @@ func TestHandler_SaveLayout_PathScopeWins(t *testing.T) {
 	}
 }
 
+// TestHandler_SaveLayout_ConcurrentFirstSaves_AreConflicts is the guard on the
+// one branch nothing else reaches: several tabs saving a dashboard nobody has
+// arranged yet.
+//
+// Every racer reads the scope, finds nothing, and tries to create. One wins.
+// Because a layout's ceiling is the number of scopes, each loser's INSERT is
+// filtered by the quota count BEFORE it reaches the unique index, so the store
+// has to tell "somebody else created this scope" apart from "you have too many
+// layouts" -- and only the first is true. A loser told to free up quota has
+// nothing to delete and no way to act; reloading and saving again is the whole
+// remedy, which is what revision_conflict says.
+//
+// Assertions run on the test goroutine: t.Fatalf from a racer would be a bug in
+// the test, so the racers only collect recorders.
+func TestHandler_SaveLayout_ConcurrentFirstSaves_AreConflicts(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	const racers = 8
+	body := layoutJSON(t, nil)
+
+	var (
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+		results = make([]*httptest.ResponseRecorder, racers)
+	)
+	for i := range racers {
+		wg.Go(func() {
+			<-start // release them together
+			results[i] = putLayout(t, h, user, "local", "overview", 0, body)
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	var created int
+	for i, rec := range results {
+		switch rec.Code {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			resp := decodeEnvelope(t, rec)
+			if resp.Error == nil || resp.Error.Reason != "revision_conflict" {
+				t.Errorf("racer %d: reason = %+v; want revision_conflict -- a loser has no quota to free",
+					i, resp.Error)
+			}
+		default:
+			t.Errorf("racer %d: status = %d, body = %s; want 201 or 409", i, rec.Code, rec.Body.String())
+		}
+	}
+	if created != 1 {
+		t.Fatalf("%d racers created a layout; want exactly 1", created)
+	}
+	if rows := storedLayouts(t, h, user); len(rows) != 1 {
+		t.Errorf("owner holds %d layouts after the race; want 1", len(rows))
+	}
+}
+
 // TestHandler_SaveLayout_QuotaExhausted_ReportsTheLimit keeps a real quota
 // refusal from being dressed up as a conflict.
 //
-// The save path translates a limit into a conflict when a layout has appeared
-// under this scope since the caller was told there was none -- a race, where
-// "you have too many layouts" would be both false and unactionable. That
-// translation must not swallow the genuine case, which is a caller who has
-// filled every scope the cluster allows and is asking for one more.
+// A collision under the requested scope outranks the ceiling, because it is
+// what actually blocks the write. That precedence must not swallow the genuine
+// case, which is a caller who has filled every scope the cluster allows and is
+// asking for one more under a scope they do not yet hold.
 func TestHandler_SaveLayout_QuotaExhausted_ReportsTheLimit(t *testing.T) {
 	defer withTestScope(t, "test-scope")()
 
