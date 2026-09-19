@@ -398,6 +398,23 @@ func ValidateDashboardLayout(raw json.RawMessage) (DashboardLayoutConfig, json.R
 				"items[%d].id %q is not a widget this server knows", i, it.ID)
 		}
 
+		// AMENDED 2026-09-19, as shipped: the block below OVERFLOWS and must
+		// not be copied. `x+w > columns` wraps -- x=math.MaxInt64 with w=1
+		// folds to a large negative, passes this test, and stores a widget
+		// quintillions of columns off a twelve-column grid. Found by Step 4's
+		// own fuzz target, which is why Step 4 gained a fourth oracle (see the
+		// amendment note at the end of this task). Bound each component
+		// against the grid FIRST, then take the sums:
+		//
+		//	if it.W < 1 || it.W > cfg.Columns          { reject }
+		//	if it.H < 1 || it.H > maxDashboardRows     { reject }
+		//	if it.X < 0 || it.X > cfg.Columns          { reject }
+		//	if it.X+it.W > cfg.Columns                 { reject }
+		//	if it.Y < 0 || it.Y > maxDashboardRows     { reject }
+		//	if it.Y+it.H > maxDashboardRows            { reject }
+		//
+		// Bounding the components first is also what makes the sums in the
+		// error messages and in itemsOverlap safe.
 		if it.W < 1 || it.H < 1 {
 			return cfg, nil, invalidf("invalid_config", "items[%d] has a non-positive size", i)
 		}
@@ -539,6 +556,30 @@ PR title: `feat(preferences): validate dashboard layout configs`
 refused on write; overlapping or out-of-bounds items are refused; params cannot
 carry control characters or exceed their bounds; unlisted fields are dropped;
 the fuzz target runs in CI via a real `fuzz.yml` row.
+
+**AMENDED 2026-09-19 — what D12 actually shipped (PR #467).** Three divergences
+from the text above, each deliberate:
+
+1. **The Step 1 bounds check overflowed.** See the amendment comment inside the
+   code block. Fixed in the shipped code; four integer-ceiling cases are pinned
+   in the table as regressions.
+
+2. **Step 4 gained a fourth oracle.** Oracles A (no panic) and B (round-trip
+   fixed point) were *all satisfied* by the overflowing layout — it does not
+   panic, it re-marshals to exactly the envelope keys, and it round-trips
+   byte-stably. Only an independent restatement of the bound, in arithmetic
+   that cannot wrap, detects it. **Generalize this:** an oracle that reuses the
+   code under test's own arithmetic cannot find a bug in that arithmetic. D13's
+   and D14's oracles should be written against the *property*, not against the
+   implementation's expression of it.
+
+3. **The unit is 8 files, not 5 (G2).** The file list above omits Step 2's two
+   frontend files and the "widget-id allowlist problem" section's TS pinned-list
+   test; the Go-side pin went into the existing `parity_test.go` rather than a
+   parallel mechanism. Each piece is half a contract on its own, so splitting
+   would have shipped a drift guard that does not guard. D13's file list is
+   likely to be similarly optimistic — count Step 4's `allEndpoints()` edit and
+   the handler tests before assuming it fits.
 
 ---
 
