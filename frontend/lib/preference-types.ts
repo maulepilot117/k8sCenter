@@ -73,7 +73,7 @@ export interface PinConfig {
 
 export interface PreferenceRecord<C> {
   id: string;
-  kind: "saved_view" | "pin";
+  kind: "saved_view" | "pin" | "dashboard_layout";
   name: string;
   clusterId: string;
   schemaVersion: number;
