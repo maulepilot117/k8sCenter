@@ -62,6 +62,14 @@ const IGNORE: RegExp[] = [
   // that hook calls /v1/auth/me and would feed itself forever. The subpaths
   // are mounted; the prefix itself is not.
   /^\/v1\/auth\/$/,
+  // A dashboard layout is a singleton per (owner, cluster, scope), addressed
+  // as /v1/preferences/layouts/{scope} — GET and PUT, no POST and no list,
+  // because the scope IS the address in both directions. So unlike the sibling
+  // /v1/preferences/{views,pins} constants, which are real collection
+  // endpoints, this literal is only ever a concatenation base and the backend
+  // mounts nothing at it. Deleting this entry does not restore coverage of the
+  // scoped route: that path carries a ${} and is skipped as dynamic either way.
+  /^\/v1\/preferences\/layouts$/,
 ];
 
 // Directory names to skip during the scan: generated build output, vendored
