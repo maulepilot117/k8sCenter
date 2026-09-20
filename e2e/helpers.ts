@@ -362,3 +362,24 @@ export function watchForSubscription(page: Page, kind: string): () => boolean {
   });
   return () => seen;
 }
+
+/**
+ * What `document.activeElement` is, named the way the dashboard grid names
+ * things: its instance id, else its test id, else its tag, else `"none"`.
+ *
+ * Shared rather than copied into each spec because the fallback chain is the
+ * assertion. A spec that read only `data-instance-id` would report `"none"`
+ * for the remove button and the toolbar alike, and a keyboard order that
+ * skipped one of them would still look right.
+ */
+export function focusedElementName(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const el = document.activeElement;
+    return (
+      el?.getAttribute("data-instance-id") ??
+      el?.getAttribute("data-testid") ??
+      el?.tagName ??
+      "none"
+    );
+  });
+}

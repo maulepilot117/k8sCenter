@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "../fixtures/base.ts";
+import { focusedElementName } from "../helpers.ts";
 // The grid's own constants, imported rather than copied: a change to the row
 // height or the gap has to break these tests loudly, not make them assert the
 // wrong geometry in silence. Importing across the project boundary is the
@@ -17,6 +18,24 @@ import {
 // prove the island routes the pointer through that engine instead of
 // positioning widgets itself, and that the pointer session starts and ends
 // where it should.
+//
+// Every test here loads the dashboard with nothing stubbed, so it renders
+// whatever layout the shared admin user has stored -- which the suite keeps as
+// the shipped default. That is why the placements below are stated as the
+// default's and not read off the page, and it is also why no test in this file
+// may save: a real write would hand this file's arrangement to every later one.
+//
+// NOT covered here, and covered elsewhere instead:
+//   - Anything that reaches the store. A layout surviving a reload, Reset
+//     writing the default back, a stale second tab, and a stored layout naming
+//     a widget this build lacks are dashboard-layout.spec.ts, which runs
+//     against the real endpoint in its own Playwright project after this one.
+//   - Which gestures dirty a session and what Cancel puts back:
+//     dashboard-edit.spec.ts, over a stubbed endpoint.
+//   - Adding and removing widgets: dashboard-palette.spec.ts and
+//     dashboard-copy.spec.ts.
+//   - That each widget renders at all, and reports its own data failure:
+//     dashboard.spec.ts.
 
 interface Cell {
   id: string;
@@ -813,17 +832,7 @@ test.describe("Dashboard grid resize", () => {
  * while the layout is being arranged.
  */
 test.describe("Dashboard grid keyboard", () => {
-  /** The instance id of whatever currently has focus, or the element's tag. */
-  const focused = (page: Page): Promise<string> =>
-    page.evaluate(() => {
-      const el = document.activeElement;
-      return (
-        el?.getAttribute("data-instance-id") ??
-        el?.getAttribute("data-testid") ??
-        el?.tagName ??
-        "none"
-      );
-    });
+  const focused = focusedElementName;
 
   const widget = (page: Page, id: string) =>
     page.locator(`[data-instance-id="${id}"]`);
