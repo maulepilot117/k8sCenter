@@ -714,6 +714,27 @@ export default function DashboardV2() {
     [records, copyScope, cluster, copyColumns],
   );
 
+  // The copy dialog's render gate includes "there is something to offer", so
+  // the list emptying takes the dialog off screen. That is the right outcome
+  // -- an empty list is nothing to choose from -- but it is not a close, and
+  // without this the user is left with no dialog and no focus.
+  //
+  // It is reachable in one page load. `startEditing` clears `copyOpen` on
+  // every Edit press but not the module-level record list, and fires the read
+  // for the new session without awaiting it, so a second session can open the
+  // dialog on the first session's answer and then have the new one land
+  // narrower -- a layout deleted from another tab or device is enough.
+  //
+  // `focusAddButton`, not `focusCopyButton`: the opener is gated on the same
+  // `copyOptions.length > 0` as the dialog, so it unmounts in this very
+  // render and its ref is already null. "Add widget" is mounted for the whole
+  // session, which is why `closePalette` leans on it too.
+  useEffect(() => {
+    if (!IS_BROWSER || !copyOpen.value || copyOptions.length > 0) return;
+    copyOpen.value = false;
+    focus.focusAddButton();
+  }, [copyOptions.length, copyOpen.value]);
+
   return (
     <div style={ROOT_STYLE}>
       <div
@@ -916,6 +937,11 @@ export default function DashboardV2() {
         // was written rather than on a half-finished gesture.
         editable={editing && !saving.value}
         onChange={handleChange}
+        // The grid reports where a removal left a gap; the focus hook decides
+        // what to do about it, including the case the grid cannot answer --
+        // the widget that went was the last one, and the only place left to
+        // put the keyboard is a toolbar button the grid does not own.
+        onRemoved={focus.focusAfterRemoval}
         onExitEdit={requestExit}
       />
 

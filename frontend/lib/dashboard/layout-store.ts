@@ -208,8 +208,18 @@ export function dropUnknownWidgets(
 export interface CopyableLayout {
   /** The source record's id. Unique across clusters, so it keys the list. */
   id: string;
-  /** The cluster it is stored on. What the row is labelled by. */
+  /** The cluster it is stored on. What `data-cluster-id` carries. */
   clusterId: string;
+  /**
+   * What to call that cluster on screen.
+   *
+   * The server's label when the registry still names the cluster, and the raw
+   * id when it does not -- a deregistered cluster has no name left to give,
+   * and the id is the only honest thing to show for it. Resolved here rather
+   * than in the dialog so the fallback is decided in the one module this
+   * repo can unit test (D-10).
+   */
+  clusterLabel: string;
   /** When it was last saved there, so two clusters are told apart by age. */
   updatedAt: string;
   /** The arrangement to take, already stripped of what this build cannot
@@ -290,14 +300,15 @@ export function copyableLayouts(
     if (withheld.length > 0) {
       warnings.push(
         `${withheld.length} widget${withheld.length === 1 ? "" : "s"} on ` +
-          `"${rec.clusterId}" read a namespace and cannot be copied to ` +
-          `another cluster.`,
+          `"${rec.clusterLabel || rec.clusterId}" read a namespace and ` +
+          `cannot be copied to another cluster.`,
       );
     }
 
     out.push({
       id: rec.id,
       clusterId: rec.clusterId,
+      clusterLabel: rec.clusterLabel || rec.clusterId,
       updatedAt: rec.updatedAt,
       // A fresh array, so the rows the dialog is still rendering and the
       // session the island is about to build cannot reach the same items.

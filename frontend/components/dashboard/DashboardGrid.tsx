@@ -136,6 +136,18 @@ interface GridItemProps {
    * being wide as well.
    */
   arrangeable: boolean;
+  /**
+   * Whether this item can be taken off the layout: the remove button is
+   * rendered.
+   *
+   * Deliberately NOT folded into `arrangeable`. Arranging is a wide-grid
+   * surface -- one column has no columns to move between and no width to size
+   * -- but removing a widget is neither of those things, and gating it on the
+   * same flag left edit mode reachable below the narrow breakpoint with
+   * nothing in it to do. A user on a split laptop screen or a phone could open
+   * the editor, see no way to take a widget off, and Save an unchanged layout.
+   */
+  removable: boolean;
   /** True while this item is the one being dragged. */
   dragging: boolean;
   /** True while this item is the one being resized. */
@@ -159,6 +171,7 @@ export function GridItem({
   def,
   narrow,
   arrangeable,
+  removable,
   dragging,
   resizing,
   onDragStart,
@@ -249,7 +262,7 @@ export function GridItem({
           }}
         />
       )}
-      {arrangeable && (
+      {removable && (
         // The title row's right end, painted over the drag handle rather than
         // beside it -- the handle spans the whole row, so there is no "beside".
         // zIndex 2 puts it above the handle, which is what makes a press land
@@ -264,6 +277,16 @@ export function GridItem({
         // control that only a pointer can reach is a control a keyboard user
         // does not have. So editing a widget is two tab stops: the item, then
         // its remove button.
+        //
+        // In one-column mode it is the only one. The item withholds `tabIndex`
+        // there because there is nothing to arrange, which leaves this button
+        // as the whole keyboard surface of a narrow edit session -- and the
+        // reason `removable` is a separate flag rather than `arrangeable`.
+        // Nothing sits under it there either, because the wrapper below is
+        // inert for the whole session and not just the arrangeable part of it
+        // -- without that, the header link of the four widgets that have one
+        // would still be live in one column, under a button painted on top of
+        // it at the same end of the same row.
         //
         // No confirmation. Removal is one Cancel away from being undone and
         // writes nothing until Save, and a modal between the user and every
@@ -355,7 +378,16 @@ export function GridItem({
         // `inert` takes the subtree out of hit testing, the tab order and the
         // accessibility tree in one attribute, which leaves the item itself as
         // the widget's single tab stop. Leaving edit mode gives the links back.
-        inert={arrangeable}
+        //
+        // Keyed on the session rather than on `arrangeable`, so one column is
+        // inert too. It was not before D17's remove control existed there,
+        // because a narrow edit session had no affordance of its own and the
+        // links were the only thing in the card worth reaching. Now the remove
+        // button is painted over the same end of the same title row that four
+        // of the ten default widgets put a header link in, and a live link
+        // under a button is a click that navigates away from the layout being
+        // edited.
+        inert={removable}
         // The cell's height has to reach the card through this wrapper, or the
         // card's own fill has nothing to fill.
         style={{ height: "100%", minWidth: 0, minHeight: 0 }}
@@ -407,6 +439,16 @@ interface DashboardGridProps {
    * it, so announcing it would report a change nobody made.
    */
   onChange?: (items: LayoutItem[]) => void;
+  /**
+   * A widget is about to be taken off, at this reading-order position.
+   *
+   * Fired immediately before the layout write, so the caller can arm whatever
+   * it uses to put the keyboard somewhere once the re-compacted grid has
+   * rendered. The grid does not do that itself: the widget that went may have
+   * been the last one, and where focus goes then is a toolbar the grid cannot
+   * reach. `useDashboardFocus` owns both halves -- see `focusAfterRemoval`.
+   */
+  onRemoved?: (vacatedIndex: number) => void;
 }
 
 /**
@@ -422,6 +464,7 @@ export default function DashboardGrid({
   editable = false,
   onExitEdit,
   onChange,
+  onRemoved,
 }: DashboardGridProps) {
   // Resolved once, on the way in, so the working copy is exactly what the grid
   // renders. The pointer sessions below read this signal while the DOM is laid
@@ -446,30 +489,6 @@ export default function DashboardGrid({
   const gridRef = useRef<HTMLDivElement | null>(null);
   /** Ends the session in flight, if there is one. Set for the grid's life. */
   const endSession = useRef<((restore: boolean) => void) | null>(null);
-  /**
-   * The reading-order position a removal just vacated, until the render
-   * without that widget has happened.
-   *
-   * Removing the focused widget takes the focused element out of the document,
-   * and the browser's answer to that is the body -- which is the top of the
-   * page. Where focus should go instead is not knowable until the layout has
-   * re-compacted, so the position is recorded here and spent by the effect
-   * below. A ref rather than a signal: nothing renders from it, and a render
-   * it caused would be a render for a value no cell reads.
-   */
-  const focusAfterRemoval = useRef<number | null>(null);
-  /**
-   * Counts removals, and exists only to be the effect's dependency.
-   *
-   * The effect below cannot key on the working copy: that changes on every
-   * cell a drag crosses, so a pre-paint effect for a once-per-removal job
-   * would be scheduled and run on every frame of every gesture. Nor can it key
-   * on `focusAfterRemoval` itself -- removing the first widget and then the
-   * widget that took its place records index 0 twice, and a dependency that
-   * did not change is an effect that does not run.
-   */
-  const removals = useSignal(0);
-
   /**
    * The one way the working copy changes, so that nothing can reshape the
    * layout without the caller hearing about it.
@@ -500,32 +519,6 @@ export default function DashboardGrid({
     measure();
     return () => ro.disconnect();
   }, []);
-
-  // Puts the keyboard back on the grid after a removal took it off.
-  //
-  // The vacated reading-order position, or the last cell when the widget that
-  // went was the last one. Position rather than identity: what the user wants
-  // next is whatever moved up into the gap, which is a different widget every
-  // time and has no id worth recording. An empty grid leaves focus where the
-  // browser put it -- there is no cell to go to, and the toolbar belongs to
-  // the caller.
-  //
-  // A layout effect, so focus lands before the browser paints and the page
-  // never shows a frame with nothing focused. Keyed on the removal counter
-  // rather than on the working copy, so a drag -- which commits a new layout
-  // for every cell the pointer crosses -- does not schedule it at all. A drag
-  // must not move the keyboard anyway, and the pointer user doing the dragging
-  // is not looking for it.
-  useLayoutEffect(() => {
-    if (!IS_BROWSER) return;
-    const vacated = focusAfterRemoval.current;
-    if (vacated === null) return;
-    focusAfterRemoval.current = null;
-    const cells =
-      gridRef.current?.querySelectorAll<HTMLElement>("[data-instance-id]");
-    if (cells === undefined || cells.length === 0) return;
-    (cells[vacated] ?? cells[cells.length - 1]).focus();
-  }, [removals.value]);
 
   // A session cannot outlive the grid either. Nothing unmounts DashboardGrid
   // today short of a navigation, which tears down the listeners anyway, but a
@@ -709,11 +702,13 @@ export default function DashboardGrid({
     const before = items.value;
     const index = before.findIndex((i) => i.instanceId === instanceId);
     if (index === -1) return;
-    focusAfterRemoval.current = index;
-    // Before the layout write, so both land in one render: Preact batches
-    // signal writes made in the same turn, and the effect that spends this
-    // counter then runs against the DOM the new layout produced.
-    removals.value += 1;
+    // Before the layout write, and up to the caller rather than handled here:
+    // the widget that just went may have been the last one, and an empty grid
+    // has no cell to move to. Where focus goes then is a toolbar control this
+    // component cannot reach, so both halves live with the caller's focus
+    // hook -- which also gets the ordering for free, because a parent's layout
+    // effects run after its children have patched.
+    onRemoved?.(index);
     setItems(compact(before.filter((i) => i.instanceId !== instanceId)));
     // Said rather than left to the moved focus: the cell focus lands on
     // announces its own placement, which tells the user where they now are but
@@ -886,6 +881,11 @@ export default function DashboardGrid({
             // by pointer or by key. Editing is a wide-grid surface; P3's
             // stored layout is what a narrow screen renders.
             arrangeable={editable && !narrow.value}
+            // Not narrowed the way `arrangeable` is. Removing a widget is not
+            // a spatial gesture, so the reason one column cannot be arranged
+            // is not a reason it cannot be edited -- and gating both on the
+            // same flag made narrow edit mode a session with nothing in it.
+            removable={editable}
             dragging={
               active?.kind === "drag" && active.instanceId === item.instanceId
             }
