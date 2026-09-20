@@ -757,7 +757,21 @@ export default function DashboardV2() {
           )}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        {/* Wraps, because edit mode is the widest this row ever gets and D17
+            made it wider still: five buttons plus the four time ranges do not
+            fit beside a title on a laptop split down the middle, and a row
+            that cannot wrap pushes the time ranges off the page instead. The
+            outer row already wraps the title away from these controls; this
+            is the same rule one level in. */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+          }}
+        >
           <EditToolbar
             editing={editing}
             dirty={session.value !== null && isDirty(session.value)}

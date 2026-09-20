@@ -159,7 +159,10 @@ export default function EditToolbar({
       // told what these buttons belong to rather than meeting them bare.
       role="group"
       aria-label="Dashboard layout editing"
-      class="flex items-center gap-2"
+      // Wraps for the same reason the row that holds it does: five buttons is
+      // more than a narrow dashboard header has room for on one line, and a
+      // group that cannot wrap pushes whatever sits beside it off the page.
+      class="flex flex-wrap items-center justify-end gap-2"
     >
       <button
         ref={addButtonRef}
