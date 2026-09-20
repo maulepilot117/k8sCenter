@@ -1,7 +1,11 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
 import type { DashboardLayoutConfig } from "../../frontend/lib/dashboard/types.ts";
-import { listedRecord, stubLayoutStore } from "./dashboard-layout-stub.ts";
+import {
+  LAYOUT_LIST_URL,
+  listedRecord,
+  stubLayoutStore,
+} from "./dashboard-layout-stub.ts";
 
 // "Copy from another cluster": which layouts are offered, what taking one puts
 // on screen, and what it writes.
@@ -104,6 +108,58 @@ test.describe("Copying a dashboard layout from another cluster", () => {
     await expect(row).toContainText("3 widgets");
   });
 
+  test("rows are named by the cluster's label, not its id", async ({ page }) => {
+    // The shape a real deployment has and the fixtures above do not: a remote
+    // cluster's id is 16 random bytes in hex, and the operator's name for it
+    // is the only part a user recognises. D17 shipped rendering the id, which
+    // every spec here missed because every fixture used a readable one.
+    const opaque = "9f3c1d7a4b28e5f06c91ab3de742c1e1";
+    await editableDashboard(page, [
+      listedRecord(opaque, THEIRS, { clusterLabel: "Production (EU)" }),
+    ]);
+
+    await page.getByTestId("copy-layout").click();
+    const row = rows(page).first();
+
+    await expect(row).toContainText("Production (EU)");
+    await expect(row).not.toContainText(opaque);
+    // The id stays on the element: it is what the test suite and any future
+    // action address the row by, and it is not what the user reads.
+    await expect(row).toHaveAttribute("data-cluster-id", opaque);
+  });
+
+  test("a cluster the registry cannot name falls back to its id", async ({
+    page,
+  }) => {
+    // Deregistered between the save and now, or a build with no registry at
+    // all. The id is then the only honest label left, and a row with no name
+    // would be worse than one named awkwardly.
+    const opaque = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+    await editableDashboard(page, [listedRecord(opaque, THEIRS)]);
+
+    await page.getByTestId("copy-layout").click();
+    await expect(rows(page).first()).toContainText(opaque);
+  });
+
+  test("two clusters are told apart by their labels", async ({ page }) => {
+    // The case the single-row fixtures could never exercise: choosing. A
+    // dialog that offers two rows the user cannot tell apart is the failure
+    // this affordance exists to avoid.
+    await editableDashboard(page, [
+      listedRecord("11111111111111111111111111111111", THEIRS, {
+        clusterLabel: "Staging",
+      }),
+      listedRecord("22222222222222222222222222222222", THEIRS, {
+        clusterLabel: "Production (EU)",
+      }),
+    ]);
+
+    await page.getByTestId("copy-layout").click();
+    await expect(rows(page)).toHaveCount(2);
+    await expect(rows(page).nth(0)).toContainText("Staging");
+    await expect(rows(page).nth(1)).toContainText("Production (EU)");
+  });
+
   test("taking a layout replaces the one being edited", async ({ page }) => {
     await editableDashboard(page, [listedRecord("prod-east", THEIRS)]);
 
@@ -192,6 +248,58 @@ test.describe("Copying a dashboard layout from another cluster", () => {
     await expect(page.getByTestId("grid-item")).toHaveCount(
       THEIRS.items.length,
     );
+  });
+
+  test("the dialog closes to a real control when its list empties", async ({
+    page,
+  }) => {
+    // The one transition that takes the dialog off screen without anybody
+    // closing it. `startEditing` clears the open flag on every Edit press but
+    // not the module-level record list, and fires the read for the new
+    // session without awaiting it -- so a second session can open the dialog
+    // on the first session's answer and then have the new one land narrower.
+    // A layout deleted from another tab or device between the two is enough.
+    //
+    // The dialog going is right; leaving the user with no dialog and no focus
+    // is not. And the button focus would normally return to is gated on the
+    // same emptied list, so it has unmounted in the same render -- which is
+    // why the fallback has to be a control that outlives the whole session.
+    await editableDashboard(page, [listedRecord("prod-east", THEIRS)]);
+
+    let releaseSecond: () => void = () => {};
+    const secondAsked = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    // Added after the stub's own route, so this one wins -- and after the
+    // first session's read has already been served, so every request it sees
+    // is the second session's. Held open until the dialog is up.
+    await page.route(LAYOUT_LIST_URL, async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.fallback();
+        return;
+      }
+      await secondAsked;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [], metadata: { total: 0 } }),
+      });
+    });
+
+    // Out of the first session and into a second, whose read is held open.
+    await page.getByTestId("cancel-edit").click();
+    await expect(page.getByTestId("edit-layout")).toBeVisible();
+    await page.getByTestId("edit-layout").click();
+
+    // Still offered, on the first session's answer.
+    await page.getByTestId("copy-layout").click();
+    await expect(dialog(page)).toBeVisible();
+
+    // Now the new answer lands, and there is nothing left to offer.
+    releaseSecond();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(page.getByTestId("copy-layout")).toHaveCount(0);
+    await expect(page.getByTestId("add-widget")).toBeFocused();
   });
 
   test("the dialog behaves like a dialog", async ({ page }) => {

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { LayoutRecord, LayoutResponse } from "@/lib/preferences.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
 import {
+  copyableLayoutRecords,
   copyableLayouts,
   dropUnknownWidgets,
   layout,
@@ -11,6 +12,7 @@ import {
   layoutRevision,
   layoutUnavailable,
   layoutWithheld,
+  loadCopyableLayouts,
   loadLayout,
   StaleLayoutScopeError,
   saveLayout,
@@ -800,4 +802,107 @@ test("copyableLayouts: the offered config does not alias the record", () => {
   // a fetch result the dialog is still rendering, and a shared array would let
   // one become the other's surprise.
   expect(got[0].config.items).not.toBe(source.items);
+});
+
+// ---------------------------------------------------------------------------
+// loadCopyableLayouts (D17): reading the other clusters' layouts
+// ---------------------------------------------------------------------------
+//
+// The sibling of `loadLayout` above, and tested to the same bar for the same
+// reason: it has the same failure-prone shape -- an AbortController that
+// supersedes an in-flight request, a stale-response guard, and a catch that
+// must leave the records alone rather than clear them. It shipped without any
+// of that exercised, and the e2e specs only ever drive the 200.
+
+test("loadCopyableLayouts: a successful read populates the records", async () => {
+  copyableLayoutRecords.value = [];
+
+  await withFetch(
+    [
+      () =>
+        jsonResponse([listedLayout("prod-east", config([item("a", KNOWN)]))]),
+    ],
+    () => loadCopyableLayouts(),
+  );
+
+  expect(copyableLayoutRecords.value.map((r) => r.clusterId)).toEqual([
+    "prod-east",
+  ]);
+});
+
+test("loadCopyableLayouts: a failed read keeps what was already there", async () => {
+  const before = [listedLayout("prod-east", config([item("a", KNOWN)]))];
+  copyableLayoutRecords.value = before;
+
+  await withFetch([() => jsonResponse({ error: "nope" }, 500)], () =>
+    loadCopyableLayouts(),
+  );
+
+  // Not cleared, and not thrown. This drives an optional affordance: a read
+  // that failed learned nothing, and dropping a list the user may be reading
+  // would close the copy dialog under them to report a background error.
+  expect(copyableLayoutRecords.value).toBe(before);
+});
+
+test("loadCopyableLayouts: an already-aborted signal issues no request", async () => {
+  copyableLayoutRecords.value = [];
+  const ac = new AbortController();
+  ac.abort();
+
+  const { calls } = await withFetch(
+    [
+      () =>
+        jsonResponse([listedLayout("prod-east", config([item("a", KNOWN)]))]),
+    ],
+    () => loadCopyableLayouts(ac.signal),
+  );
+
+  expect(calls).toBe(0);
+  expect(copyableLayoutRecords.value).toEqual([]);
+});
+
+test("loadCopyableLayouts: a superseded read does not overwrite the newer one", async () => {
+  copyableLayoutRecords.value = [];
+
+  // The first call is held open until the second has already answered, which
+  // is the ordering a second Edit press produces: `startEditing` fires this
+  // without awaiting it, so two reads can be in flight at once. The first
+  // must not land on top of the second -- a stale list is a dialog offering
+  // a layout that is no longer there.
+  // Initialized rather than left null: the assignment happens inside the
+  // executor, which runs synchronously, but TypeScript's control flow cannot
+  // see that and would narrow a nullable binding to `null` at the call below.
+  let releaseFirst = () => {};
+  const firstArrived = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (() => {
+    calls += 1;
+    if (calls === 1) {
+      return firstArrived.then(() =>
+        jsonResponse([
+          listedLayout("stale-cluster", config([item("a", KNOWN)])),
+        ]),
+      );
+    }
+    return Promise.resolve(
+      jsonResponse([listedLayout("fresh-cluster", config([item("a", KNOWN)]))]),
+    );
+  }) as unknown as typeof globalThis.fetch;
+
+  try {
+    const first = loadCopyableLayouts();
+    await loadCopyableLayouts();
+    releaseFirst();
+    await first;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(copyableLayoutRecords.value.map((r) => r.clusterId)).toEqual([
+    "fresh-cluster",
+  ]);
 });

@@ -692,7 +692,7 @@ test.describe("Dashboard edit mode", () => {
   test("a widget can be removed, and Cancel brings it back", async ({
     page,
   }) => {
-    await stubLayoutStore(page);
+    const writes = await stubLayoutStore(page);
     await editableDashboard(page);
 
     await expect(widget(page, SUBJECT)).toBeVisible();
@@ -703,6 +703,12 @@ test.describe("Dashboard edit mode", () => {
     await expect(widget(page, SUBJECT)).toHaveCount(0);
     await expect(page.getByTestId("save-layout")).toBeEnabled();
 
+    // The rule the whole editor rests on: nothing reaches the server except
+    // by Save. Asserted here and not left to the visible result, because a
+    // removal that also wrote would look identical on screen -- and the only
+    // sign of it would be the next reload, with the widget gone for good.
+    expect(writes).toHaveLength(0);
+
     await page.getByTestId("cancel-edit").click();
     await page
       .getByRole("dialog")
@@ -710,6 +716,8 @@ test.describe("Dashboard edit mode", () => {
       .click();
 
     await expect(widget(page, SUBJECT)).toBeVisible();
+    // And the undo is an undo, not a second write that happens to restore it.
+    expect(writes).toHaveLength(0);
   });
 
   test("the control is not offered outside edit mode", async ({ page }) => {
@@ -742,6 +750,45 @@ test.describe("Dashboard edit mode", () => {
     // keyboard user means starting the whole journey over.
     await expect(widget(page, removedId)).toHaveCount(0);
     await expect(page.getByTestId("grid-item").first()).toBeFocused();
+  });
+
+  test("emptying the grid puts the keyboard on Add widget", async ({ page }) => {
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    // The case the grid alone could not answer: there is no cell left to move
+    // to, and the only place the keyboard can go is a toolbar control the
+    // grid does not own. It shipped returning early here, which left focus on
+    // the body -- the top of the page, with the whole dashboard just gone.
+    const buttons = page.getByTestId("remove-widget");
+    for (let remaining = await buttons.count(); remaining > 0; remaining--) {
+      await buttons.first().click();
+      await expect(buttons).toHaveCount(remaining - 1);
+    }
+
+    await expect(page.getByTestId("grid-item")).toHaveCount(0);
+    await expect(page.getByTestId("add-widget")).toBeFocused();
+  });
+
+  test("a widget can be removed in one-column mode", async ({ page }) => {
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    // Below the grid's narrow breakpoint there is nothing to arrange -- no
+    // columns to move between and no width to size -- and removal was gated
+    // on the same flag as arranging, so edit mode opened here with nothing in
+    // it. Removing a widget is not a spatial gesture and does not need the
+    // space arranging does.
+    await page.setViewportSize({ width: 700, height: 900 });
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-mode",
+      "narrow",
+    );
+
+    await expect(widget(page, SUBJECT)).toBeVisible();
+    await removeWidget(page, SUBJECT);
+    await expect(widget(page, SUBJECT)).toHaveCount(0);
+    await expect(page.getByTestId("save-layout")).toBeEnabled();
   });
 
   test("a removed widget becomes addable again", async ({ page }) => {

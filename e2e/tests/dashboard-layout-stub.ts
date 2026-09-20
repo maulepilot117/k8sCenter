@@ -64,7 +64,7 @@ export function record(revision: number, config: unknown) {
 export function listedRecord(
   clusterId: string,
   config: unknown,
-  over: { withheld?: string[]; updatedAt?: string } = {},
+  over: { withheld?: string[]; updatedAt?: string; clusterLabel?: string } = {},
 ) {
   return {
     ...record(1, config),
