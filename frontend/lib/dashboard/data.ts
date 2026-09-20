@@ -13,12 +13,26 @@
  */
 import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
-import { api } from "@/lib/api.ts";
+import { ApiError, api } from "@/lib/api.ts";
 import type { DataSourceKey } from "./types.ts";
+import { FAMILY_STATUS_KEYS } from "./types.ts";
+
+/**
+ * Why a source failed, as far as it can be told apart from the response.
+ *
+ * "permission" is a 403 and nothing else: a standing fact about the account
+ * that no amount of waiting changes, which is why the shell renders it without
+ * a retry affordance (R2). Everything else -- a 500, a dropped connection, a
+ * malformed body -- is "failure", which is the behavior that shipped, kept
+ * under a name so the two are distinguishable at the call site.
+ */
+export type SourceErrorKind = "permission" | "failure";
 
 export interface SourceState<T = unknown> {
   data: T | null;
   error: string | null;
+  /** The classification of `error`, and null exactly when `error` is null. */
+  errorKind: SourceErrorKind | null;
   loading: boolean;
   /**
    * The range `data` was fetched under, or null before any data has landed.
@@ -41,6 +55,7 @@ export type SourceFetcher = (
 const IDLE: SourceState = {
   data: null,
   error: null,
+  errorKind: null,
   loading: false,
   range: null,
 };
@@ -49,11 +64,47 @@ const IDLE: SourceState = {
  * of these under a new range refetches; the others do not. */
 const RANGE_SENSITIVE: ReadonlySet<string> = new Set(["dashboard-trends"]);
 
+/**
+ * Sources the periodic refresh leaves alone once they have answered.
+ *
+ * The six discovery routes say whether an operator is installed on the
+ * cluster, which changes when somebody installs one -- not on the timescale of
+ * a 60s tick. Re-asking costs more than the answer is worth: the dashboard
+ * requests all six on mount whether or not a widget reads them, because the
+ * palette has to mark an un-added widget as unavailable before it is added,
+ * and three of them (policies, gitops, mesh) share the backend's
+ * 30-request-per-minute YAML bucket with `/yaml/*` and `/wizards/*`. Polling
+ * them would spend a tenth of that shared budget, per IP, for as long as a
+ * dashboard tab is open.
+ *
+ * "Once it has answered", not "once it has been asked": a status that failed
+ * has nothing on screen to protect, and a widget left in the error state until
+ * the page is reloaded because one discovery call hit a transient 500 is a
+ * worse trade than one extra request a minute. See `refresh` below.
+ */
+const REFRESH_ONCE_SETTLED: ReadonlySet<string> = new Set(FAMILY_STATUS_KEYS);
+
 /** Matches the pre-registry dashboard's 60s interval. */
 export const DASHBOARD_REFRESH_MS = 60_000;
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * A forbidden response, and only a forbidden response, is a permission
+ * outcome.
+ *
+ * Read off the HTTP status rather than the message, because the message is
+ * whatever the handler wrote and a widget must not branch on prose. 401 is
+ * deliberately not here: `api()` refreshes and retries on 401 and surfaces a
+ * session expiry, which is an authentication problem the whole page shares,
+ * not this widget's own.
+ */
+function classify(err: unknown): SourceErrorKind {
+  return err instanceof ApiError && err.status === 403
+    ? "permission"
+    : "failure";
 }
 
 function isAbort(err: unknown): boolean {
@@ -139,7 +190,7 @@ export function createSourceCache(
     entry.promise = fetcher(controller.signal, range)
       .then((data) => {
         if (!current()) return;
-        s.value = { data, error: null, loading: false, range };
+        s.value = { data, error: null, errorKind: null, loading: false, range };
       })
       .catch((err) => {
         if (!current()) return;
@@ -158,7 +209,12 @@ export function createSourceCache(
         // On a first fetch there is nothing to keep, so this is still null and
         // the widget shows the error on its own. `range` is kept too: it
         // describes the data, and the data did not change.
-        s.value = { ...s.value, error: messageOf(err), loading: false };
+        s.value = {
+          ...s.value,
+          error: messageOf(err),
+          errorKind: classify(err),
+          loading: false,
+        };
       })
       .finally(() => {
         if (current()) inFlight.delete(key);
@@ -238,6 +294,15 @@ export function createSourceCache(
       for (const entry of retired) busy.add(entry.key);
       for (const [key, range] of [...fetchedRange.entries()]) {
         if (busy.has(key)) continue;
+        // A discovery status that already answered stays answered until the
+        // next page load -- see REFRESH_ONCE_SETTLED. One that failed is
+        // retried like anything else.
+        if (
+          REFRESH_ONCE_SETTLED.has(key) &&
+          sig(key as DataSourceKey).value.data !== null
+        ) {
+          continue;
+        }
         run(key as DataSourceKey, range);
       }
     },
@@ -285,31 +350,48 @@ export function createSourceCache(
   return cache;
 }
 
-/** The real fetchers. Endpoints and shapes match what DashboardV2 fetched
+/** GET an endpoint and hand back the `data` envelope every handler writes. */
+async function read(path: string, signal: AbortSignal): Promise<unknown> {
+  return (await api<unknown>(path, { method: "GET", signal })).data;
+}
+
+/**
+ * The real fetchers. Endpoints and shapes match what DashboardV2 fetched
  * before the extraction; cluster-info and recent-events gain the 60s refresh
- * the other two always had, because a silently ageing event list is a defect. */
-export const dashboardData: SourceCache = createSourceCache({
-  "dashboard-summary": async (signal) =>
-    (
-      await api<unknown>("/v1/cluster/dashboard-summary", {
-        method: "GET",
-        signal,
-      })
-    ).data,
-  "dashboard-trends": async (signal, range) =>
-    (
-      await api<unknown>(`/v1/cluster/dashboard-trends?range=${range}`, {
-        method: "GET",
-        signal,
-      })
-    ).data,
-  "cluster-info": async (signal) =>
-    (await api<unknown>("/v1/cluster/info", { method: "GET", signal })).data,
-  "recent-events": async (signal) =>
-    (
-      await api<unknown>("/v1/resources/events?limit=10", {
-        method: "GET",
-        signal,
-      })
-    ).data,
-});
+ * the other two always had, because a silently ageing event list is a defect.
+ *
+ * Exported so `data_test.ts` can assert that every key in the union has one:
+ * a key with no entry here is invisible at runtime -- `ensure` returns without
+ * issuing anything and a widget declaring it sits in the skeleton forever.
+ */
+export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
+  "dashboard-summary": (signal) =>
+    read("/v1/cluster/dashboard-summary", signal),
+  "dashboard-trends": (signal, range) =>
+    read(`/v1/cluster/dashboard-trends?range=${range}`, signal),
+  "cluster-info": (signal) => read("/v1/cluster/info", signal),
+  "recent-events": (signal) => read("/v1/resources/events?limit=10", signal),
+
+  // The six discovery routes. Each answers "is this feature installed", which
+  // is the question its own list endpoint cannot answer -- see
+  // FAMILY_STATUS_KEYS in types.ts. They are range-insensitive, so the 60s
+  // refresh keeps them current and a time-range change does not refetch them.
+  "policies-status": (signal) => read("/v1/policies/status", signal),
+  "gitops-status": (signal) => read("/v1/gitops/status", signal),
+  "certificates-status": (signal) => read("/v1/certificates/status", signal),
+  "mesh-status": async (signal) => {
+    // The one route of the six that wraps its payload -- `{ status: {...} }`
+    // -- kept symmetric with the rest of /mesh/*. Unwrapped here so that
+    // `featurePresent` reads one shape rather than six. A body without the
+    // wrapper yields null, which reads as absent: saying "not installed" about
+    // a response we cannot parse is the safe direction, because the other one
+    // renders an absent mesh as a healthy one.
+    const body = await read("/v1/mesh/status", signal);
+    return (body as { status?: unknown } | null)?.status ?? null;
+  },
+  "external-secrets-status": (signal) =>
+    read("/v1/externalsecrets/status", signal),
+  "velero-status": (signal) => read("/v1/velero/status", signal),
+};
+
+export const dashboardData: SourceCache = createSourceCache(DASHBOARD_FETCHERS);

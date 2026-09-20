@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import { ApiError } from "@/lib/api.ts";
 import type { SourceFetcher } from "./data.ts";
-import { createSourceCache } from "./data.ts";
+import { createSourceCache, DASHBOARD_FETCHERS } from "./data.ts";
+import { DATA_SOURCE_KEYS } from "./types.ts";
 
 // The cache exists so that N widgets declaring the same source produce one
 // request, and so that a failure is a value a widget can render rather than a
@@ -650,4 +652,134 @@ test("startRefresh: a tick waits while a superseded request is still on the wire
 
   pending.get("6h")?.resolve("6h-data");
   await cache.settled();
+});
+
+// --- Permission classification (R2) ---------------------------------------
+//
+// A 403 and a 500 are both "the fetch failed", and the dashboard has to tell
+// them apart: one is a transient condition worth retrying and the other is a
+// standing fact about the account, which the shell renders without a retry
+// affordance. The cache is the only place that still holds the thrown error,
+// so the distinction is made here and carried on the state.
+
+test("errorKind: a forbidden response is classified as a permission outcome", async () => {
+  const cache = createSourceCache({
+    "dashboard-summary": () =>
+      Promise.reject(new ApiError(403, 403, "Forbidden")),
+  });
+
+  cache.ensure(["dashboard-summary"], "1h");
+  await cache.settled();
+
+  const s = cache.state("dashboard-summary");
+  expect(s.errorKind).toBe("permission");
+  expect(s.error).toContain("Forbidden");
+});
+
+test("errorKind: any other failure stays an ordinary failure", async () => {
+  const cache = createSourceCache({
+    "dashboard-summary": () => Promise.reject(new ApiError(500, 500, "boom")),
+    "cluster-info": () => Promise.reject(new Error("network down")),
+  });
+
+  cache.ensure(["dashboard-summary", "cluster-info"], "1h");
+  await cache.settled();
+  expect(cache.state("dashboard-summary").errorKind).toBe("failure");
+  expect(cache.state("cluster-info").errorKind).toBe("failure");
+});
+
+test("errorKind: a recovered refresh clears the earlier classification", async () => {
+  // Permissions change under a live session -- a role binding added while the
+  // dashboard is open -- and a widget left in the permission state after the
+  // next refresh succeeded would be telling the user something untrue.
+  let attempt = 0;
+  const cache = createSourceCache({
+    "dashboard-summary": () => {
+      attempt++;
+      return attempt === 1
+        ? Promise.reject(new ApiError(403, 403, "Forbidden"))
+        : Promise.resolve("ok");
+    },
+  });
+
+  cache.ensure(["dashboard-summary"], "1h");
+  await cache.settled();
+  expect(cache.state("dashboard-summary").errorKind).toBe("permission");
+
+  cache.refresh();
+  await cache.settled();
+  const s = cache.state("dashboard-summary");
+  expect(s.errorKind).toBeNull();
+  expect(s.error).toBeNull();
+  expect(s.data).toBe("ok");
+});
+
+test("errorKind: an idle key carries no classification", () => {
+  const cache = createSourceCache({});
+  expect(cache.state("dashboard-summary").errorKind).toBeNull();
+});
+
+test("every declared source key has a fetcher", () => {
+  // A key in the union with no entry in the table is invisible: `ensure`
+  // returns without issuing anything, the state stays idle, and a widget
+  // declaring it sits in the skeleton forever with nothing in the console.
+  const missing = DATA_SOURCE_KEYS.filter((k) => !(k in DASHBOARD_FETCHERS));
+  expect(missing).toEqual([]);
+});
+
+test("refresh: a settled family status is not re-polled", async () => {
+  // Three of the six discovery routes (policies, gitops, mesh) share the
+  // backend's 30-request-per-minute YAML bucket with /yaml/* and /wizards/*.
+  // The dashboard asks for all six on mount whether or not a widget reads
+  // them, so re-asking every 60s would spend a tenth of that shared budget,
+  // per IP, for as long as a dashboard tab is open -- to re-learn an answer
+  // that changes when someone installs an operator. Fetched once per page
+  // load instead.
+  let calls = 0;
+  const cache = createSourceCache({
+    "mesh-status": () => {
+      calls++;
+      return Promise.resolve({ detected: "istio" });
+    },
+    "dashboard-summary": () => Promise.resolve("s"),
+  });
+
+  cache.ensure(["mesh-status", "dashboard-summary"], "1h");
+  await cache.settled();
+  expect(calls).toBe(1);
+
+  cache.refresh();
+  await cache.settled();
+  expect(calls).toBe(1);
+  // The ordinary sources are unaffected.
+  expect(cache.state("dashboard-summary").data).toBe("s");
+});
+
+test("refresh: a family status that has never landed is retried", async () => {
+  // The exemption above is "do not re-ask a question already answered", not
+  // "ask once and give up": a widget whose family status hit a transient 500
+  // would otherwise sit in the error state until the page is reloaded.
+  let calls = 0;
+  const cache = createSourceCache({
+    "mesh-status": () => {
+      calls++;
+      return calls === 1
+        ? Promise.reject(new ApiError(500, 500, "boom"))
+        : Promise.resolve({ detected: "istio" });
+    },
+  });
+
+  cache.ensure(["mesh-status"], "1h");
+  await cache.settled();
+  expect(cache.state("mesh-status").error).toBeTruthy();
+
+  cache.refresh();
+  await cache.settled();
+  expect(calls).toBe(2);
+  expect(cache.state("mesh-status").data).toEqual({ detected: "istio" });
+
+  // And once it has landed, the exemption applies again.
+  cache.refresh();
+  await cache.settled();
+  expect(calls).toBe(2);
 });

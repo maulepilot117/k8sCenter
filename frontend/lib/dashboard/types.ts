@@ -29,6 +29,31 @@ export const WIDGET_FAMILIES = [
 ] as const;
 export type WidgetFamily = (typeof WIDGET_FAMILIES)[number];
 
+/**
+ * The discovery routes that say whether a CRD-discovered feature is installed.
+ *
+ * These are data sources like any other, but they are named apart because they
+ * are the only ones that answer a question about the CLUSTER rather than about
+ * a workload: is cert-manager here at all? A family's list endpoint cannot
+ * answer it -- the backend returns 200 with an empty array whether the
+ * operator is absent or merely has nothing to report, so a widget inferring
+ * absence from an empty list renders "no expiring certificates" on a cluster
+ * with no cert-manager, which is the exact failure R1 forbids.
+ *
+ * Six families, three payload shapes, one rule: `detected` is `false` or `""`
+ * when the feature is absent, and names the implementation otherwise. See
+ * `featurePresent` in widget-state.ts, which is the only place that reads it.
+ */
+export const FAMILY_STATUS_KEYS = [
+  "policies-status",
+  "gitops-status",
+  "certificates-status",
+  "mesh-status",
+  "external-secrets-status",
+  "velero-status",
+] as const;
+export type FamilyStatusKey = (typeof FAMILY_STATUS_KEYS)[number];
+
 /** Every distinct backend read the dashboard performs. A widget declares which
  * it needs; the cache in data.ts fetches each key at most once per cycle. */
 export const DATA_SOURCE_KEYS = [
@@ -36,6 +61,7 @@ export const DATA_SOURCE_KEYS = [
   "dashboard-trends",
   "cluster-info",
   "recent-events",
+  ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
 
@@ -116,6 +142,23 @@ export interface WidgetDef {
    * `render` is called. Omitted means every source is required.
    */
   optionalSources?: DataSourceKey[];
+  /**
+   * The CRD-discovered family this widget needs installed, if any.
+   *
+   * Declaring it is what buys the widget an explicit "not installed on this
+   * cluster" state, resolved by WidgetHost before `render` is ever called --
+   * so the widget body never learns it is unavailable, and never has to
+   * decide whether its own empty list means "nothing to report" or "no
+   * operator". Deciding that once here, rather than in every widget that
+   * reads a CRD-backed endpoint, is the mitigation the design spec named for
+   * the render contract itself (KTD1).
+   *
+   * The key is fetched and required alongside `sources`: it cannot be listed
+   * in `optionalSources`, because a widget that renders before its family
+   * status has landed is the case this field exists to prevent. A widget that
+   * omits this field behaves exactly as it did before availability existed.
+   */
+  familyStatus?: FamilyStatusKey;
   /**
    * Smallest the editor will let the user resize this widget.
    *

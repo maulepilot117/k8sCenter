@@ -1,4 +1,4 @@
-import { useSignal } from "@preact/signals";
+import { useComputed, useSignal } from "@preact/signals";
 import type { JSX } from "preact";
 import { useEffect, useMemo, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/Skeleton.tsx";
 // Registers every shipped widget before first render.
 import "@/components/dashboard/widgets/index.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
+import type { FamilyStatuses } from "@/lib/dashboard/catalog.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import type { EditSession } from "@/lib/dashboard/edit-session.ts";
 import {
@@ -50,6 +51,8 @@ import type {
   LayoutItem,
   WidgetDef,
 } from "@/lib/dashboard/types.ts";
+import { FAMILY_STATUS_KEYS } from "@/lib/dashboard/types.ts";
+import { sourcesOf } from "@/lib/dashboard/widget-state.ts";
 import type {
   ClusterInfoData,
   DashboardSummary,
@@ -78,7 +81,8 @@ const ROOT_STYLE: JSX.CSSProperties = { minHeight: "400px" };
 
 /**
  * Every source this layout's widgets read, plus the two the header reads for
- * its subtitle.
+ * its subtitle and the six the catalog needs to answer whether a widget can
+ * work on this cluster at all.
  *
  * Derived from the live layout rather than the shipped default: a stored
  * layout carrying a widget the default does not have would otherwise never
@@ -89,7 +93,21 @@ function sourcesFor(config: DashboardLayoutConfig): DataSourceKey[] {
     ...new Set<DataSourceKey>([
       "cluster-info",
       "dashboard-summary",
-      ...config.items.flatMap((i) => getWidget(i.id)?.sources ?? []),
+      // Every family's discovery status, whether or not a widget reading it is
+      // on this layout. The palette has to mark a widget that cannot work on
+      // this cluster BEFORE it is added (R3), and a widget that is merely in
+      // the catalog has nothing placed to pull its status in -- so the status
+      // set is a property of the catalog, not of the arrangement. Six extra
+      // reads on mount, deduped by `ensure` and refreshed on the same 60s
+      // tick as everything else.
+      ...FAMILY_STATUS_KEYS,
+      // `sourcesOf`, not `.sources`: a widget's declared family status is not
+      // in its own source list, and a widget whose status is never fetched
+      // sits in the skeleton forever.
+      ...config.items.flatMap((i) => {
+        const def = getWidget(i.id);
+        return def ? sourcesOf(def) : [];
+      }),
     ]),
   ];
 }
@@ -307,6 +325,24 @@ export default function DashboardV2() {
    * the grid replaces every cell on the second.
    */
   const focus = useDashboardFocus(editing, gridEpoch.value);
+
+  /**
+   * The six family statuses, as one value the palette can be handed.
+   *
+   * Computed rather than rebuilt inline on every render: `WidgetPalette`
+   * memoizes its catalog rows on this, and a fresh object per render would
+   * re-run a bounded grid scan per entry on every keystroke in its search box.
+   * A computed changes identity only when one of the six states actually
+   * does.
+   */
+  const familyStatuses = useComputed<FamilyStatuses>(() =>
+    Object.fromEntries(
+      FAMILY_STATUS_KEYS.map((key) => [
+        key,
+        dashboardData.signalFor(key).value,
+      ]),
+    ),
+  );
 
   // The layout on screen decides which sources are fetched, so this re-runs
   // when the load replaces the default with the user's arrangement.
@@ -964,6 +1000,7 @@ export default function DashboardV2() {
           scope={session.value.working.scope}
           placed={session.value.working.items}
           columns={session.value.working.columns}
+          familyStatuses={familyStatuses.value}
           onAdd={addWidget}
           onClose={closePalette}
         />
