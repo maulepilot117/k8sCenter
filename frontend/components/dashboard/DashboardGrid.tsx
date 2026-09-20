@@ -6,6 +6,7 @@ import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import type { Cell } from "@/lib/dashboard/grid.ts";
 import {
   cellFromPoint,
+  compact,
   dragTarget,
   layoutHeight,
   metricsFrom,
@@ -72,12 +73,38 @@ const RESIZE_HANDLE_SIZE = 24;
 const RESIZE_GRIP_SIZE = 16;
 
 /**
+ * The remove control's pointer target, held to the same WCAG 2.2 AA Target
+ * Size (Minimum) bar as the resize grip above.
+ *
+ * It sits inside the 40px title row rather than beside it, so the two targets
+ * in that row -- this one and the drag handle underneath it -- overlap rather
+ * than adjoin. 2.5.8 measures spacing between targets that do not overlap, and
+ * an enclosed target is the documented exception; the drag handle is the
+ * larger surface and this is the smaller one cut out of it.
+ */
+const REMOVE_HANDLE_SIZE = 24;
+
+/**
  * The focus ring for a grid item. Utilities rather than an inline style,
  * because `:focus-visible` has no inline form -- and an arrangeable widget with
  * no visible focus indicator is a keyboard path nobody can follow.
  */
 const ITEM_FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+
+/**
+ * The remove control's surface, ring and hover wash.
+ *
+ * Utilities rather than an inline style, for the same reason `ITEM_FOCUS_RING`
+ * is one -- neither `:focus-visible` nor `:hover` has an inline form -- and
+ * the same glass pill the edit toolbar's own buttons wear, because this is
+ * chrome sitting on a data surface. It carries that surface at rest rather
+ * than only on hover: the title row it covers already holds a title, and four
+ * widgets put a "View all" link exactly where this sits, so a bare glyph over
+ * them would read as part of the card rather than as a control on top of it.
+ */
+const REMOVE_BUTTON_CLASS =
+  "cursor-pointer rounded-md border border-glass-border bg-glass-surface hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 
 /** What a pointer session is doing. Only one runs at a time. */
 type SessionKind = "drag" | "resize";
@@ -116,6 +143,8 @@ interface GridItemProps {
   onDragStart: (event: JSX.TargetedPointerEvent<HTMLElement>) => void;
   onResizeStart: (event: JSX.TargetedPointerEvent<HTMLElement>) => void;
   onKeyDown: (event: JSX.TargetedKeyboardEvent<HTMLElement>) => void;
+  /** Takes this widget off the working copy. */
+  onRemove: () => void;
 }
 
 /**
@@ -135,6 +164,7 @@ export function GridItem({
   onDragStart,
   onResizeStart,
   onKeyDown,
+  onRemove,
 }: GridItemProps) {
   const style: JSX.CSSProperties = narrow
     ? { gridColumn: "1 / -1", gridRow: `span ${item.h}` }
@@ -155,11 +185,13 @@ export function GridItem({
       data-instance-id={item.instanceId}
       data-dragging={dragging ? "true" : undefined}
       data-resizing={resizing ? "true" : undefined}
-      // The whole item is the widget's one tab stop while editing. The two
-      // handles below deliberately are not (see the note on the drag handle),
-      // and the widget's own content is inert, so a Tab through an editable
-      // grid stops once per widget rather than on every link inside every
-      // card.
+      // The item is the widget's tab stop for arranging it while editing. The
+      // two pointer handles below deliberately are not (see the note on the
+      // drag handle), and the widget's own content is inert -- so a Tab
+      // through an editable grid stops on the item and then on its remove
+      // button, rather than on every link inside every card. The remove
+      // button is a stop because it is the one control here with no keyboard
+      // equivalent on the item itself; see its own note.
       //
       // No tabindex at all outside edit mode, rather than -1: a -1 element is
       // still focused by a click, which would ring a widget nobody can move.
@@ -216,6 +248,67 @@ export function GridItem({
             touchAction: "none",
           }}
         />
+      )}
+      {arrangeable && (
+        // The title row's right end, painted over the drag handle rather than
+        // beside it -- the handle spans the whole row, so there is no "beside".
+        // zIndex 2 puts it above the handle, which is what makes a press land
+        // here instead of starting a drag; the two guards below are the
+        // belt to that braces, and are what `PinnedResources.tsx:167-186`
+        // does for the same reason (its row is an anchor).
+        //
+        // A real tab stop, unlike the drag handle and the resize grip. Those
+        // two have keyboard equivalents on the item itself -- the arrows move,
+        // Shift and an arrow sizes -- so they can be pointer affordances with
+        // no name and no role. Removal has no such equivalent, and a visible
+        // control that only a pointer can reach is a control a keyboard user
+        // does not have. So editing a widget is two tab stops: the item, then
+        // its remove button.
+        //
+        // No confirmation. Removal is one Cancel away from being undone and
+        // writes nothing until Save, and a modal between the user and every
+        // widget they want gone would make arranging a dashboard tedious --
+        // which is the thing that actually loses layouts.
+        <button
+          type="button"
+          data-testid="remove-widget"
+          aria-label={`Remove ${def.title}`}
+          title={`Remove ${def.title}`}
+          onPointerDown={(e) => {
+            // Stops a press on this button from being read as a grab. The
+            // stacking above already keeps the event off the handle; this is
+            // what keeps that true if the two ever stop overlapping.
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRemove();
+          }}
+          class={REMOVE_BUTTON_CLASS}
+          style={{
+            position: "absolute",
+            right: "4px",
+            top: `${(DRAG_HANDLE_HEIGHT - REMOVE_HANDLE_SIZE) / 2}px`,
+            width: `${REMOVE_HANDLE_SIZE}px`,
+            height: `${REMOVE_HANDLE_SIZE}px`,
+            zIndex: 2,
+            display: "grid",
+            placeItems: "center",
+            padding: 0,
+            // 1.4.11 asks 3:1 of a control against what is behind it, and
+            // --text-muted does not have it on these cards; --text-secondary
+            // is the same token the resize grip settled on for the same test.
+            color: "var(--text-secondary)",
+            fontSize: "14px",
+            lineHeight: 1,
+          }}
+        >
+          {/* The glyph is decoration: the button's accessible name already
+              says what it removes, and a multiplication sign read aloud
+              beside that name is noise. */}
+          <span aria-hidden="true">✕</span>
+        </button>
       )}
       {arrangeable && (
         // The bottom-right corner, the one convention every resizable surface
@@ -353,6 +446,18 @@ export default function DashboardGrid({
   const gridRef = useRef<HTMLDivElement | null>(null);
   /** Ends the session in flight, if there is one. Set for the grid's life. */
   const endSession = useRef<((restore: boolean) => void) | null>(null);
+  /**
+   * The reading-order position a removal just vacated, until the render
+   * without that widget has happened.
+   *
+   * Removing the focused widget takes the focused element out of the document,
+   * and the browser's answer to that is the body -- which is the top of the
+   * page. Where focus should go instead is not knowable until the layout has
+   * re-compacted, so the position is recorded here and spent by the effect
+   * below. A ref rather than a signal: nothing renders from it, and a render
+   * it caused would be a render for a value no cell reads.
+   */
+  const focusAfterRemoval = useRef<number | null>(null);
 
   /**
    * The one way the working copy changes, so that nothing can reshape the
@@ -384,6 +489,31 @@ export default function DashboardGrid({
     measure();
     return () => ro.disconnect();
   }, []);
+
+  // Puts the keyboard back on the grid after a removal took it off.
+  //
+  // The vacated reading-order position, or the last cell when the widget that
+  // went was the last one. Position rather than identity: what the user wants
+  // next is whatever moved up into the gap, which is a different widget every
+  // time and has no id worth recording. An empty grid leaves focus where the
+  // browser put it -- there is no cell to go to, and the toolbar belongs to
+  // the caller.
+  //
+  // A layout effect, so focus lands before the browser paints and the page
+  // never shows a frame with nothing focused. It runs on every change to the
+  // working copy and does nothing unless a removal armed it: a drag must not
+  // move the keyboard, and the pointer user doing the dragging is not looking
+  // for it.
+  useLayoutEffect(() => {
+    if (!IS_BROWSER) return;
+    const vacated = focusAfterRemoval.current;
+    if (vacated === null) return;
+    focusAfterRemoval.current = null;
+    const cells =
+      gridRef.current?.querySelectorAll<HTMLElement>("[data-instance-id]");
+    if (cells === undefined || cells.length === 0) return;
+    (cells[vacated] ?? cells[cells.length - 1]).focus();
+  }, [items.value]);
 
   // A session cannot outlive the grid either. Nothing unmounts DashboardGrid
   // today short of a navigation, which tears down the listeners anyway, but a
@@ -546,6 +676,34 @@ export default function DashboardGrid({
     // entirely. Without this the widget stays lifted and follows the cursor
     // with no button held, and only Escape gets out of it.
     globalThis.addEventListener("blur", () => end(true), listen);
+  }
+
+  /**
+   * Takes a widget off the working copy.
+   *
+   * Compacted afterwards, like every other write path here: a layout with a
+   * hole in it is not the canonical form of itself, and leaving one would mean
+   * the arrangement the user sees is not the one `isDirty` compares or Save
+   * writes -- the grid re-compacts on its next mount either way.
+   *
+   * Refused mid-session. A drag holds the pre-session layout for its own
+   * Escape to restore, so removing underneath one would either resurrect the
+   * widget on cancel or restore a layout that no longer describes the grid.
+   * Unreachable by pointer -- a press cannot be in two places -- but a click
+   * on one widget's remove button while a touch drag runs on another is not.
+   */
+  function removeItem(instanceId: string, def: WidgetDef) {
+    if (session.value !== null) return;
+    const before = items.value;
+    const index = before.findIndex((i) => i.instanceId === instanceId);
+    if (index === -1) return;
+    focusAfterRemoval.current = index;
+    setItems(compact(before.filter((i) => i.instanceId !== instanceId)));
+    // Said rather than left to the moved focus: the cell focus lands on
+    // announces its own placement, which tells the user where they now are but
+    // never that something went. The two read together as "removed X" then
+    // "you are on Y".
+    announcement.value = `Removed ${def.title}`;
   }
 
   /** Moves a widget: the pointer's travel in cells applied to where it began. */
@@ -721,6 +879,7 @@ export default function DashboardGrid({
             onDragStart={(e) => startDrag(item.instanceId, e)}
             onResizeStart={(e) => startResize(item.instanceId, def, e)}
             onKeyDown={(e) => handleItemKey(item, def, e)}
+            onRemove={() => removeItem(item.instanceId, def)}
           />
         ))}
       </div>
