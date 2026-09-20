@@ -329,7 +329,7 @@ export function layoutFromResponse(
 ): LoadedLayout {
   if (res === null) {
     return {
-      config: DEFAULT_LAYOUTS[scope],
+      config: defaultLayoutFor(scope),
       revision: 0,
       withheld: [],
       warnings: [],

@@ -458,6 +458,17 @@ export default function DashboardGrid({
    * it caused would be a render for a value no cell reads.
    */
   const focusAfterRemoval = useRef<number | null>(null);
+  /**
+   * Counts removals, and exists only to be the effect's dependency.
+   *
+   * The effect below cannot key on the working copy: that changes on every
+   * cell a drag crosses, so a pre-paint effect for a once-per-removal job
+   * would be scheduled and run on every frame of every gesture. Nor can it key
+   * on `focusAfterRemoval` itself -- removing the first widget and then the
+   * widget that took its place records index 0 twice, and a dependency that
+   * did not change is an effect that does not run.
+   */
+  const removals = useSignal(0);
 
   /**
    * The one way the working copy changes, so that nothing can reshape the
@@ -500,10 +511,11 @@ export default function DashboardGrid({
   // the caller.
   //
   // A layout effect, so focus lands before the browser paints and the page
-  // never shows a frame with nothing focused. It runs on every change to the
-  // working copy and does nothing unless a removal armed it: a drag must not
-  // move the keyboard, and the pointer user doing the dragging is not looking
-  // for it.
+  // never shows a frame with nothing focused. Keyed on the removal counter
+  // rather than on the working copy, so a drag -- which commits a new layout
+  // for every cell the pointer crosses -- does not schedule it at all. A drag
+  // must not move the keyboard anyway, and the pointer user doing the dragging
+  // is not looking for it.
   useLayoutEffect(() => {
     if (!IS_BROWSER) return;
     const vacated = focusAfterRemoval.current;
@@ -513,7 +525,7 @@ export default function DashboardGrid({
       gridRef.current?.querySelectorAll<HTMLElement>("[data-instance-id]");
     if (cells === undefined || cells.length === 0) return;
     (cells[vacated] ?? cells[cells.length - 1]).focus();
-  }, [items.value]);
+  }, [removals.value]);
 
   // A session cannot outlive the grid either. Nothing unmounts DashboardGrid
   // today short of a navigation, which tears down the listeners anyway, but a
@@ -698,6 +710,10 @@ export default function DashboardGrid({
     const index = before.findIndex((i) => i.instanceId === instanceId);
     if (index === -1) return;
     focusAfterRemoval.current = index;
+    // Before the layout write, so both land in one render: Preact batches
+    // signal writes made in the same turn, and the effect that spends this
+    // counter then runs against the DOM the new layout produced.
+    removals.value += 1;
     setItems(compact(before.filter((i) => i.instanceId !== instanceId)));
     // Said rather than left to the moved focus: the cell focus lands on
     // announces its own placement, which tells the user where they now are but

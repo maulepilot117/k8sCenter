@@ -328,21 +328,12 @@ type LayoutResponse struct {
 // widget, so no stored layout can name a namespace at all. It is written now
 // because the first parameterized widget must not have to remember it.
 func (h *Handler) HandleListLayouts(w http.ResponseWriter, r *http.Request) {
-	user, ok := h.begin(w, r)
+	records, ok := h.ownedRecords(w, r, store.PreferenceKindDashboardLayout,
+		"failed to list dashboard layouts")
 	if !ok {
 		return
 	}
 
-	records, err := h.Store.List(r.Context(), user.ID, store.PreferenceKindDashboardLayout)
-	if err != nil {
-		h.logger().Error("preferences: listing dashboard layouts failed", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError,
-			"failed to list dashboard layouts", "")
-		return
-	}
-
-	// [] and never null: a client iterating the response should not have to
-	// special-case the empty case. Mirrors h.list.
 	out := make([]LayoutResponse, 0, len(records))
 	for _, rec := range records {
 		filtered, withheld, err := withholdNamespaced(rec.Config)
@@ -363,10 +354,7 @@ func (h *Handler) HandleListLayouts(w http.ResponseWriter, r *http.Request) {
 		out = append(out, LayoutResponse{PreferenceRecord: rec, Withheld: withheld})
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, api.Response{
-		Data:     out,
-		Metadata: &api.Metadata{Total: len(out)},
-	})
+	writeList(w, out)
 }
 
 // withholdNamespaced removes every placement naming a namespace and returns
@@ -380,30 +368,9 @@ func (h *Handler) HandleListLayouts(w http.ResponseWriter, r *http.Request) {
 // A config naming no namespace is returned byte for byte as stored, with no
 // re-marshal -- which is every config the catalog can currently produce.
 func withholdNamespaced(config json.RawMessage) (json.RawMessage, []string, error) {
-	var cfg DashboardLayoutConfig
-	if err := json.Unmarshal(config, &cfg); err != nil {
-		return nil, nil, fmt.Errorf("stored layout is not a layout config: %w", err)
-	}
-
-	kept := make([]DashboardLayoutItem, 0, len(cfg.Items))
-	var withheld []string
-	for _, it := range cfg.Items {
-		if it.Params[paramKeyNamespace] == "" {
-			kept = append(kept, it)
-			continue
-		}
-		withheld = append(withheld, it.InstanceID)
-	}
-	if len(withheld) == 0 {
-		return config, nil, nil
-	}
-
-	cfg.Items = kept
-	filtered, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("re-marshalling a filtered layout: %w", err)
-	}
-	return filtered, withheld, nil
+	return withholdNamespaces(config, func(string) (bool, error) {
+		return false, nil
+	})
 }
 
 // HandleGetLayout returns the caller's layout for one dashboard scope.
@@ -675,6 +642,28 @@ func (h *Handler) writeLayoutConflict(w http.ResponseWriter) {
 func (h *Handler) withholdUnauthorized(ctx context.Context, user *auth.User,
 	clusterID string, config json.RawMessage,
 ) (json.RawMessage, []string, error) {
+	return withholdNamespaces(config, func(ns string) (bool, error) {
+		return h.canSeeNamespace(ctx, user, clusterID, ns)
+	})
+}
+
+// withholdNamespaces is the shared body of the two withhold paths: parse, walk
+// the placements, drop the ones whose namespace `allow` refuses, and say which
+// were dropped.
+//
+// Split out because the two callers differ only in that predicate, and the
+// part they share is the part that must not drift: which field names a
+// namespace, that an unparseable config fails rather than passing through, and
+// that a layout losing nothing is returned byte for byte rather than
+// re-marshalled. Two copies of that walk would be two places to fix the day a
+// second parameter key becomes a namespace.
+//
+// `allow` is asked only about a placement that names a namespace, so a
+// parameterless layout -- every layout the catalog can produce today -- calls
+// it zero times.
+func withholdNamespaces(config json.RawMessage,
+	allow func(namespace string) (bool, error),
+) (json.RawMessage, []string, error) {
 	var cfg DashboardLayoutConfig
 	if err := json.Unmarshal(config, &cfg); err != nil {
 		// Every row was written through ValidateDashboardLayout, so this is
@@ -692,7 +681,7 @@ func (h *Handler) withholdUnauthorized(ctx context.Context, user *auth.User,
 			kept = append(kept, it)
 			continue
 		}
-		allowed, err := h.canSeeNamespace(ctx, user, clusterID, ns)
+		allowed, err := allow(ns)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -765,23 +754,47 @@ func (h *Handler) requireStore(w http.ResponseWriter) bool {
 
 // list is the shared body of the two GET endpoints.
 func (h *Handler) list(w http.ResponseWriter, r *http.Request, kind store.PreferenceKind) {
-	user, ok := h.begin(w, r)
+	records, ok := h.ownedRecords(w, r, kind, "failed to list preferences")
 	if !ok {
 		return
+	}
+	writeList(w, records)
+}
+
+// ownedRecords runs the preconditions and the read every list endpoint shares:
+// an authenticated caller with a configured database, then that caller's
+// records of one kind across every cluster.
+//
+// `failure` is the message a read error answers with, because the layout
+// listing names what the caller asked for rather than "preferences". It has
+// already been written when this returns false; the caller only returns.
+func (h *Handler) ownedRecords(w http.ResponseWriter, r *http.Request,
+	kind store.PreferenceKind, failure string,
+) ([]store.PreferenceRecord, bool) {
+	user, ok := h.begin(w, r)
+	if !ok {
+		return nil, false
 	}
 
 	records, err := h.Store.List(r.Context(), user.ID, kind)
 	if err != nil {
 		h.logger().Error("preferences: list failed", "kind", kind, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to list preferences", "")
-		return
+		httputil.WriteError(w, http.StatusInternalServerError, failure, "")
+		return nil, false
 	}
-	if records == nil {
-		// An owner with no records gets [], never null: a client iterating the
-		// response should not have to special-case the empty case.
-		records = []store.PreferenceRecord{}
-	}
+	return records, true
+}
 
+// writeList answers with a collection and its count.
+//
+// Generic over the element, because the layout listing wraps each record
+// before sending it. The nil slice is normalised here rather than at each call
+// site: an owner with no records gets [], never null, and a client iterating
+// the response should not have to special-case the empty case.
+func writeList[T any](w http.ResponseWriter, records []T) {
+	if records == nil {
+		records = []T{}
+	}
 	httputil.WriteJSON(w, http.StatusOK, api.Response{
 		Data:     records,
 		Metadata: &api.Metadata{Total: len(records)},

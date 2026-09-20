@@ -35,6 +35,17 @@ import type { Ref } from "preact";
 const BUTTON_BASE =
   "rounded-lg px-3.5 py-[7px] text-xs font-medium transition-[background-color,color,opacity] duration-150 disabled:cursor-not-allowed disabled:opacity-50";
 
+/**
+ * The pill every button here wears except Save.
+ *
+ * Save is the one action with a consequence, so it is the one that gets the
+ * accent fill; everything else -- entering edit mode, adding, copying,
+ * resetting, cancelling -- is a glass pill. Named rather than repeated at each
+ * button, so the boundary stays "Save differs" rather than "four of the five
+ * happen to match today".
+ */
+const BUTTON_SECONDARY = `${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`;
+
 export interface EditToolbarProps {
   /** Whether an edit session is open. */
   editing: boolean;
@@ -142,7 +153,7 @@ export default function EditToolbar({
         disabled={disabled}
         title={disabledReason}
         onClick={onEdit}
-        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
+        class={BUTTON_SECONDARY}
       >
         Edit layout
       </button>
@@ -177,7 +188,7 @@ export default function EditToolbar({
         aria-haspopup="dialog"
         aria-expanded={paletteOpen}
         onClick={onAddWidget}
-        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
+        class={BUTTON_SECONDARY}
       >
         Add widget
       </button>
@@ -193,7 +204,7 @@ export default function EditToolbar({
           aria-haspopup="dialog"
           aria-expanded={copyOpen}
           onClick={onCopyFromCluster}
-          class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
+          class={BUTTON_SECONDARY}
         >
           Copy from cluster
         </button>
@@ -208,7 +219,7 @@ export default function EditToolbar({
         // wants undone is exactly the case where nothing has been touched yet.
         disabled={saving}
         onClick={onReset}
-        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
+        class={BUTTON_SECONDARY}
       >
         Reset
       </button>
@@ -220,7 +231,7 @@ export default function EditToolbar({
         // would restore the layout underneath a write that still lands.
         disabled={saving}
         onClick={onCancel}
-        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
+        class={BUTTON_SECONDARY}
       >
         Cancel
       </button>
