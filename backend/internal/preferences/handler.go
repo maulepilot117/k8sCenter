@@ -279,7 +279,7 @@ func (h *Handler) HandleDeletePin(w http.ResponseWriter, r *http.Request) {
 // Dashboard layouts
 // ---------------------------------------------------------------------------
 
-// LayoutResponse is the body both layout endpoints return: the stored record,
+// LayoutResponse is the body every layout endpoint returns: the stored record,
 // plus anything the server removed from it on the way out.
 //
 // Withheld is not cosmetic. The read path drops placements whose namespace the
@@ -291,6 +291,119 @@ func (h *Handler) HandleDeletePin(w http.ResponseWriter, r *http.Request) {
 type LayoutResponse struct {
 	store.PreferenceRecord
 	Withheld []string `json:"withheld,omitempty"`
+}
+
+// HandleListLayouts returns every dashboard layout the caller owns, across all
+// clusters, most recently updated first.
+//
+// It exists for one affordance: "copy this dashboard from another cluster"
+// (spec D-3). Layouts are scoped per (user, cluster, scope), which is what lets
+// a production dashboard differ from a sandbox one, and the cost of that is
+// that arranging the same dashboard twice is manual. The editor closes it by
+// offering the layouts the user already has elsewhere -- which it can only do
+// if it can see them, and the scoped GET below cannot show them: it reads the
+// cluster the request is addressed to, and addressing a request to another
+// cluster requires the admin role (middleware.ClusterContext). An endpoint
+// that answers across clusters without widening anyone's cluster access is the
+// narrower thing, so this is it.
+//
+// Unpaginated, for the same reason HandleListViews is: MaxDashboardLayoutsPerUser
+// is enforced inside the store's INSERT, so the result set is bounded by
+// construction.
+//
+// NOTE ON RE-AUTHORIZATION. The scoped read re-checks every namespace a layout
+// names against the cluster it is stored on, because such a parameter is
+// evidence of what the caller could see when they saved it and never of what
+// they may see now. This endpoint cannot make that check: it spans clusters,
+// and a SelfSubjectAccessReview per record per namespace would reach clusters
+// the caller is not scoped to -- some of them unreachable, any of which would
+// turn one down cluster into a 500 for the whole list. So it takes the other
+// honest answer and drops every namespaced placement unconditionally, naming
+// them in Withheld exactly as the scoped read names the ones it refused. That
+// is the same rule canSeeNamespace already applies when no checker is wired:
+// "could not check" is not "allowed".
+//
+// Today that loop removes nothing -- every widget in the catalog is
+// parameterless and ValidateDashboardLayout refuses parameters on such a
+// widget, so no stored layout can name a namespace at all. It is written now
+// because the first parameterized widget must not have to remember it.
+func (h *Handler) HandleListLayouts(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.begin(w, r)
+	if !ok {
+		return
+	}
+
+	records, err := h.Store.List(r.Context(), user.ID, store.PreferenceKindDashboardLayout)
+	if err != nil {
+		h.logger().Error("preferences: listing dashboard layouts failed", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError,
+			"failed to list dashboard layouts", "")
+		return
+	}
+
+	// [] and never null: a client iterating the response should not have to
+	// special-case the empty case. Mirrors h.list.
+	out := make([]LayoutResponse, 0, len(records))
+	for _, rec := range records {
+		filtered, withheld, err := withholdNamespaced(rec.Config)
+		if err != nil {
+			// Every row was written through ValidateDashboardLayout, so a row
+			// that will not decode is corruption rather than an old shape.
+			// Failing the request is the only safe answer, for the reason
+			// withholdUnauthorized gives: a config that cannot be read is one
+			// whose namespaces cannot be found, and serving it unfiltered is
+			// the thing this exists to stop.
+			h.logger().Error("preferences: filtering a listed dashboard layout failed",
+				"record", rec.ID, "cluster", rec.ClusterID, "error", err)
+			httputil.WriteError(w, http.StatusInternalServerError,
+				"failed to list dashboard layouts", "")
+			return
+		}
+		rec.Config = filtered
+		out = append(out, LayoutResponse{PreferenceRecord: rec, Withheld: withheld})
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, api.Response{
+		Data:     out,
+		Metadata: &api.Metadata{Total: len(out)},
+	})
+}
+
+// withholdNamespaced removes every placement naming a namespace and returns
+// the surviving config plus the instanceIds it dropped.
+//
+// The cross-cluster counterpart to withholdUnauthorized: same shape, same
+// contract on its output, but it answers "may the caller see this namespace?"
+// with a flat no rather than with an access review. HandleListLayouts explains
+// why that is the only answer available to it.
+//
+// A config naming no namespace is returned byte for byte as stored, with no
+// re-marshal -- which is every config the catalog can currently produce.
+func withholdNamespaced(config json.RawMessage) (json.RawMessage, []string, error) {
+	var cfg DashboardLayoutConfig
+	if err := json.Unmarshal(config, &cfg); err != nil {
+		return nil, nil, fmt.Errorf("stored layout is not a layout config: %w", err)
+	}
+
+	kept := make([]DashboardLayoutItem, 0, len(cfg.Items))
+	var withheld []string
+	for _, it := range cfg.Items {
+		if it.Params[paramKeyNamespace] == "" {
+			kept = append(kept, it)
+			continue
+		}
+		withheld = append(withheld, it.InstanceID)
+	}
+	if len(withheld) == 0 {
+		return config, nil, nil
+	}
+
+	cfg.Items = kept
+	filtered, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("re-marshalling a filtered layout: %w", err)
+	}
+	return filtered, withheld, nil
 }
 
 // HandleGetLayout returns the caller's layout for one dashboard scope.

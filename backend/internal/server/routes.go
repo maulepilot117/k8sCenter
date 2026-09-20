@@ -949,7 +949,15 @@ func (s *Server) registerPreferencesRoutes(ar chi.Router) {
 		})
 		// Layouts are a singleton per scope, so there is no POST and no {id}:
 		// the scope is the address. PUT creates or replaces.
+		//
+		// The collection GET is not a second way to read one layout. It spans
+		// clusters, which is what the editor's "copy from another cluster"
+		// needs and what the scoped GET below structurally cannot do -- that
+		// one reads the cluster the request is addressed to, and addressing a
+		// request to another cluster is admin-only. See HandleListLayouts for
+		// what it withholds in exchange.
 		pr.Route("/layouts", func(lr chi.Router) {
+			lr.Get("/", h.HandleListLayouts)
 			lr.Get("/{scope}", h.HandleGetLayout)
 			lr.Put("/{scope}", h.HandleSaveLayout)
 		})
