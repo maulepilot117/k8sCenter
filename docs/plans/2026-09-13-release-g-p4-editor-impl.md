@@ -589,16 +589,54 @@ divergences are below, then what D17 and D18 inherit.
     `e2e/tests/dashboard-palette.spec.ts` -- the Tab cycle, the keyboard after
     a pointer click, and the narrow-mode insertion that found the bad fix.
 
-14. **Left undone, deliberately.** The E2E stub of the layout endpoint
-    validates the request contract but not the layout's geometry, so a spec
-    can see a save succeed for a payload the server would refuse; that is the
-    backend's own test surface (`handler_test.go`, `dashboard_test.go`, the
-    validate fuzz target) and a second implementation of it in a mock would
-    test the mock. No spec adds a widget and then cancels to prove the
-    insertion is discarded -- "Cancel restores" is covered for drags only.
-    And `DashboardV2.tsx` now carries six focus-management refs; **a
-    consolidated focus coordinator is worth doing before D17 adds a
-    seventh.**
+14. **A second review round closed what note 14 first listed as deferred.**
+    That note read "left undone, deliberately" and named three things: the
+    E2E stub validating the request contract but not the layout's geometry,
+    no spec proving Cancel discards an added widget, and six focus-management
+    refs wanting one owner. A second review of the branch -- six reviewers
+    plus an independent cross-model pass, pointed at the fix round rather
+    than at the original feature -- found one P1 and fourteen smaller items.
+    All of them are now applied, those three included, so the paragraph this
+    one replaces is no longer true.
+
+    **The P1 is the one to remember: the test written to guard the Tab-trap
+    repair proved nothing.** It pressed Shift+Tab from the search input and
+    Tab from Close -- the two adjacent, non-wrapping directions a browser
+    handles by itself -- so deleting the whole wrap block left it green. A
+    regression guard that passes without the mechanism it names is worse than
+    no guard, because it reports coverage that does not exist. **The rule this
+    leaves behind: a test written to guard a specific fix has to be run
+    against a tree with that fix removed, once, before it is trusted.** Three
+    other specs from that round failed the same test and were strengthened --
+    the one-column insertion asserted only that the palette closed, the
+    untracked-focus backstop had no test at all, and nothing proved Cancel
+    discards an insertion.
+
+    What moved, and why it matters to D17:
+    - **The disabled-reason decision is now `lib/dashboard/catalog.ts`**, with
+      its own tests, and it carries the `DASHBOARD_MAX_ITEMS` check the client
+      never had. It was logic that needed a test sitting inside a component,
+      which is the exact thing D-10 exists to prevent; the "no room" reason
+      shipped untested at any level for one round. **D17's Remove changes what
+      is placed, so it changes what this function answers -- extend it there,
+      not in the component.**
+    - **Focus management is now `lib/hooks/use-dashboard-focus.ts`.** Six refs
+      and two layout effects coordinated by boolean flags had produced the two
+      worst defects of the previous round. The island calls one named method
+      per gesture. **D17 adds a seventh mover; it calls `armReturnToEdit` (or
+      adds a method here) instead of a new ref.**
+    - **The dialog's focus ring is selected by what is focusable**, not by
+      tag, so a Remove control that is not an input or a button joins the Tab
+      cycle instead of falling into the backstop.
+    - **The narrow-mode focus recovery waits on a microtask, not a frame.** A
+      backgrounded tab throttles frames, and the frame was never what the
+      check needed: the grid's correction lands in a microtask-debounced
+      re-render whose DOM patch blurs the cell synchronously. That last step
+      was *measured* in Chromium this time. The first version of this fix was
+      wrong precisely because nobody measured it.
+    - The E2E layout stub now refuses the geometry the server refuses, and its
+      docstring no longer claims more than it checks. The widget catalog's own
+      rules stay with the Go tests; a second copy here would drift.
 
 ---
 
