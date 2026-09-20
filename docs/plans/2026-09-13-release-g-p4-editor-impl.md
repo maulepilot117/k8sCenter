@@ -451,6 +451,96 @@ searchable; the palette is fully keyboard-operable and closes on Escape and on
 scrim click; an added widget lands somewhere visible; a duplicate is prevented
 for unparameterized widgets with a stated reason.
 
+**AMENDED 2026-09-20 — what D16 shipped.** Written by walking this section's
+own list, per the lesson D12 recorded. Every step above is discharged. The
+divergences are below, then what D17 and D18 inherit.
+
+1. **Stack rot, for the fourth time.** `Deno.test` is `bun:test`, `deno task
+   check` is `bun run check`, and the palette is
+   `components/dashboard/WidgetPalette.tsx`, not `islands/WidgetPalette.tsx`:
+   it renders inside DashboardV2, which is already an island, and the tree
+   that Astro hydrates is `src/islands/`. D17's file list carries the same rot
+   — and one more: there is no `components/dashboard/GridItem.tsx`. `GridItem`
+   is an exported component inside `DashboardGrid.tsx`.
+
+2. **Nine files, not four** (G2, for the fourth time): `lib/dashboard/placement.ts`,
+   `lib/dashboard/placement_test.ts`, `lib/fuzzy-search.ts`,
+   `components/dashboard/WidgetPalette.tsx`,
+   `components/dashboard/EditToolbar.tsx`, `src/islands/DashboardV2.tsx`,
+   `e2e/tests/dashboard-layout-stub.ts`, `e2e/tests/dashboard-palette.spec.ts`,
+   `e2e/tests/dashboard-edit.spec.ts`.
+
+3. **`DashboardGrid.tsx` was NOT modified.** The plan assumed the grid owned
+   edit state; since P2 the island does. The grid holds a private working copy
+   it takes only at mount, so an insertion goes in through `mountGrid` — the
+   same door a completed load and a cancel use — and the session is told
+   separately with `applyChange`, because the grid deliberately does not report
+   the layout it mounts with. **D17's Remove is the mirror image and should use
+   the same door** rather than growing a second write path into the grid.
+
+4. **The data cache had to learn about the working copy.** `dashboardData.ensure`
+   was keyed on the stored layout. A widget added from the palette is in no
+   stored layout until the user saves, so the source it reads was never
+   fetched and the new card would have sat in its loading state forever. The
+   effect now reads `session.working` while a session is open. `ensure` skips
+   an already-fetched source, so this costs nothing on the drag path.
+
+5. **The palette autofocuses in a LAYOUT effect.** A passive effect runs after
+   the click that opened the dialog has finished, which is late enough for the
+   browser to put focus back on the button — the dialog then opens with the
+   keyboard outside it and Escape does nothing. This is D15's focus fix-up
+   finding from the other direction, and it was measured (a probe reading
+   `document.activeElement`), not guessed. `CommandPalette.tsx` papers over the
+   same ordering with `setTimeout(..., 10)`; the plan's instruction to copy it
+   would have copied the workaround. **Any dialog D17 adds inherits this.**
+
+6. **`fuzzySearch` would have truncated the catalog.** It slices to 8 entries
+   with no query and 12 with one — a screenful for a palette with hundreds of
+   navigation entries, and a silent lie for a catalog whose stated contract is
+   that every widget stays reachable. It is now generic over `{id, label,
+   detail}` with an optional limit, so widget definitions are ranked and
+   returned as themselves. The command palette's behaviour is unchanged.
+
+7. **The selection never rests on an entry that cannot be added.** The opening
+   selection, the arrows and hover all skip the already-placed rows, and the
+   selection is -1 when nothing is addable — which is the state a first-time
+   user meets, since the shipped default layout holds all ten widgets. A
+   highlighted row that ignores Enter is a worse promise than no highlight.
+   Those rows carry `aria-disabled` rather than the `disabled` attribute, so
+   they are still announced with their reason; note that Playwright's
+   actionability check waits `aria-disabled` out, so the spec that proves the
+   refusal clicks with `force: true`.
+
+8. **Nothing is addable from a default dashboard, which is D17's other half.**
+   Every palette E2E starts from a deliberately short stored layout. This is
+   not a testing artifact: until Remove ships, a user who has never edited
+   anything opens the catalog and finds every row disabled. D17 closes that
+   loop, and the pair only reads as a feature once both are in.
+
+9. **The E2E stub of the layout endpoint now lives in
+   `e2e/tests/dashboard-layout-stub.ts`**, imported by both dashboard specs.
+   It carries D15's request assertions (method, CSRF and cluster headers,
+   revision and config body), which are the reason these specs measure the
+   client rather than the mock, and a second copy of them is a copy that
+   drifts. `stubLayoutStore` takes an optional pre-loaded layout.
+   **D15's open question is still open**: everything here mocks the endpoint,
+   and D18 has to decide deliberately whether the acceptance specs keep
+   mocking or run serially against the real store and restore the default.
+
+10. **Dev-loop trap, worth remembering.** `styles.css` squashes every
+    transition to 0.01ms under `prefers-reduced-motion: reduce`, which the E2E
+    fixture emulates, and the app sets `transition-property: all`. A
+    `getComputedStyle` read — or a screenshot — taken in the same tick as a
+    class change therefore reports the *pre-transition* colour, which looks
+    exactly like a Tailwind utility that was never generated. Half an hour
+    went into that. Let two frames pass before trusting either.
+
+11. **`DASHBOARD_MAX_ITEMS` is not enforced client-side.** With ten
+    unparameterized widgets a layout cannot reach forty, so a guard here would
+    be untestable code guarding an unreachable state; the server refuses with
+    `limit_reached` and the save path already reports it. The day a
+    parameterized widget ships, the palette is where that check belongs.
+
 ---
 
 ### Task D17: Remove, reset, copy from another cluster
