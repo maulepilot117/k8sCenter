@@ -1,6 +1,15 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
-import { attachAuthInjection, getAuthHeaders } from "../helpers.ts";
+import {
+  attachAuthInjection,
+  focusedElementName,
+  getAuthHeaders,
+} from "../helpers.ts";
+// The route glob and the two pure response shapers, and nothing else from the
+// stub. This file does not stub the store (see the header) -- but the endpoint
+// it talks to is the same one, and the URL and the record shape are exactly the
+// kind of thing the stub's own header warns about keeping a second copy of.
+import { json, LAYOUT_URL, record } from "./dashboard-layout-stub.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "../../frontend/lib/dashboard/default-layout.ts";
 import type {
   DashboardLayoutConfig,
@@ -56,8 +65,13 @@ import type {
  *   - Copy from another cluster: dashboard-copy.spec.ts.
  */
 
+/**
+ * The endpoint as a request path, which `LAYOUT_URL`'s route glob cannot be.
+ *
+ * The stub exports the glob because it registers routes with it; this file
+ * fetches the endpoint for real, and `page.request` wants a path.
+ */
 const LAYOUT_PATH = "/api/v1/preferences/layouts/overview";
-const LAYOUT_URL = "**/api/v1/preferences/layouts/overview";
 
 /** The cluster these layouts belong to. Pinned, never inferred. */
 const CLUSTER = "local";
@@ -92,45 +106,8 @@ async function readStoredLayout(page: Page): Promise<StoredLayout | null> {
       `reading the stored layout failed: ${res.status()} ${await res.text()}`,
     );
   }
-  const record = (await res.json()).data;
-  return { revision: record.revision as number, config: record.config };
-}
-
-/**
- * Writes `config`, claiming whatever revision is stored now.
- *
- * Seeding, not a test of the write path -- a refusal throws with the server's
- * own words rather than leaving the spec to fail later on a layout that was
- * never stored.
- */
-async function seedLayout(
-  page: Page,
-  config: DashboardLayoutConfig,
-): Promise<void> {
-  const current = await readStoredLayout(page);
-  const res = await page.request.put(LAYOUT_PATH, {
-    headers: await layoutHeaders(page),
-    data: { revision: current?.revision ?? 0, config },
-    failOnStatusCode: false,
-  });
-  if (!res.ok()) {
-    throw new Error(
-      `seeding the layout failed: ${res.status()} ${await res.text()}`,
-    );
-  }
-}
-
-/**
- * Puts the shipped default back, so no spec hands its arrangement to the next.
- *
- * Teardown failures throw rather than passing quietly, the same rule
- * helpers.ts states for the pin and saved-view cleanups: a teardown that
- * swallows a failure lets the suite report success while leaving a layout
- * behind, and the next spec fails somewhere unrelated.
- */
-async function restoreDefaultLayout(page: Page): Promise<void> {
-  if ((await readStoredLayout(page)) === null) return;
-  await seedLayout(page, DEFAULT_OVERVIEW_LAYOUT);
+  const stored = (await res.json()).data;
+  return { revision: stored.revision as number, config: stored.config };
 }
 
 /** A layout item's identity and placement, comparable across a round trip. */
@@ -145,6 +122,64 @@ const placements = (items: LayoutItem[]) =>
       h: i.h,
     }))
     .sort((a, b) => a.instanceId.localeCompare(b.instanceId));
+
+/**
+ * Writes `config` over whatever revision is stored, claiming `revision`.
+ *
+ * Seeding, not a test of the write path -- a refusal throws with the server's
+ * own words rather than leaving the spec to fail later on a layout that was
+ * never stored.
+ */
+async function putLayout(
+  page: Page,
+  revision: number,
+  config: DashboardLayoutConfig,
+): Promise<void> {
+  const res = await page.request.put(LAYOUT_PATH, {
+    headers: await layoutHeaders(page),
+    data: { revision, config },
+    failOnStatusCode: false,
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `seeding the layout failed: ${res.status()} ${await res.text()}`,
+    );
+  }
+}
+
+/** Reads the stored revision, then writes `config` over it. */
+async function seedLayout(
+  page: Page,
+  config: DashboardLayoutConfig,
+): Promise<void> {
+  const current = await readStoredLayout(page);
+  await putLayout(page, current?.revision ?? 0, config);
+}
+
+/**
+ * Puts the shipped default back, so no spec hands its arrangement to the next.
+ *
+ * One read, and a write only when there is something to undo: nothing stored
+ * and a stored default are both already clean. Skipping the no-op write is not
+ * only cheaper -- it keeps the revision from climbing on every hook in a file
+ * whose specs assert on revisions the client claims.
+ *
+ * Teardown failures throw rather than passing quietly, the same rule
+ * helpers.ts states for the pin and saved-view cleanups: a teardown that
+ * swallows a failure lets the suite report success while leaving a layout
+ * behind, and the next spec fails somewhere unrelated.
+ */
+async function restoreDefaultLayout(page: Page): Promise<void> {
+  const current = await readStoredLayout(page);
+  if (current === null) return;
+  if (
+    JSON.stringify(placements(current.config.items)) ===
+    JSON.stringify(placements(DEFAULT_OVERVIEW_LAYOUT.items))
+  ) {
+    return;
+  }
+  await putLayout(page, current.revision, DEFAULT_OVERVIEW_LAYOUT);
+}
 
 /**
  * A layout a user could have arranged: the two metric tiles in row 1 swapped.
@@ -236,18 +271,6 @@ async function saveLayout(page: Page): Promise<void> {
   );
 }
 
-/** What `document.activeElement` is, named the way the grid names things. */
-const focused = (page: Page): Promise<string> =>
-  page.evaluate(() => {
-    const el = document.activeElement;
-    return (
-      el?.getAttribute("data-instance-id") ??
-      el?.getAttribute("data-testid") ??
-      el?.tagName ??
-      "none"
-    );
-  });
-
 /**
  * Presses Tab (or Shift+Tab) until `match` accepts the focused element.
  *
@@ -264,7 +287,7 @@ async function tabUntil(
   const seen: string[] = [];
   for (let i = 0; i < limit; i++) {
     await page.keyboard.press(key);
-    const name = await focused(page);
+    const name = await focusedElementName(page);
     seen.push(name);
     if (match(name)) return name;
   }
@@ -377,23 +400,7 @@ test.describe.serial("Dashboard layout acceptance", () => {
         await route.fallback();
         return;
       }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            id: "00000000-0000-0000-0000-000000000001",
-            kind: "dashboard_layout",
-            name: "overview",
-            clusterId: CLUSTER,
-            schemaVersion: 1,
-            revision: 7,
-            config: fromTheFuture,
-            createdAt: "2026-01-01T00:00:00Z",
-            updatedAt: "2026-01-01T00:00:00Z",
-          },
-        }),
-      });
+      await json(route, 200, { data: record(7, fromTheFuture) });
     });
 
     await page.goto("/");

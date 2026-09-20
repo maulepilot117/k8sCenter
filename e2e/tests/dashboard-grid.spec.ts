@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "../fixtures/base.ts";
+import { focusedElementName } from "../helpers.ts";
 // The grid's own constants, imported rather than copied: a change to the row
 // height or the gap has to break these tests loudly, not make them assert the
 // wrong geometry in silence. Importing across the project boundary is the
@@ -831,17 +832,7 @@ test.describe("Dashboard grid resize", () => {
  * while the layout is being arranged.
  */
 test.describe("Dashboard grid keyboard", () => {
-  /** The instance id of whatever currently has focus, or the element's tag. */
-  const focused = (page: Page): Promise<string> =>
-    page.evaluate(() => {
-      const el = document.activeElement;
-      return (
-        el?.getAttribute("data-instance-id") ??
-        el?.getAttribute("data-testid") ??
-        el?.tagName ??
-        "none"
-      );
-    });
+  const focused = focusedElementName;
 
   const widget = (page: Page, id: string) =>
     page.locator(`[data-instance-id="${id}"]`);
