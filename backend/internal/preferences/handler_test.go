@@ -1872,3 +1872,64 @@ func TestHandler_ListLayouts_WithholdsNamespacedItems(t *testing.T) {
 		t.Errorf("the stored row lost its namespaced placement: %s", stored[0].Config)
 	}
 }
+
+// TestHandler_ListLayouts_DropsUnreadableRow pins the blast radius of one
+// corrupt row.
+//
+// The endpoint answers "your layouts elsewhere", and every readable layout is
+// still a truthful answer to that even when one row is not. Failing the whole
+// request would turn a single corrupt row on a single cluster into the loss of
+// the copy affordance everywhere -- the same shape as the down-cluster 500 the
+// handler's re-authorization note rejects, so accepting it here would be
+// inconsistent with the design the endpoint is built on. The client already
+// takes the same view: copyableLayouts skips a record it cannot read.
+//
+// The row is planted through the store rather than the handler on purpose.
+// Every write goes through ValidateDashboardLayout, so this state is not
+// reachable from the API -- which is exactly why nothing would notice the
+// regression without a test that manufactures it.
+func TestHandler_ListLayouts_DropsUnreadableRow(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	if rec := putLayout(t, h, user, "prod-east", "overview", 0,
+		layoutWithItems(t, item(nil))); rec.Code != http.StatusCreated {
+		t.Fatalf("prod-east save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+
+	// Valid JSON, so the column accepts it, but not a layout: items is a
+	// string where the struct wants an array, so withholdNamespaced's
+	// Unmarshal fails exactly as it would on a truncated or half-migrated row.
+	corrupt := store.PreferenceRecord{
+		OwnerID:       user.ID,
+		Kind:          store.PreferenceKindDashboardLayout,
+		Name:          "overview",
+		ClusterID:     "prod-west",
+		DedupKey:      DashboardLayoutDedupKey("overview"),
+		SchemaVersion: DashboardLayoutSchemaVersion,
+		Config:        json.RawMessage(`{"scope":"overview","columns":12,"items":"not-an-array"}`),
+	}
+	if _, err := h.Store.CreateInCluster(t.Context(), corrupt, h.layoutCeiling()); err != nil {
+		t.Fatalf("planting the corrupt row: %v", err)
+	}
+
+	got := listLayouts(t, h, user, "local")
+	if len(got) != 1 {
+		t.Fatalf("list returned %d layouts; want only the readable one (%+v)", len(got), got)
+	}
+	if got[0].ClusterID != "prod-east" {
+		t.Errorf("survivor is on %q; want prod-east", got[0].ClusterID)
+	}
+	// The readable layout arrives whole. A listing that dropped the bad row
+	// but truncated the good one would be a quieter version of the same bug.
+	if !strings.Contains(string(got[0].Config), `"cluster-health"`) {
+		t.Errorf("the readable layout lost its arrangement: %s", got[0].Config)
+	}
+
+	// Dropping is a property of the response. The corrupt row stays on disk
+	// for an operator to inspect; a listing that deleted it would destroy the
+	// evidence of whatever wrote it.
+	if stored := storedLayouts(t, h, user); len(stored) != 2 {
+		t.Errorf("stored %d layouts; want both rows still present", len(stored))
+	}
+}
