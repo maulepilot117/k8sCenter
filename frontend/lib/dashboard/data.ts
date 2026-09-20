@@ -15,7 +15,11 @@ import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import { ApiError, api } from "@/lib/api.ts";
 import type { DataSourceKey } from "./types.ts";
-import { FAMILY_STATUS_KEYS } from "./types.ts";
+import {
+  FAMILY_STATUS_KEYS,
+  RANGE_SENSITIVE_KEYS,
+  sourceCost,
+} from "./types.ts";
 
 /**
  * Why a source failed, as far as it can be told apart from the response.
@@ -60,9 +64,9 @@ const IDLE: SourceState = {
   range: null,
 };
 
-/** Sources whose response depends on the selected time range. Re-ensuring one
- * of these under a new range refetches; the others do not. */
-const RANGE_SENSITIVE: ReadonlySet<string> = new Set(["dashboard-trends"]);
+/** Declared in types.ts beside the source keys themselves, so that adding a
+ * range-backed source is one edit in one file. */
+const RANGE_SENSITIVE = RANGE_SENSITIVE_KEYS;
 
 /**
  * Sources the periodic refresh leaves alone once they have answered.
@@ -86,6 +90,71 @@ const REFRESH_ONCE_SETTLED: ReadonlySet<string> = new Set(FAMILY_STATUS_KEYS);
 
 /** Matches the pre-registry dashboard's 60s interval. */
 export const DASHBOARD_REFRESH_MS = 60_000;
+
+/**
+ * How many non-cheap reads may be on the wire at once. The rest queue.
+ *
+ * Six because that is the per-origin connection ceiling a browser enforces on
+ * HTTP/1.1 anyway: past it the requests queue regardless, and queueing them
+ * here instead means the cache decides the order and can drop one whose
+ * widget went away. Raising it would move the queue back into the browser
+ * without issuing anything sooner.
+ *
+ * The ten shipped widgets read seven non-cheap sources between them -- the
+ * trends series and the six discovery routes -- so at most one waits at load,
+ * and it starts the moment the first of the six answers.
+ *
+ * Cheap reads are not counted or bounded. They are informer lookups; making
+ * one wait behind a Prometheus range query would trade a cost that does not
+ * exist for latency that does.
+ */
+export const MAX_CONCURRENT_EXPENSIVE_FETCHES = 6;
+
+/**
+ * The share of the refresh interval that offsets are spread across.
+ *
+ * Half, not all of it. An offset near the end of the interval would still be
+ * in flight when the next tick arrives, and the tick skips entirely while
+ * anything is outstanding -- so one slow source at offset 59s would stall the
+ * cheap sources' refresh as well. Half the interval leaves every expensive
+ * read a full half-interval to finish in before the next tick looks.
+ */
+const REFRESH_OFFSET_FRACTION = 0.5;
+
+/** FNV-1a, 32-bit. Any stable string hash would do; this one is four lines
+ * and has no dependency. */
+function hash32(value: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Where inside the refresh interval a source is issued.
+ *
+ * Cheap sources go on the tick itself, which is what every source did before
+ * this existed. Everything else gets an offset derived from its key, so a
+ * dashboard holding many expensive widgets spreads its reads across the
+ * interval instead of issuing them all at once (R6).
+ *
+ * Derived from the key rather than drawn at random, because a source that
+ * wandered between ticks would produce a request pattern nobody could read in
+ * a network trace and could drift into lockstep with another source. The
+ * consequence is that two viewers of the same dashboard offset the same
+ * source identically and still align with each other; separating them needs a
+ * per-session seed, which is a larger change than the stampede justifies.
+ *
+ * Pure, and exported for that reason: the scheduling around it is timers.
+ */
+export function sourceRefreshOffsetMs(key: string, intervalMs: number): number {
+  if (sourceCost(key) === "cheap") return 0;
+  const window = Math.floor(intervalMs * REFRESH_OFFSET_FRACTION);
+  if (window <= 0) return 0;
+  return hash32(key) % window;
+}
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -115,6 +184,8 @@ export interface SourceCache {
   state<T = unknown>(key: DataSourceKey): SourceState<T>;
   signalFor(key: DataSourceKey): Signal<SourceState>;
   ensure(keys: readonly DataSourceKey[], range: string): void;
+  /** Re-requests every source already fetched that is due again, immediately.
+   * The periodic loop spreads instead; see `startRefresh`. */
   refresh(): void;
   abort(): void;
   /**
@@ -122,10 +193,16 @@ export interface SourceCache {
    * replaces the first interval rather than stacking a second one, because two
    * live intervals would silently double the request rate against every
    * dashboard endpoint.
+   *
+   * Cheap sources go out on the tick. Each expensive one waits out its own
+   * offset inside the interval, so a dashboard of many expensive widgets does
+   * not issue all of them at once (R6). Stopping cancels an offset that has
+   * not fired yet.
    */
   startRefresh(intervalMs?: number): () => void;
-  /** Resolves when nothing is in flight. Test seam; also used by the refresh
-   * loop to avoid stacking cycles. */
+  /** Resolves when nothing is outstanding -- on the wire, queued for a slot,
+   * or retired but not yet settled. Test seam; also used by the refresh loop
+   * to avoid stacking cycles. */
   settled(): Promise<void>;
 }
 
@@ -136,6 +213,17 @@ interface InFlight {
   promise: Promise<void>;
   range: string;
   controller: AbortController;
+  /**
+   * True while the request is waiting for an expensive slot.
+   *
+   * A queued request owns its key exactly as a running one does -- it is in
+   * `inFlight`, so a second widget asking for the same key still dedupes onto
+   * it -- but it has not touched the network, which is why tearing one down
+   * drops it outright rather than aborting it.
+   */
+  queued: boolean;
+  /** Set only while queued. `true` starts the fetch, `false` drops it. */
+  admit?: (start: boolean) => void;
 }
 
 export function createSourceCache(
@@ -155,7 +243,18 @@ export function createSourceCache(
    * refresh tick stack a second request on top of it.
    */
   const retired = new Set<InFlight>();
+  /** Non-cheap requests waiting for a slot, oldest first. */
+  const waiting: InFlight[] = [];
+  /** How many non-cheap requests are on the wire. Cheap ones are not counted:
+   * they are not bounded, so counting them would only shrink the bound. */
+  let activeExpensive = 0;
   let refreshTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+  /** Per-key timers for expensive sources waiting out their offset inside the
+   * current refresh interval. */
+  const offsetTimers = new Map<
+    string,
+    ReturnType<typeof globalThis.setTimeout>
+  >();
 
   function sig(key: DataSourceKey): Signal<SourceState> {
     let s = states.get(key);
@@ -164,6 +263,46 @@ export function createSourceCache(
       states.set(key, s);
     }
     return s;
+  }
+
+  /** Takes an expensive slot if one is free. Cheap keys never ask. */
+  function takeSlot(): boolean {
+    if (activeExpensive >= MAX_CONCURRENT_EXPENSIVE_FETCHES) return false;
+    activeExpensive++;
+    return true;
+  }
+
+  /**
+   * Gives back the slot a settled request held, handing it straight to the
+   * next waiter rather than releasing and letting it be re-taken -- otherwise
+   * a fresh `ensure` could slip in ahead of something that has been queued
+   * since the last tick.
+   */
+  function releaseSlot(entry: InFlight): void {
+    if (sourceCost(entry.key) === "cheap") return;
+    const next = waiting.shift();
+    if (next) next.admit?.(true);
+    else activeExpensive--;
+  }
+
+  /** Takes a settled -- or dropped -- request off the books. */
+  function finish(entry: InFlight): void {
+    if (inFlight.get(entry.key) === entry) inFlight.delete(entry.key);
+    retired.delete(entry);
+  }
+
+  /**
+   * Drops a request that never got a slot.
+   *
+   * It holds no slot and has nothing on the wire, so there is nothing to
+   * abort and nothing for `settled()` to wait on: its promise resolves here.
+   */
+  function dropQueued(entry: InFlight): void {
+    const at = waiting.indexOf(entry);
+    if (at >= 0) waiting.splice(at, 1);
+    entry.queued = false;
+    finish(entry);
+    entry.admit?.(false);
   }
 
   function run(key: DataSourceKey, range: string): void {
@@ -180,14 +319,41 @@ export function createSourceCache(
       promise: Promise.resolve(),
       range,
       controller,
+      queued: false,
     };
+
+    if (sourceCost(key) === "cheap" || takeSlot()) {
+      entry.promise = issue(entry, fetcher);
+    } else {
+      // Over the bound. The request is recorded against its key -- so it
+      // still dedupes and still reads as loading -- but no fetch is made
+      // until a slot frees. `settled()` waits on this promise either way.
+      entry.queued = true;
+      entry.promise = new Promise<void>((resolve) => {
+        entry.admit = (start: boolean) => {
+          entry.queued = false;
+          entry.admit = undefined;
+          resolve(start ? issue(entry, fetcher) : undefined);
+        };
+      });
+      waiting.push(entry);
+    }
+
+    inFlight.set(key, entry);
+  }
+
+  /** Puts a request on the wire. Called either straight from `run` or later,
+   * when a slot frees. */
+  function issue(entry: InFlight, fetcher: SourceFetcher): Promise<void> {
+    const { key, range, controller } = entry;
+    const s = sig(key);
     // Only the newest request for a key may write its state. A superseded
     // request that resolves anyway -- a fetcher that ignores its signal, or a
     // response already on the wire when abort fired -- would otherwise land
     // after the newer one and put the old range's data back on screen.
     const current = () => inFlight.get(key) === entry;
 
-    entry.promise = fetcher(controller.signal, range)
+    return fetcher(controller.signal, range)
       .then((data) => {
         if (!current()) return;
         s.value = { data, error: null, errorKind: null, loading: false, range };
@@ -217,11 +383,11 @@ export function createSourceCache(
         };
       })
       .finally(() => {
-        if (current()) inFlight.delete(key);
-        retired.delete(entry);
+        // The slot goes back before the bookkeeping, so the next waiter
+        // starts on the same turn this one finished.
+        releaseSlot(entry);
+        finish(entry);
       });
-
-    inFlight.set(key, entry);
   }
 
   /**
@@ -232,6 +398,55 @@ export function createSourceCache(
     inFlight.delete(entry.key);
     retired.add(entry);
     entry.controller.abort();
+    // A request still waiting for a slot has issued nothing, so there is no
+    // response to ignore and nothing to wait for: drop it instead of letting
+    // it start later on behalf of a widget that is gone.
+    if (entry.queued) dropQueued(entry);
+  }
+
+  function clearOffsetTimers(): void {
+    for (const timer of offsetTimers.values()) globalThis.clearTimeout(timer);
+    offsetTimers.clear();
+  }
+
+  /** Keys with a request outstanding: on the wire, queued for a slot, or
+   * retired but not yet settled. */
+  function busyKeys(): Set<string> {
+    const busy = new Set<string>(inFlight.keys());
+    for (const entry of retired) busy.add(entry.key);
+    return busy;
+  }
+
+  /**
+   * Whether a key already fetched once is due to be fetched again.
+   *
+   * Due-ness and timing are deliberately separate: this answers *whether*,
+   * and `sourceRefreshOffsetMs` answers *when*. A discovery status that has
+   * already answered is never due, so its offset never fires -- the two
+   * compose without either needing to know about the other.
+   */
+  function isDue(key: DataSourceKey, busy: Set<string>): boolean {
+    if (busy.has(key)) return false;
+    // A discovery status that already answered stays answered until the next
+    // page load -- see REFRESH_ONCE_SETTLED. One that failed is retried like
+    // anything else.
+    if (REFRESH_ONCE_SETTLED.has(key) && sig(key).value.data !== null) {
+      return false;
+    }
+    return true;
+  }
+
+  /** The keys a refresh would re-request right now, with their ranges.
+   * Snapshotted, because running one mutates `fetchedRange`. */
+  function dueEntries(): Array<[DataSourceKey, string]> {
+    const busy = busyKeys();
+    const due: Array<[DataSourceKey, string]> = [];
+    for (const [key, range] of fetchedRange) {
+      if (isDue(key as DataSourceKey, busy)) {
+        due.push([key as DataSourceKey, range]);
+      }
+    }
+    return due;
   }
 
   /**
@@ -289,22 +504,16 @@ export function createSourceCache(
       }
     },
 
+    /**
+     * Re-requests everything due, now.
+     *
+     * Deliberately immediate: this is "refresh the dashboard", and a caller
+     * asking for that wants the requests issued, not scheduled. The offsets
+     * belong to the periodic loop below, which is the only path that repeats
+     * and therefore the only one that can stampede.
+     */
     refresh(): void {
-      const busy = new Set<string>(inFlight.keys());
-      for (const entry of retired) busy.add(entry.key);
-      for (const [key, range] of [...fetchedRange.entries()]) {
-        if (busy.has(key)) continue;
-        // A discovery status that already answered stays answered until the
-        // next page load -- see REFRESH_ONCE_SETTLED. One that failed is
-        // retried like anything else.
-        if (
-          REFRESH_ONCE_SETTLED.has(key) &&
-          sig(key as DataSourceKey).value.data !== null
-        ) {
-          continue;
-        }
-        run(key as DataSourceKey, range);
-      }
+      for (const [key, range] of dueEntries()) run(key, range);
     },
 
     abort(): void {
@@ -314,6 +523,11 @@ export function createSourceCache(
       // signalled still looks in flight to it, so that ensure() would skip
       // the key and the rejection would then forget its range: a widget left
       // blank that no refresh ever retries.
+      //
+      // A fetch waiting out its refresh offset is a fetch about to be on the
+      // wire, so a teardown cancels it as well -- otherwise the timer fires
+      // after the island is gone and re-fills a key nobody is reading.
+      clearOffsetTimers();
       for (const entry of [...inFlight.values()]) {
         retire(entry);
         settleAborted(entry.key);
@@ -326,14 +540,38 @@ export function createSourceCache(
           globalThis.clearInterval(refreshTimer);
           refreshTimer = null;
         }
+        clearOffsetTimers();
       };
       // Replace rather than stack: a second caller must not double the rate.
       stop();
       refreshTimer = globalThis.setInterval(() => {
         // Matches the pre-registry behavior: a hidden tab does not poll.
         if (typeof document !== "undefined" && document.hidden) return;
-        if (inFlight.size > 0) return;
-        cache.refresh();
+        // Nothing outstanding, and nothing already scheduled from an earlier
+        // tick. The second half is what keeps an offset fetch from being
+        // scheduled twice, which would be the stacking this guard prevents
+        // for in-flight requests.
+        if (inFlight.size > 0 || offsetTimers.size > 0) return;
+        for (const [key, range] of dueEntries()) {
+          const offset = sourceRefreshOffsetMs(key, intervalMs);
+          if (offset === 0) {
+            run(key, range);
+            continue;
+          }
+          offsetTimers.set(
+            key,
+            globalThis.setTimeout(() => {
+              offsetTimers.delete(key);
+              // Re-checked rather than assumed. Half an interval is long
+              // enough for an ensure(), an abort() or a range change to have
+              // covered this key already.
+              const current = fetchedRange.get(key);
+              if (current === undefined) return;
+              if (!isDue(key, busyKeys())) return;
+              run(key, current);
+            }, offset),
+          );
+        }
       }, intervalMs);
       return stop;
     },

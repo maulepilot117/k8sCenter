@@ -65,6 +65,86 @@ export const DATA_SOURCE_KEYS = [
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
 
+/**
+ * What a source costs the backend to answer, which is what decides whether
+ * the refresh scheduler may issue it on the tick with everything else.
+ *
+ * Three classes, not two (KTD5):
+ *
+ * - `cheap` -- served from the backend's informer cache. The read is a map
+ *   lookup in a process that already holds the objects; several at once cost
+ *   nothing worth managing.
+ * - `discovery` -- a CRD discovery route. Dearer than an informer read and
+ *   cheaper than a range query: a live API-server call behind a 5-minute
+ *   cache, and three of the six share the backend's 30-request-per-minute
+ *   YAML bucket with `/yaml/*` and `/wizards/*`. Named apart because it backs
+ *   most of the growing catalog, and scheduled under the expensive policy.
+ * - `expensive` -- a Prometheus, Hubble or PostgreSQL read. Seconds rather
+ *   than milliseconds, and a cost the backend pays per request rather than
+ *   amortising across viewers.
+ *
+ * The classification is declarative here and consumed in one place --
+ * `data.ts`, which bounds how many non-cheap reads are on the wire at once
+ * and gives each one an offset inside the refresh interval. Widgets never see
+ * it; it is not part of the render contract.
+ */
+export const SOURCE_COSTS = ["cheap", "discovery", "expensive"] as const;
+export type SourceCost = (typeof SOURCE_COSTS)[number];
+
+/**
+ * The cost of each declared source.
+ *
+ * `dashboard-trends` is the one entry worth reading twice. It sits beside
+ * three informer reads on the same dashboard and looks like them, but
+ * `HandleDashboardTrends` in backend/internal/k8s/resources/dashboard.go runs
+ * Prometheus range queries and its own comment calls them multi-second -- it
+ * was split out of the summary handler precisely so they would not eat that
+ * endpoint's 1-second Prometheus budget. Under KTD5 that is expensive, and
+ * classifying it by its neighbours rather than by what it does would leave
+ * the only expensive source the dashboard has today on the unmanaged path.
+ */
+export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
+  "dashboard-summary": "cheap",
+  "cluster-info": "cheap",
+  "recent-events": "cheap",
+  "dashboard-trends": "expensive",
+
+  "policies-status": "discovery",
+  "gitops-status": "discovery",
+  "certificates-status": "discovery",
+  "mesh-status": "discovery",
+  "external-secrets-status": "discovery",
+  "velero-status": "discovery",
+};
+
+/**
+ * The cost of a source, defaulting to `expensive` for anything unlisted.
+ *
+ * Expensive, never cheap: a contributor who adds a source to the catalog and
+ * forgets `SOURCE_COST` gets a read that is throttled harder than it needs to
+ * be, which is a slower dashboard. The other default gets a read that joins
+ * the stampede KTD5 exists to prevent, which is a slower cluster. Takes a
+ * plain string so a key arriving from a stored layout, rather than from the
+ * union, still classifies.
+ */
+export function sourceCost(key: string): SourceCost {
+  return SOURCE_COST[key as DataSourceKey] ?? "expensive";
+}
+
+/**
+ * Sources whose response depends on the selected time range. Re-ensuring one
+ * of these under a new range refetches; the others do not.
+ *
+ * Deliberately a hand-written set rather than anything derived: a unit adding
+ * a range-backed source adds its key here, in the same edit that adds it to
+ * `DATA_SOURCE_KEYS` and `SOURCE_COST`. Range-sensitivity does not follow
+ * from cost -- a cheap source could take a window and an expensive one need
+ * not -- so inferring it would be wrong in both directions.
+ */
+export const RANGE_SENSITIVE_KEYS: ReadonlySet<string> = new Set([
+  "dashboard-trends",
+]);
+
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
  * what the pre-registry three-row layout already approximated. */
 export const DASHBOARD_COLUMNS = 12;
