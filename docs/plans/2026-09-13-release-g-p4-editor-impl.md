@@ -541,6 +541,65 @@ divergences are below, then what D17 and D18 inherit.
     `limit_reached` and the save path already reports it. The day a
     parameterized widget ships, the palette is where that check belongs.
 
+12. **Review round found six defects, two of them P1, and one bad fix.** Seven
+    local reviewers plus an independent cross-model adversarial pass ran over
+    the branch; a separate validator confirmed four findings, and two more
+    were decisions the review deliberately left open. All are fixed on the
+    branch. The two that mattered most:
+
+    - **`crypto.randomUUID` is secure-context only**, so Add widget threw a
+      TypeError inside the click handler and did nothing at all on an
+      HTTP-only deployment -- the homelab this repo ships values for.
+      `GaugeRing.tsx`, `SparklineChart.tsx` and `ResourceAreaChart.tsx` had
+      each already hit this and carry a comment saying why they use
+      `Math.random`; D16's docstring asserted the opposite. **The lesson is
+      not about that one API.** A comment that states a platform guarantee is
+      a claim, and this one was written from memory rather than from the three
+      places in the same tree that had already paid for the answer.
+    - **A pointer press focuses an element even at `tabIndex={-1}`**, so
+      clicking a greyed-out row moved focus off the search input -- taking the
+      arrow keys, Enter and Escape with it -- and left the Tab trap inert,
+      because its own selector excludes option rows. The next Tab left an
+      `aria-modal` dialog. `onMouseDown` preventDefault on the row is the
+      standard guard, and the trap now pulls focus back whenever something
+      outside the ring holds it. **D17's Remove control sits in this same
+      dialog family and inherits both.**
+
+    Also fixed: placement is now bounded by `DASHBOARD_MAX_ROWS` and returns
+    `null` when nothing fits, with the palette offering such an entry disabled
+    for the same reason it disables a widget already on the dashboard (a
+    clamp was rejected -- a clamped cell overlaps, which the server refuses
+    too); the dialog swallows Ctrl/Cmd+K so the global command palette cannot
+    stack on top of it; and the palette takes the layout's own column count
+    rather than the constant.
+
+    **The narrow-mode focus fix was wrong the first time, and the E2E is what
+    caught it.** A re-mounted grid renders wide before its own layout effect
+    corrects it to one column, so the new cell briefly carries a tab stop:
+    `focus()` succeeds, the immediate "did it take focus?" check passes, and
+    the correction then blurs it to the document. The check has to be made a
+    frame later, which is the first point at which the answer is stable. A
+    focus trace, not reasoning, is what showed this -- **the same lesson as
+    note 10, one layer down: in this island, what is on screen one tick after
+    a re-mount is not what the effect sees.**
+
+13. **Eleven files, not nine** once the review fixes landed:
+    `lib/fuzzy-search_test.ts` (the shared helper had no unit test although
+    this branch changed its contract) and the three further specs in
+    `e2e/tests/dashboard-palette.spec.ts` -- the Tab cycle, the keyboard after
+    a pointer click, and the narrow-mode insertion that found the bad fix.
+
+14. **Left undone, deliberately.** The E2E stub of the layout endpoint
+    validates the request contract but not the layout's geometry, so a spec
+    can see a save succeed for a payload the server would refuse; that is the
+    backend's own test surface (`handler_test.go`, `dashboard_test.go`, the
+    validate fuzz target) and a second implementation of it in a mock would
+    test the mock. No spec adds a widget and then cancels to prove the
+    insertion is discarded -- "Cancel restores" is covered for drags only.
+    And `DashboardV2.tsx` now carries six focus-management refs; **a
+    consolidated focus coordinator is worth doing before D17 adds a
+    seventh.**
+
 ---
 
 ### Task D17: Remove, reset, copy from another cluster
