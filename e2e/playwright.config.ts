@@ -102,8 +102,14 @@ export default defineConfig({
       // discoverability.spec.ts is excluded for a different reason: it deletes
       // every pin and saved view the shared admin user owns, and pins.spec.ts
       // and saved-views.spec.ts (both in this project) own those same records.
+      //
+      // dashboard-layout.spec.ts is excluded for that same reason, one record
+      // over: it really saves dashboard layouts, and every other dashboard
+      // spec in this project renders the shipped default and asserts where it
+      // puts things.
       testIgnore: [
         /api-routes\.spec\.ts/,
+        /dashboard-layout\.spec\.ts/,
         /discoverability\.spec\.ts/,
         /route-inventory\.spec\.ts/,
       ],
@@ -127,6 +133,26 @@ export default defineConfig({
       // share its runtime budget with a couple of hundred siblings.
       name: "route-inventory",
       testMatch: /route-inventory\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "playwright/.auth/admin.json",
+      },
+      dependencies: ["chromium"],
+    },
+    {
+      // The dashboard builder's acceptance specs, and the one dashboard file
+      // that uses the REAL /preferences/layouts endpoint rather than the stub
+      // in tests/dashboard-layout-stub.ts.
+      //
+      // Same isolation discoverability gets, and for the same reason: a layout
+      // is stored per (user, cluster, scope), the whole suite shares one login,
+      // and dashboard-grid/dashboard/dashboard-edit all render the shipped
+      // default and assert where it puts things. fullyParallel:false orders
+      // tests WITHIN a file, not across files, and workers is pinned to 1 only
+      // in CI -- so without its own project this file could land in a worker
+      // beside them locally and change what they see mid-test.
+      name: "dashboard-layout",
+      testMatch: /dashboard-layout\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         storageState: "playwright/.auth/admin.json",
