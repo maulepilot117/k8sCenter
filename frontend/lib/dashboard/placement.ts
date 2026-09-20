@@ -20,11 +20,11 @@
  * rearranging the dashboard around a widget the user has not looked at yet is
  * a worse surprise than an extra row.
  */
-import { layoutHeight, overlaps } from "./grid.ts";
+import { overlaps } from "./grid.ts";
 import type { LayoutItem, WidgetDef } from "./types.ts";
-import { DASHBOARD_COLUMNS } from "./types.ts";
+import { DASHBOARD_COLUMNS, DASHBOARD_MAX_ROWS } from "./types.ts";
 
-/** How many hex characters of the uuid the instance id carries. */
+/** How many base-36 characters of the random suffix the instance id carries. */
 const INSTANCE_SUFFIX_LEN = 8;
 
 /**
@@ -35,45 +35,66 @@ const INSTANCE_SUFFIX_LEN = 8;
  * index, because an index is reused after a removal and a stale render could
  * then key a new widget to a removed one's state.
  *
- * `crypto.randomUUID` is available in every browser this app supports and in
- * the test runtime. Eight hex characters is 4 billion values against a layout
- * that holds at most `DASHBOARD_MAX_ITEMS` of them, and the full id stays well
- * inside the 64-rune bound the server stores it under.
+ * Uses `Math.random` instead of `crypto.randomUUID` -- the latter requires a
+ * secure context (HTTPS) and is `undefined` on the HTTP-only homelab
+ * deployment this repo ships values for, which made this function throw
+ * inside the palette's click handler and turned "Add widget" into a silent
+ * no-op. Same convention as `GaugeRing.tsx`'s gradient ids, for the same
+ * reason. Eight base-36 characters is still far more entropy than a layout
+ * that holds at most `DASHBOARD_MAX_ITEMS` of them needs, and the full id
+ * stays well inside the 64-rune bound the server stores it under.
  */
 export function newInstanceId(widgetId: string): string {
-  return `${widgetId}-${crypto.randomUUID().slice(0, INSTANCE_SUFFIX_LEN)}`;
+  return `${widgetId}-${Math.random()
+    .toString(36)
+    .slice(2, 2 + INSTANCE_SUFFIX_LEN)}`;
 }
 
 /**
  * The first cell `w` x `h` fits in, scanning rows top-down then columns
- * left-to-right, or the top-left of a new row below everything when none does.
+ * left-to-right, or `null` when no such cell exists without crossing
+ * `DASHBOARD_MAX_ROWS`.
+ *
+ * The scan is bounded to `y + h <= DASHBOARD_MAX_ROWS` rather than to
+ * `layoutHeight(items)` the way earlier versions of this function did. The
+ * unbounded scan always answered -- the row at `layoutHeight(items)` is below
+ * every item and therefore free -- but on a layout that already reaches the
+ * 200-row cap, that free row is itself past the cap, and the server rejects a
+ * config with a placement whose `y + h` exceeds it (`invalid_config` in
+ * `backend/internal/preferences/dashboard.go`). Returning that cell traded one
+ * unsaveable layout for another, so this returns `null` instead. The caller
+ * must not clamp `y` down into the cap to paper over the `null` case: a
+ * clamped cell would overlap whatever is already at the cap's edge, which the
+ * server also refuses. `moveItem` and `resizeItem` in `grid.ts` bound the same
+ * cap for the same reason.
+ *
+ * The "one row past the bottom is always free" fast path this function relied
+ * on still applies whenever that row is below the cap -- the loop reaches it
+ * before the bound stops the scan, so a layout with room below the cap keeps
+ * finding a fresh row exactly as before.
  */
 function firstFit(
   items: readonly LayoutItem[],
   w: number,
   h: number,
   columns: number,
-): { x: number; y: number } {
-  // `layoutHeight` is the lowest edge of the layout, so the row at `lastRow`
-  // is below every item and its first cell is free -- which is what bounds the
-  // scan and guarantees it answers, PROVIDED `w <= columns` so the inner loop
-  // runs at all. The caller clamps for exactly that reason.
-  const lastRow = layoutHeight(items);
-  for (let y = 0; y <= lastRow; y++) {
+): { x: number; y: number } | null {
+  for (let y = 0; y + h <= DASHBOARD_MAX_ROWS; y++) {
     for (let x = 0; x + w <= columns; x++) {
       const candidate = { instanceId: "", id: "", x, y, w, h };
       if (!items.some((i) => overlaps(candidate, i))) return { x, y };
     }
   }
-  // Unreachable while that clamp holds, and deliberately not a throw: a future
-  // caller asking for a widget wider than the grid should get the one corner
-  // that is always empty rather than an exception thrown from a click handler.
-  return { x: 0, y: lastRow };
+  return null;
 }
 
 /**
- * Places a newly added widget on `items` and returns it. The input is not
- * modified; the caller appends the result.
+ * Places a newly added widget on `items` and returns it, or `null` when the
+ * layout has no room left below `DASHBOARD_MAX_ROWS` for a widget this size.
+ * The input is not modified; the caller appends the result and must treat
+ * `null` as "cannot place this widget" rather than substituting a clamped
+ * position -- see `firstFit` for why a clamp is worse than the `null` it
+ * would be papering over.
  *
  * `columns` comes from the layout being edited rather than from the constant,
  * because the stored config carries its own column count and a placement wider
@@ -83,7 +104,7 @@ export function placeNewWidget(
   items: readonly LayoutItem[],
   def: WidgetDef,
   columns: number = DASHBOARD_COLUMNS,
-): LayoutItem {
+): LayoutItem | null {
   // The minimum wins over a smaller default: both come from the same
   // registration, so disagreeing is a catalog bug, but the editor refuses to
   // resize below minW/minH and the server refuses to store a placement under
@@ -97,10 +118,13 @@ export function placeNewWidget(
   const w = Math.max(1, Math.min(Math.max(def.defaultW, def.minW), columns));
   const h = Math.max(1, Math.max(def.defaultH, def.minH));
 
+  const cell = firstFit(items, w, h, columns);
+  if (!cell) return null;
+
   return {
     instanceId: newInstanceId(def.id),
     id: def.id,
-    ...firstFit(items, w, h, columns),
+    ...cell,
     w,
     h,
   };

@@ -366,8 +366,11 @@ export default function DashboardV2() {
   // asked for, it announces where it landed through the grid's own accessible
   // name, and moving the keyboard there is also what brings it into view --
   // a widget added to the bottom of a long dashboard is otherwise off screen,
-  // which reads as an Add button that did nothing. In one-column mode a widget
-  // is not a tab stop, so the explicit scroll is what carries that case.
+  // which reads as an Add button that did nothing. Below the grid's narrow
+  // breakpoint a widget is not a tab stop at all (DashboardGrid withholds
+  // `tabIndex` there on purpose -- see its comment on `arrangeable`), so
+  // focus falls back to the Add widget button in that mode; the explicit
+  // scroll below still carries the visibility half of the promise either way.
   useLayoutEffect(() => {
     if (!IS_BROWSER) return;
     const instanceId = pendingFocus.current;
@@ -378,6 +381,29 @@ export default function DashboardV2() {
     );
     el?.focus();
     el?.scrollIntoView({ block: "nearest" });
+    // Two ways the keyboard ends up nowhere, and neither is hypothetical.
+    //
+    // The cell may not be there at all, in which case `focus()` above did
+    // nothing and the palette that had focus has already unmounted.
+    if (document.activeElement !== el) {
+      addButton.current?.focus();
+      return;
+    }
+    // Or the cell may take focus and then lose it. A re-mounted grid always
+    // renders wide first and only corrects to one column in its own layout
+    // effect, which runs before this one but commits after it -- so at this
+    // moment the new cell still carries the tab stop that one-column mode is
+    // about to take away, and when it does the browser blurs it to the
+    // document. Re-checking a frame later is what catches that; a check made
+    // now cannot, which a focus trace on the narrow-mode E2E showed before
+    // this line existed.
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (active === null || active === document.body) {
+        addButton.current?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
   }, [gridEpoch.value]);
 
   useEffect(() => {
@@ -426,11 +452,24 @@ export default function DashboardV2() {
    * it over the loaded layout: it is what the grid itself will do on mount, so
    * anything else recorded here would differ from what is on screen by a
    * compaction pass.
+   *
+   * `placeNewWidget` returning `null` means the layout has no room left for
+   * this widget below `DASHBOARD_MAX_ROWS`. The palette itself already
+   * disables an entry it cannot place, with a stated reason, so reaching this
+   * function with an unplaceable widget means that guard was bypassed --
+   * doing nothing here is the honest response, not a substitute toast the
+   * user would have no context for.
    */
   function addWidget(def: WidgetDef) {
     const s = session.value;
     if (s === null || saving.value) return;
     const placed = placeNewWidget(s.working.items, def, s.working.columns);
+    // No session write, no re-mount, no pending focus: `placeNewWidget`'s own
+    // comments explain why a clamped or best-effort position is worse than
+    // refusing outright, and this island has no information the placement
+    // module did not already have when it decided there was nowhere to put
+    // this widget.
+    if (placed === null) return;
     const next = asRendered({
       ...s.working,
       items: [...s.working.items, placed],
@@ -789,6 +828,7 @@ export default function DashboardV2() {
         <WidgetPalette
           scope={session.value.working.scope}
           placed={session.value.working.items}
+          columns={session.value.working.columns}
           onAdd={addWidget}
           onClose={closePalette}
         />

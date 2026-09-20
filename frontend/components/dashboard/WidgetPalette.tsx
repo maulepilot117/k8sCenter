@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { useLayoutEffect, useRef } from "preact/hooks";
+import { placeNewWidget } from "@/lib/dashboard/placement.ts";
 import { widgetsForScope } from "@/lib/dashboard/registry.ts";
 import type {
   DashboardScope,
@@ -47,6 +48,8 @@ const FAMILY_LABELS: Record<WidgetFamily, string> = {
 
 /** Why an entry cannot be added, or null when it can be. */
 const ALREADY_PLACED = "Already on this dashboard";
+/** The layout has no free cell of this widget's size below the row cap. */
+const NO_ROOM = "No room on this dashboard";
 
 /** One catalog row: the widget, plus the fields `fuzzySearch` ranks on. */
 interface Entry extends Searchable {
@@ -59,32 +62,60 @@ export interface WidgetPaletteProps {
   scope: DashboardScope;
   /** The layout as it stands, which decides what is already on it. */
   placed: readonly LayoutItem[];
+  /**
+   * The grid width of the layout being edited.
+   *
+   * Taken from the caller rather than from `DASHBOARD_COLUMNS`, because the
+   * entry this dialog offers is placed by the same scan on the other side of
+   * `onAdd` -- and that one uses the layout's own column count. A palette that
+   * answered "there is room" against a different grid than the one the widget
+   * lands on would be offering a row whose Add then does nothing.
+   */
+  columns: number;
   /** Adds the widget. The caller places it and closes this dialog. */
   onAdd: (def: WidgetDef) => void;
   onClose: () => void;
 }
 
 /**
- * Whether a second copy of this widget would be meaningful.
+ * Why this entry cannot be added right now, or null when it can be.
  *
- * A parameterized widget legitimately appears twice -- prod beside staging --
- * which is the reason `instanceId` exists at all. An unparameterized one would
- * render exactly the same card twice, so it is shown disabled with the reason
- * rather than hidden: a catalog that quietly drops entries reads as a missing
- * widget, and `SavedViews.tsx` takes the same approach with the views it
- * cannot open.
+ * Two independent reasons, checked in order:
+ *
+ * 1. A second copy would not be meaningful. A parameterized widget
+ *    legitimately appears twice -- prod beside staging -- which is the reason
+ *    `instanceId` exists at all. An unparameterized one would render exactly
+ *    the same card twice, so it is shown disabled with the reason rather than
+ *    hidden: a catalog that quietly drops entries reads as a missing widget,
+ *    and `SavedViews.tsx` takes the same approach with the views it cannot
+ *    open.
+ * 2. There is nowhere left to put it. `placeNewWidget` is the same placement
+ *    scan `addWidget` in `DashboardV2.tsx` runs when the button is actually
+ *    pressed; running it here too means the catalog never offers a row whose
+ *    Add would silently fail to place. A widget that is *also* already placed
+ *    would trip both checks, so the already-placed reason is returned first
+ *    without paying for the scan -- reason 1 is a cheap membership test and
+ *    reason 2 is a bounded but real search over the grid.
+ *
+ * `columns` is the edited layout's own, passed down from the caller, so this
+ * check and the insertion behind `onAdd` ask the same question of the same
+ * grid.
  */
 function disabledReasonFor(
   def: WidgetDef,
   placed: readonly LayoutItem[],
+  columns: number,
 ): string | null {
-  if (def.params !== undefined) return null;
-  return placed.some((i) => i.id === def.id) ? ALREADY_PLACED : null;
+  if (def.params === undefined && placed.some((i) => i.id === def.id)) {
+    return ALREADY_PLACED;
+  }
+  return placeNewWidget(placed, def, columns) === null ? NO_ROOM : null;
 }
 
 export default function WidgetPalette({
   scope,
   placed,
+  columns,
   onAdd,
   onClose,
 }: WidgetPaletteProps) {
@@ -99,7 +130,7 @@ export default function WidgetPalette({
     label: def.title,
     detail: FAMILY_LABELS[def.family],
     def,
-    disabledReason: disabledReasonFor(def, placed),
+    disabledReason: disabledReasonFor(def, placed, columns),
   }));
 
   // What the query shows, grouped for display in the families' declared order,
@@ -201,7 +232,7 @@ export default function WidgetPalette({
   }
 
   /**
-   * Escape from anywhere in the dialog, and Tab held inside it.
+   * Ctrl/Cmd+K, Escape from anywhere in the dialog, and Tab held inside it.
    *
    * A modal that lets Tab walk out into the page behind it is modal only to
    * the mouse. The options are not tab stops -- the arrow keys move through
@@ -209,10 +240,30 @@ export default function WidgetPalette({
    * the ring is the input and the close button, and the cycle is short by
    * construction rather than by a list of selectors that has to be kept up to
    * date with the markup.
+   *
+   * This is also the one place that swallows Ctrl/Cmd+K. `CommandPalette.tsx`
+   * binds that combination on `window` to open the global command palette,
+   * and its handler calls `preventDefault()` but never `stopPropagation()` --
+   * so with nothing stopping it here, pressing it while this dialog is open
+   * stacks a second `aria-modal` dialog on top of this one, with two Tab
+   * traps live at once and this dialog's own Escape no longer reachable.
+   * Attached to the dialog container rather than duplicated on the input:
+   * Preact's onKeyDown is a real DOM listener, so a keydown fired on the
+   * input still bubbles up through this container before it would reach
+   * `window`, and this branch runs first and stops it there. Every branch
+   * below that already calls `preventDefault` for a key this dialog owns
+   * gets `stopPropagation` alongside it for the same reason -- nothing this
+   * dialog handles should be visible to a listener outside it.
    */
   function handleDialogKeyDown(e: KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (e.key === "Escape") {
       e.preventDefault();
+      e.stopPropagation();
       onClose();
       return;
     }
@@ -225,11 +276,28 @@ export default function WidgetPalette({
     if (stops.length === 0) return;
     const first = stops[0];
     const last = stops[stops.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
+    const active = document.activeElement;
+    if (!stops.some((stop) => stop === active)) {
+      // Focus is inside the dialog but on an element the trap does not
+      // recognise as a stop -- an option row focused by a pointer press is
+      // the only way that happens today, guarded separately by the
+      // mousedown handler below, but this is the backstop the comment above
+      // warns about: neither wrap branch matches an activeElement outside
+      // `stops`, so both would be skipped and the next Tab would walk out of
+      // an `aria-modal="true"` dialog. Pull focus back onto the first stop
+      // instead of trusting the browser to keep it inside.
       e.preventDefault();
+      e.stopPropagation();
+      first.focus();
+      return;
+    }
+    if (e.shiftKey && active === first) {
+      e.preventDefault();
+      e.stopPropagation();
       last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
+    } else if (!e.shiftKey && active === last) {
       e.preventDefault();
+      e.stopPropagation();
       first.focus();
     }
   }
@@ -340,6 +408,17 @@ export default function WidgetPalette({
                     // added.
                     aria-disabled={blocked}
                     title={entry.disabledReason ?? undefined}
+                    // A pointer press focuses whatever it lands on regardless
+                    // of tabIndex -- tabIndex={-1} only keeps a row out of the
+                    // Tab order, it does not stop a mousedown from focusing
+                    // it directly. That would move focus off the input,
+                    // which is where every keyboard handler below lives, and
+                    // the Tab trap's own stops selector does not recognise an
+                    // option row either, so the next Tab would walk straight
+                    // out of the dialog. Preventing the default here is the
+                    // standard combobox-with-activedescendant guard: the
+                    // click still fires and `choose` still runs.
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => choose(entry)}
                     // The pointer moves the selection too, but only onto rows
                     // that can be added -- the same invariant the arrows keep,

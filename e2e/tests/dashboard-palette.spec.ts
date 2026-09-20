@@ -65,6 +65,37 @@ function visibleOptions(page: Page) {
   return palette(page).getByRole("option");
 }
 
+/**
+ * Same as `openPalette`, but starting from a grid narrow enough to render in
+ * one column.
+ *
+ * Not a parameter on `openPalette` itself: that helper asserts wide mode on
+ * the way in, which every other spec in this file relies on, and the
+ * threshold is measured on the grid element's own width (DashboardGrid.tsx's
+ * `NARROW_GRID_WIDTH`), not the viewport's -- so the viewport has to be set
+ * before `goto`, which the wide-mode helper has no reason to do.
+ */
+async function openPaletteNarrow(page: Page) {
+  await page.setViewportSize({ width: 700, height: 900 });
+  const writes = await stubLayoutStore(page, {
+    revision: 4,
+    config: PARTIAL_LAYOUT,
+  });
+  await page.goto("/");
+  await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(
+    PARTIAL_LAYOUT.items.length,
+  );
+  await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+    "data-grid-mode",
+    "narrow",
+  );
+
+  await page.getByTestId("edit-layout").click();
+  await page.getByTestId("add-widget").click();
+  await expect(palette(page)).toBeVisible();
+  return writes;
+}
+
 test.describe("dashboard widget palette", () => {
   test("offers every widget in the scope, grouped by family", async ({
     page,
@@ -80,6 +111,11 @@ test.describe("dashboard widget palette", () => {
       ).toBeVisible();
     }
   });
+
+  // The 200-row "no room on this dashboard" disabled state is not covered
+  // here: reaching the cap through the UI takes a long resize sequence that
+  // would make a spec slow and brittle, and `placement_test.ts` already unit
+  // tests it directly.
 
   test("a widget already on the dashboard is shown with the reason, and cannot be added", async ({
     page,
@@ -101,6 +137,19 @@ test.describe("dashboard widget palette", () => {
     await expect(page.getByTestId("grid-item")).toHaveCount(
       PARTIAL_LAYOUT.items.length,
     );
+
+    // The forced click used to land focus on the disabled row itself, which
+    // killed the arrow keys and Enter (both are bound on the search input)
+    // and left the Tab trap inert. `onMouseDown` preventDefault on the option
+    // is the fix; this proves the keyboard still works after the click that
+    // used to break it, not just that the click was refused.
+    await expect(page.getByTestId("widget-search")).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(
+      palette(page).getByRole("option", { selected: true }),
+    ).toHaveCount(1);
+    await page.keyboard.press("Tab");
+    await expect(page.getByTestId("close-palette")).toBeFocused();
   });
 
   test("every entry is disabled once the dashboard holds the whole catalog", async ({
@@ -248,5 +297,57 @@ test.describe("dashboard widget palette", () => {
     // Re-entering edit mode must not reopen a dialog nobody asked for.
     await page.getByTestId("edit-layout").click();
     await expect(palette(page)).toBeHidden();
+  });
+
+  test("Tab cannot leave the dialog -- it wraps between the search input and Close", async ({
+    page,
+  }) => {
+    await openPalette(page);
+
+    // The only two tab stops inside the dialog: every option row carries
+    // tabIndex={-1} on purpose (the arrows move the selection instead), so
+    // the ring is exactly these two, both ways.
+    await expect(page.getByTestId("widget-search")).toBeFocused();
+
+    await page.keyboard.press("Shift+Tab");
+    await expect(page.getByTestId("close-palette")).toBeFocused();
+
+    await page.keyboard.press("Tab");
+    await expect(page.getByTestId("widget-search")).toBeFocused();
+  });
+
+  test("Ctrl/Cmd+K does not stack the global command palette on top of the catalog", async ({
+    page,
+  }) => {
+    await openPalette(page);
+
+    await page.keyboard.press("Control+k");
+
+    // CommandPalette.tsx exposes no test id -- its only stable marker is
+    // aria-label="Command palette" on its own role="dialog" root -- so its
+    // absence is asserted by counting role="dialog" nodes rather than
+    // querying it directly. One dialog on screen means this one's
+    // stopPropagation, not the global listener, won the key.
+    await expect(page.locator('[role="dialog"]')).toHaveCount(1);
+    await expect(palette(page)).toBeVisible();
+    await expect(page.getByTestId("widget-search")).toBeFocused();
+  });
+
+  test("adding a widget in one-column mode leaves the keyboard on Add widget, not the page", async ({
+    page,
+  }) => {
+    await openPaletteNarrow(page);
+
+    await option(page, "recent-events").click();
+    await expect(palette(page)).toBeHidden();
+
+    // Below the grid's narrow breakpoint a placed widget carries no tabindex
+    // at all (DashboardGrid withholds it -- see its `arrangeable` prop), so
+    // the focus() call the wide-mode insertion test relies on silently
+    // no-ops there. The fallback in DashboardV2's insertion effect is what
+    // catches that and moves focus to the button instead of letting it drop
+    // to the top of the page.
+    await expect(page.getByTestId("add-widget")).toBeFocused();
+    await expect(page.locator("body")).not.toBeFocused();
   });
 });
