@@ -453,6 +453,7 @@ func allEndpoints() []endpoint {
 	const layoutBody = `{"revision":0,"config":{"schemaVersion":1,"scope":"overview","columns":12,"items":[]}}`
 	id := uuid.New().String()
 	return []endpoint{
+		{http.MethodGet, "/preferences/layouts", ""},
 		{http.MethodGet, "/preferences/layouts/overview", ""},
 		{http.MethodPut, "/preferences/layouts/overview", layoutBody},
 		{http.MethodGet, "/preferences/views", ""},
@@ -548,6 +549,7 @@ func prefRouter(h *Handler) chi.Router {
 			pnr.Delete("/{id}", h.HandleDeletePin)
 		})
 		pr.Route("/layouts", func(lr chi.Router) {
+			lr.Get("/", h.HandleListLayouts)
 			lr.Get("/{scope}", h.HandleGetLayout)
 			lr.Put("/{scope}", h.HandleSaveLayout)
 		})
@@ -1712,4 +1714,222 @@ func withTestScope(t *testing.T, scope string) func() {
 	}
 	allowedDashboardScopes[scope] = struct{}{}
 	return func() { delete(allowedDashboardScopes, scope) }
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard layouts: the cross-cluster listing (Release G, D17)
+// ---------------------------------------------------------------------------
+
+// listLayouts issues the collection GET and decodes it.
+func listLayouts(t *testing.T, h *Handler, u *auth.User, clusterID string) []LayoutResponse {
+	t.Helper()
+
+	rec := do(t, h, u, clusterID, endpoint{http.MethodGet, "/preferences/layouts", ""})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d %s; want 200", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Data []LayoutResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decoding layout list (%q): %v", rec.Body.String(), err)
+	}
+	return out.Data
+}
+
+// TestHandler_ListLayouts_SpansClusters is the whole reason this endpoint
+// exists. The scoped GET reads the cluster the request is addressed to, and
+// addressing one at another cluster is admin-only -- so without a listing that
+// crosses clusters, the editor cannot offer "copy this from somewhere else"
+// (spec D-3) to anyone who is not an administrator.
+func TestHandler_ListLayouts_SpansClusters(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	if rec := putLayout(t, h, user, "prod-east", "overview", 0,
+		layoutWithItems(t, item(nil))); rec.Code != http.StatusCreated {
+		t.Fatalf("prod-east save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+	if rec := putLayout(t, h, user, "prod-west", "overview", 0,
+		layoutJSON(t, nil)); rec.Code != http.StatusCreated {
+		t.Fatalf("prod-west save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+
+	// Asked from a third cluster, so the answer cannot be "it returned the one
+	// the request was addressed to and happened to be right".
+	got := listLayouts(t, h, user, "local")
+	if len(got) != 2 {
+		t.Fatalf("list returned %d layouts; want both clusters' (%+v)", len(got), got)
+	}
+	byCluster := map[string]LayoutResponse{}
+	for _, rec := range got {
+		byCluster[rec.ClusterID] = rec
+	}
+	east, ok := byCluster["prod-east"]
+	if !ok {
+		t.Fatalf("prod-east is missing from the listing: %+v", got)
+	}
+	if _, ok := byCluster["prod-west"]; !ok {
+		t.Fatalf("prod-west is missing from the listing: %+v", got)
+	}
+	// The config travels with the record. A listing of names alone would tell
+	// the client which clusters have a layout and give it no way to take one.
+	if !strings.Contains(string(east.Config), `"cluster-health"`) {
+		t.Errorf("prod-east config = %s; want the arrangement that was saved", east.Config)
+	}
+}
+
+// TestHandler_ListLayouts_OwnerScoped extends the owner-filter guard to this
+// endpoint. It reaches across clusters, which is exactly the property that
+// would make a missing owner filter leak the most.
+func TestHandler_ListLayouts_OwnerScoped(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	alice, bob := testUser(t), testUser(t)
+
+	if rec := putLayout(t, h, alice, "prod-east", "overview", 0,
+		layoutWithItems(t, item(nil))); rec.Code != http.StatusCreated {
+		t.Fatalf("alice save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+
+	if got := listLayouts(t, h, bob, "local"); len(got) != 0 {
+		t.Fatalf("bob sees %d of alice's layouts; want none (%+v)", len(got), got)
+	}
+}
+
+// TestHandler_ListLayouts_EmptyIsAnArray keeps the listing's empty case the
+// same shape as its populated one, like every other list endpoint here: a
+// client iterating the response should not have to special-case null. It is
+// also the common case -- most users have a layout on one cluster and none
+// anywhere else.
+func TestHandler_ListLayouts_EmptyIsAnArray(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+
+	rec := do(t, h, testUser(t), "local", endpoint{http.MethodGet, "/preferences/layouts", ""})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"data":[]`) {
+		t.Errorf("empty list body = %s; want \"data\":[] rather than null", body)
+	}
+}
+
+// TestHandler_ListLayouts_WithholdsNamespacedItems pins the trade this
+// endpoint makes for spanning clusters.
+//
+// The scoped read re-authorizes each namespace against the cluster the layout
+// is stored on. This one cannot: it answers for every cluster at once, and a
+// SelfSubjectAccessReview per record would reach clusters the caller is not
+// scoped to -- turning one unreachable cluster into a 500 for the whole list.
+// So it drops every namespaced placement without asking and names it, which is
+// the same answer canSeeNamespace gives when it has no checker to ask.
+//
+// An AccessChecker is deliberately absent from the handler here: the point is
+// that the drop does not depend on one either way.
+func TestHandler_ListLayouts_WithholdsNamespacedItems(t *testing.T) {
+	defer withTestWidget(t, testParamWidgetID, testParamWidgetSpec)()
+
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	cfg := layoutWithItems(t,
+		item(map[string]any{
+			"instanceId": "scoped", "id": testParamWidgetID, "x": 0, "w": 4, "h": 4,
+			"params": map[string]string{"namespace": "prod"},
+		}),
+		item(map[string]any{"instanceId": "unscoped", "id": "cluster-health", "x": 4, "w": 4, "h": 4}),
+	)
+	if rec := putLayout(t, h, user, "prod-east", "overview", 0, cfg); rec.Code != http.StatusCreated {
+		t.Fatalf("save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+
+	got := listLayouts(t, h, user, "local")
+	if len(got) != 1 {
+		t.Fatalf("list returned %d layouts; want 1", len(got))
+	}
+	if strings.Contains(string(got[0].Config), `"prod"`) {
+		t.Errorf("a namespaced placement was served: %s", got[0].Config)
+	}
+	// Named, not merely absent. A client that saw only the survivors could not
+	// tell a filtered layout from one the user arranged that way.
+	if len(got[0].Withheld) != 1 || got[0].Withheld[0] != "scoped" {
+		t.Errorf("withheld = %v; want [scoped]", got[0].Withheld)
+	}
+	// A placement naming no namespace needs no authorization, so it survives.
+	// Without this the whole affordance would hand back empty layouts the
+	// moment one parameterized widget joined the catalog.
+	if !strings.Contains(string(got[0].Config), `"cluster-health"`) {
+		t.Errorf("a placement with no namespace was withheld: %s", got[0].Config)
+	}
+
+	// Filtering is a property of the response, never of the row. A listing
+	// that rewrote the stored layout would delete the user's placement on a
+	// cluster they never even asked about.
+	stored := storedLayouts(t, h, user)
+	if len(stored) != 1 {
+		t.Fatalf("stored %d layouts; want 1", len(stored))
+	}
+	if !strings.Contains(string(stored[0].Config), `"prod"`) {
+		t.Errorf("the stored row lost its namespaced placement: %s", stored[0].Config)
+	}
+}
+
+// TestHandler_ListLayouts_DropsUnreadableRow pins the blast radius of one
+// corrupt row.
+//
+// The endpoint answers "your layouts elsewhere", and every readable layout is
+// still a truthful answer to that even when one row is not. Failing the whole
+// request would turn a single corrupt row on a single cluster into the loss of
+// the copy affordance everywhere -- the same shape as the down-cluster 500 the
+// handler's re-authorization note rejects, so accepting it here would be
+// inconsistent with the design the endpoint is built on. The client already
+// takes the same view: copyableLayouts skips a record it cannot read.
+//
+// The row is planted through the store rather than the handler on purpose.
+// Every write goes through ValidateDashboardLayout, so this state is not
+// reachable from the API -- which is exactly why nothing would notice the
+// regression without a test that manufactures it.
+func TestHandler_ListLayouts_DropsUnreadableRow(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	if rec := putLayout(t, h, user, "prod-east", "overview", 0,
+		layoutWithItems(t, item(nil))); rec.Code != http.StatusCreated {
+		t.Fatalf("prod-east save = %d %s; want 201", rec.Code, rec.Body.String())
+	}
+
+	// Valid JSON, so the column accepts it, but not a layout: items is a
+	// string where the struct wants an array, so withholdNamespaced's
+	// Unmarshal fails exactly as it would on a truncated or half-migrated row.
+	corrupt := store.PreferenceRecord{
+		OwnerID:       user.ID,
+		Kind:          store.PreferenceKindDashboardLayout,
+		Name:          "overview",
+		ClusterID:     "prod-west",
+		DedupKey:      DashboardLayoutDedupKey("overview"),
+		SchemaVersion: DashboardLayoutSchemaVersion,
+		Config:        json.RawMessage(`{"scope":"overview","columns":12,"items":"not-an-array"}`),
+	}
+	if _, err := h.Store.CreateInCluster(t.Context(), corrupt, h.layoutCeiling()); err != nil {
+		t.Fatalf("planting the corrupt row: %v", err)
+	}
+
+	got := listLayouts(t, h, user, "local")
+	if len(got) != 1 {
+		t.Fatalf("list returned %d layouts; want only the readable one (%+v)", len(got), got)
+	}
+	if got[0].ClusterID != "prod-east" {
+		t.Errorf("survivor is on %q; want prod-east", got[0].ClusterID)
+	}
+	// The readable layout arrives whole. A listing that dropped the bad row
+	// but truncated the good one would be a quieter version of the same bug.
+	if !strings.Contains(string(got[0].Config), `"cluster-health"`) {
+		t.Errorf("the readable layout lost its arrangement: %s", got[0].Config)
+	}
+
+	// Dropping is a property of the response. The corrupt row stays on disk
+	// for an operator to inspect; a listing that deleted it would destroy the
+	// evidence of whatever wrote it.
+	if stored := storedLayouts(t, h, user); len(stored) != 2 {
+		t.Errorf("stored %d layouts; want both rows still present", len(stored))
+	}
 }

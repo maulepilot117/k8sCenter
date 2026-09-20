@@ -28,22 +28,40 @@ export type PinRecord = PreferenceRecord<PinConfig>;
 export type LayoutRecord = PreferenceRecord<DashboardLayoutConfig>;
 
 /**
- * What both layout endpoints return: the stored record, plus anything the
+ * What every layout endpoint returns: the stored record, plus anything the
  * server removed from it on the way out.
  *
- * `withheld` names the instanceIds the read dropped because the caller can no
- * longer see their namespace, and it is `omitempty` on the Go side — an
- * unfiltered response omits the key entirely, which is why it is optional
- * here rather than an always-present empty array.
+ * `withheld` names the instanceIds the read dropped, and it is `omitempty` on
+ * the Go side — an unfiltered response omits the key entirely, which is why it
+ * is optional here rather than an always-present empty array.
  *
- * It is not cosmetic. A client that saw only the survivors could not tell a
- * filtered layout from one the user arranged that way, so it would render a
- * dashboard quietly missing widgets and the first save after that would make
- * the loss permanent. Mirrors LayoutResponse in
+ * The two reads drop placements for different reasons, and a consumer that
+ * renders the field should say the right one. The scoped read re-authorizes
+ * each namespace against the cluster the layout lives on, so its `withheld`
+ * means "you can no longer see this namespace". The cross-cluster listing
+ * cannot make that check — it answers for every cluster at once — so it drops
+ * every namespaced placement unconditionally, and its `withheld` means "this
+ * cannot be carried to another cluster" regardless of access.
+ *
+ * It is not cosmetic either way. A client that saw only the survivors could
+ * not tell a filtered layout from one the user arranged that way, so it would
+ * render a dashboard quietly missing widgets and the first save after that
+ * would make the loss permanent. Mirrors LayoutResponse in
  * backend/internal/preferences/handler.go.
  */
 export interface LayoutResponse extends LayoutRecord {
   withheld?: string[];
+  /**
+   * The name an operator gave `clusterId`, when the registry still has one.
+   *
+   * Set by the cross-cluster listing only, and absent whenever no registry is
+   * wired or the cluster has been deregistered. It exists because a remote
+   * cluster's id is 16 random bytes in hex, and the copy dialog would
+   * otherwise offer a choice between two 32-character strings. The label comes
+   * from the server rather than from `GET /v1/clusters` because that endpoint
+   * is admin-only, and a non-admin is exactly who the listing exists for.
+   */
+  clusterLabel?: string;
 }
 
 const VIEWS = "/v1/preferences/views";
@@ -112,6 +130,27 @@ export const preferencesApi = {
       signal,
     });
   },
+
+  /**
+   * Every dashboard layout the caller owns, on every cluster, most recently
+   * updated first.
+   *
+   * The collection read, not a second way to fetch one layout. It exists for
+   * the editor's "copy from another cluster": layouts are scoped per (user,
+   * cluster, scope), and `getLayout` below can only answer for the cluster the
+   * request is addressed to -- addressing one at another cluster requires the
+   * admin role, so for everyone else this is the only way to see that a layout
+   * elsewhere exists at all.
+   *
+   * Each record's `withheld` names placements the server refused to hand
+   * across clusters. It answers for every cluster at once and so cannot
+   * re-authorize a namespace against the cluster the layout lives on; it drops
+   * those placements rather than serving them unchecked. Mirrors
+   * HandleListLayouts in backend/internal/preferences/handler.go.
+   */
+  listLayouts: async (signal?: AbortSignal): Promise<LayoutResponse[]> =>
+    (await api<LayoutResponse[]>(LAYOUTS, { method: "GET", signal })).data ??
+    [],
 
   /**
    * The caller's layout for one dashboard scope, or null when they have not

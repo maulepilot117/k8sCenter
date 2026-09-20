@@ -1,3 +1,4 @@
+import { useSignal } from "@preact/signals";
 import type { MutableRef } from "preact/hooks";
 import { useLayoutEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -8,16 +9,25 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  * Every gesture in the editor takes a control out of the document: entering
  * edit mode replaces "Edit layout" with Cancel and Save, leaving it takes
  * Cancel and Save away again, adding a widget re-mounts the grid and unmounts
- * the palette that had focus. A browser's answer to all three is the same one
- * -- drop focus to the body -- and the body is the top of the page, which for
- * a keyboard user means starting the whole journey over.
+ * the palette that had focus, removing one takes the focused cell away. A
+ * browser's answer to all of them is the same one -- drop focus to the body --
+ * and the body is the top of the page, which for a keyboard user means
+ * starting the whole journey over.
  *
- * This hook is the one owner of that. It holds the three button refs the
- * toolbar attaches to, the three pieces of "what the next render owes the
- * keyboard", and the two layout effects that pay them. The island calls a
- * named method once per gesture and never reasons about effect ordering: the
- * ordering rules that matter are written down here, next to the effects that
- * depend on them.
+ * This hook is the one owner of that. It holds the button refs the toolbar
+ * attaches to, the pieces of "what the next render owes the keyboard", and the
+ * three layout effects that pay them. The island calls a named method once per
+ * gesture and never reasons about effect ordering: the ordering rules that
+ * matter are written down here, next to the effects that depend on them.
+ *
+ * One owner is the whole point, and it was nearly lost. D17 added three
+ * gestures and routed two of them here; removal grew its own ref, its own
+ * counter and its own layout effect inside `DashboardGrid` instead, and the
+ * review that caught it found the predictable consequence -- a grid that owns
+ * half the choreography cannot reach the toolbar, so emptying the dashboard
+ * left focus on the body with nowhere for the component to send it. The
+ * removal mover moved here; the grid reports the vacated position and nothing
+ * else.
  *
  * It lives in `frontend/lib/hooks/` because that is this repo's one home for
  * hooks (`use-poll`, `use-dirty-guard`, `use-split-pane`, ...), all of which
@@ -28,9 +38,10 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  * suite. So it is deliberately not in `lib/dashboard/` beside the geometry and
  * the edit session, which are pure and are unit tested.
  *
- * The palette's own autofocus is NOT here. A dialog focusing itself on open is
- * the dialog's job and lives in `WidgetPalette.tsx`; what this hook owns is
- * where focus goes when that dialog closes.
+ * A dialog's own autofocus is NOT here. A dialog focusing itself on open is
+ * the dialog's job and lives in `WidgetPalette.tsx` and
+ * `LayoutCopyDialog.tsx`; what this hook owns is where focus goes when one of
+ * them closes.
  */
 export interface DashboardFocus {
   /**
@@ -46,6 +57,19 @@ export interface DashboardFocus {
   cancelButton: MutableRef<HTMLButtonElement | null>;
   /** The palette's opener, so closing the dialog puts focus back on it. */
   addButton: MutableRef<HTMLButtonElement | null>;
+  /** The copy dialog's opener. Same contract as `addButton`. */
+  copyButton: MutableRef<HTMLButtonElement | null>;
+  /**
+   * The Reset button, so its confirmation can hand the keyboard back.
+   *
+   * Reset is the one destructive gesture that leaves the session open: Cancel
+   * and the conflict dialog both close it and are covered by
+   * `armReturnToEdit`, but confirming a reset unmounts the dialog the user was
+   * standing in and leaves editing exactly where it was. Without somewhere to
+   * go, focus falls to the body and the keyboard restarts at the top of the
+   * page -- with the whole dashboard having just changed underneath it.
+   */
+  resetButton: MutableRef<HTMLButtonElement | null>;
   /**
    * The user asked to start editing: move focus to Cancel on the render that
    * has it.
@@ -75,6 +99,20 @@ export interface DashboardFocus {
    */
   focusOnInsert: (instanceId: string) => void;
   /**
+   * A widget was just taken off: focus whatever moves up into the gap once the
+   * re-compacted grid has rendered, and fall back to "Add widget" when nothing
+   * does.
+   *
+   * Call it before the layout write, in the same gesture that removed the
+   * widget, the way `focusOnInsert` is called before the re-mount.
+   *
+   * Position rather than identity, because what the user wants next is
+   * whatever took the vacated place, which is a different widget every time
+   * and has no id worth recording. The last cell when the widget that went was
+   * the last one; the toolbar when it was the only one.
+   */
+  focusAfterRemoval: (vacatedIndex: number) => void;
+  /**
    * Put focus on "Add widget" now.
    *
    * The palette's close path: a dialog that returns focus to the document
@@ -83,6 +121,15 @@ export interface DashboardFocus {
    * and is where the user came from.
    */
   focusAddButton: () => void;
+  /** Put focus on "Copy from cluster" now. Same case as `focusAddButton`. */
+  focusCopyButton: () => void;
+  /**
+   * Put focus on "Reset" now.
+   *
+   * Immediate, like the two above, and safe for the same reason: the toolbar
+   * is not what a reset re-mounts. The grid is, and this button is not in it.
+   */
+  focusResetButton: () => void;
 }
 
 /**
@@ -101,6 +148,8 @@ export function useDashboardFocus(
   const editButton = useRef<HTMLButtonElement | null>(null);
   const cancelButton = useRef<HTMLButtonElement | null>(null);
   const addButton = useRef<HTMLButtonElement | null>(null);
+  const copyButton = useRef<HTMLButtonElement | null>(null);
+  const resetButton = useRef<HTMLButtonElement | null>(null);
 
   /** Set by `armToolbarFocus`, read by the edit-mode effect below. */
   const toolbarPending = useRef(false);
@@ -116,6 +165,31 @@ export function useDashboardFocus(
    * view, and what makes the grid announce where it landed.
    */
   const insertPending = useRef<string | null>(null);
+  /**
+   * The reading-order position a removal just vacated, until the render
+   * without that widget has happened.
+   *
+   * Removing the focused widget takes the focused element out of the document,
+   * and the browser's answer to that is the body -- the top of the page. Where
+   * focus should go instead is not knowable until the layout has re-compacted,
+   * so the position is recorded here and spent by the effect below.
+   */
+  const removalPending = useRef<number | null>(null);
+  /**
+   * Counts removals, and exists only to be that effect's dependency.
+   *
+   * The effect cannot key on the layout: that changes on every cell a drag
+   * crosses, so a pre-paint effect for a once-per-removal job would be
+   * scheduled and run on every frame of every gesture. Nor can it key on
+   * `removalPending` itself -- removing the first widget and then the widget
+   * that took its place records index 0 twice, and a dependency that did not
+   * change is an effect that does not run.
+   *
+   * A signal rather than a ref for the same reason `focusOnInsert` leans on
+   * `gridEpoch`: an effect needs a value that differs between renders, and a
+   * ref never does.
+   */
+  const removals = useSignal(0);
 
   // After the render that changed edit mode, not during the key press that
   // asked for it. Focusing first leaves the browser about to run its own focus
@@ -212,10 +286,51 @@ export function useDashboardFocus(
     };
   }, [gridEpoch]);
 
+  // Puts the keyboard back after a removal took it off the grid.
+  //
+  // This lived inside DashboardGrid until the D17 review. It belongs here for
+  // the reason the D16 post-mortem gave when it made this hook the one owner
+  // of focus: two owners is how the editor lost the keyboard twice already,
+  // and a grid that owns half the choreography cannot reach the toolbar for
+  // the half it does not own -- which is exactly the empty-grid case below.
+  //
+  // Running it from the island rather than from the grid also fixes the
+  // ordering for free. Preact flushes a child's layout effects before its
+  // parent's, so by the time this runs the grid has already patched in the
+  // re-compacted cells; the version inside the grid had to reason about that
+  // sequencing itself.
+  //
+  // A layout effect, so focus lands before the browser paints and the page
+  // never shows a frame with nothing focused.
+  useLayoutEffect(() => {
+    if (!IS_BROWSER) return;
+    const vacated = removalPending.current;
+    if (vacated === null) return;
+    removalPending.current = null;
+    const cells = document.querySelectorAll<HTMLElement>("[data-instance-id]");
+    if (cells.length === 0) {
+      // Nothing left to focus, so the keyboard goes to the toolbar. "Add
+      // widget" rather than Reset or Cancel: an empty dashboard is one the
+      // user has to put something back on, and it is the control that is
+      // unconditionally mounted for the whole session.
+      //
+      // The grid could not do this -- it has no toolbar to reach -- so it
+      // returned here and left focus on the body, which is the top of the
+      // page with the whole dashboard having just gone.
+      addButton.current?.focus();
+      return;
+    }
+    // Position, not identity: what the user wants next is whatever moved up
+    // into the gap. The last cell when the widget that went was the last one.
+    (cells[vacated] ?? cells[cells.length - 1]).focus();
+  }, [removals.value]);
+
   return {
     editButton,
     cancelButton,
     addButton,
+    copyButton,
+    resetButton,
     armToolbarFocus() {
       toolbarPending.current = true;
     },
@@ -225,8 +340,21 @@ export function useDashboardFocus(
     focusOnInsert(instanceId: string) {
       insertPending.current = instanceId;
     },
+    focusAfterRemoval(vacatedIndex: number) {
+      removalPending.current = vacatedIndex;
+      // Before the caller's layout write, so both land in one render: Preact
+      // batches signal writes made in the same turn, and the effect that
+      // spends this counter then runs against the DOM the new layout made.
+      removals.value += 1;
+    },
     focusAddButton() {
       addButton.current?.focus();
+    },
+    focusCopyButton() {
+      copyButton.current?.focus();
+    },
+    focusResetButton() {
+      resetButton.current?.focus();
     },
   };
 }

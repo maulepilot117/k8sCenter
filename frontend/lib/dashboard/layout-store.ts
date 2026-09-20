@@ -40,6 +40,7 @@ import type {
   DashboardScope,
   LayoutItem,
 } from "./types.ts";
+import { DASHBOARD_LAYOUT_SCHEMA_VERSION } from "./types.ts";
 
 /**
  * The layout each scope falls back to when the user has not saved one.
@@ -51,6 +52,25 @@ import type {
 const DEFAULT_LAYOUTS: Record<DashboardScope, DashboardLayoutConfig> = {
   overview: DEFAULT_OVERVIEW_LAYOUT,
 };
+
+/**
+ * The shipped arrangement for one scope: what an unsaved dashboard renders,
+ * and what Reset restores (D-6).
+ *
+ * Exported as a function rather than the map, so a caller cannot reach a scope
+ * it did not ask for -- and so the `Record` above stays the one place a new
+ * scope has to be given a default before it compiles.
+ *
+ * The returned object is the module constant itself, not a copy. Nothing in
+ * the editor mutates a config in place -- `beginEdit` and `applyChange` clone,
+ * and the grid's geometry engine rebuilds items rather than reshaping them --
+ * so a copy here would cost a clone per Reset to defend against a rule the
+ * whole feature already keeps. `loadLayout` hands the same object out for the
+ * same reason on a 204.
+ */
+export function defaultLayoutFor(scope: DashboardScope): DashboardLayoutConfig {
+  return DEFAULT_LAYOUTS[scope];
+}
 
 /**
  * The layout the grid renders. Starts at the default so the first paint has
@@ -184,6 +204,122 @@ export function dropUnknownWidgets(
   return { config: { ...config, items: kept }, warnings };
 }
 
+/** One layout the user has on another cluster, ready to be taken. */
+export interface CopyableLayout {
+  /** The source record's id. Unique across clusters, so it keys the list. */
+  id: string;
+  /** The cluster it is stored on. What `data-cluster-id` carries. */
+  clusterId: string;
+  /**
+   * What to call that cluster on screen.
+   *
+   * The server's label when the registry still names the cluster, and the raw
+   * id when it does not -- a deregistered cluster has no name left to give,
+   * and the id is the only honest thing to show for it. Resolved here rather
+   * than in the dialog so the fallback is decided in the one module this
+   * repo can unit test (D-10).
+   */
+  clusterLabel: string;
+  /** When it was last saved there, so two clusters are told apart by age. */
+  updatedAt: string;
+  /** The arrangement to take, already stripped of what this build cannot
+   * render. Never aliases the record it came from. */
+  config: DashboardLayoutConfig;
+  /** What taking it would silently lose, in words a user can act on. */
+  warnings: string[];
+}
+
+/**
+ * The layouts a user could copy onto the dashboard they are editing.
+ *
+ * The read half of D-3: layouts are scoped per (user, cluster, scope) so a
+ * production dashboard can differ from a sandbox one, and the price of that is
+ * arranging the same dashboard twice. This turns the list endpoint's answer
+ * into the rows the editor offers.
+ *
+ * Pure, and here rather than in the dialog, because every rule below is a
+ * judgement about which layouts are safe to take -- and the dialog is a
+ * component, which this repo has no harness to test (D-10).
+ *
+ * Order is the endpoint's own: most recently updated first. A user looking for
+ * the layout they just arranged elsewhere wants it at the top, and re-sorting
+ * by cluster name would bury it.
+ *
+ * `columns` is the grid of the layout being edited, not the constant: a
+ * placement is addressed to a column count, and one laid out on a different
+ * grid describes cells the target does not have.
+ */
+export function copyableLayouts(
+  records: readonly LayoutResponse[],
+  scope: DashboardScope,
+  currentCluster: string,
+  columns: number,
+): CopyableLayout[] {
+  const out: CopyableLayout[] = [];
+
+  for (const rec of records) {
+    // The layout on screen is not a thing to copy from.
+    if (rec.clusterId === currentCluster) continue;
+
+    const cfg = rec.config;
+    // The wire is untrusted here in a way the scoped read is not: that one
+    // feeds a single typed config into one consumer, while this walks a list
+    // whose every element the server assembled from a different row. A record
+    // whose config is not a layout is skipped rather than thrown on -- one bad
+    // row must not take the other clusters' offers down with it.
+    if (cfg === null || typeof cfg !== "object" || !Array.isArray(cfg.items)) {
+      continue;
+    }
+    // A different dashboard entirely.
+    if (cfg.scope !== scope) continue;
+    // Not a layout this build can read. `schemaVersion` is the reachable half
+    // -- a newer build that bumps it will store layouts this one must decline
+    // rather than misread -- and `columns` rides along because it is the same
+    // question about geometry rather than shape: the server pins it to the one
+    // grid it serves, so today only a future server could disagree. Taking
+    // either would produce a save this build cannot explain being refused.
+    if (
+      cfg.schemaVersion !== DASHBOARD_LAYOUT_SCHEMA_VERSION ||
+      cfg.columns !== columns
+    ) {
+      continue;
+    }
+
+    const { config, warnings } = dropUnknownWidgets(cfg);
+    // Nothing left to take. Offering it would replace the dashboard with an
+    // empty grid and an explanation, which is a worse outcome than the row not
+    // being there.
+    if (config.items.length === 0) continue;
+
+    // The server drops placements naming a namespace out of a cross-cluster
+    // listing, because it cannot re-authorize them against the cluster they
+    // live on (HandleListLayouts). Unreachable today -- no shipped widget
+    // takes parameters -- and said anyway, because a layout that arrives short
+    // two widgets and says nothing looks like a copy that lost them.
+    const withheld = rec.withheld ?? [];
+    if (withheld.length > 0) {
+      warnings.push(
+        `${withheld.length} widget${withheld.length === 1 ? "" : "s"} on ` +
+          `"${rec.clusterLabel || rec.clusterId}" read a namespace and ` +
+          `cannot be copied to another cluster.`,
+      );
+    }
+
+    out.push({
+      id: rec.id,
+      clusterId: rec.clusterId,
+      clusterLabel: rec.clusterLabel || rec.clusterId,
+      updatedAt: rec.updatedAt,
+      // A fresh array, so the rows the dialog is still rendering and the
+      // session the island is about to build cannot reach the same items.
+      config: { ...config, items: [...config.items] },
+      warnings,
+    });
+  }
+
+  return out;
+}
+
 export interface LoadedLayout {
   config: DashboardLayoutConfig;
   revision: number;
@@ -204,7 +340,7 @@ export function layoutFromResponse(
 ): LoadedLayout {
   if (res === null) {
     return {
-      config: DEFAULT_LAYOUTS[scope],
+      config: defaultLayoutFor(scope),
       revision: 0,
       withheld: [],
       warnings: [],
@@ -220,6 +356,61 @@ export function layoutFromResponse(
     withheld: res.withheld ?? [],
     warnings,
   };
+}
+
+/**
+ * What the user has on their other clusters, as of the last successful read.
+ *
+ * Starts empty, which reads as "nothing to copy" -- the same thing a failed
+ * read leaves behind, and deliberately so. This drives an optional affordance,
+ * not a statement about the world: an editor that could not reach the list
+ * offers no copy button, which is exactly what it offers for a user who has
+ * layouts on no other cluster. Neither owes an explanation, because neither
+ * takes anything away.
+ *
+ * That is the opposite of `layoutUnavailable`'s rule, and for the opposite
+ * reason: there, an absent observation dressed as an empty one would show a
+ * default dashboard as though the user's arrangement were gone.
+ */
+export const copyableLayoutRecords = signal<LayoutResponse[]>([]);
+
+let copyableInFlight: AbortController | null = null;
+
+/**
+ * Reads the caller's layouts on every cluster, for the copy affordance.
+ *
+ * Separate from `loadLayout` and deliberately quiet: it does not settle
+ * `layoutLoaded`, does not touch `layoutUnavailable`, and swallows its own
+ * failure. Nothing on the dashboard depends on the answer, so a failed read
+ * must not gate editing or raise a banner about a feature the user has not
+ * reached for.
+ *
+ * Called when an edit session opens rather than on mount, so the request is
+ * only made by someone who might use it -- and early enough in the gesture
+ * that the answer is there before the user has read the toolbar.
+ */
+export async function loadCopyableLayouts(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
+
+  copyableInFlight?.abort();
+  const ac = new AbortController();
+  copyableInFlight = ac;
+
+  const onAbort = () => ac.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    const records = await preferencesApi.listLayouts(ac.signal);
+    if (ac.signal.aborted) return;
+    copyableLayoutRecords.value = records;
+  } catch {
+    // Left as it was rather than cleared. A read that failed learned nothing,
+    // and dropping a list the user is mid-way through reading would close a
+    // dialog under them to report an error about a background refresh.
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (copyableInFlight === ac) copyableInFlight = null;
+  }
 }
 
 let inFlight: AbortController | null = null;

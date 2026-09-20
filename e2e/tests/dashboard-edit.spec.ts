@@ -16,6 +16,7 @@ import {
   preferenceError,
   record,
   saveRequestBody,
+  stubLayoutList,
   stubLayoutStore,
 } from "./dashboard-layout-stub.ts";
 
@@ -79,6 +80,10 @@ async function conflictingStore(page: Page) {
   };
   let conflicted = false;
 
+  // Entering edit mode reads it, and this store does not go through
+  // `stubLayoutStore`, which would otherwise have registered it.
+  await stubLayoutList(page);
+
   await page.route(LAYOUT_URL, async (route) => {
     if (route.request().method() === "GET") {
       // Nothing stored when the page first loads; once the write has been
@@ -134,6 +139,39 @@ async function nudge(page: Page, key: "ArrowLeft" | "ArrowRight") {
 /** The drag handle of a placed widget: its card's title row. */
 const handle = (page: Page, id: string) =>
   page.locator(`[data-instance-id="${id}"] [data-testid="drag-handle"]`);
+
+/**
+ * Where the subject widget sits in the shipped default, 1-based.
+ *
+ * Stated rather than read off the page, because it is what a Reset test
+ * asserts the layout came back to -- reading it from the grid after the reset
+ * would compare the grid to itself. It is the same number the comment on
+ * `SUBJECT` above already names, and `DEFAULT_OVERVIEW_LAYOUT` is where it
+ * comes from; a change there fails this loudly rather than silently.
+ */
+const DEFAULT_SUBJECT_COLUMN = 10;
+
+/**
+ * A stored layout nowhere near the shipped default: one widget, in the first
+ * column. Both Reset tests that need a baseline other than the default use it.
+ */
+const STORED_ONE_WIDGET: DashboardLayoutConfig = {
+  schemaVersion: 1,
+  scope: "overview",
+  columns: 12,
+  items: [{ instanceId: SUBJECT, id: "active-alerts", x: 0, y: 0, w: 3, h: 5 }],
+};
+
+/**
+ * Removes a placed widget through its header control.
+ *
+ * The pointer rather than the keyboard, because the control is a pointer
+ * affordance first; that it is also a tab stop is asserted where focus is the
+ * subject.
+ */
+async function removeWidget(page: Page, id: string) {
+  await widget(page, id).getByTestId("remove-widget").click();
+}
 
 /**
  * Drags the subject widget sideways by whole columns and asserts it landed.
@@ -645,5 +683,237 @@ test.describe("Dashboard edit mode", () => {
     await save.click();
     await expect(page.getByTestId("edit-layout")).toBeVisible();
     expect(writes).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Removing a widget (D17)
+  // -------------------------------------------------------------------------
+
+  test("a widget can be removed, and Cancel brings it back", async ({
+    page,
+  }) => {
+    const writes = await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    await expect(widget(page, SUBJECT)).toBeVisible();
+    // No confirmation: removal is undone by Cancel and writes nothing until
+    // Save, so a modal between the user and every widget they want gone is
+    // what actually makes people abandon a layout.
+    await removeWidget(page, SUBJECT);
+    await expect(widget(page, SUBJECT)).toHaveCount(0);
+    await expect(page.getByTestId("save-layout")).toBeEnabled();
+
+    // The rule the whole editor rests on: nothing reaches the server except
+    // by Save. Asserted here and not left to the visible result, because a
+    // removal that also wrote would look identical on screen -- and the only
+    // sign of it would be the next reload, with the widget gone for good.
+    expect(writes).toHaveLength(0);
+
+    await page.getByTestId("cancel-edit").click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Discard changes" })
+      .click();
+
+    await expect(widget(page, SUBJECT)).toBeVisible();
+    // And the undo is an undo, not a second write that happens to restore it.
+    expect(writes).toHaveLength(0);
+  });
+
+  test("the control is not offered outside edit mode", async ({ page }) => {
+    await stubLayoutStore(page);
+    await page.goto("/");
+    await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
+
+    // A monitoring dashboard gets clicked through fast, and a live remove
+    // button on every card is a widget nobody meant to delete.
+    await expect(page.getByTestId("remove-widget")).toHaveCount(0);
+
+    await page.getByTestId("edit-layout").click();
+    await expect(page.getByTestId("remove-widget")).toHaveCount(10);
+  });
+
+  test("removing the focused widget leaves the keyboard on the grid", async ({
+    page,
+  }) => {
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    const first = page.getByTestId("grid-item").first();
+    const removedId = await first.getAttribute("data-instance-id");
+    if (removedId === null) throw new Error("no instance id on the first cell");
+
+    await first.getByTestId("remove-widget").click();
+
+    // Whatever moved up into the gap, not the body: removing the focused
+    // element drops focus to the top of the page otherwise, which for a
+    // keyboard user means starting the whole journey over.
+    await expect(widget(page, removedId)).toHaveCount(0);
+    await expect(page.getByTestId("grid-item").first()).toBeFocused();
+  });
+
+  test("emptying the grid puts the keyboard on Add widget", async ({ page }) => {
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    // The case the grid alone could not answer: there is no cell left to move
+    // to, and the only place the keyboard can go is a toolbar control the
+    // grid does not own. It shipped returning early here, which left focus on
+    // the body -- the top of the page, with the whole dashboard just gone.
+    const buttons = page.getByTestId("remove-widget");
+    for (let remaining = await buttons.count(); remaining > 0; remaining--) {
+      await buttons.first().click();
+      await expect(buttons).toHaveCount(remaining - 1);
+    }
+
+    await expect(page.getByTestId("grid-item")).toHaveCount(0);
+    await expect(page.getByTestId("add-widget")).toBeFocused();
+  });
+
+  test("a widget can be removed in one-column mode", async ({ page }) => {
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    // Below the grid's narrow breakpoint there is nothing to arrange -- no
+    // columns to move between and no width to size -- and removal was gated
+    // on the same flag as arranging, so edit mode opened here with nothing in
+    // it. Removing a widget is not a spatial gesture and does not need the
+    // space arranging does.
+    await page.setViewportSize({ width: 700, height: 900 });
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-mode",
+      "narrow",
+    );
+
+    await expect(widget(page, SUBJECT)).toBeVisible();
+    await removeWidget(page, SUBJECT);
+    await expect(widget(page, SUBJECT)).toHaveCount(0);
+    await expect(page.getByTestId("save-layout")).toBeEnabled();
+  });
+
+  test("a removed widget becomes addable again", async ({ page }) => {
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    await removeWidget(page, SUBJECT);
+
+    await page.getByTestId("add-widget").click();
+    const option = page.getByTestId("widget-option-active-alerts");
+    // The palette disables what is already placed; the removal is what makes
+    // this row live again, which is the whole loop D16 and D17 close together.
+    await expect(option).toHaveAttribute("aria-disabled", "false");
+  });
+
+  test("saving a removal writes the layout without it", async ({ page }) => {
+    const writes = await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    await removeWidget(page, SUBJECT);
+    await page.getByTestId("save-layout").click();
+    await expect(page.getByTestId("edit-layout")).toBeVisible();
+
+    expect(writes).toHaveLength(1);
+    expect(
+      writes[0].config.items.map((i) => i.instanceId),
+    ).not.toContain(SUBJECT);
+  });
+
+  // -------------------------------------------------------------------------
+  // Reset (D17)
+  // -------------------------------------------------------------------------
+
+  test("Reset asks first, and the answer decides", async ({ page }) => {
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    await removeWidget(page, SUBJECT);
+    await expect(widget(page, SUBJECT)).toHaveCount(0);
+
+    await page.getByTestId("reset-layout").click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Reset dashboard layout");
+    // Declining changes nothing: the arrangement on screen is the only copy
+    // of this session's work.
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(widget(page, SUBJECT)).toHaveCount(0);
+
+    await page.getByTestId("reset-layout").click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Reset layout" })
+      .click();
+
+    await expect(widget(page, SUBJECT)).toBeVisible();
+    // The keyboard goes back to the button that opened the dialog: the
+    // session is still open, so no exit path restores it.
+    await expect(page.getByTestId("reset-layout")).toBeFocused();
+  });
+
+  test("Reset writes nothing until Save", async ({ page }) => {
+    // Over a STORED layout, not the default. Resetting a dashboard that is
+    // already the shipped one leaves the working copy equal to the baseline
+    // and so leaves Save correctly disarmed -- which the last test in this
+    // file asserts, and which would make this one prove nothing about writes.
+    const writes = await stubLayoutStore(page, {
+      revision: 3,
+      config: STORED_ONE_WIDGET,
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("grid-item")).toHaveCount(1);
+    await page.getByTestId("edit-layout").click();
+
+    await page.getByTestId("reset-layout").click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Reset layout" })
+      .click();
+
+    // One rule, not two: nothing reaches the server except by Save.
+    expect(writes).toHaveLength(0);
+    // And it is the shipped default that came back.
+    await expectColumn(page, SUBJECT, DEFAULT_SUBJECT_COLUMN);
+
+    await page.getByTestId("save-layout").click();
+    await expect(page.getByTestId("edit-layout")).toBeVisible();
+    expect(writes).toHaveLength(1);
+    expect(writes[0].config.items).toHaveLength(10);
+  });
+
+  test("Reset restores the shipped default, not the layout last saved", async ({
+    page,
+  }) => {
+    // Reset has to reach past the stored layout (D-6): "restore what I had"
+    // is undo, a different feature, and a button that does whichever the
+    // reader guessed is worse than one that does the narrower thing.
+    await stubLayoutStore(page, { revision: 3, config: STORED_ONE_WIDGET });
+    await page.goto("/");
+    await expect(page.getByTestId("grid-item")).toHaveCount(1);
+
+    await page.getByTestId("edit-layout").click();
+    await page.getByTestId("reset-layout").click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Reset layout" })
+      .click();
+
+    await expect(page.getByTestId("grid-item")).toHaveCount(10);
+    await expect(page.getByTestId("save-layout")).toBeEnabled();
+  });
+
+  test("Reset over an untouched default leaves Save disarmed", async ({
+    page,
+  }) => {
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    await page.getByTestId("reset-layout").click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Reset layout" })
+      .click();
+
+    // Nothing changed, so there is nothing to write. An enabled Save that
+    // writes nothing trains people to ignore the one that can.
+    await expect(page.getByTestId("save-layout")).toBeDisabled();
   });
 });

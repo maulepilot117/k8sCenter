@@ -37,7 +37,14 @@ var wantPreferenceRoutes = map[string]bool{
 	"POST /preferences/pins":         true,
 	"DELETE /preferences/pins/{id}":  true,
 	// Layouts are addressed by scope, not by id: one layout per scope, so
-	// there is no POST and no collection route.
+	// there is no POST and no {id}.
+	//
+	// The collection GET is not a way to read one layout by another name. It
+	// spans clusters, which the scoped read structurally cannot: that one
+	// answers for the cluster the request is addressed to, and addressing a
+	// request at another cluster is admin-only. It is what the editor's "copy
+	// from another cluster" reads.
+	"GET /preferences/layouts":         true,
 	"GET /preferences/layouts/{scope}": true,
 	"PUT /preferences/layouts/{scope}": true,
 }

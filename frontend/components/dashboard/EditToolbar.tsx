@@ -1,21 +1,25 @@
 import type { Ref } from "preact";
 
 /**
- * The dashboard's edit controls: one button to enter edit mode, and the two
- * ways out of it.
+ * The dashboard's edit controls: one button to enter edit mode, the ways to
+ * reshape the layout once in it, and the two ways out.
  *
  * Presentation only. It decides nothing -- not whether Save is offered, not
  * what Cancel confirms -- because all of that is the edit session's, which is
  * unit tested and this is not (D-10). What it owns is which buttons exist in
  * which mode, and that a user cannot reach a control that would do nothing.
  *
- * `Reset` (D17) joins it here. It is deliberately absent rather than disabled:
- * a button that is visible in every screenshot and never does anything is a
- * worse promise than one that has not shipped.
+ * `Reset` and `Copy from cluster` joined it in D17. Both follow the rule this
+ * comment was written for: a control is absent rather than disabled when it
+ * would never do anything. Reset is always offered while editing, because
+ * there is always a shipped default to go back to. Copy appears only once the
+ * caller knows the user has a layout on some other cluster -- a button that is
+ * visible in every screenshot and opens an empty list is a worse promise than
+ * one that has not shipped.
  */
 
 /**
- * The pill shared by all three buttons, matching the time-range buttons beside
+ * The pill shared by every button here, matching the time-range buttons beside
  * them.
  *
  * Utilities rather than a style object, per the project's Tailwind-only rule.
@@ -30,6 +34,17 @@ import type { Ref } from "preact";
  */
 const BUTTON_BASE =
   "rounded-lg px-3.5 py-[7px] text-xs font-medium transition-[background-color,color,opacity] duration-150 disabled:cursor-not-allowed disabled:opacity-50";
+
+/**
+ * The pill every button here wears except Save.
+ *
+ * Save is the one action with a consequence, so it is the one that gets the
+ * accent fill; everything else -- entering edit mode, adding, copying,
+ * resetting, cancelling -- is a glass pill. Named rather than repeated at each
+ * button, so the boundary stays "Save differs" rather than "four of the five
+ * happen to match today".
+ */
+const BUTTON_SECONDARY = `${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`;
 
 export interface EditToolbarProps {
   /** Whether an edit session is open. */
@@ -72,10 +87,33 @@ export interface EditToolbarProps {
    * keyboard user at the top of the page.
    */
   addButtonRef?: Ref<HTMLButtonElement>;
+  /** The "Copy from cluster" button. Same contract as `addButtonRef`. */
+  copyButtonRef?: Ref<HTMLButtonElement>;
+  /**
+   * The Reset button, so its confirmation can put focus back here.
+   *
+   * Reset is the one destructive gesture that leaves the session open, so
+   * nothing else on the way out restores the keyboard for it.
+   */
+  resetButtonRef?: Ref<HTMLButtonElement>;
   /** Whether the catalog palette this button opens is on screen. */
   paletteOpen: boolean;
+  /**
+   * Whether this user has a layout stored on some other cluster.
+   *
+   * False hides the copy control outright. It is also false while the answer
+   * is still being read, which is why the caller reads it as editing starts
+   * rather than on the first click: a button that appears under the pointer a
+   * moment after the toolbar does is a smaller surprise than one that opens an
+   * empty dialog.
+   */
+  copyAvailable: boolean;
+  /** Whether the copy dialog this button opens is on screen. */
+  copyOpen: boolean;
   onEdit: () => void;
   onAddWidget: () => void;
+  onCopyFromCluster: () => void;
+  onReset: () => void;
   onCancel: () => void;
   onSave: () => void;
 }
@@ -90,9 +128,15 @@ export default function EditToolbar({
   editButtonRef,
   cancelButtonRef,
   addButtonRef,
+  copyButtonRef,
+  resetButtonRef,
   paletteOpen,
+  copyAvailable,
+  copyOpen,
   onEdit,
   onAddWidget,
+  onCopyFromCluster,
+  onReset,
   onCancel,
   onSave,
 }: EditToolbarProps) {
@@ -109,7 +153,7 @@ export default function EditToolbar({
         disabled={disabled}
         title={disabledReason}
         onClick={onEdit}
-        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
+        class={BUTTON_SECONDARY}
       >
         Edit layout
       </button>
@@ -123,10 +167,13 @@ export default function EditToolbar({
     <div
       data-testid="edit-toolbar"
       // A named group, so a screen reader user arriving on Save by keyboard is
-      // told what these two buttons belong to rather than meeting them bare.
+      // told what these buttons belong to rather than meeting them bare.
       role="group"
       aria-label="Dashboard layout editing"
-      class="flex items-center gap-2"
+      // Wraps for the same reason the row that holds it does: five buttons is
+      // more than a narrow dashboard header has room for on one line, and a
+      // group that cannot wrap pushes whatever sits beside it off the page.
+      class="flex flex-wrap items-center justify-end gap-2"
     >
       <button
         ref={addButtonRef}
@@ -141,9 +188,40 @@ export default function EditToolbar({
         aria-haspopup="dialog"
         aria-expanded={paletteOpen}
         onClick={onAddWidget}
-        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
+        class={BUTTON_SECONDARY}
       >
         Add widget
+      </button>
+      {copyAvailable && (
+        <button
+          ref={copyButtonRef}
+          type="button"
+          data-testid="copy-layout"
+          // Held during a save for the same reason Add widget is: the grid is
+          // frozen while the write is in flight, so a layout taken now would
+          // reach the session and not the server.
+          disabled={saving}
+          aria-haspopup="dialog"
+          aria-expanded={copyOpen}
+          onClick={onCopyFromCluster}
+          class={BUTTON_SECONDARY}
+        >
+          Copy from cluster
+        </button>
+      )}
+      <button
+        ref={resetButtonRef}
+        type="button"
+        data-testid="reset-layout"
+        // Held during a save like every other control that rewrites the
+        // working copy. Not gated on `dirty`: Reset is about the shipped
+        // default, not about this session's edits, and a saved layout the user
+        // wants undone is exactly the case where nothing has been touched yet.
+        disabled={saving}
+        onClick={onReset}
+        class={BUTTON_SECONDARY}
+      >
+        Reset
       </button>
       <button
         ref={cancelButtonRef}
@@ -153,7 +231,7 @@ export default function EditToolbar({
         // would restore the layout underneath a write that still lands.
         disabled={saving}
         onClick={onCancel}
-        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
+        class={BUTTON_SECONDARY}
       >
         Cancel
       </button>

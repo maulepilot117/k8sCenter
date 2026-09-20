@@ -896,6 +896,10 @@ func main() {
 		// access is gone. Without a checker the read path withholds every
 		// namespaced placement rather than serving one it cannot check.
 		AccessChecker: accessChecker,
+		// Names the clusters in the cross-cluster layout listing. Read-only
+		// and best effort: without it the copy rows fall back to raw cluster
+		// ids, which for a remote cluster is 16 random bytes in hex.
+		Clusters: clusterStore,
 	}
 
 	// Ready state: true after informer sync, false during shutdown

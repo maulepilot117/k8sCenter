@@ -59,6 +59,27 @@ type Handler struct {
 	// authorize, because "could not check" is not "allowed".
 	AccessChecker *resources.AccessChecker
 
+	// Clusters resolves a cluster id to the name an operator gave it, for the
+	// cross-cluster layout listing alone.
+	//
+	// The listing is the one endpoint here whose rows are addressed by cluster
+	// rather than by scope, and a remote cluster's id is 16 random bytes in
+	// hex. Offering "copy a layout from 9f3c...e1" is offering a choice the
+	// user cannot make. The obvious client-side fix -- read GET /clusters the
+	// way the cluster switcher does -- does not work here: that endpoint is
+	// admin-only, and a non-admin is precisely who this listing exists for,
+	// since addressing a request at another cluster already requires the admin
+	// role.
+	//
+	// Nil is a supported state, not a deployment mistake: a build with no
+	// cluster registry has nothing to resolve. Rows then carry no label and
+	// the client falls back to the id, which is what it must do anyway for a
+	// cluster that has since been deregistered.
+	//
+	// This widens no one's view. A label is attached only to a cluster the
+	// caller already has a layout on, which the response names regardless.
+	Clusters *store.ClusterStore
+
 	// maxSavedViews, maxPins and maxLayouts override the package ceilings.
 	// Zero means the package default. They are unexported so no caller can
 	// widen a user's quota; the package's own tests set them so the limit path
@@ -279,7 +300,7 @@ func (h *Handler) HandleDeletePin(w http.ResponseWriter, r *http.Request) {
 // Dashboard layouts
 // ---------------------------------------------------------------------------
 
-// LayoutResponse is the body both layout endpoints return: the stored record,
+// LayoutResponse is the body every layout endpoint returns: the stored record,
 // plus anything the server removed from it on the way out.
 //
 // Withheld is not cosmetic. The read path drops placements whose namespace the
@@ -291,6 +312,170 @@ func (h *Handler) HandleDeletePin(w http.ResponseWriter, r *http.Request) {
 type LayoutResponse struct {
 	store.PreferenceRecord
 	Withheld []string `json:"withheld,omitempty"`
+
+	// ClusterLabel is the name an operator gave ClusterID, when the registry
+	// still has one for it.
+	//
+	// Set by the cross-cluster listing only. The scoped endpoints answer for
+	// the cluster the request was addressed to, which the client already knows
+	// the name of; the listing is the one that hands back rows addressed by an
+	// id the user has never seen. Empty whenever no registry is wired or the
+	// cluster has been deregistered since the layout was saved, and the client
+	// falls back to the id -- which is the honest label for a cluster nothing
+	// can name any more.
+	ClusterLabel string `json:"clusterLabel,omitempty"`
+}
+
+// HandleListLayouts returns every dashboard layout the caller owns, across all
+// clusters, most recently updated first.
+//
+// It exists for one affordance: "copy this dashboard from another cluster"
+// (spec D-3). Layouts are scoped per (user, cluster, scope), which is what lets
+// a production dashboard differ from a sandbox one, and the cost of that is
+// that arranging the same dashboard twice is manual. The editor closes it by
+// offering the layouts the user already has elsewhere -- which it can only do
+// if it can see them, and the scoped GET below cannot show them: it reads the
+// cluster the request is addressed to, and addressing a request to another
+// cluster requires the admin role (middleware.ClusterContext). An endpoint
+// that answers across clusters without widening anyone's cluster access is the
+// narrower thing, so this is it.
+//
+// Unpaginated, but NOT for the same reason HandleListViews is, and the
+// difference matters. Saved views go through Store.Create, whose ceiling is
+// counted across the whole user, so that listing really is bounded by one
+// number. Layouts go through Store.CreateInCluster, whose ceiling is counted
+// inside one cluster (see MaxDashboardLayoutsPerUser in dashboard.go, where
+// "per cluster" is called load-bearing). This endpoint reads across every
+// cluster, and store.List has no cluster predicate, so the real bound is
+// MaxDashboardLayoutsPerUser times the number of clusters the caller has ever
+// saved a layout on -- and nothing purges rows when a cluster is
+// deregistered, so rows for dead clusters keep accruing and keep being
+// served.
+//
+// That is small enough today to leave alone: allowedDashboardScopes has one
+// entry, cluster registration is admin-gated, and a config is capped at 8 KiB.
+// Revisit when either multiplier grows -- a second dashboard scope (dashboard.go
+// already anticipates one in P6) or a deployment with many registered clusters.
+// The fix then is a layouts-specific store read with a LIMIT rather than reusing
+// List, and truncation named in the response metadata so the client can say the
+// list is partial.
+//
+// NOTE ON RE-AUTHORIZATION. The scoped read re-checks every namespace a layout
+// names against the cluster it is stored on, because such a parameter is
+// evidence of what the caller could see when they saved it and never of what
+// they may see now. This endpoint cannot make that check: it spans clusters,
+// and a SelfSubjectAccessReview per record per namespace would reach clusters
+// the caller is not scoped to -- some of them unreachable, any of which would
+// turn one down cluster into a 500 for the whole list. So it takes the other
+// honest answer and drops every namespaced placement unconditionally, naming
+// them in Withheld exactly as the scoped read names the ones it refused. That
+// is the same rule canSeeNamespace already applies when no checker is wired:
+// "could not check" is not "allowed".
+//
+// Today that loop removes nothing -- every widget in the catalog is
+// parameterless and ValidateDashboardLayout refuses parameters on such a
+// widget, so no stored layout can name a namespace at all. It is written now
+// because the first parameterized widget must not have to remember it.
+//
+// NOTE ON ONE BAD ROW. A row whose config will not decode is dropped from the
+// answer and logged; it does not fail the request. The scoped read has the
+// opposite rule and should: there the unreadable config IS the thing the
+// caller asked for, so answering 200 with nothing would be a lie. Here the
+// caller asked for "my layouts elsewhere", and every other cluster's layout is
+// still a truthful answer to that. Failing whole would turn one corrupt row
+// into the loss of the copy affordance on every cluster -- which is the same
+// shape as the down-cluster 500 the re-authorization note above rejects, so
+// rejecting it there and accepting it here would be inconsistent. The client
+// agrees already: copyableLayouts in layout-store.ts skips a record it cannot
+// read rather than discarding the rest of the list.
+//
+// A dropped row is not named in the response. Withheld says "this layout is
+// here, minus these placements"; a row that will not decode has no placements
+// to name and no layout to attach them to, and inventing a half-record to
+// carry the news would hand the editor something it cannot offer anyway. The
+// error log is the operator's signal, and it carries the record and cluster.
+func (h *Handler) HandleListLayouts(w http.ResponseWriter, r *http.Request) {
+	records, ok := h.ownedRecords(w, r, store.PreferenceKindDashboardLayout,
+		"failed to list dashboard layouts")
+	if !ok {
+		return
+	}
+
+	labels := h.clusterLabels(r.Context())
+
+	out := make([]LayoutResponse, 0, len(records))
+	for _, rec := range records {
+		filtered, withheld, err := withholdNamespaced(rec.Config)
+		if err != nil {
+			// Every row was written through ValidateDashboardLayout, so a row
+			// that will not decode is corruption rather than an old shape.
+			// Drop it and keep going: serving it unfiltered is what
+			// withholdUnauthorized exists to stop, but failing the whole list
+			// would take every other cluster's readable layout with it. See
+			// NOTE ON ONE BAD ROW above.
+			h.logger().Error("preferences: dropping an unreadable dashboard layout from the listing",
+				"record", rec.ID, "cluster", rec.ClusterID, "error", err)
+			continue
+		}
+		rec.Config = filtered
+		out = append(out, LayoutResponse{
+			PreferenceRecord: rec,
+			Withheld:         withheld,
+			ClusterLabel:     labels[rec.ClusterID],
+		})
+	}
+
+	writeList(w, out)
+}
+
+// clusterLabels maps cluster id to the name an operator gave it.
+//
+// Best effort by design, and the only reason it does not return an error: a
+// registry that cannot be read costs the copy rows their friendly names, and
+// nothing else. Failing the listing over it would take the whole affordance
+// away to avoid showing an id the client is already prepared to show.
+//
+// An empty map for a nil store, a failed read, or a cluster the registry has
+// forgotten. Callers index it directly; the zero value is the "no label" the
+// response field documents.
+func (h *Handler) clusterLabels(ctx context.Context) map[string]string {
+	if h.Clusters == nil {
+		return nil
+	}
+	rows, err := h.Clusters.List(ctx)
+	if err != nil {
+		h.logger().Warn("preferences: labelling listed layouts by cluster failed",
+			"error", err)
+		return nil
+	}
+	labels := make(map[string]string, len(rows))
+	for _, c := range rows {
+		// The same precedence the cluster switcher renders with, so one
+		// cluster is not called two different things in two places.
+		switch {
+		case c.DisplayName != "":
+			labels[c.ID] = c.DisplayName
+		case c.Name != "":
+			labels[c.ID] = c.Name
+		}
+	}
+	return labels
+}
+
+// withholdNamespaced removes every placement naming a namespace and returns
+// the surviving config plus the instanceIds it dropped.
+//
+// The cross-cluster counterpart to withholdUnauthorized: same shape, same
+// contract on its output, but it answers "may the caller see this namespace?"
+// with a flat no rather than with an access review. HandleListLayouts explains
+// why that is the only answer available to it.
+//
+// A config naming no namespace is returned byte for byte as stored, with no
+// re-marshal -- which is every config the catalog can currently produce.
+func withholdNamespaced(config json.RawMessage) (json.RawMessage, []string, error) {
+	return withholdNamespaces(config, func(string) (bool, error) {
+		return false, nil
+	})
 }
 
 // HandleGetLayout returns the caller's layout for one dashboard scope.
@@ -562,6 +747,28 @@ func (h *Handler) writeLayoutConflict(w http.ResponseWriter) {
 func (h *Handler) withholdUnauthorized(ctx context.Context, user *auth.User,
 	clusterID string, config json.RawMessage,
 ) (json.RawMessage, []string, error) {
+	return withholdNamespaces(config, func(ns string) (bool, error) {
+		return h.canSeeNamespace(ctx, user, clusterID, ns)
+	})
+}
+
+// withholdNamespaces is the shared body of the two withhold paths: parse, walk
+// the placements, drop the ones whose namespace `allow` refuses, and say which
+// were dropped.
+//
+// Split out because the two callers differ only in that predicate, and the
+// part they share is the part that must not drift: which field names a
+// namespace, that an unparseable config fails rather than passing through, and
+// that a layout losing nothing is returned byte for byte rather than
+// re-marshalled. Two copies of that walk would be two places to fix the day a
+// second parameter key becomes a namespace.
+//
+// `allow` is asked only about a placement that names a namespace, so a
+// parameterless layout -- every layout the catalog can produce today -- calls
+// it zero times.
+func withholdNamespaces(config json.RawMessage,
+	allow func(namespace string) (bool, error),
+) (json.RawMessage, []string, error) {
 	var cfg DashboardLayoutConfig
 	if err := json.Unmarshal(config, &cfg); err != nil {
 		// Every row was written through ValidateDashboardLayout, so this is
@@ -579,7 +786,7 @@ func (h *Handler) withholdUnauthorized(ctx context.Context, user *auth.User,
 			kept = append(kept, it)
 			continue
 		}
-		allowed, err := h.canSeeNamespace(ctx, user, clusterID, ns)
+		allowed, err := allow(ns)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -652,23 +859,47 @@ func (h *Handler) requireStore(w http.ResponseWriter) bool {
 
 // list is the shared body of the two GET endpoints.
 func (h *Handler) list(w http.ResponseWriter, r *http.Request, kind store.PreferenceKind) {
-	user, ok := h.begin(w, r)
+	records, ok := h.ownedRecords(w, r, kind, "failed to list preferences")
 	if !ok {
 		return
+	}
+	writeList(w, records)
+}
+
+// ownedRecords runs the preconditions and the read every list endpoint shares:
+// an authenticated caller with a configured database, then that caller's
+// records of one kind across every cluster.
+//
+// `failure` is the message a read error answers with, because the layout
+// listing names what the caller asked for rather than "preferences". It has
+// already been written when this returns false; the caller only returns.
+func (h *Handler) ownedRecords(w http.ResponseWriter, r *http.Request,
+	kind store.PreferenceKind, failure string,
+) ([]store.PreferenceRecord, bool) {
+	user, ok := h.begin(w, r)
+	if !ok {
+		return nil, false
 	}
 
 	records, err := h.Store.List(r.Context(), user.ID, kind)
 	if err != nil {
 		h.logger().Error("preferences: list failed", "kind", kind, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to list preferences", "")
-		return
+		httputil.WriteError(w, http.StatusInternalServerError, failure, "")
+		return nil, false
 	}
-	if records == nil {
-		// An owner with no records gets [], never null: a client iterating the
-		// response should not have to special-case the empty case.
-		records = []store.PreferenceRecord{}
-	}
+	return records, true
+}
 
+// writeList answers with a collection and its count.
+//
+// Generic over the element, because the layout listing wraps each record
+// before sending it. The nil slice is normalised here rather than at each call
+// site: an owner with no records gets [], never null, and a client iterating
+// the response should not have to special-case the empty case.
+func writeList[T any](w http.ResponseWriter, records []T) {
+	if records == nil {
+		records = []T{}
+	}
 	httputil.WriteJSON(w, http.StatusOK, api.Response{
 		Data:     records,
 		Metadata: &api.Metadata{Total: len(records)},

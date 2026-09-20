@@ -31,6 +31,17 @@ import {
 
 export const LAYOUT_URL = "**/api/v1/preferences/layouts/overview";
 
+/**
+ * The cross-cluster listing the editor's "copy from another cluster" reads.
+ *
+ * A separate glob from `LAYOUT_URL`, and it has to stay one: Playwright
+ * matches the whole path, so the scoped route above does not catch this and a
+ * spec that stubbed only that one would let the real backend answer here.
+ * Every layout spec stubs both, so no test depends on what the shared E2E
+ * database happens to hold for the shared login.
+ */
+export const LAYOUT_LIST_URL = "**/api/v1/preferences/layouts";
+
 /** A full preference record, the shape `api()` unwraps from `data`. */
 export function record(revision: number, config: unknown) {
   return {
@@ -44,6 +55,49 @@ export function record(revision: number, config: unknown) {
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
   };
+}
+
+/**
+ * One record as the cross-cluster listing returns it: a stored layout, the
+ * cluster it lives on, and anything the server withheld on the way out.
+ */
+export function listedRecord(
+  clusterId: string,
+  config: unknown,
+  over: { withheld?: string[]; updatedAt?: string; clusterLabel?: string } = {},
+) {
+  return {
+    ...record(1, config),
+    id: `00000000-0000-0000-0000-${clusterId.replace(/\W/g, "").padStart(12, "0").slice(-12)}`,
+    clusterId,
+    ...over,
+  };
+}
+
+/**
+ * Serves the cross-cluster listing. Empty by default, which is what every
+ * spec that is not about copying wants: no other cluster's layout, so the
+ * editor offers no copy control and the toolbar is the one D15 and D16 tested.
+ */
+export async function stubLayoutList(
+  page: Page,
+  records: unknown[] = [],
+): Promise<void> {
+  await page.route(LAYOUT_LIST_URL, async (route) => {
+    const request = route.request();
+    if (request.method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    expect(
+      request.headers()["x-cluster-id"],
+      "the cluster header lib/api.ts injects on every request",
+    ).toBeTruthy();
+    await json(route, 200, {
+      data: records,
+      metadata: { total: records.length },
+    });
+  });
 }
 
 export const json = (route: Route, status: number, body: unknown) =>
@@ -224,9 +278,16 @@ export interface StoredWrite {
 export async function stubLayoutStore(
   page: Page,
   initial?: { revision: number; config: DashboardLayoutConfig },
+  elsewhere: unknown[] = [],
 ): Promise<StoredWrite[]> {
   const writes: StoredWrite[] = [];
   let stored: StoredWrite | null = initial ?? null;
+
+  // Registered here rather than left to each spec: entering edit mode reads
+  // it, so a spec that stubbed only the scoped endpoint would reach the real
+  // backend on every Edit click and inherit whatever the shared E2E database
+  // holds.
+  await stubLayoutList(page, elsewhere);
 
   await page.route(LAYOUT_URL, async (route) => {
     const request = route.request();

@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
+import type { LayoutRecord, LayoutResponse } from "@/lib/preferences.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
 import {
+  copyableLayoutRecords,
+  copyableLayouts,
   dropUnknownWidgets,
   layout,
   layoutFromResponse,
@@ -9,6 +12,7 @@ import {
   layoutRevision,
   layoutUnavailable,
   layoutWithheld,
+  loadCopyableLayouts,
   loadLayout,
   StaleLayoutScopeError,
   saveLayout,
@@ -618,4 +622,287 @@ test("loadLayout: an already-aborted signal settles nothing", async () => {
 
   expect(calls).toBe(0);
   expect(layoutLoaded.value).toBe(before);
+});
+
+// ---------------------------------------------------------------------------
+// copyableLayouts (D17): which of a user's other clusters' layouts can be taken
+// ---------------------------------------------------------------------------
+
+/** One record as the list endpoint returns it. Distinct from `layoutRecord`
+ * above: that one is a single-scope read, keyed by revision. */
+function listedLayout(
+  clusterId: string,
+  cfg: DashboardLayoutConfig,
+  over: Partial<LayoutRecord> & { withheld?: string[] } = {},
+): LayoutResponse {
+  return {
+    id: `rec-${clusterId}`,
+    kind: "dashboard_layout",
+    name: "overview",
+    clusterId,
+    schemaVersion: DASHBOARD_LAYOUT_SCHEMA_VERSION,
+    revision: 1,
+    config: cfg,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-02T00:00:00Z",
+    ...over,
+  };
+}
+
+test("copyableLayouts: offers another cluster's layout and not this one's", () => {
+  const got = copyableLayouts(
+    [
+      listedLayout("prod-east", config([item("a", KNOWN)])),
+      listedLayout("local", config([item("b", ALSO_KNOWN)])),
+    ],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  expect(got.map((c) => c.clusterId)).toEqual(["prod-east"]);
+  expect(got[0].config.items.map((i) => i.id)).toEqual([KNOWN]);
+  expect(got[0].warnings).toEqual([]);
+});
+
+test("copyableLayouts: input order is preserved", () => {
+  const got = copyableLayouts(
+    [
+      listedLayout("b-cluster", config([item("a", KNOWN)])),
+      listedLayout("a-cluster", config([item("b", KNOWN)])),
+    ],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  // The endpoint sorts by updated_at descending, and most-recently-arranged is
+  // the order a user looking for a layout they just made wants. Re-sorting
+  // here by cluster name would bury it.
+  expect(got.map((c) => c.clusterId)).toEqual(["b-cluster", "a-cluster"]);
+});
+
+test("copyableLayouts: skips a layout addressed to another dashboard", () => {
+  const otherScope = {
+    ...config([item("a", KNOWN)]),
+    scope: "workloads" as DashboardScope,
+  };
+
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", otherScope)],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: skips a layout this build cannot read", () => {
+  const future = {
+    ...config([item("a", KNOWN)]),
+    schemaVersion: DASHBOARD_LAYOUT_SCHEMA_VERSION + 1,
+  };
+
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", future)],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: skips a layout laid out on a different grid", () => {
+  const narrower = { ...config([item("a", KNOWN)]), columns: 6 };
+
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", narrower)],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: drops widgets this build has no definition for", () => {
+  const got = copyableLayouts(
+    [listedLayout("prod-east", config([item("a", KNOWN), item("b", "gone")]))],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  expect(got).toHaveLength(1);
+  expect(got[0].config.items.map((i) => i.id)).toEqual([KNOWN]);
+  expect(got[0].warnings).toHaveLength(1);
+  expect(got[0].warnings[0]).toContain("gone");
+});
+
+test("copyableLayouts: says when the server withheld placements", () => {
+  const got = copyableLayouts(
+    [
+      listedLayout("prod-east", config([item("a", KNOWN)]), {
+        withheld: ["scoped-one", "scoped-two"],
+      }),
+    ],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  expect(got).toHaveLength(1);
+  // An absent observation must not look like an empty one: a layout that
+  // arrives short two widgets has to say so, or the copy looks like it lost
+  // them.
+  expect(got[0].warnings).toHaveLength(1);
+  expect(got[0].warnings[0]).toContain("2");
+});
+
+test("copyableLayouts: skips a layout with nothing left to copy", () => {
+  // Every widget on it is one this build does not have, so taking it would
+  // replace the dashboard with an empty grid and a warning. That is not an
+  // offer worth making, and a row that empties the screen is worse than no row.
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", config([item("a", "gone")]))],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: tolerates a record whose config is not a layout", () => {
+  const junk = { schemaVersion: DASHBOARD_LAYOUT_SCHEMA_VERSION } as unknown;
+
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", junk as DashboardLayoutConfig)],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: the offered config does not alias the record", () => {
+  const source = config([item("a", KNOWN)]);
+  const got = copyableLayouts(
+    [listedLayout("prod-east", source)],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  // The island hands this straight to a session and a grid, both of which
+  // rebuild items rather than reshaping them -- but the record it came from is
+  // a fetch result the dialog is still rendering, and a shared array would let
+  // one become the other's surprise.
+  expect(got[0].config.items).not.toBe(source.items);
+});
+
+// ---------------------------------------------------------------------------
+// loadCopyableLayouts (D17): reading the other clusters' layouts
+// ---------------------------------------------------------------------------
+//
+// The sibling of `loadLayout` above, and tested to the same bar for the same
+// reason: it has the same failure-prone shape -- an AbortController that
+// supersedes an in-flight request, a stale-response guard, and a catch that
+// must leave the records alone rather than clear them. It shipped without any
+// of that exercised, and the e2e specs only ever drive the 200.
+
+test("loadCopyableLayouts: a successful read populates the records", async () => {
+  copyableLayoutRecords.value = [];
+
+  await withFetch(
+    [
+      () =>
+        jsonResponse([listedLayout("prod-east", config([item("a", KNOWN)]))]),
+    ],
+    () => loadCopyableLayouts(),
+  );
+
+  expect(copyableLayoutRecords.value.map((r) => r.clusterId)).toEqual([
+    "prod-east",
+  ]);
+});
+
+test("loadCopyableLayouts: a failed read keeps what was already there", async () => {
+  const before = [listedLayout("prod-east", config([item("a", KNOWN)]))];
+  copyableLayoutRecords.value = before;
+
+  await withFetch([() => jsonResponse({ error: "nope" }, 500)], () =>
+    loadCopyableLayouts(),
+  );
+
+  // Not cleared, and not thrown. This drives an optional affordance: a read
+  // that failed learned nothing, and dropping a list the user may be reading
+  // would close the copy dialog under them to report a background error.
+  expect(copyableLayoutRecords.value).toBe(before);
+});
+
+test("loadCopyableLayouts: an already-aborted signal issues no request", async () => {
+  copyableLayoutRecords.value = [];
+  const ac = new AbortController();
+  ac.abort();
+
+  const { calls } = await withFetch(
+    [
+      () =>
+        jsonResponse([listedLayout("prod-east", config([item("a", KNOWN)]))]),
+    ],
+    () => loadCopyableLayouts(ac.signal),
+  );
+
+  expect(calls).toBe(0);
+  expect(copyableLayoutRecords.value).toEqual([]);
+});
+
+test("loadCopyableLayouts: a superseded read does not overwrite the newer one", async () => {
+  copyableLayoutRecords.value = [];
+
+  // The first call is held open until the second has already answered, which
+  // is the ordering a second Edit press produces: `startEditing` fires this
+  // without awaiting it, so two reads can be in flight at once. The first
+  // must not land on top of the second -- a stale list is a dialog offering
+  // a layout that is no longer there.
+  // Initialized rather than left null: the assignment happens inside the
+  // executor, which runs synchronously, but TypeScript's control flow cannot
+  // see that and would narrow a nullable binding to `null` at the call below.
+  let releaseFirst = () => {};
+  const firstArrived = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (() => {
+    calls += 1;
+    if (calls === 1) {
+      return firstArrived.then(() =>
+        jsonResponse([
+          listedLayout("stale-cluster", config([item("a", KNOWN)])),
+        ]),
+      );
+    }
+    return Promise.resolve(
+      jsonResponse([listedLayout("fresh-cluster", config([item("a", KNOWN)]))]),
+    );
+  }) as unknown as typeof globalThis.fetch;
+
+  try {
+    const first = loadCopyableLayouts();
+    await loadCopyableLayouts();
+    releaseFirst();
+    await first;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  expect(copyableLayoutRecords.value.map((r) => r.clusterId)).toEqual([
+    "fresh-cluster",
+  ]);
 });
