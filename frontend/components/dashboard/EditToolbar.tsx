@@ -9,9 +9,9 @@ import type { Ref } from "preact";
  * unit tested and this is not (D-10). What it owns is which buttons exist in
  * which mode, and that a user cannot reach a control that would do nothing.
  *
- * `Add widget` (D16) and `Reset` (D17) join it here. They are deliberately
- * absent rather than disabled: a button that is visible in every screenshot
- * and never does anything is a worse promise than one that has not shipped.
+ * `Reset` (D17) joins it here. It is deliberately absent rather than disabled:
+ * a button that is visible in every screenshot and never does anything is a
+ * worse promise than one that has not shipped.
  */
 
 /**
@@ -66,7 +66,16 @@ export interface EditToolbarProps {
    * fall to the document.
    */
   cancelButtonRef?: Ref<HTMLButtonElement>;
+  /**
+   * The "Add widget" button, so the caller can put focus back on it when the
+   * palette closes. A dialog that returns focus to the document leaves a
+   * keyboard user at the top of the page.
+   */
+  addButtonRef?: Ref<HTMLButtonElement>;
+  /** Whether the catalog palette this button opens is on screen. */
+  paletteOpen: boolean;
   onEdit: () => void;
+  onAddWidget: () => void;
   onCancel: () => void;
   onSave: () => void;
 }
@@ -80,7 +89,10 @@ export default function EditToolbar({
   disabledReason,
   editButtonRef,
   cancelButtonRef,
+  addButtonRef,
+  paletteOpen,
   onEdit,
+  onAddWidget,
   onCancel,
   onSave,
 }: EditToolbarProps) {
@@ -116,6 +128,23 @@ export default function EditToolbar({
       aria-label="Dashboard layout editing"
       class="flex items-center gap-2"
     >
+      <button
+        ref={addButtonRef}
+        type="button"
+        data-testid="add-widget"
+        // Held during a save for the same reason Cancel is: the grid is frozen
+        // while the write is in flight (DashboardV2.tsx), so an insertion made
+        // now would reach the session and not the server.
+        disabled={saving}
+        // The palette is a dialog rather than a menu, and this is the control
+        // that opens it, so it says which and whether it is open.
+        aria-haspopup="dialog"
+        aria-expanded={paletteOpen}
+        onClick={onAddWidget}
+        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
+      >
+        Add widget
+      </button>
       <button
         ref={cancelButtonRef}
         type="button"

@@ -1,4 +1,4 @@
-import type { Page, Route } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
 import type { DashboardLayoutConfig } from "../../frontend/lib/dashboard/types.ts";
 // The grid's own geometry, imported rather than copied, exactly as
@@ -8,23 +8,22 @@ import {
   DASHBOARD_COLUMNS,
   DASHBOARD_GRID_GAP,
 } from "../../frontend/lib/dashboard/types.ts";
+// The stubbed layout endpoint, shared with dashboard-palette.spec.ts. Its
+// header explains why these specs mock a store the E2E stack really runs.
+import {
+  json,
+  LAYOUT_URL,
+  preferenceError,
+  record,
+  saveRequestBody,
+  stubLayoutStore,
+} from "./dashboard-layout-stub.ts";
 
 // The dashboard editor: entering edit mode, whether Save is offered, what
 // Cancel puts back, and what a conflicting save does. The state machine behind
 // all four is unit tested in frontend/lib/dashboard/edit-session_test.ts;
 // these prove the island routes the user's gestures through it, and that the
 // save path talks to the server the way the endpoint expects.
-//
-// Every test here mocks the preferences endpoint rather than using the real
-// one, although the E2E stack does run a Postgres. A layout is stored per
-// (user, cluster, scope) and the whole suite shares one login, so a single
-// test that really saved would hand its arrangement to every later test that
-// loads the dashboard -- including the ones in dashboard-grid.spec.ts that
-// assert where the default layout puts things. The server side of this
-// contract is covered by the handler tests in
-// backend/internal/preferences/handler_test.go.
-
-const LAYOUT_URL = "**/api/v1/preferences/layouts/overview";
 
 /** The widget the geometry specs also drive: it starts in column 10 of 12. */
 const SUBJECT = "d-active-alerts";
@@ -53,67 +52,6 @@ function expectColumn(page: Page, id: string, col: number) {
   );
 }
 
-/** A full preference record, the shape `api()` unwraps from `data`. */
-function record(revision: number, config: unknown) {
-  return {
-    id: "00000000-0000-0000-0000-000000000001",
-    kind: "dashboard_layout",
-    name: "overview",
-    clusterId: "local",
-    schemaVersion: 1,
-    revision,
-    config,
-    createdAt: "2026-01-01T00:00:00Z",
-    updatedAt: "2026-01-01T00:00:00Z",
-  };
-}
-
-const json = (route: Route, status: number, body: unknown) =>
-  route.fulfill({
-    status,
-    contentType: "application/json",
-    body: JSON.stringify(body),
-  });
-
-const preferenceError = (route: Route, status: number, reason: string) =>
-  json(route, status, {
-    error: { code: status, message: "refused", reason },
-  });
-
-/**
- * Serves the layout endpoint from memory: 204 until something is saved, the
- * saved record afterwards, with the revision advancing on each write.
- *
- * Returns the writes it saw, so a test can assert what the client actually
- * sent rather than only what came back.
- */
-async function stubLayoutStore(page: Page) {
-  const writes: { revision: number; config: DashboardLayoutConfig }[] = [];
-  let stored: { revision: number; config: DashboardLayoutConfig } | null = null;
-
-  await page.route(LAYOUT_URL, async (route) => {
-    const request = route.request();
-    if (request.method() === "GET") {
-      if (stored === null) {
-        await route.fulfill({ status: 204, body: "" });
-        return;
-      }
-      await json(route, 200, { data: record(stored.revision, stored.config) });
-      return;
-    }
-    if (request.method() === "PUT") {
-      const body = saveRequestBody(route);
-      writes.push(body);
-      stored = { revision: body.revision + 1, config: body.config };
-      await json(route, 200, { data: record(stored.revision, stored.config) });
-      return;
-    }
-    await route.fallback();
-  });
-
-  return writes;
-}
-
 /**
  * What Save's title says once a write has been refused. Mirrors
  * SAVE_BLOCKED_REASON in DashboardV2.tsx, copied rather than imported: that
@@ -122,50 +60,6 @@ async function stubLayoutStore(page: Page) {
  */
 const SAVE_BLOCKED_REASON =
   "This dashboard has to be reloaded before it can be saved again.";
-
-/**
- * Asserts a save request is one the real backend would accept, and returns its
- * parsed body.
- *
- * A stub that answers every non-GET is a stub that stays green for a client
- * that switched to POST, dropped the JSON body, or lost the headers the API
- * client injects -- all of which `frontend/lib/api.ts` sets and
- * `backend/internal/preferences/handler.go` requires. Checking the contract
- * here is what keeps these tests measuring the client rather than the mock.
- */
-function saveRequestBody(route: Route): {
-  revision: number;
-  config: DashboardLayoutConfig;
-} {
-  const request = route.request();
-  expect(
-    request.method(),
-    "the layout save must be a PUT; the endpoint accepts no other method",
-  ).toBe("PUT");
-  const headers = request.headers();
-  expect(
-    headers["x-requested-with"],
-    "the CSRF header lib/api.ts injects on every non-GET",
-  ).toBe("XMLHttpRequest");
-  expect(
-    headers["x-cluster-id"],
-    "the cluster header lib/api.ts injects; layouts are stored per cluster",
-  ).toBeTruthy();
-
-  const body = request.postDataJSON() as {
-    revision?: unknown;
-    config?: DashboardLayoutConfig;
-  };
-  expect(
-    typeof body?.revision,
-    "the save must claim a revision; the server uses it for concurrency control",
-  ).toBe("number");
-  expect(
-    body?.config?.scope,
-    "the save must carry the layout config, addressed to a scope",
-  ).toBe("overview");
-  return body as { revision: number; config: DashboardLayoutConfig };
-}
 
 /**
  * A store that refuses the first write as a conflict, and whose reads return

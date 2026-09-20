@@ -451,6 +451,193 @@ searchable; the palette is fully keyboard-operable and closes on Escape and on
 scrim click; an added widget lands somewhere visible; a duplicate is prevented
 for unparameterized widgets with a stated reason.
 
+**AMENDED 2026-09-20 — what D16 shipped.** Written by walking this section's
+own list, per the lesson D12 recorded. Every step above is discharged. The
+divergences are below, then what D17 and D18 inherit.
+
+1. **Stack rot, for the fourth time.** `Deno.test` is `bun:test`, `deno task
+   check` is `bun run check`, and the palette is
+   `components/dashboard/WidgetPalette.tsx`, not `islands/WidgetPalette.tsx`:
+   it renders inside DashboardV2, which is already an island, and the tree
+   that Astro hydrates is `src/islands/`. D17's file list carries the same rot
+   — and one more: there is no `components/dashboard/GridItem.tsx`. `GridItem`
+   is an exported component inside `DashboardGrid.tsx`.
+
+2. **Nine files, not four** (G2, for the fourth time): `lib/dashboard/placement.ts`,
+   `lib/dashboard/placement_test.ts`, `lib/fuzzy-search.ts`,
+   `components/dashboard/WidgetPalette.tsx`,
+   `components/dashboard/EditToolbar.tsx`, `src/islands/DashboardV2.tsx`,
+   `e2e/tests/dashboard-layout-stub.ts`, `e2e/tests/dashboard-palette.spec.ts`,
+   `e2e/tests/dashboard-edit.spec.ts`.
+
+3. **`DashboardGrid.tsx` was NOT modified.** The plan assumed the grid owned
+   edit state; since P2 the island does. The grid holds a private working copy
+   it takes only at mount, so an insertion goes in through `mountGrid` — the
+   same door a completed load and a cancel use — and the session is told
+   separately with `applyChange`, because the grid deliberately does not report
+   the layout it mounts with. **D17's Remove is the mirror image and should use
+   the same door** rather than growing a second write path into the grid.
+
+4. **The data cache had to learn about the working copy.** `dashboardData.ensure`
+   was keyed on the stored layout. A widget added from the palette is in no
+   stored layout until the user saves, so the source it reads was never
+   fetched and the new card would have sat in its loading state forever. The
+   effect now reads `session.working` while a session is open. `ensure` skips
+   an already-fetched source, so this costs nothing on the drag path.
+
+5. **The palette autofocuses in a LAYOUT effect.** A passive effect runs after
+   the click that opened the dialog has finished, which is late enough for the
+   browser to put focus back on the button — the dialog then opens with the
+   keyboard outside it and Escape does nothing. This is D15's focus fix-up
+   finding from the other direction, and it was measured (a probe reading
+   `document.activeElement`), not guessed. `CommandPalette.tsx` papers over the
+   same ordering with `setTimeout(..., 10)`; the plan's instruction to copy it
+   would have copied the workaround. **Any dialog D17 adds inherits this.**
+
+6. **`fuzzySearch` would have truncated the catalog.** It slices to 8 entries
+   with no query and 12 with one — a screenful for a palette with hundreds of
+   navigation entries, and a silent lie for a catalog whose stated contract is
+   that every widget stays reachable. It is now generic over `{id, label,
+   detail}` with an optional limit, so widget definitions are ranked and
+   returned as themselves. The command palette's behaviour is unchanged.
+
+7. **The selection never rests on an entry that cannot be added.** The opening
+   selection, the arrows and hover all skip the already-placed rows, and the
+   selection is -1 when nothing is addable — which is the state a first-time
+   user meets, since the shipped default layout holds all ten widgets. A
+   highlighted row that ignores Enter is a worse promise than no highlight.
+   Those rows carry `aria-disabled` rather than the `disabled` attribute, so
+   they are still announced with their reason; note that Playwright's
+   actionability check waits `aria-disabled` out, so the spec that proves the
+   refusal clicks with `force: true`.
+
+8. **Nothing is addable from a default dashboard, which is D17's other half.**
+   Every palette E2E starts from a deliberately short stored layout. This is
+   not a testing artifact: until Remove ships, a user who has never edited
+   anything opens the catalog and finds every row disabled. D17 closes that
+   loop, and the pair only reads as a feature once both are in.
+
+9. **The E2E stub of the layout endpoint now lives in
+   `e2e/tests/dashboard-layout-stub.ts`**, imported by both dashboard specs.
+   It carries D15's request assertions (method, CSRF and cluster headers,
+   revision and config body), which are the reason these specs measure the
+   client rather than the mock, and a second copy of them is a copy that
+   drifts. `stubLayoutStore` takes an optional pre-loaded layout.
+   **D15's open question is still open**: everything here mocks the endpoint,
+   and D18 has to decide deliberately whether the acceptance specs keep
+   mocking or run serially against the real store and restore the default.
+
+10. **Dev-loop trap, worth remembering.** `styles.css` squashes every
+    transition to 0.01ms under `prefers-reduced-motion: reduce`, which the E2E
+    fixture emulates, and the app sets `transition-property: all`. A
+    `getComputedStyle` read — or a screenshot — taken in the same tick as a
+    class change therefore reports the *pre-transition* colour, which looks
+    exactly like a Tailwind utility that was never generated. Half an hour
+    went into that. Let two frames pass before trusting either.
+
+11. **`DASHBOARD_MAX_ITEMS` is not enforced client-side.** With ten
+    unparameterized widgets a layout cannot reach forty, so a guard here would
+    be untestable code guarding an unreachable state; the server refuses with
+    `limit_reached` and the save path already reports it. The day a
+    parameterized widget ships, the palette is where that check belongs.
+
+12. **Review round found six defects, two of them P1, and one bad fix.** Seven
+    local reviewers plus an independent cross-model adversarial pass ran over
+    the branch; a separate validator confirmed four findings, and two more
+    were decisions the review deliberately left open. All are fixed on the
+    branch. The two that mattered most:
+
+    - **`crypto.randomUUID` is secure-context only**, so Add widget threw a
+      TypeError inside the click handler and did nothing at all on an
+      HTTP-only deployment -- the homelab this repo ships values for.
+      `GaugeRing.tsx`, `SparklineChart.tsx` and `ResourceAreaChart.tsx` had
+      each already hit this and carry a comment saying why they use
+      `Math.random`; D16's docstring asserted the opposite. **The lesson is
+      not about that one API.** A comment that states a platform guarantee is
+      a claim, and this one was written from memory rather than from the three
+      places in the same tree that had already paid for the answer.
+    - **A pointer press focuses an element even at `tabIndex={-1}`**, so
+      clicking a greyed-out row moved focus off the search input -- taking the
+      arrow keys, Enter and Escape with it -- and left the Tab trap inert,
+      because its own selector excludes option rows. The next Tab left an
+      `aria-modal` dialog. `onMouseDown` preventDefault on the row is the
+      standard guard, and the trap now pulls focus back whenever something
+      outside the ring holds it. **D17's Remove control sits in this same
+      dialog family and inherits both.**
+
+    Also fixed: placement is now bounded by `DASHBOARD_MAX_ROWS` and returns
+    `null` when nothing fits, with the palette offering such an entry disabled
+    for the same reason it disables a widget already on the dashboard (a
+    clamp was rejected -- a clamped cell overlaps, which the server refuses
+    too); the dialog swallows Ctrl/Cmd+K so the global command palette cannot
+    stack on top of it; and the palette takes the layout's own column count
+    rather than the constant.
+
+    **The narrow-mode focus fix was wrong the first time, and the E2E is what
+    caught it.** A re-mounted grid renders wide before its own layout effect
+    corrects it to one column, so the new cell briefly carries a tab stop:
+    `focus()` succeeds, the immediate "did it take focus?" check passes, and
+    the correction then blurs it to the document. The check has to be made a
+    frame later, which is the first point at which the answer is stable. A
+    focus trace, not reasoning, is what showed this -- **the same lesson as
+    note 10, one layer down: in this island, what is on screen one tick after
+    a re-mount is not what the effect sees.**
+
+13. **Eleven files, not nine** once the review fixes landed:
+    `lib/fuzzy-search_test.ts` (the shared helper had no unit test although
+    this branch changed its contract) and the three further specs in
+    `e2e/tests/dashboard-palette.spec.ts` -- the Tab cycle, the keyboard after
+    a pointer click, and the narrow-mode insertion that found the bad fix.
+
+14. **A second review round closed what note 14 first listed as deferred.**
+    That note read "left undone, deliberately" and named three things: the
+    E2E stub validating the request contract but not the layout's geometry,
+    no spec proving Cancel discards an added widget, and six focus-management
+    refs wanting one owner. A second review of the branch -- six reviewers
+    plus an independent cross-model pass, pointed at the fix round rather
+    than at the original feature -- found one P1 and fourteen smaller items.
+    All of them are now applied, those three included, so the paragraph this
+    one replaces is no longer true.
+
+    **The P1 is the one to remember: the test written to guard the Tab-trap
+    repair proved nothing.** It pressed Shift+Tab from the search input and
+    Tab from Close -- the two adjacent, non-wrapping directions a browser
+    handles by itself -- so deleting the whole wrap block left it green. A
+    regression guard that passes without the mechanism it names is worse than
+    no guard, because it reports coverage that does not exist. **The rule this
+    leaves behind: a test written to guard a specific fix has to be run
+    against a tree with that fix removed, once, before it is trusted.** Three
+    other specs from that round failed the same test and were strengthened --
+    the one-column insertion asserted only that the palette closed, the
+    untracked-focus backstop had no test at all, and nothing proved Cancel
+    discards an insertion.
+
+    What moved, and why it matters to D17:
+    - **The disabled-reason decision is now `lib/dashboard/catalog.ts`**, with
+      its own tests, and it carries the `DASHBOARD_MAX_ITEMS` check the client
+      never had. It was logic that needed a test sitting inside a component,
+      which is the exact thing D-10 exists to prevent; the "no room" reason
+      shipped untested at any level for one round. **D17's Remove changes what
+      is placed, so it changes what this function answers -- extend it there,
+      not in the component.**
+    - **Focus management is now `lib/hooks/use-dashboard-focus.ts`.** Six refs
+      and two layout effects coordinated by boolean flags had produced the two
+      worst defects of the previous round. The island calls one named method
+      per gesture. **D17 adds a seventh mover; it calls `armReturnToEdit` (or
+      adds a method here) instead of a new ref.**
+    - **The dialog's focus ring is selected by what is focusable**, not by
+      tag, so a Remove control that is not an input or a button joins the Tab
+      cycle instead of falling into the backstop.
+    - **The narrow-mode focus recovery waits on a microtask, not a frame.** A
+      backgrounded tab throttles frames, and the frame was never what the
+      check needed: the grid's correction lands in a microtask-debounced
+      re-render whose DOM patch blurs the cell synchronously. That last step
+      was *measured* in Chromium this time. The first version of this fix was
+      wrong precisely because nobody measured it.
+    - The E2E layout stub now refuses the geometry the server refuses, and its
+      docstring no longer claims more than it checks. The widget catalog's own
+      rules stay with the Go tests; a second copy here would drift.
+
 ---
 
 ### Task D17: Remove, reset, copy from another cluster

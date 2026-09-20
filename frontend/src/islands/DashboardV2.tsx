@@ -1,8 +1,9 @@
 import { useSignal } from "@preact/signals";
 import type { JSX } from "preact";
-import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import EditToolbar from "@/components/dashboard/EditToolbar.tsx";
+import WidgetPalette from "@/components/dashboard/WidgetPalette.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
@@ -32,16 +33,19 @@ import {
   saveLayout,
   WithheldLayoutError,
 } from "@/lib/dashboard/layout-store.ts";
+import { placeNewWidget } from "@/lib/dashboard/placement.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type {
   DashboardLayoutConfig,
   DataSourceKey,
   LayoutItem,
+  WidgetDef,
 } from "@/lib/dashboard/types.ts";
 import type {
   ClusterInfoData,
   DashboardSummary,
 } from "@/lib/dashboard/wire-types.ts";
+import { useDashboardFocus } from "@/lib/hooks/use-dashboard-focus.ts";
 import { preferenceReason } from "@/lib/preferences.ts";
 import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -186,6 +190,8 @@ export default function DashboardV2() {
    */
   const session = useSignal<EditSession | null>(null);
   const saving = useSignal(false);
+  /** The catalog palette. Only meaningful while a session is open. */
+  const paletteOpen = useSignal(false);
   /** The Cancel confirmation, shown only when there is work to lose. */
   const confirmDiscard = useSignal(false);
   /** The save conflict, which is a choice rather than a message. */
@@ -251,30 +257,27 @@ export default function DashboardV2() {
    */
   const mountedGeneration = useRef(layoutGeneration.peek());
 
-  // Escape on a focused widget leaves edit mode, which takes that widget out
-  // of the tab order under the focus that is on it. Focus has to land
-  // somewhere deliberate, and where editing started is the only place the user
-  // asked for. The Cancel and Save buttons need it too: both unmount the
-  // moment the session closes.
-  const editButton = useRef<HTMLButtonElement | null>(null);
-  const cancelButton = useRef<HTMLButtonElement | null>(null);
-  /** Set by whichever path closed the session, read by the effect below. */
-  const returnFocus = useRef(false);
-  /**
-   * Set when the user asked to start editing.
-   *
-   * "Edit layout" is replaced by Cancel and Save rather than relabelled, so
-   * the button the user just pressed leaves the document and the browser
-   * drops focus to the body. Moving it to Cancel keeps the keyboard where the
-   * controls now are, and makes the first Tab land inside the editor instead
-   * of at the top of the page.
-   */
-  const focusToolbar = useRef(false);
-
   const editing = session.value !== null;
 
-  // The stored layout decides which sources are fetched, so this re-runs when
-  // the load replaces the default with the user's arrangement.
+  /**
+   * Where the keyboard goes when this editor changes shape.
+   *
+   * Three buttons and three arming gestures used to be six refs and two layout
+   * effects sitting in this island, and that cluster produced the two worst
+   * defects of D16's review round: the pairings are individually simple and
+   * only make sense read together. They are read together in one place now --
+   * `lib/hooks/use-dashboard-focus.ts` -- and this island asks for an outcome
+   * ("return to Edit when this closes") instead of setting a flag and
+   * reasoning about which effect will notice it.
+   *
+   * It is handed edit mode and the grid epoch because those are the two
+   * renders focus has to ride: the toolbar swaps its buttons on the first, and
+   * the grid replaces every cell on the second.
+   */
+  const focus = useDashboardFocus(editing, gridEpoch.value);
+
+  // The layout on screen decides which sources are fetched, so this re-runs
+  // when the load replaces the default with the user's arrangement.
   //
   // It runs first against the default, before that load has landed, and that
   // is the trade wanted: first paint does not wait on the layout round trip.
@@ -282,10 +285,25 @@ export default function DashboardV2() {
   // For a customized one it can fetch a source only a default widget reads --
   // `ensure` is keyed per source and range, so the cost is those few requests
   // once, not a refetch of everything.
+  //
+  // The working copy takes precedence over the store's layout while a session
+  // is open: a widget added from the palette is not in the stored layout and
+  // never will be until the user saves, so keying this on the store alone
+  // would leave whatever it reads unfetched and the new card in a loading
+  // state that never resolves. `ensure` skips a source it has already fetched,
+  // so re-running it on every drag costs nothing.
+  //
+  // Fetching the added widget's sources inside `addWidget` instead, and
+  // leaving this keyed on the store, looks narrower and is wrong: a time-range
+  // change later in the same session would re-ensure only the stored layout's
+  // sources, so a range-sensitive source that only the added widget reads
+  // would never be fetched for the new range, and that card alone would go on
+  // showing the old one.
   useEffect(() => {
     if (!IS_BROWSER) return;
-    dashboardData.ensure(sourcesFor(layout.value), timeRange.value);
-  }, [timeRange.value, layout.value]);
+    const config = session.value?.working ?? layout.value;
+    dashboardData.ensure(sourcesFor(config), timeRange.value);
+  }, [timeRange.value, layout.value, session.value]);
 
   // Mount only. A cluster switch reloads the page (ClusterSwitcher.tsx:239),
   // which is what re-reads the layout for the new cluster — layouts are
@@ -310,23 +328,6 @@ export default function DashboardV2() {
     }
     adoptLoadedLayout();
   }, [layoutGeneration.value]);
-
-  // After the render that ended edit mode, not during the key press that asked
-  // for it. Focusing first leaves the browser about to run its own focus
-  // fix-up on the widget it is removing from the tab order, and that lands on
-  // the document rather than on the button we just moved to.
-  useLayoutEffect(() => {
-    if (!IS_BROWSER) return;
-    if (editing) {
-      if (!focusToolbar.current) return;
-      focusToolbar.current = false;
-      cancelButton.current?.focus();
-      return;
-    }
-    if (!returnFocus.current) return;
-    returnFocus.current = false;
-    editButton.current?.focus();
-  }, [editing]);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -353,8 +354,59 @@ export default function DashboardV2() {
 
   /** Opens a session over the layout on screen, at the revision it loaded at. */
   function startEditing() {
-    focusToolbar.current = true;
+    focus.armToolbarFocus();
+    // Never inherited from the last session: the palette is a dialog, and one
+    // that reappears on its own the next time the user presses Edit is a
+    // dialog nobody asked for.
+    paletteOpen.value = false;
     session.value = beginEdit(asRendered(layout.value), layoutRevision.value);
+  }
+
+  /**
+   * Adds a widget from the catalog and puts the user on it.
+   *
+   * The grid owns its working copy and takes a new one only by re-mounting
+   * (see `mountGrid`), so an insertion goes in through the same door a load
+   * and a cancel do, and the session is told separately -- the grid does not
+   * report the layout it mounts with, and a Save armed by everything except
+   * Add would be worse than no Save at all.
+   *
+   * `asRendered` runs over the result for the same reason `startEditing` runs
+   * it over the loaded layout: it is what the grid itself will do on mount, so
+   * anything else recorded here would differ from what is on screen by a
+   * compaction pass.
+   *
+   * `placeNewWidget` returning `null` means the layout has no room left for
+   * this widget below `DASHBOARD_MAX_ROWS`. The palette itself already
+   * disables an entry it cannot place, with a stated reason, so reaching this
+   * function with an unplaceable widget means that guard was bypassed --
+   * doing nothing here is the honest response, not a substitute toast the
+   * user would have no context for.
+   */
+  function addWidget(def: WidgetDef) {
+    const s = session.value;
+    if (s === null || saving.value) return;
+    const placed = placeNewWidget(s.working.items, def, s.working.columns);
+    // No session write, no re-mount, no pending focus: `placeNewWidget`'s own
+    // comments explain why a clamped or best-effort position is worse than
+    // refusing outright, and this island has no information the placement
+    // module did not already have when it decided there was nowhere to put
+    // this widget.
+    if (placed === null) return;
+    const next = asRendered({
+      ...s.working,
+      items: [...s.working.items, placed],
+    });
+    session.value = applyChange(s, next.items);
+    paletteOpen.value = false;
+    focus.focusOnInsert(placed.instanceId);
+    mountGrid(next);
+  }
+
+  /** Closes the palette and leaves the keyboard on the button that opened it. */
+  function closePalette() {
+    paletteOpen.value = false;
+    focus.focusAddButton();
   }
 
   /**
@@ -382,7 +434,7 @@ export default function DashboardV2() {
     if (s === null) return;
     confirmDiscard.value = false;
     session.value = null;
-    returnFocus.current = true;
+    focus.armReturnToEdit();
     mountGrid(discard(s));
   }
 
@@ -426,7 +478,7 @@ export default function DashboardV2() {
       // does not bump the generation, so the grid is not re-mounted: it is
       // already displaying the saved arrangement.
       session.value = null;
-      returnFocus.current = true;
+      focus.armReturnToEdit();
       showToast("Dashboard layout saved", "success");
     } catch (err) {
       // Not a message but a choice, so it goes to the dialog rather than a
@@ -447,7 +499,7 @@ export default function DashboardV2() {
   async function reloadStoredLayout() {
     conflict.value = false;
     session.value = null;
-    returnFocus.current = true;
+    focus.armReturnToEdit();
     // No local restore: this is the one exit where the baseline is known to be
     // out of date, so what goes on screen has to come from the server.
     //
@@ -574,9 +626,14 @@ export default function DashboardV2() {
                   ? "Loading your saved layout..."
                   : undefined
             }
-            editButtonRef={editButton}
-            cancelButtonRef={cancelButton}
+            editButtonRef={focus.editButton}
+            cancelButtonRef={focus.cancelButton}
+            addButtonRef={focus.addButton}
+            paletteOpen={paletteOpen.value}
             onEdit={startEditing}
+            onAddWidget={() => {
+              paletteOpen.value = true;
+            }}
             onCancel={requestExit}
             onSave={save}
           />
@@ -675,6 +732,30 @@ export default function DashboardV2() {
         onChange={handleChange}
         onExitEdit={requestExit}
       />
+
+      {/*
+        Gated on the session as well as on its own flag: every exit from edit
+        mode -- Cancel, a successful save, taking the server's layout after a
+        conflict -- has to take the palette with it, and one condition that
+        cannot be forgotten in a new exit path is worth more than a reset in
+        each of them.
+
+        And on the save not being in flight, which is the rule the grid and
+        both toolbar exits already follow: whatever owns the layout while a
+        request is out withdraws the editing surface for exactly that window.
+        Unreachable through the pointer -- the scrim covers Save, and Tab is
+        held inside the dialog -- so this is the invariant made structural
+        rather than a case anyone has to keep arguing about.
+      */}
+      {paletteOpen.value && session.value !== null && !saving.value && (
+        <WidgetPalette
+          scope={session.value.working.scope}
+          placed={session.value.working.items}
+          columns={session.value.working.columns}
+          onAdd={addWidget}
+          onClose={closePalette}
+        />
+      )}
 
       {confirmDiscard.value && (
         <ConfirmDialog
