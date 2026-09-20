@@ -211,6 +211,166 @@ Cancel restores the loaded layout and confirms first when there is unsaved work;
 a save conflict is reported with both options rather than resolved silently; a
 saved layout survives reload.
 
+**AMENDED 2026-09-19 — what D15 shipped.** Written by walking this section's
+own list, per the lesson D12 recorded, not by reading the diff. Every step
+above is discharged. The divergences are below, then what D16 and D17 inherit.
+
+1. **Stack, again (the D14 note, still true).** This plan predates the
+   Bun/Astro migration. `Deno.test` + `jsr:@std/assert` became `bun:test`,
+   `deno task check` became `bun run check`, and the grid is
+   `frontend/components/dashboard/DashboardGrid.tsx` while the island that owns
+   edit mode is `frontend/src/islands/DashboardV2.tsx`. D16's and D17's file
+   lists and verification commands carry the same rot; translate, do not
+   trust.
+
+2. **Seven files, not four** (G2 again, for the third time in this release).
+   The list above omits the island — which is where edit state has lived since
+   P2 — and both E2E files. Shipped: `lib/dashboard/edit-session.ts`,
+   `lib/dashboard/edit-session_test.ts`,
+   `components/dashboard/EditToolbar.tsx`,
+   `components/dashboard/DashboardGrid.tsx`, `src/islands/DashboardV2.tsx`,
+   `e2e/tests/dashboard-edit.spec.ts`, `e2e/tests/dashboard-grid.spec.ts`.
+
+3. **No `Reset` button and no `Add widget` button.** Step 3 lists both with
+   test ids. They belong to D17 and D16, and a button that is present in every
+   screenshot while doing nothing is a worse promise than one that has not
+   shipped. The toolbar ships `edit-layout`, `cancel-edit` and `save-layout`;
+   the other two are additions, not replacements.
+
+4. **The grid needed a way to report changes.** Nothing in the plan says how
+   `applyChange` is reached, and the grid held its working copy privately with
+   no way out. It grew one prop, `onChange`, fired from a single `setItems`
+   helper that every write now goes through — the two pointer sessions, the
+   keyboard, and a cancelled session's restore. A Save armed by three of those
+   four paths would have been worse than no Save at all. **D16 and D17 add
+   widgets and remove them through this same door**: call `onChange` with the
+   new item list, or the session never learns about it.
+
+5. **The session's baseline is the layout as RENDERED, not as loaded.** The
+   grid runs `resolveRenderable` on the way in, which drops widgets this build
+   has no definition for and re-compacts the survivors. Opening a session over
+   the raw stored config would measure dirtiness against a layout that is not
+   on screen, and the first nudge would read as two changes. `asRendered` in
+   the island is the one-line normalizer, and it has to stay in step with
+   whatever the grid does on mount.
+
+6. **A refused save blocks the next one, and the button has to say so.** This
+   is inherited from D14 and is the finding that cost the most here. Every
+   failed write clears the store's `observed` (layout-store.ts, `saveLayout`'s
+   catch) because the write may have committed on the way out, so until a
+   fresh READ no save may claim a revision at all. Leaving edit mode and
+   re-entering reads nothing, so the obvious recovery does not work. The
+   editor therefore carries `saveBlocked`, set on any refusal, cleared only by
+   a completed load, and surfaced as Save's disabled title
+   (`SAVE_BLOCKED_REASON`). **D17's Reset and copy-from-cluster write through
+   the same path and inherit the same rule.**
+
+7. **The conflict dialog's "keep editing" is honest but terminal.** Both
+   options the plan asks for are offered. Dismissing keeps the arrangement on
+   screen — it is the only copy of that work — but the layout cannot then be
+   written without loading the newer one, which the dialog copy and Save's
+   title both say outright.
+
+8. **Re-mounting is keyed on an epoch, not on the store's generation.** The
+   grid takes its layout as a mount-time prop, so replacing it means
+   re-mounting. Keying that on `layoutGeneration` is not enough: a reload
+   landing on 204 hands back the very same default OBJECT, generation and all,
+   while the grid is still holding the user's discarded edits. The island now
+   owns `gridSource` + `gridEpoch` and bumps unconditionally, with
+   `mountedGeneration` keeping the load effect and the conflict path from
+   re-mounting over each other.
+
+9. **Three existing tests in `dashboard-grid.spec.ts` had to change, all for
+   the same reason: the "Edit layout" toggle no longer exists while editing.**
+   - "leaving edit mode keeps the layout the drag produced" asserted the old
+     "Done" button's behaviour. Deleted; Cancel (restores) and Save (stores)
+     are both covered in `dashboard-edit.spec.ts`.
+   - "a drag survives the handle disappearing under it" flipped edit mode off
+     mid-drag by pressing Space on the still-focused toggle. That is now
+     unreachable — mid-drag the pointer is captured, so neither Cancel nor
+     Save can be pressed, and Escape is the drag's own cancel. Deleted; its
+     sibling "collapsing to one column mid-drag" drives the identical grid
+     teardown through the one trigger a user still has.
+   - "a resize survives the grip disappearing under it" used the same trigger
+     but had NO narrow-collapse sibling, so it was rewritten to collapse the
+     viewport instead of deleted. That closes a coverage gap rather than
+     leaving one.
+   - "editing suspends the widget's own links and gives them back" now exits
+     through `cancel-edit`.
+
+   **Pre-existing, not D15:** "arrow keys never scroll the page out from under
+   the widget" fails on a clean `main` as well (verified by stashing this
+   branch and re-running it). It is untouched here and needs its own look.
+
+10. **The new E2E mocks the preferences endpoint although a real Postgres is
+    running.** A layout is stored per (user, cluster, scope) and the whole
+    suite shares one login, so a single test that really saved would hand its
+    arrangement to every later test that loads the dashboard — including the
+    ones asserting where the DEFAULT layout puts things. **D18's acceptance
+    specs have to decide this deliberately**: either keep mocking, or run
+    serially and restore the default afterwards.
+
+11. **D15 had to fix the toast provider to satisfy its own success-feedback
+    constraint.** `ToastProvider` opened with `if (!IS_BROWSER) return null`,
+    so its island rendered nothing during SSR; the probe that caught this
+    found the `<astro-island>` still carrying `ssr=""` with zero children on a
+    fully loaded page, and no `aria-live` container in the DOM at all. Every
+    `showToast` call in the application — this one, CRDResourceList's deletes,
+    ClusterManager's, SavedViews' — was a silent no-op, which is why no E2E
+    had ever caught it: none of them assert on a toast, and saved-views.spec
+    even says so out loud. Rendering the empty container on both sides fixes
+    it, and is independently right: an `aria-live` region has to exist before
+    its content changes or the change is not reliably announced. **Worth a
+    look in its own unit:** twenty-odd other islands use the same
+    `return null` SSR guard. They demonstrably do hydrate, so the pattern is
+    not universally fatal, and what distinguishes this one was not chased
+    down here.
+
+    **Dev-loop trap worth remembering:** editing an island and re-running the
+    E2E against the already-running `astro dev` produced TWO live copies of
+    the edited module — HMR serves the new one while the old one stays
+    resident — so `showToast` wrote to one `toasts` signal while the rendered
+    provider subscribed to the other, and the fix looked like it had not
+    worked. A probe counting module instances on `window` is what showed it;
+    restarting the dev server made it one instance and the toast appear.
+    Restart the dev server before trusting an E2E result about island module
+    state.
+
+12. **Review round (PR #470) found two real defects in this unit, both the
+    same omission.** Seven local reviewers plus an independent cross-model
+    adversarial pass ran over the branch; the cross-model peer and two local
+    reviewers independently described the same defect, and an independent
+    validator confirmed a second on a protected data-loss subject. Both are
+    fixed on the branch:
+    - **An async operation must own the editing surface while it runs.** The
+      grid stayed editable for the whole `saveLayout` await, so an edit made
+      after `commit()` snapshotted the payload reached the session but never
+      the server — and the success path then cleared the session and reported
+      "saved" over an arrangement that was never written. Fixed with
+      `editable={editing && !saving.value}`. The same omission appeared a
+      second time in `reloadStoredLayout`: `layoutLoaded` never returns to
+      false, so the first-load gate does not cover a *second* load, and Edit
+      stayed live while the replacement GET was outstanding. Fixed with a
+      `reloading` signal OR'd into `editDisabled`. **D16 and D17 add more
+      async paths through this island and inherit the rule: whatever owns the
+      layout while a request is in flight must withdraw the editing surface
+      for exactly that window.**
+    - **A stub that answers every non-GET measures the mock, not the client.**
+      The conflict E2E returned its canned 409 for any method or body, so a
+      client that switched to POST or dropped the revision would still have
+      passed. Both stubs now assert the method, the CSRF and cluster headers,
+      and the revision/config body before answering.
+
+    One reported finding was **rejected on inspection** and left alone: the
+    unconditional `saveBlocked` latch after a pre-flight refusal is correct,
+    because nothing in-session can clear `layoutWithheld` or the store's
+    observation, so a fresh read genuinely is required.
+
+13. **The new E2E asserts state, not toasts.** All but one of the specs prove
+    a save through the closed session and the recorded write; exactly one
+    asserts the toast itself, so a future regression in the notification
+    cannot be mistaken for a regression in the write.
+
 ---
 
 ### Task D16: Catalog palette

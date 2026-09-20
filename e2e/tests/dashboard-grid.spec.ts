@@ -327,39 +327,13 @@ test.describe("Dashboard grid drag", () => {
     await page.mouse.up();
   });
 
-  test("a drag survives the handle disappearing under it", async ({ page }) => {
-    await editableDashboard(page);
-
-    const before = await grab(page, "d-active-alerts");
-    const alerts = at(before, "d-active-alerts");
-    const health = at(before, "d-cluster-health");
-
-    await handle(page, "d-active-alerts").hover();
-    await page.mouse.down();
-    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
-    expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
-
-    // "Edit layout" still has focus, so Space toggles edit mode off and every
-    // handle unmounts mid-drag -- including the one the pointer is captured
-    // by. The session must still end rather than leave the grid stuck.
-    await page.keyboard.press("Space");
-    await page.mouse.up();
-
-    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
-      "data-grid-editable",
-      "false",
-    );
-    await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
-
-    // The user never dropped it, so the layout goes back. Without this the
-    // test would also pass if the drag committed where it happened to be.
-    const settled = await cells(page);
-    expect(settled).toEqual(before);
-
-    // And the session is really over: a later Escape cannot revert the page.
-    await page.keyboard.press("Escape");
-    expect(await cells(page)).toEqual(settled);
-  });
+  // "a drag survives the handle disappearing under it" was removed in D15.
+  // It flipped edit mode off mid-drag by pressing Space on the still-focused
+  // "Edit layout" toggle, and that toggle no longer exists while editing --
+  // the toolbar replaces it with Cancel and Save, neither of which can be
+  // pressed with a pointer captured by a drag. The grid teardown it covered
+  // (the session must end when its handle unmounts) is the same effect the
+  // next test drives through the one trigger a user can still reach.
 
   test("collapsing to one column mid-drag puts the layout back", async ({
     page,
@@ -487,32 +461,11 @@ test.describe("Dashboard grid drag", () => {
     expect(await cells(page)).toEqual(before);
   });
 
-  test("leaving edit mode keeps the layout the drag produced", async ({
-    page,
-  }) => {
-    await editableDashboard(page);
-
-    const before = await grab(page, "d-active-alerts");
-    const alerts = at(before, "d-active-alerts");
-    const health = at(before, "d-cluster-health");
-    await dragTo(page, "d-active-alerts", {
-      x: health.x + 40,
-      y: alerts.y + 8,
-    });
-    const moved = await cells(page);
-    // The drag produced a different layout, so "kept" below means something.
-    expect(at(moved, "d-active-alerts").x).not.toBe(alerts.x);
-
-    // "Done" ends editing; it is not a cancel. Persistence is P3, so this
-    // layout lives until reload.
-    await page.getByTestId("edit-layout").click();
-    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
-      "data-grid-editable",
-      "false",
-    );
-    await expect(page.getByTestId("drag-handle")).toHaveCount(0);
-    expect(await cells(page)).toEqual(moved);
-  });
+  // What leaving edit mode does to the layout the drag produced moved to
+  // dashboard-edit.spec.ts in D15. Until then the only exit was a "Done"
+  // button that kept the arrangement in memory; now the exits are Cancel,
+  // which puts it back, and Save, which stores it -- and both belong with the
+  // edit session that decides between them rather than with the geometry.
 });
 
 test.describe("Dashboard grid resize", () => {
@@ -785,17 +738,28 @@ test.describe("Dashboard grid resize", () => {
       cpu.width,
     );
 
-    // "Edit layout" still has focus -- the session suppresses the press that
-    // would have moved it -- so Space toggles edit mode off and every handle
-    // unmounts, the grip under the pointer included.
-    await page.keyboard.press("Space");
-    await page.mouse.up();
-
+    // The window narrows under the resize. One column has no width to size,
+    // so every handle unmounts -- the grip under the pointer included -- and
+    // the session has to end rather than leave the widget stuck mid-resize.
+    //
+    // D15 rewrote this trigger: it used to press Space on the still-focused
+    // "Edit layout" toggle, which the edit toolbar replaced with Cancel and
+    // Save. Collapsing the grid is now the only way a user can pull a handle
+    // out from under their own pointer.
+    await page.setViewportSize({ width: 700, height: 900 });
     await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
-      "data-grid-editable",
-      "false",
+      "data-grid-mode",
+      "narrow",
     );
+    await page.mouse.up();
     await expect(page.locator('[data-resizing="true"]')).toHaveCount(0);
+
+    // Back to a wide grid to read the sizes in the terms the resize used.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-mode",
+      "wide",
+    );
     // Never released, so the size goes back.
     const settled = await cells(page);
     expect(settled).toEqual(before);
@@ -1058,7 +1022,9 @@ test.describe("Dashboard grid keyboard", () => {
     await page.mouse.click(body.x, body.y);
     await expect(page).toHaveURL(/\/$/);
 
-    await page.getByTestId("edit-layout").click();
+    // Cancel is the way out now that "Done" is gone, and with nothing moved
+    // it leaves immediately rather than asking.
+    await page.getByTestId("cancel-edit").click();
     await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
       "data-grid-editable",
       "false",

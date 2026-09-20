@@ -301,6 +301,19 @@ interface DashboardGridProps {
    * and card corner would swallow those clicks.
    */
   editable?: boolean;
+  /**
+   * Reports the working copy whenever it changes, so the caller's edit session
+   * can decide whether there is anything to save.
+   *
+   * The grid stays the owner of the arrangement -- this is a notification, not
+   * a controlled value -- because the pointer sessions need a copy they can
+   * reshape at pointer speed without a round trip through the caller's state.
+   *
+   * Fired for every committed change including a cancelled session's restore,
+   * and NOT on mount: what the grid starts from is what the caller just handed
+   * it, so announcing it would report a change nobody made.
+   */
+  onChange?: (items: LayoutItem[]) => void;
 }
 
 /**
@@ -315,6 +328,7 @@ export default function DashboardGrid({
   initial,
   editable = false,
   onExitEdit,
+  onChange,
 }: DashboardGridProps) {
   // Resolved once, on the way in, so the working copy is exactly what the grid
   // renders. The pointer sessions below read this signal while the DOM is laid
@@ -339,6 +353,19 @@ export default function DashboardGrid({
   const gridRef = useRef<HTMLDivElement | null>(null);
   /** Ends the session in flight, if there is one. Set for the grid's life. */
   const endSession = useRef<((restore: boolean) => void) | null>(null);
+
+  /**
+   * The one way the working copy changes, so that nothing can reshape the
+   * layout without the caller hearing about it.
+   *
+   * Every assignment goes through here -- the two pointer sessions, the
+   * keyboard, and a cancelled session's restore -- because a Save button armed
+   * by three of those four paths is worse than no Save button at all.
+   */
+  function setItems(next: LayoutItem[]) {
+    items.value = next;
+    onChange?.(next);
+  }
 
   // Layout effect, so the first paint already uses the right mode rather than
   // flashing twelve squeezed columns on a narrow screen.
@@ -455,7 +482,7 @@ export default function DashboardGrid({
       // unrelated Escape minutes later.
       controller.abort();
       endSession.current = null;
-      if (restore) items.value = before;
+      if (restore) setItems(before);
       session.value = null;
       if (handle.hasPointerCapture(event.pointerId)) {
         handle.releasePointerCapture(event.pointerId);
@@ -535,7 +562,7 @@ export default function DashboardGrid({
         if (cell.x === last.x && cell.y === last.y) return;
         last = cell;
         const to = dragTarget(start, origin, cell);
-        items.value = moveItem(items.value, instanceId, to.x, to.y);
+        setItems(moveItem(items.value, instanceId, to.x, to.y));
       };
     });
   }
@@ -559,10 +586,12 @@ export default function DashboardGrid({
         // it can be unit tested. The bounds come from the registry rather than
         // a constant here: a widget is the only thing that knows how small it
         // still renders.
-        items.value = resizeItemToCell(items.value, instanceId, cell, {
-          minW: def.minW,
-          minH: def.minH,
-        });
+        setItems(
+          resizeItemToCell(items.value, instanceId, cell, {
+            minW: def.minW,
+            minH: def.minH,
+          }),
+        );
       };
     });
   }
@@ -618,12 +647,14 @@ export default function DashboardGrid({
     // which is the one thing the user is watching.
     event.preventDefault();
 
-    items.value = event.shiftKey
-      ? resizeItemBy(items.value, item.instanceId, step.dx, step.dy, {
-          minW: def.minW,
-          minH: def.minH,
-        })
-      : stepItem(items.value, item.instanceId, step.dx, step.dy);
+    setItems(
+      event.shiftKey
+        ? resizeItemBy(items.value, item.instanceId, step.dx, step.dy, {
+            minW: def.minW,
+            minH: def.minH,
+          })
+        : stepItem(items.value, item.instanceId, step.dx, step.dy),
+    );
 
     // Read back rather than predicted: the engine clamps, and a step that hit
     // the grid edge or a declared minimum must not be announced as one that
