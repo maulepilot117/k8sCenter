@@ -931,7 +931,9 @@ test.describe("Dashboard grid keyboard", () => {
     expect(await scroll()).toEqual(before);
   });
 
-  test("edit mode is one tab stop per widget", async ({ page }) => {
+  test("edit mode is the widget and its remove button, and nothing else", async ({
+    page,
+  }) => {
     await editableDashboard(page);
 
     // The handles are pointer affordances, not buttons: three tab stops per
@@ -944,11 +946,15 @@ test.describe("Dashboard grid keyboard", () => {
         .evaluateAll((els) => [...new Set(els.map((el) => el.tagName))]),
     ).toEqual(["DIV"]);
 
-    // Reading order: Cluster Health (0,0), then the CPU tile (6,0). Nothing
-    // focusable sits between them -- not a handle, not the links inside the
-    // health card.
+    // Reading order: Cluster Health (0,0), then the CPU tile (6,0). Between
+    // them sits exactly one more stop -- the remove control D17 added, which
+    // unlike the two handles has no keyboard equivalent on the item and so
+    // could not be a pointer-only affordance. Nothing else is focusable: not a
+    // handle, not the links inside the health card.
     await widget(page, "d-cluster-health").focus();
     expect(await focused(page)).toBe("d-cluster-health");
+    await page.keyboard.press("Tab");
+    expect(await focused(page)).toBe("remove-widget");
     await page.keyboard.press("Tab");
     expect(await focused(page)).toBe("d-cpu-tile");
   });
