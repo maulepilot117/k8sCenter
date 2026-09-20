@@ -1,6 +1,9 @@
 import { useSignal } from "@preact/signals";
-import { useLayoutEffect, useRef } from "preact/hooks";
-import { placeNewWidget } from "@/lib/dashboard/placement.ts";
+import { useLayoutEffect, useMemo, useRef } from "preact/hooks";
+// The disabled-reason decision lives in lib/, not here, because this repo has
+// no component test harness (D-10): logic that needs a unit test has to sit
+// somewhere a test can import it. Do not move it back into this file.
+import { disabledReasonFor } from "@/lib/dashboard/catalog.ts";
 import { widgetsForScope } from "@/lib/dashboard/registry.ts";
 import type {
   DashboardScope,
@@ -29,6 +32,30 @@ import { fuzzySearch } from "@/lib/fuzzy-search.ts";
  * synchronise both across islands to render one dialog.
  */
 
+/**
+ * Elements the Tab trap treats as stops, chosen by what actually makes an
+ * element focusable rather than by which tags this dialog happens to use
+ * today (input and button). A tag list goes stale the moment a control that
+ * is not one of those two tags joins the dialog -- a select, an anchor, a
+ * textarea, anything carrying an explicit tabindex -- and a stop the trap
+ * does not recognise falls into the untracked-focus backstop below, which
+ * yanks focus to the Close button on every Tab instead of letting it join
+ * the cycle. D17's Remove control lands in this same dialog family, so this
+ * has to be right before that control exists, not fixed after it breaks.
+ * `[tabindex="-1"]` is excluded because that is how this dialog itself opts
+ * an element (the option rows) out of the Tab order without removing it from
+ * the DOM, and `:disabled` is excluded because a disabled control is not a
+ * tab stop -- treating it as one would make Tab appear to stick on it.
+ */
+const FOCUSABLE_SELECTOR = [
+  "a[href]:not([tabindex='-1'])",
+  "button:not([tabindex='-1']):not(:disabled)",
+  "input:not([tabindex='-1']):not(:disabled)",
+  "select:not([tabindex='-1']):not(:disabled)",
+  "textarea:not([tabindex='-1']):not(:disabled)",
+  "[tabindex]:not([tabindex='-1'])",
+].join(", ");
+
 /** The catalog is closed and small; every entry stays reachable. Passing the
  * catalog's own size defeats `fuzzySearch`'s command-palette caps, which are a
  * screenful rather than a relevance judgement. */
@@ -45,11 +72,6 @@ const FAMILY_LABELS: Record<WidgetFamily, string> = {
   networking: "Networking",
   platform: "Platform",
 };
-
-/** Why an entry cannot be added, or null when it can be. */
-const ALREADY_PLACED = "Already on this dashboard";
-/** The layout has no free cell of this widget's size below the row cap. */
-const NO_ROOM = "No room on this dashboard";
 
 /** One catalog row: the widget, plus the fields `fuzzySearch` ranks on. */
 interface Entry extends Searchable {
@@ -77,41 +99,6 @@ export interface WidgetPaletteProps {
   onClose: () => void;
 }
 
-/**
- * Why this entry cannot be added right now, or null when it can be.
- *
- * Two independent reasons, checked in order:
- *
- * 1. A second copy would not be meaningful. A parameterized widget
- *    legitimately appears twice -- prod beside staging -- which is the reason
- *    `instanceId` exists at all. An unparameterized one would render exactly
- *    the same card twice, so it is shown disabled with the reason rather than
- *    hidden: a catalog that quietly drops entries reads as a missing widget,
- *    and `SavedViews.tsx` takes the same approach with the views it cannot
- *    open.
- * 2. There is nowhere left to put it. `placeNewWidget` is the same placement
- *    scan `addWidget` in `DashboardV2.tsx` runs when the button is actually
- *    pressed; running it here too means the catalog never offers a row whose
- *    Add would silently fail to place. A widget that is *also* already placed
- *    would trip both checks, so the already-placed reason is returned first
- *    without paying for the scan -- reason 1 is a cheap membership test and
- *    reason 2 is a bounded but real search over the grid.
- *
- * `columns` is the edited layout's own, passed down from the caller, so this
- * check and the insertion behind `onAdd` ask the same question of the same
- * grid.
- */
-function disabledReasonFor(
-  def: WidgetDef,
-  placed: readonly LayoutItem[],
-  columns: number,
-): string | null {
-  if (def.params === undefined && placed.some((i) => i.id === def.id)) {
-    return ALREADY_PLACED;
-  }
-  return placeNewWidget(placed, def, columns) === null ? NO_ROOM : null;
-}
-
 export default function WidgetPalette({
   scope,
   placed,
@@ -125,13 +112,24 @@ export default function WidgetPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  const entries: Entry[] = widgetsForScope(scope).map((def) => ({
-    id: `widget-option-${def.id}`,
-    label: def.title,
-    detail: FAMILY_LABELS[def.family],
-    def,
-    disabledReason: disabledReasonFor(def, placed, columns),
-  }));
+  // Depends only on the scope, the placed items and the column count -- never
+  // on the query or the selection -- so this is the one list here worth
+  // memoizing. Without it, every keystroke, arrow press and hover re-ran
+  // `widgetsForScope` and a bounded grid scan per entry for no reason: none
+  // of those interactions can change what is addable. The filtered and
+  // grouped lists below are deliberately left unmemoized -- they genuinely
+  // depend on the query, which changes on nearly every render anyway.
+  const entries: Entry[] = useMemo(
+    () =>
+      widgetsForScope(scope).map((def) => ({
+        id: `widget-option-${def.id}`,
+        label: def.title,
+        detail: FAMILY_LABELS[def.family],
+        def,
+        disabledReason: disabledReasonFor(def, placed, columns),
+      })),
+    [scope, placed, columns],
+  );
 
   // What the query shows, grouped for display in the families' declared order,
   // and flattened again for the keyboard: the index the arrows move through has
@@ -237,9 +235,11 @@ export default function WidgetPalette({
    * A modal that lets Tab walk out into the page behind it is modal only to
    * the mouse. The options are not tab stops -- the arrow keys move through
    * them, which is what `aria-activedescendant` on the input describes -- so
-   * the ring is the input and the close button, and the cycle is short by
-   * construction rather than by a list of selectors that has to be kept up to
-   * date with the markup.
+   * today the ring is just the input and the close button. `FOCUSABLE_SELECTOR`
+   * finds that ring by capability (what the browser would actually let a user
+   * Tab onto) rather than by naming those two controls, so a future control in
+   * this dialog joins the cycle automatically instead of falling into the
+   * untracked-focus backstop below.
    *
    * This is also the one place that swallows Ctrl/Cmd+K. `CommandPalette.tsx`
    * binds that combination on `window` to open the global command palette,
@@ -269,9 +269,8 @@ export default function WidgetPalette({
     }
     if (e.key !== "Tab") return;
     const stops = Array.from(
-      dialogRef.current?.querySelectorAll<HTMLElement>(
-        "input, button:not([tabindex='-1'])",
-      ) ?? [],
+      dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ??
+        [],
     );
     if (stops.length === 0) return;
     const first = stops[0];

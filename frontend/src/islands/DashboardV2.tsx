@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import type { JSX } from "preact";
-import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import EditToolbar from "@/components/dashboard/EditToolbar.tsx";
 import WidgetPalette from "@/components/dashboard/WidgetPalette.tsx";
@@ -45,6 +45,7 @@ import type {
   ClusterInfoData,
   DashboardSummary,
 } from "@/lib/dashboard/wire-types.ts";
+import { useDashboardFocus } from "@/lib/hooks/use-dashboard-focus.ts";
 import { preferenceReason } from "@/lib/preferences.ts";
 import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -256,39 +257,24 @@ export default function DashboardV2() {
    */
   const mountedGeneration = useRef(layoutGeneration.peek());
 
-  // Escape on a focused widget leaves edit mode, which takes that widget out
-  // of the tab order under the focus that is on it. Focus has to land
-  // somewhere deliberate, and where editing started is the only place the user
-  // asked for. The Cancel and Save buttons need it too: both unmount the
-  // moment the session closes.
-  const editButton = useRef<HTMLButtonElement | null>(null);
-  const cancelButton = useRef<HTMLButtonElement | null>(null);
-  /** The palette's opener, so closing the dialog puts focus back on it. */
-  const addButton = useRef<HTMLButtonElement | null>(null);
-  /**
-   * The widget an insertion just placed, until the grid it re-mounted has
-   * rendered it.
-   *
-   * Adding re-mounts the grid, so the new cell does not exist during the click
-   * that asked for it. The effect below picks this up on the render that does
-   * have it and moves focus there -- which is also what scrolls it into view,
-   * and what makes the grid announce where it landed.
-   */
-  const pendingFocus = useRef<string | null>(null);
-  /** Set by whichever path closed the session, read by the effect below. */
-  const returnFocus = useRef(false);
-  /**
-   * Set when the user asked to start editing.
-   *
-   * "Edit layout" is replaced by Cancel and Save rather than relabelled, so
-   * the button the user just pressed leaves the document and the browser
-   * drops focus to the body. Moving it to Cancel keeps the keyboard where the
-   * controls now are, and makes the first Tab land inside the editor instead
-   * of at the top of the page.
-   */
-  const focusToolbar = useRef(false);
-
   const editing = session.value !== null;
+
+  /**
+   * Where the keyboard goes when this editor changes shape.
+   *
+   * Three buttons and three arming gestures used to be six refs and two layout
+   * effects sitting in this island, and that cluster produced the two worst
+   * defects of D16's review round: the pairings are individually simple and
+   * only make sense read together. They are read together in one place now --
+   * `lib/hooks/use-dashboard-focus.ts` -- and this island asks for an outcome
+   * ("return to Edit when this closes") instead of setting a flag and
+   * reasoning about which effect will notice it.
+   *
+   * It is handed edit mode and the grid epoch because those are the two
+   * renders focus has to ride: the toolbar swaps its buttons on the first, and
+   * the grid replaces every cell on the second.
+   */
+  const focus = useDashboardFocus(editing, gridEpoch.value);
 
   // The layout on screen decides which sources are fetched, so this re-runs
   // when the load replaces the default with the user's arrangement.
@@ -343,69 +329,6 @@ export default function DashboardV2() {
     adoptLoadedLayout();
   }, [layoutGeneration.value]);
 
-  // After the render that ended edit mode, not during the key press that asked
-  // for it. Focusing first leaves the browser about to run its own focus
-  // fix-up on the widget it is removing from the tab order, and that lands on
-  // the document rather than on the button we just moved to.
-  useLayoutEffect(() => {
-    if (!IS_BROWSER) return;
-    if (editing) {
-      if (!focusToolbar.current) return;
-      focusToolbar.current = false;
-      cancelButton.current?.focus();
-      return;
-    }
-    if (!returnFocus.current) return;
-    returnFocus.current = false;
-    editButton.current?.focus();
-  }, [editing]);
-
-  // A widget added from the palette, on the render that has it.
-  //
-  // Focus rather than a scroll alone: the new cell is the thing the user just
-  // asked for, it announces where it landed through the grid's own accessible
-  // name, and moving the keyboard there is also what brings it into view --
-  // a widget added to the bottom of a long dashboard is otherwise off screen,
-  // which reads as an Add button that did nothing. Below the grid's narrow
-  // breakpoint a widget is not a tab stop at all (DashboardGrid withholds
-  // `tabIndex` there on purpose -- see its comment on `arrangeable`), so
-  // focus falls back to the Add widget button in that mode; the explicit
-  // scroll below still carries the visibility half of the promise either way.
-  useLayoutEffect(() => {
-    if (!IS_BROWSER) return;
-    const instanceId = pendingFocus.current;
-    if (instanceId === null) return;
-    pendingFocus.current = null;
-    const el = document.querySelector<HTMLElement>(
-      `[data-instance-id="${instanceId}"]`,
-    );
-    el?.focus();
-    el?.scrollIntoView({ block: "nearest" });
-    // Two ways the keyboard ends up nowhere, and neither is hypothetical.
-    //
-    // The cell may not be there at all, in which case `focus()` above did
-    // nothing and the palette that had focus has already unmounted.
-    if (document.activeElement !== el) {
-      addButton.current?.focus();
-      return;
-    }
-    // Or the cell may take focus and then lose it. A re-mounted grid always
-    // renders wide first and only corrects to one column in its own layout
-    // effect, which runs before this one but commits after it -- so at this
-    // moment the new cell still carries the tab stop that one-column mode is
-    // about to take away, and when it does the browser blurs it to the
-    // document. Re-checking a frame later is what catches that; a check made
-    // now cannot, which a focus trace on the narrow-mode E2E showed before
-    // this line existed.
-    const frame = requestAnimationFrame(() => {
-      const active = document.activeElement;
-      if (active === null || active === document.body) {
-        addButton.current?.focus();
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [gridEpoch.value]);
-
   useEffect(() => {
     if (!IS_BROWSER) return;
     const stop = dashboardData.startRefresh();
@@ -431,7 +354,7 @@ export default function DashboardV2() {
 
   /** Opens a session over the layout on screen, at the revision it loaded at. */
   function startEditing() {
-    focusToolbar.current = true;
+    focus.armToolbarFocus();
     // Never inherited from the last session: the palette is a dialog, and one
     // that reappears on its own the next time the user presses Edit is a
     // dialog nobody asked for.
@@ -476,14 +399,14 @@ export default function DashboardV2() {
     });
     session.value = applyChange(s, next.items);
     paletteOpen.value = false;
-    pendingFocus.current = placed.instanceId;
+    focus.focusOnInsert(placed.instanceId);
     mountGrid(next);
   }
 
   /** Closes the palette and leaves the keyboard on the button that opened it. */
   function closePalette() {
     paletteOpen.value = false;
-    addButton.current?.focus();
+    focus.focusAddButton();
   }
 
   /**
@@ -511,7 +434,7 @@ export default function DashboardV2() {
     if (s === null) return;
     confirmDiscard.value = false;
     session.value = null;
-    returnFocus.current = true;
+    focus.armReturnToEdit();
     mountGrid(discard(s));
   }
 
@@ -555,7 +478,7 @@ export default function DashboardV2() {
       // does not bump the generation, so the grid is not re-mounted: it is
       // already displaying the saved arrangement.
       session.value = null;
-      returnFocus.current = true;
+      focus.armReturnToEdit();
       showToast("Dashboard layout saved", "success");
     } catch (err) {
       // Not a message but a choice, so it goes to the dialog rather than a
@@ -576,7 +499,7 @@ export default function DashboardV2() {
   async function reloadStoredLayout() {
     conflict.value = false;
     session.value = null;
-    returnFocus.current = true;
+    focus.armReturnToEdit();
     // No local restore: this is the one exit where the baseline is known to be
     // out of date, so what goes on screen has to come from the server.
     //
@@ -703,9 +626,9 @@ export default function DashboardV2() {
                   ? "Loading your saved layout..."
                   : undefined
             }
-            editButtonRef={editButton}
-            cancelButtonRef={cancelButton}
-            addButtonRef={addButton}
+            editButtonRef={focus.editButton}
+            cancelButtonRef={focus.cancelButton}
+            addButtonRef={focus.addButton}
             paletteOpen={paletteOpen.value}
             onEdit={startEditing}
             onAddWidget={() => {

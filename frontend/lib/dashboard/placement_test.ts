@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { overlaps } from "./grid.ts";
-import { newInstanceId, placeNewWidget } from "./placement.ts";
+import {
+  INSTANCE_SUFFIX_LEN,
+  newInstanceId,
+  placeNewWidget,
+} from "./placement.ts";
 import type { LayoutItem, WidgetDef } from "./types.ts";
 import { DASHBOARD_COLUMNS, DASHBOARD_MAX_ROWS } from "./types.ts";
 
@@ -195,17 +199,23 @@ describe("placeNewWidget", () => {
     expect(out).toBeNull();
   });
 
-  test("a gap above the cap is still used on a layout that reaches it", () => {
-    // The bound narrows the scan; it must not blind it to real gaps that sit
-    // entirely below the cap. `a` occupies the left columns for the whole
-    // height and `b` fills the right columns except for a gap at the very
-    // top, so the layout's bottom edge is at the cap but a widget still fits.
+  test("a gap flush against the cap is still found, not just gaps near the top", () => {
+    // The bound narrows the scan; it must not blind it to a real gap that
+    // sits right at the edge it stops at. `a` fills every row from 0 up to
+    // (but not including) the last four, across the whole width, so the scan
+    // has to walk past DASHBOARD_MAX_ROWS - 4 iterations of an empty first
+    // column-pass before it finds anything -- a fixture where the gap were
+    // reachable at y=0 would pass even if the bound were off by a lot more
+    // than one row. `b` then takes the left six columns of the final four
+    // rows, leaving only the right six columns of the last four rows free --
+    // a cell whose bottom edge (y + h) lands exactly on DASHBOARD_MAX_ROWS.
     const items = [
-      item("a", 0, 0, 6, DASHBOARD_MAX_ROWS),
-      item("b", 6, 4, 6, DASHBOARD_MAX_ROWS - 4),
+      item("a", 0, 0, DASHBOARD_COLUMNS, DASHBOARD_MAX_ROWS - 4),
+      item("b", 0, DASHBOARD_MAX_ROWS - 4, 6, 4),
     ];
     const out = place(items, def("new", 6, 4));
-    expect({ x: out.x, y: out.y }).toEqual({ x: 6, y: 0 });
+    expect({ x: out.x, y: out.y }).toEqual({ x: 6, y: DASHBOARD_MAX_ROWS - 4 });
+    expect(out.y + out.h).toBe(DASHBOARD_MAX_ROWS);
   });
 
   test("never crosses the row cap", () => {
@@ -218,6 +228,29 @@ describe("placeNewWidget", () => {
     const out = place(items, def("new", 4, 3));
     expect({ x: out.x, y: out.y }).toEqual({ x: 0, y: DASHBOARD_MAX_ROWS - 3 });
     expect(out.y + out.h).toBeLessThanOrEqual(DASHBOARD_MAX_ROWS);
+  });
+
+  test("a widget taller than the whole grid never fits, even on an empty layout", () => {
+    // No y exists for which `y + h <= DASHBOARD_MAX_ROWS` when h alone
+    // already exceeds the cap -- not even y=0 on a layout with nothing in
+    // it. An off-by-one that loosened the bound (e.g. `<` instead of `<=`,
+    // or comparing against `columns` instead of `DASHBOARD_MAX_ROWS`) would
+    // still pass every other case here, which all use widgets shorter than
+    // the cap; this is the case that catches a bound loosened from the tall
+    // side.
+    const out = placeNewWidget([], def("too-tall", 4, DASHBOARD_MAX_ROWS + 1));
+    expect(out).toBeNull();
+  });
+
+  test("a widget whose height exactly reaches the cap from y=0 is placed", () => {
+    // The mirror case of the one above: h === DASHBOARD_MAX_ROWS is the
+    // tallest widget that CAN be placed, and only at y=0. This brackets the
+    // bound from the other side -- an off-by-one that tightened `<=` to `<`
+    // would reject this legitimate placement even though nothing overlaps it
+    // and it sits flush against, not past, the cap.
+    const out = place([], def("exactly-cap-tall", 4, DASHBOARD_MAX_ROWS));
+    expect({ x: out.x, y: out.y }).toEqual({ x: 0, y: 0 });
+    expect(out.h).toBe(DASHBOARD_MAX_ROWS);
   });
 });
 
@@ -235,6 +268,23 @@ describe("newInstanceId", () => {
     for (const id of ids) {
       expect(id.startsWith("cluster-health-")).toBe(true);
       expect(id.slice("cluster-health-".length).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("the suffix is always exactly INSTANCE_SUFFIX_LEN characters", () => {
+    // A suffix shorter than this -- including the degenerate empty suffix a
+    // bare `Math.random().toString(36).slice(2, ...)` can produce when the
+    // draw is exactly 0 -- leaves the id ending in a bare "-", which
+    // `isDNS1123Subdomain` in backend/internal/preferences/dashboard.go
+    // rejects and fails the whole layout save. Checking one call isn't
+    // enough to catch a suffix generator that is merely usually 8 characters
+    // long, so this draws many times and pins every one to the exact length.
+    for (let i = 0; i < 500; i++) {
+      const id = newInstanceId("cluster-health");
+      expect(id).toHaveLength("cluster-health-".length + INSTANCE_SUFFIX_LEN);
+      expect(id.slice("cluster-health-".length)).toMatch(
+        new RegExp(`^[0-9a-z]{${INSTANCE_SUFFIX_LEN}}$`),
+      );
     }
   });
 

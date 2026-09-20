@@ -306,14 +306,63 @@ test.describe("dashboard widget palette", () => {
 
     // The only two tab stops inside the dialog: every option row carries
     // tabIndex={-1} on purpose (the arrows move the selection instead), so
-    // the ring is exactly these two, both ways.
+    // the ring is exactly these two, both ways. In DOM order Close comes
+    // BEFORE the search input (header markup, then the input below it), so
+    // `stops` resolves to [close, input] -- `first` is Close, `last` is the
+    // input. The previous version of this test started at the input and
+    // pressed Shift+Tab (input -> close), then from close pressed Tab
+    // (close -> input): both of those are the natural, adjacent-in-DOM-order
+    // direction, which a browser does correctly with zero trap code. Neither
+    // `handleDialogKeyDown` wrap branch was ever reached, so deleting the
+    // whole wrap block left this test green. The pairing below is reversed so
+    // each press actually asks the trap to do something the DOM would not.
     await expect(page.getByTestId("widget-search")).toBeFocused();
 
-    await page.keyboard.press("Shift+Tab");
+    // The input is the LAST stop. Tab from the last stop is the forward-wrap
+    // branch (`!e.shiftKey && active === last`) -- without it, Tab from the
+    // last focusable element would leave the dialog for whatever the page
+    // puts next in the DOM, not loop back to the first stop.
+    await page.keyboard.press("Tab");
     await expect(page.getByTestId("close-palette")).toBeFocused();
 
-    await page.keyboard.press("Tab");
+    // Close is the FIRST stop. Shift+Tab from the first stop is the
+    // backward-wrap branch (`e.shiftKey && active === first`) -- without it,
+    // Shift+Tab from the first focusable element would leave the dialog
+    // backward instead of looping to the last stop.
+    await page.keyboard.press("Shift+Tab");
     await expect(page.getByTestId("widget-search")).toBeFocused();
+  });
+
+  test("focus placed on an option row by script, not by a pointer, is pulled back into the trap rather than escaping", async ({
+    page,
+  }) => {
+    await openPalette(page);
+
+    // Option rows carry tabIndex={-1} and are excluded from `stops`
+    // (FOCUSABLE_SELECTOR), and the only way a pointer used to land focus on
+    // one -- a mousedown -- is now blocked by that row's own
+    // `onMouseDown` preventDefault (see the "already on this dashboard"
+    // spec above). So the untracked-focus backstop in `handleDialogKeyDown`
+    // (the branch that fires when `document.activeElement` is not among
+    // `stops`) has no reachable trigger left through the UI. It stays real
+    // and load-bearing -- anything that ever moves focus inside the dialog
+    // without going through the trap's own stops hits it -- so it is
+    // exercised here by moving focus the one way still available: directly,
+    // bypassing the pointer guard entirely.
+    await page.evaluate(() => {
+      const row = document.querySelector<HTMLElement>(
+        '[data-testid^="widget-option-"]',
+      );
+      row?.focus();
+    });
+
+    await page.keyboard.press("Tab");
+    // Pulled to the first stop, not left on the option and not escaped.
+    await expect(page.getByTestId("close-palette")).toBeFocused();
+    // Specifically still inside the modal -- not merely "not on the option"
+    // -- since the untracked branch existing at all means the naive failure
+    // mode is Tab walking straight out to the page behind the scrim.
+    await expect(page.locator("body")).not.toBeFocused();
   });
 
   test("Ctrl/Cmd+K does not stack the global command palette on top of the catalog", async ({
@@ -341,6 +390,21 @@ test.describe("dashboard widget palette", () => {
     await option(page, "recent-events").click();
     await expect(palette(page)).toBeHidden();
 
+    // The focus assertions below prove nothing on their own: closing the
+    // palette without adding anything lands the keyboard on Add widget too,
+    // so a narrow-only regression that drops the insertion (the add handler
+    // never reaches the grid, or reaches it but the row never mounts because
+    // of the narrow layout math) would still pass this test. Proving the
+    // widget actually arrived is what the wide-mode "adds the chosen widget"
+    // spec does for the pointer path; this is its one-column twin.
+    const added = page.locator('[data-instance-id^="recent-events-"]');
+    await expect(added).toHaveCount(1);
+    await expect(page.getByTestId("grid-item")).toHaveCount(
+      PARTIAL_LAYOUT.items.length + 1,
+    );
+    // The insertion reached the edit session, not just the grid.
+    await expect(page.getByTestId("save-layout")).toBeEnabled();
+
     // Below the grid's narrow breakpoint a placed widget carries no tabindex
     // at all (DashboardGrid withholds it -- see its `arrangeable` prop), so
     // the focus() call the wide-mode insertion test relies on silently
@@ -349,5 +413,52 @@ test.describe("dashboard widget palette", () => {
     // to the top of the page.
     await expect(page.getByTestId("add-widget")).toBeFocused();
     await expect(page.locator("body")).not.toBeFocused();
+  });
+
+  test("Cancel discards a widget added from the palette, on screen and in the session", async ({
+    page,
+  }) => {
+    // Insertion is the only handler that writes the edit session AND
+    // re-mounts the grid in the same pass (DashboardV2's `addWidget`), so
+    // Cancel has to undo both halves. "Cancel restores" is otherwise only
+    // exercised for drags (dashboard-edit.spec.ts), which go through the
+    // session by a different path (`handleChange`, not `applyChange` +
+    // `mountGrid` together) -- so this is not redundant with those specs.
+    await openPalette(page);
+
+    await option(page, "recent-events").click();
+    await expect(palette(page)).toBeHidden();
+    await expect(page.getByTestId("grid-item")).toHaveCount(
+      PARTIAL_LAYOUT.items.length + 1,
+    );
+
+    await page.getByTestId("cancel-edit").click();
+    // Cancel with unsaved changes confirms first -- same path as
+    // dashboard-edit.spec.ts's "Cancel after a change asks first" spec, which
+    // exercises it for a drag rather than an addition.
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Discard unsaved changes?");
+    await dialog.getByRole("button", { name: "Discard changes" }).click();
+
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-editable",
+      "false",
+    );
+    await expect(
+      page.locator('[data-instance-id^="recent-events-"]'),
+    ).toHaveCount(0);
+    await expect(page.getByTestId("grid-item")).toHaveCount(
+      PARTIAL_LAYOUT.items.length,
+    );
+
+    // And the session, not just the screen: re-entering edit mode must not
+    // resurrect the widget from a working copy the discard failed to clear.
+    await page.getByTestId("edit-layout").click();
+    await expect(
+      page.locator('[data-instance-id^="recent-events-"]'),
+    ).toHaveCount(0);
+    await expect(page.getByTestId("grid-item")).toHaveCount(
+      PARTIAL_LAYOUT.items.length,
+    );
   });
 });

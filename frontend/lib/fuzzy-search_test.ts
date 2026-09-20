@@ -55,6 +55,36 @@ describe("fuzzySearch: ranking", () => {
     expect(fuzzySearch(items, "nodes").map((i) => i.id)).not.toContain("miss");
   });
 
+  test("scattered characters match the label, below every literal match", () => {
+    // "nwo" appears in "Network overview" only as scattered characters, which
+    // is the weakest way a label can match. It has to rank below a detail line
+    // that contains the query outright, or a typo in the middle of a word
+    // would outrank an exact phrase somebody else spelled correctly.
+    const scattered = [
+      nav("fuzzy", "Network overview"),
+      nav("literal", "Pods", "nwo host"),
+    ];
+    expect(fuzzySearch(scattered, "nwo").map((i) => i.id)).toEqual([
+      "literal",
+      "fuzzy",
+    ]);
+  });
+
+  test("scattered characters match the detail line, the weakest signal there is", () => {
+    // The last rung of the ladder, and the only one no other case reaches: no
+    // label match of any kind, and the detail line matches only by scattered
+    // characters. It still counts as a match -- an entry the user can reach by
+    // half-remembering its family is better than one they cannot reach at all.
+    const detailOnly = [nav("only", "Certificates", "data protection")];
+    expect(fuzzySearch(detailOnly, "dtp").map((i) => i.id)).toEqual(["only"]);
+    // And the same query against an entry whose detail cannot supply those
+    // characters in order finds nothing, so the match above is the scorer
+    // working rather than everything passing.
+    expect(fuzzySearch([nav("no", "Certificates", "security")], "dtp")).toEqual(
+      [],
+    );
+  });
+
   test("case and surrounding whitespace do not change the answer", () => {
     expect(fuzzySearch(items, "  NODES  ").map((i) => i.id)).toEqual(
       fuzzySearch(items, "nodes").map((i) => i.id),

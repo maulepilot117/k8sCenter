@@ -24,8 +24,10 @@ import { overlaps } from "./grid.ts";
 import type { LayoutItem, WidgetDef } from "./types.ts";
 import { DASHBOARD_COLUMNS, DASHBOARD_MAX_ROWS } from "./types.ts";
 
-/** How many base-36 characters of the random suffix the instance id carries. */
-const INSTANCE_SUFFIX_LEN = 8;
+/** How many base-36 characters of the random suffix the instance id carries.
+ * Exported so the test can pin the exact id length instead of hardcoding it
+ * a second time and drifting silently if this ever changes. */
+export const INSTANCE_SUFFIX_LEN = 8;
 
 /**
  * A fresh identity for one placement of a widget.
@@ -43,11 +45,35 @@ const INSTANCE_SUFFIX_LEN = 8;
  * reason. Eight base-36 characters is still far more entropy than a layout
  * that holds at most `DASHBOARD_MAX_ITEMS` of them needs, and the full id
  * stays well inside the 64-rune bound the server stores it under.
+ *
+ * `Math.random().toString(36)` does not reliably hand back
+ * `INSTANCE_SUFFIX_LEN` characters -- the base-36 expansion of the drawn
+ * double can terminate early, and in the degenerate case (`Math.random()`
+ * returns exactly 0) it is "0" and slicing past index 2 yields nothing at
+ * all. An id ending in a bare "-", or one shorter than every other id,
+ * still saves as a widget placement, but `isDNS1123Subdomain` in
+ * `backend/internal/preferences/dashboard.go` rejects a trailing "-", and
+ * because the server validates the whole config, that one widget's short
+ * draw fails the ENTIRE layout save. `randomSuffix` below redraws instead
+ * of accepting a short result, so the suffix is always exactly
+ * `INSTANCE_SUFFIX_LEN` characters.
  */
+function randomSuffix(): string {
+  let suffix = "";
+  // Each draw contributes whatever characters `toString(36)` produced past
+  // the "0." prefix -- possibly none. Keep drawing and concatenating until
+  // there is enough to slice from; redrawing is the "no possibility of a
+  // short or empty result" the docstring above promises, as opposed to
+  // padding with a fixed filler character that would concentrate collisions
+  // in the padded tail.
+  while (suffix.length < INSTANCE_SUFFIX_LEN) {
+    suffix += Math.random().toString(36).slice(2);
+  }
+  return suffix.slice(0, INSTANCE_SUFFIX_LEN);
+}
+
 export function newInstanceId(widgetId: string): string {
-  return `${widgetId}-${Math.random()
-    .toString(36)
-    .slice(2, 2 + INSTANCE_SUFFIX_LEN)}`;
+  return `${widgetId}-${randomSuffix()}`;
 }
 
 /**
