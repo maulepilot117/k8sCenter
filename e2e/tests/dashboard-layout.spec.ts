@@ -25,6 +25,11 @@ import type {
  * operable and readable without a mouse or a wide screen, and a second tab is
  * told when it loses a race rather than quietly overwriting the winner.
  *
+ * One of the eight does not hold: at 400px the page chrome leaves the grid
+ * 54 pixels to render in. It is recorded as an expected failure rather than
+ * dropped -- see "the page chrome does not leave room for the dashboard at
+ * 400px" below for the measurements and why it is not fixed here.
+ *
  * THIS FILE USES THE REAL STORE. Every other dashboard editor spec
  * (dashboard-edit, dashboard-palette, dashboard-copy) mocks
  * /api/v1/preferences/layouts through dashboard-layout-stub.ts, and it has to:
@@ -46,6 +51,19 @@ import type {
  *     The layouts endpoint has no DELETE (the scope is the address; PUT
  *     creates or replaces), so "clean" means "stores the default", which
  *     renders identically to storing nothing.
+ *
+ * Two limits of that bargain, known and accepted rather than overlooked:
+ *
+ *   - The first run on a fresh account destroys the never-saved state for
+ *     good. 204-means-no-row and 200-with-the-default are the same dashboard
+ *     but not the same record, and PUT cannot restore an absence. Nothing
+ *     asserts the real 204 today -- dashboard-grid.spec.ts stubs its own --
+ *     but a future spec that wants it needs a disposable user, not this
+ *     teardown.
+ *   - The restore compares placements only, so a stored record that differed
+ *     solely in envelope metadata or per-widget params would be read as clean.
+ *     The server pins `schemaVersion` and `columns` and today's widgets take
+ *     no params, so there is nothing else for it to differ in yet.
  *
  * NOT covered here, and covered elsewhere instead:
  *   - The no-database deployment (spec scenario 7). The E2E harness always
@@ -469,7 +487,9 @@ test.describe.serial("Dashboard layout acceptance", () => {
     expect(await column(page, "d-cluster-health")).toBe(before + 1);
   });
 
-  test("a customized dashboard is readable at 400px", async ({ page }) => {
+  test("a customized dashboard collapses to one column at 400px", async ({
+    page,
+  }) => {
     // A layout the user arranged, not the shipped one: the collapse has to
     // survive placements nobody designed the breakpoint around.
     await seedLayout(page, customLayout());
@@ -479,6 +499,32 @@ test.describe.serial("Dashboard layout acceptance", () => {
     const grid = page.getByTestId("dashboard-grid");
     await expect(grid).toHaveAttribute("data-grid-mode", "narrow");
     await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
+
+    // The stored layout is what a narrow screen renders, and this is the only
+    // assertion here that can tell that apart from the shipped default. One
+    // column discards x and w, so the swap that makes customLayout() custom is
+    // invisible in the geometry below -- every measurement further down holds
+    // for the default layout too, and a regression that ignored the stored
+    // layout at narrow widths would sail through them. What survives the
+    // collapse is reading order: DashboardGrid renders `compact()`'s output,
+    // which sorts by y then x, so swapping the two tiles' columns swaps the
+    // order they stack in.
+    const readingOrder = await page
+      .getByTestId("grid-item")
+      .evaluateAll((els) => els.map((el) => el.getAttribute("data-instance-id")));
+    expect(readingOrder).toEqual([
+      "d-cluster-health",
+      // Swapped: the default stacks the CPU tile first.
+      SWAPPED.b,
+      SWAPPED.a,
+      "d-pods-tile",
+      "d-network-tile",
+      "d-resource-utilization",
+      "d-pod-status",
+      "d-nodes",
+      "d-recent-events",
+      "d-active-alerts",
+    ]);
 
     // One column: every cell shares a left edge and spans the grid, and each
     // starts below the one before it. Matching left edges alone would also
@@ -506,15 +552,6 @@ test.describe.serial("Dashboard layout acceptance", () => {
       }
     }
 
-    // Nothing pushes the page sideways. A dashboard you have to scroll
-    // horizontally on a phone is the failure this whole breakpoint exists for.
-    const overflow = await page.evaluate(() => {
-      const d = document.documentElement;
-      return { scrollWidth: d.scrollWidth, clientWidth: d.clientWidth };
-    });
-    expect(overflow.scrollWidth, "the page is no wider than the viewport")
-      .toBeLessThanOrEqual(overflow.clientWidth + 1);
-
     // Arranging is a wide-grid gesture: one column has no columns to move
     // between and no width to size, so the items are not arrangeable here --
     // no drag handles, and no widget is a tab stop. Edit mode itself is still
@@ -528,6 +565,61 @@ test.describe.serial("Dashboard layout acceptance", () => {
     );
     await expect(page.getByTestId("drag-handle")).toHaveCount(0);
     await expect(page.getByTestId("remove-widget")).toHaveCount(10);
+  });
+
+  /**
+   * The other half of "usable at 400px", and it does not hold today.
+   *
+   * `test.fail()` rather than a deleted assertion or a `test.skip`: the spec
+   * runs, the failure is the expected result, and the day somebody gives the
+   * chrome a mobile breakpoint this turns red with "expected to fail but
+   * passed" and forces this comment to be rewritten. A skipped test would go
+   * on being skipped forever, and a dropped assertion would leave the suite
+   * claiming a 400px promise it never checks.
+   *
+   * What is broken is the page chrome, not the grid. ChromeLayout.astro has no
+   * media query at all, so the sidebar never collapses: at a 400px viewport
+   * `main` measures 86px and the grid inside it 54px, and every card overflows
+   * its cell -- the utilization chart by 157px. The grid's own collapse (the
+   * test above) is correct; it is being handed 54 pixels to do it in.
+   *
+   * Not fixed here because giving the chrome a mobile breakpoint is a design
+   * decision about the whole application shell, not about the dashboard, and
+   * the phone surface this product actually ships is the Flutter app under
+   * mobile/. Assert it, do not fix it, until that decision is made.
+   */
+  test("the page chrome does not leave room for the dashboard at 400px", async ({
+    page,
+  }) => {
+    test.fail();
+
+    await page.setViewportSize({ width: 400, height: 900 });
+    await page.goto("/");
+    await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
+
+    // Measured per element, not on document.documentElement: ChromeLayout's
+    // `main` is `overflow-x: hidden`, so it CLIPS a grid too wide for it and
+    // the document can never report the overflow. A page-level check here
+    // would be a line that cannot fail, which is how this went unnoticed.
+    // Same measurement dashboard.spec.ts's "a card fills its grid cell and
+    // never scrolls sideways" makes, one level out.
+    const overflowX = await page.evaluate(() =>
+      [
+        ...document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-grid"], [data-testid="grid-item"]',
+        ),
+      ].map((el) => ({
+        what: el.getAttribute("data-instance-id") ?? "grid",
+        over: el.scrollWidth - el.clientWidth,
+      })),
+    );
+    // The grid plus its ten cells. A selector that matched nothing would
+    // otherwise make the loop below pass by having nothing to check -- and on
+    // a test.fail() spec, a vacuous pass reads as "fixed".
+    expect(overflowX).toHaveLength(11);
+    for (const { what, over } of overflowX) {
+      expect(over, `${what} scrolls sideways`).toBeLessThanOrEqual(1);
+    }
   });
 
   test("a second tab is told its save is stale rather than quietly winning", async ({
