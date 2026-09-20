@@ -311,8 +311,10 @@ func (h *Handler) HandleTemplateQuery(w http.ResponseWriter, r *http.Request) {
 //
 // GET /api/v1/monitoring/queries/*
 //   - {slug} path segment captured by chi wildcard (e.g. "pods/cpu").
-//   - namespace: Kubernetes namespace (required for namespaced resources).
-//   - name: Resource name used in the PromQL template.
+//   - namespace: Kubernetes namespace (required for namespaced resources;
+//     ignored, including for RBAC scoping, on ClusterWide slugs).
+//   - name: Resource name used in the PromQL template (likewise ignored on
+//     ClusterWide slugs).
 //   - start / end / step: Optional; omitting runs an instant query at Now().
 func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 	pc := h.Discoverer.PrometheusClient()
@@ -404,6 +406,18 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		// For cluster-scoped resources, pass "" as namespace.
 		if clusterScopedGVRs[def.RequiredGVR] {
+			rbacNS = ""
+		}
+		// Cluster-wide slugs render a query with no namespace filter, so the
+		// grant they need is a cluster-scoped one. This must come last and
+		// must win over both branches above: the caller can supply namespace=
+		// and name= on any slug, and for a cluster-wide slug those values
+		// would otherwise narrow the check to a namespace the caller does
+		// hold while the response still spans the whole cluster. The
+		// parameters are ignored for rendering too — a ClusterWide template
+		// carries no {{.Namespace}} / {{.Name}} placeholders (pinned by
+		// TestRegistry_ClusterWideSlugsRenderWithoutParameters).
+		if def.ClusterWide {
 			rbacNS = ""
 		}
 

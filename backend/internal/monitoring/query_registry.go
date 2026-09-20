@@ -28,6 +28,23 @@ type QueryDef struct {
 
 	// Description is surfaced in dashboard tooltips and API docs.
 	Description string
+
+	// ClusterWide marks a slug whose template asks a question about the whole
+	// cluster rather than one resource instance: it takes no namespace and no
+	// name, and its PromQL carries no namespace filter.
+	//
+	// The flag is load-bearing for authorization, not documentation.
+	// HandleSlugQuery forces the CanAccessGroupResource namespace to "" for
+	// these, ignoring whatever the caller put in the query string. Without
+	// that, a viewer holding `list pods` in exactly one namespace could pass
+	// ?namespace=<their-namespace>, satisfy a namespace-scoped RBAC check, and
+	// receive a result set covering every namespace in the cluster — a scoped
+	// check silently turned into an open read.
+	//
+	// A ClusterWide entry's RequiredGVR still names the resource the metric
+	// actually describes (pods, persistentvolumeclaims), so the cluster-scope
+	// check is a real grant on real data, not an empty formality.
+	ClusterWide bool
 }
 
 // Registry is the canonical set of allowed non-admin PromQL slugs.
@@ -771,6 +788,49 @@ var Registry = map[string]QueryDef{
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "services",
 		Description:   "Service endpoint pods CPU usage in cores",
+	},
+
+	// ── cluster-wide (no namespace, no name) ──────────────────────────────────
+	//
+	// Every entry above is scoped to one resource instance. These three answer
+	// a question about the whole cluster and take no parameters at all, which
+	// is what the overview dashboard's widgets need — the raw /query routes
+	// they would otherwise have to use are admin-gated, and D-8 forbids
+	// user-authored PromQL outright. ClusterWide pins their RBAC check to
+	// cluster scope; see the field's doc comment.
+	//
+	// The result limit is baked into the template rather than exposed as a
+	// parameter: a caller-supplied k would be a user-authored piece of the
+	// query, and the widgets render a fixed-height ranked list anyway.
+	"cluster/top-consumers-cpu": {
+		Slug: "cluster/top-consumers-cpu",
+		// container!="" drops cAdvisor's per-pod rollup series, which would
+		// otherwise double-count every pod against its own containers.
+		// pod!="" drops the node-level cgroup series that carries no pod.
+		Template:      `topk(10, sum(rate(container_cpu_usage_seconds_total{container!="",pod!=""}[5m])) by (namespace, pod))`,
+		RequiredVerbs: []string{"list"},
+		RequiredGVR:   "pods",
+		ClusterWide:   true,
+		Description:   "Top 10 pods cluster-wide by CPU usage in cores",
+	},
+	"cluster/top-consumers-memory": {
+		Slug:          "cluster/top-consumers-memory",
+		Template:      `topk(10, sum(container_memory_working_set_bytes{container!="",pod!=""}) by (namespace, pod) / 1024 / 1024)`,
+		RequiredVerbs: []string{"list"},
+		RequiredGVR:   "pods",
+		ClusterWide:   true,
+		Description:   "Top 10 pods cluster-wide by memory working set in MB",
+	},
+	"cluster/storage-capacity": {
+		Slug: "cluster/storage-capacity",
+		// `> 0` filters out volumes reporting zero capacity, which would
+		// divide to +Inf and take the top of the ranking away from the PVCs
+		// that are genuinely close to full.
+		Template:      `topk(10, 100 * kubelet_volume_stats_used_bytes / (kubelet_volume_stats_capacity_bytes > 0))`,
+		RequiredVerbs: []string{"list"},
+		RequiredGVR:   "persistentvolumeclaims",
+		ClusterWide:   true,
+		Description:   "Top 10 PersistentVolumeClaims cluster-wide by percent of capacity used",
 	},
 }
 
