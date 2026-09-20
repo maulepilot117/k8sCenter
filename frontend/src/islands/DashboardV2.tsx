@@ -3,6 +3,7 @@ import type { JSX } from "preact";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import EditToolbar from "@/components/dashboard/EditToolbar.tsx";
+import WidgetPalette from "@/components/dashboard/WidgetPalette.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
@@ -32,11 +33,13 @@ import {
   saveLayout,
   WithheldLayoutError,
 } from "@/lib/dashboard/layout-store.ts";
+import { placeNewWidget } from "@/lib/dashboard/placement.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type {
   DashboardLayoutConfig,
   DataSourceKey,
   LayoutItem,
+  WidgetDef,
 } from "@/lib/dashboard/types.ts";
 import type {
   ClusterInfoData,
@@ -186,6 +189,8 @@ export default function DashboardV2() {
    */
   const session = useSignal<EditSession | null>(null);
   const saving = useSignal(false);
+  /** The catalog palette. Only meaningful while a session is open. */
+  const paletteOpen = useSignal(false);
   /** The Cancel confirmation, shown only when there is work to lose. */
   const confirmDiscard = useSignal(false);
   /** The save conflict, which is a choice rather than a message. */
@@ -258,6 +263,18 @@ export default function DashboardV2() {
   // moment the session closes.
   const editButton = useRef<HTMLButtonElement | null>(null);
   const cancelButton = useRef<HTMLButtonElement | null>(null);
+  /** The palette's opener, so closing the dialog puts focus back on it. */
+  const addButton = useRef<HTMLButtonElement | null>(null);
+  /**
+   * The widget an insertion just placed, until the grid it re-mounted has
+   * rendered it.
+   *
+   * Adding re-mounts the grid, so the new cell does not exist during the click
+   * that asked for it. The effect below picks this up on the render that does
+   * have it and moves focus there -- which is also what scrolls it into view,
+   * and what makes the grid announce where it landed.
+   */
+  const pendingFocus = useRef<string | null>(null);
   /** Set by whichever path closed the session, read by the effect below. */
   const returnFocus = useRef(false);
   /**
@@ -273,8 +290,8 @@ export default function DashboardV2() {
 
   const editing = session.value !== null;
 
-  // The stored layout decides which sources are fetched, so this re-runs when
-  // the load replaces the default with the user's arrangement.
+  // The layout on screen decides which sources are fetched, so this re-runs
+  // when the load replaces the default with the user's arrangement.
   //
   // It runs first against the default, before that load has landed, and that
   // is the trade wanted: first paint does not wait on the layout round trip.
@@ -282,10 +299,18 @@ export default function DashboardV2() {
   // For a customized one it can fetch a source only a default widget reads --
   // `ensure` is keyed per source and range, so the cost is those few requests
   // once, not a refetch of everything.
+  //
+  // The working copy takes precedence over the store's layout while a session
+  // is open: a widget added from the palette is not in the stored layout and
+  // never will be until the user saves, so keying this on the store alone
+  // would leave whatever it reads unfetched and the new card in a loading
+  // state that never resolves. `ensure` skips a source it has already fetched,
+  // so re-running it on every drag costs nothing.
   useEffect(() => {
     if (!IS_BROWSER) return;
-    dashboardData.ensure(sourcesFor(layout.value), timeRange.value);
-  }, [timeRange.value, layout.value]);
+    const config = session.value?.working ?? layout.value;
+    dashboardData.ensure(sourcesFor(config), timeRange.value);
+  }, [timeRange.value, layout.value, session.value]);
 
   // Mount only. A cluster switch reloads the page (ClusterSwitcher.tsx:239),
   // which is what re-reads the layout for the new cluster — layouts are
@@ -328,6 +353,26 @@ export default function DashboardV2() {
     editButton.current?.focus();
   }, [editing]);
 
+  // A widget added from the palette, on the render that has it.
+  //
+  // Focus rather than a scroll alone: the new cell is the thing the user just
+  // asked for, it announces where it landed through the grid's own accessible
+  // name, and moving the keyboard there is also what brings it into view --
+  // a widget added to the bottom of a long dashboard is otherwise off screen,
+  // which reads as an Add button that did nothing. In one-column mode a widget
+  // is not a tab stop, so the explicit scroll is what carries that case.
+  useLayoutEffect(() => {
+    if (!IS_BROWSER) return;
+    const instanceId = pendingFocus.current;
+    if (instanceId === null) return;
+    pendingFocus.current = null;
+    const el = document.querySelector<HTMLElement>(
+      `[data-instance-id="${instanceId}"]`,
+    );
+    el?.focus();
+    el?.scrollIntoView({ block: "nearest" });
+  }, [gridEpoch.value]);
+
   useEffect(() => {
     if (!IS_BROWSER) return;
     const stop = dashboardData.startRefresh();
@@ -354,7 +399,45 @@ export default function DashboardV2() {
   /** Opens a session over the layout on screen, at the revision it loaded at. */
   function startEditing() {
     focusToolbar.current = true;
+    // Never inherited from the last session: the palette is a dialog, and one
+    // that reappears on its own the next time the user presses Edit is a
+    // dialog nobody asked for.
+    paletteOpen.value = false;
     session.value = beginEdit(asRendered(layout.value), layoutRevision.value);
+  }
+
+  /**
+   * Adds a widget from the catalog and puts the user on it.
+   *
+   * The grid owns its working copy and takes a new one only by re-mounting
+   * (see `mountGrid`), so an insertion goes in through the same door a load
+   * and a cancel do, and the session is told separately -- the grid does not
+   * report the layout it mounts with, and a Save armed by everything except
+   * Add would be worse than no Save at all.
+   *
+   * `asRendered` runs over the result for the same reason `startEditing` runs
+   * it over the loaded layout: it is what the grid itself will do on mount, so
+   * anything else recorded here would differ from what is on screen by a
+   * compaction pass.
+   */
+  function addWidget(def: WidgetDef) {
+    const s = session.value;
+    if (s === null || saving.value) return;
+    const placed = placeNewWidget(s.working.items, def, s.working.columns);
+    const next = asRendered({
+      ...s.working,
+      items: [...s.working.items, placed],
+    });
+    session.value = applyChange(s, next.items);
+    paletteOpen.value = false;
+    pendingFocus.current = placed.instanceId;
+    mountGrid(next);
+  }
+
+  /** Closes the palette and leaves the keyboard on the button that opened it. */
+  function closePalette() {
+    paletteOpen.value = false;
+    addButton.current?.focus();
   }
 
   /**
@@ -576,7 +659,12 @@ export default function DashboardV2() {
             }
             editButtonRef={editButton}
             cancelButtonRef={cancelButton}
+            addButtonRef={addButton}
+            paletteOpen={paletteOpen.value}
             onEdit={startEditing}
+            onAddWidget={() => {
+              paletteOpen.value = true;
+            }}
             onCancel={requestExit}
             onSave={save}
           />
@@ -675,6 +763,29 @@ export default function DashboardV2() {
         onChange={handleChange}
         onExitEdit={requestExit}
       />
+
+      {/*
+        Gated on the session as well as on its own flag: every exit from edit
+        mode -- Cancel, a successful save, taking the server's layout after a
+        conflict -- has to take the palette with it, and one condition that
+        cannot be forgotten in a new exit path is worth more than a reset in
+        each of them.
+
+        And on the save not being in flight, which is the rule the grid and
+        both toolbar exits already follow: whatever owns the layout while a
+        request is out withdraws the editing surface for exactly that window.
+        Unreachable through the pointer -- the scrim covers Save, and Tab is
+        held inside the dialog -- so this is the invariant made structural
+        rather than a case anyone has to keep arguing about.
+      */}
+      {paletteOpen.value && session.value !== null && !saving.value && (
+        <WidgetPalette
+          scope={session.value.working.scope}
+          placed={session.value.working.items}
+          onAdd={addWidget}
+          onClose={closePalette}
+        />
+      )}
 
       {confirmDiscard.value && (
         <ConfirmDialog
