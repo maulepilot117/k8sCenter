@@ -12,9 +12,9 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  * -- drop focus to the body -- and the body is the top of the page, which for
  * a keyboard user means starting the whole journey over.
  *
- * This hook is the one owner of that. It holds the three button refs the
- * toolbar attaches to, the three pieces of "what the next render owes the
- * keyboard", and the two layout effects that pay them. The island calls a
+ * This hook is the one owner of that. It holds the button refs the toolbar
+ * attaches to, the three pieces of "what the next render owes the keyboard",
+ * and the two layout effects that pay them. The island calls a
  * named method once per gesture and never reasons about effect ordering: the
  * ordering rules that matter are written down here, next to the effects that
  * depend on them.
@@ -28,9 +28,10 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  * suite. So it is deliberately not in `lib/dashboard/` beside the geometry and
  * the edit session, which are pure and are unit tested.
  *
- * The palette's own autofocus is NOT here. A dialog focusing itself on open is
- * the dialog's job and lives in `WidgetPalette.tsx`; what this hook owns is
- * where focus goes when that dialog closes.
+ * A dialog's own autofocus is NOT here. A dialog focusing itself on open is
+ * the dialog's job and lives in `WidgetPalette.tsx` and
+ * `LayoutCopyDialog.tsx`; what this hook owns is where focus goes when one of
+ * them closes.
  */
 export interface DashboardFocus {
   /**
@@ -46,6 +47,19 @@ export interface DashboardFocus {
   cancelButton: MutableRef<HTMLButtonElement | null>;
   /** The palette's opener, so closing the dialog puts focus back on it. */
   addButton: MutableRef<HTMLButtonElement | null>;
+  /** The copy dialog's opener. Same contract as `addButton`. */
+  copyButton: MutableRef<HTMLButtonElement | null>;
+  /**
+   * The Reset button, so its confirmation can hand the keyboard back.
+   *
+   * Reset is the one destructive gesture that leaves the session open: Cancel
+   * and the conflict dialog both close it and are covered by
+   * `armReturnToEdit`, but confirming a reset unmounts the dialog the user was
+   * standing in and leaves editing exactly where it was. Without somewhere to
+   * go, focus falls to the body and the keyboard restarts at the top of the
+   * page -- with the whole dashboard having just changed underneath it.
+   */
+  resetButton: MutableRef<HTMLButtonElement | null>;
   /**
    * The user asked to start editing: move focus to Cancel on the render that
    * has it.
@@ -83,6 +97,15 @@ export interface DashboardFocus {
    * and is where the user came from.
    */
   focusAddButton: () => void;
+  /** Put focus on "Copy from cluster" now. Same case as `focusAddButton`. */
+  focusCopyButton: () => void;
+  /**
+   * Put focus on "Reset" now.
+   *
+   * Immediate, like the two above, and safe for the same reason: the toolbar
+   * is not what a reset re-mounts. The grid is, and this button is not in it.
+   */
+  focusResetButton: () => void;
 }
 
 /**
@@ -101,6 +124,8 @@ export function useDashboardFocus(
   const editButton = useRef<HTMLButtonElement | null>(null);
   const cancelButton = useRef<HTMLButtonElement | null>(null);
   const addButton = useRef<HTMLButtonElement | null>(null);
+  const copyButton = useRef<HTMLButtonElement | null>(null);
+  const resetButton = useRef<HTMLButtonElement | null>(null);
 
   /** Set by `armToolbarFocus`, read by the edit-mode effect below. */
   const toolbarPending = useRef(false);
@@ -216,6 +241,8 @@ export function useDashboardFocus(
     editButton,
     cancelButton,
     addButton,
+    copyButton,
+    resetButton,
     armToolbarFocus() {
       toolbarPending.current = true;
     },
@@ -227,6 +254,12 @@ export function useDashboardFocus(
     },
     focusAddButton() {
       addButton.current?.focus();
+    },
+    focusCopyButton() {
+      copyButton.current?.focus();
+    },
+    focusResetButton() {
+      resetButton.current?.focus();
     },
   };
 }

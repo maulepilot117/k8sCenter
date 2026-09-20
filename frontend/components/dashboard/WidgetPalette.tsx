@@ -14,6 +14,7 @@ import type {
 import { WIDGET_FAMILIES } from "@/lib/dashboard/types.ts";
 import type { Searchable } from "@/lib/fuzzy-search.ts";
 import { fuzzySearch } from "@/lib/fuzzy-search.ts";
+import { useModalDialogKeys } from "@/lib/hooks/use-modal-dialog-keys.ts";
 
 /**
  * The catalog of widgets that can be added to the dashboard being edited.
@@ -31,30 +32,6 @@ import { fuzzySearch } from "@/lib/fuzzy-search.ts";
  * reach the open edit session, so a separate hydration root would have to
  * synchronise both across islands to render one dialog.
  */
-
-/**
- * Elements the Tab trap treats as stops, chosen by what actually makes an
- * element focusable rather than by which tags this dialog happens to use
- * today (input and button). A tag list goes stale the moment a control that
- * is not one of those two tags joins the dialog -- a select, an anchor, a
- * textarea, anything carrying an explicit tabindex -- and a stop the trap
- * does not recognise falls into the untracked-focus backstop below, which
- * yanks focus to the Close button on every Tab instead of letting it join
- * the cycle. D17's Remove control lands in this same dialog family, so this
- * has to be right before that control exists, not fixed after it breaks.
- * `[tabindex="-1"]` is excluded because that is how this dialog itself opts
- * an element (the option rows) out of the Tab order without removing it from
- * the DOM, and `:disabled` is excluded because a disabled control is not a
- * tab stop -- treating it as one would make Tab appear to stick on it.
- */
-const FOCUSABLE_SELECTOR = [
-  "a[href]:not([tabindex='-1'])",
-  "button:not([tabindex='-1']):not(:disabled)",
-  "input:not([tabindex='-1']):not(:disabled)",
-  "select:not([tabindex='-1']):not(:disabled)",
-  "textarea:not([tabindex='-1']):not(:disabled)",
-  "[tabindex]:not([tabindex='-1'])",
-].join(", ");
 
 /** The catalog is closed and small; every entry stays reachable. Passing the
  * catalog's own size defeats `fuzzySearch`'s command-palette caps, which are a
@@ -110,7 +87,10 @@ export default function WidgetPalette({
   /** Index into the flattened list below; -1 while nothing is selectable. */
   const selectedIndex = useSignal(-1);
   const inputRef = useRef<HTMLInputElement>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
+  // Escape, the Tab trap and the Ctrl/Cmd+K swallow are the modal
+  // contract, shared with the copy dialog; see the hook.
+  const { dialogRef, onKeyDown: handleDialogKeyDown } =
+    useModalDialogKeys(onClose);
 
   // Depends only on the scope, the placed items and the column count -- never
   // on the query or the selection -- so this is the one list here worth
@@ -226,78 +206,6 @@ export default function WidgetPalette({
         e.preventDefault();
         onClose();
         break;
-    }
-  }
-
-  /**
-   * Ctrl/Cmd+K, Escape from anywhere in the dialog, and Tab held inside it.
-   *
-   * A modal that lets Tab walk out into the page behind it is modal only to
-   * the mouse. The options are not tab stops -- the arrow keys move through
-   * them, which is what `aria-activedescendant` on the input describes -- so
-   * today the ring is just the input and the close button. `FOCUSABLE_SELECTOR`
-   * finds that ring by capability (what the browser would actually let a user
-   * Tab onto) rather than by naming those two controls, so a future control in
-   * this dialog joins the cycle automatically instead of falling into the
-   * untracked-focus backstop below.
-   *
-   * This is also the one place that swallows Ctrl/Cmd+K. `CommandPalette.tsx`
-   * binds that combination on `window` to open the global command palette,
-   * and its handler calls `preventDefault()` but never `stopPropagation()` --
-   * so with nothing stopping it here, pressing it while this dialog is open
-   * stacks a second `aria-modal` dialog on top of this one, with two Tab
-   * traps live at once and this dialog's own Escape no longer reachable.
-   * Attached to the dialog container rather than duplicated on the input:
-   * Preact's onKeyDown is a real DOM listener, so a keydown fired on the
-   * input still bubbles up through this container before it would reach
-   * `window`, and this branch runs first and stops it there. Every branch
-   * below that already calls `preventDefault` for a key this dialog owns
-   * gets `stopPropagation` alongside it for the same reason -- nothing this
-   * dialog handles should be visible to a listener outside it.
-   */
-  function handleDialogKeyDown(e: KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      onClose();
-      return;
-    }
-    if (e.key !== "Tab") return;
-    const stops = Array.from(
-      dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ??
-        [],
-    );
-    if (stops.length === 0) return;
-    const first = stops[0];
-    const last = stops[stops.length - 1];
-    const active = document.activeElement;
-    if (!stops.some((stop) => stop === active)) {
-      // Focus is inside the dialog but on an element the trap does not
-      // recognise as a stop -- an option row focused by a pointer press is
-      // the only way that happens today, guarded separately by the
-      // mousedown handler below, but this is the backstop the comment above
-      // warns about: neither wrap branch matches an activeElement outside
-      // `stops`, so both would be skipped and the next Tab would walk out of
-      // an `aria-modal="true"` dialog. Pull focus back onto the first stop
-      // instead of trusting the browser to keep it inside.
-      e.preventDefault();
-      e.stopPropagation();
-      first.focus();
-      return;
-    }
-    if (e.shiftKey && active === first) {
-      e.preventDefault();
-      e.stopPropagation();
-      last.focus();
-    } else if (!e.shiftKey && active === last) {
-      e.preventDefault();
-      e.stopPropagation();
-      first.focus();
     }
   }
 

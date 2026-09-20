@@ -1,14 +1,16 @@
 import { useSignal } from "@preact/signals";
 import type { JSX } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useMemo, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import EditToolbar from "@/components/dashboard/EditToolbar.tsx";
+import LayoutCopyDialog from "@/components/dashboard/LayoutCopyDialog.tsx";
 import WidgetPalette from "@/components/dashboard/WidgetPalette.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 // Registers every shipped widget before first render.
 import "@/components/dashboard/widgets/index.ts";
+import { selectedCluster } from "@/lib/cluster.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import type { EditSession } from "@/lib/dashboard/edit-session.ts";
 import {
@@ -19,8 +21,14 @@ import {
   isDirty,
 } from "@/lib/dashboard/edit-session.ts";
 import { resolveRenderable } from "@/lib/dashboard/grid.ts";
-import type { LayoutUnavailable } from "@/lib/dashboard/layout-store.ts";
+import type {
+  CopyableLayout,
+  LayoutUnavailable,
+} from "@/lib/dashboard/layout-store.ts";
 import {
+  copyableLayoutRecords,
+  copyableLayouts,
+  defaultLayoutFor,
   layout,
   layoutGeneration,
   layoutLoaded,
@@ -28,6 +36,7 @@ import {
   layoutUnavailable,
   layoutWarnings,
   layoutWithheld,
+  loadCopyableLayouts,
   loadLayout,
   StaleLayoutScopeError,
   saveLayout,
@@ -192,8 +201,31 @@ export default function DashboardV2() {
   const saving = useSignal(false);
   /** The catalog palette. Only meaningful while a session is open. */
   const paletteOpen = useSignal(false);
+  /** The copy dialog. Only meaningful while a session is open. */
+  const copyOpen = useSignal(false);
   /** The Cancel confirmation, shown only when there is work to lose. */
   const confirmDiscard = useSignal(false);
+  /**
+   * The Reset confirmation.
+   *
+   * Behind a dialog although Reset, like every other gesture in the editor,
+   * writes nothing until Save (D-6). The difference is what it discards: a
+   * drag moves one widget and a removal takes one away, while this replaces
+   * the whole arrangement at once -- including a layout the user saved months
+   * ago and has not looked at since. Cancel would still put it back, but only
+   * for as long as the session lasts, and the whole point of the button is
+   * that the user is about to arrange something new on top of it.
+   */
+  const confirmReset = useSignal(false);
+  /**
+   * What the last gesture inside this session had to drop, in words.
+   *
+   * Kept apart from `layoutWarnings`, which the store owns and which describes
+   * the last load. This one describes something the user just did, and clearing
+   * it when they do the next thing is the point: a warning about a copy is
+   * stale the moment the layout is replaced again.
+   */
+  const editWarnings = useSignal<string[]>([]);
   /** The save conflict, which is a choice rather than a message. */
   const conflict = useSignal(false);
   /**
@@ -355,11 +387,22 @@ export default function DashboardV2() {
   /** Opens a session over the layout on screen, at the revision it loaded at. */
   function startEditing() {
     focus.armToolbarFocus();
-    // Never inherited from the last session: the palette is a dialog, and one
-    // that reappears on its own the next time the user presses Edit is a
-    // dialog nobody asked for.
+    // Never inherited from the last session: these are dialogs, and one that
+    // reappears on its own the next time the user presses Edit is a dialog
+    // nobody asked for. Warnings go with them -- they describe a gesture in
+    // the session that just ended.
     paletteOpen.value = false;
+    copyOpen.value = false;
+    editWarnings.value = [];
     session.value = beginEdit(asRendered(layout.value), layoutRevision.value);
+    // Read here rather than on mount, so the request is only made by someone
+    // who might use it -- and early enough in the gesture that the answer is
+    // there before the user has finished reading the toolbar. Not awaited:
+    // nothing else in this function depends on it, and the affordance it feeds
+    // simply appears when it lands. It settles its own failure (see the
+    // store): a copy list that could not be read offers no copy button, which
+    // is what a user with no other clusters gets anyway.
+    void loadCopyableLayouts();
   }
 
   /**
@@ -409,6 +452,76 @@ export default function DashboardV2() {
     focus.focusAddButton();
   }
 
+  /** Closes the copy dialog and leaves the keyboard on its opener. */
+  function closeCopyDialog() {
+    copyOpen.value = false;
+    focus.focusCopyButton();
+  }
+
+  /**
+   * Replaces the working copy with the shipped default (D-6).
+   *
+   * The default, not the layout the user last saved. "Restore what I had" is
+   * undo -- different state, different feature -- and a button that does
+   * whichever of the two the reader guessed is worse than one that does the
+   * narrower thing and says so.
+   *
+   * It goes through the session and the re-mount like every other replacement,
+   * and it writes nothing: Save is still the only thing that reaches the
+   * server. It does not force the session dirty either. `isDirty` compares the
+   * working copy against the baseline, so resetting a dashboard that is
+   * already the default leaves Save disabled -- which is correct, because
+   * there would be nothing to write.
+   */
+  function resetLayout() {
+    const s = session.value;
+    if (s === null || saving.value) return;
+    confirmReset.value = false;
+    // `asRendered` for the same reason `startEditing` and `addWidget` run it:
+    // it is what the grid does on mount, so anything else recorded here would
+    // differ from what is on screen by a compaction pass. The scope's own
+    // default, so a second dashboard gets its own rather than the overview's.
+    const next = asRendered({
+      ...s.working,
+      items: defaultLayoutFor(s.working.scope).items,
+    });
+    session.value = applyChange(s, next.items);
+    editWarnings.value = [];
+    // The dialog the user was standing in has gone and the session is still
+    // open, so nothing else on the way out restores the keyboard.
+    focus.focusResetButton();
+    mountGrid(next);
+  }
+
+  /**
+   * Takes a layout the user arranged on another cluster (D-3).
+   *
+   * A replacement, not a merge: the rows offer whole dashboards, and silently
+   * folding one into what is already on screen would produce an arrangement
+   * neither cluster has. The items carry their source instanceIds, which is
+   * safe because the whole list is replaced -- nothing they could collide
+   * with survives.
+   *
+   * `scope` and `columns` stay the target's. `copyableLayouts` has already
+   * refused any record that disagrees about either, so this cannot quietly
+   * re-address a layout to the wrong dashboard or the wrong grid.
+   *
+   * Warnings ride along because the copy may be short: a widget this build
+   * does not have, or a placement the server would not hand across clusters.
+   * A dashboard that arrives missing two cards and says nothing reads as a
+   * copy that lost them.
+   */
+  function copyFrom(entry: CopyableLayout) {
+    const s = session.value;
+    if (s === null || saving.value) return;
+    const next = asRendered({ ...s.working, items: entry.config.items });
+    session.value = applyChange(s, next.items);
+    editWarnings.value = entry.warnings;
+    copyOpen.value = false;
+    focus.focusCopyButton();
+    mountGrid(next);
+  }
+
   /**
    * Records what the grid is now holding.
    *
@@ -433,6 +546,8 @@ export default function DashboardV2() {
     const s = session.value;
     if (s === null) return;
     confirmDiscard.value = false;
+    confirmReset.value = false;
+    editWarnings.value = [];
     session.value = null;
     focus.armReturnToEdit();
     mountGrid(discard(s));
@@ -478,6 +593,10 @@ export default function DashboardV2() {
       // does not bump the generation, so the grid is not re-mounted: it is
       // already displaying the saved arrangement.
       session.value = null;
+      // What the arrangement dropped on its way here is now what was saved,
+      // and the user has been told once already. Keeping it would leave a
+      // warning about a copy standing over a dashboard that is now stored.
+      editWarnings.value = [];
       focus.armReturnToEdit();
       showToast("Dashboard layout saved", "success");
     } catch (err) {
@@ -499,6 +618,7 @@ export default function DashboardV2() {
   async function reloadStoredLayout() {
     conflict.value = false;
     session.value = null;
+    editWarnings.value = [];
     focus.armReturnToEdit();
     // No local restore: this is the one exit where the baseline is known to be
     // out of date, so what goes on screen has to come from the server.
@@ -567,6 +687,33 @@ export default function DashboardV2() {
   // separately because `layoutLoaded` never returns to false once set.
   const editDisabled = storageDown || layoutPending || reloading.value;
 
+  // What the copy affordance has to offer.
+  //
+  // The target's scope and grid decide which records are takeable, and both
+  // live on the layout being edited rather than on a constant -- so this is
+  // derived from the session, not from the catalog. Empty outside a session,
+  // and empty while the list is still being read, which is what keeps the
+  // button absent until there is something behind it.
+  //
+  // Memoized on the four things that can change the answer, and deliberately
+  // NOT on the session itself. The session is a new object on every committed
+  // change, so keying on it would re-scan every record and re-run
+  // `dropUnknownWidgets` over every placement on each frame of a drag -- to
+  // produce the same list, because moving a widget cannot change which of
+  // another cluster's layouts may be copied. Same reason the palette memoizes
+  // its catalog on `placed` rather than on the session.
+  const copyScope = session.value?.working.scope;
+  const copyColumns = session.value?.working.columns;
+  const cluster = selectedCluster.value;
+  const records = copyableLayoutRecords.value;
+  const copyOptions = useMemo(
+    () =>
+      copyScope === undefined || copyColumns === undefined
+        ? []
+        : copyableLayouts(records, copyScope, cluster, copyColumns),
+    [records, copyScope, cluster, copyColumns],
+  );
+
   return (
     <div style={ROOT_STYLE}>
       <div
@@ -629,10 +776,20 @@ export default function DashboardV2() {
             editButtonRef={focus.editButton}
             cancelButtonRef={focus.cancelButton}
             addButtonRef={focus.addButton}
+            copyButtonRef={focus.copyButton}
+            resetButtonRef={focus.resetButton}
             paletteOpen={paletteOpen.value}
+            copyAvailable={copyOptions.length > 0}
+            copyOpen={copyOpen.value}
             onEdit={startEditing}
             onAddWidget={() => {
               paletteOpen.value = true;
+            }}
+            onCopyFromCluster={() => {
+              copyOpen.value = true;
+            }}
+            onReset={() => {
+              confirmReset.value = true;
             }}
             onCancel={requestExit}
             onSave={save}
@@ -688,6 +845,21 @@ export default function DashboardV2() {
         <Alert variant="warning" class="mb-4">
           <ul style={{ margin: 0, paddingLeft: "18px" }}>
             {layoutWarnings.value.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </Alert>
+      )}
+
+      {/* What the gesture the user just made had to drop -- today, a copy that
+          arrived short. Separate from the banner above, which describes the
+          last load: the two can be true at once and say different things, and
+          merging them would make a warning about a layout the user took read
+          as one about the layout they already had. */}
+      {editWarnings.value.length > 0 && (
+        <Alert variant="warning" class="mb-4">
+          <ul style={{ margin: 0, paddingLeft: "18px" }}>
+            {editWarnings.value.map((w) => (
               <li key={w}>{w}</li>
             ))}
           </ul>
@@ -754,6 +926,36 @@ export default function DashboardV2() {
           columns={session.value.working.columns}
           onAdd={addWidget}
           onClose={closePalette}
+        />
+      )}
+
+      {/* Gated on the session, on the save not being in flight, and on there
+          being something to offer -- the same three conditions the palette
+          carries, plus the one that is this dialog's own: a background read
+          that came back empty must take the dialog with it rather than leave
+          an empty list on screen. */}
+      {copyOpen.value &&
+        session.value !== null &&
+        !saving.value &&
+        copyOptions.length > 0 && (
+          <LayoutCopyDialog
+            layouts={copyOptions}
+            onCopy={copyFrom}
+            onClose={closeCopyDialog}
+          />
+        )}
+
+      {confirmReset.value && (
+        <ConfirmDialog
+          title="Reset dashboard layout"
+          message="This replaces the arrangement on screen with the dashboard as it ships. Nothing is written until you press Save, and Cancel still puts back the layout you last saved."
+          confirmLabel="Reset layout"
+          danger
+          onConfirm={resetLayout}
+          onCancel={() => {
+            confirmReset.value = false;
+            focus.focusResetButton();
+          }}
         />
       )}
 

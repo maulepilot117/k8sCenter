@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import type { LayoutRecord, LayoutResponse } from "@/lib/preferences.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
 import {
+  copyableLayouts,
   dropUnknownWidgets,
   layout,
   layoutFromResponse,
@@ -618,4 +620,184 @@ test("loadLayout: an already-aborted signal settles nothing", async () => {
 
   expect(calls).toBe(0);
   expect(layoutLoaded.value).toBe(before);
+});
+
+// ---------------------------------------------------------------------------
+// copyableLayouts (D17): which of a user's other clusters' layouts can be taken
+// ---------------------------------------------------------------------------
+
+/** One record as the list endpoint returns it. Distinct from `layoutRecord`
+ * above: that one is a single-scope read, keyed by revision. */
+function listedLayout(
+  clusterId: string,
+  cfg: DashboardLayoutConfig,
+  over: Partial<LayoutRecord> & { withheld?: string[] } = {},
+): LayoutResponse {
+  return {
+    id: `rec-${clusterId}`,
+    kind: "dashboard_layout",
+    name: "overview",
+    clusterId,
+    schemaVersion: DASHBOARD_LAYOUT_SCHEMA_VERSION,
+    revision: 1,
+    config: cfg,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-02T00:00:00Z",
+    ...over,
+  };
+}
+
+test("copyableLayouts: offers another cluster's layout and not this one's", () => {
+  const got = copyableLayouts(
+    [
+      listedLayout("prod-east", config([item("a", KNOWN)])),
+      listedLayout("local", config([item("b", ALSO_KNOWN)])),
+    ],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  expect(got.map((c) => c.clusterId)).toEqual(["prod-east"]);
+  expect(got[0].config.items.map((i) => i.id)).toEqual([KNOWN]);
+  expect(got[0].warnings).toEqual([]);
+});
+
+test("copyableLayouts: input order is preserved", () => {
+  const got = copyableLayouts(
+    [
+      listedLayout("b-cluster", config([item("a", KNOWN)])),
+      listedLayout("a-cluster", config([item("b", KNOWN)])),
+    ],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  // The endpoint sorts by updated_at descending, and most-recently-arranged is
+  // the order a user looking for a layout they just made wants. Re-sorting
+  // here by cluster name would bury it.
+  expect(got.map((c) => c.clusterId)).toEqual(["b-cluster", "a-cluster"]);
+});
+
+test("copyableLayouts: skips a layout addressed to another dashboard", () => {
+  const otherScope = {
+    ...config([item("a", KNOWN)]),
+    scope: "workloads" as DashboardScope,
+  };
+
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", otherScope)],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: skips a layout this build cannot read", () => {
+  const future = {
+    ...config([item("a", KNOWN)]),
+    schemaVersion: DASHBOARD_LAYOUT_SCHEMA_VERSION + 1,
+  };
+
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", future)],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: skips a layout laid out on a different grid", () => {
+  const narrower = { ...config([item("a", KNOWN)]), columns: 6 };
+
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", narrower)],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: drops widgets this build has no definition for", () => {
+  const got = copyableLayouts(
+    [listedLayout("prod-east", config([item("a", KNOWN), item("b", "gone")]))],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  expect(got).toHaveLength(1);
+  expect(got[0].config.items.map((i) => i.id)).toEqual([KNOWN]);
+  expect(got[0].warnings).toHaveLength(1);
+  expect(got[0].warnings[0]).toContain("gone");
+});
+
+test("copyableLayouts: says when the server withheld placements", () => {
+  const got = copyableLayouts(
+    [
+      listedLayout("prod-east", config([item("a", KNOWN)]), {
+        withheld: ["scoped-one", "scoped-two"],
+      }),
+    ],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  expect(got).toHaveLength(1);
+  // An absent observation must not look like an empty one: a layout that
+  // arrives short two widgets has to say so, or the copy looks like it lost
+  // them.
+  expect(got[0].warnings).toHaveLength(1);
+  expect(got[0].warnings[0]).toContain("2");
+});
+
+test("copyableLayouts: skips a layout with nothing left to copy", () => {
+  // Every widget on it is one this build does not have, so taking it would
+  // replace the dashboard with an empty grid and a warning. That is not an
+  // offer worth making, and a row that empties the screen is worse than no row.
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", config([item("a", "gone")]))],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: tolerates a record whose config is not a layout", () => {
+  const junk = { schemaVersion: DASHBOARD_LAYOUT_SCHEMA_VERSION } as unknown;
+
+  expect(
+    copyableLayouts(
+      [listedLayout("prod-east", junk as DashboardLayoutConfig)],
+      "overview",
+      "local",
+      DASHBOARD_COLUMNS,
+    ),
+  ).toEqual([]);
+});
+
+test("copyableLayouts: the offered config does not alias the record", () => {
+  const source = config([item("a", KNOWN)]);
+  const got = copyableLayouts(
+    [listedLayout("prod-east", source)],
+    "overview",
+    "local",
+    DASHBOARD_COLUMNS,
+  );
+
+  // The island hands this straight to a session and a grid, both of which
+  // rebuild items rather than reshaping them -- but the record it came from is
+  // a fetch result the dialog is still rendering, and a shared array would let
+  // one become the other's surprise.
+  expect(got[0].config.items).not.toBe(source.items);
 });

@@ -114,6 +114,27 @@ export const preferencesApi = {
   },
 
   /**
+   * Every dashboard layout the caller owns, on every cluster, most recently
+   * updated first.
+   *
+   * The collection read, not a second way to fetch one layout. It exists for
+   * the editor's "copy from another cluster": layouts are scoped per (user,
+   * cluster, scope), and `getLayout` below can only answer for the cluster the
+   * request is addressed to -- addressing one at another cluster requires the
+   * admin role, so for everyone else this is the only way to see that a layout
+   * elsewhere exists at all.
+   *
+   * Each record's `withheld` names placements the server refused to hand
+   * across clusters. It answers for every cluster at once and so cannot
+   * re-authorize a namespace against the cluster the layout lives on; it drops
+   * those placements rather than serving them unchecked. Mirrors
+   * HandleListLayouts in backend/internal/preferences/handler.go.
+   */
+  listLayouts: async (signal?: AbortSignal): Promise<LayoutResponse[]> =>
+    (await api<LayoutResponse[]>(LAYOUTS, { method: "GET", signal })).data ??
+    [],
+
+  /**
    * The caller's layout for one dashboard scope, or null when they have not
    * customized it.
    *
