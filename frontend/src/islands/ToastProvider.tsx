@@ -1,5 +1,4 @@
 import { signal } from "@preact/signals";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface Toast {
   id: number;
@@ -48,8 +47,13 @@ const typeStyles: Record<Toast["type"], Record<string, string>> = {
  * Mount once in _layout.tsx.
  */
 export default function ToastProvider() {
-  if (!IS_BROWSER) return null;
-
+  // Deliberately NOT `if (!IS_BROWSER) return null`. Astro renders an island
+  // on the server and hydrates that markup in place; a provider that returned
+  // null server-side left an <astro-island> with no children, which never
+  // hydrated -- so the container was absent and every showToast in the app was
+  // a no-op. Rendering the empty container on both sides costs one hidden div
+  // and is what makes hydration possible at all. `toasts` is empty during SSR
+  // by construction, so the two renders agree.
   return (
     <div
       role="status"

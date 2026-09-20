@@ -2,31 +2,59 @@ import { useSignal } from "@preact/signals";
 import type { JSX } from "preact";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
+import EditToolbar from "@/components/dashboard/EditToolbar.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 // Registers every shipped widget before first render.
 import "@/components/dashboard/widgets/index.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
+import type { EditSession } from "@/lib/dashboard/edit-session.ts";
+import {
+  applyChange,
+  beginEdit,
+  commit,
+  discard,
+  isDirty,
+} from "@/lib/dashboard/edit-session.ts";
+import { resolveRenderable } from "@/lib/dashboard/grid.ts";
 import type { LayoutUnavailable } from "@/lib/dashboard/layout-store.ts";
 import {
   layout,
   layoutGeneration,
   layoutLoaded,
+  layoutRevision,
   layoutUnavailable,
   layoutWarnings,
   layoutWithheld,
   loadLayout,
+  StaleLayoutScopeError,
+  saveLayout,
+  WithheldLayoutError,
 } from "@/lib/dashboard/layout-store.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type {
   DashboardLayoutConfig,
   DataSourceKey,
+  LayoutItem,
 } from "@/lib/dashboard/types.ts";
 import type {
   ClusterInfoData,
   DashboardSummary,
 } from "@/lib/dashboard/wire-types.ts";
+import { preferenceReason } from "@/lib/preferences.ts";
+import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+
+/**
+ * What Save's title says once a write has been refused.
+ *
+ * "Reloaded" is the literal instruction and not a euphemism: nothing short of
+ * a fresh read lets the client claim a revision again, and leaving edit mode
+ * is not a read. See `saveBlocked`.
+ */
+const SAVE_BLOCKED_REASON =
+  "This dashboard has to be reloaded before it can be saved again.";
 
 const TIME_RANGES = ["15m", "1h", "6h", "24h"] as const;
 type TimeRange = (typeof TIME_RANGES)[number];
@@ -78,20 +106,138 @@ function unavailableCopy(reason: LayoutUnavailable): string {
   }
 }
 
+/**
+ * Human text for a save that did not happen. Same rule as `unavailableCopy`:
+ * a failure this cannot name is reported as a failure rather than dressed in
+ * the last message somebody wrote.
+ *
+ * `revision_conflict` is deliberately absent — it is not a message, it is a
+ * choice, and it goes to the dialog below rather than a toast.
+ */
+function saveErrorCopy(err: unknown): string {
+  // Raised before the request goes out, so no reason code exists for them.
+  if (err instanceof WithheldLayoutError) {
+    return "This layout cannot be saved while some of its widgets are hidden, which is what keeps them from being deleted.";
+  }
+  if (err instanceof StaleLayoutScopeError) {
+    return "Your dashboard was reloaded while you were editing it. Reload the page and arrange it again.";
+  }
+  switch (preferenceReason(err)) {
+    case "database_unavailable":
+      return "Saved dashboard layouts need a database, and this deployment has none configured.";
+    case "limit_reached":
+      return "This dashboard has more widgets than a saved layout can hold.";
+    case "identity_too_long":
+      return "Your account identity is longer than stored layouts support. An operator has to shorten the mapped identity attribute.";
+    case "invalid_config":
+    case "unknown_widget_id":
+    case "unsupported_schema_version":
+      return "This arrangement is not one the server can store.";
+    default:
+      return "Your layout could not be saved.";
+  }
+}
+
+/**
+ * The layout as the grid actually renders it.
+ *
+ * `resolveRenderable` is what the grid runs on the way in: it drops placements
+ * this build has no widget for and re-compacts what is left. An edit session
+ * opened over the unnormalized config would measure dirtiness against a layout
+ * that is not on screen, and the first drag would then look like two changes.
+ */
+function asRendered(config: DashboardLayoutConfig): DashboardLayoutConfig {
+  return {
+    ...config,
+    items: resolveRenderable(config.items, getWidget).map((r) => r.item),
+  };
+}
+
 export default function DashboardV2() {
   const timeRange = useSignal<TimeRange>("1h");
-  // Edit mode is deliberately not persisted. The layout it produces now is:
-  // P3 stores it, and P4 adds the Save button that writes the working copy
-  // back through the layout store.
-  const editing = useSignal(false);
+  /**
+   * The open edit session, or null when not editing.
+   *
+   * Edit mode is deliberately not persisted; the layout it produces is. The
+   * session holds the baseline and the revision alongside the working copy so
+   * a Save cannot write a stale revision — see edit-session.ts.
+   */
+  const session = useSignal<EditSession | null>(null);
+  const saving = useSignal(false);
+  /** The Cancel confirmation, shown only when there is work to lose. */
+  const confirmDiscard = useSignal(false);
+  /** The save conflict, which is a choice rather than a message. */
+  const conflict = useSignal(false);
+  /**
+   * Set once a save has been refused, and cleared only by a completed load.
+   *
+   * The store drops its observation whenever a write fails, because the write
+   * may have committed on the way out and its revision would then be a lie
+   * (layout-store.ts, `saveLayout`'s catch). Until a fresh read, no save may
+   * claim a revision at all -- so a second attempt would be refused for a
+   * different and much stranger reason than the first.
+   *
+   * Cleared by the load effect and NOT by opening another session, because
+   * leaving edit mode and coming back reads nothing: the block would lift
+   * while the refusal underneath it stood, which is the same broken Save
+   * button with a longer path to it.
+   */
+  const saveBlocked = useSignal(false);
+
+  /**
+   * What the grid mounts from, and the key that re-mounts it.
+   *
+   * The grid copies `initial` into its own signal once, on mount, because the
+   * working copy is what the pointer sessions reshape — so handing it a new
+   * starting point means re-mounting it. Three things do: a completed load, a
+   * cancel putting the baseline back, and taking the stored layout after a
+   * conflict.
+   *
+   * The epoch is bumped on every call, never conditionally on the config
+   * having changed. What is being replaced is the grid's private working copy,
+   * and that can differ from `gridSource` without `gridSource` differing from
+   * anything — an edited dashboard whose reload comes back 204 hands the very
+   * same default object straight back, and a guard comparing the two would
+   * leave the discarded edits on screen.
+   */
+  const gridSource = useSignal<DashboardLayoutConfig>(layout.peek());
+  const gridEpoch = useSignal(0);
+  function mountGrid(config: DashboardLayoutConfig) {
+    gridSource.value = config;
+    gridEpoch.value += 1;
+  }
+
+  /**
+   * The load generation the grid is already mounted on.
+   *
+   * A load bumps the store's generation and the effect below re-mounts on it.
+   * The conflict path re-mounts by hand, because it has to work even for a
+   * load that changes nothing the store can see; recording the generation it
+   * mounted at is what stops the effect from mounting a second time over it.
+   */
+  const mountedGeneration = useRef(layoutGeneration.peek());
+
   // Escape on a focused widget leaves edit mode, which takes that widget out
   // of the tab order under the focus that is on it. Focus has to land
   // somewhere deliberate, and where editing started is the only place the user
-  // asked for.
+  // asked for. The Cancel and Save buttons need it too: both unmount the
+  // moment the session closes.
   const editButton = useRef<HTMLButtonElement | null>(null);
-  /** Set by Escape, read by the effect below. Only that exit needs to move
-   * focus: clicking "Done" leaves it on the button already. */
+  const cancelButton = useRef<HTMLButtonElement | null>(null);
+  /** Set by whichever path closed the session, read by the effect below. */
   const returnFocus = useRef(false);
+  /**
+   * Set when the user asked to start editing.
+   *
+   * "Edit layout" is replaced by Cancel and Save rather than relabelled, so
+   * the button the user just pressed leaves the document and the browser
+   * drops focus to the body. Moving it to Cancel keeps the keyboard where the
+   * controls now are, and makes the first Tab land inside the editor instead
+   * of at the top of the page.
+   */
+  const focusToolbar = useRef(false);
+
+  const editing = session.value !== null;
 
   // The stored layout decides which sources are fetched, so this re-runs when
   // the load replaces the default with the user's arrangement.
@@ -118,15 +264,35 @@ export default function DashboardV2() {
     return () => ac.abort();
   }, []);
 
+  // A completed load is a new starting point for the grid.
+  //
+  // It cannot land on top of an open session: editing is withheld until the
+  // first load settles (`editDisabled` below), and there is no second load —
+  // a cluster switch reloads the page. The day a reload affordance ships, this
+  // has to decide what happens to a session it would discard.
+  useEffect(() => {
+    if (!IS_BROWSER || layoutGeneration.value === mountedGeneration.current) {
+      return;
+    }
+    adoptLoadedLayout();
+  }, [layoutGeneration.value]);
+
   // After the render that ended edit mode, not during the key press that asked
   // for it. Focusing first leaves the browser about to run its own focus
   // fix-up on the widget it is removing from the tab order, and that lands on
   // the document rather than on the button we just moved to.
   useLayoutEffect(() => {
-    if (!IS_BROWSER || editing.value || !returnFocus.current) return;
+    if (!IS_BROWSER) return;
+    if (editing) {
+      if (!focusToolbar.current) return;
+      focusToolbar.current = false;
+      cancelButton.current?.focus();
+      return;
+    }
+    if (!returnFocus.current) return;
     returnFocus.current = false;
     editButton.current?.focus();
-  }, [editing.value]);
+  }, [editing]);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -136,6 +302,129 @@ export default function DashboardV2() {
       dashboardData.abort();
     };
   }, []);
+
+  /**
+   * Puts the store's layout on the grid and records that it is there.
+   *
+   * Both callers -- the effect above and the conflict path -- have to do all
+   * three things together: re-mount, note the generation so the other one does
+   * not re-mount over it, and lift the save block, since a completed read is
+   * exactly what the store needs before it can claim a revision again.
+   */
+  function adoptLoadedLayout() {
+    mountedGeneration.current = layoutGeneration.peek();
+    saveBlocked.value = false;
+    mountGrid(layout.peek());
+  }
+
+  /** Opens a session over the layout on screen, at the revision it loaded at. */
+  function startEditing() {
+    focusToolbar.current = true;
+    session.value = beginEdit(asRendered(layout.value), layoutRevision.value);
+  }
+
+  /**
+   * Records what the grid is now holding.
+   *
+   * Guarded on there being a session: the grid reports its restore on the way
+   * out too, and a session already closed must not be reopened by it.
+   */
+  function handleChange(items: LayoutItem[]) {
+    const s = session.value;
+    if (s === null) return;
+    session.value = applyChange(s, items);
+  }
+
+  /**
+   * Closes the session and puts the grid back to the layout as loaded.
+   *
+   * Always a restore: this is the Cancel path, and the two exits that keep
+   * what is on screen -- a successful save and taking the server's layout
+   * after a conflict -- close the session themselves, because each has its own
+   * idea of what the grid should be showing afterwards.
+   */
+  function closeEditing() {
+    const s = session.value;
+    if (s === null) return;
+    confirmDiscard.value = false;
+    session.value = null;
+    returnFocus.current = true;
+    mountGrid(discard(s));
+  }
+
+  /**
+   * Leaves edit mode, asking first when there is work to lose.
+   *
+   * Leaving with unsaved changes is the one way to lose a layout silently, and
+   * a dashboard is easy to click away from.
+   */
+  function requestExit() {
+    const s = session.value;
+    if (s === null || saving.value) return;
+    if (!isDirty(s)) {
+      closeEditing();
+      return;
+    }
+    confirmDiscard.value = true;
+  }
+
+  async function save() {
+    const s = session.value;
+    if (s === null || saving.value || !isDirty(s)) return;
+    const { config, revision } = commit(s);
+
+    // The session pinned a revision when it opened; the store's is the one the
+    // write will actually claim. They can only differ if a load landed while
+    // editing, and saving then would overwrite a layout this session never
+    // saw. Unreachable today (see the load effect above), and checked anyway:
+    // the whole point of the session carrying a revision is that nothing else
+    // gets to choose it.
+    if (revision !== layoutRevision.value) {
+      saveBlocked.value = true;
+      conflict.value = true;
+      return;
+    }
+
+    saving.value = true;
+    try {
+      await saveLayout("overview", config);
+      // The store now holds exactly what the grid is showing, and deliberately
+      // does not bump the generation, so the grid is not re-mounted: it is
+      // already displaying the saved arrangement.
+      session.value = null;
+      returnFocus.current = true;
+      showToast("Dashboard layout saved", "success");
+    } catch (err) {
+      // Not a message but a choice, so it goes to the dialog rather than a
+      // toast. The session stays open either way: the user's arrangement is
+      // the only copy of this work that exists.
+      saveBlocked.value = true;
+      if (preferenceReason(err) === "revision_conflict") {
+        conflict.value = true;
+        return;
+      }
+      showToast(saveErrorCopy(err), "error");
+    } finally {
+      saving.value = false;
+    }
+  }
+
+  /** Takes the stored layout and drops this session's edits with it. */
+  async function reloadStoredLayout() {
+    conflict.value = false;
+    session.value = null;
+    returnFocus.current = true;
+    // No local restore: this is the one exit where the baseline is known to be
+    // out of date, so what goes on screen has to come from the server.
+    //
+    // `loadLayout` settles rather than rejects, so this re-mounts either way:
+    // on what the other tab saved, or -- if the read failed -- on the layout
+    // the store was left holding. Either beats leaving the edits the user just
+    // asked to drop sitting on the grid. The generation is recorded first so
+    // the effect above does not re-mount a second time over this one.
+    await loadLayout("overview");
+    adoptLoadedLayout();
+  }
 
   if (!IS_BROWSER) {
     return <div style={ROOT_STYLE} />;
@@ -162,10 +451,23 @@ export default function DashboardV2() {
   // which throws away whatever the grid's private working copy holds -- so
   // until it lands there must be nothing in that copy worth keeping.
   const layoutPending = !layoutLoaded.value;
+  // Withdrawn in two states, for two different reasons.
+  //
+  // Storage down: arranging a dashboard that cannot be stored is work the user
+  // loses on the next reload, so the affordance is withdrawn rather than
+  // offered and then disappointed.
+  //
+  // Load pending: what is on screen is still the default, and adopting the
+  // stored layout re-mounts the grid. Editing in that window means a drag that
+  // vanishes the instant the response lands, with no warning -- the one case
+  // where offering the affordance actively destroys work rather than merely
+  // wasting it.
+  //
+  // Withheld placements do NOT disable it, although they also block a save:
+  // there the layout on screen is the user's own and the block is transient,
+  // so editing it for this session is still worth something. The save path
+  // reports the refusal, and the banner below has already explained it.
   const editDisabled = storageDown || layoutPending;
-  // Changes only when a load replaces the layout, which is when the grid has
-  // to start over from a new arrangement. See the comment at its usage.
-  const layoutKey = `layout-${layoutGeneration.value}`;
 
   return (
     <div style={ROOT_STYLE}>
@@ -211,55 +513,27 @@ export default function DashboardV2() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <button
-            ref={editButton}
-            type="button"
-            data-testid="edit-layout"
-            aria-pressed={editing.value}
-            // Withdrawn in two states, for two different reasons.
-            //
-            // Storage down: arranging a dashboard that cannot be stored is
-            // work the user loses on the next reload, so the affordance is
-            // withdrawn rather than offered and then disappointed.
-            //
-            // Load pending: what is on screen is still the default, and
-            // adopting the stored layout re-mounts the grid. Editing in that
-            // window means a drag that vanishes the instant the response
-            // lands, with no warning -- the one case where offering the
-            // affordance actively destroys work rather than merely wasting it.
-            //
-            // Withheld placements do NOT disable it, although they also block
-            // a save: there the layout on screen is the user's own and the
-            // block is transient, so editing it for this session is still
-            // worth something.
+          <EditToolbar
+            editing={editing}
+            dirty={session.value !== null && isDirty(session.value)}
+            saving={saving.value}
+            saveBlockedReason={
+              saveBlocked.value ? SAVE_BLOCKED_REASON : undefined
+            }
             disabled={editDisabled}
-            title={
+            disabledReason={
               storageDown
                 ? (unavailableMessage ?? undefined)
                 : layoutPending
                   ? "Loading your saved layout..."
                   : undefined
             }
-            onClick={() => {
-              editing.value = !editing.value;
-            }}
-            style={{
-              padding: "7px 14px",
-              borderRadius: "8px",
-              border: "1px solid var(--glass-border)",
-              cursor: editDisabled ? "not-allowed" : "pointer",
-              opacity: editDisabled ? 0.5 : 1,
-              fontSize: "12px",
-              fontWeight: 500,
-              background: editing.value
-                ? "var(--accent)"
-                : "var(--glass-surface)",
-              color: editing.value ? "var(--bg-base)" : "var(--text-muted)",
-              transition: "background 0.15s, color 0.15s",
-            }}
-          >
-            {editing.value ? "Done" : "Edit layout"}
-          </button>
+            editButtonRef={editButton}
+            cancelButtonRef={cancelButton}
+            onEdit={startEditing}
+            onCancel={requestExit}
+            onSave={save}
+          />
 
           <div
             style={{
@@ -335,23 +609,42 @@ export default function DashboardV2() {
         </Alert>
       )}
 
-      {/*
-        Keyed on the loaded layout. DashboardGrid copies `initial` into its own
-        signal once, on mount, because the working copy is what the pointer
-        sessions reshape -- so a prop change alone would leave the grid still
-        rendering the default after the stored layout lands. Re-mounting is the
-        honest way to hand it a new starting point, and it is the same thing a
-        reset or a scope change will need in P4.
-      */}
       <DashboardGrid
-        key={layoutKey}
-        initial={layout.value}
-        editable={editing.value}
-        onExitEdit={() => {
-          returnFocus.current = true;
-          editing.value = false;
-        }}
+        key={`layout-${gridEpoch.value}`}
+        initial={gridSource.value}
+        editable={editing}
+        onChange={handleChange}
+        onExitEdit={requestExit}
       />
+
+      {confirmDiscard.value && (
+        <ConfirmDialog
+          title="Discard unsaved changes?"
+          message="This dashboard goes back to the arrangement you last saved. There is no undo."
+          confirmLabel="Discard changes"
+          danger
+          onConfirm={closeEditing}
+          onCancel={() => {
+            confirmDiscard.value = false;
+          }}
+        />
+      )}
+
+      {conflict.value && (
+        <ConfirmDialog
+          title="This dashboard changed somewhere else"
+          message="Your layout was saved from another tab or device after you started editing. Loading it discards the changes you made here; keeping them lets you carry on, but this dashboard cannot be saved until you load the newer one."
+          confirmLabel="Load the saved layout"
+          onConfirm={() => {
+            void reloadStoredLayout();
+          }}
+          // Escape and the scrim land here too, which is the safe default: the
+          // arrangement on screen is the only copy of this session's work.
+          onCancel={() => {
+            conflict.value = false;
+          }}
+        />
+      )}
     </div>
   );
 }
