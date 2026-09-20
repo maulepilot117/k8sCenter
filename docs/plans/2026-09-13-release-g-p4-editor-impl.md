@@ -336,9 +336,39 @@ above is discharged. The divergences are below, then what D16 and D17 inherit.
     Restart the dev server before trusting an E2E result about island module
     state.
 
-12. **The new E2E asserts state, not toasts.** Eleven of the twelve tests
-    prove a save through the closed session and the recorded write; exactly
-    one asserts the toast itself, so a future regression in the notification
+12. **Review round (PR #470) found two real defects in this unit, both the
+    same omission.** Seven local reviewers plus an independent cross-model
+    adversarial pass ran over the branch; the cross-model peer and two local
+    reviewers independently described the same defect, and an independent
+    validator confirmed a second on a protected data-loss subject. Both are
+    fixed on the branch:
+    - **An async operation must own the editing surface while it runs.** The
+      grid stayed editable for the whole `saveLayout` await, so an edit made
+      after `commit()` snapshotted the payload reached the session but never
+      the server — and the success path then cleared the session and reported
+      "saved" over an arrangement that was never written. Fixed with
+      `editable={editing && !saving.value}`. The same omission appeared a
+      second time in `reloadStoredLayout`: `layoutLoaded` never returns to
+      false, so the first-load gate does not cover a *second* load, and Edit
+      stayed live while the replacement GET was outstanding. Fixed with a
+      `reloading` signal OR'd into `editDisabled`. **D16 and D17 add more
+      async paths through this island and inherit the rule: whatever owns the
+      layout while a request is in flight must withdraw the editing surface
+      for exactly that window.**
+    - **A stub that answers every non-GET measures the mock, not the client.**
+      The conflict E2E returned its canned 409 for any method or body, so a
+      client that switched to POST or dropped the revision would still have
+      passed. Both stubs now assert the method, the CSRF and cluster headers,
+      and the revision/config body before answering.
+
+    One reported finding was **rejected on inspection** and left alone: the
+    unconditional `saveBlocked` latch after a pre-flight refusal is correct,
+    because nothing in-session can clear `layoutWithheld` or the store's
+    observation, so a fresh read genuinely is required.
+
+13. **The new E2E asserts state, not toasts.** All but one of the specs prove
+    a save through the closed session and the recorded write; exactly one
+    asserts the toast itself, so a future regression in the notification
     cannot be mistaken for a regression in the write.
 
 ---

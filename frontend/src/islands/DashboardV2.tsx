@@ -82,6 +82,31 @@ function sourcesFor(config: DashboardLayoutConfig): DataSourceKey[] {
 }
 
 /**
+ * The reasons whose wording does not depend on whether the layout was being
+ * read or written.
+ *
+ * Both copy helpers below consult this first. They used to carry byte-identical
+ * sentences for these two reasons, three dozen lines apart, so a copy edit had
+ * to be remembered twice and a half-applied one would tell the user two
+ * different things about the same condition.
+ *
+ * `null` means "not one of the shared reasons" -- the caller then applies its
+ * own read-specific or write-specific wording.
+ */
+function sharedReasonCopy(
+  reason: LayoutUnavailable | undefined,
+): string | null {
+  switch (reason) {
+    case "database_unavailable":
+      return "Saved dashboard layouts need a database, and this deployment has none configured.";
+    case "identity_too_long":
+      return "Your account identity is longer than stored layouts support. An operator has to shorten the mapped identity attribute.";
+    default:
+      return null;
+  }
+}
+
+/**
  * Human text for the reasons a layout load can fail with. Mirrors the same
  * helper in SavedViews.tsx, including its rule: a reason not named here gets
  * generic copy rather than invented specifics, because describing the wrong
@@ -92,11 +117,9 @@ function sourcesFor(config: DashboardLayoutConfig): DataSourceKey[] {
  * `undefined` so "nothing went wrong" cannot reach here at all.
  */
 function unavailableCopy(reason: LayoutUnavailable): string {
+  const shared = sharedReasonCopy(reason);
+  if (shared !== null) return shared;
   switch (reason) {
-    case "database_unavailable":
-      return "Saved dashboard layouts need a database, and this deployment has none configured.";
-    case "identity_too_long":
-      return "Your account identity is longer than stored layouts support. An operator has to shorten the mapped identity attribute.";
     case "invalid_config":
     case "unsupported_schema_version":
     case "unknown_widget_id":
@@ -122,13 +145,12 @@ function saveErrorCopy(err: unknown): string {
   if (err instanceof StaleLayoutScopeError) {
     return "Your dashboard was reloaded while you were editing it. Reload the page and arrange it again.";
   }
-  switch (preferenceReason(err)) {
-    case "database_unavailable":
-      return "Saved dashboard layouts need a database, and this deployment has none configured.";
+  const reason = preferenceReason(err);
+  const shared = sharedReasonCopy(reason);
+  if (shared !== null) return shared;
+  switch (reason) {
     case "limit_reached":
       return "This dashboard has more widgets than a saved layout can hold.";
-    case "identity_too_long":
-      return "Your account identity is longer than stored layouts support. An operator has to shorten the mapped identity attribute.";
     case "invalid_config":
     case "unknown_widget_id":
     case "unsupported_schema_version":
@@ -183,6 +205,18 @@ export default function DashboardV2() {
    * button with a longer path to it.
    */
   const saveBlocked = useSignal(false);
+  /**
+   * A replacement layout is being read and the grid has not adopted it yet.
+   *
+   * The first load withdraws Edit through `layoutPending`, but that signal is
+   * `!layoutLoaded`, and the store sets `layoutLoaded` true once and never back
+   * to false -- so every load after the first leaves Edit enabled while its GET
+   * is outstanding. Taking the stored layout after a conflict is exactly such a
+   * load, and a session opened in that window is erased without warning when
+   * `adoptLoadedLayout` re-mounts the grid over it. Same destroyed-work case the
+   * first-load gate exists to prevent, so it gets the same gate.
+   */
+  const reloading = useSignal(false);
 
   /**
    * What the grid mounts from, and the key that re-mounts it.
@@ -422,8 +456,17 @@ export default function DashboardV2() {
     // the store was left holding. Either beats leaving the edits the user just
     // asked to drop sitting on the grid. The generation is recorded first so
     // the effect above does not re-mount a second time over this one.
-    await loadLayout("overview");
-    adoptLoadedLayout();
+    //
+    // Edit is withheld across the whole await: the session is already closed,
+    // so without this the user could reopen one, arrange it, and have it
+    // re-mounted away the moment the response lands.
+    reloading.value = true;
+    try {
+      await loadLayout("overview");
+      adoptLoadedLayout();
+    } finally {
+      reloading.value = false;
+    }
   }
 
   if (!IS_BROWSER) {
@@ -467,7 +510,10 @@ export default function DashboardV2() {
   // there the layout on screen is the user's own and the block is transient,
   // so editing it for this session is still worth something. The save path
   // reports the refusal, and the banner below has already explained it.
-  const editDisabled = storageDown || layoutPending;
+  //
+  // Reloading is the same case as a pending first load, and is tracked
+  // separately because `layoutLoaded` never returns to false once set.
+  const editDisabled = storageDown || layoutPending || reloading.value;
 
   return (
     <div style={ROOT_STYLE}>
@@ -524,7 +570,7 @@ export default function DashboardV2() {
             disabledReason={
               storageDown
                 ? (unavailableMessage ?? undefined)
-                : layoutPending
+                : layoutPending || reloading.value
                   ? "Loading your saved layout..."
                   : undefined
             }
@@ -612,7 +658,20 @@ export default function DashboardV2() {
       <DashboardGrid
         key={`layout-${gridEpoch.value}`}
         initial={gridSource.value}
-        editable={editing}
+        // Frozen while the write is in flight, not merely while editing.
+        //
+        // `commit` snapshots the payload before the await, so a drag or a
+        // keyboard nudge landing during the round trip reaches the session but
+        // never the server -- and the success path then clears the session and
+        // reports "saved" over an arrangement that was not written. The user
+        // keeps looking at the newer layout, cannot re-save it, and loses it on
+        // the next reload. Cancel and Save are already held for the same
+        // reason; the grid is the third control that had to be.
+        //
+        // The grid's own `[editable, narrow.value]` effect ends any pointer
+        // session in flight with a restore, so the screen lands on exactly what
+        // was written rather than on a half-finished gesture.
+        editable={editing && !saving.value}
         onChange={handleChange}
         onExitEdit={requestExit}
       />

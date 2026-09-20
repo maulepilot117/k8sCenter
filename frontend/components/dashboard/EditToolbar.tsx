@@ -14,14 +14,22 @@ import type { Ref } from "preact";
  * and never does anything is a worse promise than one that has not shipped.
  */
 
-/** Matches the pill styling the time-range buttons beside it already use. */
-const BUTTON_BASE = {
-  padding: "7px 14px",
-  borderRadius: "8px",
-  fontSize: "12px",
-  fontWeight: 500,
-  transition: "background 0.15s, color 0.15s, opacity 0.15s",
-} as const;
+/**
+ * The pill shared by all three buttons, matching the time-range buttons beside
+ * them.
+ *
+ * Utilities rather than a style object, per the project's Tailwind-only rule.
+ * The colours come from the theme's own tokens (`glass-surface`, `accent`,
+ * `text-muted`), so a theme change reaches these buttons like any other
+ * surface. `py-[7px]` is an arbitrary length, not a colour: 7px has no step on
+ * the spacing scale and the neighbouring pills are that tall.
+ *
+ * The disabled look is a `disabled:` variant rather than a ternary, so the
+ * markup cannot disagree with the `disabled` attribute about whether a button
+ * is inert.
+ */
+const BUTTON_BASE =
+  "rounded-lg px-3.5 py-[7px] text-xs font-medium transition-[background-color,color,opacity] duration-150 disabled:cursor-not-allowed disabled:opacity-50";
 
 export interface EditToolbarProps {
   /** Whether an edit session is open. */
@@ -89,14 +97,7 @@ export default function EditToolbar({
         disabled={disabled}
         title={disabledReason}
         onClick={onEdit}
-        style={{
-          ...BUTTON_BASE,
-          border: "1px solid var(--glass-border)",
-          cursor: disabled ? "not-allowed" : "pointer",
-          opacity: disabled ? 0.5 : 1,
-          background: "var(--glass-surface)",
-          color: "var(--text-muted)",
-        }}
+        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
       >
         Edit layout
       </button>
@@ -113,7 +114,7 @@ export default function EditToolbar({
       // told what these two buttons belong to rather than meeting them bare.
       role="group"
       aria-label="Dashboard layout editing"
-      style={{ display: "flex", alignItems: "center", gap: "8px" }}
+      class="flex items-center gap-2"
     >
       <button
         ref={cancelButtonRef}
@@ -123,14 +124,7 @@ export default function EditToolbar({
         // would restore the layout underneath a write that still lands.
         disabled={saving}
         onClick={onCancel}
-        style={{
-          ...BUTTON_BASE,
-          border: "1px solid var(--glass-border)",
-          cursor: saving ? "not-allowed" : "pointer",
-          opacity: saving ? 0.5 : 1,
-          background: "var(--glass-surface)",
-          color: "var(--text-muted)",
-        }}
+        class={`${BUTTON_BASE} cursor-pointer border border-glass-border bg-glass-surface text-text-muted`}
       >
         Cancel
       </button>
@@ -140,7 +134,7 @@ export default function EditToolbar({
         // Nothing to write, a write already in flight, or a write the client
         // is no longer in a position to make. An enabled Save that cannot
         // succeed trains people to ignore the one that can.
-        disabled={!dirty || saving || saveBlocked}
+        disabled={saveOff}
         title={
           saveBlocked
             ? saveBlockedReason
@@ -149,14 +143,13 @@ export default function EditToolbar({
               : undefined
         }
         onClick={onSave}
-        style={{
-          ...BUTTON_BASE,
-          border: "1px solid transparent",
-          cursor: saveOff ? "not-allowed" : "pointer",
-          opacity: saveOff ? 0.5 : 1,
-          background: "var(--accent)",
-          color: "var(--bg-base)",
-        }}
+        class={`${BUTTON_BASE} cursor-pointer border border-transparent bg-accent`}
+        // The one inline declaration left, and the same exception
+        // ConfirmDialog.tsx already makes for this exact colour: the theme
+        // token is `--color-base`, whose utility would be `text-base` -- which
+        // Tailwind already owns as a font size. There is no colour utility to
+        // spell this with.
+        style={{ color: "var(--bg-base)" }}
       >
         {saving ? "Saving..." : "Save"}
       </button>

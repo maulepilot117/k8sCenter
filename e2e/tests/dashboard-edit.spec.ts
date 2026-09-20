@@ -1,6 +1,13 @@
 import type { Page, Route } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
 import type { DashboardLayoutConfig } from "../../frontend/lib/dashboard/types.ts";
+// The grid's own geometry, imported rather than copied, exactly as
+// dashboard-grid.spec.ts does: a change to the column count or the gap has to
+// break these drags loudly instead of making them aim at the wrong cell.
+import {
+  DASHBOARD_COLUMNS,
+  DASHBOARD_GRID_GAP,
+} from "../../frontend/lib/dashboard/types.ts";
 
 // The dashboard editor: entering edit mode, whether Save is offered, what
 // Cancel puts back, and what a conflicting save does. The state machine behind
@@ -95,10 +102,7 @@ async function stubLayoutStore(page: Page) {
       return;
     }
     if (request.method() === "PUT") {
-      const body = request.postDataJSON() as {
-        revision: number;
-        config: DashboardLayoutConfig;
-      };
+      const body = saveRequestBody(route);
       writes.push(body);
       stored = { revision: body.revision + 1, config: body.config };
       await json(route, 200, { data: record(stored.revision, stored.config) });
@@ -118,6 +122,50 @@ async function stubLayoutStore(page: Page) {
  */
 const SAVE_BLOCKED_REASON =
   "This dashboard has to be reloaded before it can be saved again.";
+
+/**
+ * Asserts a save request is one the real backend would accept, and returns its
+ * parsed body.
+ *
+ * A stub that answers every non-GET is a stub that stays green for a client
+ * that switched to POST, dropped the JSON body, or lost the headers the API
+ * client injects -- all of which `frontend/lib/api.ts` sets and
+ * `backend/internal/preferences/handler.go` requires. Checking the contract
+ * here is what keeps these tests measuring the client rather than the mock.
+ */
+function saveRequestBody(route: Route): {
+  revision: number;
+  config: DashboardLayoutConfig;
+} {
+  const request = route.request();
+  expect(
+    request.method(),
+    "the layout save must be a PUT; the endpoint accepts no other method",
+  ).toBe("PUT");
+  const headers = request.headers();
+  expect(
+    headers["x-requested-with"],
+    "the CSRF header lib/api.ts injects on every non-GET",
+  ).toBe("XMLHttpRequest");
+  expect(
+    headers["x-cluster-id"],
+    "the cluster header lib/api.ts injects; layouts are stored per cluster",
+  ).toBeTruthy();
+
+  const body = request.postDataJSON() as {
+    revision?: unknown;
+    config?: DashboardLayoutConfig;
+  };
+  expect(
+    typeof body?.revision,
+    "the save must claim a revision; the server uses it for concurrency control",
+  ).toBe("number");
+  expect(
+    body?.config?.scope,
+    "the save must carry the layout config, addressed to a scope",
+  ).toBe("overview");
+  return body as { revision: number; config: DashboardLayoutConfig };
+}
 
 /**
  * A store that refuses the first write as a conflict, and whose reads return
@@ -148,6 +196,9 @@ async function conflictingStore(page: Page) {
       await json(route, 200, { data: record(7, theirs) });
       return;
     }
+    // Validated before the canned refusal: a conflict response handed back for
+    // a malformed request would let a broken client pass these tests.
+    saveRequestBody(route);
     conflicted = true;
     await preferenceError(route, 409, "revision_conflict");
   });
@@ -186,6 +237,49 @@ async function nudge(page: Page, key: "ArrowLeft" | "ArrowRight") {
   return after;
 }
 
+/** The drag handle of a placed widget: its card's title row. */
+const handle = (page: Page, id: string) =>
+  page.locator(`[data-instance-id="${id}"] [data-testid="drag-handle"]`);
+
+/**
+ * Drags the subject widget sideways by whole columns and asserts it landed.
+ *
+ * The pointer rather than the keyboard, because the keyboard is the only path
+ * the rest of this file exercises and it is not the path most users take:
+ * `onChange` is wired separately from the drag (DashboardGrid.tsx), the resize
+ * and the keyboard, so a regression in the pointer wiring would otherwise ship
+ * with every spec here green.
+ */
+async function dragColumns(page: Page, id: string, deltaColumns: number) {
+  const before = await column(page, id);
+  // Hover first, and measure only afterwards. The subject widget sits in the
+  // bottom row, so reaching it scrolls the page -- and a box captured before
+  // that scroll points at where the widget used to be, which makes the drag
+  // land on nothing and the test pass without moving anything.
+  await handle(page, id).hover();
+  const grid = await page.getByTestId("dashboard-grid").boundingBox();
+  if (grid === null) throw new Error("grid has no box");
+  // `repeat(DASHBOARD_COLUMNS, minmax(0, 1fr))` with a fixed gap, so one
+  // column step is a track plus a gap.
+  const track =
+    (grid.width - DASHBOARD_GRID_GAP * (DASHBOARD_COLUMNS - 1)) /
+    DASHBOARD_COLUMNS;
+  const step = track + DASHBOARD_GRID_GAP;
+
+  const grip = await handle(page, id).boundingBox();
+  if (grip === null) throw new Error("drag handle has no box");
+  const from = { x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 };
+
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + step * deltaColumns, from.y, { steps: 12 });
+  await page.mouse.up();
+
+  const after = before + deltaColumns;
+  await expectColumn(page, id, after);
+  return after;
+}
+
 test.describe("Dashboard edit mode", () => {
   test("Save is withheld until the layout actually changes", async ({
     page,
@@ -205,6 +299,180 @@ test.describe("Dashboard edit mode", () => {
     // affordance goes away with it.
     await nudge(page, "ArrowRight");
     await expect(save).toBeDisabled();
+  });
+
+  test("a pointer drag arms Save, and dragging back disarms it", async ({
+    page,
+  }) => {
+    // The drag twin of the keyboard test above. `onChange` is fired from three
+    // separate call sites in DashboardGrid -- drag, resize and keyboard -- and
+    // only the keyboard one was covered, so a drag that moved a widget on
+    // screen without telling the session would have shipped green.
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    const save = page.getByTestId("save-layout");
+    await expect(save).toBeDisabled();
+
+    const start = await column(page, SUBJECT);
+    await dragColumns(page, SUBJECT, -1);
+    await expect(save).toBeEnabled();
+
+    // Back where it started: the layout is the one that was loaded, so the
+    // affordance goes away with it.
+    await dragColumns(page, SUBJECT, 1);
+    await expectColumn(page, SUBJECT, start);
+    await expect(save).toBeDisabled();
+  });
+
+  test("a drag cancelled mid-gesture leaves Save disarmed", async ({ page }) => {
+    // Escape during a drag restores the pre-drag layout through the same
+    // `setItems(before)` the grid uses for every interrupted session. That
+    // restore has to reach the edit session too, or Save stays armed over a
+    // phantom position the user never dropped and a later click writes it.
+    await stubLayoutStore(page);
+    await editableDashboard(page);
+
+    const save = page.getByTestId("save-layout");
+    const start = await column(page, SUBJECT);
+
+    // Hover before measuring, for the reason `dragColumns` gives.
+    await handle(page, SUBJECT).hover();
+    const grip = await handle(page, SUBJECT).boundingBox();
+    if (grip === null) throw new Error("drag handle has no box");
+    await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(grip.x - 200, grip.y + 60, { steps: 12 });
+
+    // The gesture has to have moved something, or the restore below proves
+    // nothing and this test would pass on a drag that never happened.
+    await expect(widget(page, SUBJECT)).not.toHaveAttribute(
+      "aria-label",
+      new RegExp(`column ${start} of`),
+    );
+    await expect(save).toBeEnabled();
+
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+
+    await expectColumn(page, SUBJECT, start);
+    await expect(save).toBeDisabled();
+  });
+
+  test("the grid is frozen while a save is in flight", async ({ page }) => {
+    // The window this guards: `commit()` snapshots the payload before the
+    // await, so an edit made during the round trip reaches the session but
+    // never the server -- and the success path then clears the session and
+    // reports "saved" over an arrangement that was never written.
+    let releasePut: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+      releasePut = resolve;
+    });
+    const writes: { revision: number; config: DashboardLayoutConfig }[] = [];
+
+    await page.route(LAYOUT_URL, async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({ status: 204, body: "" });
+        return;
+      }
+      const body = saveRequestBody(route);
+      writes.push(body);
+      await held;
+      await json(route, 200, { data: record(body.revision + 1, body.config) });
+    });
+
+    await editableDashboard(page);
+    const moved = await nudge(page, "ArrowLeft");
+    await page.getByTestId("save-layout").click();
+
+    // The arrangement stops being arrangeable for the duration of the write,
+    // the same way Cancel and Save are already held.
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-editable",
+      "false",
+    );
+    await expect(page.getByTestId("drag-handle")).toHaveCount(0);
+
+    // A keystroke aimed at the widget now does nothing, so nothing can diverge
+    // from the payload already in flight.
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-editable",
+      "false",
+    );
+
+    releasePut?.();
+    await expect(page.getByTestId("edit-layout")).toBeVisible();
+
+    // What was written is what the user was looking at when they pressed Save.
+    expect(writes).toHaveLength(1);
+    expect(
+      writes[0].config.items.find((i) => i.instanceId === SUBJECT)?.x,
+    ).toBe(moved - 1);
+
+    // And the layout on screen still matches it once editing reopens.
+    await page.getByTestId("edit-layout").click();
+    await expectColumn(page, SUBJECT, moved);
+  });
+
+  test("Edit is withheld while the conflict reload is in flight", async ({
+    page,
+  }) => {
+    // Taking the stored layout after a conflict starts a second load, and
+    // `layoutLoaded` never returns to false once set -- so the first-load gate
+    // does not cover this one. Without its own gate the user can reopen
+    // editing during the GET and have that work re-mounted away when the
+    // response lands.
+    const theirs: DashboardLayoutConfig = {
+      schemaVersion: 1,
+      scope: "overview",
+      columns: 12,
+      items: [
+        { instanceId: SUBJECT, id: "active-alerts", x: 0, y: 0, w: 3, h: 5 },
+      ],
+    };
+    let conflicted = false;
+    let releaseGet: (() => void) | null = null;
+    const heldGet = new Promise<void>((resolve) => {
+      releaseGet = resolve;
+    });
+
+    await page.route(LAYOUT_URL, async (route) => {
+      if (route.request().method() === "GET") {
+        if (!conflicted) {
+          await route.fulfill({ status: 204, body: "" });
+          return;
+        }
+        await heldGet;
+        await json(route, 200, { data: record(7, theirs) });
+        return;
+      }
+      saveRequestBody(route);
+      conflicted = true;
+      await preferenceError(route, 409, "revision_conflict");
+    });
+
+    await editableDashboard(page);
+    await nudge(page, "ArrowLeft");
+    await page.getByTestId("save-layout").click();
+
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Load the saved layout" })
+      .click();
+
+    // The session is closed, and Edit must not be offered again until the
+    // replacement layout is actually on the grid.
+    const edit = page.getByTestId("edit-layout");
+    await expect(edit).toBeDisabled();
+    await expect(edit).toHaveAttribute("title", "Loading your saved layout...");
+
+    releaseGet?.();
+    await expect(edit).toBeEnabled();
+
+    // And what landed is the other tab's layout, not this session's edits.
+    await edit.click();
+    await expectColumn(page, SUBJECT, 1);
   });
 
   test("Cancel with nothing moved leaves without asking", async ({ page }) => {
