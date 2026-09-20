@@ -54,9 +54,10 @@ function firstFit(
   h: number,
   columns: number,
 ): { x: number; y: number } {
-  // One row past the bottom is always free, so the scan is bounded and always
-  // answers. `layoutHeight` is the lowest edge of the layout, so starting a
-  // row there clears everything without a gap.
+  // `layoutHeight` is the lowest edge of the layout, so the row at `lastRow`
+  // is below every item and its first cell is free -- which is what bounds the
+  // scan and guarantees it answers, PROVIDED `w <= columns` so the inner loop
+  // runs at all. The caller clamps for exactly that reason.
   const lastRow = layoutHeight(items);
   for (let y = 0; y <= lastRow; y++) {
     for (let x = 0; x + w <= columns; x++) {
@@ -64,6 +65,9 @@ function firstFit(
       if (!items.some((i) => overlaps(candidate, i))) return { x, y };
     }
   }
+  // Unreachable while that clamp holds, and deliberately not a throw: a future
+  // caller asking for a widget wider than the grid should get the one corner
+  // that is always empty rather than an exception thrown from a click handler.
   return { x: 0, y: lastRow };
 }
 

@@ -102,26 +102,18 @@ export default function WidgetPalette({
     disabledReason: disabledReasonFor(def, placed),
   }));
 
-  /**
-   * What `q` shows, grouped for display in the families' declared order.
-   *
-   * A function of the query rather than of the signal, because the input
-   * handler has to know what the next keystroke will show in order to put the
-   * selection on something addable; reading it off the signal would be one
-   * render behind.
-   */
-  function shownFor(q: string) {
-    const matches = fuzzySearch(entries, q, NO_LIMIT);
-    return WIDGET_FAMILIES.map((family) => ({
-      family,
-      items: matches.filter((e) => e.def.family === family),
-    })).filter((g) => g.items.length > 0);
-  }
-
-  // Flattened again for the keyboard: the index the arrows move through has to
-  // be the order the eye reads, not the order the scorer returned.
-  const groups = shownFor(query.value);
+  // What the query shows, grouped for display in the families' declared order,
+  // and flattened again for the keyboard: the index the arrows move through has
+  // to be the order the eye reads, not the order the scorer returned.
+  const matches = fuzzySearch(entries, query.value, NO_LIMIT);
+  const groups = WIDGET_FAMILIES.map((family) => ({
+    family,
+    items: matches.filter((e) => e.def.family === family),
+  })).filter((g) => g.items.length > 0);
   const flat = groups.flatMap((g) => g.items);
+  // Position in the flattened order, by entry, so a row does not rescan the
+  // list to find out which index it is.
+  const positions = new Map(flat.map((e, i) => [e, i]));
   const selected = flat[selectedIndex.value];
 
   /**
@@ -143,8 +135,6 @@ export default function WidgetPalette({
 
   // Focus moves into the dialog on open and back to the opener on close; the
   // caller owns the return leg, because the button it goes back to is its own.
-  // The opening selection is the first addable entry, for the same reason the
-  // arrows skip the others.
   //
   // A layout effect, not an effect: the dialog is mounted from the click on
   // the button that opens it, and a passive effect runs after the browser has
@@ -154,10 +144,20 @@ export default function WidgetPalette({
   // with a `setTimeout(..., 10)`.
   useLayoutEffect(() => {
     inputRef.current?.focus();
-    selectedIndex.value = firstAddable(flat);
-    // Mount only: after this the selection belongs to the user and to the
-    // query handler below.
   }, []);
+
+  // The selection follows the query, and only the query: it opens on the first
+  // addable entry and returns there whenever the list is refiltered, while the
+  // arrows and the pointer move it freely within one list.
+  //
+  // Before paint, so a keystroke never shows the previous query's selection on
+  // the new list for a frame. `flat` is this render's list, which is what makes
+  // this the single place that decides where the selection starts -- the input
+  // handler used to re-derive the filtered list itself to answer the same
+  // question one render early.
+  useLayoutEffect(() => {
+    selectedIndex.value = firstAddable(flat);
+  }, [query.value]);
 
   function choose(entry: Entry | undefined) {
     if (entry === undefined || entry.disabledReason !== null) return;
@@ -235,9 +235,8 @@ export default function WidgetPalette({
   }
 
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: the scrim's click is the
-    // pointer-only way out; every keyboard path out of this dialog is handled
-    // by the key handler on the panel below.
+    // The scrim's click is the pointer-only way out; every keyboard path out
+    // of this dialog is handled by the key handler on the panel below.
     <div
       class="glass-scrim fixed inset-0 z-50 flex items-start justify-center pt-[min(15vh,96px)] px-4"
       onClick={(e) => {
@@ -284,11 +283,8 @@ export default function WidgetPalette({
             aria-activedescendant={selected?.id}
             aria-label="Search widgets"
             onInput={(e) => {
-              const next = (e.target as HTMLInputElement).value;
-              query.value = next;
-              selectedIndex.value = firstAddable(
-                shownFor(next).flatMap((g) => g.items),
-              );
+              // The selection follows from the query; the effect above owns it.
+              query.value = (e.target as HTMLInputElement).value;
             }}
             onKeyDown={handleInputKeyDown}
             class="w-full bg-transparent py-1 text-sm text-text-primary outline-none placeholder:text-text-muted"
@@ -323,7 +319,7 @@ export default function WidgetPalette({
                 {FAMILY_LABELS[group.family]}
               </div>
               {group.items.map((entry) => {
-                const index = flat.indexOf(entry);
+                const index = positions.get(entry) ?? -1;
                 const isSelected = index === selectedIndex.value;
                 const blocked = entry.disabledReason !== null;
                 return (

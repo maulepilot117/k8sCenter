@@ -306,6 +306,13 @@ export default function DashboardV2() {
   // would leave whatever it reads unfetched and the new card in a loading
   // state that never resolves. `ensure` skips a source it has already fetched,
   // so re-running it on every drag costs nothing.
+  //
+  // Fetching the added widget's sources inside `addWidget` instead, and
+  // leaving this keyed on the store, looks narrower and is wrong: a time-range
+  // change later in the same session would re-ensure only the stored layout's
+  // sources, so a range-sensitive source that only the added widget reads
+  // would never be fetched for the new range, and that card alone would go on
+  // showing the old one.
   useEffect(() => {
     if (!IS_BROWSER) return;
     const config = session.value?.working ?? layout.value;
