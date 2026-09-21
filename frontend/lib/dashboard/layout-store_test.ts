@@ -906,3 +906,52 @@ test("loadCopyableLayouts: a superseded read does not overwrite the newer one", 
     "fresh-cluster",
   ]);
 });
+
+// A parameterized fixture, so the read-side twin of the server's
+// mandatory-parameter rule has something to act on.
+const NEEDS_NS = "fixture-layout-store-needs-namespace";
+registerWidget({
+  ...defFixture(NEEDS_NS),
+  params: { namespace: [] },
+});
+
+test("dropUnknownWidgets: drops a placement stored without its declared values", () => {
+  // The server refuses a layout whose parameterized placement carries no
+  // value, and refuses it whole. Without this twin, a layout stored before
+  // that rule loads with a card that can never resolve, and then every save
+  // of the whole dashboard fails with a message naming no widget -- leaving
+  // the user unable to save and unable to tell which of up to forty cards is
+  // at fault.
+  const { config: kept, warnings } = dropUnknownWidgets(
+    config([item("a", KNOWN), item("b", NEEDS_NS)]),
+  );
+
+  expect(kept.items.map((i) => i.instanceId)).toEqual(["a"]);
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain(NEEDS_NS);
+});
+
+test("dropUnknownWidgets: keeps a parameterized placement that has its values", () => {
+  const placed: LayoutItem = {
+    ...item("b", NEEDS_NS),
+    params: { namespace: "prod" },
+  };
+  const { config: kept, warnings } = dropUnknownWidgets(
+    config([item("a", KNOWN), placed]),
+  );
+
+  expect(kept.items.map((i) => i.instanceId)).toEqual(["a", "b"]);
+  expect(warnings).toEqual([]);
+});
+
+test("dropUnknownWidgets: an empty value is not a value", () => {
+  // The same reading the server and the read-side namespace filter take: a
+  // declared key present with an empty string names nothing.
+  const placed: LayoutItem = {
+    ...item("b", NEEDS_NS),
+    params: { namespace: "" },
+  };
+  const { config: kept } = dropUnknownWidgets(config([placed]));
+
+  expect(kept.items).toEqual([]);
+});

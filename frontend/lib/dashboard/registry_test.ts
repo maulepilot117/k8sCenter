@@ -282,7 +282,24 @@ test("registry ids are pinned to the server-side allowlist", () => {
     .map((w) => w.id)
     .filter((id) => !id.startsWith("fixture-"))
     .sort();
-  expect(ids).toEqual(serverAllowedWidgetIDs());
+  const server = serverAllowedWidgetIDs();
+
+  // Subset, not equality. The server's map is deliberately a superset: a
+  // retired widget keeps its entry there so a stored layout that still
+  // carries the placement is not bricked, while the registry loses it. That
+  // is the documented retirement procedure, so asserting equality would make
+  // the first correct retirement fail this test.
+  const unregistered = ids.filter((id) => !server.includes(id));
+  expect(unregistered).toEqual([]);
+
+  // The other direction is not free, though: an id the server accepts and the
+  // registry does not know is either a retirement or a widget someone deleted
+  // without retiring it. Only the first is allowed, and RETIRED_WIDGET_IDS is
+  // where that is declared.
+  const serverOnly = server.filter(
+    (id) => !ids.includes(id) && !isRetiredWidgetId(id),
+  );
+  expect(serverOnly).toEqual([]);
 });
 
 test("registry minimums are pinned to the server-side catalog", () => {

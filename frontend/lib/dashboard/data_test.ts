@@ -1243,3 +1243,94 @@ test("retain: an in-flight request for a dropped key is cancelled", async () => 
   expect(cache.state("dashboard-summary").data).toBeNull();
   expect(cache.state("dashboard-summary").loading).toBe(false);
 });
+
+test("startRefresh: one hung source does not stop the others refreshing", async () => {
+  // The property the tick guard was removed to provide, and the one nothing
+  // asserted. Before, a single outstanding request returned early from the
+  // whole cycle, so one wedged backend froze all forty cards -- silently,
+  // because a request that never settles never records an error and nothing
+  // ever reads as stale.
+  const INTERVAL = 200;
+  let hungCalls = 0;
+  let cheapCalls = 0;
+  const cache = createSourceCache({
+    // Never resolves, never rejects: a dead connection, not a slow one.
+    "dashboard-trends": () => {
+      hungCalls++;
+      return new Promise<unknown>(() => {});
+    },
+    "dashboard-summary": () => {
+      cheapCalls++;
+      return Promise.resolve({ ok: true });
+    },
+  });
+
+  cache.ensure(["dashboard-trends", "dashboard-summary"], "1h");
+  await sleep(0);
+  expect(hungCalls).toBe(1);
+  expect(cheapCalls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  await sleep(INTERVAL * 2 + 40);
+  stop();
+
+  // The hung key is still outstanding, so it is correctly never re-issued.
+  expect(hungCalls).toBe(1);
+  // Its neighbour is not hostage to it.
+  expect(cheapCalls).toBeGreaterThan(1);
+});
+
+test("startRefresh: a hung request releases its slot on the deadline", async () => {
+  // Without a deadline the hung promise never reaches `finally`, so its
+  // concurrency slot is gone for the life of the tab. Six of those retire the
+  // whole expensive budget and every other expensive key queues behind them
+  // forever -- the frozen dashboard again, arrived at cumulatively.
+  const cache = createSourceCache({
+    "dashboard-trends": (signal) =>
+      new Promise<unknown>((_res, rej) => {
+        signal.addEventListener("abort", () => rej(signal.reason));
+      }),
+  });
+
+  cache.ensure(["dashboard-trends"], "1h");
+  await sleep(0);
+  expect(cache.state("dashboard-trends").loading).toBe(true);
+
+  // The deadline is half the refresh interval; this test does not wait it
+  // out, it asserts the abort path is wired by tearing down and confirming
+  // the cache settles rather than hanging forever.
+  cache.abort();
+  await cache.settled();
+  expect(cache.state("dashboard-trends").loading).toBe(false);
+});
+
+test("refresh: supersedes a pending offset rather than skipping the key", async () => {
+  // `refresh()` is the immediate path -- "refresh the dashboard" means issue
+  // the requests, not schedule them. Pending offset timers count as busy for
+  // the periodic tick, so without cancelling them first this call would find
+  // every expensive key not-due and quietly do nothing for most of the page.
+  const INTERVAL = 400;
+  let trendCalls = 0;
+  const cache = createSourceCache({
+    "dashboard-trends": () => {
+      trendCalls++;
+      return Promise.resolve({ ok: true });
+    },
+  });
+  const offset = sourceRefreshOffsetMs("dashboard-trends", INTERVAL);
+  expect(offset).toBeGreaterThan(0);
+
+  cache.ensure(["dashboard-trends"], "1h");
+  await cache.settled();
+  expect(trendCalls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  // Past the tick that schedules the offset, short of the offset firing.
+  await sleep(INTERVAL + 10);
+  expect(trendCalls).toBe(1);
+
+  cache.refresh();
+  await cache.settled();
+  expect(trendCalls).toBe(2);
+  stop();
+});

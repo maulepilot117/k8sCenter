@@ -900,14 +900,22 @@ func TestCanonicalParams(t *testing.T) {
 	}
 }
 
-// TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate is the
-// end-to-end form of the collision above: before the separator was fixed, two
-// placements of one widget carrying genuinely different params were refused as
-// duplicates of each other.
+// TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate checks that two
+// placements of one widget carrying genuinely different params survive
+// duplicate detection end to end, with a key that contains the separator.
 //
-// It needs a widget that accepts parameters, and no shipped widget does, so it
-// installs one for the duration of the test. That is also the only way to
-// exercise the param-membership path at all today.
+// It no longer reproduces the original separator collision, and should not
+// claim to. That bug needed a placement whose param map omitted one of the
+// widget's declared keys -- `{"a=b": "c"}` against `{"a": "b=c"}`, each one
+// key, both folding to the same identity string. Declared params are
+// mandatory now, so neither placement is a layout the validator will accept,
+// and with the join key-sorted two full two-key maps cannot fold together
+// unless their values are equal, which makes them the same placement.
+//
+// The separator property itself is pinned where it does not need a valid
+// layout: the injectivity pairs in TestCanonicalParams, which call the
+// derivation directly. What survives here is the end-to-end half that still
+// means something -- that a key containing `=` does not confuse identity.
 func TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate(t *testing.T) {
 	restore := withTestWidget(t, "nodes", widgetSpec{
 		MinW: 3, MinH: 4,
@@ -1084,6 +1092,90 @@ func TestValidateDashboardLayout_DeclaredParamsAreMandatory(t *testing.T) {
 			}
 			if reason := reasonOf(err); reason != "invalid_config" {
 				t.Fatalf("reason = %q, want invalid_config", reason)
+			}
+		})
+	}
+}
+
+// TestWithholdNamespaces_EmptyValueFailsClosed covers the read half of the
+// mandatory-parameter rule.
+//
+// The validator refuses an empty declared value on write now, but a row
+// stored before that rule existed still has to be read, and the two readings
+// of an empty string are not the same. Treating "present and empty" the way
+// "absent" is treated -- as naming no namespace -- serves the placement
+// without ever asking whether the caller may see it, which is the one thing
+// this filter exists to prevent.
+func TestWithholdNamespaces_EmptyValueFailsClosed(t *testing.T) {
+	cases := []struct {
+		name       string
+		params     map[string]string
+		wantKept   int
+		wantAsked  bool
+		wantAskFor string
+	}{
+		{
+			name:      "no namespace key: nothing to re-authorize",
+			params:    nil,
+			wantKept:  1,
+			wantAsked: false,
+		},
+		{
+			name:      "namespace present and empty: withheld without asking",
+			params:    map[string]string{paramKeyNamespace: ""},
+			wantKept:  0,
+			wantAsked: false,
+		},
+		{
+			name:       "namespace present: asked, and kept when allowed",
+			params:     map[string]string{paramKeyNamespace: "prod"},
+			wantKept:   1,
+			wantAsked:  true,
+			wantAskFor: "prod",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DashboardLayoutConfig{
+				SchemaVersion: DashboardLayoutSchemaVersion,
+				Scope:         "overview",
+				Columns:       dashboardColumns,
+				Items: []DashboardLayoutItem{{
+					InstanceID: "w1", ID: "cluster-health",
+					X: 0, Y: 0, W: 4, H: 4,
+					Params: tc.params,
+				}},
+			}
+			raw, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			var askedFor []string
+			out, withheld, err := withholdNamespaces(raw,
+				func(ns string) (bool, error) {
+					askedFor = append(askedFor, ns)
+					return true, nil
+				})
+			if err != nil {
+				t.Fatalf("withholdNamespaces: %v", err)
+			}
+
+			var got DashboardLayoutConfig
+			if err := json.Unmarshal(out, &got); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			if len(got.Items) != tc.wantKept {
+				t.Fatalf("kept %d items, want %d (withheld %v)",
+					len(got.Items), tc.wantKept, withheld)
+			}
+			if tc.wantAsked {
+				if len(askedFor) != 1 || askedFor[0] != tc.wantAskFor {
+					t.Fatalf("asked %v, want one call for %q", askedFor, tc.wantAskFor)
+				}
+			} else if len(askedFor) != 0 {
+				t.Fatalf("asked %v, want no re-authorization call", askedFor)
 			}
 		})
 	}

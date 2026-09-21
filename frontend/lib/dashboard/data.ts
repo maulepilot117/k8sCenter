@@ -97,6 +97,15 @@ const REFRESH_ONCE_SETTLED: ReadonlySet<string> = new Set(FAMILY_STATUS_KEYS);
 export const DASHBOARD_REFRESH_MS = 60_000;
 
 /**
+ * How long a single request may run before it is aborted.
+ *
+ * Half the refresh interval, so a hung read becomes a visible error within
+ * one cycle and its concurrency slot comes back, rather than being lost for
+ * the life of the tab. See the deadline in `issue` for why that matters.
+ */
+export const REQUEST_TIMEOUT_MS = DASHBOARD_REFRESH_MS / 2;
+
+/**
  * How many non-cheap reads may be on the wire at once. The rest queue.
  *
  * Six because that is the per-origin connection ceiling a browser enforces on
@@ -119,10 +128,15 @@ export const MAX_CONCURRENT_EXPENSIVE_FETCHES = 6;
  * The share of the refresh interval that offsets are spread across.
  *
  * Half, not all of it. An offset near the end of the interval would still be
- * in flight when the next tick arrives, and the tick skips entirely while
- * anything is outstanding -- so one slow source at offset 59s would stall the
- * cheap sources' refresh as well. Half the interval leaves every expensive
- * read a full half-interval to finish in before the next tick looks.
+ * counting down when the next tick arrives, and a key holding a pending timer
+ * reads as busy -- so a source offset to 59s would skip its own next cycle
+ * and effectively refresh every other interval. Half leaves every expensive
+ * read a full half-interval to fire and finish in before the next tick looks,
+ * which is also the deadline a single request gets (REQUEST_TIMEOUT_MS).
+ *
+ * This used to say the tick "skips entirely while anything is outstanding".
+ * It no longer does: that guard froze every card whenever one read was slow,
+ * and due-ness is per key now.
  */
 const REFRESH_OFFSET_FRACTION = 0.5;
 
@@ -238,8 +252,9 @@ export interface SourceCache {
    */
   startRefresh(intervalMs?: number): () => void;
   /** Resolves when nothing is outstanding -- on the wire, queued for a slot,
-   * or retired but not yet settled. Test seam; also used by the refresh loop
-   * to avoid stacking cycles. */
+   * or retired but not yet settled. A test seam, and only that: the refresh
+   * loop does not consult it. Cycles are kept from stacking per key, by
+   * due-ness. */
   settled(): Promise<void>;
 }
 
@@ -396,6 +411,26 @@ export function createSourceCache(
   function issue(entry: InFlight, fetcher: SourceFetcher): Promise<void> {
     const { key, range, params, controller } = entry;
     const s = sig(key);
+
+    // Nothing below this layer bounds a request. The server-side proxy times
+    // out its own hop to the backend, but the browser's fetch carries no
+    // deadline, so a wedged proxy or a dead connection leaves a promise that
+    // never settles -- and a promise that never settles never reaches the
+    // `finally` below, so its slot is never returned.
+    //
+    // That is load-bearing now that the refresh tick no longer stops when
+    // something is outstanding. Six hung requests would retire the whole
+    // expensive budget permanently, and every other expensive key would then
+    // sit queued behind them while the four cheap sources kept ticking -- a
+    // dashboard that looks alive while most of it is frozen, with no error
+    // anywhere, because a request that never settles never records one.
+    //
+    // Half the interval: long enough that a slow-but-working backend still
+    // lands, short enough that a hung one is a visible error inside one
+    // cycle rather than a slot lost for the session.
+    const deadline = globalThis.setTimeout(() => {
+      controller.abort(new DOMException("timed out", "TimeoutError"));
+    }, REQUEST_TIMEOUT_MS);
     // Only the newest request for a key may write its state. A superseded
     // request that resolves anyway -- a fetcher that ignores its signal, or a
     // response already on the wire when abort fired -- would otherwise land
@@ -432,6 +467,7 @@ export function createSourceCache(
         };
       })
       .finally(() => {
+        globalThis.clearTimeout(deadline);
         // The slot goes back before the bookkeeping, so the next waiter
         // starts on the same turn this one finished.
         releaseSlot(entry);
@@ -568,6 +604,13 @@ export function createSourceCache(
      * and therefore the only one that can stampede.
      */
     refresh(): void {
+      // The schedule this supersedes is cancelled first. Pending offset
+      // timers count as busy, so without this every expensive key would be
+      // reported not-due and skipped -- turning "refresh the dashboard" into
+      // a call that re-issues the four cheap sources and silently defers the
+      // rest by up to half an interval. Clearing first also means the keys
+      // cannot double-fetch: the timer is gone before due-ness is computed.
+      clearOffsetTimers();
       for (const [key, range] of dueEntries()) run(key, range);
     },
 
