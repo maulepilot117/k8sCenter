@@ -1,8 +1,21 @@
 name: CI
 
+# Every pull request, not only the ones targeting `main`.
+#
+# A stacked series -- feature branches whose PRs target each other, with only
+# the base PR pointing at `main` -- left every PR but the base with NO checks
+# at all until it was retargeted after its parent merged. That is the worst
+# time to learn something is broken: the parent is already in, so the failure
+# lands on `main`'s doorstep rather than in review. Release G / P5 shipped as
+# four stacked PRs and hit exactly this -- a mandatory-parameter rule landed
+# on the base and broke three PostgreSQL-backed tests that only the base PR's
+# CI could see.
+#
+# E2E deliberately keeps its `branches: [main]` filter: it stands up a kind
+# cluster for 8 minutes, and paying that on every push to every PR in a stack
+# buys far less than this workflow does.
 on:
   pull_request:
-    branches: [main]
 
 # Deny by default — each job declares minimum permissions
 permissions: {}
