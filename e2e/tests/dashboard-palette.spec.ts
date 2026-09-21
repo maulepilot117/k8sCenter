@@ -30,7 +30,7 @@ const PARTIAL_LAYOUT: DashboardLayoutConfig = {
 };
 
 /** Every widget registered for the overview scope, parameterized included. */
-const CATALOG_SIZE = 14;
+const CATALOG_SIZE = 20;
 
 /** What the shipped default layout places: the curated starting subset. */
 const DEFAULT_LAYOUT_SIZE = 10;
@@ -56,7 +56,20 @@ const NOT_ON_DEFAULT_IDS = [
   "workload-health",
   "pending-pods",
   "pod-restarts",
+  "hpa-status",
+  "pdb-risk",
+  "top-consumers",
+  "quota-pressure",
+  "node-conditions",
+  "storage-capacity",
 ];
+
+// The literal above is the guard, but a unit that adds a widget and forgets
+// this file would otherwise fail on an opaque count mismatch. This says what
+// actually went wrong.
+test("the catalog, the default and this file's own list agree", () => {
+  expect(NOT_ON_DEFAULT_IDS.length + DEFAULT_LAYOUT_SIZE).toBe(CATALOG_SIZE);
+});
 
 const palette = (page: Page) => page.getByTestId("widget-palette");
 const option = (page: Page, widgetId: string) =>
@@ -229,9 +242,12 @@ test.describe("dashboard widget palette", () => {
   test("typing filters the catalog", async ({ page }) => {
     await openPalette(page);
 
-    await page.getByTestId("widget-search").fill("nodes");
+    // "nodes" now matches node-conditions too, so the term has to be one only
+    // one widget carries -- the point is that typing narrows the catalog, not
+    // that any particular word is unique in it.
+    await page.getByTestId("widget-search").fill("quota");
     await expect(visibleOptions(page)).toHaveCount(1);
-    await expect(option(page, "nodes")).toBeVisible();
+    await expect(option(page, "quota-pressure")).toBeVisible();
 
     await page.getByTestId("widget-search").fill("zzzz");
     await expect(visibleOptions(page)).toHaveCount(0);
