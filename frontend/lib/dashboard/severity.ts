@@ -264,10 +264,11 @@ export function policyComplianceView(
 }
 
 function historyView(history: unknown): ComplianceHistoryView {
-  if (!Array.isArray(history)) {
+  const points = list(history);
+  if (points === null) {
     return { available: false, delta: null, days: COMPLIANCE_HISTORY_DAYS };
   }
-  const scores = history
+  const scores = points
     .map((point) => num(obj(point)?.score))
     .filter((s): s is number => s !== null);
   return {
@@ -341,7 +342,8 @@ export function policyViolationsView(
       unreadableRows: 0,
     };
   }
-  if (!Array.isArray(data)) {
+  const items = list(data);
+  if (items === null) {
     return {
       readable: false,
       total: 0,
@@ -358,7 +360,7 @@ export function policyViolationsView(
   // identity we cannot read is still a violation, and leaving it out of the
   // header count would under-report the cluster. Its severity falls into the
   // unranked bucket when that is unreadable too.
-  for (const entry of data) {
+  for (const entry of items) {
     const body = obj(entry);
     const name = str(body?.name);
     if (body === null || name === "") {
@@ -386,9 +388,9 @@ export function policyViolationsView(
 
   return {
     readable: true,
-    total: data.length,
+    total: items.length,
     blocking: rows.filter((r) => r.blocking).length,
-    bySeverity: severityBreakdown(data.map((e) => obj(e)?.severity)),
+    bySeverity: severityBreakdown(items.map((e) => obj(e)?.severity)),
     rows: rows.slice(0, Math.max(0, limit)),
     unreadableRows,
   };
@@ -489,7 +491,8 @@ export function vulnerabilitySeverityView(
   //
   // Absent is treated the same as null: neither is a scan that came back
   // empty.
-  if (!Array.isArray(body.vulnerabilities)) {
+  const reports = list(body.vulnerabilities);
+  if (reports === null) {
     return {
       readable: false,
       scanned: 0,
@@ -501,7 +504,7 @@ export function vulnerabilitySeverityView(
     };
   }
 
-  const entries = body.vulnerabilities;
+  const entries = reports;
   const rows: VulnWorkloadRow[] = [];
   let unreadableRows = 0;
   for (const entry of entries) {

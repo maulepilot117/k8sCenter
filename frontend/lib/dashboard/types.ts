@@ -683,6 +683,35 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
   "unread-notifications": [404],
 };
 
+/**
+ * Statuses that mean "understood, and not answerable as asked" for a source.
+ *
+ * Sibling of `ABSENT_STATUSES`, and deliberately separate from it. Absence
+ * says the cluster does not run the feature; this says the feature is running
+ * and the request cannot be served the way it was sent. Rendering the second
+ * as the first would send an operator looking for an operator that is already
+ * installed.
+ *
+ * `mesh-golden-signals` is the case that forced the distinction. The route
+ * resolves the mesh from its own discovery when `?mesh=` is absent, which is
+ * right on every cluster running one -- and answers 400 on a cluster running
+ * BOTH Istio and Linkerd, asking to be told which. The mesh family status
+ * reports the mesh PRESENT on such a cluster (two are), so the unavailable
+ * branch never fires, and before this the card fell through to the generic
+ * error state: warning colour, a quoted backend message, and a retry that
+ * could never succeed no matter how many times it was pressed.
+ *
+ * A third `mesh` parameter would make the widget work there, at the cost of a
+ * third stored value on every placement and a third dialog field, to
+ * disambiguate a configuration the mesh pages themselves treat as unusual.
+ * Saying plainly what is wrong is the cheaper honest answer, and it is what
+ * the fetcher's comment always claimed the card did.
+ */
+export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
+  {
+    "mesh-golden-signals": [400],
+  };
+
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
  * what the pre-registry three-row layout already approximated. */
 export const DASHBOARD_COLUMNS = 12;

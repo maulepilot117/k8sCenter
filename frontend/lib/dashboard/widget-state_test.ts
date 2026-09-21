@@ -44,6 +44,14 @@ const forbidden = (message = "Forbidden") =>
 const absent = (message = "cluster management requires a database") =>
   src({ error: message, errorKind: "absent" });
 
+/**
+ * A read the feature is present for and cannot answer as asked: the route
+ * answered a status `UNSUPPORTED_STATUSES` in types.ts names, which today is
+ * the 400 `mesh-golden-signals` returns on a cluster running two meshes.
+ */
+const unsupported = (message = "specify ?mesh= on a dual-mesh cluster") =>
+  src({ error: message, errorKind: "unsupported" });
+
 /** Builds the lookup `resolveWidgetState` reads, defaulting anything the test
  * did not name to idle -- which is what an unrequested key actually reads as. */
 function lookup(
@@ -529,5 +537,50 @@ describe("resolveWidgetState: parameterized sources", () => {
       resolveWidgetState(decl(), lookup({ "dashboard-summary": ok() }), {})
         .state,
     ).toBe("ready");
+  });
+});
+
+describe("unsupported", () => {
+  // The dual-mesh case. The mesh family status reports the mesh PRESENT --
+  // two are -- so the unavailable branch cannot fire, and before this state
+  // existed the 400 fell through to the generic error card: warning colour
+  // and a retry that could never succeed, on a cluster where nothing is
+  // broken and nothing will change by asking again.
+  test("a present feature that cannot answer is not unavailable and not an error", () => {
+    const r = resolveWidgetState(
+      decl({ sources: ["mesh-golden-signals"], familyStatus: "mesh-status" }),
+      lookup({
+        "mesh-status": src({ data: { detected: "istio" } }),
+        "mesh-golden-signals": unsupported(),
+      }),
+    );
+    expect(r.state).toBe("unsupported");
+  });
+
+  // The whole point of the state: the heading cannot explain this one on its
+  // own, so the message has to reach the card.
+  test("the blocking source rides along, because its message is the explanation", () => {
+    const r = resolveWidgetState(
+      decl({ sources: ["mesh-golden-signals"], familyStatus: "mesh-status" }),
+      lookup({
+        "mesh-status": src({ data: { detected: "istio" } }),
+        "mesh-golden-signals": unsupported("cluster runs istio and linkerd"),
+      }),
+    );
+    expect(r.blocking?.error).toBe("cluster runs istio and linkerd");
+  });
+
+  // Absence is the more specific claim and keeps precedence: a cluster that
+  // does not run the mesh at all must read as not-installed, not as a request
+  // that needs refining.
+  test("a feature reported absent still outranks it", () => {
+    const r = resolveWidgetState(
+      decl({ sources: ["mesh-golden-signals"], familyStatus: "mesh-status" }),
+      lookup({
+        "mesh-status": src({ data: { detected: "" } }),
+        "mesh-golden-signals": unsupported(),
+      }),
+    );
+    expect(r.state).toBe("unavailable");
   });
 });

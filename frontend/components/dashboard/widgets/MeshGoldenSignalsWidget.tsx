@@ -4,7 +4,6 @@ import { dashboardData } from "@/lib/dashboard/data.ts";
 // rounding live in lib/, under test (D-10, KTD8). The first of those especially:
 // the route answers with a zero for every query Prometheus refused, and a card
 // that printed those zeros would report an unmeasured service as a flawless one.
-import type { GoldenSignalsView } from "@/lib/dashboard/networking.ts";
 import {
   goldenSignalsServiceHref,
   goldenSignalsView,

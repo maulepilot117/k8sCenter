@@ -24,6 +24,7 @@ import {
   NOT_FOUND_IS_REFUSAL,
   RANGE_SENSITIVE_KEYS,
   sourceCost,
+  UNSUPPORTED_STATUSES,
 } from "./types.ts";
 // Safe despite the apparent cycle: widget-state's only import from this
 // file is `import type`, which is erased, so there is no runtime edge back.
@@ -51,7 +52,22 @@ import type { ResourceListPage } from "./wire-types.ts";
  * "failure", which is the behavior that shipped, kept under a name so the
  * three are distinguishable at the call site.
  */
-export type SourceErrorKind = "permission" | "failure" | "absent";
+export type SourceErrorKind =
+  | "permission"
+  | "failure"
+  | "absent"
+  /**
+   * The backend understood the request and will not answer it, for a
+   * reason that is neither absence nor permission and that retrying
+   * cannot change.
+   *
+   * Distinct from `absent` because the feature IS installed -- saying it
+   * is not would send an operator looking for a missing operator -- and
+   * distinct from `failure` because a retry is futile and the shell must
+   * not offer one. The backend's own message is what makes it
+   * actionable, so unlike the other two this one is shown.
+   */
+  | "unsupported";
 
 export interface SourceState<T = unknown> {
   data: T | null;
@@ -250,6 +266,11 @@ function classify(err: unknown, base: string): SourceErrorKind {
   // deliberately opaque refusal readable as one, and reporting it as an
   // absence would tell the user the feature is gone rather than shut.
   if (ABSENT_STATUSES[base]?.includes(err.status)) return "absent";
+  // After absence, for the same reason absence is checked after refusal: a
+  // source that appeared in both declarations should read as the more
+  // specific claim, and "this cluster does not run it" is more specific than
+  // "this request cannot be answered".
+  if (UNSUPPORTED_STATUSES[base]?.includes(err.status)) return "unsupported";
   return "failure";
 }
 
@@ -1108,8 +1129,17 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // it answers 400 on a cluster running BOTH, asking to be told which. That
   // is a third parameter, and a third parameter is a third stored value on
   // every placement and a third field in the dialog, to disambiguate a
-  // configuration the mesh pages themselves treat as unusual. The card takes
-  // the 400 and says what it means instead.
+  // configuration the mesh pages themselves treat as unusual.
+  //
+  // So the card says what the 400 means instead -- which it did NOT do until
+  // `UNSUPPORTED_STATUSES` existed. The mesh family status reports the mesh
+  // PRESENT on a dual-mesh cluster, because two are, so the unavailable
+  // branch never fired and this fell through to the generic error card:
+  // warning colour, a quoted backend message, and a retry that could never
+  // succeed. This comment claimed otherwise for the whole of P5. The 400 is
+  // now classified `unsupported`, which renders muted, offers no retry, and
+  // shows the backend's message -- the one thing that tells the reader the
+  // cluster runs both.
   "mesh-golden-signals": (signal, _range, params) =>
     read(
       `/v1/mesh/golden-signals?${new URLSearchParams({

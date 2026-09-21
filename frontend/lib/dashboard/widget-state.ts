@@ -26,6 +26,11 @@ import type { DataSourceKey, WidgetDef } from "./types.ts";
  * - `unavailable` -- the feature is not installed on this cluster, or this
  *   deployment does not serve it. Not a failure and not a delay: nothing is
  *   wrong and nothing is coming.
+ * - `unsupported` -- the feature IS here, and cannot answer this particular
+ *   request however many times it is asked. Standing like `permission` and
+ *   futile to retry like `unavailable`, but unlike either it shows the
+ *   backend's own message, because that message is the only thing that tells
+ *   the reader what to change.
  * - `ready` -- the widget renders, and says whatever its own data says,
  *   including "nothing to report".
  */
@@ -34,6 +39,7 @@ export type WidgetState =
   | "permission"
   | "error"
   | "unavailable"
+  | "unsupported"
   | "ready";
 
 export interface WidgetResolution {
@@ -209,6 +215,17 @@ export function resolveWidgetState(
   const unserved = requiredStates.find((s) => s.errorKind === "absent");
   if (unserved) {
     return { state: "unavailable", blocking: null, stale: null };
+  }
+
+  // After absence and before the two failure branches. The feature is
+  // present, so `unavailable` would be a lie; a retry cannot help, so `error`
+  // would be one too. The blocking source rides along because its message is
+  // the whole value of this state -- see UNSUPPORTED_STATUSES in types.ts.
+  const unanswerable = requiredStates.find(
+    (s) => s.errorKind === "unsupported",
+  );
+  if (unanswerable) {
+    return { state: "unsupported", blocking: unanswerable, stale: null };
   }
 
   const refused = requiredStates.find((s) => s.errorKind === "permission");

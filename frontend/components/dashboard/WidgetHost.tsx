@@ -204,6 +204,34 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
             </>
           }
         />
+      ) : resolved.state === "unsupported" ? (
+        // The feature is installed and cannot answer this request as asked.
+        // Muted like `unavailable` rather than warning-coloured, because
+        // nothing is broken and no retry is offered -- pressing one would
+        // send the identical request to the identical answer.
+        //
+        // The backend's message IS shown here, unlike the other two standing
+        // states. "Not installed" and "no access" are complete explanations
+        // on their own; this one is not, and the message is what names the
+        // thing the reader can actually change (on a dual-mesh cluster, which
+        // mesh the card should read).
+        <StateCard
+          testId="widget-unsupported"
+          heading="This cluster needs more to answer"
+          detail={
+            resolved.blocking?.error ??
+            `${def.title} cannot be answered as configured on this cluster.`
+          }
+          icon={
+            // A fork in the road: the thing is here, and the request is
+            // ambiguous rather than refused or missing.
+            <>
+              <path d="M12 21v-6" />
+              <path d="M12 15L6 9V3" />
+              <path d="M12 15l6-6V3" />
+            </>
+          }
+        />
       ) : resolved.state === "permission" ? (
         // No retry affordance, deliberately: a 403 is a standing fact about
         // the account, and a "try again" on it is a lie. The raw message is
