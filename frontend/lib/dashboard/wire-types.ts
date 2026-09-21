@@ -71,3 +71,35 @@ export interface DiagnosticsSummary {
   failing: Array<{ kind: string; name: string; reason: string }>;
   total: number;
 }
+
+/**
+ * Mirrors GET /v1/resources/counts -- lowercase plural kind to how many the
+ * informer cache holds.
+ *
+ * Two properties of this payload are load-bearing and neither is visible in
+ * its type. It is LOCAL-CLUSTER ONLY: the handler refuses a remote cluster
+ * context outright, because remote clusters use direct API calls and populate
+ * no informers. And a kind the caller has no `list` permission for is OMITTED
+ * FROM THE MAP rather than reported as zero -- so a missing key means "not
+ * visible to you", never "none of these exist". `rollUpWorkloadHealth` is
+ * built entirely around that distinction.
+ */
+export type ResourceCounts = Record<string, number>;
+
+/**
+ * One page of the generic resource list route, `GET /v1/resources/{kind}`.
+ *
+ * The route answers with the raw Kubernetes objects under `data` and the
+ * population size under `metadata.total`, and the two differ: a page is capped
+ * at 500 items server-side. Both halves are kept here because a widget that
+ * ranked a 500-item page and printed the ranking as the cluster's worst pods
+ * would be wrong on exactly the clusters where it matters most.
+ *
+ * `items` is `unknown[]` deliberately. The consumers read a handful of status
+ * fields off objects this build does not control, so they narrow defensively
+ * per field rather than asserting a shape the server is free to extend.
+ */
+export interface ResourceListPage {
+  items: unknown[];
+  total: number;
+}

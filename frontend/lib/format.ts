@@ -14,6 +14,32 @@ export function age(timestamp: string): string {
 }
 
 /**
+ * Formats an already-computed duration in milliseconds the way `age` formats
+ * a timestamp.
+ *
+ * `age` reads the clock itself, which is right for a component rendering a
+ * timestamp and wrong for a value whose clock was injected so the arithmetic
+ * could be unit-tested (see `classifyPod` in lib/dashboard/pod-health.ts).
+ * This is that half.
+ *
+ * Null and NaN render an em-dash rather than "0s". They mean the source
+ * timestamp was missing or unparseable, and "0s" would read as brand new --
+ * the opposite claim, on a card whose whole job is to rank by how long
+ * something has been stuck. A negative duration is clock skew between the API
+ * server and the browser and clamps to zero.
+ */
+export function durationShort(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return "—";
+  const secs = Math.max(0, Math.floor(ms / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/**
  * Linear-interpolated percentile (`p` in 0..100) over a numeric series.
  * Non-finite samples are dropped first; returns 0 for an empty or
  * all-non-finite series, and the sole value for a single-element series.

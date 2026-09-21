@@ -78,8 +78,9 @@ func TestContractParity(t *testing.T) {
 				want: []string{
 					"active-alerts", "cluster-health", "cpu-tile",
 					"diagnostics-summary", "memory-tile", "network-tile",
-					"nodes", "pod-status", "pods-tile", "recent-events",
-					"resource-utilization",
+					"nodes", "pending-pods", "pod-restarts", "pod-status",
+					"pods-tile", "recent-events", "resource-utilization",
+					"workload-health",
 				},
 				tsConstName: "the widget registry",
 				tsFile:      "frontend/lib/dashboard/registry.ts",
@@ -145,10 +146,13 @@ func TestContractParity(t *testing.T) {
 			"memory-tile":          {MinW: 2, MinH: 2},
 			"network-tile":         {MinW: 2, MinH: 2},
 			"nodes":                {MinW: 3, MinH: 4},
+			"pending-pods":         {MinW: 3, MinH: 3},
+			"pod-restarts":         {MinW: 3, MinH: 3},
 			"pod-status":           {MinW: 3, MinH: 4},
 			"pods-tile":            {MinW: 2, MinH: 2},
 			"recent-events":        {MinW: 3, MinH: 3},
 			"resource-utilization": {MinW: 4, MinH: 4},
+			"workload-health":      {MinW: 3, MinH: 3},
 		}
 
 		for id, w := range want {

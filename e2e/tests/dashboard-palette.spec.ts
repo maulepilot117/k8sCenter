@@ -8,16 +8,16 @@ import { stubLayoutStore } from "./dashboard-layout-stub.ts";
 // in frontend/lib/dashboard/placement_test.ts; these prove the dialog routes
 // the user's choice through it and that the result is on screen and saveable.
 //
-// The stored layout below is deliberately short. The shipped default carries
-// every PARAMETERLESS widget in the catalog, so a dashboard that starts from
-// it has almost nothing left to add -- which is worth one test, and useless
-// for the other six.
+// The stored layout below is deliberately short, so most of the catalog is
+// addable and the six tests that need something to add have it.
 //
-// "Almost" is the parameterized widget. The default cannot carry one: a
-// layout every user starts from has no defensible namespace to pick for them.
-// So the two counts below are different numbers and are not interchangeable.
+// The shipped default is a CURATED subset of the catalog rather than all of
+// it -- a starting dashboard that grew with every release would hand a new
+// user a wall of cards -- so the two counts below are different numbers and
+// are not interchangeable.
 
-/** The three widgets the tests start from, and the seven they can add. */
+/** The three widgets the tests start from; the rest of the catalog is
+ * addable on top of them. */
 const PARTIAL_LAYOUT: DashboardLayoutConfig = {
   schemaVersion: 1,
   scope: "overview",
@@ -30,16 +30,33 @@ const PARTIAL_LAYOUT: DashboardLayoutConfig = {
 };
 
 /** Every widget registered for the overview scope, parameterized included. */
-const CATALOG_SIZE = 11;
+const CATALOG_SIZE = 14;
 
-/** What the shipped default layout places: the parameterless catalog. */
+/** What the shipped default layout places: the curated starting subset. */
 const DEFAULT_LAYOUT_SIZE = 10;
 
 /**
- * The widgets that take parameters, which the default layout cannot carry and
- * which therefore stay addable on a dashboard holding everything else.
+ * The widgets that take parameters. Their rows stay addable however full the
+ * dashboard is of unparameterized copies, because choosing one opens a dialog
+ * rather than placing a card.
  */
 const PARAMETERIZED_IDS = ["diagnostics-summary"];
+
+/**
+ * Everything the shipped default does NOT place, and which is therefore still
+ * addable on a dashboard that has never been edited.
+ *
+ * This is not derived from the registry on purpose: the point of the test
+ * below is that the default is a deliberate subset, and a list computed from
+ * the same source as the thing under test would agree with any subset at all,
+ * including an accidental one.
+ */
+const NOT_ON_DEFAULT_IDS = [
+  ...PARAMETERIZED_IDS,
+  "workload-health",
+  "pending-pods",
+  "pod-restarts",
+];
 
 const palette = (page: Page) => page.getByTestId("widget-palette");
 const option = (page: Page, widgetId: string) =>
@@ -166,14 +183,14 @@ test.describe("dashboard widget palette", () => {
     await expect(page.getByTestId("close-palette")).toBeFocused();
   });
 
-  test("only the parameterized entries remain addable on the shipped default", async ({
+  test("exactly the widgets the shipped default omits remain addable", async ({
     page,
   }) => {
-    // The shipped default is the dashboard a first-time user meets, and it
-    // holds every widget that can be placed without asking a question. Those
-    // rows say so rather than the palette opening empty; the rows that DO ask
-    // a question are not on it and stay addable, because a default layout has
-    // no defensible namespace to pick on the user's behalf.
+    // The shipped default is the dashboard a first-time user meets. The
+    // widgets it DOES place say "already on this dashboard" rather than the
+    // palette opening empty; the ones it deliberately leaves off stay
+    // addable, which is what makes the default a starting point rather than
+    // the whole product.
     await openPalette(page, null);
 
     await expect(visibleOptions(page)).toHaveCount(CATALOG_SIZE);
@@ -189,21 +206,21 @@ test.describe("dashboard widget palette", () => {
       );
     }
 
-    const blocked = await visibleOptions(page).all();
-    expect(blocked).toHaveLength(CATALOG_SIZE);
-    for (const o of blocked) {
+    const rows = await visibleOptions(page).all();
+    expect(rows).toHaveLength(CATALOG_SIZE);
+    for (const o of rows) {
       const id = await o.getAttribute("data-testid");
-      const parameterized = PARAMETERIZED_IDS.some(
+      const addable = NOT_ON_DEFAULT_IDS.some(
         (w) => id === `widget-option-${w}`,
       );
       await expect(o).toHaveAttribute(
         "aria-disabled",
-        parameterized ? "false" : "true",
+        addable ? "false" : "true",
       );
     }
 
     // The selection opens on the first row that can actually be added, which
-    // is now one of the parameterized ones rather than nothing at all.
+    // is one of the omitted ones rather than nothing at all.
     await expect(
       palette(page).getByRole("option", { selected: true }),
     ).toHaveCount(1);

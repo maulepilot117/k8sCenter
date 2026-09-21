@@ -67,6 +67,20 @@ export const DATA_SOURCE_KEYS = [
   // diagnostics widgets pointed at different namespaces are two entries and
   // two pointed at the same one are still a single fetch.
   "diagnostics-summary",
+  // Batch counts for every informer-tracked kind. Read by the workload
+  // roll-up as its visibility oracle rather than only as a source of totals:
+  // the route omits a kind the caller cannot list instead of zeroing it, and
+  // it is the only route that answers "may this account see this kind at
+  // all". See `ResourceCounts` in wire-types.ts.
+  "resource-counts",
+  // Four reads of the generic list route, one per kind. Separate keys rather
+  // than one parameterized source: the kind is fixed by the widget, not
+  // chosen by the user, so there is nothing to carry in a cache key and
+  // nothing for the server to re-authorize (D-8).
+  "deployments-list",
+  "statefulsets-list",
+  "daemonsets-list",
+  "pods-list",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -124,6 +138,20 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   // than being fixed per page. That is "a cost the backend pays per request
   // rather than amortising across viewers", which is this class.
   "diagnostics-summary": "expensive",
+  // The five list-shaped reads. Informer-backed, and still not cheap, for the
+  // two reasons the diagnostics entry above gives and one of their own:
+  // every one of them runs a SelfSubjectAccessReview before it reads
+  // anything, and every one of them serialises whole Kubernetes objects --
+  // up to the route's 500-item page cap -- rather than a handful of numbers.
+  // `pods-list` is the extreme case: a page of 500 pod specs is orders of
+  // magnitude more bytes than the entire dashboard summary. A read whose cost
+  // the backend pays per request rather than amortising across viewers is
+  // this class, and that is what these are.
+  "resource-counts": "expensive",
+  "deployments-list": "expensive",
+  "statefulsets-list": "expensive",
+  "daemonsets-list": "expensive",
+  "pods-list": "expensive",
 
   "policies-status": "discovery",
   "gitops-status": "discovery",
