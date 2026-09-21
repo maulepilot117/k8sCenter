@@ -242,7 +242,52 @@ test("optionalSources is always a subset of sources", () => {
  * Reading the real map closes that. A widget added on one side only now fails
  * here, which is what the contract always said it did.
  */
-function serverAllowedWidgetIDs(): string[] {
+/** One widget's spec exactly as the Go catalog declares it. */
+interface ServerWidgetSpec {
+  minW: number;
+  minH: number;
+  /**
+   * Parameter key -> the closed set of values it accepts. An empty array is
+   * the "any value inside the generic bounds" case and is NOT the same as the
+   * key being absent. Null when the widget declares no parameters at all.
+   */
+  params: Record<string, string[]> | null;
+}
+
+/**
+ * Returns the inner text of the brace group that opens at `openIndex`.
+ *
+ * A widget entry is written either inline (`{MinW: 2, MinH: 2}`) or across
+ * several lines with a nested `map[string][]string{...}` inside it, so the
+ * end of an entry cannot be found by scanning for the next `}`.
+ */
+function braceBody(src: string, openIndex: number): string {
+  let depth = 0;
+  for (let i = openIndex; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") {
+      depth--;
+      if (depth === 0) return src.slice(openIndex + 1, i);
+    }
+  }
+  throw new Error(
+    "unbalanced braces while parsing allowedWidgets; the map's shape changed",
+  );
+}
+
+/**
+ * Parses the whole `allowedWidgets` catalog out of the Go source -- ids,
+ * minimums and parameters.
+ *
+ * Reading the real Go values rather than keeping a second hand-typed copy is
+ * the entire point of this helper. A pin that compares each language's
+ * catalog against a table written in that same language is two
+ * self-comparisons wearing one name: the natural edit, changing the widget
+ * and the table sitting beside it, leaves both suites green while the two
+ * catalogs disagree. Only the ids were read here before, so the size and
+ * parameter halves of the contract were exactly that.
+ */
+function serverAllowedWidgets(): Record<string, ServerWidgetSpec> {
   const goFile = join(
     import.meta.dir,
     "../../../backend/internal/preferences/dashboard.go",
@@ -256,16 +301,76 @@ function serverAllowedWidgetIDs(): string[] {
         `the only thing that checks the two catalogs against each other.`,
     );
   }
-  const close = src.indexOf("\n}", open);
-  const block = src.slice(open, close);
-  const ids = [...block.matchAll(/^\t"([a-z0-9-]+)":/gm)].map((m) => m[1]);
-  if (ids.length === 0) {
+  const block = braceBody(src, src.indexOf("{", open));
+
+  // Parameter keys are Go constants, not string literals, and the constant is
+  // where the spelling the server actually stores is decided -- a namespace
+  // key spelled any other way stores and renders identically while silently
+  // opting the widget out of per-read re-authorization. Resolve them so this
+  // pin checks the stored spelling rather than the identifier someone typed.
+  const constants: Record<string, string> = {};
+  for (const m of src.matchAll(/^const (paramKey\w+) = "([^"]+)"$/gm)) {
+    constants[m[1]] = m[2];
+  }
+
+  const specs: Record<string, ServerWidgetSpec> = {};
+  for (const m of block.matchAll(/^\t"([a-z0-9-]+)":\s*\{/gm)) {
+    const id = m[1];
+    const body = braceBody(block, m.index + m[0].length - 1);
+    const minW = Number(/\bMinW:\s*(\d+)/.exec(body)?.[1]);
+    const minH = Number(/\bMinH:\s*(\d+)/.exec(body)?.[1]);
+    if (!Number.isInteger(minW) || !Number.isInteger(minH)) {
+      throw new Error(
+        `could not parse MinW/MinH for "${id}" out of allowedWidgets in ` +
+          `${goFile}; the entry's shape changed and this parse is now blind ` +
+          `to it. Fix the parse -- a silently unparsed entry is an unpinned ` +
+          `one.`,
+      );
+    }
+    specs[id] = { minW, minH, params: parseServerParams(body, constants, id) };
+  }
+  if (Object.keys(specs).length === 0) {
     throw new Error(
       `parsed zero widget ids out of allowedWidgets in ${goFile}; the map's ` +
         `shape changed and this parse is now vacuous.`,
     );
   }
-  return ids.sort();
+  return specs;
+}
+
+/** Parses one entry's `Params:` map, resolving Go constant keys. */
+function parseServerParams(
+  body: string,
+  constants: Record<string, string>,
+  id: string,
+): Record<string, string[]> | null {
+  const at = body.indexOf("Params:");
+  if (at === -1) return null;
+  const mapAt = body.indexOf("map[string][]string", at);
+  if (mapAt === -1) {
+    throw new Error(
+      `"${id}" declares Params in a shape this parse does not understand; ` +
+        `fix the parse rather than leaving the parameter half unpinned.`,
+    );
+  }
+  const inner = braceBody(body, body.indexOf("{", mapAt));
+  const params: Record<string, string[]> = {};
+  for (const m of inner.matchAll(/(?:"([^"]+)"|(\w+))\s*:\s*\{([^}]*)\}/g)) {
+    const key = m[1] ?? constants[m[2]];
+    if (key === undefined) {
+      throw new Error(
+        `"${id}" declares parameter key \`${m[2]}\`, which is not a ` +
+          `paramKey* constant in dashboard.go, so this parse cannot resolve ` +
+          `the spelling the server stores.`,
+      );
+    }
+    params[key] = [...m[3].matchAll(/"([^"]*)"/g)].map((v) => v[1]);
+  }
+  return params;
+}
+
+function serverAllowedWidgetIDs(): string[] {
+  return Object.keys(serverAllowedWidgets()).sort();
 }
 
 test("registry ids are pinned to the server-side allowlist", () => {
@@ -302,7 +407,7 @@ test("registry ids are pinned to the server-side allowlist", () => {
   expect(serverOnly).toEqual([]);
 });
 
-test("registry minimums are pinned to the server-side catalog", () => {
+test("registry minimums and parameters are pinned to the server-side catalog", () => {
   // The other half of the size contract. The server refuses a placement below
   // a widget's declared minimum, using its own copy of these numbers in
   // `allowedWidgets` (backend/internal/preferences/dashboard.go) because it
@@ -311,27 +416,57 @@ test("registry minimums are pinned to the server-side catalog", () => {
   // citing a bound the client never showed -- or the reverse, an editor that
   // refuses a size the server would have taken.
   //
+  // The Go values are PARSED out of dashboard.go rather than restated here.
+  // A literal in this file would only be this language's copy of the numbers,
+  // so the natural edit -- change the widget, change the table beside it --
+  // would keep both suites green while the two catalogs disagreed. That is
+  // precisely what a mutation of cpu-tile's MinW proved before this changed.
+  //
   // The Go half is TestContractParity/"widget specs" in
-  // backend/internal/preferences/parity_test.go, which pins the same pairs.
-  const mins = Object.fromEntries(
-    allWidgets()
-      .filter((w) => !w.id.startsWith("fixture-"))
-      .map((w) => [w.id, [w.minW, w.minH]]),
-  );
-  expect(mins).toEqual({
-    "active-alerts": [2, 3],
-    "cluster-health": [3, 4],
-    "cpu-tile": [2, 2],
-    "diagnostics-summary": [3, 3],
-    "memory-tile": [2, 2],
-    "network-tile": [2, 2],
-    nodes: [3, 4],
-    "pod-status": [3, 4],
-    "pods-tile": [2, 2],
-    "recent-events": [3, 3],
-    "resource-utilization": [4, 4],
-  });
+  // backend/internal/preferences/parity_test.go. It is an in-language pin
+  // against accidental edits to allowedWidgets; THIS test is the one that
+  // actually compares the two languages.
+  const server = serverAllowedWidgets();
+  const drift: string[] = [];
+
+  for (const w of allWidgets()) {
+    if (w.id.startsWith("fixture-")) continue;
+    const spec = server[w.id];
+    // A widget registered here and absent there is the ids test's finding,
+    // not this one's; reporting it twice would just double the noise.
+    if (!spec) continue;
+
+    if (w.minW !== spec.minW || w.minH !== spec.minH) {
+      drift.push(
+        `${w.id} minimum: registry ${w.minW}x${w.minH}, ` +
+          `server ${spec.minW}x${spec.minH}`,
+      );
+    }
+
+    const here = normalizeParams(w.params ?? null);
+    const there = normalizeParams(spec.params);
+    if (here !== there) {
+      drift.push(`${w.id} parameters: registry ${here}, server ${there}`);
+    }
+  }
+
+  expect(drift).toEqual([]);
 });
+
+/**
+ * Canonical string for a parameter surface, so the two languages compare by
+ * value. Key order and value order are not part of the contract; the set of
+ * keys and the set of values each key accepts are.
+ */
+function normalizeParams(
+  params: Readonly<Record<string, readonly string[]>> | null,
+): string {
+  if (params === null || Object.keys(params).length === 0) return "none";
+  return Object.keys(params)
+    .sort()
+    .map((k) => `${k}=[${[...params[k]].sort().join(",")}]`)
+    .join(" ");
+}
 
 test("the parameterized widgets and their declared keys are pinned", () => {
   // This replaced the "no shipped widget declares parameters yet" tripwire the

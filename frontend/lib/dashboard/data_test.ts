@@ -1304,6 +1304,49 @@ test("startRefresh: a hung request releases its slot on the deadline", async () 
   expect(cache.state("dashboard-trends").loading).toBe(false);
 });
 
+test("the deadline is a visible failure, not a silent teardown", async () => {
+  // The deadline aborts its own controller, so it lands in the same catch as
+  // a teardown abort with `controller.signal.aborted` true. Reading it as a
+  // teardown made a hung source silent in both directions: no error was
+  // recorded, and on a first fetch `settleAborted` dropped the key out of
+  // `fetchedRange`, which is what the refresh tick iterates -- so the card
+  // sat in its skeleton for the life of the tab and was never re-requested.
+  //
+  // Restoring the old guard (dropping `!timedOut`) fails exactly this test.
+  const TIMEOUT = 30;
+  let calls = 0;
+  const cache = createSourceCache(
+    {
+      "dashboard-trends": (signal) => {
+        calls++;
+        return new Promise<unknown>((_res, rej) => {
+          signal.addEventListener("abort", () => rej(signal.reason));
+        });
+      },
+    },
+    TIMEOUT,
+  );
+
+  cache.ensure(["dashboard-trends"], "1h");
+  await sleep(TIMEOUT + 20);
+  await cache.settled();
+
+  // The reader is told. A source that did not answer is a failure, and
+  // `failure` rather than `permission` because a wedged backend is transient
+  // as far as this layer can tell.
+  const state = cache.state("dashboard-trends");
+  expect(state.loading).toBe(false);
+  expect(state.errorKind).toBe("failure");
+  expect(state.error).not.toBeNull();
+
+  // And it is still in the refresh set, so the next tick retries it. This is
+  // the half that made the old behaviour permanent rather than merely quiet.
+  const stop = cache.startRefresh(TIMEOUT * 2);
+  await sleep(TIMEOUT * 2 + 40);
+  stop();
+  expect(calls).toBeGreaterThan(1);
+});
+
 test("refresh: supersedes a pending offset rather than skipping the key", async () => {
   // `refresh()` is the immediate path -- "refresh the dashboard" means issue
   // the requests, not schedule them. Pending offset timers count as busy for

@@ -304,6 +304,14 @@ interface InFlight {
 
 export function createSourceCache(
   fetchers: Partial<Record<DataSourceKey, SourceFetcher>>,
+  /**
+   * How long a single request may take before it is abandoned. Injectable for
+   * the same reason `startRefresh` takes its interval: the shipped value is
+   * half a refresh cycle, and a test that had to wait it out in real time
+   * would not be written -- which is exactly why the deadline's failure
+   * behaviour went uncovered until it was found by review.
+   */
+  requestTimeoutMs: number = REQUEST_TIMEOUT_MS,
 ): SourceCache {
   const states = new Map<string, Signal<SourceState>>();
   const inFlight = new Map<string, InFlight>();
@@ -447,9 +455,19 @@ export function createSourceCache(
     // Half the interval: long enough that a slow-but-working backend still
     // lands, short enough that a hung one is a visible error inside one
     // cycle rather than a slot lost for the session.
+    // Tracked separately because the deadline and a teardown reach the catch
+    // below identically: `controller.signal.aborted` is true for both, and
+    // the reason we pass is a DOMException just like a real abort. Reading
+    // the deadline as a teardown is what made the timeout silent -- the
+    // widget recorded no error, and on a first fetch `settleAborted` dropped
+    // the key out of `fetchedRange` and so out of the refresh set, leaving
+    // the card in its skeleton for the life of the tab. A hung source has to
+    // be a visible, retried failure, which is the whole point of the bound.
+    let timedOut = false;
     const deadline = globalThis.setTimeout(() => {
+      timedOut = true;
       controller.abort(new DOMException("timed out", "TimeoutError"));
-    }, REQUEST_TIMEOUT_MS);
+    }, requestTimeoutMs);
     // Only the newest request for a key may write its state. A superseded
     // request that resolves anyway -- a fetcher that ignores its signal, or a
     // response already on the wire when abort fired -- would otherwise land
@@ -463,10 +481,14 @@ export function createSourceCache(
       })
       .catch((err) => {
         if (!current()) return;
-        if (isAbort(err) || controller.signal.aborted) {
+        if (!timedOut && (isAbort(err) || controller.signal.aborted)) {
           // Teardown, not failure: an abort banner would be noise on every
           // navigation. abort() normally retires the entry before this runs,
           // so reaching here means the fetcher aborted on its own.
+          //
+          // The deadline is excluded above: it aborts the same controller,
+          // but it means the source did not answer, which is a failure the
+          // reader has to see.
           settleAborted(key);
           return;
         }

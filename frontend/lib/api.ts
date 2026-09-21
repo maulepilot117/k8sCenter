@@ -95,10 +95,31 @@ export function errorExtra(err: ApiError, key: string): string | undefined {
 }
 
 /**
+ * How long a token refresh may take before it is abandoned.
+ *
+ * `refreshPromise` is a module-global singleton: every caller that takes a
+ * 401 in the same window awaits that one promise, so a refresh that never
+ * settles blocks all of them for the life of the page. The dashboard makes
+ * that concrete -- each blocked caller is holding one of the six concurrency
+ * slots in lib/dashboard/data.ts, and the per-request deadline there cannot
+ * help, because it aborts its own fetch's signal and this call is not on it.
+ * Bounding the refresh here is what makes that deadline's guarantee true.
+ *
+ * A timeout resolves false, which is the same answer a network error or a
+ * non-OK response already produces, so it introduces no new outcome -- it
+ * only stops "no answer" from being an answer the caller waits on forever.
+ */
+const REFRESH_TIMEOUT_MS = 10_000;
+
+/**
  * Attempt to refresh the access token using the httpOnly refresh cookie.
  * Returns true if refresh succeeded.
  */
 async function refreshAccessToken(): Promise<boolean> {
+  const controller = new AbortController();
+  const deadline = globalThis.setTimeout(() => {
+    controller.abort(new DOMException("timed out", "TimeoutError"));
+  }, REFRESH_TIMEOUT_MS);
   try {
     const res = await fetch("/api/v1/auth/refresh", {
       method: "POST",
@@ -106,6 +127,7 @@ async function refreshAccessToken(): Promise<boolean> {
       headers: {
         "X-Requested-With": "XMLHttpRequest",
       },
+      signal: controller.signal,
     });
     if (!res.ok) return false;
 
@@ -118,6 +140,8 @@ async function refreshAccessToken(): Promise<boolean> {
   } catch (e) {
     console.info("token refresh failed:", e);
     return false;
+  } finally {
+    globalThis.clearTimeout(deadline);
   }
 }
 
