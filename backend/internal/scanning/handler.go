@@ -244,8 +244,18 @@ func (h *Handler) HandleVulnerabilities(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// RBAC: check per-scanner access and filter results accordingly
-	canTrivy := h.canAccessTrivy(r.Context(), user, namespace)
-	canKubescape := h.canAccessKubescape(r.Context(), user, namespace)
+	canTrivy, terr := h.canAccessTrivy(r.Context(), user, namespace)
+	if terr != nil {
+		h.Logger.Error("scanning RBAC check failed", "scanner", "trivy", "namespace", namespace, "error", terr)
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
+	canKubescape, kerr := h.canAccessKubescape(r.Context(), user, namespace)
+	if kerr != nil {
+		h.Logger.Error("scanning RBAC check failed", "scanner", "kubescape", "namespace", namespace, "error", kerr)
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
 
 	if !canTrivy && !canKubescape {
 		httputil.WriteError(w, http.StatusForbidden,
@@ -275,23 +285,36 @@ func (h *Handler) HandleVulnerabilities(w http.ResponseWriter, r *http.Request) 
 }
 
 // canAccessTrivy checks if the user can list Trivy VulnerabilityReports in the namespace.
-func (h *Handler) canAccessTrivy(ctx context.Context, user *auth.User, namespace string) bool {
+//
+// The error is RETURNED, not folded into the bool. `err == nil && can` reads a
+// check that could not run as a refusal, and a refusal on both scanners is
+// indistinguishable at the widget from a namespace with nothing to report —
+// so a broken access review renders as a clean scan on the one card whose
+// whole job is to say otherwise.
+func (h *Handler) canAccessTrivy(ctx context.Context, user *auth.User, namespace string) (bool, error) {
 	clusterID := middleware.ClusterIDFromContext(ctx)
 	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"list", "aquasecurity.github.io", "vulnerabilityreports", namespace,
 	)
-	return err == nil && can
+	if err != nil {
+		return false, fmt.Errorf("trivy access review failed for namespace %q: %w", namespace, err)
+	}
+	return can, nil
 }
 
 // canAccessKubescape checks if the user can list Kubescape VulnerabilitySummaries in the namespace.
-func (h *Handler) canAccessKubescape(ctx context.Context, user *auth.User, namespace string) bool {
+// See canAccessTrivy: a review that did not answer is not a denial.
+func (h *Handler) canAccessKubescape(ctx context.Context, user *auth.User, namespace string) (bool, error) {
 	clusterID := middleware.ClusterIDFromContext(ctx)
 	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"list", "spdx.softwarecomposition.org", "vulnerabilitysummaries", namespace,
 	)
-	return err == nil && can
+	if err != nil {
+		return false, fmt.Errorf("kubescape access review failed for namespace %q: %w", namespace, err)
+	}
+	return can, nil
 }
 
 // filterByScannerAccess removes results from scanners the user cannot access.

@@ -20,9 +20,23 @@
  * Pure: no DOM, no fetch, no signals (D-10).
  */
 
-/** An object, or null when the value is not one. `null` is not an object. */
+/**
+ * A record, or null when the value is not one.
+ *
+ * `null` is not a record, and neither is an array. The array exclusion is
+ * load-bearing rather than pedantic: an envelope reader does
+ * `obj(body)?.[field]`, and on a bare array that yields `undefined` -- which
+ * every caller then reads as "the field was absent", i.e. an empty result. So
+ * a route answering with a naked list instead of its envelope would render as
+ * a clean, empty card. Refusing the array makes it unreadable instead, which
+ * is what it is.
+ *
+ * The private copies this replaced had forked on exactly this: the modules
+ * that had learned to distinguish unreadable from empty excluded arrays, and
+ * the ones that had not, did not. The stricter reading is the shared one.
+ */
 export function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null
+  return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
 }

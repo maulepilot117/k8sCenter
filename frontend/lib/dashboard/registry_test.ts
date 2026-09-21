@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 // Importing the widget modules is what registers them, and registration is
@@ -12,8 +12,9 @@ import { join } from "node:path";
 // file without listing it fails here rather than silently shrinking what the
 // invariants cover.
 import "@/components/dashboard/widgets/index.ts";
+import type { SourceState } from "./data.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
-import { KNOWN_PARAM_KEYS } from "./params.ts";
+import { KNOWN_PARAM_KEYS, sourceKeyFor } from "./params.ts";
 import {
   allWidgets,
   getWidget,
@@ -29,6 +30,7 @@ import {
   DISPLAY_MODES,
   WIDGET_FAMILIES,
 } from "./types.ts";
+import { resolveWidgetState } from "./widget-state.ts";
 
 // The registry is the allowlist the server validates against and the catalog
 // the palette renders. Every invariant below exists because breaking it
@@ -490,6 +492,11 @@ test("the parameterized widgets and their declared keys are pinned", () => {
   );
   expect(declared).toEqual({
     "diagnostics-summary": { namespace: [] },
+    // The second parameterized widget, and the first whose parameter is
+    // MANDATORY rather than a scoping choice: `/v1/scanning/vulnerabilities`
+    // answers 400 without `?namespace=`, so there is no unparameterized form
+    // of this card. Same key and same empty value set for the same reasons.
+    "vulnerability-severity": { namespace: [] },
   });
 });
 
@@ -557,6 +564,396 @@ test("the default layout satisfies every widget's declared minimum", () => {
     }
   }
   expect(offenders).toEqual([]);
+});
+
+describe("the security family's availability, through the real definitions", () => {
+  // The two acceptance examples of this release, exercised against the
+  // REGISTERED widgets rather than a fixture. The distinction they turn on is
+  // not something either widget can make for itself: `/v1/policies/violations`
+  // and `/v1/scanning/vulnerabilities` both answer 200 with an empty array
+  // whether the operator is absent or merely has nothing to report, so the
+  // reading is decided by the declared family status before `render` is ever
+  // called (KTD1). Testing it here is what makes the declaration load-bearing:
+  // a widget that dropped its `familyStatus` would keep rendering, keep
+  // passing every other invariant in this file, and start reporting an
+  // uninstalled feature as a healthy one.
+  function stateOf(
+    states: Record<string, Partial<SourceState>>,
+  ): (key: string) => SourceState {
+    return (key) => ({
+      data: null,
+      error: null,
+      errorKind: null,
+      loading: false,
+      range: null,
+      ...(states[key] ?? {}),
+    });
+  }
+
+  function resolve(
+    id: string,
+    states: Record<string, Partial<SourceState>>,
+    params: Record<string, string> = {},
+  ) {
+    const def = getWidget(id);
+    if (!def) throw new Error(`${id} is not registered`);
+    return resolveWidgetState(def, stateOf(states), params).state;
+  }
+
+  test("no policy engine: both policy widgets read as not installed", () => {
+    // `detected: ""` is how the policy status route reports neither Kyverno
+    // nor Gatekeeper. The data sources below have landed and are EMPTY, which
+    // is exactly the payload a cluster with an engine and nothing to report
+    // would send -- so anything other than `unavailable` here is the card
+    // rendering absence as good news.
+    const absent = {
+      "policies-status": { data: { detected: "" } },
+      "policy-compliance-score": {
+        data: { score: 100, pass: 0, fail: 0, warn: 0, total: 0 },
+      },
+      "policy-violations-list": { data: [] },
+    };
+    expect(resolve("policy-compliance", absent)).toBe("unavailable");
+    expect(resolve("policy-violations", absent)).toBe("unavailable");
+  });
+
+  test("Kyverno installed with zero violations: the card is ready, not unavailable", () => {
+    // The other half, and the reason the unavailable state has to be derived
+    // from the status route rather than from the list: the list is identical
+    // in both tests.
+    expect(
+      resolve("policy-violations", {
+        "policies-status": { data: { detected: "kyverno" } },
+        "policy-violations-list": { data: [] },
+      }),
+    ).toBe("ready");
+  });
+
+  test("compliance renders on the score alone when history is refused", () => {
+    // The history source is optional, so a 403 from the admin-gated history
+    // route must not reach the shell's error card: the current score is
+    // present, and the widget degrades to a line of copy instead.
+    expect(
+      resolve("policy-compliance", {
+        "policies-status": { data: { detected: "gatekeeper" } },
+        "policy-compliance-score": { data: { score: 82, total: 12 } },
+        "policy-compliance-history": {
+          error: "Forbidden",
+          errorKind: "permission",
+        },
+      }),
+    ).toBe("ready");
+  });
+
+  test("no scanner: the vulnerability widget reads as not installed", () => {
+    const params = { namespace: "prod" };
+    const key = sourceKeyFor("vulnerability-reports", params);
+    expect(
+      resolve(
+        "vulnerability-severity",
+        {
+          "scanning-status": { data: { detected: "" } },
+          [key]: { data: { vulnerabilities: [], summary: null } },
+        },
+        params,
+      ),
+    ).toBe("unavailable");
+  });
+
+  test("a scanner with no findings: the vulnerability widget is ready", () => {
+    const params = { namespace: "prod" };
+    const key = sourceKeyFor("vulnerability-reports", params);
+    expect(
+      resolve(
+        "vulnerability-severity",
+        {
+          "scanning-status": { data: { detected: "trivy" } },
+          [key]: { data: { vulnerabilities: [], summary: null } },
+        },
+        params,
+      ),
+    ).toBe("ready");
+  });
+
+  test("each security widget declares the family whose absence would fool it", () => {
+    // Pinned by name rather than only exercised above: a widget reading a
+    // CRD-backed route with NO family declared is the defect R1 names, and it
+    // is invisible -- the card renders, the invariants pass, and the only
+    // symptom is an empty green box on a cluster that runs none of this.
+    expect(getWidget("policy-compliance")?.familyStatus).toBe(
+      "policies-status",
+    );
+    expect(getWidget("policy-violations")?.familyStatus).toBe(
+      "policies-status",
+    );
+    expect(getWidget("vulnerability-severity")?.familyStatus).toBe(
+      "scanning-status",
+    );
+  });
+});
+
+describe("the data-protection family's availability, through the real definitions", () => {
+  // The same exercise the security block above runs, over the four widgets
+  // that read cert-manager, External Secrets, Velero and the VolumeSnapshot
+  // CRDs. Every one of those four routes answers 200 with an empty array both
+  // when its operator is absent and when it is present with nothing to report,
+  // so the reading is decided by the declared family status before `render` is
+  // ever called (KTD1).
+  //
+  // These four matter more than most: the two readings are not merely
+  // different, they are opposite. "No expiring certificates", "every secret is
+  // synced", "no failed backups" and "no broken snapshots" are all reassuring
+  // sentences, and on a cluster running none of this they are all false in the
+  // one direction an operator will not check.
+  function stateOf(
+    states: Record<string, Partial<SourceState>>,
+  ): (key: string) => SourceState {
+    return (key) => ({
+      data: null,
+      error: null,
+      errorKind: null,
+      loading: false,
+      range: null,
+      ...(states[key] ?? {}),
+    });
+  }
+
+  function resolve(id: string, states: Record<string, Partial<SourceState>>) {
+    const def = getWidget(id);
+    if (!def) throw new Error(`${id} is not registered`);
+    return resolveWidgetState(def, stateOf(states), {}).state;
+  }
+
+  // id -> [its family status key, its data source key]. The empty payload
+  // below is deliberately the SAME in the absent and present cases: that is
+  // the whole point, and a table keyed this way makes it impossible to write
+  // the two tests against different data by accident.
+  const FAMILIES: [string, string, string][] = [
+    ["certs-expiring", "certificates-status", "certificates-list"],
+    ["eso-health", "external-secrets-status", "external-secrets-list"],
+    ["velero-backups", "velero-status", "velero-backups-list"],
+    ["snapshot-health", "snapshots-status", "snapshots-list"],
+  ];
+
+  test("no operator: each of the four reads as not installed", () => {
+    // `detected: false` is how all four of these status payloads report
+    // absence -- three of them are the boolean-shaped `Detected` field on a
+    // Go status struct, and the fourth is the storage family's
+    // `metadata.available` flag normalised into the same shape by the
+    // `snapshots-status` fetcher.
+    const offenders: string[] = [];
+    for (const [id, status, source] of FAMILIES) {
+      const state = resolve(id, {
+        [status]: { data: { detected: false } },
+        [source]: { data: [] },
+      });
+      if (state !== "unavailable") offenders.push(`${id} resolved ${state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("operator present with nothing to report: each of the four is ready", () => {
+    // The other half, and the reason availability has to come from the status
+    // route rather than from the list: the list is byte-identical to the test
+    // above. Anything other than `ready` here is a card refusing to tell an
+    // operator that their backup tooling has taken no backups.
+    const offenders: string[] = [];
+    for (const [id, status, source] of FAMILIES) {
+      const state = resolve(id, {
+        [status]: { data: { detected: true } },
+        [source]: { data: [] },
+      });
+      if (state !== "ready") offenders.push(`${id} resolved ${state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("an unreadable family status reads as absent, never as healthy", () => {
+    // `featurePresent` treats an unparseable payload as absent on purpose. A
+    // card saying "not installed" because a status route changed shape is a
+    // visible bug someone fixes; one rendering an empty green box is a bug
+    // nobody sees.
+    const offenders: string[] = [];
+    for (const [id, status, source] of FAMILIES) {
+      const state = resolve(id, {
+        [status]: { data: { unexpected: "shape" } },
+        [source]: { data: [] },
+      });
+      if (state !== "unavailable") offenders.push(`${id} resolved ${state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("each data-protection widget declares the family whose absence would fool it", () => {
+    // Pinned by name as well as exercised above: a widget reading a CRD-backed
+    // route with NO family declared is the defect R1 names, and it is
+    // invisible -- the card renders, every other invariant in this file
+    // passes, and the only symptom is a reassuring empty box on a cluster that
+    // runs none of this.
+    const declared = Object.fromEntries(
+      FAMILIES.map(([id]) => [id, getWidget(id)?.familyStatus]),
+    );
+    expect(declared).toEqual({
+      "certs-expiring": "certificates-status",
+      "eso-health": "external-secrets-status",
+      "velero-backups": "velero-status",
+      // The eighth family status key, and the only one that is not a
+      // `/status` route. The storage family publishes its VolumeSnapshot CRD
+      // check as `metadata.available` on the snapshot routes instead; the
+      // fetcher normalises it. Pinned here because "snapshots have no status
+      // route, so skip the declaration" is exactly the shortcut that would
+      // reintroduce the defect on this one card.
+      "snapshot-health": "snapshots-status",
+    });
+  });
+
+  test("the certificate card reads the full inventory, not the expiring subset", () => {
+    // `/v1/certificates/expiring` returns only certificates already inside
+    // their warning threshold and replaces the per-certificate thresholds with
+    // a pre-computed severity string. A card built on it could tell neither
+    // "every certificate is healthy" from "cert-manager manages nothing" --
+    // both are an empty array -- nor which threshold a classification came
+    // from, which is the one thing the annotation contract makes
+    // per-certificate. Pinned so a later "simplification" to the narrower
+    // route has to argue with a test.
+    expect(getWidget("certs-expiring")?.sources).toEqual(["certificates-list"]);
+  });
+});
+
+describe("the delivery and mesh families' availability, through the real definitions", () => {
+  // The same exercise the security and data-protection blocks above run, over
+  // the two GitOps cards and the mesh one. Both routes answer 200 with an
+  // empty result whether the feature is absent or present with nothing to
+  // report, so the reading is decided by the declared family status before
+  // `render` is ever called (KTD1).
+  //
+  // These three matter for the same reason the data-protection four do: the
+  // two readings are opposite. "Every application is synced" and "every
+  // workload encrypts" are reassuring sentences, and on a cluster with no
+  // GitOps tool and no service mesh they are both false in the one direction
+  // an operator will not check.
+  function stateOf(
+    states: Record<string, Partial<SourceState>>,
+  ): (key: string) => SourceState {
+    return (key) => ({
+      data: null,
+      error: null,
+      errorKind: null,
+      loading: false,
+      range: null,
+      ...(states[key] ?? {}),
+    });
+  }
+
+  function resolve(id: string, states: Record<string, Partial<SourceState>>) {
+    const def = getWidget(id);
+    if (!def) throw new Error(`${id} is not registered`);
+    return resolveWidgetState(def, stateOf(states), {}).state;
+  }
+
+  // The empty payloads below are deliberately the SAME in the absent and
+  // present cases: that is the whole point.
+  const NO_APPS = { applications: [], summary: null };
+  const NO_WORKLOADS = { status: { detected: "istio" }, workloads: [] };
+
+  test("neither Argo CD nor Flux: both GitOps cards read as not installed", () => {
+    // `detected: ""` is how the GitOps status route reports neither tool. It
+    // is a STRING that names the tool -- "argocd", "fluxcd", "both" -- not a
+    // boolean, which is why `featurePresent` has to treat the empty string as
+    // absence rather than testing truthiness of a flag that does not exist.
+    const absent = {
+      "gitops-status": { data: { detected: "", lastChecked: "" } },
+      "gitops-applications": { data: NO_APPS },
+    };
+    expect(resolve("gitops-app-health", absent)).toBe("unavailable");
+    expect(resolve("gitops-recent-syncs", absent)).toBe("unavailable");
+  });
+
+  test("a tool installed managing nothing: both GitOps cards are ready", () => {
+    // The other half, and the reason availability comes from the status route:
+    // the applications payload is byte-identical to the test above.
+    const present = {
+      "gitops-status": { data: { detected: "fluxcd", lastChecked: "" } },
+      "gitops-applications": { data: NO_APPS },
+    };
+    expect(resolve("gitops-app-health", present)).toBe("ready");
+    expect(resolve("gitops-recent-syncs", present)).toBe("ready");
+  });
+
+  test("no mesh detected: the coverage card reads as not installed", () => {
+    expect(
+      resolve("mtls-coverage", {
+        "mesh-status": { data: { detected: "", lastChecked: "" } },
+        "mesh-mtls": { data: NO_WORKLOADS },
+      }),
+    ).toBe("unavailable");
+  });
+
+  test("a mesh detected with no workloads: the coverage card is ready", () => {
+    // Ready, so the card can say "a mesh is installed and nothing is running
+    // in it" -- which is a finding. Unavailable here would tell an operator
+    // their mesh is not installed while it is.
+    expect(
+      resolve("mtls-coverage", {
+        "mesh-status": { data: { detected: "linkerd", lastChecked: "" } },
+        "mesh-mtls": { data: NO_WORKLOADS },
+      }),
+    ).toBe("ready");
+  });
+
+  test("an unreadable family status reads as absent, never as healthy", () => {
+    const offenders: string[] = [];
+    const cases: [string, string, string, unknown][] = [
+      ["gitops-app-health", "gitops-status", "gitops-applications", NO_APPS],
+      ["gitops-recent-syncs", "gitops-status", "gitops-applications", NO_APPS],
+      ["mtls-coverage", "mesh-status", "mesh-mtls", NO_WORKLOADS],
+    ];
+    for (const [id, status, source, payload] of cases) {
+      const state = resolve(id, {
+        [status]: { data: { unexpected: "shape" } },
+        [source]: { data: payload },
+      });
+      if (state !== "unavailable") offenders.push(`${id} resolved ${state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("each delivery and mesh widget declares the family whose absence would fool it", () => {
+    expect(getWidget("gitops-app-health")?.familyStatus).toBe("gitops-status");
+    expect(getWidget("gitops-recent-syncs")?.familyStatus).toBe(
+      "gitops-status",
+    );
+    expect(getWidget("mtls-coverage")?.familyStatus).toBe("mesh-status");
+  });
+
+  test("both GitOps cards read the one applications source and nothing else", () => {
+    // One key, declared twice, is ONE request: the cache fetches each key at
+    // most once per cycle. Pinned because the obvious "improvement" is a
+    // second source per card.
+    //
+    // And neither declares `/v1/gitops/commits`, which is the pin that
+    // matters. That route needs a repository URL AND a set of shas, so it can
+    // only be asked after the applications list is in hand, and it answers
+    // with a neutral empty shape when no Git provider token is configured.
+    // Declaring it would make a card that must be useful without commit
+    // enrichment unable to render at all without it.
+    expect(getWidget("gitops-app-health")?.sources).toEqual([
+      "gitops-applications",
+    ]);
+    expect(getWidget("gitops-recent-syncs")?.sources).toEqual([
+      "gitops-applications",
+    ]);
+  });
+
+  test("the coverage card is parameterless and reads the cluster-wide posture", () => {
+    // `/v1/mesh/mtls` treats an absent namespace as a cluster-scoped read, and
+    // the cluster-wide posture is the more useful default for an overview card
+    // (KTD4). A namespace parameter here would also make the card one of the
+    // few whose placement the server re-authorizes per read, for a scope the
+    // route does not require.
+    expect(getWidget("mtls-coverage")?.params).toBeUndefined();
+    expect(getWidget("mtls-coverage")?.sources).toEqual(["mesh-mtls"]);
+  });
 });
 
 test("every widget module is listed in the manifest", () => {

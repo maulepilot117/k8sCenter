@@ -134,6 +134,60 @@ var allowedWidgets = map[string]widgetSpec{
 		MinH:   3,
 		Params: map[string][]string{paramKeyNamespace: {}},
 	},
+	// The security family. All three read CRD-discovered features and declare
+	// a discovery status client-side, which is a render-contract concern and
+	// therefore invisible here -- this map validates placements, not sources.
+	//
+	// The compliance card is taller than it is wide because it stacks a gauge
+	// over a pass/fail row; the other two are wider because each row carries a
+	// resource name beside a cluster of severity chips.
+	"policy-compliance": {MinW: 3, MinH: 4},
+	"policy-violations": {MinW: 4, MinH: 3},
+	// The second parameterized widget, and the first whose parameter is
+	// MANDATORY rather than a scoping choice: the backing route
+	// (`/v1/scanning/vulnerabilities`) answers 400 without `?namespace=`, so
+	// there is no unparameterized form of this card to fall back to. Same key
+	// and same empty value slice as diagnostics-summary above, for the same
+	// reasons -- see that entry's comment.
+	"vulnerability-severity": {
+		MinW:   4,
+		MinH:   3,
+		Params: map[string][]string{paramKeyNamespace: {}},
+	},
+	// The data-protection family. Like the security three above, all four read
+	// CRD-discovered features and declare a discovery status client-side --
+	// invisible here, because this map validates placements, not sources.
+	//
+	// All four are four columns wide for the same reason: each row carries a
+	// resource name beside a state badge and an attribution line, and a
+	// certificate, ExternalSecret, Velero backup or VolumeSnapshot name is
+	// routinely long enough (`daily-full-20260920010000`) that three columns
+	// truncate it to uselessness. None of them takes parameters: every backing
+	// route is cluster-wide and already RBAC-filtered, so there is no scope
+	// for the user to choose.
+	"certs-expiring":  {MinW: 4, MinH: 3},
+	"eso-health":      {MinW: 4, MinH: 3},
+	"velero-backups":  {MinW: 4, MinH: 3},
+	"snapshot-health": {MinW: 4, MinH: 3},
+	// The delivery and networking family. Like the seven above, all three read
+	// CRD-discovered features and declare a discovery status client-side --
+	// invisible here, because this map validates placements, not sources.
+	//
+	// Four columns each for the reason the data-protection four are: a row
+	// carries a long name beside a badge cluster and an attribution line, and
+	// an Argo CD application or an Istio workload name
+	// (`checkout-service-canary`) truncates to uselessness at three.
+	//
+	// None of them takes parameters, and `mtls-coverage` is the one where that
+	// is a decision rather than a consequence. `/v1/mesh/mtls` ACCEPTS a
+	// `?namespace=` filter and treats its absence as a cluster-scoped read; the
+	// widget deliberately never sends one, because the cluster-wide posture is
+	// the useful default for an overview card. Declaring the key here would
+	// make every stored placement carry a scope the card does not use and put
+	// it through the per-read re-authorization path for nothing.
+	"gitops-app-health":   {MinW: 4, MinH: 3},
+	"gitops-recent-syncs": {MinW: 4, MinH: 3},
+	"mtls-coverage":       {MinW: 4, MinH: 3},
 }
 
 // MaxDashboardLayoutsPerUser is the per-user, per-cluster ceiling. One layout

@@ -52,11 +52,12 @@ function decl(over: Partial<WidgetSourceDecl> = {}): WidgetSourceDecl {
 }
 
 describe("featurePresent", () => {
-  // Six families, three payload shapes. The boolean families (cert-manager,
-  // ESO, Velero) say `detected: false`; the string families (policy, GitOps,
-  // mesh) say `detected: ""` and otherwise name which implementation was
-  // found. One rule covers all six, which is why every widget can declare a
-  // family status without the shell learning six payload shapes.
+  // Eight families, three payload shapes. The boolean families (cert-manager,
+  // ESO, Velero, snapshots) say `detected: false`; the string families (policy,
+  // GitOps, mesh, scanning) say `detected: ""` and otherwise name which
+  // implementation was found. One rule covers all eight, which is why every
+  // widget can declare a family status without the shell learning eight
+  // payload shapes.
   test("a boolean family reports absence as detected:false", () => {
     expect(featurePresent({ detected: false })).toBe(false);
     expect(featurePresent({ detected: true })).toBe(true);
@@ -370,6 +371,7 @@ describe("every family status key is declarable", () => {
       "mesh-status",
       "external-secrets-status",
       "velero-status",
+      "scanning-status",
     ];
     const offenders = keys.filter(
       (key) =>

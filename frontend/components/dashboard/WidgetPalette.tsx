@@ -96,7 +96,7 @@ export interface WidgetPaletteProps {
    * widgets'. The source cache fetches what placed widgets declare, so a
    * widget that has never been added would have no status at all to judge, and
    * the palette could not mark it before it is added (R3). The caller requests
-   * all six regardless of what is on the layout.
+   * all eight regardless of what is on the layout.
    */
   familyStatuses: FamilyStatuses;
   /** Adds the widget. The caller places it and closes this dialog. */

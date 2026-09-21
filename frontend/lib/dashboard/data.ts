@@ -15,6 +15,7 @@ import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import { ApiError, api } from "@/lib/api.ts";
 import { decodeSourceKey } from "./params.ts";
+import { COMPLIANCE_HISTORY_DAYS } from "./severity.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   FAMILY_STATUS_KEYS,
@@ -83,10 +84,10 @@ const RANGE_SENSITIVE = RANGE_SENSITIVE_KEYS;
 /**
  * Sources the periodic refresh leaves alone once they have answered.
  *
- * The six discovery routes say whether an operator is installed on the
+ * The eight discovery routes say whether an operator is installed on the
  * cluster, which changes when somebody installs one -- not on the timescale of
  * a 60s tick. Re-asking costs more than the answer is worth: the dashboard
- * requests all six on mount whether or not a widget reads them, because the
+ * requests all eight on mount whether or not a widget reads them, because the
  * palette has to mark an un-added widget as unavailable before it is added,
  * and three of them (policies, gitops, mesh) share the backend's
  * 30-request-per-minute YAML bucket with `/yaml/*` and `/wizards/*`. Polling
@@ -140,7 +141,7 @@ export const REQUEST_TIMEOUT_MS = DASHBOARD_REFRESH_MS / 2;
  * The catalog has grown past the point where every non-cheap source fits in
  * the bound at once, which is what the bound is for: a dashboard holding the
  * workload widgets alongside the metric tiles wants the trends series, the
- * counts route, four list reads and six discovery routes, and the last of
+ * counts route, four list reads and eight discovery routes, and the last of
  * them waits for a slot rather than joining a twelve-request burst. The
  * refresh offsets below spread the same set across the interval on every tick
  * after the first.
@@ -834,6 +835,31 @@ async function readList(
 }
 
 /**
+ * A route envelope with one nil-slice field normalised to an empty array.
+ *
+ * Go marshals a nil slice as `null`, so a handler that builds its result with
+ * `var out []T` answers `"field": null` for an empty result. On a BARE list
+ * response that is caught by a plain `?? []`, and catching it matters: a
+ * source whose data is null never renders, because `resolveWidgetState` reads
+ * `data !== null` as "has landed".
+ *
+ * An envelope hides the same defect somewhere worse. The body is an object, so
+ * the card renders -- and renders a fleet it could not read as a fleet with
+ * nothing in it. This normalises the one field and leaves everything else
+ * alone, including a body that is not an object at all: the view functions
+ * distinguish an unreadable body from an empty one, and flattening the two
+ * here would take that distinction away from them.
+ */
+function withList(body: unknown, field: string): unknown {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return body;
+  }
+  const value = (body as Record<string, unknown>)[field];
+  if (value !== null && value !== undefined) return body;
+  return { ...(body as Record<string, unknown>), [field]: [] };
+}
+
+/**
  * The real fetchers. Endpoints and shapes match what DashboardV2 fetched
  * before the extraction; cluster-info and recent-events gain the 60s refresh
  * the other two always had, because a silently ageing event list is a defect.
@@ -928,7 +954,111 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "volume-capacity": (signal) =>
     read("/v1/monitoring/queries/cluster/storage-capacity", signal),
 
-  // The six discovery routes. Each answers "is this feature installed", which
+  // The security family's four reads. The prefixes are the two the project's
+  // own CLAUDE.md API summary gets wrong: policy routes are mounted under
+  // `/v1/policies/...` (plural) and vulnerabilities under `/v1/scanning/...`
+  // rather than a `/v1/security/...` that does not exist. Both confirmed
+  // against `registerPolicyRoutes` and `registerScanningRoutes` in
+  // backend/internal/server/routes.go.
+  "policy-compliance-score": (signal) =>
+    read("/v1/policies/compliance", signal),
+  // `days=30` is `COMPLIANCE_HISTORY_DAYS` in severity.ts, which is what the
+  // card's copy says the trend covers. A window changed in one place and not
+  // the other puts a truthful number under a false label.
+  "policy-compliance-history": async (signal) =>
+    (await read(
+      `/v1/policies/compliance/history?days=${COMPLIANCE_HISTORY_DAYS}`,
+      signal,
+    )) ?? [],
+  // `?? []`, and this is load-bearing rather than defensive. The handler
+  // builds its result with `var filtered []NormalizedViolation`, so an engine
+  // with nothing to report serialises as `"data": null` -- and a source whose
+  // data is null NEVER RENDERS: `resolveWidgetState` reads `data !== null` as
+  // "has landed", so the card would sit in the skeleton for as long as the
+  // cluster stayed clean. Normalising here is what makes "zero violations"
+  // reachable at all, which is one of this release's two acceptance examples.
+  "policy-violations-list": async (signal) =>
+    (await read("/v1/policies/violations", signal)) ?? [],
+  // The second parameterized fetcher, and the first whose parameter is
+  // mandatory rather than a scoping choice: the handler answers 400 without
+  // `?namespace=`. Percent-encoded for the same reason the diagnostics
+  // fetcher encodes its own -- this is where a stored value becomes a URL --
+  // though here it lands in the query string rather than the path.
+  "vulnerability-reports": (signal, _range, params) =>
+    read(
+      `/v1/scanning/vulnerabilities?namespace=${encodeURIComponent(
+        params.namespace ?? "",
+      )}`,
+      signal,
+    ),
+
+  // The data-protection family's four reads.
+  //
+  // `read`, not `readList`: none of these is the generic list route, so none
+  // of them caps a page or reports a population total, and every one answers
+  // with the whole (already RBAC-filtered) set. There is therefore no
+  // truncation for a card to disclose -- the coverage problem `page-coverage.ts`
+  // exists for does not arise here.
+  //
+  // `?? []` on all four, and it is a guard rather than an observation. Every
+  // one of these handlers builds its result with `make(..., 0, n)` or returns
+  // a literal empty slice on its not-installed and RBAC-refused paths, so all
+  // four serialise an empty result as `[]` today -- checked against
+  // `HandleListCertificates`, `HandleListExternalSecrets`, `HandleListBackups`
+  // and `HandleListSnapshots`. The guard is here because the cost of being
+  // wrong is invisible and permanent: `resolveWidgetState` reads `data !==
+  // null` as "has landed", so a handler that ever regressed to `var out
+  // []T` would leave the card in its skeleton forever rather than failing.
+  // `policy-violations-list` above is that regression, already shipped.
+  //
+  // The certificates read is the full inventory rather than
+  // `/v1/certificates/expiring`: see `certificates-list` in types.ts.
+  "certificates-list": async (signal) =>
+    (await read("/v1/certificates/certificates", signal)) ?? [],
+  // Nested under its own segment. A bare `/v1/externalsecrets` is the chi
+  // router group, not a route, and would 404.
+  "external-secrets-list": async (signal) =>
+    (await read("/v1/externalsecrets/externalsecrets", signal)) ?? [],
+  "velero-backups-list": async (signal) =>
+    (await read("/v1/velero/backups", signal)) ?? [],
+  "snapshots-list": async (signal) =>
+    (await read("/v1/storage/snapshots", signal)) ?? [],
+
+  // The delivery and networking reads. Both answer with an ENVELOPE rather
+  // than a bare list -- `{ applications, summary }` and
+  // `{ status, workloads, errors }` -- so `read` keeps the whole body and the
+  // `?? []` guard lands on the nested field instead of on the response.
+  //
+  // The guard on `applications` is load-bearing, not defensive.
+  // `HandleListApplications` builds its result through `filterApps`, which
+  // returns `var out []NormalizedApp` -- a nil slice -- so a caller whose RBAC
+  // filter or query parameters drop everything gets `"applications": null`.
+  // The same defect that shipped on `policy-violations-list`. It does not
+  // strand the card the way a null BODY would (the envelope is still an
+  // object, so `resolveWidgetState` sees data), which is precisely why it
+  // would have gone unnoticed: the card would render, and quietly report a
+  // fleet it could not read as a fleet with nothing wrong.
+  //
+  // `mesh-mtls` does NOT have it today -- `aggregateWorkloads` returns
+  // `make([]WorkloadMTLS, 0, n)` and the handler seeds the field with a
+  // literal empty slice on its no-mesh path, both checked -- and carries the
+  // same guard anyway, for the reason the data-protection four do: the cost of
+  // a later regression is invisible and permanent.
+  //
+  // Neither is spelled `?? []` inline, because the field sits inside an object
+  // the rest of the card reads. `withList` rebuilds the envelope with the one
+  // field normalised, and leaves a body that is not an envelope at all
+  // untouched so the view functions can still report it as unreadable rather
+  // than as empty.
+  "gitops-applications": async (signal) =>
+    withList(await read("/v1/gitops/applications", signal), "applications"),
+  // No `?namespace=`: the route reads an absent namespace as cluster-scoped,
+  // and the cluster-wide posture is what an overview card is for (KTD4). That
+  // is also what keeps the widget parameterless on both sides of the catalog.
+  "mesh-mtls": async (signal) =>
+    withList(await read("/v1/mesh/mtls", signal), "workloads"),
+
+  // The eight discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see
   // FAMILY_STATUS_KEYS in types.ts. They are range-insensitive, so the 60s
   // refresh keeps them current and a time-range change does not refetch them.
@@ -936,9 +1066,10 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "gitops-status": (signal) => read("/v1/gitops/status", signal),
   "certificates-status": (signal) => read("/v1/certificates/status", signal),
   "mesh-status": async (signal) => {
-    // The one route of the six that wraps its payload -- `{ status: {...} }`
+    // The one route of the eight that wraps its payload -- `{ status: {...} }`
     // -- kept symmetric with the rest of /mesh/*. Unwrapped here so that
-    // `featurePresent` reads one shape rather than six.
+    // `featurePresent` reads one shape rather than a different one per
+    // family.
     //
     // A body without the wrapper normalises to an explicit absent verdict
     // rather than to null. Null would have been the wrong safe direction: the
@@ -952,6 +1083,36 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "external-secrets-status": (signal) =>
     read("/v1/externalsecrets/status", signal),
   "velero-status": (signal) => read("/v1/velero/status", signal),
+  // The seventh. Same string-valued `detected` the policy, GitOps and mesh
+  // statuses use -- `""`, `"trivy"`, `"kubescape"` or `"both"` -- so
+  // `featurePresent` reads it without a special case.
+  "scanning-status": (signal) => read("/v1/scanning/status", signal),
+  // The eighth, and the only one that reads a flag out of `metadata` rather
+  // than a body out of `data`.
+  //
+  // The storage family mounts no `/status` route. What it has instead is the
+  // `available` flag every snapshot route attaches to its metadata, which is
+  // `checkSnapshotCRDs()` verbatim -- the discovery client asked for
+  // `snapshot.storage.k8s.io/v1` behind a 5-minute cache. `read` drops
+  // metadata, so this one calls `api` directly and normalises the flag into
+  // the `{ detected }` shape `featurePresent` reads, exactly as the mesh
+  // status above unwraps its own odd envelope so that function sees one shape
+  // rather than eight.
+  //
+  // Anything other than a literal `true` reads as ABSENT, which is the
+  // deliberate direction: a build that cannot parse this route saying "not
+  // installed" is a visible bug someone fixes, where one rendering an empty
+  // green snapshot card on a cluster with no CSI snapshotter is a bug nobody
+  // sees (R1).
+  "snapshots-status": async (signal) => {
+    const res = await api<unknown>("/v1/storage/snapshot-classes", {
+      method: "GET",
+      signal,
+    });
+    const available = (res.metadata as { available?: unknown } | undefined)
+      ?.available;
+    return { detected: available === true };
+  },
 };
 
 export const dashboardData: SourceCache = createSourceCache(DASHBOARD_FETCHERS);

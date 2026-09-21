@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -250,8 +251,18 @@ func (h *Handler) HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 	// Filter both slices by RBAC, then aggregate ViolationCount from the
 	// user's visible violations. populateViolationCounts returns a copy so the
 	// cached slice is never mutated.
-	policies = h.filterPoliciesByRBAC(r.Context(), user, policies)
-	violations = h.filterViolationsByRBAC(r.Context(), user, violations)
+	policies, ferr := h.filterPoliciesByRBAC(r.Context(), user, policies)
+	if ferr != nil {
+		h.Logger.Error("policy RBAC filter failed", "user", user.KubernetesUsername, "error", ferr)
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
+	violations, ferr = h.filterViolationsByRBAC(r.Context(), user, violations)
+	if ferr != nil {
+		h.Logger.Error("policy RBAC filter failed", "user", user.KubernetesUsername, "error", ferr)
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
 	sorted := populateViolationCounts(policies, violations)
 	sort.Slice(sorted, func(i, j int) bool {
 		wi := severityWeights[sorted[i].Severity]
@@ -281,7 +292,12 @@ func (h *Handler) HandleListViolations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Filter violations by RBAC — user must be able to list pods in the namespace
-	filtered := h.filterViolationsByRBAC(r.Context(), user, violations)
+	filtered, ferr := h.filterViolationsByRBAC(r.Context(), user, violations)
+	if ferr != nil {
+		h.Logger.Error("policy RBAC filter failed", "user", user.KubernetesUsername, "error", ferr)
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
 
 	// Sort by severity weight descending
 	sort.Slice(filtered, func(i, j int) bool {
@@ -312,8 +328,18 @@ func (h *Handler) HandleCompliance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Filter by RBAC
-	policies = h.filterPoliciesByRBAC(r.Context(), user, policies)
-	filtered := h.filterViolationsByRBAC(r.Context(), user, violations)
+	policies, ferr := h.filterPoliciesByRBAC(r.Context(), user, policies)
+	if ferr != nil {
+		h.Logger.Error("policy RBAC filter failed", "user", user.KubernetesUsername, "error", ferr)
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
+	filtered, ferr := h.filterViolationsByRBAC(r.Context(), user, violations)
+	if ferr != nil {
+		h.Logger.Error("policy RBAC filter failed", "user", user.KubernetesUsername, "error", ferr)
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
 
 	scope := r.URL.Query().Get("namespace")
 	score := computeCompliance(policies, filtered, scope)
@@ -382,7 +408,22 @@ func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request
 
 // filterViolationsByRBAC removes violations the user cannot see. Uses "list pods"
 // as a namespace access proxy — the same pattern used by dashboard-summary.
-func (h *Handler) filterViolationsByRBAC(ctx context.Context, user *auth.User, violations []NormalizedViolation) []NormalizedViolation {
+//
+// An access-review ERROR is returned, never folded into a denial. The two are
+// opposite facts: "you may not see this namespace" is an answer, and "I could
+// not find out" is the absence of one. Dropping a namespace on the second
+// produces a SHORTER list that is indistinguishable from a complete one, and
+// the cards built on this route — policy violations and the compliance score —
+// render that as a clean, compliant cluster. A security card reporting good
+// news because its own permission check broke is the exact failure this
+// release exists to prevent.
+//
+// The whole request fails rather than returning a partial list, matching
+// HandleMTLSPosture in internal/servicemesh/handler.go, whose comment states
+// the same rule: conflating a checker fault with a denial masks an
+// infrastructure outage as an access decision. A 500 reaches the widget as a
+// failure and the card shows an error instead of a score.
+func (h *Handler) filterViolationsByRBAC(ctx context.Context, user *auth.User, violations []NormalizedViolation) ([]NormalizedViolation, error) {
 	// Cache RBAC decisions per namespace within this request
 	nsAccess := make(map[string]bool)
 	var filtered []NormalizedViolation
@@ -402,10 +443,9 @@ func (h *Handler) filterViolationsByRBAC(ctx context.Context, user *auth.User, v
 			clusterID := middleware.ClusterIDFromContext(ctx)
 			can, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", ns)
 			if err != nil {
-				allowed = false
-			} else {
-				allowed = can
+				return nil, fmt.Errorf("access review failed for namespace %q: %w", ns, err)
 			}
+			allowed = can
 			nsAccess[ns] = allowed
 		}
 
@@ -414,12 +454,12 @@ func (h *Handler) filterViolationsByRBAC(ctx context.Context, user *auth.User, v
 		}
 	}
 
-	return filtered
+	return filtered, nil
 }
 
 // filterPoliciesByRBAC removes policies the user cannot see based on namespace access.
 // Cluster-scoped policies are visible to all authenticated users (they apply globally).
-func (h *Handler) filterPoliciesByRBAC(ctx context.Context, user *auth.User, policies []NormalizedPolicy) []NormalizedPolicy {
+func (h *Handler) filterPoliciesByRBAC(ctx context.Context, user *auth.User, policies []NormalizedPolicy) ([]NormalizedPolicy, error) {
 	nsAccess := make(map[string]bool)
 	var filtered []NormalizedPolicy
 
@@ -435,10 +475,12 @@ func (h *Handler) filterPoliciesByRBAC(ctx context.Context, user *auth.User, pol
 			clusterID := middleware.ClusterIDFromContext(ctx)
 			can, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", p.Namespace)
 			if err != nil {
-				allowed = false
-			} else {
-				allowed = can
+				// See filterViolationsByRBAC: a check that did not answer is
+				// not a denial, and silently dropping the namespace would
+				// shorten the list with nothing to say so.
+				return nil, fmt.Errorf("access review failed for namespace %q: %w", p.Namespace, err)
 			}
+			allowed = can
 			nsAccess[p.Namespace] = allowed
 		}
 
@@ -447,7 +489,7 @@ func (h *Handler) filterPoliciesByRBAC(ctx context.Context, user *auth.User, pol
 		}
 	}
 
-	return filtered
+	return filtered, nil
 }
 
 // computeCompliance calculates a weighted compliance score from policies and violations.
