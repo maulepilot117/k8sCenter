@@ -323,6 +323,19 @@ func ValidateDashboardLayout(raw json.RawMessage) (DashboardLayoutConfig, json.R
 				return cfg, nil, invalidf("invalid_config",
 					"items[%d] param %q has an invalid value", i, k)
 			}
+			// The empty string is not a value. It passed every bound above,
+			// and three layers below here read it differently: the read path
+			// treats a namespace of "" as naming no namespace and skips the
+			// re-authorization the key exists for, the browser's key encoding
+			// drops the pair so the placement collapses onto the unscoped
+			// source, and the fetcher issues a path with an empty segment
+			// that the resource layer accepts as "every namespace". The
+			// dialog cannot produce this, but the dialog is not what makes it
+			// safe.
+			if v == "" {
+				return cfg, nil, invalidf("invalid_config",
+					"items[%d] param %q has an invalid value", i, k)
+			}
 
 			// Then the widget's own declaration. No URLs, no queries, no
 			// scripts -- KTD4 -- is enforced by the value being drawn from a
@@ -339,6 +352,24 @@ func ValidateDashboardLayout(raw json.RawMessage) (DashboardLayoutConfig, json.R
 			if len(allowed) > 0 && !containsString(allowed, v) {
 				return cfg, nil, invalidf("invalid_config",
 					"items[%d]: %q is not a value %s accepts for %q", i, v, it.ID, k)
+			}
+		}
+
+		// The loop above checks every parameter that was sent. This checks
+		// the other direction -- that a widget declaring a parameter actually
+		// carries one -- which nothing did, so a placement naming a namespace
+		// and omitting the service it also declares was stored happily and
+		// then failed on every read for the life of the layout. The browser
+		// refuses the same case before it sends; this is its missing twin.
+		//
+		// Every declared key is mandatory today, which is true of all four
+		// parameterized widgets: their backing routes refuse without the
+		// value. An optional parameter would need a per-key flag rather than
+		// this blanket rule.
+		for k := range spec.Params {
+			if _, ok := it.Params[k]; !ok {
+				return cfg, nil, invalidf("invalid_config",
+					"items[%d]: %s requires a value for %q", i, it.ID, k)
 			}
 		}
 

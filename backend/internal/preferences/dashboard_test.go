@@ -136,11 +136,11 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 			raw: layoutWithItems(t,
 				item(map[string]any{
 					"instanceId": "prod", "id": testParamWidgetID, "x": 0, "w": 6,
-					"params": map[string]string{"namespace": "prod"},
+					"params": map[string]string{"namespace": "prod", "mode": "compact", "n": "1"},
 				}),
 				item(map[string]any{
 					"instanceId": "staging", "id": testParamWidgetID, "x": 6, "w": 6,
-					"params": map[string]string{"namespace": "staging"},
+					"params": map[string]string{"namespace": "staging", "mode": "compact", "n": "1"},
 				}),
 			),
 		},
@@ -148,7 +148,8 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 			name:  "value drawn from a closed enum",
 			setup: withParamWidget,
 			raw: layoutWithItems(t, item(map[string]any{
-				"id": testParamWidgetID, "params": map[string]string{"mode": "compact"},
+				"id":     testParamWidgetID,
+				"params": map[string]string{"mode": "compact", "namespace": "ns", "n": "1"},
 			})),
 		},
 		{
@@ -160,7 +161,7 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 					items = append(items, item(map[string]any{
 						"instanceId": "w" + strconv.Itoa(i),
 						"id":         testParamWidgetID,
-						"params":     map[string]string{"n": strconv.Itoa(i)},
+						"params":     map[string]string{"n": strconv.Itoa(i), "namespace": "ns", "mode": "full"},
 						"x":          0, "w": 12, "y": i, "h": 1,
 					}))
 				}
@@ -914,14 +915,19 @@ func TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate(t *testing.T) {
 	})
 	defer restore()
 
+	// Both placements carry both declared keys. A widget that declares a
+	// parameter must be given one -- the validator refuses a partially filled
+	// placement now -- so the collision this test is about is expressed by
+	// swapping which key holds the value that looks like the other key, not
+	// by omitting one.
 	raw := layoutWithItems(t,
 		item(map[string]any{
 			"instanceId": "one", "id": "nodes", "x": 0, "w": 6, "h": 4,
-			"params": map[string]string{"a=b": "c"},
+			"params": map[string]string{"a=b": "c", "a": "z"},
 		}),
 		item(map[string]any{
 			"instanceId": "two", "id": "nodes", "x": 6, "w": 6, "h": 4,
-			"params": map[string]string{"a": "b=c"},
+			"params": map[string]string{"a=b": "z", "a": "b=c"},
 		}),
 	)
 
@@ -1033,4 +1039,52 @@ func TestValidateDashboardLayout_DiagnosticsSummaryParams(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestValidateDashboardLayout_DeclaredParamsAreMandatory covers the direction
+// the param loop never checked: it validated every parameter that was sent and
+// nothing asserted that a widget declaring one was given it.
+//
+// Both halves matter for the same reason. A placement missing a declared value
+// was stored and then failed on every read for the life of the layout, because
+// the backing route refuses without it. A placement carrying the empty string
+// was worse than useless: the read path reads "" as naming no namespace and
+// skips the per-read re-authorization the key exists for, the browser's key
+// encoding drops the pair so the card collapses onto the unscoped source, and
+// the fetcher issues a path with an empty segment that the resource layer
+// accepts as every namespace.
+//
+// Neither is reachable from the dialog, which refuses both before it sends.
+// That is not what makes them safe.
+func TestValidateDashboardLayout_DeclaredParamsAreMandatory(t *testing.T) {
+	cases := []struct {
+		name   string
+		params map[string]string
+	}{
+		{"one declared key omitted", map[string]string{"namespace": "prod", "mode": "compact"}},
+		{"no params at all", nil},
+		{"declared key carries the empty string", map[string]string{
+			"namespace": "", "mode": "compact", "n": "1",
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer withParamWidget(t)()
+
+			over := map[string]any{"id": testParamWidgetID}
+			if tc.params != nil {
+				over["params"] = tc.params
+			}
+			raw := layoutWithItems(t, item(over))
+
+			_, _, err := ValidateDashboardLayout(raw)
+			if err == nil {
+				t.Fatal("a partially filled parameterized placement was accepted")
+			}
+			if reason := reasonOf(err); reason != "invalid_config" {
+				t.Fatalf("reason = %q, want invalid_config", reason)
+			}
+		})
+	}
 }

@@ -156,13 +156,29 @@ export function resolveWidgetState(
   );
   const requiredStates = required.map((k) => stateOf(k.key));
 
-  if (requiredStates.every((s) => s.data !== null)) {
-    if (
-      def.familyStatus !== undefined &&
-      !featurePresent(stateOf(sourceKeyFor(def.familyStatus, params)).data)
-    ) {
+  // Asked before the every-source-landed gate below, and deliberately so.
+  //
+  // This used to sit inside that gate, which silently assumed an absent
+  // feature's own data route still answers -- 200 with an empty list, the way
+  // a CRD-discovered list handler does. Two routes in this catalog do not:
+  // the Hubble flows route answers 503 when Hubble is absent, and the mesh
+  // golden-signals route answers 400 when no mesh is detected. On exactly the
+  // clusters the unavailable state exists for, those widgets never reached it
+  // -- their required source errored, so they fell through to the error card,
+  // in warning colour, quoting the backend, offering a retry that could never
+  // succeed. That is this release's own rule inverted.
+  //
+  // Once the family status itself has landed and reports the feature absent,
+  // no other source can change the answer: there is nothing to load, and
+  // whatever its data route said is a symptom of the same absence.
+  if (def.familyStatus !== undefined) {
+    const family = stateOf(sourceKeyFor(def.familyStatus, params));
+    if (family.data !== null && !featurePresent(family.data)) {
       return { state: "unavailable", blocking: null, stale: null };
     }
+  }
+
+  if (requiredStates.every((s) => s.data !== null)) {
     // The notice claims last-known data, so it appears only when the failed
     // source still holds some: an optional source that failed before ever
     // loading has nothing stale to show, and the widget renders without it.

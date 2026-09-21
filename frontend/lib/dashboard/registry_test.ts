@@ -227,18 +227,53 @@ test("optionalSources is always a subset of sources", () => {
   expect(offenders).toEqual([]);
 });
 
+/**
+ * The widget ids the server will accept, read from the Go allowlist itself.
+ *
+ * This used to be a hand-typed literal, mirrored by a second hand-typed
+ * literal on the Go side, and the pair did not do what both files claimed.
+ * Each test compared its own registry against its own literal, in its own
+ * language; neither read the other. So the natural edit -- add the widget to
+ * `registry.ts` and to the literal right here, which is where the failure
+ * points you -- left the Go allowlist untouched and both suites green. The
+ * user then builds a layout the editor offers and the server refuses to
+ * store, with nothing red anywhere.
+ *
+ * Reading the real map closes that. A widget added on one side only now fails
+ * here, which is what the contract always said it did.
+ */
+function serverAllowedWidgetIDs(): string[] {
+  const goFile = join(
+    import.meta.dir,
+    "../../../backend/internal/preferences/dashboard.go",
+  );
+  const src = readFileSync(goFile, "utf8");
+  const open = src.indexOf("allowedWidgets = map[string]widgetSpec{");
+  if (open === -1) {
+    throw new Error(
+      `could not find allowedWidgets in ${goFile}. If the map was renamed or ` +
+        `moved, point this at it -- do not delete this test, because it is ` +
+        `the only thing that checks the two catalogs against each other.`,
+    );
+  }
+  const close = src.indexOf("\n}", open);
+  const block = src.slice(open, close);
+  const ids = [...block.matchAll(/^\t"([a-z0-9-]+)":/gm)].map((m) => m[1]);
+  if (ids.length === 0) {
+    throw new Error(
+      `parsed zero widget ids out of allowedWidgets in ${goFile}; the map's ` +
+        `shape changed and this parse is now vacuous.`,
+    );
+  }
+  return ids.sort();
+}
+
 test("registry ids are pinned to the server-side allowlist", () => {
   // The other half of a cross-language contract. The server validates a saved
-  // layout against `allowedWidgetIDs` in
-  // backend/internal/preferences/dashboard.go, which is a Go map and cannot
-  // read this registry -- so a widget added here and not there produces a
-  // layout the user can build in the editor and the server then refuses on
-  // save, with no test failing anywhere.
-  //
-  // Pinning both sides to the same literal turns that into a red test on
-  // whichever side was forgotten. The Go half is TestContractParity in
-  // backend/internal/preferences/parity_test.go; adding a widget means
-  // editing three places, and forgetting any one of them fails here or there.
+  // layout against `allowedWidgets` in
+  // backend/internal/preferences/dashboard.go -- so a widget added here and
+  // not there produces a layout the user can build in the editor and the
+  // server then refuses on save.
   //
   // `fixture-*` ids are filtered out: `bun test` shares module state across
   // files and the registry is append-only, so the registration tests above
@@ -247,19 +282,7 @@ test("registry ids are pinned to the server-side allowlist", () => {
     .map((w) => w.id)
     .filter((id) => !id.startsWith("fixture-"))
     .sort();
-  expect(ids).toEqual([
-    "active-alerts",
-    "cluster-health",
-    "cpu-tile",
-    "diagnostics-summary",
-    "memory-tile",
-    "network-tile",
-    "nodes",
-    "pod-status",
-    "pods-tile",
-    "recent-events",
-    "resource-utilization",
-  ]);
+  expect(ids).toEqual(serverAllowedWidgetIDs());
 });
 
 test("registry minimums are pinned to the server-side catalog", () => {

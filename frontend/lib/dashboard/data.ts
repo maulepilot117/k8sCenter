@@ -463,6 +463,10 @@ export function createSourceCache(
   function busyKeys(): Set<string> {
     const busy = new Set<string>(inFlight.keys());
     for (const entry of retired) busy.add(entry.key);
+    // A key with an offset timer pending from an earlier tick is spoken for
+    // too. Counting it here is what lets the tick below skip that one key
+    // rather than abandoning the whole cycle.
+    for (const key of offsetTimers.keys()) busy.add(key);
     return busy;
   }
 
@@ -625,11 +629,18 @@ export function createSourceCache(
       refreshTimer = globalThis.setInterval(() => {
         // Matches the pre-registry behavior: a hidden tab does not poll.
         if (typeof document !== "undefined" && document.hidden) return;
-        // Nothing outstanding, and nothing already scheduled from an earlier
-        // tick. The second half is what keeps an offset fetch from being
-        // scheduled twice, which would be the stacking this guard prevents
-        // for in-flight requests.
-        if (inFlight.size > 0 || offsetTimers.size > 0) return;
+        // Deliberately not gated on the cache being quiet.
+        //
+        // This used to return early whenever anything anywhere was
+        // outstanding, which is a far stronger claim than it needed. Stacking
+        // is a per-key hazard -- the same key fetched twice -- and `isDue`
+        // already refuses a key that is on the wire, queued, retired, or
+        // holding an offset timer. Bailing out of the whole tick instead
+        // meant one slow read froze refresh for every other card, silently:
+        // a request that never settles never records an error, so nothing
+        // goes stale and nothing says why. With up to forty cards over
+        // separate backends, and no timeout below this layer, that is a
+        // dashboard quietly serving yesterday's numbers.
         for (const [key, range] of dueEntries()) {
           const offset = sourceRefreshOffsetMs(key, intervalMs);
           if (offset === 0) {
@@ -714,12 +725,16 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "mesh-status": async (signal) => {
     // The one route of the six that wraps its payload -- `{ status: {...} }`
     // -- kept symmetric with the rest of /mesh/*. Unwrapped here so that
-    // `featurePresent` reads one shape rather than six. A body without the
-    // wrapper yields null, which reads as absent: saying "not installed" about
-    // a response we cannot parse is the safe direction, because the other one
-    // renders an absent mesh as a healthy one.
+    // `featurePresent` reads one shape rather than six.
+    //
+    // A body without the wrapper normalises to an explicit absent verdict
+    // rather than to null. Null would have been the wrong safe direction: the
+    // shell reads a null source as "has not landed yet", so an unparseable
+    // status would have held every mesh card in its skeleton for good instead
+    // of saying the mesh is not installed. The sibling normalisers below and
+    // beside this one all answer with a verdict for the same reason.
     const body = await read("/v1/mesh/status", signal);
-    return (body as { status?: unknown } | null)?.status ?? null;
+    return (body as { status?: unknown } | null)?.status ?? { detected: false };
   },
   "external-secrets-status": (signal) =>
     read("/v1/externalsecrets/status", signal),

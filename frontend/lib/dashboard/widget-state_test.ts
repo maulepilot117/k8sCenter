@@ -293,18 +293,51 @@ describe("resolveWidgetState -- availability", () => {
     expect(r.state).toBe("error");
   });
 
-  test("absence is reported only once the widget's own sources have settled", () => {
-    // Loading outranks unavailable, deliberately. The alternative -- deciding
-    // absence the moment the status lands -- would make the resolution order
-    // depend on which of two independent requests won a race, and every other
-    // state here is already gated on "the widget could render". An absent
-    // feature's own endpoints still answer (200, empty), so this resolves to
-    // unavailable a moment later rather than sitting here.
+  test("absence is reported as soon as the family status says so", () => {
+    // This test used to assert the opposite, on the premise that "an absent
+    // feature's own endpoints still answer (200, empty)" so the widget would
+    // reach unavailable a moment later anyway. That premise is false for two
+    // widgets in this catalog: the Hubble flows route answers 503 when Hubble
+    // is absent and the mesh golden-signals route answers 400 when no mesh is
+    // detected. On those clusters the moment never came -- the required
+    // source errored and the widget fell through to the error card, which is
+    // the one outcome the unavailable state exists to prevent.
+    //
+    // Once the status has landed and reports the feature absent, no other
+    // source can change the answer. There is nothing to wait for.
     const r = resolveWidgetState(
       decl({ familyStatus: "mesh-status" }),
       lookup({
         "dashboard-summary": loading(),
         "mesh-status": ok({ detected: "" }),
+      }),
+    );
+    expect(r.state).toBe("unavailable");
+  });
+
+  test("an absent feature outranks its own route's failure", () => {
+    // The case the reordering above exists for: a feature whose data route
+    // refuses rather than answering empty. Reported as not installed, not as
+    // a failure with a retry that cannot succeed.
+    const r = resolveWidgetState(
+      decl({ familyStatus: "mesh-status" }),
+      lookup({
+        "dashboard-summary": failed("400 no service mesh detected"),
+        "mesh-status": ok({ detected: "" }),
+      }),
+    );
+    expect(r.state).toBe("unavailable");
+    expect(r.blocking).toBeNull();
+  });
+
+  test("a family status that has not landed still waits", () => {
+    // The reordering does not make absence win a race against its own
+    // evidence: with no verdict yet, there is nothing to report.
+    const r = resolveWidgetState(
+      decl({ familyStatus: "mesh-status" }),
+      lookup({
+        "dashboard-summary": ok(),
+        "mesh-status": loading(),
       }),
     );
     expect(r.state).toBe("loading");
