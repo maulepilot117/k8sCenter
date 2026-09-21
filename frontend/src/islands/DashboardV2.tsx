@@ -11,6 +11,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 // Registers every shipped widget before first render.
 import "@/components/dashboard/widgets/index.ts";
+import { useAuth } from "@/lib/auth.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
 import type { FamilyStatuses } from "@/lib/dashboard/catalog.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
@@ -359,6 +360,32 @@ export default function DashboardV2() {
    * A computed changes identity only when one of the eight states actually
    * does.
    */
+  // Not a hook: `useAuth` hands back the module-level signals lib/auth.ts
+  // already maintains, so this reads the session the shell loaded rather than
+  // requesting anything.
+  const { user } = useAuth();
+
+  /**
+   * Whether this session holds the admin role, or null before `/auth/me` has
+   * answered.
+   *
+   * The palette's other availability input is a set of discovery routes the
+   * cache fetches; this one is not fetched at all. `cluster-status` and
+   * `audit-activity` are gated by `middleware.RequireAdmin` rather than by
+   * RBAC, so the answer rides on the session the shell already loaded -- and
+   * asking the cluster for it would be a request for something the browser is
+   * holding.
+   *
+   * Null while the user signal is empty, which blocks nothing: the palette
+   * must not depend on whether `/auth/me` has come back, and a non-admin who
+   * adds one of the two anyway gets the permission card from the route's own
+   * 403 (R2).
+   */
+  const viewerIsAdmin = useComputed<boolean | null>(() => {
+    const u = user.value;
+    return u === null ? null : (u.roles ?? []).includes("admin");
+  });
+
   const familyStatuses = useComputed<FamilyStatuses>(() =>
     Object.fromEntries(
       FAMILY_STATUS_KEYS.map((key) => [
@@ -1161,6 +1188,7 @@ export default function DashboardV2() {
           placed={session.value.working.items}
           columns={session.value.working.columns}
           familyStatuses={familyStatuses.value}
+          viewerIsAdmin={viewerIsAdmin.value}
           onAdd={addWidget}
           onClose={closePalette}
         />

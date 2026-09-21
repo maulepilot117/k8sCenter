@@ -19,6 +19,7 @@ import { decodeSourceKey } from "./params.ts";
 import { COMPLIANCE_HISTORY_DAYS } from "./severity.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
+  ABSENT_STATUSES,
   FAMILY_STATUS_KEYS,
   NOT_FOUND_IS_REFUSAL,
   RANGE_SENSITIVE_KEYS,
@@ -36,11 +37,21 @@ import type { ResourceListPage } from "./wire-types.ts";
  * changes, which is why the shell renders it without a retry affordance (R2).
  * It is a 403, plus the 404 the slug-query route uses in place of one so its
  * catalog cannot be enumerated -- see `classify` below and
- * `NOT_FOUND_IS_REFUSAL` in types.ts. Everything else -- a 500, a dropped
- * connection, a malformed body -- is "failure", which is the behavior that
- * shipped, kept under a name so the two are distinguishable at the call site.
+ * `NOT_FOUND_IS_REFUSAL` in types.ts.
+ *
+ * "absent" is a standing fact about the DEPLOYMENT: the route answered a
+ * status that means this build does not serve the read here at all, which for
+ * the platform family is a 503 (no database) or the 404 of a route that is
+ * never registered without one. `ABSENT_STATUSES` in types.ts names the
+ * sources and their codes, and `resolveWidgetState` turns this into the same
+ * `unavailable` outcome a missing operator produces -- not an error, because
+ * nothing is wrong, and not a delay, because nothing is coming (R1).
+ *
+ * Everything else -- a 500, a dropped connection, a malformed body -- is
+ * "failure", which is the behavior that shipped, kept under a name so the
+ * three are distinguishable at the call site.
  */
-export type SourceErrorKind = "permission" | "failure";
+export type SourceErrorKind = "permission" | "failure" | "absent";
 
 export interface SourceState<T = unknown> {
   data: T | null;
@@ -213,7 +224,9 @@ function messageOf(err: unknown): string {
 
 /**
  * A forbidden response is a permission outcome -- and so is a not-found from
- * the handful of sources that have no other way to say forbidden.
+ * the handful of sources that have no other way to say forbidden. A status
+ * that means "this deployment does not serve this read" is an absence, which
+ * is neither.
  *
  * Read off the HTTP status rather than the message, because the message is
  * whatever the handler wrote and a widget must not branch on prose. 401 is
@@ -232,6 +245,11 @@ function classify(err: unknown, base: string): SourceErrorKind {
   if (!(err instanceof ApiError)) return "failure";
   if (err.status === 403) return "permission";
   if (err.status === 404 && NOT_FOUND_IS_REFUSAL.has(base)) return "permission";
+  // Checked after the refusal branch, so a source that ever appeared in both
+  // declarations still reads as refused: that set exists to keep a
+  // deliberately opaque refusal readable as one, and reporting it as an
+  // absence would tell the user the feature is gone rather than shut.
+  if (ABSENT_STATUSES[base]?.includes(err.status)) return "absent";
   return "failure";
 }
 
@@ -814,6 +832,23 @@ async function read(path: string, signal: AbortSignal): Promise<unknown> {
 const LIST_PAGE_LIMIT = 500;
 
 /**
+ * How many audit entries and unread notifications the platform cards ask for.
+ *
+ * Small on purpose. Both routes page against PostgreSQL and both cards show a
+ * handful of rows; asking for the route's own default (25 notifications) or
+ * anything larger would pay for rows nothing renders, once per refresh, per
+ * open dashboard. The audit route's `pageSize` is clamped server-side and the
+ * notification route's `limit` is capped at 200, so neither number can grow
+ * past what the handler will serve.
+ *
+ * The notification cap does NOT bound the count beside the rows: that comes
+ * from `metadata.total`, which the handler computes over the whole unread
+ * population before it pages.
+ */
+const AUDIT_PAGE_SIZE = 10;
+const UNREAD_FEED_LIMIT = 10;
+
+/**
  * GET a list endpoint and keep BOTH halves of its envelope.
  *
  * `read` above drops `metadata`, which is right for the handlers that answer
@@ -1119,6 +1154,59 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // the route to ask for "all routes".
   "gateway-httproutes": async (signal) =>
     (await read("/v1/gateway/httproutes", signal)) ?? [],
+
+  // The platform family's five. None of them is CRD-discovered and none of
+  // them declares a family status: what can be missing is the deployment's
+  // database, and `ABSENT_STATUSES` in types.ts maps the status each route
+  // says so with onto the unavailable state.
+  //
+  // `?? []` on the four bare lists below, and on three of them it is
+  // LOAD-BEARING rather than defensive. `ClusterStore.List` accumulates into
+  // `var clusters []ClusterRecord`, `PostgresStore.Query` into
+  // `var entries []Entry`, and `Store.ListNotifications` into
+  // `var notifications []Notification` -- three separate nil slices, which Go
+  // marshals as `"data": null`. A source whose data is null NEVER RENDERS:
+  // `resolveWidgetState` reads `data !== null` as "has landed", so without
+  // these guards an empty audit log, an empty registry and -- the common case
+  // -- an account with nothing unread would each leave their card in the
+  // skeleton forever. That is the fifth, sixth and seventh instance of this
+  // shape found in this phase.
+  //
+  // The preferences pair is the exception and its guard IS defensive:
+  // `writeList` in backend/internal/preferences/handler.go normalises a nil
+  // slice to `[]` before it writes, and its docstring says so. Carried anyway,
+  // because the cost of a later regression is invisible and permanent.
+  "clusters-list": async (signal) => (await read("/v1/clusters", signal)) ?? [],
+  // `pageSize`, not `limit`: this route's paging parameters are its own
+  // (`audit.QueryParams`), not the generic list route's. Asking for `limit`
+  // would silently get the handler's default page instead.
+  "audit-log": async (signal) =>
+    (await read(`/v1/audit/logs?pageSize=${AUDIT_PAGE_SIZE}`, signal)) ?? [],
+  // The one platform fetcher that keeps its envelope, because the count the
+  // card shows has to be the server's rather than this page's: `metadata.total`
+  // is the whole unread population under the same filter, where `data` is one
+  // capped page of it. `withList` normalises the nil slice inside the envelope
+  // and leaves a body that is not an envelope at all untouched, so
+  // `notificationsFeedView` can still report it as unreadable rather than as
+  // empty.
+  //
+  // `read=unread` is `ListOpts.ReadFilter`, whose only two recognised values
+  // are "read" and "unread"; anything else is no filter at all, which would
+  // make this card report the whole feed as unread.
+  "unread-notifications": async (signal) => {
+    const res = await api<unknown>(
+      `/v1/notifications?read=unread&limit=${UNREAD_FEED_LIMIT}`,
+      { method: "GET", signal },
+    );
+    return withList(
+      { items: res.data, total: res.metadata?.total ?? null },
+      "items",
+    );
+  },
+  "preference-views": async (signal) =>
+    (await read("/v1/preferences/views", signal)) ?? [],
+  "preference-pins": async (signal) =>
+    (await read("/v1/preferences/pins", signal)) ?? [],
 
   // The ten discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see

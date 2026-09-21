@@ -281,6 +281,42 @@ export const DATA_SOURCE_KEYS = [
   // minority of clusters run. The card names what it counted instead.
   "gateway-gateways",
   "gateway-httproutes",
+  // The platform family's five reads, and the first five in this table whose
+  // backing feature can be missing from the DEPLOYMENT rather than from the
+  // cluster. All five need PostgreSQL; none is CRD-discovered, so none has a
+  // family status above. `ABSENT_STATUSES` below is what carries that
+  // reading instead.
+  //
+  // `clusters-list` is `/v1/clusters` -- the registry of registered clusters,
+  // admin-gated, NOT the `/v1/cluster/info` that `cluster-info` already reads.
+  // The two are one letter apart and answer different questions: one is "what
+  // clusters does this install manage", the other "what is the cluster I am
+  // pointed at".
+  "clusters-list",
+  // `/v1/audit/logs`, admin-gated. Named for the route rather than for the
+  // widget (`audit-activity`), which is the convention `volume-capacity` and
+  // `policy-compliance-score` already follow: a card declaring a source of its
+  // own name reads as a typo.
+  "audit-log",
+  // `/v1/notifications?read=unread`. Named for what it carries rather than
+  // for the widget (`notifications-feed`) for the same reason, and named
+  // `unread-` because the filter is part of the request: the card is about
+  // what has NOT been seen, and the same route with no filter is a different
+  // read that nothing here asks for.
+  //
+  // Its sibling `/v1/notifications/unread-count` is deliberately NOT a second
+  // source. The list response's `metadata.total` is the count of the whole
+  // unread population under the same filter -- the handler counts before it
+  // pages -- so one request already answers both the feed and the badge, and
+  // a second would be a second PostgreSQL round trip per refresh for a number
+  // this one returns.
+  "unread-notifications",
+  // The preferences pair, `/v1/preferences/views` and `/v1/preferences/pins`.
+  // Named `preference-` rather than after their widgets (`saved-views`,
+  // `pinned-resources`) for the convention above, and prefixed alike because
+  // they are one route group with one availability condition.
+  "preference-views",
+  "preference-pins",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -478,6 +514,27 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   "gateway-gateways": "expensive",
   "gateway-httproutes": "expensive",
 
+  // The platform family's five. Every one of them is a PostgreSQL read, which
+  // the class definition names outright -- no informer, no discovery cache, a
+  // live query per request against a database the backend shares with every
+  // other viewer.
+  //
+  // Three of them are worse than a plain SELECT and the shape shows none of
+  // it. `unread-notifications` runs an RBAC namespace resolution before it
+  // reads (`accessibleNamespaces`) and then TWO queries, a COUNT and a page,
+  // both over a LEFT JOIN against the per-user read marks. `audit-log` does
+  // the same count-then-page pair over a table with 90 days of retention on
+  // it. `clusters-list` is the mildest and is still a per-request query whose
+  // rows the handler then strips credentials from.
+  //
+  // None of them is `discovery`: that class is for the CRD status routes,
+  // which answer out of a 5-minute cache. Nothing below is cached anywhere.
+  "clusters-list": "expensive",
+  "audit-log": "expensive",
+  "unread-notifications": "expensive",
+  "preference-views": "expensive",
+  "preference-pins": "expensive",
+
   "policies-status": "discovery",
   "gitops-status": "discovery",
   "certificates-status": "discovery",
@@ -579,6 +636,53 @@ export const NOT_FOUND_IS_REFUSAL: ReadonlySet<string> = new Set([
   "volume-capacity",
 ]);
 
+/**
+ * Sources whose failure is an absence: this deployment does not serve them.
+ *
+ * The CRD-discovered families answer "not installed" through a discovery
+ * route, which is what `FAMILY_STATUS_KEYS` above is for. The platform family
+ * has no such route and no such question -- what can be missing there is the
+ * DEPLOYMENT's PostgreSQL database, not an operator in the cluster -- and its
+ * routes report it as an ERROR STATUS rather than as a payload:
+ *
+ * - `/v1/clusters` answers 503 "cluster management requires a database"
+ *   (`handleListClusters`), as do `/v1/preferences/views` and
+ *   `/v1/preferences/pins` ("preferences require a database",
+ *   `Handler.requireStore`) and `/v1/audit/logs`, whose logger is only
+ *   `audit.Queryable` when it is the PostgreSQL one.
+ * - `/v1/notifications` is not REGISTERED at all without a database -- the
+ *   whole notification centre is built inside `if dbPool != nil` -- so chi
+ *   answers its 404. Same condition, different code, and the same reading:
+ *   this build does not serve this here.
+ *
+ * Without this, all five land on the shell's generic error card: "could not be
+ * loaded", with a retry that will never work, for a deployment configured
+ * exactly as its operator meant it. `ABSENT_STATUSES` turns that into the
+ * unavailable state R1 already defines, which is the same answer a missing
+ * operator gets and for the same reason -- nothing is wrong and nothing is
+ * coming.
+ *
+ * A map from source to the exact codes, rather than one set per code. The
+ * codes differ per route for a reason the source knows and the classifier does
+ * not, and declaring them here keeps the widening narrow: a 503 from an
+ * ORDINARY route is a server that is struggling and must keep its retry, and a
+ * 404 from one is a missing object. Only a route whose absence is a deployment
+ * fact appears below.
+ *
+ * `NOT_FOUND_IS_REFUSAL` wins where the two ever overlap -- see `classify` in
+ * data.ts -- because that set exists to keep a deliberately opaque refusal
+ * readable as a refusal. Nothing is in both today.
+ */
+export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
+  "clusters-list": [503],
+  "audit-log": [503],
+  "preference-views": [503],
+  "preference-pins": [503],
+  // 404 and not 503: the route does not exist on a deployment without a
+  // database, so there is no handler to answer 503 from.
+  "unread-notifications": [404],
+};
+
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
  * what the pre-registry three-row layout already approximated. */
 export const DASHBOARD_COLUMNS = 12;
@@ -673,6 +777,29 @@ export interface WidgetDef {
    * omits this field behaves exactly as it did before availability existed.
    */
   familyStatus?: FamilyStatusKey;
+  /**
+   * The widget's backing route is gated by `middleware.RequireAdmin`.
+   *
+   * The one availability fact in this catalog that is not a family status, and
+   * the one that needs no fetch: admin-ness is a property of the SESSION,
+   * carried on the `/auth/me` roles the shell has already loaded, where
+   * whether cert-manager is installed is a property of the cluster that only a
+   * discovery route can answer.
+   *
+   * Declaring it buys the same thing `familyStatus` buys: the palette can mark
+   * the entry BEFORE it is added (R3), rather than letting a user place a card
+   * that can only ever say "you do not have access". It changes nothing about
+   * how the widget renders once placed -- a non-admin's 403 already resolves
+   * to the permission state through the failure classifier, which is what the
+   * acceptance example turns on -- so this is not a second permission
+   * mechanism, only an earlier reading of the same one.
+   *
+   * Client-side only, like `familyStatus`: the Go catalog validates
+   * PLACEMENTS, and the server enforces the real gate on the route itself. A
+   * widget that omits this behaves exactly as every widget did before it
+   * existed.
+   */
+  adminOnly?: boolean;
   /**
    * Smallest the editor will let the user resize this widget.
    *

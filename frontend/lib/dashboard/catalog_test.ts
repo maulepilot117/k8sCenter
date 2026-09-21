@@ -329,3 +329,61 @@ describe("disabledReasonFor -- family availability", () => {
     ).toBe(NOT_INSTALLED);
   });
 });
+
+describe("disabledReasonFor -- an admin-gated entry", () => {
+  // The one availability fact in this catalog that is NOT a family status.
+  //
+  // `/v1/clusters` and `/v1/audit/logs` are gated by `middleware.RequireAdmin`
+  // rather than by RBAC, so the answer is a property of the SESSION and is
+  // knowable without asking the cluster anything -- the roles on `/auth/me`
+  // the shell has already loaded. There is no discovery route to declare and
+  // nothing to fetch; without this, the palette would offer a row whose card
+  // can only ever say "you do not have access" (R3).
+  const auditWidget = () => def("audit-activity", 4, 4, { adminOnly: true });
+
+  test("a non-admin is told before adding it, not after", () => {
+    expect(
+      disabledReasonFor(auditWidget(), [], DASHBOARD_COLUMNS, {}, false),
+    ).toBe(NOT_PERMITTED);
+  });
+
+  test("an admin is offered it", () => {
+    expect(
+      disabledReasonFor(auditWidget(), [], DASHBOARD_COLUMNS, {}, true),
+    ).toBeNull();
+  });
+
+  test("an unknown session blocks nothing", () => {
+    // The same rule a family status in flight follows: the palette's contents
+    // must not depend on whether `/auth/me` has answered yet, and the widget's
+    // own permission state covers the case once it is added.
+    expect(
+      disabledReasonFor(auditWidget(), [], DASHBOARD_COLUMNS, {}, null),
+    ).toBeNull();
+    expect(
+      disabledReasonFor(auditWidget(), [], DASHBOARD_COLUMNS, {}),
+    ).toBeNull();
+  });
+
+  test("an ordinary widget is unaffected by a non-admin session", () => {
+    expect(
+      disabledReasonFor(
+        def("pod-status", 4, 4),
+        [],
+        DASHBOARD_COLUMNS,
+        {},
+        false,
+      ),
+    ).toBeNull();
+  });
+
+  test("the refusal outranks a copy already on the dashboard", () => {
+    // Same argument the family reasons carry: "not permitted" is what the user
+    // needs to know about the card they already have, and "already on this
+    // dashboard" hides it.
+    const placed = [item("a", 0, 0, 4, 4, "audit-activity")];
+    expect(
+      disabledReasonFor(auditWidget(), placed, DASHBOARD_COLUMNS, {}, false),
+    ).toBe(NOT_PERMITTED);
+  });
+});

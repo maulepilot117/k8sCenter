@@ -205,6 +205,33 @@ var allowedWidgets = map[string]widgetSpec{
 		MinH:   3,
 		Params: map[string][]string{paramKeyNamespace: {}},
 	},
+	// The platform family: the multi-cluster registry, the notification feed,
+	// the audit log and the two per-user preference launchers. None of them
+	// takes parameters -- every backing route is scoped by the caller's own
+	// identity or by the whole install, so there is nothing for a user to
+	// choose -- and none of them is CRD-discovered, which is invisible here
+	// because this map validates placements, not sources.
+	//
+	// Two of them read admin-gated routes (`/v1/clusters`, `/v1/audit/logs`).
+	// That gate is enforced on the route and surfaced in the client catalog;
+	// it deliberately does NOT appear here, because this map decides whether a
+	// PLACEMENT may be stored and a non-admin is entitled to keep a layout
+	// holding a card they cannot currently read -- roles change, and a saved
+	// dashboard that silently lost a widget on demotion could not get it back
+	// on promotion.
+	//
+	// The two wide ones are wide for the reason the data-protection four are.
+	// An audit row is a user, a verb and a `kind/namespace/name` triple on one
+	// line -- the longest row in this catalog, hence five columns rather than
+	// four -- and a cluster row carries the prober's message, which is
+	// routinely a dial error with an address in it. The preferences pair is
+	// the narrowest in the catalog: a name capped at maxRecordNameLen beside
+	// an adapter slug.
+	"cluster-status":     {MinW: 4, MinH: 3},
+	"notifications-feed": {MinW: 4, MinH: 3},
+	"audit-activity":     {MinW: 5, MinH: 3},
+	"saved-views":        {MinW: 3, MinH: 3},
+	"pinned-resources":   {MinW: 3, MinH: 3},
 	// The first widget with TWO parameters, and the first whose parameters are
 	// not bounded the same way as each other.
 	//

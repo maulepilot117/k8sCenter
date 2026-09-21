@@ -99,6 +99,18 @@ export interface WidgetPaletteProps {
    * all eight regardless of what is on the layout.
    */
   familyStatuses: FamilyStatuses;
+  /**
+   * Whether the session holds the admin role, or null before `/auth/me` has
+   * answered.
+   *
+   * The two admin-gated widgets (`cluster-status`, `audit-activity`) sit
+   * behind `middleware.RequireAdmin` rather than behind RBAC, so their
+   * availability is a property of the session and not of the cluster -- there
+   * is no discovery route to put in `familyStatuses` and nothing to fetch. The
+   * caller passes what it already holds; null blocks nothing, exactly as an
+   * unanswered family status does.
+   */
+  viewerIsAdmin: boolean | null;
   /** Adds the widget. The caller places it and closes this dialog. */
   onAdd: (def: WidgetDef) => void;
   onClose: () => void;
@@ -109,6 +121,7 @@ export default function WidgetPalette({
   placed,
   columns,
   familyStatuses,
+  viewerIsAdmin,
   onAdd,
   onClose,
 }: WidgetPaletteProps) {
@@ -138,9 +151,15 @@ export default function WidgetPalette({
         label: def.title,
         detail: FAMILY_LABELS[def.family],
         def,
-        disabledReason: disabledReasonFor(def, placed, columns, familyStatuses),
+        disabledReason: disabledReasonFor(
+          def,
+          placed,
+          columns,
+          familyStatuses,
+          viewerIsAdmin,
+        ),
       })),
-    [scope, placed, columns, familyStatuses],
+    [scope, placed, columns, familyStatuses, viewerIsAdmin],
   );
 
   // What the query shows, grouped for display in the families' declared order,

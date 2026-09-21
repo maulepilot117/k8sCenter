@@ -35,6 +35,14 @@ const failed = (message = "boom") =>
   src({ error: message, errorKind: "failure" });
 const forbidden = (message = "Forbidden") =>
   src({ error: message, errorKind: "permission" });
+/**
+ * A read the deployment does not serve: the route answered 503 (or, for the
+ * notification centre, the 404 of a route that is not registered without a
+ * database) and `ABSENT_STATUSES` in types.ts classified it as absence rather
+ * than failure.
+ */
+const absent = (message = "cluster management requires a database") =>
+  src({ error: message, errorKind: "absent" });
 
 /** Builds the lookup `resolveWidgetState` reads, defaulting anything the test
  * did not name to idle -- which is what an unrequested key actually reads as. */
@@ -231,6 +239,84 @@ describe("resolveWidgetState -- permission", () => {
       }),
     );
     expect(r.state).toBe("ready");
+  });
+});
+
+describe("resolveWidgetState -- a source the deployment does not serve", () => {
+  // The platform family's routes are not CRD-discovered, so none of them has a
+  // discovery status to declare. What can be missing is the DEPLOYMENT's
+  // database, and the four routes that need one say so with a 503 -- a
+  // service-unavailable error, which without this would land on the generic
+  // error card: "could not be loaded", with a retry that will never work, for
+  // a deployment that is configured exactly as its operator meant it to be.
+
+  test("a required source classified absent is unavailable, not an error", () => {
+    const r = resolveWidgetState(
+      decl(),
+      lookup({ "dashboard-summary": absent() }),
+    );
+    expect(r.state).toBe("unavailable");
+  });
+
+  test("the unavailable state carries no blocking source", () => {
+    // The shell renders no message for it, exactly as it renders none for a
+    // family that reports its feature absent. Handing it one would invite a
+    // card that prints "503 Service Unavailable" at an operator who has simply
+    // not configured a database.
+    const r = resolveWidgetState(
+      decl(),
+      lookup({ "dashboard-summary": absent() }),
+    );
+    expect(r.blocking).toBeNull();
+    expect(r.stale).toBeNull();
+  });
+
+  test("absence outranks both a refusal and a failure", () => {
+    // A feature the deployment does not run cannot be permitted, and cannot
+    // usefully be retried. Ranking a 403 above it would tell an operator their
+    // account is the problem when the deployment is.
+    const r = resolveWidgetState(
+      decl({ sources: ["dashboard-summary", "cluster-info", "recent-events"] }),
+      lookup({
+        "dashboard-summary": failed("500"),
+        "cluster-info": forbidden(),
+        "recent-events": absent(),
+      }),
+    );
+    expect(r.state).toBe("unavailable");
+  });
+
+  test("an OPTIONAL source the deployment does not serve does not withhold the widget", () => {
+    // Same rule every other outcome follows: a source the widget declared
+    // optional never gates it. A card blanked by a secondary read the
+    // deployment does not serve is the failure `optionalSources` exists for.
+    const r = resolveWidgetState(
+      decl({
+        sources: ["dashboard-summary", "dashboard-trends"],
+        optionalSources: ["dashboard-trends"],
+      }),
+      lookup({ "dashboard-summary": ok(), "dashboard-trends": absent() }),
+    );
+    expect(r.state).toBe("ready");
+  });
+
+  test("data already on screen outranks a source that has gone absent", () => {
+    // The ready branch is checked first for everything else and is checked
+    // first for this too: a route that starts answering 503 mid-session leaves
+    // the last good reading on screen under the stale notice rather than
+    // replacing a working card with "not installed".
+    const r = resolveWidgetState(
+      decl(),
+      lookup({
+        "dashboard-summary": src({
+          data: { a: 1 },
+          error: "gone",
+          errorKind: "absent",
+        }),
+      }),
+    );
+    expect(r.state).toBe("ready");
+    expect(r.stale?.error).toBe("gone");
   });
 });
 

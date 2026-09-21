@@ -76,17 +76,20 @@ func TestContractParity(t *testing.T) {
 				name: "allowedWidgets (ids)",
 				got:  widgetIDSet(),
 				want: []string{
-					"active-alerts", "certs-expiring", "cluster-health",
+					"active-alerts", "audit-activity",
+					"certs-expiring", "cluster-health", "cluster-status",
 					"cpu-tile", "diagnostics-summary", "eso-health",
 					"gateway-routes",
 					"gitops-app-health", "gitops-recent-syncs",
 					"hpa-status", "hubble-flows", "memory-tile",
 					"mesh-golden-signals", "mtls-coverage",
 					"network-tile",
-					"node-conditions", "nodes", "pdb-risk", "pending-pods",
+					"node-conditions", "nodes", "notifications-feed",
+					"pdb-risk", "pending-pods", "pinned-resources",
 					"pod-restarts", "pod-status", "pods-tile",
 					"policy-compliance", "policy-violations", "quota-pressure",
-					"recent-events", "resource-utilization", "snapshot-health",
+					"recent-events", "resource-utilization", "saved-views",
+					"snapshot-health",
 					"storage-capacity", "top-consumers", "velero-backups",
 					"vulnerability-severity", "workload-health",
 				},
@@ -147,6 +150,16 @@ func TestContractParity(t *testing.T) {
 			"certs-expiring": {MinW: 4, MinH: 3},
 			"cluster-health": {MinW: 3, MinH: 4},
 			"cpu-tile":       {MinW: 2, MinH: 2},
+			// The platform family. None takes parameters -- every backing
+			// route is scoped by the caller's identity or by the whole
+			// install. The two admin-gated routes are NOT marked here: this
+			// map validates placements, and a non-admin is entitled to keep a
+			// layout holding a card they cannot currently read.
+			"cluster-status":     {MinW: 4, MinH: 3},
+			"notifications-feed": {MinW: 4, MinH: 3},
+			"audit-activity":     {MinW: 5, MinH: 3},
+			"saved-views":        {MinW: 3, MinH: 3},
+			"pinned-resources":   {MinW: 3, MinH: 3},
 			"diagnostics-summary": {
 				MinW:   3,
 				MinH:   3,

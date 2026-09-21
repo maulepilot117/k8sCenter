@@ -26,8 +26,11 @@ export const NO_ROOM = "No room on this dashboard";
 /** The widget's family is not installed on this cluster, so the card it would
  * add can only ever say so. */
 export const NOT_INSTALLED = "Not installed on this cluster";
-/** The family's own discovery route refused this account, so whether the
- * feature is installed is not something we are allowed to find out. */
+/** Either the family's own discovery route refused this account -- so whether
+ * the feature is installed is not something we are allowed to find out -- or
+ * the widget's route is admin-gated and this session is not an admin. One
+ * badge for both, because the user's position is the same: the card this row
+ * would add can only ever say "you do not have access". */
 export const NOT_PERMITTED = "Not permitted for this account";
 
 /**
@@ -44,11 +47,27 @@ export type FamilyStatuses = Readonly<
   Partial<Record<FamilyStatusKey, SourceState>>
 >;
 
-/** NOT_PERMITTED, NOT_INSTALLED or null, from the widget's declared family. */
+/**
+ * NOT_PERMITTED, NOT_INSTALLED or null -- from the widget's declared family,
+ * or from the session when the widget's route is admin-gated.
+ *
+ * The admin check comes first and needs no fetch. It is a property of the
+ * session rather than of the cluster, so it is known on first paint where a
+ * discovery status is not; and a widget that is admin-gated AND declares a
+ * family would otherwise be refused for the wrong one of the two, since a
+ * non-admin's discovery status is itself likely to be a refusal.
+ *
+ * `viewerIsAdmin` is a TRI-STATE: null means the session has not answered yet,
+ * and blocks nothing. Refusing a row because `/auth/me` is still in flight
+ * would make the palette's contents depend on request timing, which is the
+ * same rule an unanswered family status already follows below.
+ */
 function availabilityReason(
   def: WidgetDef,
   statuses: FamilyStatuses,
+  viewerIsAdmin: boolean | null,
 ): string | null {
+  if (def.adminOnly === true && viewerIsAdmin === false) return NOT_PERMITTED;
   if (def.familyStatus === undefined) return null;
   const status = statuses[def.familyStatus];
   if (status === undefined) return null;
@@ -75,7 +94,8 @@ function availabilityReason(
  *    -- a length comparison -- so paying for it first costs nothing on the
  *    common case where the dashboard is nowhere near full.
  * 2. The widget cannot work here at all -- its family is not installed on this
- *    cluster, or this account may not read it. These are facts about the
+ *    cluster, this account may not read it, or its route is admin-gated and
+ *    this session is not an admin. These are facts about the
  *    cluster and the account rather than about the layout, which is why they
  *    outrank both reasons below: a cert-manager widget already on the
  *    dashboard of a cluster with no cert-manager is better described as "not
@@ -105,11 +125,12 @@ export function disabledReasonFor(
   placed: readonly LayoutItem[],
   columns: number,
   familyStatuses: FamilyStatuses = {},
+  viewerIsAdmin: boolean | null = null,
 ): string | null {
   if (placed.length >= DASHBOARD_MAX_ITEMS) {
     return DASHBOARD_FULL;
   }
-  const availability = availabilityReason(def, familyStatuses);
+  const availability = availabilityReason(def, familyStatuses, viewerIsAdmin);
   if (availability !== null) {
     return availability;
   }
