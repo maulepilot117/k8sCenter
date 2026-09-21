@@ -82,7 +82,7 @@ const ROOT_STYLE: JSX.CSSProperties = { minHeight: "400px" };
 
 /**
  * Every source this layout's widgets read, plus the two the header reads for
- * its subtitle and the six the catalog needs to answer whether a widget can
+ * its subtitle and the seven the catalog needs to answer whether a widget can
  * work on this cluster at all.
  *
  * Derived from the live layout rather than the shipped default: a stored
@@ -98,7 +98,7 @@ function sourcesFor(config: DashboardLayoutConfig): string[] {
       // on this layout. The palette has to mark a widget that cannot work on
       // this cluster BEFORE it is added (R3), and a widget that is merely in
       // the catalog has nothing placed to pull its status in -- so the status
-      // set is a property of the catalog, not of the arrangement. Six extra
+      // set is a property of the catalog, not of the arrangement. Seven extra
       // reads on mount, deduped by `ensure` and refreshed on the same 60s
       // tick as everything else.
       ...FAMILY_STATUS_KEYS,
@@ -351,12 +351,12 @@ export default function DashboardV2() {
   const focus = useDashboardFocus(editing, gridEpoch.value);
 
   /**
-   * The six family statuses, as one value the palette can be handed.
+   * The seven family statuses, as one value the palette can be handed.
    *
    * Computed rather than rebuilt inline on every render: `WidgetPalette`
    * memoizes its catalog rows on this, and a fresh object per render would
    * re-run a bounded grid scan per entry on every keystroke in its search box.
-   * A computed changes identity only when one of the six states actually
+   * A computed changes identity only when one of the seven states actually
    * does.
    */
   const familyStatuses = useComputed<FamilyStatuses>(() =>
@@ -408,7 +408,7 @@ export default function DashboardV2() {
     // Safe against the transient states this effect runs in, because `keys`
     // is always the superset in play: the working copy while a session is
     // open (which holds widgets the stored layout does not), the stored
-    // layout otherwise, plus the header's two sources and all six family
+    // layout otherwise, plus the header's two sources and all seven family
     // statuses unconditionally.
     dashboardData.retain(keys);
   }, [timeRange.value, layout.value, session.value]);

@@ -61,6 +61,12 @@ export const PARAMETERIZED_SOURCE_PARAMS: Readonly<
   Partial<Record<DataSourceKey, readonly string[]>>
 > = {
   "diagnostics-summary": [PARAM_KEY_NAMESPACE],
+  // The scanning route REQUIRES `?namespace=` and answers 400 without it, so
+  // unlike diagnostics -- whose namespace is a scoping choice -- this one has
+  // no unparameterized form to fall back to. Keyed the same way for the same
+  // reason: two vulnerability cards pointed at different namespaces are two
+  // cache entries, and two pointed at the same one are a single fetch.
+  "vulnerability-reports": [PARAM_KEY_NAMESPACE],
 };
 
 /** C0 and C1 -- Unicode category Cc, which is what Go's `unicode.IsControl`

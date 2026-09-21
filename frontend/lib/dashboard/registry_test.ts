@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 // Importing the widget modules is what registers them, and registration is
@@ -12,8 +12,9 @@ import { join } from "node:path";
 // file without listing it fails here rather than silently shrinking what the
 // invariants cover.
 import "@/components/dashboard/widgets/index.ts";
+import type { SourceState } from "./data.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
-import { KNOWN_PARAM_KEYS } from "./params.ts";
+import { KNOWN_PARAM_KEYS, sourceKeyFor } from "./params.ts";
 import {
   allWidgets,
   getWidget,
@@ -29,6 +30,7 @@ import {
   DISPLAY_MODES,
   WIDGET_FAMILIES,
 } from "./types.ts";
+import { resolveWidgetState } from "./widget-state.ts";
 
 // The registry is the allowlist the server validates against and the catalog
 // the palette renders. Every invariant below exists because breaking it
@@ -490,6 +492,11 @@ test("the parameterized widgets and their declared keys are pinned", () => {
   );
   expect(declared).toEqual({
     "diagnostics-summary": { namespace: [] },
+    // The second parameterized widget, and the first whose parameter is
+    // MANDATORY rather than a scoping choice: `/v1/scanning/vulnerabilities`
+    // answers 400 without `?namespace=`, so there is no unparameterized form
+    // of this card. Same key and same empty value set for the same reasons.
+    "vulnerability-severity": { namespace: [] },
   });
 });
 
@@ -557,6 +564,132 @@ test("the default layout satisfies every widget's declared minimum", () => {
     }
   }
   expect(offenders).toEqual([]);
+});
+
+describe("the security family's availability, through the real definitions", () => {
+  // The two acceptance examples of this release, exercised against the
+  // REGISTERED widgets rather than a fixture. The distinction they turn on is
+  // not something either widget can make for itself: `/v1/policies/violations`
+  // and `/v1/scanning/vulnerabilities` both answer 200 with an empty array
+  // whether the operator is absent or merely has nothing to report, so the
+  // reading is decided by the declared family status before `render` is ever
+  // called (KTD1). Testing it here is what makes the declaration load-bearing:
+  // a widget that dropped its `familyStatus` would keep rendering, keep
+  // passing every other invariant in this file, and start reporting an
+  // uninstalled feature as a healthy one.
+  function stateOf(
+    states: Record<string, Partial<SourceState>>,
+  ): (key: string) => SourceState {
+    return (key) => ({
+      data: null,
+      error: null,
+      errorKind: null,
+      loading: false,
+      range: null,
+      ...(states[key] ?? {}),
+    });
+  }
+
+  function resolve(
+    id: string,
+    states: Record<string, Partial<SourceState>>,
+    params: Record<string, string> = {},
+  ) {
+    const def = getWidget(id);
+    if (!def) throw new Error(`${id} is not registered`);
+    return resolveWidgetState(def, stateOf(states), params).state;
+  }
+
+  test("no policy engine: both policy widgets read as not installed", () => {
+    // `detected: ""` is how the policy status route reports neither Kyverno
+    // nor Gatekeeper. The data sources below have landed and are EMPTY, which
+    // is exactly the payload a cluster with an engine and nothing to report
+    // would send -- so anything other than `unavailable` here is the card
+    // rendering absence as good news.
+    const absent = {
+      "policies-status": { data: { detected: "" } },
+      "policy-compliance-score": {
+        data: { score: 100, pass: 0, fail: 0, warn: 0, total: 0 },
+      },
+      "policy-violations-list": { data: [] },
+    };
+    expect(resolve("policy-compliance", absent)).toBe("unavailable");
+    expect(resolve("policy-violations", absent)).toBe("unavailable");
+  });
+
+  test("Kyverno installed with zero violations: the card is ready, not unavailable", () => {
+    // The other half, and the reason the unavailable state has to be derived
+    // from the status route rather than from the list: the list is identical
+    // in both tests.
+    expect(
+      resolve("policy-violations", {
+        "policies-status": { data: { detected: "kyverno" } },
+        "policy-violations-list": { data: [] },
+      }),
+    ).toBe("ready");
+  });
+
+  test("compliance renders on the score alone when history is refused", () => {
+    // The history source is optional, so a 403 from the admin-gated history
+    // route must not reach the shell's error card: the current score is
+    // present, and the widget degrades to a line of copy instead.
+    expect(
+      resolve("policy-compliance", {
+        "policies-status": { data: { detected: "gatekeeper" } },
+        "policy-compliance-score": { data: { score: 82, total: 12 } },
+        "policy-compliance-history": {
+          error: "Forbidden",
+          errorKind: "permission",
+        },
+      }),
+    ).toBe("ready");
+  });
+
+  test("no scanner: the vulnerability widget reads as not installed", () => {
+    const params = { namespace: "prod" };
+    const key = sourceKeyFor("vulnerability-reports", params);
+    expect(
+      resolve(
+        "vulnerability-severity",
+        {
+          "scanning-status": { data: { detected: "" } },
+          [key]: { data: { vulnerabilities: [], summary: null } },
+        },
+        params,
+      ),
+    ).toBe("unavailable");
+  });
+
+  test("a scanner with no findings: the vulnerability widget is ready", () => {
+    const params = { namespace: "prod" };
+    const key = sourceKeyFor("vulnerability-reports", params);
+    expect(
+      resolve(
+        "vulnerability-severity",
+        {
+          "scanning-status": { data: { detected: "trivy" } },
+          [key]: { data: { vulnerabilities: [], summary: null } },
+        },
+        params,
+      ),
+    ).toBe("ready");
+  });
+
+  test("each security widget declares the family whose absence would fool it", () => {
+    // Pinned by name rather than only exercised above: a widget reading a
+    // CRD-backed route with NO family declared is the defect R1 names, and it
+    // is invisible -- the card renders, the invariants pass, and the only
+    // symptom is an empty green box on a cluster that runs none of this.
+    expect(getWidget("policy-compliance")?.familyStatus).toBe(
+      "policies-status",
+    );
+    expect(getWidget("policy-violations")?.familyStatus).toBe(
+      "policies-status",
+    );
+    expect(getWidget("vulnerability-severity")?.familyStatus).toBe(
+      "scanning-status",
+    );
+  });
 });
 
 test("every widget module is listed in the manifest", () => {

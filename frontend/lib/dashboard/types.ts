@@ -40,8 +40,8 @@ export type WidgetFamily = (typeof WIDGET_FAMILIES)[number];
  * absence from an empty list renders "no expiring certificates" on a cluster
  * with no cert-manager, which is the exact failure R1 forbids.
  *
- * Six families, three payload shapes, one rule: `detected` is `false` or `""`
- * when the feature is absent, and names the implementation otherwise. See
+ * Seven families, three payload shapes, one rule: `detected` is `false` or
+ * `""` when the feature is absent, and names the implementation otherwise. See
  * `featurePresent` in widget-state.ts, which is the only place that reads it.
  */
 export const FAMILY_STATUS_KEYS = [
@@ -51,6 +51,17 @@ export const FAMILY_STATUS_KEYS = [
   "mesh-status",
   "external-secrets-status",
   "velero-status",
+  // The seventh, and the one this list did not have when the mechanism
+  // shipped. Security scanning is CRD-discovered exactly like the six above
+  // it -- `/v1/scanning/status` answers with a `ScannerStatus` whose
+  // `detected` is `""`, `"trivy"`, `"kubescape"` or `"both"`, the same string
+  // shape the policy, GitOps and mesh families use -- and the route it
+  // guards, `/v1/scanning/vulnerabilities`, has the same defect as every
+  // other CRD-backed list: it answers 200 with an empty array whether no
+  // scanner is installed or every image is clean. The two readings are
+  // opposite and the list cannot tell them apart, so the status route is the
+  // only honest signal (R1).
+  "scanning-status",
 ] as const;
 export type FamilyStatusKey = (typeof FAMILY_STATUS_KEYS)[number];
 
@@ -112,6 +123,34 @@ export const DATA_SOURCE_KEYS = [
   // beside a second one reads as a typo. Named for what the series carry
   // instead: per-PersistentVolumeClaim percent-of-capacity-used.
   "volume-capacity",
+  // The security family's four reads. None of them is a discovery route --
+  // those are the FAMILY_STATUS_KEYS below, and all three security widgets
+  // declare one -- these are the data the cards render once the family is
+  // known to be present.
+  //
+  // `policy-compliance-score` is `/v1/policies/compliance` and NOT named
+  // `policy-compliance`, which is the widget's own id: a card declaring a
+  // source of its own name reads as a typo, and the same reasoning named
+  // `volume-capacity` above.
+  "policy-compliance-score",
+  // `/v1/policies/compliance/history`. The only source in this table behind
+  // `middleware.RequireAdmin`, and the only one that can answer 503 by
+  // design -- the handler refuses that way when the deployment has no
+  // database. Declared OPTIONAL by the widget that reads it for exactly that
+  // reason: both refusals leave the current score untouched, and a card gated
+  // on this one would blank a gauge the compliance endpoint already answered,
+  // permanently, for every non-admin.
+  "policy-compliance-history",
+  // `/v1/policies/violations`. Note the plural prefix: the routes are mounted
+  // under `/v1/policies/...`, not `/v1/policy/...` (see `registerPolicyRoutes`
+  // in backend/internal/server/routes.go). The project's own CLAUDE.md API
+  // summary has this wrong.
+  "policy-violations-list",
+  // `/v1/scanning/vulnerabilities`, under the scanning prefix rather than a
+  // security one. The second parameterized source, and parameterized because
+  // the handler REQUIRES `?namespace=` and answers 400 without it -- there is
+  // no cluster-wide vulnerability roll-up to ask instead.
+  "vulnerability-reports",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -211,12 +250,39 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   "top-consumers-memory": "expensive",
   "volume-capacity": "expensive",
 
+  // The four security reads. None of them is `discovery`, although every
+  // widget that reads them also declares a discovery status: that class is
+  // for the status ROUTES, which answer out of a 5-minute cache and return a
+  // handful of booleans. These four are data reads over the same CRDs, and
+  // each one is expensive for a reason the shape does not show.
+  //
+  // `policy-compliance-score` and `policy-violations-list` both run
+  // `filterViolationsByRBAC`, which issues a SelfSubjectAccessReview PER
+  // NAMESPACE carrying a violation -- so their cost scales with the cluster
+  // rather than with the dashboard, which is the same argument that put
+  // `limits-namespaces` in this class. Both also sit under the backend's
+  // 30-request-per-minute YAML bucket, shared with `/yaml/*` and
+  // `/wizards/*`.
+  //
+  // `policy-compliance-history` is a PostgreSQL range query, which the class
+  // definition names outright.
+  //
+  // `vulnerability-reports` is two access reviews plus a CRD list per
+  // request, issued once per distinct namespace on the layout -- a cost that
+  // grows with the dashboard rather than being fixed per page, which is the
+  // argument that put `diagnostics-summary` here.
+  "policy-compliance-score": "expensive",
+  "policy-compliance-history": "expensive",
+  "policy-violations-list": "expensive",
+  "vulnerability-reports": "expensive",
+
   "policies-status": "discovery",
   "gitops-status": "discovery",
   "certificates-status": "discovery",
   "mesh-status": "discovery",
   "external-secrets-status": "discovery",
   "velero-status": "discovery",
+  "scanning-status": "discovery",
 };
 
 /**

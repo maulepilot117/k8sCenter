@@ -134,6 +134,26 @@ var allowedWidgets = map[string]widgetSpec{
 		MinH:   3,
 		Params: map[string][]string{paramKeyNamespace: {}},
 	},
+	// The security family. All three read CRD-discovered features and declare
+	// a discovery status client-side, which is a render-contract concern and
+	// therefore invisible here -- this map validates placements, not sources.
+	//
+	// The compliance card is taller than it is wide because it stacks a gauge
+	// over a pass/fail row; the other two are wider because each row carries a
+	// resource name beside a cluster of severity chips.
+	"policy-compliance": {MinW: 3, MinH: 4},
+	"policy-violations": {MinW: 4, MinH: 3},
+	// The second parameterized widget, and the first whose parameter is
+	// MANDATORY rather than a scoping choice: the backing route
+	// (`/v1/scanning/vulnerabilities`) answers 400 without `?namespace=`, so
+	// there is no unparameterized form of this card to fall back to. Same key
+	// and same empty value slice as diagnostics-summary above, for the same
+	// reasons -- see that entry's comment.
+	"vulnerability-severity": {
+		MinW:   4,
+		MinH:   3,
+		Params: map[string][]string{paramKeyNamespace: {}},
+	},
 }
 
 // MaxDashboardLayoutsPerUser is the per-user, per-cluster ceiling. One layout

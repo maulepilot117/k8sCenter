@@ -76,7 +76,7 @@ export function sourcesOf(def: WidgetSourceDecl): DataSourceKey[] {
 /**
  * Whether a family status payload reports its feature installed.
  *
- * Three payload shapes across six families, one field. The boolean families
+ * Three payload shapes across seven families, one field. The boolean families
  * (cert-manager, External Secrets, Velero) report absence as `detected:
  * false`; the string families (policy, GitOps, service mesh) report it as
  * `detected: ""` and otherwise name which implementation was found --

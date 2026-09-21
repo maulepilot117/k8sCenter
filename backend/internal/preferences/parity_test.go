@@ -80,8 +80,9 @@ func TestContractParity(t *testing.T) {
 					"diagnostics-summary", "hpa-status", "memory-tile",
 					"network-tile", "node-conditions", "nodes", "pdb-risk",
 					"pending-pods", "pod-restarts", "pod-status", "pods-tile",
-					"quota-pressure", "recent-events", "resource-utilization",
-					"storage-capacity", "top-consumers", "workload-health",
+					"policy-compliance", "policy-violations", "quota-pressure",
+					"recent-events", "resource-utilization", "storage-capacity",
+					"top-consumers", "vulnerability-severity", "workload-health",
 				},
 				tsConstName: "the widget registry",
 				tsFile:      "frontend/lib/dashboard/registry.ts",
@@ -154,12 +155,23 @@ func TestContractParity(t *testing.T) {
 			"pod-restarts":         {MinW: 3, MinH: 3},
 			"pod-status":           {MinW: 3, MinH: 4},
 			"pods-tile":            {MinW: 2, MinH: 2},
+			"policy-compliance":    {MinW: 3, MinH: 4},
+			"policy-violations":    {MinW: 4, MinH: 3},
 			"quota-pressure":       {MinW: 3, MinH: 3},
 			"recent-events":        {MinW: 3, MinH: 3},
 			"resource-utilization": {MinW: 4, MinH: 4},
 			"storage-capacity":     {MinW: 4, MinH: 4},
 			"top-consumers":        {MinW: 4, MinH: 4},
-			"workload-health":      {MinW: 3, MinH: 3},
+			// The second parameterized widget. Its namespace is MANDATORY
+			// rather than a scoping choice -- `/v1/scanning/vulnerabilities`
+			// answers 400 without one -- but the declaration is identical to
+			// diagnostics-summary's above, and for the same reasons.
+			"vulnerability-severity": {
+				MinW:   4,
+				MinH:   3,
+				Params: map[string][]string{paramKeyNamespace: {}},
+			},
+			"workload-health": {MinW: 3, MinH: 3},
 		}
 
 		for id, w := range want {

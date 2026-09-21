@@ -15,6 +15,7 @@ import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import { ApiError, api } from "@/lib/api.ts";
 import { decodeSourceKey } from "./params.ts";
+import { COMPLIANCE_HISTORY_DAYS } from "./severity.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   FAMILY_STATUS_KEYS,
@@ -83,10 +84,10 @@ const RANGE_SENSITIVE = RANGE_SENSITIVE_KEYS;
 /**
  * Sources the periodic refresh leaves alone once they have answered.
  *
- * The six discovery routes say whether an operator is installed on the
+ * The seven discovery routes say whether an operator is installed on the
  * cluster, which changes when somebody installs one -- not on the timescale of
  * a 60s tick. Re-asking costs more than the answer is worth: the dashboard
- * requests all six on mount whether or not a widget reads them, because the
+ * requests all seven on mount whether or not a widget reads them, because the
  * palette has to mark an un-added widget as unavailable before it is added,
  * and three of them (policies, gitops, mesh) share the backend's
  * 30-request-per-minute YAML bucket with `/yaml/*` and `/wizards/*`. Polling
@@ -140,7 +141,7 @@ export const REQUEST_TIMEOUT_MS = DASHBOARD_REFRESH_MS / 2;
  * The catalog has grown past the point where every non-cheap source fits in
  * the bound at once, which is what the bound is for: a dashboard holding the
  * workload widgets alongside the metric tiles wants the trends series, the
- * counts route, four list reads and six discovery routes, and the last of
+ * counts route, four list reads and seven discovery routes, and the last of
  * them waits for a slot rather than joining a twelve-request burst. The
  * refresh offsets below spread the same set across the interval on every tick
  * after the first.
@@ -928,7 +929,45 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "volume-capacity": (signal) =>
     read("/v1/monitoring/queries/cluster/storage-capacity", signal),
 
-  // The six discovery routes. Each answers "is this feature installed", which
+  // The security family's four reads. The prefixes are the two the project's
+  // own CLAUDE.md API summary gets wrong: policy routes are mounted under
+  // `/v1/policies/...` (plural) and vulnerabilities under `/v1/scanning/...`
+  // rather than a `/v1/security/...` that does not exist. Both confirmed
+  // against `registerPolicyRoutes` and `registerScanningRoutes` in
+  // backend/internal/server/routes.go.
+  "policy-compliance-score": (signal) =>
+    read("/v1/policies/compliance", signal),
+  // `days=30` is `COMPLIANCE_HISTORY_DAYS` in severity.ts, which is what the
+  // card's copy says the trend covers. A window changed in one place and not
+  // the other puts a truthful number under a false label.
+  "policy-compliance-history": async (signal) =>
+    (await read(
+      `/v1/policies/compliance/history?days=${COMPLIANCE_HISTORY_DAYS}`,
+      signal,
+    )) ?? [],
+  // `?? []`, and this is load-bearing rather than defensive. The handler
+  // builds its result with `var filtered []NormalizedViolation`, so an engine
+  // with nothing to report serialises as `"data": null` -- and a source whose
+  // data is null NEVER RENDERS: `resolveWidgetState` reads `data !== null` as
+  // "has landed", so the card would sit in the skeleton for as long as the
+  // cluster stayed clean. Normalising here is what makes "zero violations"
+  // reachable at all, which is one of this release's two acceptance examples.
+  "policy-violations-list": async (signal) =>
+    (await read("/v1/policies/violations", signal)) ?? [],
+  // The second parameterized fetcher, and the first whose parameter is
+  // mandatory rather than a scoping choice: the handler answers 400 without
+  // `?namespace=`. Percent-encoded for the same reason the diagnostics
+  // fetcher encodes its own -- this is where a stored value becomes a URL --
+  // though here it lands in the query string rather than the path.
+  "vulnerability-reports": (signal, _range, params) =>
+    read(
+      `/v1/scanning/vulnerabilities?namespace=${encodeURIComponent(
+        params.namespace ?? "",
+      )}`,
+      signal,
+    ),
+
+  // The seven discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see
   // FAMILY_STATUS_KEYS in types.ts. They are range-insensitive, so the 60s
   // refresh keeps them current and a time-range change does not refetch them.
@@ -936,9 +975,10 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "gitops-status": (signal) => read("/v1/gitops/status", signal),
   "certificates-status": (signal) => read("/v1/certificates/status", signal),
   "mesh-status": async (signal) => {
-    // The one route of the six that wraps its payload -- `{ status: {...} }`
+    // The one route of the seven that wraps its payload -- `{ status: {...} }`
     // -- kept symmetric with the rest of /mesh/*. Unwrapped here so that
-    // `featurePresent` reads one shape rather than six.
+    // `featurePresent` reads one shape rather than a different one per
+    // family.
     //
     // A body without the wrapper normalises to an explicit absent verdict
     // rather than to null. Null would have been the wrong safe direction: the
@@ -952,6 +992,10 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "external-secrets-status": (signal) =>
     read("/v1/externalsecrets/status", signal),
   "velero-status": (signal) => read("/v1/velero/status", signal),
+  // The seventh. Same string-valued `detected` the policy, GitOps and mesh
+  // statuses use -- `""`, `"trivy"`, `"kubescape"` or `"both"` -- so
+  // `featurePresent` reads it without a special case.
+  "scanning-status": (signal) => read("/v1/scanning/status", signal),
 };
 
 export const dashboardData: SourceCache = createSourceCache(DASHBOARD_FETCHERS);

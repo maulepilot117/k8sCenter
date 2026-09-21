@@ -36,7 +36,7 @@ export const NOT_PERMITTED = "Not permitted for this account";
  * A snapshot rather than a lookup into the live cache, because this module is
  * pure. A key that is missing, still in flight, or failed for any reason other
  * than a refusal is simply not an answer, and blocks nothing: refusing a row
- * because six discovery routes have not come back yet would make the palette's
+ * because seven discovery routes have not come back yet would make the palette's
  * contents depend on request timing, and a transient 500 on a discovery route
  * is not evidence a feature is missing.
  */
