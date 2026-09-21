@@ -35,8 +35,133 @@ import type { DataSourceKey, LayoutItem } from "./types.ts";
  */
 export const PARAM_KEY_NAMESPACE = "namespace";
 
+/**
+ * The param key whose value names a Kubernetes Service inside that namespace.
+ *
+ * Exactly the server's `paramKeyService`. The second key, and the first whose
+ * legal values are not knowable ahead of time AND are not re-authorized on
+ * read -- which is why it is the only key with a value SHAPE (see
+ * `PARAM_VALUE_SHAPE`). A namespace that is nonsense is inert, because the
+ * read path checks it against the live cluster and withholds the placement
+ * when it does not authorize. Nothing performs that check for a service name:
+ * there is no per-service grant to test it against, and the backing route
+ * authorizes the namespace. So a service value that reached storage
+ * unvalidated would be exactly the "unvalidated caller text in a stored
+ * layout" D-8 exists to prevent, and its shape is the whole defence.
+ */
+export const PARAM_KEY_SERVICE = "service";
+
 /** Every param key a widget may declare. See `PARAM_KEY_NAMESPACE`. */
-export const KNOWN_PARAM_KEYS: readonly string[] = [PARAM_KEY_NAMESPACE];
+export const KNOWN_PARAM_KEYS: readonly string[] = [
+  PARAM_KEY_NAMESPACE,
+  PARAM_KEY_SERVICE,
+];
+
+/**
+ * Keys whose open values must additionally match a shape, and the shape.
+ *
+ * Mirrors `paramValueShapes` in backend/internal/preferences/dashboard.go,
+ * pattern for pattern. A key absent from this table is bounded only by the
+ * generic length and control-character rules, which is what `namespace` has
+ * been since P3 and stays -- tightening it here would start refusing saves of
+ * layouts the server has been accepting, which is the drift this module
+ * exists to prevent rather than cause.
+ *
+ * A Service name is a DNS-1035 label: lowercase alphanumerics and dashes,
+ * starting with a letter, at most 63 characters. Stricter than a namespace's
+ * DNS-1123 label on purpose -- it is what Kubernetes itself enforces on the
+ * object -- and strict enough that a URL, a path, a PromQL expression and a
+ * shell fragment are all refused by the same rule rather than by four
+ * blocklists.
+ */
+export const PARAM_VALUE_SHAPE: Readonly<Record<string, RegExp>> = {
+  [PARAM_KEY_SERVICE]: /^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$/,
+};
+
+/**
+ * Which key a field's value space is drawn from, for the keys that have one.
+ *
+ * Mirrors nothing on the server, and does not need to: this is a collection
+ * rule, not a storage rule. The server validates a service name's shape
+ * whatever namespace it arrived beside, because a placement is validated as a
+ * whole and a service that does not exist in its namespace is not a thing the
+ * server can tell apart from one that was deleted a minute ago.
+ *
+ * It matters here because the dialog cannot offer a service list before it
+ * knows which namespace to list from, and because a service chosen in one
+ * namespace is meaningless in another.
+ */
+export const PARAM_KEY_PARENT: Readonly<Record<string, string>> = {
+  [PARAM_KEY_SERVICE]: PARAM_KEY_NAMESPACE,
+};
+
+/** The key `key`'s value space is scoped by, or null when it has none. */
+export function paramParentKey(key: string): string | null {
+  return PARAM_KEY_PARENT[key] ?? null;
+}
+
+/** Why a field cannot be used yet, or null when it can. */
+export type ParamFieldBlock = "awaiting-parent" | "no-options";
+
+export interface ParamFieldState {
+  enabled: boolean;
+  blocked: ParamFieldBlock | null;
+}
+
+/**
+ * Whether a field can be used, and if not, why.
+ *
+ * Two reasons, and they need different copy: a service field before a
+ * namespace is chosen is waiting for something the user is about to do, while
+ * a service field in a namespace whose services the user cannot list is
+ * waiting for nothing at all.
+ *
+ * Both outcomes are a DISABLED SELECT. Neither is a text input, and that is
+ * the load-bearing part: "there is nothing to offer, so let them type it"
+ * would put an unvalidated service name into a stored layout, which is
+ * precisely the shape D-8 exists to keep out (and the reason
+ * `PARAM_VALUE_SHAPE` exists as the second line of defence for the client
+ * that skips the dialog).
+ */
+export function paramFieldState(
+  key: string,
+  values: Readonly<Record<string, string>>,
+  options: readonly string[],
+): ParamFieldState {
+  const parent = paramParentKey(key);
+  if (parent !== null && (values[parent] ?? "") === "") {
+    return { enabled: false, blocked: "awaiting-parent" };
+  }
+  if (options.length === 0) return { enabled: false, blocked: "no-options" };
+  return { enabled: true, blocked: null };
+}
+
+/**
+ * `values` with one key set, and every key that depended on it cleared.
+ *
+ * Unconditional on the parent's new value, including when it is the value the
+ * parent already had: the dependent field's OPTIONS are refetched either way,
+ * and a value kept across a refetch is a value that was never checked against
+ * the list it is supposedly drawn from.
+ *
+ * The failure this prevents is silent. A golden-signals widget re-pointed
+ * from prod to staging while still carrying prod's service name reads a
+ * service that does not exist in staging, and the mesh answers zeros -- a
+ * card reporting no traffic for a service that is simply not there, which is
+ * absence rendering as good news (R1) one level down from where the shell can
+ * see it.
+ */
+export function withParamValue(
+  values: Readonly<Record<string, string>>,
+  key: string,
+  value: string,
+): Record<string, string> {
+  const next: Record<string, string> = { ...values, [key]: value };
+  for (const [child, parent] of Object.entries(PARAM_KEY_PARENT)) {
+    if (parent === key && child in next) next[child] = "";
+  }
+  return next;
+}
 
 /** Mirrors `maxParamKeyLen` in backend/internal/preferences/dashboard.go. */
 export const MAX_PARAM_KEY_LEN = 32;
@@ -67,6 +192,15 @@ export const PARAMETERIZED_SOURCE_PARAMS: Readonly<
   // reason: two vulnerability cards pointed at different namespaces are two
   // cache entries, and two pointed at the same one are a single fetch.
   "vulnerability-reports": [PARAM_KEY_NAMESPACE],
+  // The first source keyed by TWO values. `/v1/mesh/golden-signals` requires
+  // both and answers 400 with either missing, and -- more to the point here --
+  // two cards on two services in one namespace are two different reads. Keyed
+  // on the namespace alone they would collapse into one cache entry showing
+  // whichever service landed last, under two cards each labelled with its own.
+  "mesh-golden-signals": [PARAM_KEY_NAMESPACE, PARAM_KEY_SERVICE],
+  // The Hubble REST route requires `?namespace=` and answers 400 without one,
+  // like the scanning route above: a mandatory scope rather than a choice.
+  "hubble-flows": [PARAM_KEY_NAMESPACE],
 };
 
 /** C0 and C1 -- Unicode category Cc, which is what Go's `unicode.IsControl`
@@ -93,6 +227,7 @@ function runeCount(value: string): number {
  * read back.
  */
 export function paramValueError(
+  key: string,
   value: string,
   allowed: readonly string[],
 ): string | null {
@@ -103,7 +238,15 @@ export function paramValueError(
   if (CONTROL_CHARS.test(value)) {
     return "Control characters are not allowed.";
   }
-  if (allowed.length > 0 && !allowed.includes(value)) {
+  if (allowed.length > 0) {
+    return allowed.includes(value) ? null : "Choose one of the offered values.";
+  }
+  // Open-valued, so the generic bounds above were the whole check until a key
+  // arrived whose value nothing downstream re-authorizes. `PARAM_VALUE_SHAPE`
+  // names those keys and carries the reasoning; a key absent from it keeps the
+  // behaviour it shipped with.
+  const shape = PARAM_VALUE_SHAPE[key];
+  if (shape !== undefined && !shape.test(value)) {
     return "Choose one of the offered values.";
   }
   return null;

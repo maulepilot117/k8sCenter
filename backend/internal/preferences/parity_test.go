@@ -78,8 +78,10 @@ func TestContractParity(t *testing.T) {
 				want: []string{
 					"active-alerts", "certs-expiring", "cluster-health",
 					"cpu-tile", "diagnostics-summary", "eso-health",
+					"gateway-routes",
 					"gitops-app-health", "gitops-recent-syncs",
-					"hpa-status", "memory-tile", "mtls-coverage",
+					"hpa-status", "hubble-flows", "memory-tile",
+					"mesh-golden-signals", "mtls-coverage",
 					"network-tile",
 					"node-conditions", "nodes", "pdb-risk", "pending-pods",
 					"pod-restarts", "pod-status", "pods-tile",
@@ -160,9 +162,35 @@ func TestContractParity(t *testing.T) {
 			// parameters -- `mtls-coverage` in particular ships parameterless
 			// on purpose: `/v1/mesh/mtls` reads an absent namespace as a
 			// cluster-scoped request, which is what an overview card wants.
-			"gitops-app-health":    {MinW: 4, MinH: 3},
-			"gitops-recent-syncs":  {MinW: 4, MinH: 3},
-			"mtls-coverage":        {MinW: 4, MinH: 3},
+			"gitops-app-health":   {MinW: 4, MinH: 3},
+			"gitops-recent-syncs": {MinW: 4, MinH: 3},
+			"mtls-coverage":       {MinW: 4, MinH: 3},
+			// The rest of the networking family. `gateway-routes` is
+			// parameterless for the reason the data-protection four are: both
+			// Gateway API list routes are cluster-wide and already
+			// RBAC-filtered.
+			"gateway-routes": {MinW: 4, MinH: 3},
+			// The Hubble REST route answers 400 without `?namespace=`, so this
+			// parameter is mandatory rather than a scoping choice -- the same
+			// case as vulnerability-severity below.
+			"hubble-flows": {
+				MinW:   4,
+				MinH:   3,
+				Params: map[string][]string{paramKeyNamespace: {}},
+			},
+			// The first widget with TWO parameters, and the first whose two
+			// are not bounded the same way. `/v1/mesh/golden-signals` requires
+			// both. The namespace is re-authorized per read; the service is
+			// not, and is bounded by `paramValueShapes` instead -- which is
+			// what the open-valued-key check below now tests for.
+			"mesh-golden-signals": {
+				MinW: 3,
+				MinH: 3,
+				Params: map[string][]string{
+					paramKeyNamespace: {},
+					paramKeyService:   {},
+				},
+			},
 			"hpa-status":           {MinW: 3, MinH: 3},
 			"memory-tile":          {MinW: 2, MinH: 2},
 			"network-tile":         {MinW: 2, MinH: 2},
@@ -209,19 +237,39 @@ func TestContractParity(t *testing.T) {
 						"frontend/lib/dashboard/registry_test.ts to match, or update this test)",
 						id, got.Params, w.Params)
 				}
-				// A namespace parameter is the one key the read path
-				// re-authorizes (R5). A widget that meant to take one and
-				// spelled it differently would store and render identically
-				// and simply never be withheld, so the spelling is pinned
-				// rather than left to the catalog literal above to match by
-				// eye.
+				// An open-valued parameter is one whose values this catalog
+				// cannot enumerate, so the validator cannot check membership
+				// and something else has to stand in its place. There are
+				// exactly two things that can:
+				//
+				//   - `paramKeyNamespace`, whose value the READ path
+				//     re-authorizes against the live cluster on every read
+				//     (R5). A namespace that is nonsense can never authorize,
+				//     so the placement is withheld and the value is inert.
+				//   - a key in `paramValueShapes`, whose value has to match a
+				//     Kubernetes name pattern before it is stored at all.
+				//
+				// A key with neither is unvalidated caller text sitting in a
+				// stored layout, which is what spec §7 forbids. The spelling
+				// is pinned here rather than left to the catalog literal above
+				// to match by eye, because the failure it prevents -- a widget
+				// that meant to take a namespace and spelled the key
+				// differently -- stores and renders identically and is simply
+				// never withheld.
 				for key := range got.Params {
-					if key != paramKeyNamespace && len(got.Params[key]) == 0 {
-						t.Fatalf("%s declares an open-valued parameter %q; only %q is "+
-							"re-authorized on read, so an open value under any other key "+
-							"is unvalidated caller text in a stored layout",
-							id, key, paramKeyNamespace)
+					if len(got.Params[key]) > 0 {
+						continue // a closed set validates itself
 					}
+					if key == paramKeyNamespace {
+						continue
+					}
+					if _, bounded := paramValueShapes[key]; bounded {
+						continue
+					}
+					t.Fatalf("%s declares an open-valued parameter %q that is neither %q "+
+						"(re-authorized on read) nor shape-bounded in paramValueShapes, "+
+						"so its value is unvalidated caller text in a stored layout",
+						id, key, paramKeyNamespace)
 				}
 				// A minimum below 1 would be a zero-area widget. The validator
 				// floors it independently, so this is the catalog's own bound.

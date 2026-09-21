@@ -40,7 +40,7 @@ export type WidgetFamily = (typeof WIDGET_FAMILIES)[number];
  * absence from an empty list renders "no expiring certificates" on a cluster
  * with no cert-manager, which is the exact failure R1 forbids.
  *
- * Seven families, three payload shapes, one rule: `detected` is `false` or
+ * Ten families, three payload shapes, one rule: `detected` is `false` or
  * `""` when the feature is absent, and names the implementation otherwise. See
  * `featurePresent` in widget-state.ts, which is the only place that reads it.
  */
@@ -84,6 +84,34 @@ export const FAMILY_STATUS_KEYS = [
   // no VolumeSnapshotClasses still answers `available: true` -- so this says
   // "snapshots are a thing here", never "snapshots are configured here".
   "snapshots-status",
+  // The ninth. Gateway API is CRD-discovered like the first seven and DOES
+  // mount a `/status` route (`/v1/gateway/status`), but it reports presence as
+  // `available: boolean` rather than `detected` -- so the fetcher normalises
+  // the flag into the `{ detected }` shape `featurePresent` reads, exactly as
+  // `snapshots-status` normalises its own.
+  //
+  // Needed for the same reason every other family status is: every Gateway API
+  // list route answers 200 with an EMPTY ARRAY when the CRDs are absent (the
+  // handlers return `[]GatewaySummary{}` outright on `!IsAvailable`), which is
+  // byte-identical to a cluster that has Gateway API installed and no Gateways
+  // yet. "No gateways are misrouting" is a reassuring sentence and it is false
+  // on a cluster with no Gateway API at all (R1).
+  "gateway-status",
+  // The tenth, and the only one that is not a CRD check.
+  //
+  // Hubble is a Cilium FEATURE, not a CRD: it is on when the Cilium ConfigMap
+  // carries `enable-hubble: "true"` and a `hubble-relay` Service was found.
+  // The networking family publishes both through `/v1/networking/cni`, whose
+  // `features.hubble` flag is what this key reads and normalises.
+  //
+  // The flows route cannot answer the question itself. It answers 503 when the
+  // backend has no Hubble client and 400 when the namespace is missing, and a
+  // card built on those would show an ERROR for a cluster that simply does not
+  // run Hubble -- which is honest but useless, where the unavailable state is
+  // both. More importantly the reverse holds: a cluster WITH Hubble and a
+  // quiet namespace answers 200 with an empty flow list, which is what "no
+  // dropped traffic" has to be told apart from.
+  "hubble-status",
 ] as const;
 export type FamilyStatusKey = (typeof FAMILY_STATUS_KEYS)[number];
 
@@ -213,12 +241,46 @@ export const DATA_SOURCE_KEYS = [
   // rows depended on it would be blank on most clusters. See
   // `gitopsRecentSyncsView` in sync-state.ts.
   "gitops-applications",
-  // The networking family's one read: `/v1/mesh/mtls`, and requested with NO
+  // The networking family's first read: `/v1/mesh/mtls`, requested with NO
   // namespace, which that route treats as a cluster-scoped read (KTD4). That
   // is what keeps `mtls-coverage` parameterless: the cluster-wide posture is
   // the more useful default for an overview card and the one an operator
   // cannot reconstruct without visiting every namespace page in turn.
   "mesh-mtls",
+  // The networking family's remaining four reads.
+  //
+  // `mesh-golden-signals` is `/v1/mesh/golden-signals`, and the first source
+  // in this table keyed by TWO parameters. The route REQUIRES both a
+  // `?namespace=` and a `?service=` and answers 400 with either missing, so
+  // there is no cluster-wide or namespace-wide form of it to read instead --
+  // unlike `mesh-mtls` above, whose parameterless cluster-scoped form is
+  // exactly what made that card parameterless. It optionally takes a `?mesh=`
+  // selector, which this source deliberately does not send: see the fetcher.
+  "mesh-golden-signals",
+  // `/v1/networking/hubble/flows`, the REST route -- NOT `/ws/flows`. A
+  // dashboard card holding a WebSocket open per placement would turn a
+  // six-card layout into six live gRPC streams against Hubble Relay for as
+  // long as the tab is open, and a flow feed that repaints continuously is
+  // not what an overview card is. One bounded batch per refresh instead.
+  "hubble-flows",
+  // The Gateway API family's two reads, under `/v1/gateway/...` -- their own
+  // top-level prefix, NOT under `/v1/networking/...` where the Cilium and CNI
+  // routes live. Confirmed against `registerGatewayRoutes` in
+  // backend/internal/server/routes.go.
+  //
+  // Two keys and not one because the card answers two questions the other
+  // cannot: `gateway-gateways` carries each Gateway's own
+  // `status.listeners[].attachedRoutes` total, which is the controller's count
+  // across EVERY route kind, and `gateway-httproutes` is the route inventory
+  // the card ranks and the only way to see a route whose parent names a
+  // Gateway that is not there.
+  //
+  // `/v1/gateway/routes` is deliberately not a third source: it REQUIRES a
+  // `?kind=` from {grpcroutes, tcproutes, tlsroutes, udproutes} and serves one
+  // kind per call, so covering it would be four more reads for kinds a small
+  // minority of clusters run. The card names what it counted instead.
+  "gateway-gateways",
+  "gateway-httproutes",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -391,6 +453,31 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   "gitops-applications": "expensive",
   "mesh-mtls": "expensive",
 
+  // The networking family's other four. All expensive, and three of them for
+  // reasons this table has already used once.
+  //
+  // `mesh-golden-signals` fans out SIX Prometheus instant queries per request
+  // behind one access review, with no server-side cache, and is issued once
+  // per distinct namespace/service pair on the layout -- a Prometheus read
+  // AND a cost that grows with the dashboard, which is this class twice over
+  // in the same way `mesh-mtls` above is.
+  //
+  // `hubble-flows` is a live gRPC stream to Hubble Relay, drained until EOF or
+  // a 1000-flow cap, in front of a pod LIST used as the namespace RBAC check.
+  // The class definition names Hubble outright.
+  //
+  // The two Gateway API reads are the mildest pair in this block and still not
+  // cheap: each runs `filterByRBAC`, a SelfSubjectAccessReview PER NAMESPACE
+  // carrying a Gateway or an HTTPRoute, which is the argument that classified
+  // `limits-namespaces`, `policy-violations-list`, `certificates-list` and
+  // `gitops-applications`. Their 30-second server-side cache covers the CRD
+  // fetch only; the access reviews and the serialisation of every normalized
+  // object are paid per request.
+  "mesh-golden-signals": "expensive",
+  "hubble-flows": "expensive",
+  "gateway-gateways": "expensive",
+  "gateway-httproutes": "expensive",
+
   "policies-status": "discovery",
   "gitops-status": "discovery",
   "certificates-status": "discovery",
@@ -404,6 +491,17 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   // this class describes. The expensive snapshot read is `snapshots-list`
   // above, and it is a separate key precisely so this one can stay cheap.
   "snapshots-status": "discovery",
+  // The ninth. A 5-minute-cached CRD discovery call behind a route that does
+  // nothing else, which is this class exactly.
+  "gateway-status": "discovery",
+  // The tenth, and `discovery` by behaviour rather than by name: the CNI
+  // detector answers from a cached probe and re-probes only when asked to, so
+  // a read is a map lookup in the common case and a DaemonSet scan plus a
+  // ConfigMap read in the cold one. Dearer than an informer lookup, far
+  // cheaper than the flow stream it guards, and it sits under the networking
+  // routes' 30-request-per-minute YAML bucket -- the argument that put three
+  // of the eight above it in this class.
+  "hubble-status": "discovery",
 };
 
 /**

@@ -14,6 +14,7 @@
 import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import { ApiError, api } from "@/lib/api.ts";
+import { HUBBLE_FLOW_BATCH } from "./networking.ts";
 import { decodeSourceKey } from "./params.ts";
 import { COMPLIANCE_HISTORY_DAYS } from "./severity.ts";
 import type { DataSourceKey } from "./types.ts";
@@ -84,12 +85,12 @@ const RANGE_SENSITIVE = RANGE_SENSITIVE_KEYS;
 /**
  * Sources the periodic refresh leaves alone once they have answered.
  *
- * The eight discovery routes say whether an operator is installed on the
+ * The ten discovery routes say whether a feature is installed on the
  * cluster, which changes when somebody installs one -- not on the timescale of
  * a 60s tick. Re-asking costs more than the answer is worth: the dashboard
- * requests all eight on mount whether or not a widget reads them, because the
+ * requests all ten on mount whether or not a widget reads them, because the
  * palette has to mark an un-added widget as unavailable before it is added,
- * and three of them (policies, gitops, mesh) share the backend's
+ * and four of them (policies, gitops, mesh, hubble) share the backend's
  * 30-request-per-minute YAML bucket with `/yaml/*` and `/wizards/*`. Polling
  * them would spend a tenth of that shared budget, per IP, for as long as a
  * dashboard tab is open.
@@ -1058,7 +1059,68 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "mesh-mtls": async (signal) =>
     withList(await read("/v1/mesh/mtls", signal), "workloads"),
 
-  // The eight discovery routes. Each answers "is this feature installed", which
+  // The networking family's other four.
+  //
+  // The third parameterized fetcher and the first that needs TWO values. Both
+  // are mandatory -- the handler answers 400 with either missing -- and both
+  // are percent-encoded for the reason the two above it are: this is where a
+  // stored value becomes a URL. `URLSearchParams` rather than hand-built
+  // interpolation, because two values doubles the number of places a missed
+  // encode can hide.
+  //
+  // No `?mesh=`. The route resolves the mesh from its own discovery when the
+  // parameter is absent, which is right on every cluster running one mesh;
+  // it answers 400 on a cluster running BOTH, asking to be told which. That
+  // is a third parameter, and a third parameter is a third stored value on
+  // every placement and a third field in the dialog, to disambiguate a
+  // configuration the mesh pages themselves treat as unusual. The card takes
+  // the 400 and says what it means instead.
+  "mesh-golden-signals": (signal, _range, params) =>
+    read(
+      `/v1/mesh/golden-signals?${new URLSearchParams({
+        namespace: params.namespace ?? "",
+        service: params.service ?? "",
+      }).toString()}`,
+      signal,
+    ),
+
+  // The REST flow route, NOT `/ws/flows`. See `hubble-flows` in types.ts.
+  //
+  // `?? []` and it is load-bearing, not defensive: `GetFlows` accumulates into
+  // `var flows []FlowRecord` and hands back a NIL slice when the namespace is
+  // quiet, which Go marshals as `"data": null`. A source whose data is null
+  // never renders -- `resolveWidgetState` reads `data !== null` as "has
+  // landed" -- so without this the card would sit in its skeleton forever on
+  // exactly the cluster it has the best news for. The same defect
+  // `policy-violations-list` shipped with.
+  //
+  // `limit` is the card's own cap rather than the route's 100 default: the
+  // percentages are a share of the batch, and a batch of 100 out of a busy
+  // namespace makes that share noise.
+  "hubble-flows": async (signal, _range, params) =>
+    (await read(
+      `/v1/networking/hubble/flows?${new URLSearchParams({
+        namespace: params.namespace ?? "",
+        limit: String(HUBBLE_FLOW_BATCH),
+      }).toString()}`,
+      signal,
+    )) ?? [],
+
+  // The Gateway API pair, under `/v1/gateway/...` -- its own top-level prefix,
+  // not the networking one. `?? []` on both: today each handler returns
+  // `make([]T, 0, n)` through `filterByRBAC` and a literal empty slice on its
+  // not-installed path, both checked, so neither can answer null now. The
+  // guard is here because the cost of a later regression is invisible and
+  // permanent, which is the reasoning the data-protection four carry.
+  "gateway-gateways": async (signal) =>
+    (await read("/v1/gateway/gateways", signal)) ?? [],
+  // HTTPRoutes have their own route; `/v1/gateway/routes` serves one NON-HTTP
+  // kind per call behind a required `?kind=` and 400s without it, so it is not
+  // the route to ask for "all routes".
+  "gateway-httproutes": async (signal) =>
+    (await read("/v1/gateway/httproutes", signal)) ?? [],
+
+  // The ten discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see
   // FAMILY_STATUS_KEYS in types.ts. They are range-insensitive, so the 60s
   // refresh keeps them current and a time-range change does not refetch them.
@@ -1112,6 +1174,43 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
     const available = (res.metadata as { available?: unknown } | undefined)
       ?.available;
     return { detected: available === true };
+  },
+  // The ninth. Gateway API DOES mount a `/status` route, and it reports
+  // presence as `available: boolean` rather than as `detected` -- so this
+  // normalises the flag into the shape `featurePresent` reads, exactly as the
+  // mesh status above unwraps its own envelope and the snapshot status above
+  // lifts its flag out of metadata. Anything other than a literal `true` reads
+  // as ABSENT, which is the deliberate direction for the reason those two
+  // carry: a build that cannot parse this route saying "not installed" is a
+  // visible bug someone fixes, where one rendering an empty green gateway card
+  // on a cluster with no Gateway API is a bug nobody sees (R1).
+  "gateway-status": async (signal) => {
+    const body = await read("/v1/gateway/status", signal);
+    return {
+      detected: (body as { available?: unknown } | null)?.available === true,
+    };
+  },
+  // The tenth, and the only family status that is not a CRD check. Hubble is a
+  // Cilium feature flag plus a discovered Relay Service, and
+  // `/v1/networking/cni` is where the detector publishes both.
+  //
+  // `features.hubble` and not `features.hubbleRelayAddr`: the flag is what the
+  // Cilium ConfigMap says is enabled, while the address is what the detector
+  // managed to find, and a Relay the detector missed is a broken lookup rather
+  // than an absent feature. Reading the address would report Hubble as
+  // uninstalled on a cluster running it, which is the error in the direction
+  // that costs an operator a real signal.
+  //
+  // Always an object, even for a null body: a family status whose data is null
+  // leaves the widget in its skeleton for good, because `resolveWidgetState`
+  // reads `data !== null` as "has landed" before it ever asks whether the
+  // feature is present.
+  "hubble-status": async (signal) => {
+    const body = await read("/v1/networking/cni", signal);
+    const features = (body as { features?: unknown } | null)?.features;
+    return {
+      detected: (features as { hubble?: unknown } | undefined)?.hubble === true,
+    };
   },
 };
 

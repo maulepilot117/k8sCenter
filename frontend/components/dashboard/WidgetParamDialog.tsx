@@ -9,10 +9,16 @@ import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 import {
   duplicatePlacementOf,
   missingParamKeys,
+  PARAM_KEY_NAMESPACE,
+  PARAM_KEY_SERVICE,
+  paramFieldState,
+  paramParentKey,
   paramValueError,
+  withParamValue,
 } from "@/lib/dashboard/params.ts";
 import type { LayoutItem, WidgetDef } from "@/lib/dashboard/types.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { useNamespacedServices } from "@/lib/hooks/use-services.ts";
 
 /**
  * The values a parameterized widget needs, collected before it is placed and
@@ -45,6 +51,22 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
  *
  * Confirming returns the values. Cancelling returns nothing, and the caller
  * treats that as "place no widget" rather than "place it with defaults".
+ *
+ * **Cascading fields.** A widget may declare a key whose value space is scoped
+ * by another key's -- a service inside a namespace. That field is disabled
+ * until its parent is answered, its options are fetched from the parent's
+ * value, and its value is cleared whenever the parent changes. The rules are
+ * in `params.ts` under test (`paramFieldState`, `withParamValue`); this file
+ * only renders what they answer.
+ *
+ * The one thing a reader should not change without reading D-8: a dependent
+ * field with no options stays a DISABLED SELECT. "There is nothing to offer,
+ * so let them type it" is the obvious repair and it is the defect -- a service
+ * name that reaches a stored layout without coming from a fetched list is
+ * unvalidated caller text, which is what the parameter surface exists to keep
+ * out. An empty list is the answer to a namespace with no services and to one
+ * the caller may not list services in, and a disabled select is the right
+ * answer to both.
  */
 
 /** What the caller gets back. A cancel calls `onCancel` instead. */
@@ -96,6 +118,19 @@ export default function WidgetParamDialog({
   // is made by someone who is about to use it, and a failure leaves the list
   // at its "default" fallback rather than blocking the dialog.
   const namespaces = useNamespaces();
+  // The service picker's options, scoped to whatever namespace is currently
+  // chosen. Re-read when that changes, which is why it takes the value rather
+  // than the signal: this component re-renders on every value change already,
+  // so the hook sees the new namespace on the same pass the field does.
+  //
+  // A widget that declares no service key still calls this -- hooks cannot be
+  // conditional -- and it costs nothing, because the hook issues no request
+  // for an empty namespace and a parameterless widget never has one.
+  const services = useNamespacedServices(
+    keys.includes(PARAM_KEY_SERVICE)
+      ? (values.value[PARAM_KEY_NAMESPACE] ?? "")
+      : "",
+  );
 
   // On the first field, not on Cancel: every field is something to fill in and
   // Cancel is the way out, so opening on the exit would open on the one
@@ -127,9 +162,10 @@ export default function WidgetParamDialog({
 
     // Unfilled fields first, and named. One field could report this through
     // `paramValueError`'s own empty-value message, but a widget taking two --
-    // the namespace-then-service case a later unit adds -- would then say
+    // the namespace-and-service case golden signals brought -- would then say
     // "choose a value" without saying which, on a dialog where the user can
-    // see two empty selects.
+    // see two empty selects. This is also what refuses a confirm with a
+    // namespace and no service, which the backing read needs both of.
     const missing = missingParamKeys(declared, next);
     if (missing.length > 0) {
       problem.value = `Choose a ${missing.join(" and a ")}.`;
@@ -137,7 +173,7 @@ export default function WidgetParamDialog({
     }
 
     for (const key of keys) {
-      const error = paramValueError(next[key], declared[key] ?? []);
+      const error = paramValueError(key, next[key], declared[key] ?? []);
       if (error !== null) {
         problem.value = error;
         return;
@@ -171,13 +207,33 @@ export default function WidgetParamDialog({
       <div class="flex flex-col gap-3 px-4 py-3">
         {keys.map((key, index) => {
           const allowed = declared[key] ?? [];
-          // An open-valued key is a namespace today, and the cluster's own
-          // namespace list is the only sane source of options for one -- so
-          // both branches render a select and neither renders a free-text
-          // field. That is D-8 made structural rather than promised: there is
-          // no control here into which a query or a URL can be typed.
-          const options = allowed.length > 0 ? [...allowed] : namespaces.value;
+          // Three sources of options, one control. A closed set the widget
+          // declared; the cluster's namespaces; or the chosen namespace's
+          // services. Every branch is a SELECT and none of them is a text
+          // input, including the branch where there is nothing to offer --
+          // that is D-8 made structural rather than promised, because a
+          // service name that reached a stored layout without coming from one
+          // of these lists is unvalidated caller text by construction.
+          const options =
+            allowed.length > 0
+              ? [...allowed]
+              : key === PARAM_KEY_SERVICE
+                ? services.value
+                : namespaces.value;
           const current = values.value[key] ?? "";
+          const field = paramFieldState(key, values.value, options);
+          const parent = paramParentKey(key);
+          // Two reasons a field is unusable and they need different copy: one
+          // is waiting for something the user is about to do, the other is
+          // waiting for nothing at all.
+          const hint =
+            field.blocked === "awaiting-parent"
+              ? `Choose a ${parent} first.`
+              : field.blocked === "no-options"
+                ? parent === null
+                  ? `No ${key} on this cluster is available to choose.`
+                  : `No ${key} you can list in ${values.value[parent] ?? ""}.`
+                : null;
           return (
             <label key={key} class="flex flex-col gap-1">
               <span class="text-xs font-medium capitalize text-text-secondary">
@@ -187,14 +243,22 @@ export default function WidgetParamDialog({
                 ref={index === 0 ? firstField : undefined}
                 data-testid={`widget-param-${key}`}
                 value={current}
+                disabled={!field.enabled}
                 onChange={(e) => {
-                  values.value = {
-                    ...values.value,
-                    [key]: (e.target as HTMLSelectElement).value,
-                  };
+                  // Through `withParamValue`, not a spread: choosing a
+                  // namespace has to clear the service chosen under the
+                  // previous one. A service kept across that change points at
+                  // a name the new namespace may not have, and the mesh
+                  // answers zeros for a service that is not there -- a card
+                  // reporting no traffic for something that does not exist.
+                  values.value = withParamValue(
+                    values.value,
+                    key,
+                    (e.target as HTMLSelectElement).value,
+                  );
                   problem.value = null;
                 }}
-                class="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                class="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {/* A placeholder row, so an unfilled field reads as unfilled
                     rather than as the first namespace in the list. It carries
@@ -214,6 +278,14 @@ export default function WidgetParamDialog({
                   </option>
                 ))}
               </select>
+              {hint !== null && (
+                <span
+                  data-testid={`widget-param-${key}-hint`}
+                  class="text-[11px] leading-snug text-text-muted"
+                >
+                  {hint}
+                </span>
+              )}
             </label>
           );
         })}
