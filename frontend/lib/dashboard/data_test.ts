@@ -702,6 +702,60 @@ test("errorKind: any other failure stays an ordinary failure", async () => {
   expect(cache.state("cluster-info").errorKind).toBe("failure");
 });
 
+test("errorKind: a not-found from a slug source is a refusal, not a failure", async () => {
+  // The slug-query handler answers "you lack the grant" and "no such slug"
+  // with the same 404 so its catalog cannot be enumerated (F#29). Left as an
+  // ordinary failure, a user who simply cannot read pods cluster-wide gets
+  // "could not be loaded" and a retry that will never work, instead of the
+  // permission card R2 built for them.
+  const cache = createSourceCache({
+    "top-consumers-cpu": () =>
+      Promise.reject(new ApiError(404, 404, "not found or forbidden")),
+    "top-consumers-memory": () =>
+      Promise.reject(new ApiError(404, 404, "not found or forbidden")),
+  });
+
+  cache.ensure(["top-consumers-cpu", "top-consumers-memory"], "1h");
+  await cache.settled();
+
+  expect(cache.state("top-consumers-cpu").errorKind).toBe("permission");
+  expect(cache.state("top-consumers-memory").errorKind).toBe("permission");
+});
+
+test("errorKind: a not-found from any other source stays an ordinary failure", async () => {
+  // The widening is declared per source for exactly this reason. A 404 from a
+  // resource route means the object is gone -- a namespace deleted while the
+  // dashboard was open -- which is not a permission problem and must not
+  // render as one.
+  const cache = createSourceCache({
+    "pods-list": () => Promise.reject(new ApiError(404, 404, "not found")),
+    "diagnostics-summary": () =>
+      Promise.reject(new ApiError(404, 404, "not found")),
+  });
+
+  const diag = sourceKeyFor("diagnostics-summary", { namespace: "gone" });
+  cache.ensure(["pods-list", diag], "1h");
+  await cache.settled();
+
+  expect(cache.state("pods-list").errorKind).toBe("failure");
+  expect(cache.state(diag).errorKind).toBe("failure");
+});
+
+test("errorKind: a slug source's other failures are not refusals", async () => {
+  // 503 is "Prometheus was never discovered" and 502 is "Prometheus answered
+  // badly". Both are conditions of the cluster, not of the account, and both
+  // keep the retry the permission card withholds.
+  const cache = createSourceCache({
+    "top-consumers-cpu": () =>
+      Promise.reject(new ApiError(503, 503, "Prometheus is not available")),
+  });
+
+  cache.ensure(["top-consumers-cpu"], "1h");
+  await cache.settled();
+
+  expect(cache.state("top-consumers-cpu").errorKind).toBe("failure");
+});
+
 test("errorKind: a recovered refresh clears the earlier classification", async () => {
   // Permissions change under a live session -- a role binding added while the
   // dashboard is open -- and a widget left in the permission state after the
@@ -980,11 +1034,12 @@ test("bound: cheap sources are not subject to the bound", async () => {
   expect(stalled).toEqual([]);
 
   // Drain in passes: resolving the running ones admits the queued one, which
-  // registers a deferred of its own.
-  for (let pass = 0; pass < 3; pass++) {
-    for (const d of pending.values()) d.resolve("ok");
-    await sleep(0);
-  }
+  // registers a deferred of its own. `drain` rather than a fixed pass count --
+  // the number of passes needed is the number of QUEUED requests, which grows
+  // every time a non-cheap source is added, so a hardcoded count turns the
+  // next added source into a five-second timeout here. That is exactly what
+  // `drain`'s docstring warns about and exactly what U7 tripped.
+  await drain(pending);
   await cache.settled();
 });
 

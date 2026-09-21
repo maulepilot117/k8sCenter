@@ -67,6 +67,51 @@ export const DATA_SOURCE_KEYS = [
   // diagnostics widgets pointed at different namespaces are two entries and
   // two pointed at the same one are still a single fetch.
   "diagnostics-summary",
+  // Batch counts for every informer-tracked kind. Read by the workload
+  // roll-up as its visibility oracle rather than only as a source of totals:
+  // the route omits a kind the caller cannot list instead of zeroing it, and
+  // it is the only route that answers "may this account see this kind at
+  // all". See `ResourceCounts` in wire-types.ts.
+  "resource-counts",
+  // Four reads of the generic list route, one per kind. Separate keys rather
+  // than one parameterized source: the kind is fixed by the widget, not
+  // chosen by the user, so there is nothing to carry in a cache key and
+  // nothing for the server to re-authorize (D-8).
+  "deployments-list",
+  "statefulsets-list",
+  "daemonsets-list",
+  "pods-list",
+  // Two more of the same, for the scaling widgets. The route kind is `hpas`
+  // and `pdbs` -- the resource adapters' `Kind()`, which is NOT the
+  // `horizontalpodautoscalers` / `poddisruptionbudgets` spelling the counts
+  // route and the RBAC checks use. Requesting the long form gets a 404 for a
+  // kind that is very much present.
+  "hpas-list",
+  "pdbs-list",
+  // The reliability reads. `nodes-list` is the same generic list route again
+  // -- and `nodes` is both the adapter's `Kind()` and the long resource name,
+  // so this one does not have the `hpas`/`pdbs` trap. The other two are not
+  // the generic route at all: `limits-namespaces` is the ResourceQuota /
+  // LimitRange roll-up the limits family serves, and `storage-classes` is the
+  // storage family's class inventory. Neither family is CRD-discovered, so
+  // neither has a status key here.
+  "nodes-list",
+  "limits-namespaces",
+  "storage-classes",
+  // The first sources that are neither an informer read nor a discovery
+  // route: two named, server-owned PromQL templates from the slug registry
+  // (`backend/internal/monitoring/query_registry.go`). The widget names a
+  // slug and nothing else -- no query text, no URL (D-8) -- and the raw
+  // `/monitoring/query` routes stay admin-gated and unreachable from here
+  // (R15).
+  "top-consumers-cpu",
+  "top-consumers-memory",
+  // The third slug read, and the one whose key does NOT echo its slug tail.
+  // It reads `cluster/storage-capacity`, but the widget that composes it is
+  // itself `storage-capacity` -- a card declaring a source of its own name
+  // beside a second one reads as a typo. Named for what the series carry
+  // instead: per-PersistentVolumeClaim percent-of-capacity-used.
+  "volume-capacity",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -124,6 +169,47 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   // than being fixed per page. That is "a cost the backend pays per request
   // rather than amortising across viewers", which is this class.
   "diagnostics-summary": "expensive",
+  // The five list-shaped reads. Informer-backed, and still not cheap, for the
+  // two reasons the diagnostics entry above gives and one of their own:
+  // every one of them runs a SelfSubjectAccessReview before it reads
+  // anything, and every one of them serialises whole Kubernetes objects --
+  // up to the route's 500-item page cap -- rather than a handful of numbers.
+  // `pods-list` is the extreme case: a page of 500 pod specs is orders of
+  // magnitude more bytes than the entire dashboard summary. A read whose cost
+  // the backend pays per request rather than amortising across viewers is
+  // this class, and that is what these are.
+  "resource-counts": "expensive",
+  "deployments-list": "expensive",
+  "statefulsets-list": "expensive",
+  "daemonsets-list": "expensive",
+  "pods-list": "expensive",
+  // Same route, same reasons.
+  "hpas-list": "expensive",
+  "pdbs-list": "expensive",
+  // Same route, same reasons, and a node object is one of the larger ones the
+  // route serves -- capacity, allocatable, images and a dozen conditions each.
+  "nodes-list": "expensive",
+  // Neither of these is the generic list route, and neither is cheap.
+  //
+  // `limits-namespaces` runs a SelfSubjectAccessReview PER NAMESPACE before it
+  // answers -- `filterByRBAC` checks every namespace in the roll-up
+  // individually -- so its cost scales with the cluster rather than with the
+  // dashboard. `storage-classes` is the mildest source in this table: an
+  // informer list with no access review at all. It is still not `cheap`,
+  // because both routes sit under the backend's 30-request-per-minute YAML
+  // bucket, shared with `/yaml/*` and `/wizards/*` -- a dashboard refreshing
+  // them on the unmanaged path would spend an operator's YAML budget in
+  // another tab. Classifying by the bucket rather than by the work is the
+  // direction `sourceCost` already defaults in.
+  "limits-namespaces": "expensive",
+  "storage-classes": "expensive",
+  // Prometheus, which is the definition of this class: seconds rather than
+  // milliseconds, and a cost the backend pays per request. The slug handler
+  // adds a SelfSubjectAccessReview in front of the query, so a refused caller
+  // pays for the check and gets nothing.
+  "top-consumers-cpu": "expensive",
+  "top-consumers-memory": "expensive",
+  "volume-capacity": "expensive",
 
   "policies-status": "discovery",
   "gitops-status": "discovery",
@@ -159,6 +245,53 @@ export function sourceCost(key: string): SourceCost {
  */
 export const RANGE_SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   "dashboard-trends",
+]);
+
+/**
+ * Sources whose 404 is a refusal, not a missing object.
+ *
+ * The slug-query handler answers a caller who lacks the slug's declared grant
+ * with 404 and the body "not found or forbidden" -- the SAME response it gives
+ * for a slug that does not exist. That is deliberate: a 403 there would let
+ * anyone enumerate the query catalog by watching which slugs come back
+ * forbidden (F#29 of the 2026-05-22 audit). The opacity is a property of that
+ * route, and the backend is not the thing to change.
+ *
+ * But the failure classifier in data.ts maps 403 and nothing else to the
+ * permission state, so without this a user who simply lacks cluster-wide pod
+ * read lands the top-consumers card in the plain error state -- "could not be
+ * loaded", with a retry that will never work -- instead of the permission
+ * state R2 built for exactly that person. The widget cannot fix it itself:
+ * `resolveWidgetState` decides the outcome before `render` is ever called, so
+ * by the time the widget runs, the choice has been made.
+ *
+ * So the widening is declared per source rather than applied to the status
+ * code globally. A 404 from an ordinary resource route means the object is
+ * gone, which is not a permission problem and must not read as one; a 404
+ * from a route that has no other way to say "forbidden" is the only place the
+ * reading is right. Two keys today, both pointing at the one handler that
+ * refuses this way.
+ *
+ * The residual imprecision is named rather than hidden: a frontend asking a
+ * backend too old to carry the slug also gets a 404, and this classifies that
+ * as a permission problem too. Both mean "this build will not serve you this
+ * query", the card is identical either way, and the alternative -- reading
+ * every genuine refusal as a server error -- is wrong for the far more common
+ * case.
+ */
+export const NOT_FOUND_IS_REFUSAL: ReadonlySet<string> = new Set([
+  "top-consumers-cpu",
+  "top-consumers-memory",
+  // The third slug, and the same handler. Listed even though it is an
+  // OPTIONAL source, where the two above are required ones: the widget reads
+  // `errorKind` itself to choose between "your account may not read volume
+  // usage" and "volume usage could not be read", and without this entry a
+  // refused caller gets the second -- an invitation to wait for something
+  // that will never arrive. Its declared grant is a cluster-scoped `list` on
+  // persistentvolumeclaims, which is exactly the grant a namespace-scoped
+  // operator does not have, so this is the common case on that card rather
+  // than an edge one.
+  "volume-capacity",
 ]);
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is

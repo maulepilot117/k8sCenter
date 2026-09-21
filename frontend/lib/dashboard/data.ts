@@ -18,21 +18,25 @@ import { decodeSourceKey } from "./params.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   FAMILY_STATUS_KEYS,
+  NOT_FOUND_IS_REFUSAL,
   RANGE_SENSITIVE_KEYS,
   sourceCost,
 } from "./types.ts";
 // Safe despite the apparent cycle: widget-state's only import from this
 // file is `import type`, which is erased, so there is no runtime edge back.
 import { featurePresent } from "./widget-state.ts";
+import type { ResourceListPage } from "./wire-types.ts";
 
 /**
  * Why a source failed, as far as it can be told apart from the response.
  *
- * "permission" is a 403 and nothing else: a standing fact about the account
- * that no amount of waiting changes, which is why the shell renders it without
- * a retry affordance (R2). Everything else -- a 500, a dropped connection, a
- * malformed body -- is "failure", which is the behavior that shipped, kept
- * under a name so the two are distinguishable at the call site.
+ * "permission" is a standing fact about the account that no amount of waiting
+ * changes, which is why the shell renders it without a retry affordance (R2).
+ * It is a 403, plus the 404 the slug-query route uses in place of one so its
+ * catalog cannot be enumerated -- see `classify` below and
+ * `NOT_FOUND_IS_REFUSAL` in types.ts. Everything else -- a 500, a dropped
+ * connection, a malformed body -- is "failure", which is the behavior that
+ * shipped, kept under a name so the two are distinguishable at the call site.
  */
 export type SourceErrorKind = "permission" | "failure";
 
@@ -133,9 +137,13 @@ export const REQUEST_TIMEOUT_MS = DASHBOARD_REFRESH_MS / 2;
  * widget went away. Raising it would move the queue back into the browser
  * without issuing anything sooner.
  *
- * The ten shipped widgets read seven non-cheap sources between them -- the
- * trends series and the six discovery routes -- so at most one waits at load,
- * and it starts the moment the first of the six answers.
+ * The catalog has grown past the point where every non-cheap source fits in
+ * the bound at once, which is what the bound is for: a dashboard holding the
+ * workload widgets alongside the metric tiles wants the trends series, the
+ * counts route, four list reads and six discovery routes, and the last of
+ * them waits for a slot rather than joining a twelve-request burst. The
+ * refresh offsets below spread the same set across the interval on every tick
+ * after the first.
  *
  * Cheap reads are not counted or bounded. They are informer lookups; making
  * one wait behind a Prometheus range query would trade a cost that does not
@@ -202,19 +210,27 @@ function messageOf(err: unknown): string {
 }
 
 /**
- * A forbidden response, and only a forbidden response, is a permission
- * outcome.
+ * A forbidden response is a permission outcome -- and so is a not-found from
+ * the handful of sources that have no other way to say forbidden.
  *
  * Read off the HTTP status rather than the message, because the message is
  * whatever the handler wrote and a widget must not branch on prose. 401 is
  * deliberately not here: `api()` refreshes and retries on 401 and surfaces a
  * session expiry, which is an authentication problem the whole page shares,
  * not this widget's own.
+ *
+ * The 404 branch is narrow on purpose and takes the source key to keep it
+ * that way. An ordinary resource route's 404 means the object is gone, which
+ * is not a permission problem and must never render as one; only the
+ * slug-query route deliberately collapses "forbidden" into "not found" so its
+ * catalog cannot be enumerated. `NOT_FOUND_IS_REFUSAL` in types.ts names the
+ * sources that read it, and carries the full reasoning.
  */
-function classify(err: unknown): SourceErrorKind {
-  return err instanceof ApiError && err.status === 403
-    ? "permission"
-    : "failure";
+function classify(err: unknown, base: string): SourceErrorKind {
+  if (!(err instanceof ApiError)) return "failure";
+  if (err.status === 403) return "permission";
+  if (err.status === 404 && NOT_FOUND_IS_REFUSAL.has(base)) return "permission";
+  return "failure";
 }
 
 function isAbort(err: unknown): boolean {
@@ -436,7 +452,7 @@ export function createSourceCache(
   /** Puts a request on the wire. Called either straight from `run` or later,
    * when a slot frees. */
   function issue(entry: InFlight, fetcher: SourceFetcher): Promise<void> {
-    const { key, range, params, controller } = entry;
+    const { key, base, range, params, controller } = entry;
     const s = sig(key);
 
     // Nothing below this layer bounds a request. The server-side proxy times
@@ -503,7 +519,7 @@ export function createSourceCache(
         s.value = {
           ...s.value,
           error: messageOf(err),
-          errorKind: classify(err),
+          errorKind: classify(err, base),
           loading: false,
         };
       })
@@ -789,6 +805,35 @@ async function read(path: string, signal: AbortSignal): Promise<unknown> {
 }
 
 /**
+ * The largest page the generic list route will serve. Requests above it are
+ * clamped server-side (`parseListParams`), so asking for more would silently
+ * get this and leave the client believing it had the whole population.
+ */
+const LIST_PAGE_LIMIT = 500;
+
+/**
+ * GET a list endpoint and keep BOTH halves of its envelope.
+ *
+ * `read` above drops `metadata`, which is right for the handlers that answer
+ * with a whole object and wrong for the list route: the route caps a page at
+ * `LIST_PAGE_LIMIT` items while `metadata.total` reports the whole
+ * population, so dropping the total would leave a consumer unable to tell a
+ * complete list from the first 500 of three thousand. Every widget that ranks
+ * a list has to say which of the two it is showing.
+ */
+async function readList(
+  path: string,
+  signal: AbortSignal,
+): Promise<ResourceListPage> {
+  const res = await api<unknown>(`${path}?limit=${LIST_PAGE_LIMIT}`, {
+    method: "GET",
+    signal,
+  });
+  const items = Array.isArray(res.data) ? res.data : [];
+  return { items, total: res.metadata?.total ?? items.length };
+}
+
+/**
  * The real fetchers. Endpoints and shapes match what DashboardV2 fetched
  * before the extraction; cluster-info and recent-events gain the 60s refresh
  * the other two always had, because a silently ageing event list is a defect.
@@ -820,6 +865,68 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
       `/v1/diagnostics/${encodeURIComponent(params.namespace ?? "")}/summary`,
       signal,
     ),
+
+  // Batch counts across every informer-tracked kind. Deliberately requested
+  // without a namespace: the dashboard is a cluster-wide surface, and the
+  // namespace picker scopes the list pages rather than this one.
+  "resource-counts": (signal) => read("/v1/resources/counts", signal),
+
+  // The four list reads. `readList`, not `read`: what these widgets render is
+  // a ranking, and a ranking over a capped page has to be labelled as one.
+  "deployments-list": (signal) => readList("/v1/resources/deployments", signal),
+  "statefulsets-list": (signal) =>
+    readList("/v1/resources/statefulsets", signal),
+  "daemonsets-list": (signal) => readList("/v1/resources/daemonsets", signal),
+  "pods-list": (signal) => readList("/v1/resources/pods", signal),
+
+  // `hpas` and `pdbs`, not `horizontalpodautoscalers` and
+  // `poddisruptionbudgets`. The generic route dispatches on the resource
+  // adapter's `Kind()`, which is the short form; the long form is what the
+  // counts route keys on and what the RBAC check names, and asking for it
+  // here returns a 404 for a kind that is present on every cluster.
+  "hpas-list": (signal) => readList("/v1/resources/hpas", signal),
+  "pdbs-list": (signal) => readList("/v1/resources/pdbs", signal),
+
+  // `nodes` is both the adapter's `Kind()` and the long resource name, so
+  // unlike the two above there is no short/long form to get wrong.
+  "nodes-list": (signal) => readList("/v1/resources/nodes", signal),
+
+  // Two family routes rather than the generic one, and neither is a list page
+  // -- both answer with a whole roll-up, so `read` and not `readList`.
+  //
+  // `/limits/namespaces` returns one row per namespace that has a
+  // ResourceQuota OR a LimitRange, already RBAC-filtered and already sorted by
+  // utilization. The rows with no quota are the reason `quotaPressureView`
+  // cannot simply render the payload: they are in it, and a pressure ranking
+  // must not carry them. Deliberately requested without a namespace, like
+  // `resource-counts`: the dashboard is a cluster-wide surface.
+  "limits-namespaces": (signal) => read("/v1/limits/namespaces", signal),
+  // `/storage/classes` is the storage family's class inventory. There is no
+  // bare `/storage` overview route to ask instead -- the family mounts
+  // drivers, classes, snapshots, snapshot-classes and presets under its own
+  // prefix and nothing that spans them -- which is why the card composes this
+  // with the Prometheus slug below rather than reading one endpoint.
+  "storage-classes": (signal) => read("/v1/storage/classes", signal),
+
+  // The two slug reads. The whole query lives on the server; the client
+  // names it and nothing else (D-8, R15). No namespace and no name: these
+  // slugs are `ClusterWide`, which also pins their RBAC check to a
+  // cluster-scoped grant, so supplying either would be ignored by the
+  // handler and misleading here.
+  //
+  // A caller without that grant gets 404, not 403 -- the handler answers
+  // refusals and unknown slugs identically so the catalog cannot be
+  // enumerated. `NOT_FOUND_IS_REFUSAL` is what turns that back into the
+  // permission state these two cards need.
+  "top-consumers-cpu": (signal) =>
+    read("/v1/monitoring/queries/cluster/top-consumers-cpu", signal),
+  "top-consumers-memory": (signal) =>
+    read("/v1/monitoring/queries/cluster/top-consumers-memory", signal),
+  // The third slug. Its RBAC check is a cluster-scoped `list` on
+  // persistentvolumeclaims rather than on pods, and it refuses the same
+  // opaque way -- hence its entry in `NOT_FOUND_IS_REFUSAL` too.
+  "volume-capacity": (signal) =>
+    read("/v1/monitoring/queries/cluster/storage-capacity", signal),
 
   // The six discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see

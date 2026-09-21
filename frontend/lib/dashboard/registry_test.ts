@@ -493,6 +493,21 @@ test("the parameterized widgets and their declared keys are pinned", () => {
   });
 });
 
+test("the CPU/memory switch on top-consumers is a view choice, not stored state", () => {
+  // The card switches between two rankings, and the switch is held in
+  // component state. Storing it would mean either two catalog entries or a
+  // `params` declaration -- putting a view toggle into the saved layout, into
+  // its revision history and into the server's per-widget parameter
+  // validation, for something that is a button. The pin above already fails
+  // if a `params` key appears here; this says why, and pins the other half:
+  // both slugs are declared as sources, so either tab renders from data the
+  // cache already holds rather than from a fetch the toggle triggers.
+  const def = getWidget("top-consumers");
+  expect(def?.params).toBeUndefined();
+  expect(def?.sources).toEqual(["top-consumers-cpu", "top-consumers-memory"]);
+  expect(def?.optionalSources).toEqual(["top-consumers-memory"]);
+});
+
 test("every declared parameter key is one the server recognises", () => {
   // The namespace key is special-cased by the read path, which re-authorizes
   // its value on every read (R5). A widget spelling it differently would look

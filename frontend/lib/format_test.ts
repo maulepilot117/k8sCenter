@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { formatMbps, lastDelta, percentile } from "./format.ts";
+import { durationShort, formatMbps, lastDelta, percentile } from "./format.ts";
 
 // --- percentile ---
 
@@ -102,4 +102,31 @@ test("lastDelta: a non-finite endpoint has no delta", () => {
   expect(lastDelta([1, Number.NaN])).toBeNull();
   expect(lastDelta([Number.NaN, 1])).toBeNull();
   expect(lastDelta([1, Number.POSITIVE_INFINITY])).toBeNull();
+});
+
+// --- durationShort ---
+//
+// `age` above takes a timestamp and reads the clock itself. The pod widgets
+// hold an already-computed millisecond age (injected clock, so the ranking is
+// testable), so they need the other half on its own.
+
+test("durationShort: an unmeasurable age renders an em-dash", () => {
+  // Null means the creationTimestamp was missing or unparseable. A pod whose
+  // age nobody can read must not render as "0s", which reads as brand new and
+  // is the opposite of what an unreadable field tells us.
+  expect(durationShort(null)).toBe("—");
+  expect(durationShort(Number.NaN)).toBe("—");
+});
+
+test("durationShort: a negative age clamps to zero rather than counting up", () => {
+  // Clock skew between the API server and the browser. "-3s" is noise.
+  expect(durationShort(-3000)).toBe("0s");
+});
+
+test("durationShort: steps through seconds, minutes, hours and days", () => {
+  expect(durationShort(5_000)).toBe("5s");
+  expect(durationShort(59_000)).toBe("59s");
+  expect(durationShort(60_000)).toBe("1m");
+  expect(durationShort(90 * 60_000)).toBe("1h");
+  expect(durationShort(36 * 3_600_000)).toBe("1d");
 });

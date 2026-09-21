@@ -17,24 +17,45 @@ test("default layout: every id resolves to a registered widget", () => {
   expect(missing.map((i) => i.id)).toEqual([]);
 });
 
-test("default layout: contains every shipped parameterless widget exactly once", () => {
-  // Compared by id, not by count: registry_test registers `fixture-*`
-  // widgets, and bun shares module state across test files in one run.
-  //
-  // Parameterless is the whole set that CAN be here. A widget that needs a
-  // value has no defensible default -- the layout every user starts from
-  // cannot know which namespace any of them cares about, and picking one
-  // would put a card on every dashboard that most accounts are not permitted
-  // to read and that the server would withhold on load. So the default ships
-  // the widgets that need nothing, and a parameterized one arrives when a
+test("default layout: is the curated starting set, pinned by id", () => {
+  // This used to assert that the default held EVERY shipped parameterless
+  // widget. That was true while the catalog was the ten cards the
+  // pre-registry dashboard rendered and the default was simply those ten
+  // re-expressed -- but the catalog is now an assembly kit, and a default
+  // that grew with it would put every widget of every release on the
+  // starting dashboard, run into DASHBOARD_MAX_ITEMS, and hand a new user a
+  // wall of cards about features their cluster may not even run. The default
+  // is a curated subset from here on, so it is pinned by literal instead:
+  // adding a widget to the catalog no longer touches this list, and adding
+  // one TO THE DEFAULT is a deliberate edit that has to say so here.
+  expect(items.map((i) => i.id).sort()).toEqual([
+    "active-alerts",
+    "cluster-health",
+    "cpu-tile",
+    "memory-tile",
+    "network-tile",
+    "nodes",
+    "pod-status",
+    "pods-tile",
+    "recent-events",
+    "resource-utilization",
+  ]);
+});
+
+test("default layout: holds only parameterless widgets", () => {
+  // The half of the old assertion that still holds, kept because the reason
+  // survives the catalog's growth: a widget that needs a value has no
+  // defensible default. The layout every user starts from cannot know which
+  // namespace any of them cares about, and picking one would put a card on
+  // every dashboard that most accounts are not permitted to read and that
+  // the server would withhold on load. A parameterized widget arrives when a
   // user adds it and chooses.
-  const shipped = allWidgets()
-    .filter((w) => !w.id.startsWith("fixture-"))
-    .filter((w) => w.params === undefined)
-    .map((w) => w.id)
-    .sort();
-  expect(items.map((i) => i.id).sort()).toEqual(shipped);
-  expect(shipped).toHaveLength(10);
+  const shipped = new Set(
+    allWidgets()
+      .filter((w) => w.params === undefined)
+      .map((w) => w.id),
+  );
+  expect(items.filter((i) => !shipped.has(i.id)).map((i) => i.id)).toEqual([]);
 });
 
 test("default layout: carries no parameters", () => {
