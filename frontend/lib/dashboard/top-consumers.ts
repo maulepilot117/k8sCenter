@@ -15,6 +15,8 @@
  * to an empty list -- which on this card would render as a cluster where
  * nothing is using anything.
  */
+
+import { list, obj, str } from "./narrow.ts";
 import type { DataSourceKey } from "./types.ts";
 
 /**
@@ -86,16 +88,6 @@ const UNREADABLE: TopConsumersView = {
   warnings: [],
 };
 
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
 /**
  * The numeric half of a `[timestamp, value]` sample pair.
  *
@@ -132,11 +124,16 @@ export function rankConsumers(
   // means somebody made it a range query, and rendering one sample of it as
   // "current usage" would be a number nobody asked for.
   if (str(body.resultType) !== "vector") return UNREADABLE;
-  if (!Array.isArray(body.result)) return UNREADABLE;
+  // The payload's own list: not-a-list is unreadable, which is the shared
+  // contract in narrow.ts rather than a judgement made locally here. Bound to
+  // a name because that is what carries the narrowing forward -- the call
+  // alone leaves `body.result` unknown to the loop below.
+  const samples = list(body.result);
+  if (samples === null) return UNREADABLE;
 
   const rows: ConsumerRow[] = [];
   let dropped = 0;
-  for (const sample of body.result) {
+  for (const sample of samples) {
     const s = obj(sample);
     const metric = obj(s?.metric);
     const pod = str(metric?.pod);

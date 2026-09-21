@@ -13,6 +13,8 @@
  * throw -- otherwise a single malformed pod blanks a card describing several
  * hundred readable ones.
  */
+
+import { list, listOr, obj, str } from "./narrow.ts";
 import type { PageCoverage } from "./page-coverage.ts";
 import { coverage } from "./page-coverage.ts";
 import type { ResourceListPage } from "./wire-types.ts";
@@ -72,28 +74,14 @@ export interface PodHealth {
   ageMs: number | null;
 }
 
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function arr(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
 /** Every container status a pod carries, regular and init. Init containers
  * are included because an init container in a restart loop keeps the pod
  * down exactly as an app container does, and a ranking that ignored them
  * would report the stuck pod as having no restarts. */
 function containerStatuses(status: Record<string, unknown>): unknown[] {
   return [
-    ...arr(status.containerStatuses),
-    ...arr(status.initContainerStatuses),
+    ...listOr(status.containerStatuses),
+    ...listOr(status.initContainerStatuses),
   ];
 }
 
@@ -128,7 +116,7 @@ function scheduleRefusalOf(status: Record<string, unknown>): {
   refused: boolean;
   reason: string;
 } {
-  for (const c of arr(status.conditions)) {
+  for (const c of listOr(status.conditions)) {
     const o = obj(c);
     if (str(o?.type) !== "PodScheduled") continue;
     if (str(o?.status) !== "False") return { refused: false, reason: "" };
@@ -201,8 +189,9 @@ export function classifyPods(
   page: ResourceListPage | null | undefined,
   now: number = Date.now(),
 ): PodHealth[] {
-  if (page === null || page === undefined) return [];
-  return arr(page.items).map((item) => classifyPod(item, now));
+  // Not a list means nothing to classify. The difference between that and
+  // an empty cluster rides on `coverage(page, n).readable` in the views.
+  return (list(page?.items) ?? []).map((item) => classifyPod(item, now));
 }
 
 /** Namespace then name, so a tie orders identically on every refresh rather

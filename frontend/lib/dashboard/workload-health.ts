@@ -22,6 +22,8 @@
  * explicit and the card prints it.
  */
 
+import { numOr, obj } from "./narrow.ts";
+
 /** The three controller kinds this widget rolls up, in the order the card
  * renders them. Spelled as the counts route spells them -- lowercase plural --
  * because those strings are the map keys. */
@@ -99,20 +101,6 @@ export interface WorkloadHealthRollUp {
   empty: boolean;
 }
 
-/** Narrow an unknown to a readable object without asserting its shape. */
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-/** A finite number, or `fallback`. Rejects NaN and Infinity as well as the
- * wrong type: both arrive from a body this build cannot read, and both would
- * poison every sum they touch. */
-function num(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
 /**
  * Whether one controller object has as many ready replicas as it wants.
  *
@@ -139,18 +127,18 @@ export function workloadReady(kind: WorkloadKind, value: unknown): boolean {
   const status = obj(o.status) ?? {};
 
   if (kind === "daemonsets") {
-    const desired = num(status.desiredNumberScheduled, 0);
+    const desired = numOr(status.desiredNumberScheduled, 0);
     if (desired <= 0) return true;
-    return num(status.numberReady, 0) >= desired;
+    return numOr(status.numberReady, 0) >= desired;
   }
 
   const spec = obj(o.spec) ?? {};
   // Kubernetes defaults an omitted spec.replicas to 1, so the fallback is 1
   // and not 0: defaulting to 0 would make every default-sized Deployment read
   // as ready before it had a single pod.
-  const desired = num(spec.replicas, 1);
+  const desired = numOr(spec.replicas, 1);
   if (desired <= 0) return true;
-  return num(status.readyReplicas, 0) >= desired;
+  return numOr(status.readyReplicas, 0) >= desired;
 }
 
 const EMPTY_KIND = (kind: WorkloadKind): WorkloadKindHealth => ({
