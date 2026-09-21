@@ -21,6 +21,8 @@
  * degrades to `unknown` rather than blanking a card describing several hundred
  * readable ones.
  */
+
+import { list, listOr, num, obj, str } from "./narrow.ts";
 import type { PageCoverage } from "./page-coverage.ts";
 import { coverage } from "./page-coverage.ts";
 import type { ResourceListPage } from "./wire-types.ts";
@@ -44,34 +46,12 @@ export function pdbHref(namespace: string, name: string): string {
 
 // --- shared narrowing ------------------------------------------------------
 
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function arr(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-/**
- * A finite number, or null.
- *
- * Null rather than a fallback, everywhere in this module: a replica count we
- * could not read is not zero and not one, and every consumer below branches on
- * the difference instead of summing a guess.
- */
-function num(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
 function itemsOf(page: ResourceListPage | null | undefined): unknown[] {
-  if (page === null || page === undefined) return [];
-  return arr(page.items);
+  // A page whose `items` is not a list carries no items to count. That this
+  // is "could not read it" rather than "there were none" is carried by
+  // `coverage(page, n).readable`, which every view in this module spreads --
+  // deriving it in one place is what stops a new card having to remember it.
+  return list(page?.items) ?? [];
 }
 
 /** Namespace then name, so a tie orders identically on every refresh rather
@@ -212,7 +192,7 @@ function worstMetric(
   value: Record<string, unknown>,
 ): { current: number; target: number } | null {
   const targets = new Map<string, number>();
-  for (const m of arr(obj(value.spec)?.metrics)) {
+  for (const m of listOr(obj(value.spec)?.metrics)) {
     const key = metricKey(m);
     const target = utilizationOf(m, "target");
     // A target of zero would divide to Infinity below and is not a target any
@@ -222,7 +202,7 @@ function worstMetric(
   if (targets.size === 0) return null;
 
   let worst: { current: number; target: number } | null = null;
-  for (const m of arr(obj(value.status)?.currentMetrics)) {
+  for (const m of listOr(obj(value.status)?.currentMetrics)) {
     const key = metricKey(m);
     const target = targets.get(key);
     const current = utilizationOf(m, "current");

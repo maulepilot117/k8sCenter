@@ -30,6 +30,8 @@
  * degrades to a counter rather than blanking a card describing the readable
  * rest.
  */
+
+import { list, num, obj, str } from "./narrow.ts";
 import type { PageCoverage } from "./page-coverage.ts";
 import { coverage } from "./page-coverage.ts";
 import type { ResourceListPage } from "./wire-types.ts";
@@ -72,23 +74,6 @@ export function pressureLevel(percent: number): PressureLevel {
   if (percent >= PRESSURE_CRITICAL_PERCENT) return "critical";
   if (percent >= PRESSURE_WARNING_PERCENT) return "warning";
   return "ok";
-}
-
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-/** A finite number, or null. Null rather than a fallback, throughout: a
- * utilization we could not read is not zero, and every consumer below branches
- * on the difference instead of ranking a guess. */
-function num(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 // --------------------------------------------------------------------------
@@ -376,7 +361,9 @@ export function nodeConditionsView(
   page: ResourceListPage | null | undefined,
   limit: number,
 ): NodeConditionsView {
-  const items = Array.isArray(page?.items) ? page.items : [];
+  // `readable` on the spread coverage below is what tells the card this was
+  // a list at all; the counts here are only meaningful once it is true.
+  const items = list(page?.items) ?? [];
 
   const issues: NodeIssue[] = [];
   let clear = 0;

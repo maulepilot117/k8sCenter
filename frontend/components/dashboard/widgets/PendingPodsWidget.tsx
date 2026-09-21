@@ -53,7 +53,18 @@ function PendingPods() {
         ) : undefined
       }
     >
-      {waiting === 0 ? (
+      {!view.readable ? (
+        // The list route answered with something this build cannot read. The
+        // empty state below counts zero because there was nothing to count,
+        // not because the cluster is clean, and saying the latter over an
+        // unanswered read is the failure this release exists to prevent.
+        <p
+          data-testid="pending-pods-unreadable-page"
+          class="py-4 text-center text-xs text-text-muted"
+        >
+          The pod roll-up returned a result this card cannot read.
+        </p>
+      ) : waiting === 0 ? (
         <p
           data-testid="pending-pods-empty"
           class="py-4 text-center text-xs text-text-muted"

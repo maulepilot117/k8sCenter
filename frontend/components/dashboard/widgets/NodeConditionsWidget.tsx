@@ -67,7 +67,19 @@ function NodeConditions() {
         ) : undefined
       }
     >
-      {view.nodes.length === 0 ? (
+      {!view.readable ? (
+        // The nodes route answered with something this build cannot read as a
+        // list. Every count beside this is zero because there was nothing to
+        // count, so the empty state below would render a cluster where every
+        // node is ready -- the most reassuring thing this card can say, over
+        // a question that was never answered.
+        <p
+          data-testid="node-conditions-unreadable-page"
+          class="py-4 text-center text-xs text-text-muted"
+        >
+          The node roll-up returned a result this card cannot read.
+        </p>
+      ) : view.nodes.length === 0 ? (
         <p
           data-testid="node-conditions-empty"
           class="py-4 text-center text-xs text-text-muted"

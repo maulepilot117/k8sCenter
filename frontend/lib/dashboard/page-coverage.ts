@@ -18,6 +18,7 @@
  *
  * Pure: no DOM, no fetch, no signals (D-10).
  */
+import { list } from "./narrow.ts";
 import type { ResourceListPage } from "./wire-types.ts";
 
 export interface PageCoverage {
@@ -27,6 +28,16 @@ export interface PageCoverage {
   counted: number;
   /** The page is a sample of the population rather than all of it. */
   truncated: boolean;
+  /**
+   * The payload carried a list this build could read.
+   *
+   * False when the route answered with a null payload, a missing `items`, or
+   * an `items` that is not an array. Every count beside this one is then zero
+   * because there was nothing to count -- NOT because the cluster is clean --
+   * so a card that renders its empty state without checking this prints good
+   * news over a question that was never answered.
+   */
+  readable: boolean;
 }
 
 /**
@@ -43,5 +54,10 @@ export function coverage(
 ): PageCoverage {
   const raw = page?.total;
   const total = typeof raw === "number" && Number.isFinite(raw) ? raw : counted;
-  return { total, counted, truncated: total > counted };
+  // Read off the payload rather than taken from the caller: every view that
+  // spreads this already passes the page, and deriving it here is what makes
+  // the signal impossible for a new card to forget. A card still has to
+  // render it -- but it can no longer be absent from the view it renders.
+  const readable = list(page?.items) !== null;
+  return { total, counted, truncated: total > counted, readable };
 }

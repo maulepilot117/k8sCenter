@@ -287,8 +287,14 @@ const READY: Array<[string, string]> = [
   ["PIDPressure", "False"],
 ];
 
-function page(items: unknown[], total?: number): ResourceListPage {
-  return { items, total: total ?? items.length };
+/**
+ * `items` is deliberately `unknown` rather than `unknown[]`: a malformed
+ * payload is one of the cases these views have to distinguish, and a helper
+ * that could only build well-formed pages made that case unwritable.
+ */
+function page(items: unknown, total?: number): ResourceListPage {
+  const n = Array.isArray(items) ? items.length : 0;
+  return { items, total: total ?? n } as unknown as ResourceListPage;
 }
 
 describe("nodeConditionsView", () => {
@@ -448,14 +454,31 @@ describe("nodeConditionsView", () => {
     expect(view.nodes).toEqual([]);
   });
 
-  test("an empty or absent page does not throw", () => {
-    for (const p of [page([]), null, undefined]) {
+  test("an empty page is a readable, genuinely clean cluster", () => {
+    const view = nodeConditionsView(page([]), 10);
+    expect(view.readable).toBe(true);
+    expect(view.nodes).toEqual([]);
+    expect(view.affected).toBe(0);
+    expect(view.clear).toBe(0);
+    expect(view.total).toBe(0);
+    expect(view.truncated).toBe(false);
+  });
+
+  // This replaces "an empty or absent page does not throw", which asserted
+  // that an empty page, a null payload and an unreadable one all produce the
+  // same view. Not throwing was the right half of that; treating the three as
+  // one answer was the belief that let a card print a clean cluster over a
+  // read that never happened. The sentence is kept here because it is the
+  // mistake, not merely a test that was wrong.
+  test("a null, absent or malformed payload is unreadable, not clean", () => {
+    for (const p of [null, undefined, page(null), page("nodes"), page(7)]) {
       const view = nodeConditionsView(p, 10);
+      expect(view.readable).toBe(false);
+      // The counts are still zero -- there was nothing to count -- which is
+      // exactly why `readable` has to be what the card branches on.
       expect(view.nodes).toEqual([]);
       expect(view.affected).toBe(0);
       expect(view.clear).toBe(0);
-      expect(view.total).toBe(0);
-      expect(view.truncated).toBe(false);
     }
   });
 

@@ -79,7 +79,18 @@ function Autoscalers() {
         ) : undefined
       }
     >
-      {view.hpas.length === 0 ? (
+      {!view.readable ? (
+        // The list route answered with something this build cannot read. The
+        // empty state below counts zero because there was nothing to count,
+        // not because the cluster is clean, and saying the latter over an
+        // unanswered read is the failure this release exists to prevent.
+        <p
+          data-testid="hpa-status-unreadable-page"
+          class="py-4 text-center text-xs text-text-muted"
+        >
+          The autoscaler roll-up returned a result this card cannot read.
+        </p>
+      ) : view.hpas.length === 0 ? (
         <p
           data-testid="hpa-status-empty"
           class="py-4 text-center text-xs text-text-muted"
