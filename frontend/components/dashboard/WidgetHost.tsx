@@ -128,7 +128,16 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
   // Idle (never requested -- the consumer calls `ensure`, not this component)
   // and in-flight both land on the skeleton, so they never need
   // distinguishing.
-  const resolved = resolveWidgetState(def, (k) => dashboardData.state(k));
+  //
+  // The params go in as well, because a parameterized widget's sources are
+  // cached under keys that carry them -- resolving against the bare source
+  // name would read a key nothing ever fetched, and the card would sit in the
+  // skeleton rather than failing visibly.
+  const resolved = resolveWidgetState(
+    def,
+    (k) => dashboardData.state(k),
+    params,
+  );
 
   const mode = pickMode(def.modes, width.value, height.value);
   // In a grid cell the stale notice takes its natural height and the widget

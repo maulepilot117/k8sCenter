@@ -9,8 +9,13 @@ import { stubLayoutStore } from "./dashboard-layout-stub.ts";
 // the user's choice through it and that the result is on screen and saveable.
 //
 // The stored layout below is deliberately short. The shipped default carries
-// every widget in the catalog, so a dashboard that starts from it has nothing
-// left to add -- which is worth one test, and useless for the other six.
+// every PARAMETERLESS widget in the catalog, so a dashboard that starts from
+// it has almost nothing left to add -- which is worth one test, and useless
+// for the other six.
+//
+// "Almost" is the parameterized widget. The default cannot carry one: a
+// layout every user starts from has no defensible namespace to pick for them.
+// So the two counts below are different numbers and are not interchangeable.
 
 /** The three widgets the tests start from, and the seven they can add. */
 const PARTIAL_LAYOUT: DashboardLayoutConfig = {
@@ -24,8 +29,17 @@ const PARTIAL_LAYOUT: DashboardLayoutConfig = {
   ],
 };
 
-/** Every widget registered for the overview scope. */
-const CATALOG_SIZE = 10;
+/** Every widget registered for the overview scope, parameterized included. */
+const CATALOG_SIZE = 11;
+
+/** What the shipped default layout places: the parameterless catalog. */
+const DEFAULT_LAYOUT_SIZE = 10;
+
+/**
+ * The widgets that take parameters, which the default layout cannot carry and
+ * which therefore stay addable on a dashboard holding everything else.
+ */
+const PARAMETERIZED_IDS = ["diagnostics-summary"];
 
 const palette = (page: Page) => page.getByTestId("widget-palette");
 const option = (page: Page, widgetId: string) =>
@@ -47,7 +61,7 @@ async function openPalette(
   );
   await page.goto("/");
   await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(
-    stored === null ? CATALOG_SIZE : stored.items.length,
+    stored === null ? DEFAULT_LAYOUT_SIZE : stored.items.length,
   );
   await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
     "data-grid-mode",
@@ -152,21 +166,47 @@ test.describe("dashboard widget palette", () => {
     await expect(page.getByTestId("close-palette")).toBeFocused();
   });
 
-  test("every entry is disabled once the dashboard holds the whole catalog", async ({
+  test("only the parameterized entries remain addable on the shipped default", async ({
     page,
   }) => {
-    // The shipped default is exactly this case, and it is the one a first-time
-    // user meets. Nothing is addable and the palette says so on every row
-    // rather than opening empty.
+    // The shipped default is the dashboard a first-time user meets, and it
+    // holds every widget that can be placed without asking a question. Those
+    // rows say so rather than the palette opening empty; the rows that DO ask
+    // a question are not on it and stay addable, because a default layout has
+    // no defensible namespace to pick on the user's behalf.
     await openPalette(page, null);
 
     await expect(visibleOptions(page)).toHaveCount(CATALOG_SIZE);
+
+    for (const id of PARAMETERIZED_IDS) {
+      const row = option(page, id);
+      await expect(row).toHaveAttribute("aria-disabled", "false");
+      // Said before the row is chosen. Choosing it opens a dialog rather than
+      // placing a widget, and an Add that produced a dialog for no stated
+      // reason reads as a bug.
+      await expect(row.getByTestId("widget-option-needs-values")).toContainText(
+        "namespace",
+      );
+    }
+
+    const blocked = await visibleOptions(page).all();
+    expect(blocked).toHaveLength(CATALOG_SIZE);
+    for (const o of blocked) {
+      const id = await o.getAttribute("data-testid");
+      const parameterized = PARAMETERIZED_IDS.some(
+        (w) => id === `widget-option-${w}`,
+      );
+      await expect(o).toHaveAttribute(
+        "aria-disabled",
+        parameterized ? "false" : "true",
+      );
+    }
+
+    // The selection opens on the first row that can actually be added, which
+    // is now one of the parameterized ones rather than nothing at all.
     await expect(
       palette(page).getByRole("option", { selected: true }),
-    ).toHaveCount(0);
-    for (const o of await visibleOptions(page).all()) {
-      await expect(o).toHaveAttribute("aria-disabled", "true");
-    }
+    ).toHaveCount(1);
   });
 
   test("typing filters the catalog", async ({ page }) => {

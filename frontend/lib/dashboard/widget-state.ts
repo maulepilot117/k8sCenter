@@ -13,6 +13,7 @@
  * injected lookup rather than by reading the live cache.
  */
 import type { SourceState } from "./data.ts";
+import { sourceKeyFor } from "./params.ts";
 import type { DataSourceKey, WidgetDef } from "./types.ts";
 
 /**
@@ -132,19 +133,33 @@ export function featurePresent(data: unknown): boolean {
  */
 export function resolveWidgetState(
   def: WidgetSourceDecl,
-  stateOf: (key: DataSourceKey) => SourceState,
+  stateOf: (key: string) => SourceState,
+  params: Readonly<Record<string, string>> = {},
 ): WidgetResolution {
   const optional = def.optionalSources ?? [];
-  const keys = sourcesOf(def);
+  const declared = sourcesOf(def);
+  // A source is DECLARED by name and READ under a key. For everything that
+  // takes no parameters the two are the same string, which is why every
+  // caller that predates parameters still resolves correctly. For a
+  // parameterized one they differ, and looking up the declared name would
+  // read a key nothing ever fetched -- idle, so the widget would sit in the
+  // skeleton for good rather than failing visibly.
+  //
+  // The optional and family-status comparisons stay on the declared names,
+  // because that is what a widget author writes.
+  const keys = declared.map((k) => ({
+    declared: k,
+    key: sourceKeyFor(k, params),
+  }));
   const required = keys.filter(
-    (k) => k === def.familyStatus || !optional.includes(k),
+    (k) => k.declared === def.familyStatus || !optional.includes(k.declared),
   );
-  const requiredStates = required.map(stateOf);
+  const requiredStates = required.map((k) => stateOf(k.key));
 
   if (requiredStates.every((s) => s.data !== null)) {
     if (
       def.familyStatus !== undefined &&
-      !featurePresent(stateOf(def.familyStatus).data)
+      !featurePresent(stateOf(sourceKeyFor(def.familyStatus, params)).data)
     ) {
       return { state: "unavailable", blocking: null, stale: null };
     }
@@ -152,8 +167,9 @@ export function resolveWidgetState(
     // source still holds some: an optional source that failed before ever
     // loading has nothing stale to show, and the widget renders without it.
     const stale =
-      keys.map(stateOf).find((s) => s.error !== null && s.data !== null) ??
-      null;
+      keys
+        .map((k) => stateOf(k.key))
+        .find((s) => s.error !== null && s.data !== null) ?? null;
     return { state: "ready", blocking: null, stale };
   }
 

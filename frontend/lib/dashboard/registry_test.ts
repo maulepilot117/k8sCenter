@@ -13,6 +13,7 @@ import { join } from "node:path";
 // invariants cover.
 import "@/components/dashboard/widgets/index.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
+import { KNOWN_PARAM_KEYS } from "./params.ts";
 import {
   allWidgets,
   getWidget,
@@ -250,6 +251,7 @@ test("registry ids are pinned to the server-side allowlist", () => {
     "active-alerts",
     "cluster-health",
     "cpu-tile",
+    "diagnostics-summary",
     "memory-tile",
     "network-tile",
     "nodes",
@@ -280,6 +282,7 @@ test("registry minimums are pinned to the server-side catalog", () => {
     "active-alerts": [2, 3],
     "cluster-health": [3, 4],
     "cpu-tile": [2, 2],
+    "diagnostics-summary": [3, 3],
     "memory-tile": [2, 2],
     "network-tile": [2, 2],
     nodes: [3, 4],
@@ -290,17 +293,57 @@ test("registry minimums are pinned to the server-side catalog", () => {
   });
 });
 
-test("no shipped widget declares parameters yet", () => {
-  // The server refuses any parameter on a widget that declares none, which is
-  // every widget today. This test is the tripwire for that changing: the day a
-  // widget gains a `params` spec, this fails and so does the Go side's
-  // parameterless assertion, forcing the ParamSpec to be written in both
-  // catalogs rather than the server quietly accepting whatever arrives.
-  const parameterized = allWidgets()
-    .filter((w) => !w.id.startsWith("fixture-"))
-    .filter((w) => w.params !== undefined)
-    .map((w) => w.id);
-  expect(parameterized).toEqual([]);
+test("the parameterized widgets and their declared keys are pinned", () => {
+  // This replaced the "no shipped widget declares parameters yet" tripwire the
+  // moment the first parameterized widget landed, which is exactly what that
+  // tripwire was for. The pin is stricter than the one it replaced: the server
+  // validates a stored value against the widget's own declaration
+  // (`allowedWidgets` in backend/internal/preferences/dashboard.go), so a key
+  // added here and not there makes every layout carrying it unsaveable, and a
+  // value set narrowed on one side only makes the two disagree about which
+  // values are legal.
+  //
+  // An empty array means "any value inside the generic bounds" -- a namespace
+  // name, whose legal values are not knowable ahead of time -- and is
+  // deliberately NOT the same as the key being absent. The Go half is
+  // TestContractParity/"widget specs".
+  const declared = Object.fromEntries(
+    allWidgets()
+      .filter((w) => !w.id.startsWith("fixture-"))
+      .filter((w) => w.params !== undefined)
+      .map((w) => [w.id, w.params]),
+  );
+  expect(declared).toEqual({
+    "diagnostics-summary": { namespace: [] },
+  });
+});
+
+test("every declared parameter key is one the server recognises", () => {
+  // The namespace key is special-cased by the read path, which re-authorizes
+  // its value on every read (R5). A widget spelling it differently would look
+  // identical in the editor and in storage and would silently opt out of that
+  // -- the placement would never be withheld, and a user who lost access to
+  // the namespace would go on seeing the card. Nothing else would notice, so
+  // this and `registerWidget`'s own guard are the whole defence.
+  const offenders: string[] = [];
+  for (const w of allWidgets()) {
+    for (const key of Object.keys(w.params ?? {})) {
+      if (!KNOWN_PARAM_KEYS.includes(key)) {
+        offenders.push(`${w.id} declares unknown param ${key}`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
+test("registerWidget: an unknown parameter key is rejected", () => {
+  // Enforced at the runtime boundary and not only by the invariant above: a
+  // definition registered from anywhere has to satisfy it, and the failure
+  // this prevents is invisible by construction.
+  expect(() =>
+    registerWidget(defFixture("fixture-bad-param", { params: { ns: [] } })),
+  ).toThrow("ns");
+  expect(getWidget("fixture-bad-param")).toBeUndefined();
 });
 
 test("the default layout satisfies every widget's declared minimum", () => {

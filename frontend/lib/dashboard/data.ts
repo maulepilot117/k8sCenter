@@ -14,6 +14,7 @@
 import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import { ApiError, api } from "@/lib/api.ts";
+import { decodeSourceKey } from "./params.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   FAMILY_STATUS_KEYS,
@@ -49,11 +50,15 @@ export interface SourceState<T = unknown> {
   range: string | null;
 }
 
-/** A fetcher receives the abort signal and the active time range. Sources that
- * ignore the range simply do not read it. */
+/**
+ * A fetcher receives the abort signal, the active time range and the
+ * parameters its key was resolved under. Sources that ignore either simply do
+ * not read it, which is every source that shipped before parameters existed.
+ */
 export type SourceFetcher = (
   signal: AbortSignal,
   range: string,
+  params: Readonly<Record<string, string>>,
 ) => Promise<unknown>;
 
 const IDLE: SourceState = {
@@ -150,7 +155,10 @@ function hash32(value: string): number {
  * Pure, and exported for that reason: the scheduling around it is timers.
  */
 export function sourceRefreshOffsetMs(key: string, intervalMs: number): number {
-  if (sourceCost(key) === "cheap") return 0;
+  // The class comes from the source, the offset from the whole key: two
+  // parameterized reads of one source are two requests and want two slots in
+  // the interval, but they are the same kind of request and cost the same.
+  if (sourceCost(decodeSourceKey(key).base) === "cheap") return 0;
   const window = Math.floor(intervalMs * REFRESH_OFFSET_FRACTION);
   if (window <= 0) return 0;
   return hash32(key) % window;
@@ -180,10 +188,39 @@ function isAbort(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+/**
+ * Every method below takes a RESOLVED key, not a source name.
+ *
+ * For an unparameterized source the two are the same string, which is why
+ * every caller that predates parameters still reads correctly. For a
+ * parameterized one the key carries the values as well (`sourceKeyFor` in
+ * params.ts), so diagnostics-for-prod and diagnostics-for-staging are two
+ * entries with two states and two requests, and two widgets pointed at one
+ * namespace still dedupe onto a single fetch.
+ */
 export interface SourceCache {
-  state<T = unknown>(key: DataSourceKey): SourceState<T>;
-  signalFor(key: DataSourceKey): Signal<SourceState>;
-  ensure(keys: readonly DataSourceKey[], range: string): void;
+  state<T = unknown>(key: string): SourceState<T>;
+  signalFor(key: string): Signal<SourceState>;
+  ensure(keys: readonly string[], range: string): void;
+  /**
+   * Forgets every key outside `keys`: cancels anything in flight for one,
+   * clears its state and stops the refresh loop re-requesting it.
+   *
+   * Only parameterized keys make this necessary, which is why it did not
+   * exist before them. The unparameterized key set is the source union --
+   * eleven keys, all of them belonging to a widget that might come back -- so
+   * "everything ever fetched" was a bounded and correct set for the refresh
+   * loop to re-request. A parameterized key is not: re-pointing one widget
+   * from prod to staging leaves prod recorded as fetched, and without this it
+   * would go on being polled every 60s, in the backend's shared
+   * 30-request-per-minute bucket, on behalf of a card that no longer exists.
+   *
+   * Deliberately separate from `ensure` rather than folded into it. `ensure`
+   * is called with whatever subset a caller needs and says "these are
+   * wanted"; this says "these are ALL that are wanted", which only the
+   * consumer holding the whole layout can truthfully claim.
+   */
+  retain(keys: readonly string[]): void;
   /** Re-requests every source already fetched that is due again, immediately.
    * The periodic loop spreads instead; see `startRefresh`. */
   refresh(): void;
@@ -209,7 +246,12 @@ export interface SourceCache {
 /** One live request. Each carries its own controller so a single superseded
  * request can be cancelled without tearing down its siblings. */
 interface InFlight {
-  key: DataSourceKey;
+  key: string;
+  /** The source the key resolves to, and the values it was resolved under.
+   * Decoded once here so neither the fetcher lookup nor the cost lookup has
+   * to parse the key again on every state transition. */
+  base: string;
+  params: Record<string, string>;
   promise: Promise<void>;
   range: string;
   controller: AbortController;
@@ -256,7 +298,7 @@ export function createSourceCache(
     ReturnType<typeof globalThis.setTimeout>
   >();
 
-  function sig(key: DataSourceKey): Signal<SourceState> {
+  function sig(key: string): Signal<SourceState> {
     let s = states.get(key);
     if (!s) {
       s = signal<SourceState>({ ...IDLE });
@@ -279,7 +321,7 @@ export function createSourceCache(
    * since the last tick.
    */
   function releaseSlot(entry: InFlight): void {
-    if (sourceCost(entry.key) === "cheap") return;
+    if (sourceCost(entry.base) === "cheap") return;
     const next = waiting.shift();
     if (next) next.admit?.(true);
     else activeExpensive--;
@@ -305,8 +347,13 @@ export function createSourceCache(
     entry.admit?.(false);
   }
 
-  function run(key: DataSourceKey, range: string): void {
-    const fetcher = fetchers[key];
+  function run(key: string, range: string): void {
+    // The key is what the cache is keyed by; the source inside it is what
+    // decides which fetcher serves it and what that read costs. A key naming
+    // a source with no fetcher is invisible by design -- see the union
+    // coverage test in data_test.ts.
+    const { base, params } = decodeSourceKey(key);
+    const fetcher = fetchers[base as DataSourceKey];
     if (!fetcher) return;
 
     const s = sig(key);
@@ -316,13 +363,15 @@ export function createSourceCache(
     const controller = new AbortController();
     const entry: InFlight = {
       key,
+      base,
+      params,
       promise: Promise.resolve(),
       range,
       controller,
       queued: false,
     };
 
-    if (sourceCost(key) === "cheap" || takeSlot()) {
+    if (sourceCost(base) === "cheap" || takeSlot()) {
       entry.promise = issue(entry, fetcher);
     } else {
       // Over the bound. The request is recorded against its key -- so it
@@ -345,7 +394,7 @@ export function createSourceCache(
   /** Puts a request on the wire. Called either straight from `run` or later,
    * when a slot frees. */
   function issue(entry: InFlight, fetcher: SourceFetcher): Promise<void> {
-    const { key, range, controller } = entry;
+    const { key, range, params, controller } = entry;
     const s = sig(key);
     // Only the newest request for a key may write its state. A superseded
     // request that resolves anyway -- a fetcher that ignores its signal, or a
@@ -353,7 +402,7 @@ export function createSourceCache(
     // after the newer one and put the old range's data back on screen.
     const current = () => inFlight.get(key) === entry;
 
-    return fetcher(controller.signal, range)
+    return fetcher(controller.signal, range, params)
       .then((data) => {
         if (!current()) return;
         s.value = { data, error: null, errorKind: null, loading: false, range };
@@ -425,7 +474,7 @@ export function createSourceCache(
    * already answered is never due, so its offset never fires -- the two
    * compose without either needing to know about the other.
    */
-  function isDue(key: DataSourceKey, busy: Set<string>): boolean {
+  function isDue(key: string, busy: Set<string>): boolean {
     if (busy.has(key)) return false;
     // A discovery status that already answered stays answered until the next
     // page load -- see REFRESH_ONCE_SETTLED. One that failed is retried like
@@ -438,12 +487,12 @@ export function createSourceCache(
 
   /** The keys a refresh would re-request right now, with their ranges.
    * Snapshotted, because running one mutates `fetchedRange`. */
-  function dueEntries(): Array<[DataSourceKey, string]> {
+  function dueEntries(): Array<[string, string]> {
     const busy = busyKeys();
-    const due: Array<[DataSourceKey, string]> = [];
+    const due: Array<[string, string]> = [];
     for (const [key, range] of fetchedRange) {
-      if (isDue(key as DataSourceKey, busy)) {
-        due.push([key as DataSourceKey, range]);
+      if (isDue(key, busy)) {
+        due.push([key, range]);
       }
     }
     return due;
@@ -462,7 +511,7 @@ export function createSourceCache(
    *   is skipped, and the tab names a window the chart does not show until a
    *   refresh tick happens to fetch it.
    */
-  function settleAborted(key: DataSourceKey): void {
+  function settleAborted(key: string): void {
     const s = sig(key);
     if (s.value.range === null) {
       fetchedRange.delete(key);
@@ -473,17 +522,19 @@ export function createSourceCache(
   }
 
   const cache: SourceCache = {
-    state<T>(key: DataSourceKey): SourceState<T> {
+    state<T>(key: string): SourceState<T> {
       return sig(key).value as SourceState<T>;
     },
 
-    signalFor(key: DataSourceKey): Signal<SourceState> {
+    signalFor(key: string): Signal<SourceState> {
       return sig(key);
     },
 
-    ensure(keys: readonly DataSourceKey[], range: string): void {
+    ensure(keys: readonly string[], range: string): void {
       for (const key of keys) {
-        const sensitive = RANGE_SENSITIVE.has(key);
+        // Range-sensitivity is a property of the source, not of the values it
+        // was resolved under, so it is asked of the base rather than the key.
+        const sensitive = RANGE_SENSITIVE.has(decodeSourceKey(key).base);
         const pending = inFlight.get(key);
         if (pending) {
           // A request under the range being asked for already covers this.
@@ -514,6 +565,33 @@ export function createSourceCache(
      */
     refresh(): void {
       for (const [key, range] of dueEntries()) run(key, range);
+    },
+
+    retain(keys: readonly string[]): void {
+      const wanted = new Set(keys);
+      for (const entry of [...inFlight.values()]) {
+        if (wanted.has(entry.key)) continue;
+        // A request on behalf of a card that is gone. Retired rather than
+        // merely forgotten: left alone it would land and re-fill a key this
+        // call just cleared, and `settled()` has to keep waiting on it
+        // either way until it actually settles.
+        retire(entry);
+      }
+      for (const key of [...fetchedRange.keys()]) {
+        if (wanted.has(key)) continue;
+        fetchedRange.delete(key);
+        const timer = offsetTimers.get(key);
+        if (timer !== undefined) {
+          globalThis.clearTimeout(timer);
+          offsetTimers.delete(key);
+        }
+        // The state goes too, not just the schedule. Keeping it would make a
+        // namespace re-added later render whatever was on screen when its
+        // card was removed, with no fetch behind it -- `ensure` would see a
+        // key it has no record of, run it, and the stale value would be
+        // visible until the response landed.
+        states.delete(key);
+      }
     },
 
     abort(): void {
@@ -609,6 +687,22 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
     read(`/v1/cluster/dashboard-trends?range=${range}`, signal),
   "cluster-info": (signal) => read("/v1/cluster/info", signal),
   "recent-events": (signal) => read("/v1/resources/events?limit=10", signal),
+
+  // The one parameterized fetcher. Its key carries the namespace, so this is
+  // called once per distinct namespace on the layout and the cache holds one
+  // state per namespace.
+  //
+  // The namespace is percent-encoded into the path rather than interpolated
+  // raw. It has already passed `paramValueError` on the way in and the server
+  // re-validates it on save, but this is the one place a stored value becomes
+  // a URL, and a value with a slash in it would otherwise address a different
+  // route entirely. Encoding is the narrow fix; the broad one is that the
+  // value is never user-authored text in the first place (D-8).
+  "diagnostics-summary": (signal, _range, params) =>
+    read(
+      `/v1/diagnostics/${encodeURIComponent(params.namespace ?? "")}/summary`,
+      signal,
+    ),
 
   // The six discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see

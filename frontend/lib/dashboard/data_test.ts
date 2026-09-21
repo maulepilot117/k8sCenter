@@ -8,6 +8,7 @@ import {
   MAX_CONCURRENT_EXPENSIVE_FETCHES,
   sourceRefreshOffsetMs,
 } from "./data.ts";
+import { sourceKeyFor } from "./params.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   DATA_SOURCE_KEYS,
@@ -838,6 +839,30 @@ function saturate(): {
   return { cache: createSourceCache(fetchers), started, pending };
 }
 
+/**
+ * Resolves every deferred the saturated cache is holding, in passes, until
+ * none is left outstanding.
+ *
+ * One pass is not enough and the number of passes needed is the number of
+ * queued requests, which is `NON_CHEAP_KEYS.length - MAX_CONCURRENT_...` and
+ * therefore changes whenever a source is added. A queued request is admitted
+ * from a settled one's `.finally`, which is a microtask -- so it registers its
+ * own deferred strictly AFTER a synchronous loop over `pending` has finished,
+ * and a single pass leaves it unresolved and `settled()` waiting on it
+ * forever. The "cheap sources are not subject to the bound" test above already
+ * drains in passes for this reason; this is the same loop, sized off the key
+ * list instead of a hardcoded count so adding a source cannot silently turn a
+ * passing test into a five-second timeout.
+ */
+async function drain(
+  pending: Map<string, ReturnType<typeof deferred<string>>>,
+): Promise<void> {
+  for (let pass = 0; pass <= NON_CHEAP_KEYS.length; pass++) {
+    for (const d of pending.values()) d.resolve("ok");
+    await sleep(0);
+  }
+}
+
 test("cost: every declared source key carries an explicit class", () => {
   // Omission is the failure mode the default guards, not the one it excuses:
   // an unlisted key falls back to expensive by design, but a key the author
@@ -888,7 +913,7 @@ test("bound: expensive fetches beyond the limit wait for a slot", async () => {
   await sleep(0);
   expect(started.length).toBe(MAX_CONCURRENT_EXPENSIVE_FETCHES + 1);
 
-  for (const d of pending.values()) d.resolve("ok");
+  await drain(pending);
   await cache.settled();
   const blank = NON_CHEAP_KEYS.filter((k) => cache.state(k).data === null);
   expect(blank).toEqual([]);
@@ -907,7 +932,7 @@ test("bound: a failing expensive fetch releases its slot", async () => {
   await sleep(0);
   expect(started).toContain(queued);
 
-  for (const d of pending.values()) d.resolve("ok");
+  await drain(pending);
   await cache.settled();
   expect(cache.state(first).error).toBe("boom");
 });
@@ -1124,4 +1149,97 @@ test("range: the range-sensitive set names real source keys", () => {
     (k) => !(DATA_SOURCE_KEYS as readonly string[]).includes(k),
   );
   expect(unknown).toEqual([]);
+});
+
+// `retain` -- dropping keys nothing on the layout asks for any more.
+//
+// Before parameters, the set of keys a session could ever fetch was the source
+// union: eleven, fixed, and every one of them belonged to a widget that might
+// come back. A parameterized key is not like that. Re-pointing one widget from
+// prod to staging leaves `diagnostics-summary` for prod recorded as fetched,
+// and `dueEntries` re-requests everything it has ever fetched -- so the
+// abandoned namespace goes on being polled every 60s, in the backend's shared
+// 30-request-per-minute bucket, for as long as the tab is open, for a card
+// that no longer exists.
+
+test("retain: a key nothing asks for any more stops being refreshed", async () => {
+  let prodCalls = 0;
+  let stagingCalls = 0;
+  const cache = createSourceCache({
+    "diagnostics-summary": (_signal, _range, params) => {
+      if (params.namespace === "prod") prodCalls++;
+      else stagingCalls++;
+      return Promise.resolve({ total: 0, failing: [] });
+    },
+  });
+
+  const prod = sourceKeyFor("diagnostics-summary", { namespace: "prod" });
+  const staging = sourceKeyFor("diagnostics-summary", { namespace: "staging" });
+
+  cache.ensure([prod], "1h");
+  await cache.settled();
+  expect(prodCalls).toBe(1);
+
+  // The widget is re-pointed: staging is now the only key on the layout.
+  cache.ensure([staging], "1h");
+  cache.retain([staging]);
+  await cache.settled();
+
+  const stop = cache.startRefresh(20);
+  await sleep(140);
+  stop();
+  await cache.settled();
+
+  expect(prodCalls).toBe(1);
+  expect(stagingCalls).toBeGreaterThan(1);
+});
+
+test("retain: a dropped key's state is forgotten, not left stale", async () => {
+  // Re-adding the same namespace later must refetch rather than render
+  // whatever was on screen when the card was removed.
+  const cache = createSourceCache({
+    "dashboard-summary": () => Promise.resolve("s"),
+  });
+  cache.ensure(["dashboard-summary"], "1h");
+  await cache.settled();
+  expect(cache.state("dashboard-summary").data).toBe("s");
+
+  cache.retain([]);
+  expect(cache.state("dashboard-summary").data).toBeNull();
+});
+
+test("retain: a key still asked for is untouched", async () => {
+  const cache = createSourceCache({
+    "dashboard-summary": () => Promise.resolve("s"),
+    "cluster-info": () => Promise.resolve("c"),
+  });
+  cache.ensure(["dashboard-summary", "cluster-info"], "1h");
+  await cache.settled();
+
+  cache.retain(["dashboard-summary"]);
+  expect(cache.state("dashboard-summary").data).toBe("s");
+  expect(cache.state("cluster-info").data).toBeNull();
+});
+
+test("retain: an in-flight request for a dropped key is cancelled", async () => {
+  // It is a request on behalf of a card that is gone. Leaving it would let it
+  // land and re-fill a key `retain` just cleared.
+  const d = deferred<string>();
+  let aborted = false;
+  const cache = createSourceCache({
+    "dashboard-summary": (signal) => {
+      signal.addEventListener("abort", () => {
+        aborted = true;
+        d.reject(new DOMException("Aborted", "AbortError"));
+      });
+      return d.promise;
+    },
+  });
+  cache.ensure(["dashboard-summary"], "1h");
+  cache.retain([]);
+  await cache.settled();
+
+  expect(aborted).toBe(true);
+  expect(cache.state("dashboard-summary").data).toBeNull();
+  expect(cache.state("dashboard-summary").loading).toBe(false);
 });

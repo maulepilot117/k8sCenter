@@ -27,6 +27,14 @@ import { fuzzySearch } from "@/lib/fuzzy-search.ts";
  * the skipped keyboard stop -- so the palette gained no new mechanism, only
  * new reasons (R3).
  *
+ * Choosing a row does not always place a widget. A widget that declares
+ * parameters needs values first, so `onAdd` for one of those opens the
+ * parameter dialog instead and the placement happens on confirm -- which is
+ * why such a row says so before it is chosen. Without the hint, pressing
+ * Enter on it looks like an Add that produced a dialog for no stated reason;
+ * with it, the dialog is the thing the row promised. The branch itself is the
+ * caller's: this dialog neither places widgets nor knows what a session is.
+ *
  * A modal dialog, not a menu: it takes the screen, it closes on Escape and on
  * the scrim, and focus goes into it and comes back out to the control that
  * opened it. `SavedViews.tsx` models the other shape -- `role="menu"` with no
@@ -348,6 +356,21 @@ export default function WidgetPalette({
                   }`}
                 >
                   <span class="flex-1 truncate">{entry.def.title}</span>
+                  {/* Not a disabled reason: this row CAN be added, it just
+                      asks a question first. So it is rendered on its own
+                      rather than through `disabledReason`, which is read by
+                      the keyboard as "skip this row". Hidden while the row is
+                      blocked, because a reason and a hint competing for the
+                      same end of the same row reads as two badges about the
+                      same refusal. */}
+                  {!blocked && entry.def.params !== undefined && (
+                    <span
+                      data-testid="widget-option-needs-values"
+                      class="shrink-0 text-[11px] text-text-muted"
+                    >
+                      Asks for {Object.keys(entry.def.params).join(", ")}
+                    </span>
+                  )}
                   {blocked && (
                     <span class="shrink-0 rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted">
                       {entry.disabledReason}

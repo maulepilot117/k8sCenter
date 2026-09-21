@@ -100,6 +100,20 @@ var allowedWidgets = map[string]widgetSpec{
 	"nodes":                {MinW: 3, MinH: 4},
 	"recent-events":        {MinW: 3, MinH: 3},
 	"active-alerts":        {MinW: 2, MinH: 3},
+	// The first parameterized widget. The empty value slice is load-bearing
+	// and is NOT the same as omitting the key: it says the legal values are
+	// not knowable from a catalog -- they are whatever namespaces this cluster
+	// has -- so only the generic length and control-character bounds apply.
+	//
+	// The key is `paramKeyNamespace` exactly, which is what makes a stored
+	// value re-authorized on every read (see the const's docstring and
+	// `withholdUnauthorized`). Any other spelling would store and serve
+	// identically while silently opting the widget out of that.
+	"diagnostics-summary": {
+		MinW:   3,
+		MinH:   3,
+		Params: map[string][]string{paramKeyNamespace: {}},
+	},
 }
 
 // MaxDashboardLayoutsPerUser is the per-user, per-cluster ceiling. One layout

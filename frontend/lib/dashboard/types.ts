@@ -61,6 +61,12 @@ export const DATA_SOURCE_KEYS = [
   "dashboard-trends",
   "cluster-info",
   "recent-events",
+  // The first source whose response depends on a widget's own parameters:
+  // one read per namespace rather than one per page. The cache keys it by
+  // source AND parameters (see `sourceKeyFor` in params.ts), so two
+  // diagnostics widgets pointed at different namespaces are two entries and
+  // two pointed at the same one are still a single fetch.
+  "diagnostics-summary",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -108,6 +114,16 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   "cluster-info": "cheap",
   "recent-events": "cheap",
   "dashboard-trends": "expensive",
+  // Informer-backed like the three above it, and still not cheap. Three
+  // reasons, none of which the list shape shows: the handler runs a
+  // SelfSubjectAccessReview before it reads anything (60s-cached, which is
+  // exactly the refresh interval, so most ticks pay for one); the route sits
+  // under the backend's 30-request-per-minute YAML bucket, shared with
+  // `/yaml/*` and `/wizards/*`; and it is the only source issued once per
+  // distinct parameter value, so its cost grows with the dashboard rather
+  // than being fixed per page. That is "a cost the backend pays per request
+  // rather than amortising across viewers", which is this class.
+  "diagnostics-summary": "expensive",
 
   "policies-status": "discovery",
   "gitops-status": "discovery",

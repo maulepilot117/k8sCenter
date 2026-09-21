@@ -10,6 +10,7 @@
  * Widget components register themselves here at module load. The rendering
  * modules import their widgets so registration happens before first paint.
  */
+import { KNOWN_PARAM_KEYS } from "./params.ts";
 import type { DashboardScope, WidgetDef } from "./types.ts";
 
 const widgets = new Map<string, WidgetDef>();
@@ -58,6 +59,21 @@ export function registerWidget(def: WidgetDef): void {
     throw new Error(
       `widget ${def.id} must implement the "normal" display mode`,
     );
+  }
+  // A parameter key the server does not recognise is the one defect in this
+  // file that produces no visible symptom at all. The read path recognises a
+  // namespace by an exact key and re-authorizes its value on every read (R5);
+  // a widget that declared `ns` instead would store, render and save exactly
+  // as this one does, and simply never be withheld from a user who lost access
+  // to the namespace it reads. There is nothing downstream to catch that, so
+  // it is caught here.
+  for (const key of Object.keys(def.params ?? {})) {
+    if (!KNOWN_PARAM_KEYS.includes(key)) {
+      throw new Error(
+        `widget ${def.id} declares unknown parameter ${key}; ` +
+          `the server recognises ${KNOWN_PARAM_KEYS.join(", ")}`,
+      );
+    }
   }
   widgets.set(def.id, def);
 }

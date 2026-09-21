@@ -946,3 +946,91 @@ func withTestWidget(t *testing.T, id string, spec widgetSpec) func() {
 		delete(allowedWidgets, id)
 	}
 }
+
+// TestValidateDashboardLayout_DiagnosticsSummaryParams exercises the param
+// rules against the REAL catalog entry rather than the stand-in above.
+//
+// The stand-in proves the validator's logic; this proves the shipped widget is
+// wired into it. The two are different failures: a catalog entry that declared
+// no params, or declared the namespace key under another name, would leave
+// every case in TestValidateDashboardLayout_RejectsParams passing while the
+// one widget that actually needs parameters could not carry them -- or could
+// carry one the read path never re-authorizes.
+func TestValidateDashboardLayout_DiagnosticsSummaryParams(t *testing.T) {
+	const id = "diagnostics-summary"
+
+	place := func(instance, namespace string, extra map[string]string) map[string]any {
+		params := map[string]string{}
+		if namespace != "" {
+			params[paramKeyNamespace] = namespace
+		}
+		for k, v := range extra {
+			params[k] = v
+		}
+		return item(map[string]any{
+			"instanceId": instance, "id": id,
+			"x": 0, "y": 0, "w": 3, "h": 3,
+			"params": params,
+		})
+	}
+
+	t.Run("accepts a namespace", func(t *testing.T) {
+		if _, _, err := ValidateDashboardLayout(
+			layoutWithItems(t, place("a", "prod", nil)),
+		); err != nil {
+			t.Fatalf("a namespace parameter was refused: %v", err)
+		}
+	})
+
+	t.Run("accepts two namespaces side by side", func(t *testing.T) {
+		// The reason instanceId exists: prod beside staging is two views, not
+		// one widget placed twice.
+		first := place("a", "prod", nil)
+		second := place("b", "staging", nil)
+		second["x"] = 3
+		if _, _, err := ValidateDashboardLayout(
+			layoutWithItems(t, first, second),
+		); err != nil {
+			t.Fatalf("two namespaces were refused: %v", err)
+		}
+	})
+
+	t.Run("refuses the same namespace twice", func(t *testing.T) {
+		first := place("a", "prod", nil)
+		second := place("b", "prod", nil)
+		second["x"] = 3
+		_, _, err := ValidateDashboardLayout(layoutWithItems(t, first, second))
+		if reasonOf(err) != "invalid_config" {
+			t.Fatalf("a duplicate namespace was accepted: %v", err)
+		}
+	})
+
+	t.Run("refuses an undeclared key", func(t *testing.T) {
+		// R14's server half: the widget declares `namespace` and nothing else,
+		// so a client sending anything more is refused with the field named
+		// rather than having it silently stored.
+		_, _, err := ValidateDashboardLayout(
+			layoutWithItems(t, place("a", "prod", map[string]string{"ns": "prod"})),
+		)
+		if reasonOf(err) != "invalid_config" {
+			t.Fatalf("an undeclared parameter was accepted: %v", err)
+		}
+	})
+
+	t.Run("refuses a value outside the generic bounds", func(t *testing.T) {
+		for name, value := range map[string]string{
+			"over-long":        strings.Repeat("a", maxParamValueLen+1),
+			"control char":     "pr\u0000od",
+			"newline injected": "prod\nstaging",
+		} {
+			t.Run(name, func(t *testing.T) {
+				_, _, err := ValidateDashboardLayout(
+					layoutWithItems(t, place("a", value, nil)),
+				)
+				if reasonOf(err) != "invalid_config" {
+					t.Fatalf("%q was accepted as a namespace: %v", name, err)
+				}
+			})
+		}
+	})
+}

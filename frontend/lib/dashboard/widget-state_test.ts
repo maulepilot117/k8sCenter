@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SourceState } from "./data.ts";
+import { sourceKeyFor } from "./params.ts";
 import type { DataSourceKey, FamilyStatusKey } from "./types.ts";
 import {
   featurePresent,
@@ -39,8 +40,11 @@ const forbidden = (message = "Forbidden") =>
  * did not name to idle -- which is what an unrequested key actually reads as. */
 function lookup(
   states: Partial<Record<DataSourceKey, SourceState>>,
-): (key: DataSourceKey) => SourceState {
-  return (key) => states[key] ?? src();
+): (key: string) => SourceState {
+  // Keyed by string, not by DataSourceKey: the lookup `resolveWidgetState`
+  // reads takes a RESOLVED key, which for a parameterized source is the
+  // source name plus its values and is therefore not in the union.
+  return (key) => states[key as DataSourceKey] ?? src();
 }
 
 function decl(over: Partial<WidgetSourceDecl> = {}): WidgetSourceDecl {
@@ -345,5 +349,64 @@ describe("every family status key is declarable", () => {
         ).state !== "unavailable",
     );
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("resolveWidgetState: parameterized sources", () => {
+  // A parameterized widget reads its source under a key that carries the
+  // values, so the state it resolves against has to be looked up under the
+  // same key. Resolving against the bare source key instead is the defect
+  // this covers, and it is a quiet one: the bare key is never fetched, so it
+  // reads as idle and the widget sits in the skeleton forever.
+  const paramDecl = decl({ sources: ["diagnostics-summary"] });
+  const prod = sourceKeyFor("diagnostics-summary", { namespace: "prod" });
+  const staging = sourceKeyFor("diagnostics-summary", {
+    namespace: "staging",
+  });
+
+  test("resolves against the key its parameters produce", () => {
+    const stateOf = (key: string) =>
+      key === prod ? ok({ total: 1, failing: [] }) : src();
+    expect(
+      resolveWidgetState(paramDecl, stateOf, { namespace: "prod" }).state,
+    ).toBe("ready");
+  });
+
+  test("two namespaces resolve independently", () => {
+    // The whole reason the key carries the values: a 403 on one namespace
+    // must not put the other namespace's card into the permission state.
+    const stateOf = (key: string) => {
+      if (key === prod) return ok({ total: 1, failing: [] });
+      if (key === staging) return forbidden();
+      return src();
+    };
+    expect(
+      resolveWidgetState(paramDecl, stateOf, { namespace: "prod" }).state,
+    ).toBe("ready");
+    expect(
+      resolveWidgetState(paramDecl, stateOf, { namespace: "staging" }).state,
+    ).toBe("permission");
+  });
+
+  test("a refused read is the permission state, with no retry offered", () => {
+    // R5's client half. The server withholds a placement whose namespace the
+    // caller may not read on LOAD; access lost while the dashboard is already
+    // open surfaces as a 403 on the next refresh instead, and lands here.
+    const resolved = resolveWidgetState(
+      paramDecl,
+      (key) => (key === prod ? forbidden() : src()),
+      { namespace: "prod" },
+    );
+    expect(resolved.state).toBe("permission");
+    expect(resolved.blocking?.errorKind).toBe("permission");
+  });
+
+  test("a widget with no parameters is unaffected", () => {
+    // The path every shipped widget took before parameters existed: an
+    // unparameterized source keeps its bare key however it is called.
+    expect(
+      resolveWidgetState(decl(), lookup({ "dashboard-summary": ok() }), {})
+        .state,
+    ).toBe("ready");
   });
 });
