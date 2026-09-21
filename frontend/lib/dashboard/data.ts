@@ -18,6 +18,7 @@ import { decodeSourceKey } from "./params.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   FAMILY_STATUS_KEYS,
+  NOT_FOUND_IS_REFUSAL,
   RANGE_SENSITIVE_KEYS,
   sourceCost,
 } from "./types.ts";
@@ -29,11 +30,13 @@ import type { ResourceListPage } from "./wire-types.ts";
 /**
  * Why a source failed, as far as it can be told apart from the response.
  *
- * "permission" is a 403 and nothing else: a standing fact about the account
- * that no amount of waiting changes, which is why the shell renders it without
- * a retry affordance (R2). Everything else -- a 500, a dropped connection, a
- * malformed body -- is "failure", which is the behavior that shipped, kept
- * under a name so the two are distinguishable at the call site.
+ * "permission" is a standing fact about the account that no amount of waiting
+ * changes, which is why the shell renders it without a retry affordance (R2).
+ * It is a 403, plus the 404 the slug-query route uses in place of one so its
+ * catalog cannot be enumerated -- see `classify` below and
+ * `NOT_FOUND_IS_REFUSAL` in types.ts. Everything else -- a 500, a dropped
+ * connection, a malformed body -- is "failure", which is the behavior that
+ * shipped, kept under a name so the two are distinguishable at the call site.
  */
 export type SourceErrorKind = "permission" | "failure";
 
@@ -207,19 +210,27 @@ function messageOf(err: unknown): string {
 }
 
 /**
- * A forbidden response, and only a forbidden response, is a permission
- * outcome.
+ * A forbidden response is a permission outcome -- and so is a not-found from
+ * the handful of sources that have no other way to say forbidden.
  *
  * Read off the HTTP status rather than the message, because the message is
  * whatever the handler wrote and a widget must not branch on prose. 401 is
  * deliberately not here: `api()` refreshes and retries on 401 and surfaces a
  * session expiry, which is an authentication problem the whole page shares,
  * not this widget's own.
+ *
+ * The 404 branch is narrow on purpose and takes the source key to keep it
+ * that way. An ordinary resource route's 404 means the object is gone, which
+ * is not a permission problem and must never render as one; only the
+ * slug-query route deliberately collapses "forbidden" into "not found" so its
+ * catalog cannot be enumerated. `NOT_FOUND_IS_REFUSAL` in types.ts names the
+ * sources that read it, and carries the full reasoning.
  */
-function classify(err: unknown): SourceErrorKind {
-  return err instanceof ApiError && err.status === 403
-    ? "permission"
-    : "failure";
+function classify(err: unknown, base: string): SourceErrorKind {
+  if (!(err instanceof ApiError)) return "failure";
+  if (err.status === 403) return "permission";
+  if (err.status === 404 && NOT_FOUND_IS_REFUSAL.has(base)) return "permission";
+  return "failure";
 }
 
 function isAbort(err: unknown): boolean {
@@ -441,7 +452,7 @@ export function createSourceCache(
   /** Puts a request on the wire. Called either straight from `run` or later,
    * when a slot frees. */
   function issue(entry: InFlight, fetcher: SourceFetcher): Promise<void> {
-    const { key, range, params, controller } = entry;
+    const { key, base, range, params, controller } = entry;
     const s = sig(key);
 
     // Nothing below this layer bounds a request. The server-side proxy times
@@ -508,7 +519,7 @@ export function createSourceCache(
         s.value = {
           ...s.value,
           error: messageOf(err),
-          errorKind: classify(err),
+          errorKind: classify(err, base),
           loading: false,
         };
       })
@@ -867,6 +878,29 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
     readList("/v1/resources/statefulsets", signal),
   "daemonsets-list": (signal) => readList("/v1/resources/daemonsets", signal),
   "pods-list": (signal) => readList("/v1/resources/pods", signal),
+
+  // `hpas` and `pdbs`, not `horizontalpodautoscalers` and
+  // `poddisruptionbudgets`. The generic route dispatches on the resource
+  // adapter's `Kind()`, which is the short form; the long form is what the
+  // counts route keys on and what the RBAC check names, and asking for it
+  // here returns a 404 for a kind that is present on every cluster.
+  "hpas-list": (signal) => readList("/v1/resources/hpas", signal),
+  "pdbs-list": (signal) => readList("/v1/resources/pdbs", signal),
+
+  // The two slug reads. The whole query lives on the server; the client
+  // names it and nothing else (D-8, R15). No namespace and no name: these
+  // slugs are `ClusterWide`, which also pins their RBAC check to a
+  // cluster-scoped grant, so supplying either would be ignored by the
+  // handler and misleading here.
+  //
+  // A caller without that grant gets 404, not 403 -- the handler answers
+  // refusals and unknown slugs identically so the catalog cannot be
+  // enumerated. `NOT_FOUND_IS_REFUSAL` is what turns that back into the
+  // permission state these two cards need.
+  "top-consumers-cpu": (signal) =>
+    read("/v1/monitoring/queries/cluster/top-consumers-cpu", signal),
+  "top-consumers-memory": (signal) =>
+    read("/v1/monitoring/queries/cluster/top-consumers-memory", signal),
 
   // The six discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see
