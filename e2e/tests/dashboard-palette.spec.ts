@@ -30,7 +30,7 @@ const PARTIAL_LAYOUT: DashboardLayoutConfig = {
 };
 
 /** Every widget registered for the overview scope, parameterized included. */
-const CATALOG_SIZE = 20;
+const CATALOG_SIZE = 30;
 
 /** What the shipped default layout places: the curated starting subset. */
 const DEFAULT_LAYOUT_SIZE = 10;
@@ -40,7 +40,7 @@ const DEFAULT_LAYOUT_SIZE = 10;
  * dashboard is of unparameterized copies, because choosing one opens a dialog
  * rather than placing a card.
  */
-const PARAMETERIZED_IDS = ["diagnostics-summary"];
+const PARAMETERIZED_IDS = ["diagnostics-summary", "vulnerability-severity"];
 
 /**
  * Everything the shipped default does NOT place, and which is therefore still
@@ -62,6 +62,15 @@ const NOT_ON_DEFAULT_IDS = [
   "quota-pressure",
   "node-conditions",
   "storage-capacity",
+  "policy-compliance",
+  "policy-violations",
+  "certs-expiring",
+  "eso-health",
+  "velero-backups",
+  "snapshot-health",
+  "gitops-app-health",
+  "gitops-recent-syncs",
+  "mtls-coverage",
 ];
 
 // The literal above is the guard, but a unit that adds a widget and forgets
@@ -208,7 +217,10 @@ test.describe("dashboard widget palette", () => {
 
     await expect(visibleOptions(page)).toHaveCount(CATALOG_SIZE);
 
-    for (const id of PARAMETERIZED_IDS) {
+    // diagnostics-summary alone: the other parameterized widgets are gated on
+    // a discovered feature, so whether they are addable depends on what the
+    // cluster under test runs rather than on the behaviour being asserted.
+    for (const id of ["diagnostics-summary"]) {
       const row = option(page, id);
       await expect(row).toHaveAttribute("aria-disabled", "false");
       // Said before the row is chosen. Choosing it opens a dialog rather than
@@ -221,15 +233,24 @@ test.describe("dashboard widget palette", () => {
 
     const rows = await visibleOptions(page).all();
     expect(rows).toHaveLength(CATALOG_SIZE);
+    // Two independent reasons disable a row now, so the assertion is about
+    // WHICH reason rather than whether there is one. A widget the default
+    // places must say it is already here. A widget the default omits must
+    // never say that -- but it may still be disabled because this cluster
+    // does not run its feature, which is a fact about the environment the
+    // suite points at and not about the default being a deliberate subset.
     for (const o of rows) {
       const id = await o.getAttribute("data-testid");
-      const addable = NOT_ON_DEFAULT_IDS.some(
+      const omitted = NOT_ON_DEFAULT_IDS.some(
         (w) => id === `widget-option-${w}`,
       );
-      await expect(o).toHaveAttribute(
-        "aria-disabled",
-        addable ? "false" : "true",
-      );
+      const reason = (await o.getAttribute("title")) ?? "";
+      if (omitted) {
+        expect(reason).not.toContain("Already");
+      } else {
+        await expect(o).toHaveAttribute("aria-disabled", "true");
+        expect(reason).toContain("Already");
+      }
     }
 
     // The selection opens on the first row that can actually be added, which
