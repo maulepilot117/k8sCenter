@@ -59,6 +59,7 @@ type AccessChecker struct {
 	alwaysDeny    bool            // for testing only
 	predicate     AccessPredicate // for testing only
 	denyResources map[string]bool // for testing only — denies CanAccess for named resources
+	forcedErr     error           // for testing only — every check fails with this
 }
 
 // NewAccessChecker creates an AccessChecker that verifies user permissions.
@@ -94,6 +95,9 @@ func (ac *AccessChecker) SetClusterRouter(cr *k8s.ClusterRouter) {
 // clusters are checked against their own RBAC rather than the local
 // cluster's. F#9 security audit 2026-05-22.
 func (ac *AccessChecker) CanAccess(ctx context.Context, clusterID, username string, groups []string, verb, resource, namespace string) (bool, error) {
+	if ac.forcedErr != nil {
+		return false, ac.forcedErr
+	}
 	// denyResources is checked first so tests can selectively deny specific
 	// resources even when alwaysAllow is set (NewDenyResourcesAccessChecker).
 	if ac.denyResources != nil && ac.denyResources[resource] {
@@ -185,6 +189,9 @@ func (ac *AccessChecker) CanAccess(ctx context.Context, clusterID, username stri
 // clusterID selects which cluster's API server runs the SAR — see CanAccess.
 // F#9 security audit 2026-05-22.
 func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, clusterID, username string, groups []string, verb, apiGroup, resource, namespace string) (bool, error) {
+	if ac.forcedErr != nil {
+		return false, ac.forcedErr
+	}
 	if ac.alwaysAllow {
 		return true, nil
 	}
@@ -307,6 +314,23 @@ func NewDenyResourcesAccessChecker(denied ...string) *AccessChecker {
 // tests covering partial-RBAC scenarios (e.g., "user can list one CRD
 // group but not another"). The predicate isn't consulted by the basic
 // CanAccess method because no current test scenario needs it.
+// NewErroringAccessChecker returns an AccessChecker whose every check fails
+// with the supplied error, without denying anything.
+//
+// It exists because "denied" and "could not be determined" are different
+// facts that a bool alone cannot carry, and callers have repeatedly collapsed
+// the second into the first — producing a shortened list, or a refusal, that
+// nothing distinguishes from a real answer. A caller that treats a broken
+// check as a denial passes every test written with the always-deny fake; only
+// this one tells them apart.
+func NewErroringAccessChecker(err error) *AccessChecker {
+	return &AccessChecker{
+		clientFactory: nil,
+		logger:        slog.Default(),
+		forcedErr:     err,
+	}
+}
+
 func NewPredicateAccessChecker(fn AccessPredicate) *AccessChecker {
 	return &AccessChecker{
 		clientFactory: nil,

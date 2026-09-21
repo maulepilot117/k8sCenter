@@ -11,8 +11,13 @@ describe("obj", () => {
     expect(obj(7)).toBeNull();
   });
 
-  test("an array is an object, which is what callers index into", () => {
-    expect(obj([1, 2])).not.toBeNull();
+  test("an array is NOT a record", () => {
+    // The exclusion that matters. An envelope reader does `obj(body)?.[field]`,
+    // so a bare array would yield undefined and read as an absent field --
+    // i.e. an empty result -- turning a route that answered with a naked list
+    // instead of its envelope into a clean, confident, empty card.
+    expect(obj([])).toBeNull();
+    expect(obj([1, 2])).toBeNull();
   });
 });
 

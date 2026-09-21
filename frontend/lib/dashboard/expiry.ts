@@ -33,44 +33,15 @@
  * readable rest.
  */
 import { getPhaseCategory } from "@/lib/velero-types.ts";
+import { list, num, obj, str } from "./narrow.ts";
 
 // --------------------------------------------------------------------------
 // Shared readers
 // --------------------------------------------------------------------------
 
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-/**
- * A finite number, or null.
- *
- * Null rather than zero throughout this module: a day count we could not read
- * is not a certificate expiring today, and an error count we could not read is
- * not an absence of errors. Every consumer branches on the difference instead
- * of reporting a guess as a fact.
- */
-function num(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
 function count(value: unknown): number {
   const n = num(value);
   return n !== null && n > 0 ? Math.floor(n) : 0;
-}
-
-/** The payload of a list route, or null when the body is not a list at all.
- * Not `[]`: a body this build cannot read has to stay distinguishable from an
- * empty one, which is the whole difference between "nothing to report" and
- * "we could not tell". */
-function list(data: unknown): unknown[] | null {
-  return Array.isArray(data) ? data : null;
 }
 
 /** Every path segment is encoded. A Kubernetes name cannot contain a slash,

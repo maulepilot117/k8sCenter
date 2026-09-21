@@ -36,6 +36,8 @@
  * Pure: no DOM, no fetch, no signals (D-10).
  */
 
+import { list, obj, str } from "./narrow.ts";
+
 // --------------------------------------------------------------------------
 // Shared readers
 // --------------------------------------------------------------------------
@@ -44,16 +46,6 @@
 // other modules here. Hoisting them is a real cleanup and it is a cross-cutting
 // one -- seven modules and their tests -- so it does not belong inside a widget
 // unit.
-
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
 
 /**
  * The list carried on a route envelope's field, or null when the body is not
@@ -73,7 +65,10 @@ function envelopeList(data: unknown, field: string): unknown[] | null {
   if (body === null) return null;
   const value = body[field];
   if (value === undefined || value === null) return [];
-  return Array.isArray(value) ? value : null;
+  // An absent field is an empty list; a present field that is not a list
+  // is the backend saying it could not give us one. Same contract as
+  // narrow.ts's `list`, applied one level into an envelope.
+  return list(value);
 }
 
 // --------------------------------------------------------------------------

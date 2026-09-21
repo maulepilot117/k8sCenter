@@ -29,6 +29,8 @@
  * readable rest.
  */
 
+import { list, num, obj, str } from "./narrow.ts";
+
 // --------------------------------------------------------------------------
 // Shared
 // --------------------------------------------------------------------------
@@ -145,23 +147,6 @@ export function severityBreakdown(
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return bucketsFrom(counts);
-}
-
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-/** A finite number, or null. Null rather than zero: a count we could not read
- * is not a count of none, and every consumer below branches on the
- * difference instead of reporting a guess as a fact. */
-function num(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 /** A finite count, defaulting to zero. Used only where the field is a count
