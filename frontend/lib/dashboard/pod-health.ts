@@ -13,6 +13,8 @@
  * throw -- otherwise a single malformed pod blanks a card describing several
  * hundred readable ones.
  */
+import type { PageCoverage } from "./page-coverage.ts";
+import { coverage } from "./page-coverage.ts";
 import type { ResourceListPage } from "./wire-types.ts";
 
 /**
@@ -252,28 +254,6 @@ export function rankPending(pods: readonly PodHealth[]): PodHealth[] {
     }
     return byIdentity(a, b);
   });
-}
-
-/** What both views report about the page they were computed over. `total` is
- * the route's own count of the whole population and `counted` is how much of
- * it this page carried, so `truncated` says the card's numbers describe a
- * sample. The list route caps a page at 500 items, and a ranking over the
- * first 500 of 3000 pods is not "the worst pods on the cluster". */
-interface PageCoverage {
-  total: number;
-  counted: number;
-  truncated: boolean;
-}
-
-function coverage(
-  page: ResourceListPage | null | undefined,
-  counted: number,
-): PageCoverage {
-  const total =
-    typeof page?.total === "number" && Number.isFinite(page.total)
-      ? page.total
-      : counted;
-  return { total, counted, truncated: total > counted };
 }
 
 export interface PendingPodsView extends PageCoverage {

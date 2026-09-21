@@ -1034,11 +1034,12 @@ test("bound: cheap sources are not subject to the bound", async () => {
   expect(stalled).toEqual([]);
 
   // Drain in passes: resolving the running ones admits the queued one, which
-  // registers a deferred of its own.
-  for (let pass = 0; pass < 3; pass++) {
-    for (const d of pending.values()) d.resolve("ok");
-    await sleep(0);
-  }
+  // registers a deferred of its own. `drain` rather than a fixed pass count --
+  // the number of passes needed is the number of QUEUED requests, which grows
+  // every time a non-cheap source is added, so a hardcoded count turns the
+  // next added source into a five-second timeout here. That is exactly what
+  // `drain`'s docstring warns about and exactly what U7 tripped.
+  await drain(pending);
   await cache.settled();
 });
 
