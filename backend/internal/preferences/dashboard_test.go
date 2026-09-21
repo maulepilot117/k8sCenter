@@ -84,6 +84,25 @@ var testParamWidgetSpec = widgetSpec{
 	},
 }
 
+// fullParams returns a complete parameter set for testParamWidgetSpec, with
+// the given keys overridden.
+//
+// Every key a widget declares is mandatory -- the validator refuses a
+// partially filled placement -- so a test interested in one parameter still
+// has to supply the others. Without this, adding a key to the stand-in breaks
+// every test that names a different one.
+func fullParams(over map[string]string) map[string]string {
+	out := map[string]string{
+		"namespace": "ns",
+		"mode":      "full",
+		"n":         "1",
+	}
+	for k, v := range over {
+		out[k] = v
+	}
+	return out
+}
+
 func withParamWidget(t *testing.T) func() {
 	t.Helper()
 	return withTestWidget(t, testParamWidgetID, testParamWidgetSpec)

@@ -1635,11 +1635,11 @@ func TestHandler_GetLayout_ReauthorizesNamespaces(t *testing.T) {
 	cfg := layoutWithItems(t,
 		item(map[string]any{
 			"instanceId": "revoked", "id": testParamWidgetID, "x": 0, "w": 4, "h": 4,
-			"params": map[string]string{"namespace": "prod"},
+			"params": fullParams(map[string]string{"namespace": "prod"}),
 		}),
 		item(map[string]any{
 			"instanceId": "kept", "id": testParamWidgetID, "x": 4, "w": 4, "h": 4,
-			"params": map[string]string{"namespace": "staging"},
+			"params": fullParams(map[string]string{"namespace": "staging"}),
 		}),
 	)
 	if rec := putLayout(t, h, user, "local", "overview", 0, cfg); rec.Code != http.StatusCreated {
@@ -1684,7 +1684,7 @@ func TestHandler_GetLayout_WithoutAccessCheckerWithholdsNamespacedItems(t *testi
 	cfg := layoutWithItems(t,
 		item(map[string]any{
 			"instanceId": "scoped", "id": testParamWidgetID, "x": 0, "w": 4, "h": 4,
-			"params": map[string]string{"namespace": "prod"},
+			"params": fullParams(map[string]string{"namespace": "prod"}),
 		}),
 		item(map[string]any{"instanceId": "unscoped", "id": "cluster-health", "x": 4, "w": 4, "h": 4}),
 	)
@@ -1834,7 +1834,7 @@ func TestHandler_ListLayouts_WithholdsNamespacedItems(t *testing.T) {
 	cfg := layoutWithItems(t,
 		item(map[string]any{
 			"instanceId": "scoped", "id": testParamWidgetID, "x": 0, "w": 4, "h": 4,
-			"params": map[string]string{"namespace": "prod"},
+			"params": fullParams(map[string]string{"namespace": "prod"}),
 		}),
 		item(map[string]any{"instanceId": "unscoped", "id": "cluster-health", "x": 4, "w": 4, "h": 4}),
 	)
