@@ -20,28 +20,9 @@
  * every other module under this directory. Hoisting them is a real cleanup and
  * a separate one; nothing here is the place to start it.
  */
+
+import { list, num, obj, str } from "./narrow.ts";
 import { coveragePercent } from "./sync-state.ts";
-
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-/** A finite number, or null. Deliberately NOT `Number(value) || 0`: a value
- * that is absent, a string or a NaN is not a zero, and the whole point of
- * these three cards is that a zero means something. */
-function num(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function list(value: unknown): unknown[] | null {
-  return Array.isArray(value) ? value : null;
-}
 
 /** Strings from an array field, skipping anything that is not one. */
 function strings(value: unknown): string[] {

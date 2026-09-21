@@ -6,6 +6,7 @@ import {
   NO_ROOM,
   NOT_INSTALLED,
   NOT_PERMITTED,
+  selectionAfterEntriesChange,
 } from "./catalog.ts";
 import type { SourceState } from "./data.ts";
 import type { LayoutItem, WidgetDef } from "./types.ts";
@@ -385,5 +386,35 @@ describe("disabledReasonFor -- an admin-gated entry", () => {
     expect(
       disabledReasonFor(auditWidget(), placed, DASHBOARD_COLUMNS, {}, false),
     ).toBe(NOT_PERMITTED);
+  });
+});
+
+describe("selectionAfterEntriesChange", () => {
+  // The palette's rows become addable or not as discovery statuses and the
+  // admin signal resolve, on their own schedule, while the dialog is open.
+  // A selection left on a row that has since become unaddable looks selected
+  // and silently swallows both Enter and a click, because `choose` no-ops on
+  // a blocked entry and both paths go through it.
+  test("a selection still pointing at an addable row is left alone", () => {
+    // Not merely "does not crash": moving it would yank the user's cursor
+    // every time an unrelated status landed.
+    expect(selectionAfterEntriesChange([true, true, true], 2)).toBe(2);
+    expect(selectionAfterEntriesChange([false, true, true], 1)).toBe(1);
+  });
+
+  test("a selection on a row that just became unaddable moves to the first addable one", () => {
+    expect(selectionAfterEntriesChange([false, false, true], 0)).toBe(2);
+    expect(selectionAfterEntriesChange([true, false, true], 1)).toBe(0);
+  });
+
+  test("nothing addable selects nothing, rather than promising a dead Enter", () => {
+    expect(selectionAfterEntriesChange([false, false], 0)).toBe(-1);
+    expect(selectionAfterEntriesChange([], 0)).toBe(-1);
+  });
+
+  test("an out-of-range selection is repaired, not preserved", () => {
+    // The list can shrink underneath the selection as well as change shape.
+    expect(selectionAfterEntriesChange([false, true], 7)).toBe(1);
+    expect(selectionAfterEntriesChange([true, true], -1)).toBe(0);
   });
 });

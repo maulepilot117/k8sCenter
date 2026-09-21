@@ -5,7 +5,10 @@ import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 // no component test harness (D-10): logic that needs a unit test has to sit
 // somewhere a test can import it. Do not move it back into this file.
 import type { FamilyStatuses } from "@/lib/dashboard/catalog.ts";
-import { disabledReasonFor } from "@/lib/dashboard/catalog.ts";
+import {
+  disabledReasonFor,
+  selectionAfterEntriesChange,
+} from "@/lib/dashboard/catalog.ts";
 import { widgetsForScope } from "@/lib/dashboard/registry.ts";
 import type {
   DashboardScope,
@@ -219,6 +222,25 @@ export default function WidgetPalette({
     selectedIndex.value = firstAddable(flat);
   }, [query.value]);
 
+  // The selection also has to follow a row that stops being addable underneath
+  // it. `entries` recomputes when a discovery status or the admin signal
+  // lands, both of which resolve on their own schedule while the dialog is
+  // open, and `disabledReasonFor` can flip the selected row to blocked without
+  // the query having changed -- so the effect above never re-runs.
+  //
+  // What the user saw was a row that still looked selected, because the row's
+  // class checks `isSelected` before `blocked`, sitting next to its new
+  // disabled-reason badge and silently swallowing both Enter and a click:
+  // `choose` no-ops on a blocked entry, and both paths go through it. A dialog
+  // that ignores input without saying why is worse than one that refuses out
+  // loud, which is what moving the selection restores.
+  useLayoutEffect(() => {
+    selectedIndex.value = selectionAfterEntriesChange(
+      flat.map((e) => e.disabledReason === null),
+      selectedIndex.value,
+    );
+  }, [entries]);
+
   function choose(entry: Entry | undefined) {
     if (entry === undefined || entry.disabledReason !== null) return;
     onAdd(entry.def);
@@ -366,11 +388,18 @@ export default function WidgetPalette({
                   // see -- and this row is the one Enter acts on. Every row
                   // reserves the bar's width so the selection does not
                   // shuffle the list sideways.
+                  //
+                  // `blocked` is tested FIRST. The selection normally moves
+                  // off a row that becomes unaddable, but for the frame
+                  // before it does -- and for a pointer resting on a blocked
+                  // row -- "selected" styling on something that refuses both
+                  // Enter and a click tells the user the opposite of the
+                  // truth. Unaddable outranks selected.
                   class={`flex w-full items-center gap-3 border-l-2 px-4 py-2 text-left text-sm ${
-                    isSelected
-                      ? "cursor-pointer border-accent bg-accent-dim text-text-primary"
-                      : blocked
-                        ? "cursor-not-allowed border-transparent text-text-muted"
+                    blocked
+                      ? "cursor-not-allowed border-transparent text-text-muted"
+                      : isSelected
+                        ? "cursor-pointer border-accent bg-accent-dim text-text-primary"
                         : "cursor-pointer border-transparent text-text-secondary"
                   }`}
                 >

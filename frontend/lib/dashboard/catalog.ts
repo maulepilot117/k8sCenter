@@ -139,3 +139,31 @@ export function disabledReasonFor(
   }
   return placeNewWidget(placed, def, columns) === null ? NO_ROOM : null;
 }
+
+/**
+ * Where the palette's selection should sit after its entry list changes.
+ *
+ * Pure and here rather than inline in the component, per D-10: the decision
+ * has three cases and a defect in it is invisible on screen -- the row still
+ * looks selected.
+ *
+ * `current` is kept whenever it still points at an addable row, so a status
+ * landing elsewhere in the catalog does not yank the user's selection. It
+ * moves only when the selected row itself has become unaddable, which is the
+ * case the palette had no answer for: a discovery status or the admin signal
+ * resolves while the dialog is open, `disabledReasonFor` flips that row to
+ * blocked, and the selection stays on it. `choose` then no-ops on both Enter
+ * and click, so the dialog ignores the user with no explanation.
+ *
+ * -1 when nothing is addable, matching the open-time behaviour: highlighting
+ * a row there would promise an Enter that does nothing.
+ */
+export function selectionAfterEntriesChange(
+  addable: readonly boolean[],
+  current: number,
+): number {
+  if (current >= 0 && current < addable.length && addable[current]) {
+    return current;
+  }
+  return addable.indexOf(true);
+}

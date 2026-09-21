@@ -25,6 +25,7 @@
  */
 import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
+import { list, num, obj, str } from "./narrow.ts";
 import { coverage } from "./page-coverage.ts";
 
 // --------------------------------------------------------------------------
@@ -35,28 +36,6 @@ import { coverage } from "./page-coverage.ts";
 // four lines each, and a shared "readers" module would be imported by every
 // view file in lib/dashboard for no behaviour.
 // --------------------------------------------------------------------------
-
-function obj(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function num(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-/** The payload of a list route, or null when the body is not a list at all.
- * Not `[]`: a body this build cannot read has to stay distinguishable from an
- * empty one, which is the whole difference between "nothing to report" and
- * "we could not tell". */
-function list(data: unknown): unknown[] | null {
-  return Array.isArray(data) ? data : null;
-}
 
 // --------------------------------------------------------------------------
 // cluster-status
