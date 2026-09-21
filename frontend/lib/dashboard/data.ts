@@ -835,6 +835,31 @@ async function readList(
 }
 
 /**
+ * A route envelope with one nil-slice field normalised to an empty array.
+ *
+ * Go marshals a nil slice as `null`, so a handler that builds its result with
+ * `var out []T` answers `"field": null` for an empty result. On a BARE list
+ * response that is caught by a plain `?? []`, and catching it matters: a
+ * source whose data is null never renders, because `resolveWidgetState` reads
+ * `data !== null` as "has landed".
+ *
+ * An envelope hides the same defect somewhere worse. The body is an object, so
+ * the card renders -- and renders a fleet it could not read as a fleet with
+ * nothing in it. This normalises the one field and leaves everything else
+ * alone, including a body that is not an object at all: the view functions
+ * distinguish an unreadable body from an empty one, and flattening the two
+ * here would take that distinction away from them.
+ */
+function withList(body: unknown, field: string): unknown {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return body;
+  }
+  const value = (body as Record<string, unknown>)[field];
+  if (value !== null && value !== undefined) return body;
+  return { ...(body as Record<string, unknown>), [field]: [] };
+}
+
+/**
  * The real fetchers. Endpoints and shapes match what DashboardV2 fetched
  * before the extraction; cluster-info and recent-events gain the 60s refresh
  * the other two always had, because a silently ageing event list is a defect.
@@ -998,6 +1023,40 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
     (await read("/v1/velero/backups", signal)) ?? [],
   "snapshots-list": async (signal) =>
     (await read("/v1/storage/snapshots", signal)) ?? [],
+
+  // The delivery and networking reads. Both answer with an ENVELOPE rather
+  // than a bare list -- `{ applications, summary }` and
+  // `{ status, workloads, errors }` -- so `read` keeps the whole body and the
+  // `?? []` guard lands on the nested field instead of on the response.
+  //
+  // The guard on `applications` is load-bearing, not defensive.
+  // `HandleListApplications` builds its result through `filterApps`, which
+  // returns `var out []NormalizedApp` -- a nil slice -- so a caller whose RBAC
+  // filter or query parameters drop everything gets `"applications": null`.
+  // The same defect that shipped on `policy-violations-list`. It does not
+  // strand the card the way a null BODY would (the envelope is still an
+  // object, so `resolveWidgetState` sees data), which is precisely why it
+  // would have gone unnoticed: the card would render, and quietly report a
+  // fleet it could not read as a fleet with nothing wrong.
+  //
+  // `mesh-mtls` does NOT have it today -- `aggregateWorkloads` returns
+  // `make([]WorkloadMTLS, 0, n)` and the handler seeds the field with a
+  // literal empty slice on its no-mesh path, both checked -- and carries the
+  // same guard anyway, for the reason the data-protection four do: the cost of
+  // a later regression is invisible and permanent.
+  //
+  // Neither is spelled `?? []` inline, because the field sits inside an object
+  // the rest of the card reads. `withList` rebuilds the envelope with the one
+  // field normalised, and leaves a body that is not an envelope at all
+  // untouched so the view functions can still report it as unreadable rather
+  // than as empty.
+  "gitops-applications": async (signal) =>
+    withList(await read("/v1/gitops/applications", signal), "applications"),
+  // No `?namespace=`: the route reads an absent namespace as cluster-scoped,
+  // and the cluster-wide posture is what an overview card is for (KTD4). That
+  // is also what keeps the widget parameterless on both sides of the catalog.
+  "mesh-mtls": async (signal) =>
+    withList(await read("/v1/mesh/mtls", signal), "workloads"),
 
   // The eight discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see

@@ -169,6 +169,25 @@ var allowedWidgets = map[string]widgetSpec{
 	"eso-health":      {MinW: 4, MinH: 3},
 	"velero-backups":  {MinW: 4, MinH: 3},
 	"snapshot-health": {MinW: 4, MinH: 3},
+	// The delivery and networking family. Like the seven above, all three read
+	// CRD-discovered features and declare a discovery status client-side --
+	// invisible here, because this map validates placements, not sources.
+	//
+	// Four columns each for the reason the data-protection four are: a row
+	// carries a long name beside a badge cluster and an attribution line, and
+	// an Argo CD application or an Istio workload name
+	// (`checkout-service-canary`) truncates to uselessness at three.
+	//
+	// None of them takes parameters, and `mtls-coverage` is the one where that
+	// is a decision rather than a consequence. `/v1/mesh/mtls` ACCEPTS a
+	// `?namespace=` filter and treats its absence as a cluster-scoped read; the
+	// widget deliberately never sends one, because the cluster-wide posture is
+	// the useful default for an overview card. Declaring the key here would
+	// make every stored placement carry a scope the card does not use and put
+	// it through the per-read re-authorization path for nothing.
+	"gitops-app-health":   {MinW: 4, MinH: 3},
+	"gitops-recent-syncs": {MinW: 4, MinH: 3},
+	"mtls-coverage":       {MinW: 4, MinH: 3},
 }
 
 // MaxDashboardLayoutsPerUser is the per-user, per-cluster ceiling. One layout

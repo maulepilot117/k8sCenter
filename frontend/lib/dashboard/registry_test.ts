@@ -820,6 +820,142 @@ describe("the data-protection family's availability, through the real definition
   });
 });
 
+describe("the delivery and mesh families' availability, through the real definitions", () => {
+  // The same exercise the security and data-protection blocks above run, over
+  // the two GitOps cards and the mesh one. Both routes answer 200 with an
+  // empty result whether the feature is absent or present with nothing to
+  // report, so the reading is decided by the declared family status before
+  // `render` is ever called (KTD1).
+  //
+  // These three matter for the same reason the data-protection four do: the
+  // two readings are opposite. "Every application is synced" and "every
+  // workload encrypts" are reassuring sentences, and on a cluster with no
+  // GitOps tool and no service mesh they are both false in the one direction
+  // an operator will not check.
+  function stateOf(
+    states: Record<string, Partial<SourceState>>,
+  ): (key: string) => SourceState {
+    return (key) => ({
+      data: null,
+      error: null,
+      errorKind: null,
+      loading: false,
+      range: null,
+      ...(states[key] ?? {}),
+    });
+  }
+
+  function resolve(id: string, states: Record<string, Partial<SourceState>>) {
+    const def = getWidget(id);
+    if (!def) throw new Error(`${id} is not registered`);
+    return resolveWidgetState(def, stateOf(states), {}).state;
+  }
+
+  // The empty payloads below are deliberately the SAME in the absent and
+  // present cases: that is the whole point.
+  const NO_APPS = { applications: [], summary: null };
+  const NO_WORKLOADS = { status: { detected: "istio" }, workloads: [] };
+
+  test("neither Argo CD nor Flux: both GitOps cards read as not installed", () => {
+    // `detected: ""` is how the GitOps status route reports neither tool. It
+    // is a STRING that names the tool -- "argocd", "fluxcd", "both" -- not a
+    // boolean, which is why `featurePresent` has to treat the empty string as
+    // absence rather than testing truthiness of a flag that does not exist.
+    const absent = {
+      "gitops-status": { data: { detected: "", lastChecked: "" } },
+      "gitops-applications": { data: NO_APPS },
+    };
+    expect(resolve("gitops-app-health", absent)).toBe("unavailable");
+    expect(resolve("gitops-recent-syncs", absent)).toBe("unavailable");
+  });
+
+  test("a tool installed managing nothing: both GitOps cards are ready", () => {
+    // The other half, and the reason availability comes from the status route:
+    // the applications payload is byte-identical to the test above.
+    const present = {
+      "gitops-status": { data: { detected: "fluxcd", lastChecked: "" } },
+      "gitops-applications": { data: NO_APPS },
+    };
+    expect(resolve("gitops-app-health", present)).toBe("ready");
+    expect(resolve("gitops-recent-syncs", present)).toBe("ready");
+  });
+
+  test("no mesh detected: the coverage card reads as not installed", () => {
+    expect(
+      resolve("mtls-coverage", {
+        "mesh-status": { data: { detected: "", lastChecked: "" } },
+        "mesh-mtls": { data: NO_WORKLOADS },
+      }),
+    ).toBe("unavailable");
+  });
+
+  test("a mesh detected with no workloads: the coverage card is ready", () => {
+    // Ready, so the card can say "a mesh is installed and nothing is running
+    // in it" -- which is a finding. Unavailable here would tell an operator
+    // their mesh is not installed while it is.
+    expect(
+      resolve("mtls-coverage", {
+        "mesh-status": { data: { detected: "linkerd", lastChecked: "" } },
+        "mesh-mtls": { data: NO_WORKLOADS },
+      }),
+    ).toBe("ready");
+  });
+
+  test("an unreadable family status reads as absent, never as healthy", () => {
+    const offenders: string[] = [];
+    const cases: [string, string, string, unknown][] = [
+      ["gitops-app-health", "gitops-status", "gitops-applications", NO_APPS],
+      ["gitops-recent-syncs", "gitops-status", "gitops-applications", NO_APPS],
+      ["mtls-coverage", "mesh-status", "mesh-mtls", NO_WORKLOADS],
+    ];
+    for (const [id, status, source, payload] of cases) {
+      const state = resolve(id, {
+        [status]: { data: { unexpected: "shape" } },
+        [source]: { data: payload },
+      });
+      if (state !== "unavailable") offenders.push(`${id} resolved ${state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("each delivery and mesh widget declares the family whose absence would fool it", () => {
+    expect(getWidget("gitops-app-health")?.familyStatus).toBe("gitops-status");
+    expect(getWidget("gitops-recent-syncs")?.familyStatus).toBe(
+      "gitops-status",
+    );
+    expect(getWidget("mtls-coverage")?.familyStatus).toBe("mesh-status");
+  });
+
+  test("both GitOps cards read the one applications source and nothing else", () => {
+    // One key, declared twice, is ONE request: the cache fetches each key at
+    // most once per cycle. Pinned because the obvious "improvement" is a
+    // second source per card.
+    //
+    // And neither declares `/v1/gitops/commits`, which is the pin that
+    // matters. That route needs a repository URL AND a set of shas, so it can
+    // only be asked after the applications list is in hand, and it answers
+    // with a neutral empty shape when no Git provider token is configured.
+    // Declaring it would make a card that must be useful without commit
+    // enrichment unable to render at all without it.
+    expect(getWidget("gitops-app-health")?.sources).toEqual([
+      "gitops-applications",
+    ]);
+    expect(getWidget("gitops-recent-syncs")?.sources).toEqual([
+      "gitops-applications",
+    ]);
+  });
+
+  test("the coverage card is parameterless and reads the cluster-wide posture", () => {
+    // `/v1/mesh/mtls` treats an absent namespace as a cluster-scoped read, and
+    // the cluster-wide posture is the more useful default for an overview card
+    // (KTD4). A namespace parameter here would also make the card one of the
+    // few whose placement the server re-authorizes per read, for a scope the
+    // route does not require.
+    expect(getWidget("mtls-coverage")?.params).toBeUndefined();
+    expect(getWidget("mtls-coverage")?.sources).toEqual(["mesh-mtls"]);
+  });
+});
+
 test("every widget module is listed in the manifest", () => {
   // The drift guard. Registration is an import side effect, so a widget file
   // the manifest does not import registers nothing -- and every invariant

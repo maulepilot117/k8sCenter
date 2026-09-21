@@ -197,6 +197,28 @@ export const DATA_SOURCE_KEYS = [
   // CLASSES route for the availability flag rather than this one, so the
   // expensive list is issued once and only for its data.
   "snapshots-list",
+  // The delivery family's one read, shared by BOTH GitOps cards.
+  //
+  // `/v1/gitops/applications`, whose envelope is `{ applications, summary }`
+  // rather than a bare list -- so `read`, not `readList`, and the fetcher
+  // keeps the envelope. Two widgets declaring the same key is the case the
+  // per-cycle cache exists for: the app-health roll-up and the recent-syncs
+  // list are one request, not two, however many copies of either an operator
+  // places.
+  //
+  // `/v1/gitops/commits` is deliberately NOT a source. It requires a
+  // repository URL AND a set of shas -- so it can only be asked after this
+  // list is in hand -- and answers with a neutral empty shape when the
+  // deployment has no Git provider token, which is the default. A card whose
+  // rows depended on it would be blank on most clusters. See
+  // `gitopsRecentSyncsView` in sync-state.ts.
+  "gitops-applications",
+  // The networking family's one read: `/v1/mesh/mtls`, and requested with NO
+  // namespace, which that route treats as a cluster-scoped read (KTD4). That
+  // is what keeps `mtls-coverage` parameterless: the cluster-wide posture is
+  // the more useful default for an overview card and the one an operator
+  // cannot reconstruct without visiting every namespace page in turn.
+  "mesh-mtls",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -345,6 +367,29 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   "external-secrets-list": "expensive",
   "velero-backups-list": "expensive",
   "snapshots-list": "expensive",
+
+  // The delivery and networking reads. Both expensive, and the second is the
+  // dearest source in this table.
+  //
+  // `gitops-applications` runs `filterAppsByRBAC`, a SelfSubjectAccessReview
+  // per namespace carrying an application -- the argument that classified
+  // `limits-namespaces`, `policy-violations-list` and `certificates-list` --
+  // and it sits under the backend's 30-request-per-minute YAML bucket, shared
+  // with `/yaml/*` and `/wizards/*`. Its 30-second server-side cache covers
+  // only the CRD fetch; the access reviews and the serialisation of every
+  // normalized application are paid per request.
+  //
+  // `mesh-mtls` is worse than any of them and the shape shows none of it. One
+  // request runs an access review, an IMPERSONATED pod LIST across every
+  // namespace (capped at `meshListCap` and flagged `truncated` when it bites),
+  // a ReplicaSet list for owner resolution, a mesh-policy fetch, and -- when
+  // Istio is part of the detected mesh -- a Prometheus range query to
+  // cross-check the policy verdict against observed traffic. There is no
+  // server-side cache on any of it. That is a Prometheus read AND a cost the
+  // backend pays per request rather than amortising across viewers, which is
+  // this class twice over.
+  "gitops-applications": "expensive",
+  "mesh-mtls": "expensive",
 
   "policies-status": "discovery",
   "gitops-status": "discovery",

@@ -78,7 +78,9 @@ func TestContractParity(t *testing.T) {
 				want: []string{
 					"active-alerts", "certs-expiring", "cluster-health",
 					"cpu-tile", "diagnostics-summary", "eso-health",
-					"hpa-status", "memory-tile", "network-tile",
+					"gitops-app-health", "gitops-recent-syncs",
+					"hpa-status", "memory-tile", "mtls-coverage",
+					"network-tile",
 					"node-conditions", "nodes", "pdb-risk", "pending-pods",
 					"pod-restarts", "pod-status", "pods-tile",
 					"policy-compliance", "policy-violations", "quota-pressure",
@@ -151,9 +153,16 @@ func TestContractParity(t *testing.T) {
 			// The data-protection family. Four columns each: every row carries
 			// a long resource name beside a state badge. None takes
 			// parameters -- every backing route is cluster-wide.
-			"eso-health":           {MinW: 4, MinH: 3},
-			"velero-backups":       {MinW: 4, MinH: 3},
-			"snapshot-health":      {MinW: 4, MinH: 3},
+			"eso-health":      {MinW: 4, MinH: 3},
+			"velero-backups":  {MinW: 4, MinH: 3},
+			"snapshot-health": {MinW: 4, MinH: 3},
+			// The delivery and networking family. Four columns each, and no
+			// parameters -- `mtls-coverage` in particular ships parameterless
+			// on purpose: `/v1/mesh/mtls` reads an absent namespace as a
+			// cluster-scoped request, which is what an overview card wants.
+			"gitops-app-health":    {MinW: 4, MinH: 3},
+			"gitops-recent-syncs":  {MinW: 4, MinH: 3},
+			"mtls-coverage":        {MinW: 4, MinH: 3},
 			"hpa-status":           {MinW: 3, MinH: 3},
 			"memory-tile":          {MinW: 2, MinH: 2},
 			"network-tile":         {MinW: 2, MinH: 2},
