@@ -24,6 +24,7 @@ import {
 // Safe despite the apparent cycle: widget-state's only import from this
 // file is `import type`, which is erased, so there is no runtime edge back.
 import { featurePresent } from "./widget-state.ts";
+import type { ResourceListPage } from "./wire-types.ts";
 
 /**
  * Why a source failed, as far as it can be told apart from the response.
@@ -133,9 +134,13 @@ export const REQUEST_TIMEOUT_MS = DASHBOARD_REFRESH_MS / 2;
  * widget went away. Raising it would move the queue back into the browser
  * without issuing anything sooner.
  *
- * The ten shipped widgets read seven non-cheap sources between them -- the
- * trends series and the six discovery routes -- so at most one waits at load,
- * and it starts the moment the first of the six answers.
+ * The catalog has grown past the point where every non-cheap source fits in
+ * the bound at once, which is what the bound is for: a dashboard holding the
+ * workload widgets alongside the metric tiles wants the trends series, the
+ * counts route, four list reads and six discovery routes, and the last of
+ * them waits for a slot rather than joining a twelve-request burst. The
+ * refresh offsets below spread the same set across the interval on every tick
+ * after the first.
  *
  * Cheap reads are not counted or bounded. They are informer lookups; making
  * one wait behind a Prometheus range query would trade a cost that does not
@@ -789,6 +794,35 @@ async function read(path: string, signal: AbortSignal): Promise<unknown> {
 }
 
 /**
+ * The largest page the generic list route will serve. Requests above it are
+ * clamped server-side (`parseListParams`), so asking for more would silently
+ * get this and leave the client believing it had the whole population.
+ */
+const LIST_PAGE_LIMIT = 500;
+
+/**
+ * GET a list endpoint and keep BOTH halves of its envelope.
+ *
+ * `read` above drops `metadata`, which is right for the handlers that answer
+ * with a whole object and wrong for the list route: the route caps a page at
+ * `LIST_PAGE_LIMIT` items while `metadata.total` reports the whole
+ * population, so dropping the total would leave a consumer unable to tell a
+ * complete list from the first 500 of three thousand. Every widget that ranks
+ * a list has to say which of the two it is showing.
+ */
+async function readList(
+  path: string,
+  signal: AbortSignal,
+): Promise<ResourceListPage> {
+  const res = await api<unknown>(`${path}?limit=${LIST_PAGE_LIMIT}`, {
+    method: "GET",
+    signal,
+  });
+  const items = Array.isArray(res.data) ? res.data : [];
+  return { items, total: res.metadata?.total ?? items.length };
+}
+
+/**
  * The real fetchers. Endpoints and shapes match what DashboardV2 fetched
  * before the extraction; cluster-info and recent-events gain the 60s refresh
  * the other two always had, because a silently ageing event list is a defect.
@@ -820,6 +854,19 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
       `/v1/diagnostics/${encodeURIComponent(params.namespace ?? "")}/summary`,
       signal,
     ),
+
+  // Batch counts across every informer-tracked kind. Deliberately requested
+  // without a namespace: the dashboard is a cluster-wide surface, and the
+  // namespace picker scopes the list pages rather than this one.
+  "resource-counts": (signal) => read("/v1/resources/counts", signal),
+
+  // The four list reads. `readList`, not `read`: what these widgets render is
+  // a ranking, and a ranking over a capped page has to be labelled as one.
+  "deployments-list": (signal) => readList("/v1/resources/deployments", signal),
+  "statefulsets-list": (signal) =>
+    readList("/v1/resources/statefulsets", signal),
+  "daemonsets-list": (signal) => readList("/v1/resources/daemonsets", signal),
+  "pods-list": (signal) => readList("/v1/resources/pods", signal),
 
   // The six discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see

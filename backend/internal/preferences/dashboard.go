@@ -100,6 +100,9 @@ var allowedWidgets = map[string]widgetSpec{
 	"nodes":                {MinW: 3, MinH: 4},
 	"recent-events":        {MinW: 3, MinH: 3},
 	"active-alerts":        {MinW: 2, MinH: 3},
+	"workload-health":      {MinW: 3, MinH: 3},
+	"pending-pods":         {MinW: 3, MinH: 3},
+	"pod-restarts":         {MinW: 3, MinH: 3},
 	// The first parameterized widget. The empty value slice is load-bearing
 	// and is NOT the same as omitting the key: it says the legal values are
 	// not knowable from a catalog -- they are whatever namespaces this cluster
