@@ -887,6 +887,27 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "hpas-list": (signal) => readList("/v1/resources/hpas", signal),
   "pdbs-list": (signal) => readList("/v1/resources/pdbs", signal),
 
+  // `nodes` is both the adapter's `Kind()` and the long resource name, so
+  // unlike the two above there is no short/long form to get wrong.
+  "nodes-list": (signal) => readList("/v1/resources/nodes", signal),
+
+  // Two family routes rather than the generic one, and neither is a list page
+  // -- both answer with a whole roll-up, so `read` and not `readList`.
+  //
+  // `/limits/namespaces` returns one row per namespace that has a
+  // ResourceQuota OR a LimitRange, already RBAC-filtered and already sorted by
+  // utilization. The rows with no quota are the reason `quotaPressureView`
+  // cannot simply render the payload: they are in it, and a pressure ranking
+  // must not carry them. Deliberately requested without a namespace, like
+  // `resource-counts`: the dashboard is a cluster-wide surface.
+  "limits-namespaces": (signal) => read("/v1/limits/namespaces", signal),
+  // `/storage/classes` is the storage family's class inventory. There is no
+  // bare `/storage` overview route to ask instead -- the family mounts
+  // drivers, classes, snapshots, snapshot-classes and presets under its own
+  // prefix and nothing that spans them -- which is why the card composes this
+  // with the Prometheus slug below rather than reading one endpoint.
+  "storage-classes": (signal) => read("/v1/storage/classes", signal),
+
   // The two slug reads. The whole query lives on the server; the client
   // names it and nothing else (D-8, R15). No namespace and no name: these
   // slugs are `ClusterWide`, which also pins their RBAC check to a
@@ -901,6 +922,11 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
     read("/v1/monitoring/queries/cluster/top-consumers-cpu", signal),
   "top-consumers-memory": (signal) =>
     read("/v1/monitoring/queries/cluster/top-consumers-memory", signal),
+  // The third slug. Its RBAC check is a cluster-scoped `list` on
+  // persistentvolumeclaims rather than on pods, and it refuses the same
+  // opaque way -- hence its entry in `NOT_FOUND_IS_REFUSAL` too.
+  "volume-capacity": (signal) =>
+    read("/v1/monitoring/queries/cluster/storage-capacity", signal),
 
   // The six discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see

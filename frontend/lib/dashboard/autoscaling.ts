@@ -21,6 +21,8 @@
  * degrades to `unknown` rather than blanking a card describing several hundred
  * readable ones.
  */
+import type { PageCoverage } from "./page-coverage.ts";
+import { coverage } from "./page-coverage.ts";
 import type { ResourceListPage } from "./wire-types.ts";
 
 /** The full pages these widgets link to (R7). The route kind is `hpas` and
@@ -65,33 +67,6 @@ function arr(value: unknown): unknown[] {
  */
 function num(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-/**
- * What a card can say about the page it was computed over.
- *
- * `total` is the route's own count of the whole population and `counted` is
- * how much of it this page carried. The list route caps a page at 500 items,
- * so a ranking over the first 500 of 3000 is a sample and has to be labelled
- * as one.
- *
- * The twin of the private `coverage` in pod-health.ts. Deliberately copied
- * rather than imported: hoisting it would mean editing a module that just
- * shipped, and the two are eight lines. A third copy is the point at which it
- * should move to a shared module instead.
- */
-interface PageCoverage {
-  total: number;
-  counted: number;
-  truncated: boolean;
-}
-
-function coverage(
-  page: ResourceListPage | null | undefined,
-  counted: number,
-): PageCoverage {
-  const total = num(page?.total) ?? counted;
-  return { total, counted, truncated: total > counted };
 }
 
 function itemsOf(page: ResourceListPage | null | undefined): unknown[] {

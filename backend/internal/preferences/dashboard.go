@@ -105,6 +105,15 @@ var allowedWidgets = map[string]widgetSpec{
 	"pod-restarts":         {MinW: 3, MinH: 3},
 	"hpa-status":           {MinW: 3, MinH: 3},
 	"pdb-risk":             {MinW: 3, MinH: 3},
+	"quota-pressure":       {MinW: 3, MinH: 3},
+	// Wider than its neighbours for the same reason top-consumers is: a row
+	// carries a node name plus up to four condition chips, and a node name is
+	// routinely `ip-10-0-42-118.eu-west-1.compute.internal`.
+	"node-conditions": {MinW: 4, MinH: 3},
+	// Wider AND taller: the card stacks a StorageClass inventory above a
+	// ranked volume list, so it needs the height for two sections and the
+	// width for a claim name beside its namespace.
+	"storage-capacity": {MinW: 4, MinH: 4},
 	// Wider than its neighbours: each row carries a pod name, its namespace
 	// and a value, and three columns inside three grid columns truncate the
 	// names to uselessness. The card's CPU/memory switch is NOT a parameter

@@ -88,6 +88,16 @@ export const DATA_SOURCE_KEYS = [
   // kind that is very much present.
   "hpas-list",
   "pdbs-list",
+  // The reliability reads. `nodes-list` is the same generic list route again
+  // -- and `nodes` is both the adapter's `Kind()` and the long resource name,
+  // so this one does not have the `hpas`/`pdbs` trap. The other two are not
+  // the generic route at all: `limits-namespaces` is the ResourceQuota /
+  // LimitRange roll-up the limits family serves, and `storage-classes` is the
+  // storage family's class inventory. Neither family is CRD-discovered, so
+  // neither has a status key here.
+  "nodes-list",
+  "limits-namespaces",
+  "storage-classes",
   // The first sources that are neither an informer read nor a discovery
   // route: two named, server-owned PromQL templates from the slug registry
   // (`backend/internal/monitoring/query_registry.go`). The widget names a
@@ -96,6 +106,12 @@ export const DATA_SOURCE_KEYS = [
   // (R15).
   "top-consumers-cpu",
   "top-consumers-memory",
+  // The third slug read, and the one whose key does NOT echo its slug tail.
+  // It reads `cluster/storage-capacity`, but the widget that composes it is
+  // itself `storage-capacity` -- a card declaring a source of its own name
+  // beside a second one reads as a typo. Named for what the series carry
+  // instead: per-PersistentVolumeClaim percent-of-capacity-used.
+  "volume-capacity",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -170,12 +186,30 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   // Same route, same reasons.
   "hpas-list": "expensive",
   "pdbs-list": "expensive",
+  // Same route, same reasons, and a node object is one of the larger ones the
+  // route serves -- capacity, allocatable, images and a dozen conditions each.
+  "nodes-list": "expensive",
+  // Neither of these is the generic list route, and neither is cheap.
+  //
+  // `limits-namespaces` runs a SelfSubjectAccessReview PER NAMESPACE before it
+  // answers -- `filterByRBAC` checks every namespace in the roll-up
+  // individually -- so its cost scales with the cluster rather than with the
+  // dashboard. `storage-classes` is the mildest source in this table: an
+  // informer list with no access review at all. It is still not `cheap`,
+  // because both routes sit under the backend's 30-request-per-minute YAML
+  // bucket, shared with `/yaml/*` and `/wizards/*` -- a dashboard refreshing
+  // them on the unmanaged path would spend an operator's YAML budget in
+  // another tab. Classifying by the bucket rather than by the work is the
+  // direction `sourceCost` already defaults in.
+  "limits-namespaces": "expensive",
+  "storage-classes": "expensive",
   // Prometheus, which is the definition of this class: seconds rather than
   // milliseconds, and a cost the backend pays per request. The slug handler
   // adds a SelfSubjectAccessReview in front of the query, so a refused caller
   // pays for the check and gets nothing.
   "top-consumers-cpu": "expensive",
   "top-consumers-memory": "expensive",
+  "volume-capacity": "expensive",
 
   "policies-status": "discovery",
   "gitops-status": "discovery",
@@ -248,6 +282,16 @@ export const RANGE_SENSITIVE_KEYS: ReadonlySet<string> = new Set([
 export const NOT_FOUND_IS_REFUSAL: ReadonlySet<string> = new Set([
   "top-consumers-cpu",
   "top-consumers-memory",
+  // The third slug, and the same handler. Listed even though it is an
+  // OPTIONAL source, where the two above are required ones: the widget reads
+  // `errorKind` itself to choose between "your account may not read volume
+  // usage" and "volume usage could not be read", and without this entry a
+  // refused caller gets the second -- an invitation to wait for something
+  // that will never arrive. Its declared grant is a cluster-scoped `list` on
+  // persistentvolumeclaims, which is exactly the grant a namespace-scoped
+  // operator does not have, so this is the common case on that card rather
+  // than an edge one.
+  "volume-capacity",
 ]);
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
