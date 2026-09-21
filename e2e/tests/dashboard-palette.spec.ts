@@ -80,6 +80,22 @@ test("the catalog, the default and this file's own list agree", () => {
   expect(NOT_ON_DEFAULT_IDS.length + DEFAULT_LAYOUT_SIZE).toBe(CATALOG_SIZE);
 });
 
+/**
+ * Everything the shipped default does NOT place, and which is therefore still
+ * addable on a dashboard that has never been edited.
+ *
+ * This is not derived from the registry on purpose: the point of the test
+ * below is that the default is a deliberate subset, and a list computed from
+ * the same source as the thing under test would agree with any subset at all,
+ * including an accidental one.
+ */
+const NOT_ON_DEFAULT_IDS = [
+  ...PARAMETERIZED_IDS,
+  "workload-health",
+  "pending-pods",
+  "pod-restarts",
+];
+
 const palette = (page: Page) => page.getByTestId("widget-palette");
 const option = (page: Page, widgetId: string) =>
   page.getByTestId(`widget-option-${widgetId}`);
