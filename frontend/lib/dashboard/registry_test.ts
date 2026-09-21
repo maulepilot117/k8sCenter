@@ -692,6 +692,134 @@ describe("the security family's availability, through the real definitions", () 
   });
 });
 
+describe("the data-protection family's availability, through the real definitions", () => {
+  // The same exercise the security block above runs, over the four widgets
+  // that read cert-manager, External Secrets, Velero and the VolumeSnapshot
+  // CRDs. Every one of those four routes answers 200 with an empty array both
+  // when its operator is absent and when it is present with nothing to report,
+  // so the reading is decided by the declared family status before `render` is
+  // ever called (KTD1).
+  //
+  // These four matter more than most: the two readings are not merely
+  // different, they are opposite. "No expiring certificates", "every secret is
+  // synced", "no failed backups" and "no broken snapshots" are all reassuring
+  // sentences, and on a cluster running none of this they are all false in the
+  // one direction an operator will not check.
+  function stateOf(
+    states: Record<string, Partial<SourceState>>,
+  ): (key: string) => SourceState {
+    return (key) => ({
+      data: null,
+      error: null,
+      errorKind: null,
+      loading: false,
+      range: null,
+      ...(states[key] ?? {}),
+    });
+  }
+
+  function resolve(id: string, states: Record<string, Partial<SourceState>>) {
+    const def = getWidget(id);
+    if (!def) throw new Error(`${id} is not registered`);
+    return resolveWidgetState(def, stateOf(states), {}).state;
+  }
+
+  // id -> [its family status key, its data source key]. The empty payload
+  // below is deliberately the SAME in the absent and present cases: that is
+  // the whole point, and a table keyed this way makes it impossible to write
+  // the two tests against different data by accident.
+  const FAMILIES: [string, string, string][] = [
+    ["certs-expiring", "certificates-status", "certificates-list"],
+    ["eso-health", "external-secrets-status", "external-secrets-list"],
+    ["velero-backups", "velero-status", "velero-backups-list"],
+    ["snapshot-health", "snapshots-status", "snapshots-list"],
+  ];
+
+  test("no operator: each of the four reads as not installed", () => {
+    // `detected: false` is how all four of these status payloads report
+    // absence -- three of them are the boolean-shaped `Detected` field on a
+    // Go status struct, and the fourth is the storage family's
+    // `metadata.available` flag normalised into the same shape by the
+    // `snapshots-status` fetcher.
+    const offenders: string[] = [];
+    for (const [id, status, source] of FAMILIES) {
+      const state = resolve(id, {
+        [status]: { data: { detected: false } },
+        [source]: { data: [] },
+      });
+      if (state !== "unavailable") offenders.push(`${id} resolved ${state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("operator present with nothing to report: each of the four is ready", () => {
+    // The other half, and the reason availability has to come from the status
+    // route rather than from the list: the list is byte-identical to the test
+    // above. Anything other than `ready` here is a card refusing to tell an
+    // operator that their backup tooling has taken no backups.
+    const offenders: string[] = [];
+    for (const [id, status, source] of FAMILIES) {
+      const state = resolve(id, {
+        [status]: { data: { detected: true } },
+        [source]: { data: [] },
+      });
+      if (state !== "ready") offenders.push(`${id} resolved ${state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("an unreadable family status reads as absent, never as healthy", () => {
+    // `featurePresent` treats an unparseable payload as absent on purpose. A
+    // card saying "not installed" because a status route changed shape is a
+    // visible bug someone fixes; one rendering an empty green box is a bug
+    // nobody sees.
+    const offenders: string[] = [];
+    for (const [id, status, source] of FAMILIES) {
+      const state = resolve(id, {
+        [status]: { data: { unexpected: "shape" } },
+        [source]: { data: [] },
+      });
+      if (state !== "unavailable") offenders.push(`${id} resolved ${state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("each data-protection widget declares the family whose absence would fool it", () => {
+    // Pinned by name as well as exercised above: a widget reading a CRD-backed
+    // route with NO family declared is the defect R1 names, and it is
+    // invisible -- the card renders, every other invariant in this file
+    // passes, and the only symptom is a reassuring empty box on a cluster that
+    // runs none of this.
+    const declared = Object.fromEntries(
+      FAMILIES.map(([id]) => [id, getWidget(id)?.familyStatus]),
+    );
+    expect(declared).toEqual({
+      "certs-expiring": "certificates-status",
+      "eso-health": "external-secrets-status",
+      "velero-backups": "velero-status",
+      // The eighth family status key, and the only one that is not a
+      // `/status` route. The storage family publishes its VolumeSnapshot CRD
+      // check as `metadata.available` on the snapshot routes instead; the
+      // fetcher normalises it. Pinned here because "snapshots have no status
+      // route, so skip the declaration" is exactly the shortcut that would
+      // reintroduce the defect on this one card.
+      "snapshot-health": "snapshots-status",
+    });
+  });
+
+  test("the certificate card reads the full inventory, not the expiring subset", () => {
+    // `/v1/certificates/expiring` returns only certificates already inside
+    // their warning threshold and replaces the per-certificate thresholds with
+    // a pre-computed severity string. A card built on it could tell neither
+    // "every certificate is healthy" from "cert-manager manages nothing" --
+    // both are an empty array -- nor which threshold a classification came
+    // from, which is the one thing the annotation contract makes
+    // per-certificate. Pinned so a later "simplification" to the narrower
+    // route has to argue with a test.
+    expect(getWidget("certs-expiring")?.sources).toEqual(["certificates-list"]);
+  });
+});
+
 test("every widget module is listed in the manifest", () => {
   // The drift guard. Registration is an import side effect, so a widget file
   // the manifest does not import registers nothing -- and every invariant

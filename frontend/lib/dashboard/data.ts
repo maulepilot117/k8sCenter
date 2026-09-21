@@ -84,10 +84,10 @@ const RANGE_SENSITIVE = RANGE_SENSITIVE_KEYS;
 /**
  * Sources the periodic refresh leaves alone once they have answered.
  *
- * The seven discovery routes say whether an operator is installed on the
+ * The eight discovery routes say whether an operator is installed on the
  * cluster, which changes when somebody installs one -- not on the timescale of
  * a 60s tick. Re-asking costs more than the answer is worth: the dashboard
- * requests all seven on mount whether or not a widget reads them, because the
+ * requests all eight on mount whether or not a widget reads them, because the
  * palette has to mark an un-added widget as unavailable before it is added,
  * and three of them (policies, gitops, mesh) share the backend's
  * 30-request-per-minute YAML bucket with `/yaml/*` and `/wizards/*`. Polling
@@ -141,7 +141,7 @@ export const REQUEST_TIMEOUT_MS = DASHBOARD_REFRESH_MS / 2;
  * The catalog has grown past the point where every non-cheap source fits in
  * the bound at once, which is what the bound is for: a dashboard holding the
  * workload widgets alongside the metric tiles wants the trends series, the
- * counts route, four list reads and seven discovery routes, and the last of
+ * counts route, four list reads and eight discovery routes, and the last of
  * them waits for a slot rather than joining a twelve-request burst. The
  * refresh offsets below spread the same set across the interval on every tick
  * after the first.
@@ -967,7 +967,39 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
       signal,
     ),
 
-  // The seven discovery routes. Each answers "is this feature installed", which
+  // The data-protection family's four reads.
+  //
+  // `read`, not `readList`: none of these is the generic list route, so none
+  // of them caps a page or reports a population total, and every one answers
+  // with the whole (already RBAC-filtered) set. There is therefore no
+  // truncation for a card to disclose -- the coverage problem `page-coverage.ts`
+  // exists for does not arise here.
+  //
+  // `?? []` on all four, and it is a guard rather than an observation. Every
+  // one of these handlers builds its result with `make(..., 0, n)` or returns
+  // a literal empty slice on its not-installed and RBAC-refused paths, so all
+  // four serialise an empty result as `[]` today -- checked against
+  // `HandleListCertificates`, `HandleListExternalSecrets`, `HandleListBackups`
+  // and `HandleListSnapshots`. The guard is here because the cost of being
+  // wrong is invisible and permanent: `resolveWidgetState` reads `data !==
+  // null` as "has landed", so a handler that ever regressed to `var out
+  // []T` would leave the card in its skeleton forever rather than failing.
+  // `policy-violations-list` above is that regression, already shipped.
+  //
+  // The certificates read is the full inventory rather than
+  // `/v1/certificates/expiring`: see `certificates-list` in types.ts.
+  "certificates-list": async (signal) =>
+    (await read("/v1/certificates/certificates", signal)) ?? [],
+  // Nested under its own segment. A bare `/v1/externalsecrets` is the chi
+  // router group, not a route, and would 404.
+  "external-secrets-list": async (signal) =>
+    (await read("/v1/externalsecrets/externalsecrets", signal)) ?? [],
+  "velero-backups-list": async (signal) =>
+    (await read("/v1/velero/backups", signal)) ?? [],
+  "snapshots-list": async (signal) =>
+    (await read("/v1/storage/snapshots", signal)) ?? [],
+
+  // The eight discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see
   // FAMILY_STATUS_KEYS in types.ts. They are range-insensitive, so the 60s
   // refresh keeps them current and a time-range change does not refetch them.
@@ -975,7 +1007,7 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "gitops-status": (signal) => read("/v1/gitops/status", signal),
   "certificates-status": (signal) => read("/v1/certificates/status", signal),
   "mesh-status": async (signal) => {
-    // The one route of the seven that wraps its payload -- `{ status: {...} }`
+    // The one route of the eight that wraps its payload -- `{ status: {...} }`
     // -- kept symmetric with the rest of /mesh/*. Unwrapped here so that
     // `featurePresent` reads one shape rather than a different one per
     // family.
@@ -996,6 +1028,32 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // statuses use -- `""`, `"trivy"`, `"kubescape"` or `"both"` -- so
   // `featurePresent` reads it without a special case.
   "scanning-status": (signal) => read("/v1/scanning/status", signal),
+  // The eighth, and the only one that reads a flag out of `metadata` rather
+  // than a body out of `data`.
+  //
+  // The storage family mounts no `/status` route. What it has instead is the
+  // `available` flag every snapshot route attaches to its metadata, which is
+  // `checkSnapshotCRDs()` verbatim -- the discovery client asked for
+  // `snapshot.storage.k8s.io/v1` behind a 5-minute cache. `read` drops
+  // metadata, so this one calls `api` directly and normalises the flag into
+  // the `{ detected }` shape `featurePresent` reads, exactly as the mesh
+  // status above unwraps its own odd envelope so that function sees one shape
+  // rather than eight.
+  //
+  // Anything other than a literal `true` reads as ABSENT, which is the
+  // deliberate direction: a build that cannot parse this route saying "not
+  // installed" is a visible bug someone fixes, where one rendering an empty
+  // green snapshot card on a cluster with no CSI snapshotter is a bug nobody
+  // sees (R1).
+  "snapshots-status": async (signal) => {
+    const res = await api<unknown>("/v1/storage/snapshot-classes", {
+      method: "GET",
+      signal,
+    });
+    const available = (res.metadata as { available?: unknown } | undefined)
+      ?.available;
+    return { detected: available === true };
+  },
 };
 
 export const dashboardData: SourceCache = createSourceCache(DASHBOARD_FETCHERS);

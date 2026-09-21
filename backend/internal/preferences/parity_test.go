@@ -76,13 +76,15 @@ func TestContractParity(t *testing.T) {
 				name: "allowedWidgets (ids)",
 				got:  widgetIDSet(),
 				want: []string{
-					"active-alerts", "cluster-health", "cpu-tile",
-					"diagnostics-summary", "hpa-status", "memory-tile",
-					"network-tile", "node-conditions", "nodes", "pdb-risk",
-					"pending-pods", "pod-restarts", "pod-status", "pods-tile",
+					"active-alerts", "certs-expiring", "cluster-health",
+					"cpu-tile", "diagnostics-summary", "eso-health",
+					"hpa-status", "memory-tile", "network-tile",
+					"node-conditions", "nodes", "pdb-risk", "pending-pods",
+					"pod-restarts", "pod-status", "pods-tile",
 					"policy-compliance", "policy-violations", "quota-pressure",
-					"recent-events", "resource-utilization", "storage-capacity",
-					"top-consumers", "vulnerability-severity", "workload-health",
+					"recent-events", "resource-utilization", "snapshot-health",
+					"storage-capacity", "top-consumers", "velero-backups",
+					"vulnerability-severity", "workload-health",
 				},
 				tsConstName: "the widget registry",
 				tsFile:      "frontend/lib/dashboard/registry.ts",
@@ -138,6 +140,7 @@ func TestContractParity(t *testing.T) {
 	t.Run("widget specs", func(t *testing.T) {
 		want := map[string]widgetSpec{
 			"active-alerts":  {MinW: 2, MinH: 3},
+			"certs-expiring": {MinW: 4, MinH: 3},
 			"cluster-health": {MinW: 3, MinH: 4},
 			"cpu-tile":       {MinW: 2, MinH: 2},
 			"diagnostics-summary": {
@@ -145,6 +148,12 @@ func TestContractParity(t *testing.T) {
 				MinH:   3,
 				Params: map[string][]string{paramKeyNamespace: {}},
 			},
+			// The data-protection family. Four columns each: every row carries
+			// a long resource name beside a state badge. None takes
+			// parameters -- every backing route is cluster-wide.
+			"eso-health":           {MinW: 4, MinH: 3},
+			"velero-backups":       {MinW: 4, MinH: 3},
+			"snapshot-health":      {MinW: 4, MinH: 3},
 			"hpa-status":           {MinW: 3, MinH: 3},
 			"memory-tile":          {MinW: 2, MinH: 2},
 			"network-tile":         {MinW: 2, MinH: 2},

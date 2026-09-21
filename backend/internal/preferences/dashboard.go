@@ -154,6 +154,21 @@ var allowedWidgets = map[string]widgetSpec{
 		MinH:   3,
 		Params: map[string][]string{paramKeyNamespace: {}},
 	},
+	// The data-protection family. Like the security three above, all four read
+	// CRD-discovered features and declare a discovery status client-side --
+	// invisible here, because this map validates placements, not sources.
+	//
+	// All four are four columns wide for the same reason: each row carries a
+	// resource name beside a state badge and an attribution line, and a
+	// certificate, ExternalSecret, Velero backup or VolumeSnapshot name is
+	// routinely long enough (`daily-full-20260920010000`) that three columns
+	// truncate it to uselessness. None of them takes parameters: every backing
+	// route is cluster-wide and already RBAC-filtered, so there is no scope
+	// for the user to choose.
+	"certs-expiring":  {MinW: 4, MinH: 3},
+	"eso-health":      {MinW: 4, MinH: 3},
+	"velero-backups":  {MinW: 4, MinH: 3},
+	"snapshot-health": {MinW: 4, MinH: 3},
 }
 
 // MaxDashboardLayoutsPerUser is the per-user, per-cluster ceiling. One layout

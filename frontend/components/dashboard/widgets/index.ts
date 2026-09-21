@@ -16,8 +16,10 @@
  */
 import "./ActiveAlertsWidget.tsx";
 import "./ClusterHealthWidget.tsx";
+import "./CertsExpiringWidget.tsx";
 import "./CpuTileWidget.tsx";
 import "./DiagnosticsSummaryWidget.tsx";
+import "./EsoHealthWidget.tsx";
 import "./HPAStatusWidget.tsx";
 import "./MemoryTileWidget.tsx";
 import "./NetworkTileWidget.tsx";
@@ -33,7 +35,9 @@ import "./PolicyViolationsWidget.tsx";
 import "./QuotaPressureWidget.tsx";
 import "./RecentEventsWidget.tsx";
 import "./ResourceUtilizationWidget.tsx";
+import "./SnapshotHealthWidget.tsx";
 import "./StorageCapacityWidget.tsx";
 import "./TopConsumersWidget.tsx";
+import "./VeleroBackupsWidget.tsx";
 import "./VulnerabilitySeverityWidget.tsx";
 import "./WorkloadHealthWidget.tsx";

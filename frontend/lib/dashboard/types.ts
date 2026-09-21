@@ -62,6 +62,28 @@ export const FAMILY_STATUS_KEYS = [
   // opposite and the list cannot tell them apart, so the status route is the
   // only honest signal (R1).
   "scanning-status",
+  // The eighth, and the only one that is not a route called `/status`.
+  //
+  // VolumeSnapshot is CRD-discovered exactly like the seven above -- the
+  // storage handler's `checkSnapshotCRDs` asks the discovery client for
+  // `snapshot.storage.k8s.io/v1` behind a 5-minute cache, which is the same
+  // check every other family's Discoverer performs -- but the storage family
+  // mounts no `/status` route to publish the answer through. It publishes it
+  // on the snapshot routes instead, as `metadata.available`.
+  //
+  // So this key reads `/v1/storage/snapshot-classes` and normalises that
+  // metadata flag into the `{ detected }` shape `featurePresent` already
+  // understands. Snapshot-CLASSES rather than snapshots: both carry the same
+  // flag from the same function, and the classes route is a small,
+  // cluster-scoped, non-impersonated list where the snapshots route is an
+  // impersonated list of every VolumeSnapshot in the cluster. Asking the
+  // cheap one for the cheap answer keeps this in the `discovery` cost class
+  // honestly rather than by assertion.
+  //
+  // The flag is the CRD check alone -- a cluster with the CRDs installed and
+  // no VolumeSnapshotClasses still answers `available: true` -- so this says
+  // "snapshots are a thing here", never "snapshots are configured here".
+  "snapshots-status",
 ] as const;
 export type FamilyStatusKey = (typeof FAMILY_STATUS_KEYS)[number];
 
@@ -151,6 +173,30 @@ export const DATA_SOURCE_KEYS = [
   // the handler REQUIRES `?namespace=` and answers 400 without it -- there is
   // no cluster-wide vulnerability roll-up to ask instead.
   "vulnerability-reports",
+  // The data-protection family's four reads: certificates, external secrets,
+  // Velero backups and volume snapshots. Every one of them is the data half
+  // of a CRD-discovered feature whose presence is answered by a status key
+  // below -- never by whether the list came back empty, which all four routes
+  // do on a cluster that runs none of this (R1).
+  //
+  // `certificates-list` is `/v1/certificates/certificates`, the full
+  // inventory, NOT `/v1/certificates/expiring`. The expiring route returns
+  // only what is already inside its warning threshold and carries a
+  // pre-computed severity string instead of the per-certificate thresholds
+  // behind it, so a card built on it could tell neither "every certificate is
+  // healthy" from "cert-manager manages nothing", nor which threshold a
+  // classification came from. See `certsExpiringView` in expiry.ts.
+  "certificates-list",
+  // `/v1/externalsecrets/externalsecrets` -- the list is nested under its own
+  // segment, and a bare `/v1/externalsecrets` is the router group rather than
+  // a route. Drift and sync state ride inline on each item, so the card needs
+  // no second call.
+  "external-secrets-list",
+  "velero-backups-list",
+  // `/v1/storage/snapshots`. Its sibling `snapshots-status` below reads the
+  // CLASSES route for the availability flag rather than this one, so the
+  // expensive list is issued once and only for its data.
+  "snapshots-list",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -276,6 +322,30 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   "policy-violations-list": "expensive",
   "vulnerability-reports": "expensive",
 
+  // The data-protection family's four reads. Every one of them is expensive,
+  // and for the reasons that put their security-family neighbours here rather
+  // than for their shape.
+  //
+  // `certificates-list` and `external-secrets-list` both run `filterByRBAC`,
+  // which issues a SelfSubjectAccessReview PER NAMESPACE carrying an item --
+  // the same argument that classified `limits-namespaces` and
+  // `policy-violations-list`. Both also serialise whole normalised CRD
+  // objects, a dozen fields each, for every object in the cluster.
+  //
+  // `velero-backups-list` is a live five-way dynamic list (backups, restores,
+  // schedules and both location kinds) behind a 30-second cache, because the
+  // handler's fetch is all-or-nothing; asking for backups pays for the rest.
+  //
+  // `snapshots-list` is the dearest of the four and the only one with no
+  // server-side cache at all: an impersonated dynamic LIST of every
+  // VolumeSnapshot in every namespace, on every request. It also shares the
+  // storage routes' 30-request-per-minute YAML bucket with `/yaml/*` and
+  // `/wizards/*`, as `storage-classes` above does.
+  "certificates-list": "expensive",
+  "external-secrets-list": "expensive",
+  "velero-backups-list": "expensive",
+  "snapshots-list": "expensive",
+
   "policies-status": "discovery",
   "gitops-status": "discovery",
   "certificates-status": "discovery",
@@ -283,6 +353,12 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   "external-secrets-status": "discovery",
   "velero-status": "discovery",
   "scanning-status": "discovery",
+  // The eighth. `discovery` on the merits and not only to satisfy the class's
+  // invariant: it reads the snapshot-CLASSES route, whose answer is the
+  // 5-minute-cached CRD check plus a small cluster-scoped list, which is what
+  // this class describes. The expensive snapshot read is `snapshots-list`
+  // above, and it is a separate key precisely so this one can stay cheap.
+  "snapshots-status": "discovery",
 };
 
 /**
