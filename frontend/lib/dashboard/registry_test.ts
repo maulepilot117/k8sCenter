@@ -12,6 +12,7 @@ import { join } from "node:path";
 // file without listing it fails here rather than silently shrinking what the
 // invariants cover.
 import "@/components/dashboard/widgets/index.ts";
+import { disabledReasonFor, NOT_PERMITTED } from "./catalog.ts";
 import type { SourceState } from "./data.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
 import { KNOWN_PARAM_KEYS, sourceKeyFor } from "./params.ts";
@@ -25,12 +26,13 @@ import {
 } from "./registry.ts";
 import type { WidgetDef } from "./types.ts";
 import {
+  DASHBOARD_COLUMNS,
   DASHBOARD_SCOPES,
   DATA_SOURCE_KEYS,
   DISPLAY_MODES,
   WIDGET_FAMILIES,
 } from "./types.ts";
-import { resolveWidgetState } from "./widget-state.ts";
+import { resolveWidgetState, sourcesOf } from "./widget-state.ts";
 
 // The registry is the allowlist the server validates against and the catalog
 // the palette renders. Every invariant below exists because breaking it
@@ -497,6 +499,18 @@ test("the parameterized widgets and their declared keys are pinned", () => {
     // answers 400 without `?namespace=`, so there is no unparameterized form
     // of this card. Same key and same empty value set for the same reasons.
     "vulnerability-severity": { namespace: [] },
+    // Mandatory too: the Hubble REST route answers 400 without `?namespace=`.
+    "hubble-flows": { namespace: [] },
+    // The first widget to declare TWO keys, and the reason the parameter
+    // dialog grew a cascading case: `/v1/mesh/golden-signals` requires both,
+    // and the service list cannot be offered until a namespace is chosen.
+    //
+    // Both value sets are empty and they are NOT bounded the same way. A
+    // stored namespace is re-authorized against the live cluster on every
+    // read (R5), so a nonsense one is inert. Nothing re-authorizes a service
+    // name, so its shape is its only bound -- see PARAM_VALUE_SHAPE in
+    // params.ts, whose Go twin is `paramValueShapes`.
+    "mesh-golden-signals": { namespace: [], service: [] },
   });
 });
 
@@ -953,6 +967,432 @@ describe("the delivery and mesh families' availability, through the real definit
     // route does not require.
     expect(getWidget("mtls-coverage")?.params).toBeUndefined();
     expect(getWidget("mtls-coverage")?.sources).toEqual(["mesh-mtls"]);
+  });
+});
+
+describe("the networking family's availability, through the real definitions", () => {
+  // The same exercise the three blocks above run, over the unit's three
+  // networking cards. Each of their routes answers 200 with an empty or
+  // zeroed result when the feature is absent, so the reading is decided by
+  // the declared family status before `render` is ever called (KTD1).
+  //
+  // These three matter for the reason the others do and one of their own: two
+  // of the three sentences at stake -- "nothing was dropped" and "every
+  // gateway is programmed" -- are the sentences an operator most wants to
+  // read and least wants to be wrong about, and "no requests per second" is a
+  // sentence about a service nobody measured.
+  function stateOf(
+    states: Record<string, Partial<SourceState>>,
+  ): (key: string) => SourceState {
+    return (key) => ({
+      data: null,
+      error: null,
+      errorKind: null,
+      loading: false,
+      range: null,
+      ...(states[key] ?? {}),
+    });
+  }
+
+  function resolve(
+    id: string,
+    states: Record<string, Partial<SourceState>>,
+    params: Record<string, string> = {},
+  ) {
+    const def = getWidget(id);
+    if (!def) throw new Error(`${id} is not registered`);
+    return resolveWidgetState(def, stateOf(states), params).state;
+  }
+
+  const NS = { namespace: "prod" };
+  const NS_SVC = { namespace: "prod", service: "checkout" };
+  // The empty payloads are deliberately the SAME in the absent and present
+  // cases below: that is the whole point.
+  const NO_FLOWS: unknown[] = [];
+  const NO_SIGNALS = {
+    status: { detected: "istio" },
+    signals: { available: true, rps: 0, errorRate: 0 },
+  };
+
+  test("no Hubble: the flows card reads as not installed", () => {
+    // `detected: false` is what the fetcher normalises `features.hubble` into.
+    expect(
+      resolve(
+        "hubble-flows",
+        {
+          "hubble-status": { data: { detected: false } },
+          [sourceKeyFor("hubble-flows", NS)]: { data: NO_FLOWS },
+        },
+        NS,
+      ),
+    ).toBe("unavailable");
+  });
+
+  test("Hubble watching a quiet namespace: the flows card is ready", () => {
+    // Ready, so the card can say "Hubble is watching and saw nothing" -- which
+    // is a finding. Unavailable here would tell an operator their flow
+    // visibility is gone while it is working.
+    expect(
+      resolve(
+        "hubble-flows",
+        {
+          "hubble-status": { data: { detected: true } },
+          [sourceKeyFor("hubble-flows", NS)]: { data: NO_FLOWS },
+        },
+        NS,
+      ),
+    ).toBe("ready");
+  });
+
+  test("no Gateway API: the gateway card reads as not installed", () => {
+    expect(
+      resolve("gateway-routes", {
+        "gateway-status": { data: { detected: false } },
+        "gateway-gateways": { data: [] },
+        "gateway-httproutes": { data: [] },
+      }),
+    ).toBe("unavailable");
+  });
+
+  test("Gateway API installed with nothing declared: the gateway card is ready", () => {
+    expect(
+      resolve("gateway-routes", {
+        "gateway-status": { data: { detected: true } },
+        "gateway-gateways": { data: [] },
+        "gateway-httproutes": { data: [] },
+      }),
+    ).toBe("ready");
+  });
+
+  test("no mesh: the golden-signals card reads as not installed", () => {
+    expect(
+      resolve(
+        "mesh-golden-signals",
+        {
+          "mesh-status": { data: { detected: "", lastChecked: "" } },
+          [sourceKeyFor("mesh-golden-signals", NS_SVC)]: { data: NO_SIGNALS },
+        },
+        NS_SVC,
+      ),
+    ).toBe("unavailable");
+  });
+
+  test("a mesh with a silent service: the golden-signals card is ready", () => {
+    expect(
+      resolve(
+        "mesh-golden-signals",
+        {
+          "mesh-status": { data: { detected: "istio", lastChecked: "" } },
+          [sourceKeyFor("mesh-golden-signals", NS_SVC)]: { data: NO_SIGNALS },
+        },
+        NS_SVC,
+      ),
+    ).toBe("ready");
+  });
+
+  test("a namespace the caller can no longer read resolves to the permission state", () => {
+    // R5's client-side half. The layout endpoint withholds a placement whose
+    // stored namespace no longer authorizes, but a user can also lose access
+    // between the layout being served and the widget's own read -- and the
+    // mesh and Hubble routes both answer 403 for a namespace the caller
+    // cannot list pods in. `unavailable` must not win that race: the feature
+    // IS installed, and telling the user it is missing would send them to
+    // install something they already have.
+    expect(
+      resolve(
+        "mesh-golden-signals",
+        {
+          "mesh-status": { data: { detected: "istio", lastChecked: "" } },
+          [sourceKeyFor("mesh-golden-signals", NS_SVC)]: {
+            error: "forbidden",
+            errorKind: "permission",
+          },
+        },
+        NS_SVC,
+      ),
+    ).toBe("permission");
+    expect(
+      resolve(
+        "hubble-flows",
+        {
+          "hubble-status": { data: { detected: true } },
+          [sourceKeyFor("hubble-flows", NS)]: {
+            error: "forbidden",
+            errorKind: "permission",
+          },
+        },
+        NS,
+      ),
+    ).toBe("permission");
+  });
+
+  test("an unreadable family status reads as absent, never as healthy", () => {
+    const offenders: string[] = [];
+    const cases: [
+      string,
+      string,
+      Record<string, unknown>,
+      Record<string, string>,
+    ][] = [
+      [
+        "hubble-flows",
+        "hubble-status",
+        { [sourceKeyFor("hubble-flows", NS)]: { data: NO_FLOWS } },
+        NS,
+      ],
+      [
+        "gateway-routes",
+        "gateway-status",
+        {
+          "gateway-gateways": { data: [] },
+          "gateway-httproutes": { data: [] },
+        },
+        {},
+      ],
+      [
+        "mesh-golden-signals",
+        "mesh-status",
+        {
+          [sourceKeyFor("mesh-golden-signals", NS_SVC)]: { data: NO_SIGNALS },
+        },
+        NS_SVC,
+      ],
+    ];
+    for (const [id, status, sources, params] of cases) {
+      const state = resolve(
+        id,
+        {
+          [status]: { data: { unexpected: "shape" } },
+          ...(sources as Record<string, Partial<SourceState>>),
+        },
+        params,
+      );
+      if (state !== "unavailable") offenders.push(`${id} resolved ${state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("each networking widget declares the family whose absence would fool it", () => {
+    expect(getWidget("mesh-golden-signals")?.familyStatus).toBe("mesh-status");
+    expect(getWidget("hubble-flows")?.familyStatus).toBe("hubble-status");
+    expect(getWidget("gateway-routes")?.familyStatus).toBe("gateway-status");
+  });
+
+  test("the flows card reads the REST route and never the socket", () => {
+    // `/ws/flows` is a real, mounted channel. A card that opened one per
+    // placement would hold a live gRPC stream against Hubble Relay open for
+    // as long as the tab is, per card. Pinned because "make it live" is the
+    // obvious improvement and it is the wrong one here.
+    expect(getWidget("hubble-flows")?.sources).toEqual(["hubble-flows"]);
+  });
+
+  test("the gateway card reads the Gateway API prefix, both halves of it", () => {
+    // Two keys, not one. The per-gateway route count is the controller's own
+    // total across every route kind and the unattached count can only come
+    // from the route list, so neither read can be dropped in favour of the
+    // other. Both are under `/v1/gateway/...`, not `/v1/networking/...`.
+    expect(getWidget("gateway-routes")?.sources).toEqual([
+      "gateway-gateways",
+      "gateway-httproutes",
+    ]);
+    expect(getWidget("gateway-routes")?.params).toBeUndefined();
+  });
+
+  test("two golden-signals cards on one namespace read two different keys", () => {
+    // The reason the source is keyed by BOTH values. Keyed on the namespace
+    // alone, two cards pointed at two services in one namespace would share a
+    // cache entry and both show whichever landed last, each under its own
+    // label. The server's own duplicate rule already permits the pair: same
+    // widget, different params.
+    const def = getWidget("mesh-golden-signals");
+    if (!def) throw new Error("mesh-golden-signals is not registered");
+    const checkout = sourcesOf(def).map((k) =>
+      sourceKeyFor(k, { namespace: "prod", service: "checkout" }),
+    );
+    const cart = sourcesOf(def).map((k) =>
+      sourceKeyFor(k, { namespace: "prod", service: "cart" }),
+    );
+    expect(checkout).not.toEqual(cart);
+    // And the family status is NOT split by them: a cluster's mesh is
+    // discovered once however many services are on the dashboard.
+    expect(checkout).toContain("mesh-status");
+    expect(cart).toContain("mesh-status");
+  });
+});
+
+describe("the platform family's availability, through the real definitions", () => {
+  // The same exercise the security, data-protection, delivery and mesh blocks
+  // above run -- over five widgets that declare NO family status, which is the
+  // point.
+  //
+  // Nothing in this family is CRD-discovered. What can be missing is the
+  // DEPLOYMENT's PostgreSQL database, and the routes report that as an error
+  // STATUS rather than as a discovery payload: 503 from the four that have a
+  // handler to answer with, and the 404 of a route that is never registered
+  // for the notification feed. `ABSENT_STATUSES` in types.ts declares which
+  // code means which per source, and the classifier turns it into the same
+  // `unavailable` outcome a missing operator produces. A family status here
+  // would be a second request to the same route asking the same question.
+  //
+  // Two of the five read admin-gated routes, where the answer is a property of
+  // the session rather than of the cluster -- and that one IS declared, as
+  // `adminOnly`, because the palette has to mark the entry before it is added
+  // and there is no discovery route to learn it from.
+  function stateOf(
+    states: Record<string, Partial<SourceState>>,
+  ): (key: string) => SourceState {
+    return (key) => ({
+      data: null,
+      error: null,
+      errorKind: null,
+      loading: false,
+      range: null,
+      ...(states[key] ?? {}),
+    });
+  }
+
+  function resolve(id: string, states: Record<string, Partial<SourceState>>) {
+    const def = getWidget(id);
+    if (!def) throw new Error(`${id} is not registered`);
+    return resolveWidgetState(def, stateOf(states), {});
+  }
+
+  /** id -> the one source it declares. */
+  const PLATFORM: [string, string][] = [
+    ["cluster-status", "clusters-list"],
+    ["notifications-feed", "unread-notifications"],
+    ["audit-activity", "audit-log"],
+    ["saved-views", "preference-views"],
+    ["pinned-resources", "preference-pins"],
+  ];
+
+  test("none of the five declares a family status, and each reads one source", () => {
+    // Pinned by name. A family status added here later would be a second read
+    // of a route the widget already reads, asking a question that route
+    // answers with its status code.
+    const declared = Object.fromEntries(
+      PLATFORM.map(([id]) => [id, getWidget(id)?.familyStatus]),
+    );
+    expect(declared).toEqual({
+      "cluster-status": undefined,
+      "notifications-feed": undefined,
+      "audit-activity": undefined,
+      "saved-views": undefined,
+      "pinned-resources": undefined,
+    });
+    const sources = Object.fromEntries(
+      PLATFORM.map(([id]) => [id, getWidget(id)?.sources]),
+    );
+    expect(sources).toEqual({
+      "cluster-status": ["clusters-list"],
+      "notifications-feed": ["unread-notifications"],
+      "audit-activity": ["audit-log"],
+      "saved-views": ["preference-views"],
+      "pinned-resources": ["preference-pins"],
+    });
+  });
+
+  test("no database: each of the five reads as unavailable, not as an error", () => {
+    // The deployment-configuration case. `errorKind: "absent"` is what the
+    // classifier produces from the status each route answers with; every card
+    // must resolve to the state that says nothing is coming rather than to the
+    // one that says something went wrong.
+    const offenders: string[] = [];
+    for (const [id, source] of PLATFORM) {
+      const r = resolve(id, {
+        [source]: { error: "requires a database", errorKind: "absent" },
+      });
+      if (r.state !== "unavailable") {
+        offenders.push(`${id} resolved ${r.state}`);
+      }
+      if (r.blocking !== null) {
+        offenders.push(`${id} carried a blocking source`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("a database that is there: each of the five renders, including when empty", () => {
+    // The other half, and the reason the absence has to come from the status
+    // code rather than from the payload: an empty list is what an account with
+    // no pins, no saved views and nothing unread legitimately has, and all
+    // three of those cards must say so rather than withholding themselves.
+    const offenders: string[] = [];
+    for (const [id, source] of PLATFORM) {
+      const data = id === "notifications-feed" ? { items: [], total: 0 } : [];
+      const r = resolve(id, { [source]: { data } });
+      if (r.state !== "ready") offenders.push(`${id} resolved ${r.state}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("a non-admin: audit-activity is the permission state, never an error", () => {
+    // The acceptance example. `/v1/audit/logs` is gated by
+    // `middleware.RequireAdmin`, so for most accounts this IS the card's
+    // steady state -- and the state it lands in is the one WidgetHost renders
+    // without a retry, because a "try again" on a 403 is a lie (R2).
+    const r = resolve("audit-activity", {
+      "audit-log": { error: "Forbidden", errorKind: "permission" },
+    });
+    expect(r.state).toBe("permission");
+    expect(r.blocking?.error).toBe("Forbidden");
+  });
+
+  test("an admin: audit-activity renders the activity it read", () => {
+    const r = resolve("audit-activity", {
+      "audit-log": {
+        data: [
+          {
+            timestamp: "2026-09-20T10:00:00Z",
+            user: "chris",
+            action: "update",
+            result: "success",
+          },
+        ],
+      },
+    });
+    expect(r.state).toBe("ready");
+  });
+
+  test("the palette marks the admin-gated pair before either is added", () => {
+    // Admin-ness is not a family status and nothing fetches it, so this is the
+    // one availability answer in the catalog that comes from the session. The
+    // pair is pinned by name: a widget reading an admin-gated route WITHOUT
+    // this declaration is offered to everyone and can only ever say "you do
+    // not have access" once placed (R3).
+    const adminGated = allWidgets()
+      .filter((w) => !w.id.startsWith("fixture-"))
+      .filter((w) => w.adminOnly === true)
+      .map((w) => w.id)
+      .sort();
+    expect(adminGated).toEqual(["audit-activity", "cluster-status"]);
+
+    const audit = getWidget("audit-activity");
+    if (!audit) throw new Error("audit-activity is not registered");
+    expect(disabledReasonFor(audit, [], DASHBOARD_COLUMNS, {}, false)).toBe(
+      NOT_PERMITTED,
+    );
+    expect(
+      disabledReasonFor(audit, [], DASHBOARD_COLUMNS, {}, true),
+    ).toBeNull();
+  });
+
+  test("the three open widgets are offered to a non-admin", () => {
+    // The gate is per widget, not per family: the notification feed and both
+    // preference launchers are open to every authenticated account, and
+    // marking them would withhold cards nothing refuses.
+    const offenders: string[] = [];
+    for (const id of [
+      "notifications-feed",
+      "saved-views",
+      "pinned-resources",
+    ]) {
+      const def = getWidget(id);
+      if (!def) throw new Error(`${id} is not registered`);
+      const reason = disabledReasonFor(def, [], DASHBOARD_COLUMNS, {}, false);
+      if (reason !== null) offenders.push(`${id}: ${reason}`);
+    }
+    expect(offenders).toEqual([]);
   });
 });
 

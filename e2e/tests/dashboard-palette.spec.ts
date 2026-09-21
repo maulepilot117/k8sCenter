@@ -30,7 +30,7 @@ const PARTIAL_LAYOUT: DashboardLayoutConfig = {
 };
 
 /** Every widget registered for the overview scope, parameterized included. */
-const CATALOG_SIZE = 30;
+const CATALOG_SIZE = 38;
 
 /** What the shipped default layout places: the curated starting subset. */
 const DEFAULT_LAYOUT_SIZE = 10;
@@ -40,7 +40,12 @@ const DEFAULT_LAYOUT_SIZE = 10;
  * dashboard is of unparameterized copies, because choosing one opens a dialog
  * rather than placing a card.
  */
-const PARAMETERIZED_IDS = ["diagnostics-summary", "vulnerability-severity"];
+const PARAMETERIZED_IDS = [
+  "diagnostics-summary",
+  "vulnerability-severity",
+  "mesh-golden-signals",
+  "hubble-flows",
+];
 
 /**
  * Everything the shipped default does NOT place, and which is therefore still
@@ -71,6 +76,12 @@ const NOT_ON_DEFAULT_IDS = [
   "gitops-app-health",
   "gitops-recent-syncs",
   "mtls-coverage",
+  "gateway-routes",
+  "cluster-status",
+  "notifications-feed",
+  "audit-activity",
+  "saved-views",
+  "pinned-resources",
 ];
 
 // The literal above is the guard, but a unit that adds a widget and forgets

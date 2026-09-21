@@ -23,8 +23,14 @@ import type { DataSourceKey, WidgetDef } from "./types.ts";
  * - `permission` -- this account may not read what the widget needs. Standing,
  *   not transient, so the shell offers no retry.
  * - `error` -- a read failed. Transient as far as anyone here can tell.
- * - `unavailable` -- the feature is not installed on this cluster. Not a
- *   failure and not a delay: nothing is wrong and nothing is coming.
+ * - `unavailable` -- the feature is not installed on this cluster, or this
+ *   deployment does not serve it. Not a failure and not a delay: nothing is
+ *   wrong and nothing is coming.
+ * - `unsupported` -- the feature IS here, and cannot answer this particular
+ *   request however many times it is asked. Standing like `permission` and
+ *   futile to retry like `unavailable`, but unlike either it shows the
+ *   backend's own message, because that message is the only thing that tells
+ *   the reader what to change.
  * - `ready` -- the widget renders, and says whatever its own data says,
  *   including "nothing to report".
  */
@@ -33,6 +39,7 @@ export type WidgetState =
   | "permission"
   | "error"
   | "unavailable"
+  | "unsupported"
   | "ready";
 
 export interface WidgetResolution {
@@ -76,7 +83,7 @@ export function sourcesOf(def: WidgetSourceDecl): DataSourceKey[] {
 /**
  * Whether a family status payload reports its feature installed.
  *
- * Three payload shapes across eight families, one field. The boolean families
+ * Three payload shapes across ten families, one field. The boolean families
  * (cert-manager, External Secrets, Velero, and volume snapshots, whose
  * `metadata.available` flag the fetcher normalises into this shape) report
  * absence as `detected: false`; the string families (policy, GitOps, service
@@ -118,11 +125,20 @@ export function featurePresent(data: unknown): boolean {
  *        own empty list means "nothing to report" or "no operator installed"
  *        -- which it cannot decide, because the backend returns 200 with an
  *        empty array either way (KTD1).
- * 2. **A required source failed** -- and a forbidden one outranks any other
+ * 2. **A required source is one this deployment does not serve** -- a route
+ *    that answered 503 because the deployment has no database, or one that is
+ *    not registered at all without one. `ABSENT_STATUSES` in types.ts names
+ *    the sources that read a status code that way, and the answer is the same
+ *    `unavailable` a missing operator produces: nothing is wrong and nothing
+ *    is coming. It outranks BOTH failures below it, because a feature the
+ *    deployment does not run cannot be permitted and cannot usefully be
+ *    retried -- telling an operator their account is the problem when the
+ *    deployment is would send them to the wrong person.
+ * 3. **A required source failed** -- and a forbidden one outranks any other
  *    failure, because the two states differ in what they offer the user: a
  *    retry on a 403 is a lie, and the state that carries none has to win when
  *    both land together.
- * 3. Otherwise nothing is known yet: the skeleton. Idle (never requested --
+ * 4. Otherwise nothing is known yet: the skeleton. Idle (never requested --
  *    the consumer calls `ensure`, not this) and in flight both land here, so
  *    they never need distinguishing.
  *
@@ -189,6 +205,27 @@ export function resolveWidgetState(
         .map((k) => stateOf(k.key))
         .find((s) => s.error !== null && s.data !== null) ?? null;
     return { state: "ready", blocking: null, stale };
+  }
+
+  // Before either failure branch, and with no blocking source: the shell
+  // renders no message for `unavailable`, exactly as it renders none for a
+  // family that reports its feature absent, so handing it one would invite a
+  // card printing "503 Service Unavailable" at an operator whose deployment is
+  // configured exactly as they meant it.
+  const unserved = requiredStates.find((s) => s.errorKind === "absent");
+  if (unserved) {
+    return { state: "unavailable", blocking: null, stale: null };
+  }
+
+  // After absence and before the two failure branches. The feature is
+  // present, so `unavailable` would be a lie; a retry cannot help, so `error`
+  // would be one too. The blocking source rides along because its message is
+  // the whole value of this state -- see UNSUPPORTED_STATUSES in types.ts.
+  const unanswerable = requiredStates.find(
+    (s) => s.errorKind === "unsupported",
+  );
+  if (unanswerable) {
+    return { state: "unsupported", blocking: unanswerable, stale: null };
   }
 
   const refused = requiredStates.find((s) => s.errorKind === "permission");

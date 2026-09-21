@@ -11,6 +11,7 @@ import {
 import { sourceKeyFor } from "./params.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
+  ABSENT_STATUSES,
   DATA_SOURCE_KEYS,
   FAMILY_STATUS_KEYS,
   RANGE_SENSITIVE_KEYS,
@@ -754,6 +755,91 @@ test("errorKind: a slug source's other failures are not refusals", async () => {
   await cache.settled();
 
   expect(cache.state("top-consumers-cpu").errorKind).toBe("failure");
+});
+
+test("errorKind: a 503 from a source that needs a database is an absence", async () => {
+  // Not a failure. The four platform routes that need PostgreSQL answer 503
+  // when the deployment has none, which is a deployment-configuration fact
+  // rather than a server having a bad minute -- and the shell renders it as
+  // unavailable, with no retry, because nothing is coming.
+  const cache = createSourceCache({
+    "clusters-list": () =>
+      Promise.reject(
+        new ApiError(503, 503, "cluster management requires a database"),
+      ),
+    "preference-views": () =>
+      Promise.reject(new ApiError(503, 503, "preferences require a database")),
+  });
+
+  cache.ensure(["clusters-list", "preference-views"], "1h");
+  await cache.settled();
+
+  expect(cache.state("clusters-list").errorKind).toBe("absent");
+  expect(cache.state("preference-views").errorKind).toBe("absent");
+});
+
+test("errorKind: a 404 from the notification feed is an absence, a 503 is not", async () => {
+  // The notification centre is the one platform route that is not registered
+  // at all without a database, so chi answers its 404 and there is no handler
+  // to answer a 503 from. Declaring only the code the route can actually
+  // produce is what keeps the widening narrow: a 503 here would be the server
+  // struggling, and it keeps its retry.
+  const cache = createSourceCache({
+    "unread-notifications": () =>
+      Promise.reject(new ApiError(404, 404, "404 page not found")),
+    "audit-log": () => Promise.reject(new ApiError(404, 404, "not found")),
+  });
+
+  cache.ensure(["unread-notifications", "audit-log"], "1h");
+  await cache.settled();
+
+  expect(cache.state("unread-notifications").errorKind).toBe("absent");
+  // Declared for 503 only, so its 404 stays an ordinary failure.
+  expect(cache.state("audit-log").errorKind).toBe("failure");
+});
+
+test("errorKind: a 503 from any other source stays an ordinary failure", async () => {
+  // The widening is declared per source for the same reason the not-found one
+  // is. A 503 from a resource route is a backend that cannot reach the API
+  // server, which is transient and must keep the retry the unavailable card
+  // withholds.
+  const cache = createSourceCache({
+    "pods-list": () => Promise.reject(new ApiError(503, 503, "unavailable")),
+    "certificates-status": () =>
+      Promise.reject(new ApiError(503, 503, "unavailable")),
+  });
+
+  cache.ensure(["pods-list", "certificates-status"], "1h");
+  await cache.settled();
+
+  expect(cache.state("pods-list").errorKind).toBe("failure");
+  expect(cache.state("certificates-status").errorKind).toBe("failure");
+});
+
+test("errorKind: a forbidden platform read is a refusal, not an absence", async () => {
+  // Both `/v1/clusters` and `/v1/audit/logs` are admin-gated, so a non-admin
+  // gets 403 from a deployment that serves them perfectly well. Classifying
+  // that as absence would tell the reader the feature is gone when it is
+  // merely shut to them -- which is the distinction R1 and R2 are two
+  // requirements rather than one.
+  const cache = createSourceCache({
+    "audit-log": () => Promise.reject(new ApiError(403, 403, "Forbidden")),
+  });
+
+  cache.ensure(["audit-log"], "1h");
+  await cache.settled();
+
+  expect(cache.state("audit-log").errorKind).toBe("permission");
+});
+
+test("every source declared absent-capable is a real source key", () => {
+  // The map is keyed by string, like the refusal set beside it, so a typo
+  // would classify nothing and produce no symptom: the card would render the
+  // generic error and nobody would know the declaration was inert.
+  const unknown = Object.keys(ABSENT_STATUSES).filter(
+    (k) => !(DATA_SOURCE_KEYS as readonly string[]).includes(k),
+  );
+  expect(unknown).toEqual([]);
 });
 
 test("errorKind: a recovered refresh clears the earlier classification", async () => {

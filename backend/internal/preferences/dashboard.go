@@ -12,6 +12,7 @@ package preferences
 
 import (
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -188,6 +189,72 @@ var allowedWidgets = map[string]widgetSpec{
 	"gitops-app-health":   {MinW: 4, MinH: 3},
 	"gitops-recent-syncs": {MinW: 4, MinH: 3},
 	"mtls-coverage":       {MinW: 4, MinH: 3},
+	// The rest of the networking family. Unlike `mtls-coverage` above, two of
+	// these three are parameterized, and not by choice: their backing routes
+	// answer 400 without the values.
+	//
+	// `gateway-routes` is the parameterless one, and for the reason the
+	// data-protection four are: `/v1/gateway/gateways` and
+	// `/v1/gateway/httproutes` are cluster-wide and already RBAC-filtered, so
+	// there is no scope for a user to choose.
+	"gateway-routes": {MinW: 4, MinH: 3},
+	// `/v1/networking/hubble/flows` REQUIRES `?namespace=`. Same key and same
+	// empty value slice as diagnostics-summary, for the same reasons.
+	"hubble-flows": {
+		MinW:   4,
+		MinH:   3,
+		Params: map[string][]string{paramKeyNamespace: {}},
+	},
+	// The platform family: the multi-cluster registry, the notification feed,
+	// the audit log and the two per-user preference launchers. None of them
+	// takes parameters -- every backing route is scoped by the caller's own
+	// identity or by the whole install, so there is nothing for a user to
+	// choose -- and none of them is CRD-discovered, which is invisible here
+	// because this map validates placements, not sources.
+	//
+	// Two of them read admin-gated routes (`/v1/clusters`, `/v1/audit/logs`).
+	// That gate is enforced on the route and surfaced in the client catalog;
+	// it deliberately does NOT appear here, because this map decides whether a
+	// PLACEMENT may be stored and a non-admin is entitled to keep a layout
+	// holding a card they cannot currently read -- roles change, and a saved
+	// dashboard that silently lost a widget on demotion could not get it back
+	// on promotion.
+	//
+	// The two wide ones are wide for the reason the data-protection four are.
+	// An audit row is a user, a verb and a `kind/namespace/name` triple on one
+	// line -- the longest row in this catalog, hence five columns rather than
+	// four -- and a cluster row carries the prober's message, which is
+	// routinely a dial error with an address in it. The preferences pair is
+	// the narrowest in the catalog: a name capped at maxRecordNameLen beside
+	// an adapter slug.
+	"cluster-status":     {MinW: 4, MinH: 3},
+	"notifications-feed": {MinW: 4, MinH: 3},
+	"audit-activity":     {MinW: 5, MinH: 3},
+	"saved-views":        {MinW: 3, MinH: 3},
+	"pinned-resources":   {MinW: 3, MinH: 3},
+	// The first widget with TWO parameters, and the first whose parameters are
+	// not bounded the same way as each other.
+	//
+	// `/v1/mesh/golden-signals` requires a namespace AND a service and answers
+	// 400 with either missing. The namespace is the key the read path
+	// re-authorizes (`withholdUnauthorized`), so a stored namespace the caller
+	// has lost access to withholds the whole placement and a nonsense one can
+	// never authorize -- it is inert.
+	//
+	// Nothing re-authorizes the service. There is no per-service grant to test
+	// it against, and the route authorizes the namespace, so the value's SHAPE
+	// is its only bound -- which is why it is in `paramValueShapes` below and
+	// the namespace is not. Without that, `service` would be the first key
+	// carrying open caller text into a stored layout, which is exactly what
+	// the spec's "no user-authored queries and no URLs, ever" forbids.
+	"mesh-golden-signals": {
+		MinW: 3,
+		MinH: 3,
+		Params: map[string][]string{
+			paramKeyNamespace: {},
+			paramKeyService:   {},
+		},
+	},
 }
 
 // MaxDashboardLayoutsPerUser is the per-user, per-cluster ceiling. One layout
@@ -211,6 +278,46 @@ var MaxDashboardLayoutsPerUser = len(allowedDashboardScopes)
 // out of that. A widget declaring this key in its spec is declaring that its
 // value is a namespace.
 const paramKeyNamespace = "namespace"
+
+// paramKeyService is the param key whose value names a Kubernetes Service
+// inside the placement's namespace.
+//
+// The second well-known key, and the first whose value nothing downstream
+// re-authorizes. A namespace is checked against the live cluster on every read
+// and the placement withheld when it does not authorize, so a stored namespace
+// that is nonsense is inert. There is no equivalent check for a service name:
+// no per-service grant exists to test it against, and the backing route
+// (`/v1/mesh/golden-signals`) authorizes the NAMESPACE before it reads
+// anything.
+//
+// So this key's value is bounded by its shape instead -- see
+// `paramValueShapes` -- and that bound is not belt-and-braces. It is the whole
+// reason a second open-valued key is admissible at all: without it, `service`
+// would be unvalidated caller text sitting in a stored layout, which is what
+// spec §7 exists to prevent.
+const paramKeyService = "service"
+
+// paramValueShapes bounds the values of open-valued keys that need more than
+// the generic length and control-character rules.
+//
+// A key absent from this map is bounded only by those generic rules, which is
+// what `namespace` has been since P3 and stays. Tightening it retroactively
+// would start refusing saves of layouts this validator has been accepting,
+// and a stored namespace is already answerable by the cluster itself.
+//
+// A Service name is a DNS-1035 label: lowercase alphanumerics and dashes,
+// starting with a letter, at most 63 characters. That is what Kubernetes
+// enforces on the object, so it refuses nothing a real service could be
+// called -- and it refuses a URL, a path, a PromQL expression and a shell
+// fragment with one rule rather than four blocklists, because none of them is
+// a DNS label.
+//
+// Mirrored in PARAM_VALUE_SHAPE in frontend/lib/dashboard/params.ts, pattern
+// for pattern, so the dialog refuses what this would refuse before the round
+// trip rather than after it costs the user their arrangement.
+var paramValueShapes = map[string]*regexp.Regexp{
+	paramKeyService: regexp.MustCompile(`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`),
+}
 
 // SaveLayoutRequest is the wire shape for PUT /preferences/layouts/{scope}.
 //
@@ -421,11 +528,20 @@ func ValidateDashboardLayout(raw json.RawMessage) (DashboardLayoutConfig, json.R
 					"items[%d]: %s does not take a parameter named %q", i, it.ID, k)
 			}
 			// An empty value set means the legal values are not knowable here
-			// (a namespace name), so the generic bounds above are the whole
-			// check. A non-empty set is closed.
+			// (a namespace name, a service name). A non-empty set is closed.
 			if len(allowed) > 0 && !containsString(allowed, v) {
 				return cfg, nil, invalidf("invalid_config",
 					"items[%d]: %q is not a value %s accepts for %q", i, v, it.ID, k)
+			}
+			// For an open-valued key the generic bounds above were the whole
+			// check until one arrived whose value nothing downstream
+			// re-authorizes. `paramValueShapes` names those keys and carries
+			// the reasoning; a key absent from it keeps the behaviour it
+			// shipped with, and a key with a CLOSED set never reaches here.
+			if shape, bounded := paramValueShapes[k]; bounded &&
+				len(allowed) == 0 && !shape.MatchString(v) {
+				return cfg, nil, invalidf("invalid_config",
+					"items[%d]: %q is not a valid value for %q", i, v, k)
 			}
 		}
 

@@ -15,21 +15,28 @@
  * Side-effect imports only — this module intentionally exports nothing.
  */
 import "./ActiveAlertsWidget.tsx";
-import "./ClusterHealthWidget.tsx";
+import "./AuditActivityWidget.tsx";
 import "./CertsExpiringWidget.tsx";
+import "./ClusterHealthWidget.tsx";
+import "./ClusterStatusWidget.tsx";
 import "./CpuTileWidget.tsx";
 import "./DiagnosticsSummaryWidget.tsx";
 import "./EsoHealthWidget.tsx";
+import "./GatewayRoutesWidget.tsx";
 import "./GitOpsAppHealthWidget.tsx";
 import "./GitOpsRecentSyncsWidget.tsx";
 import "./HPAStatusWidget.tsx";
+import "./HubbleFlowsWidget.tsx";
 import "./MemoryTileWidget.tsx";
+import "./MeshGoldenSignalsWidget.tsx";
 import "./MtlsCoverageWidget.tsx";
 import "./NetworkTileWidget.tsx";
 import "./NodeConditionsWidget.tsx";
 import "./NodesWidget.tsx";
+import "./NotificationsFeedWidget.tsx";
 import "./PDBRiskWidget.tsx";
 import "./PendingPodsWidget.tsx";
+import "./PinnedResourcesWidget.tsx";
 import "./PodRestartsWidget.tsx";
 import "./PodStatusWidget.tsx";
 import "./PodsTileWidget.tsx";
@@ -38,6 +45,7 @@ import "./PolicyViolationsWidget.tsx";
 import "./QuotaPressureWidget.tsx";
 import "./RecentEventsWidget.tsx";
 import "./ResourceUtilizationWidget.tsx";
+import "./SavedViewsWidget.tsx";
 import "./SnapshotHealthWidget.tsx";
 import "./StorageCapacityWidget.tsx";
 import "./TopConsumersWidget.tsx";

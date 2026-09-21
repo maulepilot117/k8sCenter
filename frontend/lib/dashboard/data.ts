@@ -14,14 +14,17 @@
 import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import { ApiError, api } from "@/lib/api.ts";
+import { HUBBLE_FLOW_BATCH } from "./networking.ts";
 import { decodeSourceKey } from "./params.ts";
 import { COMPLIANCE_HISTORY_DAYS } from "./severity.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
+  ABSENT_STATUSES,
   FAMILY_STATUS_KEYS,
   NOT_FOUND_IS_REFUSAL,
   RANGE_SENSITIVE_KEYS,
   sourceCost,
+  UNSUPPORTED_STATUSES,
 } from "./types.ts";
 // Safe despite the apparent cycle: widget-state's only import from this
 // file is `import type`, which is erased, so there is no runtime edge back.
@@ -35,11 +38,36 @@ import type { ResourceListPage } from "./wire-types.ts";
  * changes, which is why the shell renders it without a retry affordance (R2).
  * It is a 403, plus the 404 the slug-query route uses in place of one so its
  * catalog cannot be enumerated -- see `classify` below and
- * `NOT_FOUND_IS_REFUSAL` in types.ts. Everything else -- a 500, a dropped
- * connection, a malformed body -- is "failure", which is the behavior that
- * shipped, kept under a name so the two are distinguishable at the call site.
+ * `NOT_FOUND_IS_REFUSAL` in types.ts.
+ *
+ * "absent" is a standing fact about the DEPLOYMENT: the route answered a
+ * status that means this build does not serve the read here at all, which for
+ * the platform family is a 503 (no database) or the 404 of a route that is
+ * never registered without one. `ABSENT_STATUSES` in types.ts names the
+ * sources and their codes, and `resolveWidgetState` turns this into the same
+ * `unavailable` outcome a missing operator produces -- not an error, because
+ * nothing is wrong, and not a delay, because nothing is coming (R1).
+ *
+ * Everything else -- a 500, a dropped connection, a malformed body -- is
+ * "failure", which is the behavior that shipped, kept under a name so the
+ * three are distinguishable at the call site.
  */
-export type SourceErrorKind = "permission" | "failure";
+export type SourceErrorKind =
+  | "permission"
+  | "failure"
+  | "absent"
+  /**
+   * The backend understood the request and will not answer it, for a
+   * reason that is neither absence nor permission and that retrying
+   * cannot change.
+   *
+   * Distinct from `absent` because the feature IS installed -- saying it
+   * is not would send an operator looking for a missing operator -- and
+   * distinct from `failure` because a retry is futile and the shell must
+   * not offer one. The backend's own message is what makes it
+   * actionable, so unlike the other two this one is shown.
+   */
+  | "unsupported";
 
 export interface SourceState<T = unknown> {
   data: T | null;
@@ -84,12 +112,12 @@ const RANGE_SENSITIVE = RANGE_SENSITIVE_KEYS;
 /**
  * Sources the periodic refresh leaves alone once they have answered.
  *
- * The eight discovery routes say whether an operator is installed on the
+ * The ten discovery routes say whether a feature is installed on the
  * cluster, which changes when somebody installs one -- not on the timescale of
  * a 60s tick. Re-asking costs more than the answer is worth: the dashboard
- * requests all eight on mount whether or not a widget reads them, because the
+ * requests all ten on mount whether or not a widget reads them, because the
  * palette has to mark an un-added widget as unavailable before it is added,
- * and three of them (policies, gitops, mesh) share the backend's
+ * and four of them (policies, gitops, mesh, hubble) share the backend's
  * 30-request-per-minute YAML bucket with `/yaml/*` and `/wizards/*`. Polling
  * them would spend a tenth of that shared budget, per IP, for as long as a
  * dashboard tab is open.
@@ -212,7 +240,9 @@ function messageOf(err: unknown): string {
 
 /**
  * A forbidden response is a permission outcome -- and so is a not-found from
- * the handful of sources that have no other way to say forbidden.
+ * the handful of sources that have no other way to say forbidden. A status
+ * that means "this deployment does not serve this read" is an absence, which
+ * is neither.
  *
  * Read off the HTTP status rather than the message, because the message is
  * whatever the handler wrote and a widget must not branch on prose. 401 is
@@ -231,6 +261,16 @@ function classify(err: unknown, base: string): SourceErrorKind {
   if (!(err instanceof ApiError)) return "failure";
   if (err.status === 403) return "permission";
   if (err.status === 404 && NOT_FOUND_IS_REFUSAL.has(base)) return "permission";
+  // Checked after the refusal branch, so a source that ever appeared in both
+  // declarations still reads as refused: that set exists to keep a
+  // deliberately opaque refusal readable as one, and reporting it as an
+  // absence would tell the user the feature is gone rather than shut.
+  if (ABSENT_STATUSES[base]?.includes(err.status)) return "absent";
+  // After absence, for the same reason absence is checked after refusal: a
+  // source that appeared in both declarations should read as the more
+  // specific claim, and "this cluster does not run it" is more specific than
+  // "this request cannot be answered".
+  if (UNSUPPORTED_STATUSES[base]?.includes(err.status)) return "unsupported";
   return "failure";
 }
 
@@ -813,6 +853,23 @@ async function read(path: string, signal: AbortSignal): Promise<unknown> {
 const LIST_PAGE_LIMIT = 500;
 
 /**
+ * How many audit entries and unread notifications the platform cards ask for.
+ *
+ * Small on purpose. Both routes page against PostgreSQL and both cards show a
+ * handful of rows; asking for the route's own default (25 notifications) or
+ * anything larger would pay for rows nothing renders, once per refresh, per
+ * open dashboard. The audit route's `pageSize` is clamped server-side and the
+ * notification route's `limit` is capped at 200, so neither number can grow
+ * past what the handler will serve.
+ *
+ * The notification cap does NOT bound the count beside the rows: that comes
+ * from `metadata.total`, which the handler computes over the whole unread
+ * population before it pages.
+ */
+const AUDIT_PAGE_SIZE = 10;
+const UNREAD_FEED_LIMIT = 10;
+
+/**
  * GET a list endpoint and keep BOTH halves of its envelope.
  *
  * `read` above drops `metadata`, which is right for the handlers that answer
@@ -1058,7 +1115,130 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   "mesh-mtls": async (signal) =>
     withList(await read("/v1/mesh/mtls", signal), "workloads"),
 
-  // The eight discovery routes. Each answers "is this feature installed", which
+  // The networking family's other four.
+  //
+  // The third parameterized fetcher and the first that needs TWO values. Both
+  // are mandatory -- the handler answers 400 with either missing -- and both
+  // are percent-encoded for the reason the two above it are: this is where a
+  // stored value becomes a URL. `URLSearchParams` rather than hand-built
+  // interpolation, because two values doubles the number of places a missed
+  // encode can hide.
+  //
+  // No `?mesh=`. The route resolves the mesh from its own discovery when the
+  // parameter is absent, which is right on every cluster running one mesh;
+  // it answers 400 on a cluster running BOTH, asking to be told which. That
+  // is a third parameter, and a third parameter is a third stored value on
+  // every placement and a third field in the dialog, to disambiguate a
+  // configuration the mesh pages themselves treat as unusual.
+  //
+  // So the card says what the 400 means instead -- which it did NOT do until
+  // `UNSUPPORTED_STATUSES` existed. The mesh family status reports the mesh
+  // PRESENT on a dual-mesh cluster, because two are, so the unavailable
+  // branch never fired and this fell through to the generic error card:
+  // warning colour, a quoted backend message, and a retry that could never
+  // succeed. This comment claimed otherwise for the whole of P5. The 400 is
+  // now classified `unsupported`, which renders muted, offers no retry, and
+  // shows the backend's message -- the one thing that tells the reader the
+  // cluster runs both.
+  "mesh-golden-signals": (signal, _range, params) =>
+    read(
+      `/v1/mesh/golden-signals?${new URLSearchParams({
+        namespace: params.namespace ?? "",
+        service: params.service ?? "",
+      }).toString()}`,
+      signal,
+    ),
+
+  // The REST flow route, NOT `/ws/flows`. See `hubble-flows` in types.ts.
+  //
+  // `?? []` and it is load-bearing, not defensive: `GetFlows` accumulates into
+  // `var flows []FlowRecord` and hands back a NIL slice when the namespace is
+  // quiet, which Go marshals as `"data": null`. A source whose data is null
+  // never renders -- `resolveWidgetState` reads `data !== null` as "has
+  // landed" -- so without this the card would sit in its skeleton forever on
+  // exactly the cluster it has the best news for. The same defect
+  // `policy-violations-list` shipped with.
+  //
+  // `limit` is the card's own cap rather than the route's 100 default: the
+  // percentages are a share of the batch, and a batch of 100 out of a busy
+  // namespace makes that share noise.
+  "hubble-flows": async (signal, _range, params) =>
+    (await read(
+      `/v1/networking/hubble/flows?${new URLSearchParams({
+        namespace: params.namespace ?? "",
+        limit: String(HUBBLE_FLOW_BATCH),
+      }).toString()}`,
+      signal,
+    )) ?? [],
+
+  // The Gateway API pair, under `/v1/gateway/...` -- its own top-level prefix,
+  // not the networking one. `?? []` on both: today each handler returns
+  // `make([]T, 0, n)` through `filterByRBAC` and a literal empty slice on its
+  // not-installed path, both checked, so neither can answer null now. The
+  // guard is here because the cost of a later regression is invisible and
+  // permanent, which is the reasoning the data-protection four carry.
+  "gateway-gateways": async (signal) =>
+    (await read("/v1/gateway/gateways", signal)) ?? [],
+  // HTTPRoutes have their own route; `/v1/gateway/routes` serves one NON-HTTP
+  // kind per call behind a required `?kind=` and 400s without it, so it is not
+  // the route to ask for "all routes".
+  "gateway-httproutes": async (signal) =>
+    (await read("/v1/gateway/httproutes", signal)) ?? [],
+
+  // The platform family's five. None of them is CRD-discovered and none of
+  // them declares a family status: what can be missing is the deployment's
+  // database, and `ABSENT_STATUSES` in types.ts maps the status each route
+  // says so with onto the unavailable state.
+  //
+  // `?? []` on the four bare lists below, and on three of them it is
+  // LOAD-BEARING rather than defensive. `ClusterStore.List` accumulates into
+  // `var clusters []ClusterRecord`, `PostgresStore.Query` into
+  // `var entries []Entry`, and `Store.ListNotifications` into
+  // `var notifications []Notification` -- three separate nil slices, which Go
+  // marshals as `"data": null`. A source whose data is null NEVER RENDERS:
+  // `resolveWidgetState` reads `data !== null` as "has landed", so without
+  // these guards an empty audit log, an empty registry and -- the common case
+  // -- an account with nothing unread would each leave their card in the
+  // skeleton forever. That is the fifth, sixth and seventh instance of this
+  // shape found in this phase.
+  //
+  // The preferences pair is the exception and its guard IS defensive:
+  // `writeList` in backend/internal/preferences/handler.go normalises a nil
+  // slice to `[]` before it writes, and its docstring says so. Carried anyway,
+  // because the cost of a later regression is invisible and permanent.
+  "clusters-list": async (signal) => (await read("/v1/clusters", signal)) ?? [],
+  // `pageSize`, not `limit`: this route's paging parameters are its own
+  // (`audit.QueryParams`), not the generic list route's. Asking for `limit`
+  // would silently get the handler's default page instead.
+  "audit-log": async (signal) =>
+    (await read(`/v1/audit/logs?pageSize=${AUDIT_PAGE_SIZE}`, signal)) ?? [],
+  // The one platform fetcher that keeps its envelope, because the count the
+  // card shows has to be the server's rather than this page's: `metadata.total`
+  // is the whole unread population under the same filter, where `data` is one
+  // capped page of it. `withList` normalises the nil slice inside the envelope
+  // and leaves a body that is not an envelope at all untouched, so
+  // `notificationsFeedView` can still report it as unreadable rather than as
+  // empty.
+  //
+  // `read=unread` is `ListOpts.ReadFilter`, whose only two recognised values
+  // are "read" and "unread"; anything else is no filter at all, which would
+  // make this card report the whole feed as unread.
+  "unread-notifications": async (signal) => {
+    const res = await api<unknown>(
+      `/v1/notifications?read=unread&limit=${UNREAD_FEED_LIMIT}`,
+      { method: "GET", signal },
+    );
+    return withList(
+      { items: res.data, total: res.metadata?.total ?? null },
+      "items",
+    );
+  },
+  "preference-views": async (signal) =>
+    (await read("/v1/preferences/views", signal)) ?? [],
+  "preference-pins": async (signal) =>
+    (await read("/v1/preferences/pins", signal)) ?? [],
+
+  // The ten discovery routes. Each answers "is this feature installed", which
   // is the question its own list endpoint cannot answer -- see
   // FAMILY_STATUS_KEYS in types.ts. They are range-insensitive, so the 60s
   // refresh keeps them current and a time-range change does not refetch them.
@@ -1112,6 +1292,43 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
     const available = (res.metadata as { available?: unknown } | undefined)
       ?.available;
     return { detected: available === true };
+  },
+  // The ninth. Gateway API DOES mount a `/status` route, and it reports
+  // presence as `available: boolean` rather than as `detected` -- so this
+  // normalises the flag into the shape `featurePresent` reads, exactly as the
+  // mesh status above unwraps its own envelope and the snapshot status above
+  // lifts its flag out of metadata. Anything other than a literal `true` reads
+  // as ABSENT, which is the deliberate direction for the reason those two
+  // carry: a build that cannot parse this route saying "not installed" is a
+  // visible bug someone fixes, where one rendering an empty green gateway card
+  // on a cluster with no Gateway API is a bug nobody sees (R1).
+  "gateway-status": async (signal) => {
+    const body = await read("/v1/gateway/status", signal);
+    return {
+      detected: (body as { available?: unknown } | null)?.available === true,
+    };
+  },
+  // The tenth, and the only family status that is not a CRD check. Hubble is a
+  // Cilium feature flag plus a discovered Relay Service, and
+  // `/v1/networking/cni` is where the detector publishes both.
+  //
+  // `features.hubble` and not `features.hubbleRelayAddr`: the flag is what the
+  // Cilium ConfigMap says is enabled, while the address is what the detector
+  // managed to find, and a Relay the detector missed is a broken lookup rather
+  // than an absent feature. Reading the address would report Hubble as
+  // uninstalled on a cluster running it, which is the error in the direction
+  // that costs an operator a real signal.
+  //
+  // Always an object, even for a null body: a family status whose data is null
+  // leaves the widget in its skeleton for good, because `resolveWidgetState`
+  // reads `data !== null` as "has landed" before it ever asks whether the
+  // feature is present.
+  "hubble-status": async (signal) => {
+    const body = await read("/v1/networking/cni", signal);
+    const features = (body as { features?: unknown } | null)?.features;
+    return {
+      detected: (features as { hubble?: unknown } | undefined)?.hubble === true,
+    };
   },
 };
 

@@ -41,6 +41,7 @@
     "d3-force": "^3.0.0"
   },
   "devDependencies": {
+    "preact-render-to-string": "^6.7.0",
     "@astrojs/check": "^0.9.10",
     "@babel/parser": "7.29.8",
     "@biomejs/biome": "2.5.12",

@@ -81,6 +81,10 @@ var testParamWidgetSpec = widgetSpec{
 		"namespace": {},                  // open set: any value inside the generic bounds
 		"mode":      {"compact", "full"}, // closed set
 		"n":         {},
+		// Open set AND shape-bounded, which is a third case and not a variant
+		// of the first: `paramValueShapes` names it, so the generic bounds are
+		// not the whole check. See TestValidateDashboardLayout_ServiceShape.
+		"service": {},
 	},
 }
 
@@ -90,12 +94,14 @@ var testParamWidgetSpec = widgetSpec{
 // Every key a widget declares is mandatory -- the validator refuses a
 // partially filled placement -- so a test interested in one parameter still
 // has to supply the others. Without this, adding a key to the stand-in breaks
-// every test that names a different one.
+// every test that names a different one, which is exactly what happened when
+// `service` was added.
 func fullParams(over map[string]string) map[string]string {
 	out := map[string]string{
 		"namespace": "ns",
 		"mode":      "full",
 		"n":         "1",
+		"service":   "svc",
 	}
 	for k, v := range over {
 		out[k] = v
@@ -155,11 +161,11 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 			raw: layoutWithItems(t,
 				item(map[string]any{
 					"instanceId": "prod", "id": testParamWidgetID, "x": 0, "w": 6,
-					"params": map[string]string{"namespace": "prod", "mode": "compact", "n": "1"},
+					"params": map[string]string{"namespace": "prod", "mode": "compact", "n": "1", "service": "svc"},
 				}),
 				item(map[string]any{
 					"instanceId": "staging", "id": testParamWidgetID, "x": 6, "w": 6,
-					"params": map[string]string{"namespace": "staging", "mode": "compact", "n": "1"},
+					"params": map[string]string{"namespace": "staging", "mode": "compact", "n": "1", "service": "svc"},
 				}),
 			),
 		},
@@ -168,7 +174,7 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 			setup: withParamWidget,
 			raw: layoutWithItems(t, item(map[string]any{
 				"id":     testParamWidgetID,
-				"params": map[string]string{"mode": "compact", "namespace": "ns", "n": "1"},
+				"params": map[string]string{"mode": "compact", "namespace": "ns", "n": "1", "service": "svc"},
 			})),
 		},
 		{
@@ -180,7 +186,7 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 					items = append(items, item(map[string]any{
 						"instanceId": "w" + strconv.Itoa(i),
 						"id":         testParamWidgetID,
-						"params":     map[string]string{"n": strconv.Itoa(i), "namespace": "ns", "mode": "full"},
+						"params":     map[string]string{"n": strconv.Itoa(i), "namespace": "ns", "mode": "full", "service": "svc"},
 						"x":          0, "w": 12, "y": i, "h": 1,
 					}))
 				}
@@ -546,6 +552,98 @@ func TestValidateDashboardLayout_RejectsParams(t *testing.T) {
 	}
 }
 
+// TestValidateDashboardLayout_ServiceShape covers the one open-valued key
+// whose value is bounded by a pattern rather than by membership.
+//
+// The service key exists because `/v1/mesh/golden-signals` needs a service
+// name and a cluster's service names cannot be enumerated in this catalog. It
+// is bounded by shape because -- unlike the namespace key beside it -- nothing
+// downstream re-authorizes its value: there is no per-service grant to check
+// it against, and the route authorizes the namespace. So the shape is the
+// whole defence, and spec §7's "no user-authored queries and no URLs" holds
+// for this key only as long as this rule does.
+//
+// The accepted cases matter as much as the refused ones. A rule that refused
+// a legal service name would make a widget the editor offers unsaveable, and
+// every value below is one Kubernetes itself accepts on a Service object.
+func TestValidateDashboardLayout_ServiceShape(t *testing.T) {
+	accepted := []string{
+		"checkout",
+		"a",
+		"checkout-api-v2",
+		"x1",
+		strings.Repeat("a", 63), // the longest DNS-1035 label
+	}
+	refused := []string{
+		"",                      // empty: not a name
+		"Checkout",              // uppercase
+		"9checkout",             // leading digit: legal for a namespace, not a service
+		"-checkout",             // leading dash
+		"checkout-",             // trailing dash
+		"check_out",             // underscore
+		"prod/checkout",         // a path separator: a different route entirely
+		"checkout.prod.svc",     // a dotted name: a DNS subdomain, not a label
+		"http://evil.example/x", // a URL
+		"sum(rate(x[5m]))",      // PromQL
+		"checkout ",             // trailing space
+		strings.Repeat("a", 64), // past the label bound
+	}
+
+	for _, v := range accepted {
+		t.Run("accepts "+v, func(t *testing.T) {
+			defer withParamWidget(t)()
+			raw := layoutWithItems(t, item(map[string]any{
+				"id": testParamWidgetID, "params": map[string]string{
+					"service": v, "namespace": "ns", "mode": "full", "n": "1",
+				},
+			}))
+			if _, _, err := ValidateDashboardLayout(raw); err != nil {
+				t.Fatalf("service %q was refused: %v", v, err)
+			}
+		})
+	}
+
+	for _, v := range refused {
+		t.Run("refuses "+v, func(t *testing.T) {
+			defer withParamWidget(t)()
+			raw := layoutWithItems(t, item(map[string]any{
+				"id": testParamWidgetID, "params": map[string]string{
+					"service": v, "namespace": "ns", "mode": "full", "n": "1",
+				},
+			}))
+			_, normalized, err := ValidateDashboardLayout(raw)
+			if reasonOf(err) != "invalid_config" {
+				t.Fatalf("service %q was accepted (err %v); want invalid_config", v, err)
+			}
+			if normalized != nil {
+				t.Fatalf("a rejected layout returned %d bytes to store; want nil", len(normalized))
+			}
+		})
+	}
+}
+
+// TestValidateDashboardLayout_NamespaceKeepsItsBounds pins the other half of
+// the asymmetry above: the namespace key is NOT shape-bounded.
+//
+// Deliberate, and not an oversight to tidy up later. A namespace value is
+// re-authorized against the live cluster on every read, so one that is
+// nonsense simply never authorizes and its placement is withheld -- while
+// narrowing the rule here would start refusing saves of layouts this
+// validator has been accepting since P3, which is a client that breaks a
+// user's stored dashboard to enforce a bound the cluster already enforces.
+func TestValidateDashboardLayout_NamespaceKeepsItsBounds(t *testing.T) {
+	defer withParamWidget(t)()
+
+	for _, v := range []string{"9prod", strings.Repeat("a", 64), "Prod"} {
+		raw := layoutWithItems(t, item(map[string]any{
+			"id": testParamWidgetID, "params": fullParams(map[string]string{"namespace": v}),
+		}))
+		if _, _, err := ValidateDashboardLayout(raw); err != nil {
+			t.Fatalf("namespace %q was refused: %v", v, err)
+		}
+	}
+}
+
 // TestValidateDashboardLayout_ItemsIsAlwaysAnArray guards the one value the
 // TypeScript mirror declares cannot occur.
 //
@@ -817,7 +915,7 @@ func TestValidateDashboardLayout_NormalizationIsAFixedPoint(t *testing.T) {
 	raw := layoutWithItems(t,
 		item(map[string]any{
 			"instanceId": "a", "id": testParamWidgetID, "x": 0, "w": 6,
-			"params": map[string]string{"namespace": "z", "n": "2", "mode": "full"},
+			"params": fullParams(map[string]string{"namespace": "z", "n": "2"}),
 		}),
 		item(map[string]any{
 			"instanceId": "b", "id": "nodes", "x": 6, "w": 6,

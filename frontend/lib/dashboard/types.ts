@@ -40,7 +40,7 @@ export type WidgetFamily = (typeof WIDGET_FAMILIES)[number];
  * absence from an empty list renders "no expiring certificates" on a cluster
  * with no cert-manager, which is the exact failure R1 forbids.
  *
- * Seven families, three payload shapes, one rule: `detected` is `false` or
+ * Ten families, three payload shapes, one rule: `detected` is `false` or
  * `""` when the feature is absent, and names the implementation otherwise. See
  * `featurePresent` in widget-state.ts, which is the only place that reads it.
  */
@@ -84,6 +84,34 @@ export const FAMILY_STATUS_KEYS = [
   // no VolumeSnapshotClasses still answers `available: true` -- so this says
   // "snapshots are a thing here", never "snapshots are configured here".
   "snapshots-status",
+  // The ninth. Gateway API is CRD-discovered like the first seven and DOES
+  // mount a `/status` route (`/v1/gateway/status`), but it reports presence as
+  // `available: boolean` rather than `detected` -- so the fetcher normalises
+  // the flag into the `{ detected }` shape `featurePresent` reads, exactly as
+  // `snapshots-status` normalises its own.
+  //
+  // Needed for the same reason every other family status is: every Gateway API
+  // list route answers 200 with an EMPTY ARRAY when the CRDs are absent (the
+  // handlers return `[]GatewaySummary{}` outright on `!IsAvailable`), which is
+  // byte-identical to a cluster that has Gateway API installed and no Gateways
+  // yet. "No gateways are misrouting" is a reassuring sentence and it is false
+  // on a cluster with no Gateway API at all (R1).
+  "gateway-status",
+  // The tenth, and the only one that is not a CRD check.
+  //
+  // Hubble is a Cilium FEATURE, not a CRD: it is on when the Cilium ConfigMap
+  // carries `enable-hubble: "true"` and a `hubble-relay` Service was found.
+  // The networking family publishes both through `/v1/networking/cni`, whose
+  // `features.hubble` flag is what this key reads and normalises.
+  //
+  // The flows route cannot answer the question itself. It answers 503 when the
+  // backend has no Hubble client and 400 when the namespace is missing, and a
+  // card built on those would show an ERROR for a cluster that simply does not
+  // run Hubble -- which is honest but useless, where the unavailable state is
+  // both. More importantly the reverse holds: a cluster WITH Hubble and a
+  // quiet namespace answers 200 with an empty flow list, which is what "no
+  // dropped traffic" has to be told apart from.
+  "hubble-status",
 ] as const;
 export type FamilyStatusKey = (typeof FAMILY_STATUS_KEYS)[number];
 
@@ -213,12 +241,82 @@ export const DATA_SOURCE_KEYS = [
   // rows depended on it would be blank on most clusters. See
   // `gitopsRecentSyncsView` in sync-state.ts.
   "gitops-applications",
-  // The networking family's one read: `/v1/mesh/mtls`, and requested with NO
+  // The networking family's first read: `/v1/mesh/mtls`, requested with NO
   // namespace, which that route treats as a cluster-scoped read (KTD4). That
   // is what keeps `mtls-coverage` parameterless: the cluster-wide posture is
   // the more useful default for an overview card and the one an operator
   // cannot reconstruct without visiting every namespace page in turn.
   "mesh-mtls",
+  // The networking family's remaining four reads.
+  //
+  // `mesh-golden-signals` is `/v1/mesh/golden-signals`, and the first source
+  // in this table keyed by TWO parameters. The route REQUIRES both a
+  // `?namespace=` and a `?service=` and answers 400 with either missing, so
+  // there is no cluster-wide or namespace-wide form of it to read instead --
+  // unlike `mesh-mtls` above, whose parameterless cluster-scoped form is
+  // exactly what made that card parameterless. It optionally takes a `?mesh=`
+  // selector, which this source deliberately does not send: see the fetcher.
+  "mesh-golden-signals",
+  // `/v1/networking/hubble/flows`, the REST route -- NOT `/ws/flows`. A
+  // dashboard card holding a WebSocket open per placement would turn a
+  // six-card layout into six live gRPC streams against Hubble Relay for as
+  // long as the tab is open, and a flow feed that repaints continuously is
+  // not what an overview card is. One bounded batch per refresh instead.
+  "hubble-flows",
+  // The Gateway API family's two reads, under `/v1/gateway/...` -- their own
+  // top-level prefix, NOT under `/v1/networking/...` where the Cilium and CNI
+  // routes live. Confirmed against `registerGatewayRoutes` in
+  // backend/internal/server/routes.go.
+  //
+  // Two keys and not one because the card answers two questions the other
+  // cannot: `gateway-gateways` carries each Gateway's own
+  // `status.listeners[].attachedRoutes` total, which is the controller's count
+  // across EVERY route kind, and `gateway-httproutes` is the route inventory
+  // the card ranks and the only way to see a route whose parent names a
+  // Gateway that is not there.
+  //
+  // `/v1/gateway/routes` is deliberately not a third source: it REQUIRES a
+  // `?kind=` from {grpcroutes, tcproutes, tlsroutes, udproutes} and serves one
+  // kind per call, so covering it would be four more reads for kinds a small
+  // minority of clusters run. The card names what it counted instead.
+  "gateway-gateways",
+  "gateway-httproutes",
+  // The platform family's five reads, and the first five in this table whose
+  // backing feature can be missing from the DEPLOYMENT rather than from the
+  // cluster. All five need PostgreSQL; none is CRD-discovered, so none has a
+  // family status above. `ABSENT_STATUSES` below is what carries that
+  // reading instead.
+  //
+  // `clusters-list` is `/v1/clusters` -- the registry of registered clusters,
+  // admin-gated, NOT the `/v1/cluster/info` that `cluster-info` already reads.
+  // The two are one letter apart and answer different questions: one is "what
+  // clusters does this install manage", the other "what is the cluster I am
+  // pointed at".
+  "clusters-list",
+  // `/v1/audit/logs`, admin-gated. Named for the route rather than for the
+  // widget (`audit-activity`), which is the convention `volume-capacity` and
+  // `policy-compliance-score` already follow: a card declaring a source of its
+  // own name reads as a typo.
+  "audit-log",
+  // `/v1/notifications?read=unread`. Named for what it carries rather than
+  // for the widget (`notifications-feed`) for the same reason, and named
+  // `unread-` because the filter is part of the request: the card is about
+  // what has NOT been seen, and the same route with no filter is a different
+  // read that nothing here asks for.
+  //
+  // Its sibling `/v1/notifications/unread-count` is deliberately NOT a second
+  // source. The list response's `metadata.total` is the count of the whole
+  // unread population under the same filter -- the handler counts before it
+  // pages -- so one request already answers both the feed and the badge, and
+  // a second would be a second PostgreSQL round trip per refresh for a number
+  // this one returns.
+  "unread-notifications",
+  // The preferences pair, `/v1/preferences/views` and `/v1/preferences/pins`.
+  // Named `preference-` rather than after their widgets (`saved-views`,
+  // `pinned-resources`) for the convention above, and prefixed alike because
+  // they are one route group with one availability condition.
+  "preference-views",
+  "preference-pins",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -391,6 +489,52 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   "gitops-applications": "expensive",
   "mesh-mtls": "expensive",
 
+  // The networking family's other four. All expensive, and three of them for
+  // reasons this table has already used once.
+  //
+  // `mesh-golden-signals` fans out SIX Prometheus instant queries per request
+  // behind one access review, with no server-side cache, and is issued once
+  // per distinct namespace/service pair on the layout -- a Prometheus read
+  // AND a cost that grows with the dashboard, which is this class twice over
+  // in the same way `mesh-mtls` above is.
+  //
+  // `hubble-flows` is a live gRPC stream to Hubble Relay, drained until EOF or
+  // a 1000-flow cap, in front of a pod LIST used as the namespace RBAC check.
+  // The class definition names Hubble outright.
+  //
+  // The two Gateway API reads are the mildest pair in this block and still not
+  // cheap: each runs `filterByRBAC`, a SelfSubjectAccessReview PER NAMESPACE
+  // carrying a Gateway or an HTTPRoute, which is the argument that classified
+  // `limits-namespaces`, `policy-violations-list`, `certificates-list` and
+  // `gitops-applications`. Their 30-second server-side cache covers the CRD
+  // fetch only; the access reviews and the serialisation of every normalized
+  // object are paid per request.
+  "mesh-golden-signals": "expensive",
+  "hubble-flows": "expensive",
+  "gateway-gateways": "expensive",
+  "gateway-httproutes": "expensive",
+
+  // The platform family's five. Every one of them is a PostgreSQL read, which
+  // the class definition names outright -- no informer, no discovery cache, a
+  // live query per request against a database the backend shares with every
+  // other viewer.
+  //
+  // Three of them are worse than a plain SELECT and the shape shows none of
+  // it. `unread-notifications` runs an RBAC namespace resolution before it
+  // reads (`accessibleNamespaces`) and then TWO queries, a COUNT and a page,
+  // both over a LEFT JOIN against the per-user read marks. `audit-log` does
+  // the same count-then-page pair over a table with 90 days of retention on
+  // it. `clusters-list` is the mildest and is still a per-request query whose
+  // rows the handler then strips credentials from.
+  //
+  // None of them is `discovery`: that class is for the CRD status routes,
+  // which answer out of a 5-minute cache. Nothing below is cached anywhere.
+  "clusters-list": "expensive",
+  "audit-log": "expensive",
+  "unread-notifications": "expensive",
+  "preference-views": "expensive",
+  "preference-pins": "expensive",
+
   "policies-status": "discovery",
   "gitops-status": "discovery",
   "certificates-status": "discovery",
@@ -404,6 +548,17 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   // this class describes. The expensive snapshot read is `snapshots-list`
   // above, and it is a separate key precisely so this one can stay cheap.
   "snapshots-status": "discovery",
+  // The ninth. A 5-minute-cached CRD discovery call behind a route that does
+  // nothing else, which is this class exactly.
+  "gateway-status": "discovery",
+  // The tenth, and `discovery` by behaviour rather than by name: the CNI
+  // detector answers from a cached probe and re-probes only when asked to, so
+  // a read is a map lookup in the common case and a DaemonSet scan plus a
+  // ConfigMap read in the cold one. Dearer than an informer lookup, far
+  // cheaper than the flow stream it guards, and it sits under the networking
+  // routes' 30-request-per-minute YAML bucket -- the argument that put three
+  // of the eight above it in this class.
+  "hubble-status": "discovery",
 };
 
 /**
@@ -480,6 +635,82 @@ export const NOT_FOUND_IS_REFUSAL: ReadonlySet<string> = new Set([
   // than an edge one.
   "volume-capacity",
 ]);
+
+/**
+ * Sources whose failure is an absence: this deployment does not serve them.
+ *
+ * The CRD-discovered families answer "not installed" through a discovery
+ * route, which is what `FAMILY_STATUS_KEYS` above is for. The platform family
+ * has no such route and no such question -- what can be missing there is the
+ * DEPLOYMENT's PostgreSQL database, not an operator in the cluster -- and its
+ * routes report it as an ERROR STATUS rather than as a payload:
+ *
+ * - `/v1/clusters` answers 503 "cluster management requires a database"
+ *   (`handleListClusters`), as do `/v1/preferences/views` and
+ *   `/v1/preferences/pins` ("preferences require a database",
+ *   `Handler.requireStore`) and `/v1/audit/logs`, whose logger is only
+ *   `audit.Queryable` when it is the PostgreSQL one.
+ * - `/v1/notifications` is not REGISTERED at all without a database -- the
+ *   whole notification centre is built inside `if dbPool != nil` -- so chi
+ *   answers its 404. Same condition, different code, and the same reading:
+ *   this build does not serve this here.
+ *
+ * Without this, all five land on the shell's generic error card: "could not be
+ * loaded", with a retry that will never work, for a deployment configured
+ * exactly as its operator meant it. `ABSENT_STATUSES` turns that into the
+ * unavailable state R1 already defines, which is the same answer a missing
+ * operator gets and for the same reason -- nothing is wrong and nothing is
+ * coming.
+ *
+ * A map from source to the exact codes, rather than one set per code. The
+ * codes differ per route for a reason the source knows and the classifier does
+ * not, and declaring them here keeps the widening narrow: a 503 from an
+ * ORDINARY route is a server that is struggling and must keep its retry, and a
+ * 404 from one is a missing object. Only a route whose absence is a deployment
+ * fact appears below.
+ *
+ * `NOT_FOUND_IS_REFUSAL` wins where the two ever overlap -- see `classify` in
+ * data.ts -- because that set exists to keep a deliberately opaque refusal
+ * readable as a refusal. Nothing is in both today.
+ */
+export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
+  "clusters-list": [503],
+  "audit-log": [503],
+  "preference-views": [503],
+  "preference-pins": [503],
+  // 404 and not 503: the route does not exist on a deployment without a
+  // database, so there is no handler to answer 503 from.
+  "unread-notifications": [404],
+};
+
+/**
+ * Statuses that mean "understood, and not answerable as asked" for a source.
+ *
+ * Sibling of `ABSENT_STATUSES`, and deliberately separate from it. Absence
+ * says the cluster does not run the feature; this says the feature is running
+ * and the request cannot be served the way it was sent. Rendering the second
+ * as the first would send an operator looking for an operator that is already
+ * installed.
+ *
+ * `mesh-golden-signals` is the case that forced the distinction. The route
+ * resolves the mesh from its own discovery when `?mesh=` is absent, which is
+ * right on every cluster running one -- and answers 400 on a cluster running
+ * BOTH Istio and Linkerd, asking to be told which. The mesh family status
+ * reports the mesh PRESENT on such a cluster (two are), so the unavailable
+ * branch never fires, and before this the card fell through to the generic
+ * error state: warning colour, a quoted backend message, and a retry that
+ * could never succeed no matter how many times it was pressed.
+ *
+ * A third `mesh` parameter would make the widget work there, at the cost of a
+ * third stored value on every placement and a third dialog field, to
+ * disambiguate a configuration the mesh pages themselves treat as unusual.
+ * Saying plainly what is wrong is the cheaper honest answer, and it is what
+ * the fetcher's comment always claimed the card did.
+ */
+export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
+  {
+    "mesh-golden-signals": [400],
+  };
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
  * what the pre-registry three-row layout already approximated. */
@@ -575,6 +806,29 @@ export interface WidgetDef {
    * omits this field behaves exactly as it did before availability existed.
    */
   familyStatus?: FamilyStatusKey;
+  /**
+   * The widget's backing route is gated by `middleware.RequireAdmin`.
+   *
+   * The one availability fact in this catalog that is not a family status, and
+   * the one that needs no fetch: admin-ness is a property of the SESSION,
+   * carried on the `/auth/me` roles the shell has already loaded, where
+   * whether cert-manager is installed is a property of the cluster that only a
+   * discovery route can answer.
+   *
+   * Declaring it buys the same thing `familyStatus` buys: the palette can mark
+   * the entry BEFORE it is added (R3), rather than letting a user place a card
+   * that can only ever say "you do not have access". It changes nothing about
+   * how the widget renders once placed -- a non-admin's 403 already resolves
+   * to the permission state through the failure classifier, which is what the
+   * acceptance example turns on -- so this is not a second permission
+   * mechanism, only an earlier reading of the same one.
+   *
+   * Client-side only, like `familyStatus`: the Go catalog validates
+   * PLACEMENTS, and the server enforces the real gate on the route itself. A
+   * widget that omits this behaves exactly as every widget did before it
+   * existed.
+   */
+  adminOnly?: boolean;
   /**
    * Smallest the editor will let the user resize this widget.
    *

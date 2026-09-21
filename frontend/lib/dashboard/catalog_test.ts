@@ -6,6 +6,7 @@ import {
   NO_ROOM,
   NOT_INSTALLED,
   NOT_PERMITTED,
+  selectionAfterEntriesChange,
 } from "./catalog.ts";
 import type { SourceState } from "./data.ts";
 import type { LayoutItem, WidgetDef } from "./types.ts";
@@ -327,5 +328,93 @@ describe("disabledReasonFor -- family availability", () => {
         "certificates-status": status(false),
       }),
     ).toBe(NOT_INSTALLED);
+  });
+});
+
+describe("disabledReasonFor -- an admin-gated entry", () => {
+  // The one availability fact in this catalog that is NOT a family status.
+  //
+  // `/v1/clusters` and `/v1/audit/logs` are gated by `middleware.RequireAdmin`
+  // rather than by RBAC, so the answer is a property of the SESSION and is
+  // knowable without asking the cluster anything -- the roles on `/auth/me`
+  // the shell has already loaded. There is no discovery route to declare and
+  // nothing to fetch; without this, the palette would offer a row whose card
+  // can only ever say "you do not have access" (R3).
+  const auditWidget = () => def("audit-activity", 4, 4, { adminOnly: true });
+
+  test("a non-admin is told before adding it, not after", () => {
+    expect(
+      disabledReasonFor(auditWidget(), [], DASHBOARD_COLUMNS, {}, false),
+    ).toBe(NOT_PERMITTED);
+  });
+
+  test("an admin is offered it", () => {
+    expect(
+      disabledReasonFor(auditWidget(), [], DASHBOARD_COLUMNS, {}, true),
+    ).toBeNull();
+  });
+
+  test("an unknown session blocks nothing", () => {
+    // The same rule a family status in flight follows: the palette's contents
+    // must not depend on whether `/auth/me` has answered yet, and the widget's
+    // own permission state covers the case once it is added.
+    expect(
+      disabledReasonFor(auditWidget(), [], DASHBOARD_COLUMNS, {}, null),
+    ).toBeNull();
+    expect(
+      disabledReasonFor(auditWidget(), [], DASHBOARD_COLUMNS, {}),
+    ).toBeNull();
+  });
+
+  test("an ordinary widget is unaffected by a non-admin session", () => {
+    expect(
+      disabledReasonFor(
+        def("pod-status", 4, 4),
+        [],
+        DASHBOARD_COLUMNS,
+        {},
+        false,
+      ),
+    ).toBeNull();
+  });
+
+  test("the refusal outranks a copy already on the dashboard", () => {
+    // Same argument the family reasons carry: "not permitted" is what the user
+    // needs to know about the card they already have, and "already on this
+    // dashboard" hides it.
+    const placed = [item("a", 0, 0, 4, 4, "audit-activity")];
+    expect(
+      disabledReasonFor(auditWidget(), placed, DASHBOARD_COLUMNS, {}, false),
+    ).toBe(NOT_PERMITTED);
+  });
+});
+
+describe("selectionAfterEntriesChange", () => {
+  // The palette's rows become addable or not as discovery statuses and the
+  // admin signal resolve, on their own schedule, while the dialog is open.
+  // A selection left on a row that has since become unaddable looks selected
+  // and silently swallows both Enter and a click, because `choose` no-ops on
+  // a blocked entry and both paths go through it.
+  test("a selection still pointing at an addable row is left alone", () => {
+    // Not merely "does not crash": moving it would yank the user's cursor
+    // every time an unrelated status landed.
+    expect(selectionAfterEntriesChange([true, true, true], 2)).toBe(2);
+    expect(selectionAfterEntriesChange([false, true, true], 1)).toBe(1);
+  });
+
+  test("a selection on a row that just became unaddable moves to the first addable one", () => {
+    expect(selectionAfterEntriesChange([false, false, true], 0)).toBe(2);
+    expect(selectionAfterEntriesChange([true, false, true], 1)).toBe(0);
+  });
+
+  test("nothing addable selects nothing, rather than promising a dead Enter", () => {
+    expect(selectionAfterEntriesChange([false, false], 0)).toBe(-1);
+    expect(selectionAfterEntriesChange([], 0)).toBe(-1);
+  });
+
+  test("an out-of-range selection is repaired, not preserved", () => {
+    // The list can shrink underneath the selection as well as change shape.
+    expect(selectionAfterEntriesChange([false, true], 7)).toBe(1);
+    expect(selectionAfterEntriesChange([true, true], -1)).toBe(0);
   });
 });

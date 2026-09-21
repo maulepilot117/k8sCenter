@@ -3,13 +3,18 @@ import {
   canonicalParams,
   decodeSourceKey,
   duplicatePlacementOf,
+  KNOWN_PARAM_KEYS,
   MAX_PARAM_VALUE_LEN,
   missingParamKeys,
   PARAM_KEY_NAMESPACE,
+  PARAM_KEY_SERVICE,
   PARAMETERIZED_SOURCE_PARAMS,
+  paramFieldState,
+  paramParentKey,
   paramValueError,
   sourceKeyFor,
   widgetSourceKeys,
+  withParamValue,
 } from "./params.ts";
 import type { LayoutItem } from "./types.ts";
 import { DATA_SOURCE_KEYS } from "./types.ts";
@@ -43,40 +48,50 @@ function item(
 
 describe("paramValueError", () => {
   test("an ordinary namespace name is accepted", () => {
-    expect(paramValueError("kube-system", [])).toBeNull();
+    expect(paramValueError(PARAM_KEY_NAMESPACE, "kube-system", [])).toBeNull();
   });
 
   test("an empty value is refused", () => {
     // The dialog places nothing until every declared key has a value; without
     // this the user could confirm an empty namespace and get a widget that
     // reads /v1/diagnostics//summary.
-    expect(paramValueError("", [])).not.toBeNull();
+    expect(paramValueError(PARAM_KEY_NAMESPACE, "", [])).not.toBeNull();
   });
 
   test("a value longer than the server's bound is refused", () => {
     const tooLong = "a".repeat(MAX_PARAM_VALUE_LEN + 1);
-    expect(paramValueError(tooLong, [])).not.toBeNull();
-    expect(paramValueError("a".repeat(MAX_PARAM_VALUE_LEN), [])).toBeNull();
+    expect(paramValueError(PARAM_KEY_NAMESPACE, tooLong, [])).not.toBeNull();
+    expect(
+      paramValueError(PARAM_KEY_NAMESPACE, "a".repeat(MAX_PARAM_VALUE_LEN), []),
+    ).toBeNull();
   });
 
   test("the bound counts runes, the way the server does", () => {
     // utf8.RuneCountInString, not len(). A value of 253 astral code points is
     // accepted by the server and must be accepted here, and 254 refused.
     const astral = "\u{1F600}".repeat(MAX_PARAM_VALUE_LEN);
-    expect(paramValueError(astral, [])).toBeNull();
-    expect(paramValueError(astral + "\u{1F600}", [])).not.toBeNull();
+    expect(paramValueError(PARAM_KEY_NAMESPACE, astral, [])).toBeNull();
+    expect(
+      paramValueError(PARAM_KEY_NAMESPACE, astral + "\u{1F600}", []),
+    ).not.toBeNull();
   });
 
   test("a control character is refused", () => {
     // unicode.IsControl on the Go side: C0 and C1, not merely newline.
-    expect(paramValueError("pro\nd", [])).not.toBeNull();
-    expect(paramValueError("pro\u0000d", [])).not.toBeNull();
-    expect(paramValueError("pro\u009fd", [])).not.toBeNull();
+    expect(paramValueError(PARAM_KEY_NAMESPACE, "pro\nd", [])).not.toBeNull();
+    expect(
+      paramValueError(PARAM_KEY_NAMESPACE, "pro\u0000d", []),
+    ).not.toBeNull();
+    expect(
+      paramValueError(PARAM_KEY_NAMESPACE, "pro\u009fd", []),
+    ).not.toBeNull();
   });
 
   test("a closed value set is closed", () => {
-    expect(paramValueError("istio", ["istio", "linkerd"])).toBeNull();
-    expect(paramValueError("consul", ["istio", "linkerd"])).not.toBeNull();
+    expect(paramValueError("mesh", "istio", ["istio", "linkerd"])).toBeNull();
+    expect(
+      paramValueError("mesh", "consul", ["istio", "linkerd"]),
+    ).not.toBeNull();
   });
 });
 
@@ -267,5 +282,252 @@ describe("widgetSourceKeys", () => {
     );
     const shared = prod.filter((k) => staging.includes(k));
     expect(shared).toEqual(["dashboard-summary"]);
+  });
+});
+
+describe("the service key's value shape", () => {
+  // The namespace key and the service key are open-valued for the same
+  // reason -- neither value space is enumerable from a catalog -- and they
+  // are NOT bounded the same way, which is the point of this block.
+  //
+  // A stored namespace is re-authorized against the live cluster on every
+  // read (R5), so a nonsense namespace is inert: it can never authorize, and
+  // the placement is withheld. Nothing re-authorizes a service name. Its only
+  // defence is its shape, so the shape is the check -- which is D-8 made
+  // structural for the one key that would otherwise carry unvalidated caller
+  // text into a stored layout.
+
+  test("the service parameter is spelled exactly as the server expects", () => {
+    expect(PARAM_KEY_SERVICE).toBe("service");
+    expect(KNOWN_PARAM_KEYS).toEqual([PARAM_KEY_NAMESPACE, PARAM_KEY_SERVICE]);
+  });
+
+  test("an ordinary service name is accepted", () => {
+    expect(paramValueError(PARAM_KEY_SERVICE, "checkout", [])).toBeNull();
+    expect(
+      paramValueError(PARAM_KEY_SERVICE, "checkout-api-v2", []),
+    ).toBeNull();
+  });
+
+  test("anything that is not a Kubernetes service name is refused", () => {
+    // The shapes D-8 exists to keep out of a stored parameter, and the reason
+    // the input is a select over a fetched list rather than a text box: none
+    // of these can be produced by choosing from that list, and all of them
+    // can be produced by a client that skips it.
+    const offenders = [
+      "my service", // a space
+      "prod/checkout", // a path separator: a different route entirely
+      "http://evil.example/x", // a URL
+      "sum(rate(x[5m])) or on() vector(0)", // PromQL
+      "Checkout", // uppercase: not a DNS label
+      "checkout-", // a trailing dash
+      "-checkout", // a leading dash
+      "9checkout", // a leading digit: legal for a namespace, not a service
+      "a".repeat(64), // past the 63-character label bound
+    ];
+    const accepted = offenders.filter(
+      (v) => paramValueError(PARAM_KEY_SERVICE, v, []) === null,
+    );
+    expect(accepted).toEqual([]);
+  });
+
+  test("the longest legal service name is still accepted", () => {
+    expect(paramValueError(PARAM_KEY_SERVICE, "a".repeat(63), [])).toBeNull();
+  });
+
+  test("the namespace key keeps the generic bounds it shipped with", () => {
+    // Deliberately NOT tightened alongside the service key. A namespace value
+    // is re-authorized per read, and narrowing it here would refuse a save of
+    // a layout the server has been accepting since P3 -- a client that starts
+    // rejecting stored values is the drift this module exists to prevent.
+    expect(paramValueError(PARAM_KEY_NAMESPACE, "9prod", [])).toBeNull();
+    expect(paramValueError(PARAM_KEY_NAMESPACE, "a".repeat(64), [])).toBeNull();
+  });
+});
+
+describe("the cascading parameter case", () => {
+  // A service is only meaningful inside a namespace, and the service list the
+  // dialog offers is drawn from the namespace the user picked. That makes the
+  // second field DEPENDENT: unusable before the first is answered, and stale
+  // the moment the first changes. Both rules live here rather than in the
+  // dialog because the dialog is untestable in this repo (D-10).
+
+  test("the service key depends on the namespace key, and nothing depends on the namespace", () => {
+    expect(paramParentKey(PARAM_KEY_SERVICE)).toBe(PARAM_KEY_NAMESPACE);
+    expect(paramParentKey(PARAM_KEY_NAMESPACE)).toBeNull();
+    expect(paramParentKey("mode")).toBeNull();
+  });
+
+  test("a dependent field is blocked until its parent has a value", () => {
+    expect(paramFieldState(PARAM_KEY_SERVICE, {}, ["checkout"])).toEqual({
+      enabled: false,
+      blocked: "awaiting-parent",
+    });
+    expect(
+      paramFieldState(PARAM_KEY_SERVICE, { namespace: "" }, ["checkout"]),
+    ).toEqual({ enabled: false, blocked: "awaiting-parent" });
+  });
+
+  test("a field with a parent but no options is disabled rather than opened up", () => {
+    // The namespace the user picked is one they cannot list services in, or
+    // one with no services at all. Either way there is nothing to choose, and
+    // the answer is an empty disabled select -- never a text box, which is
+    // what "fall back to free text" would mean and what D-8 forbids.
+    expect(
+      paramFieldState(PARAM_KEY_SERVICE, { namespace: "prod" }, []),
+    ).toEqual({ enabled: false, blocked: "no-options" });
+  });
+
+  test("a field with a parent and options is enabled", () => {
+    expect(
+      paramFieldState(PARAM_KEY_SERVICE, { namespace: "prod" }, ["checkout"]),
+    ).toEqual({ enabled: true, blocked: null });
+  });
+
+  test("an independent field with options is enabled", () => {
+    expect(paramFieldState(PARAM_KEY_NAMESPACE, {}, ["prod"])).toEqual({
+      enabled: true,
+      blocked: null,
+    });
+  });
+
+  test("changing the parent clears the dependent value", () => {
+    // The kept-value failure this prevents is silent and specific: a widget
+    // re-pointed from prod to staging while still carrying prod's service
+    // name would read /v1/mesh/golden-signals for a service that does not
+    // exist in staging and render zeros -- a card reporting no traffic for a
+    // service that is simply not there.
+    expect(
+      withParamValue(
+        { namespace: "prod", service: "checkout" },
+        PARAM_KEY_NAMESPACE,
+        "staging",
+      ),
+    ).toEqual({ namespace: "staging", service: "" });
+  });
+
+  test("re-choosing the same parent value still clears, because the option list is refetched", () => {
+    expect(
+      withParamValue(
+        { namespace: "prod", service: "checkout" },
+        PARAM_KEY_NAMESPACE,
+        "prod",
+      ),
+    ).toEqual({ namespace: "prod", service: "" });
+  });
+
+  test("setting the dependent value leaves the parent alone", () => {
+    expect(
+      withParamValue(
+        { namespace: "prod", service: "" },
+        PARAM_KEY_SERVICE,
+        "checkout",
+      ),
+    ).toEqual({ namespace: "prod", service: "checkout" });
+  });
+
+  test("setting an unrelated key clears nothing", () => {
+    expect(withParamValue({ namespace: "prod" }, "mode", "full")).toEqual({
+      namespace: "prod",
+      mode: "full",
+    });
+  });
+});
+
+describe("a two-key widget's placement rules", () => {
+  // The golden-signals shape, through the two functions the dialog gates on.
+  // Both were written for the one-key case and neither needed changing; these
+  // pin that, because the failure of either at two keys is a placement the
+  // server refuses after the user has arranged a dashboard around it.
+
+  test("a namespace with no service is refused, and both keys are named", () => {
+    // The backing read needs both -- `/v1/mesh/golden-signals` answers 400
+    // with either missing -- so a confirm at this point would place a card
+    // that can never load. The dialog turns this list into "Choose a
+    // service.", naming the field rather than saying "choose a value" beside
+    // two selects.
+    const declared = { namespace: [], service: [] };
+    expect(
+      missingParamKeys(declared, { namespace: "prod", service: "" }),
+    ).toEqual(["service"]);
+    expect(missingParamKeys(declared, { namespace: "", service: "" })).toEqual([
+      "namespace",
+      "service",
+    ]);
+    expect(
+      missingParamKeys(declared, { namespace: "prod", service: "checkout" }),
+    ).toEqual([]);
+  });
+
+  test("two services in one namespace are two placements, not a duplicate", () => {
+    // The case that makes the service key part of the identity rather than
+    // decoration on the namespace. Both cards are legitimate and the server
+    // agrees: its duplicate rule is the same widget with the same params.
+    const placed = [
+      item("a", "mesh-golden-signals", {
+        namespace: "prod",
+        service: "checkout",
+      }),
+    ];
+    expect(
+      duplicatePlacementOf(placed, "mesh-golden-signals", {
+        namespace: "prod",
+        service: "cart",
+      }),
+    ).toBeNull();
+    expect(
+      duplicatePlacementOf(placed, "mesh-golden-signals", {
+        namespace: "prod",
+        service: "checkout",
+      }),
+    ).not.toBeNull();
+  });
+
+  test("key order does not make one placement two", () => {
+    // `canonicalParams` sorts, and two keys is the first time that can
+    // actually differ: one key cannot be out of order with itself.
+    expect(canonicalParams({ namespace: "prod", service: "cart" })).toBe(
+      canonicalParams({ service: "cart", namespace: "prod" }),
+    );
+  });
+});
+
+describe("the networking sources' parameters", () => {
+  test("golden signals is keyed by both of its values", () => {
+    // Both, and not only the namespace: two cards on two services in one
+    // namespace are two different reads, and keying on the namespace alone
+    // would make them one cache entry showing whichever landed last.
+    expect(PARAMETERIZED_SOURCE_PARAMS["mesh-golden-signals"]).toEqual([
+      PARAM_KEY_NAMESPACE,
+      PARAM_KEY_SERVICE,
+    ]);
+    expect(
+      sourceKeyFor("mesh-golden-signals", {
+        namespace: "prod",
+        service: "checkout",
+      }),
+    ).not.toBe(
+      sourceKeyFor("mesh-golden-signals", {
+        namespace: "prod",
+        service: "cart",
+      }),
+    );
+  });
+
+  test("the flows source is keyed by its namespace", () => {
+    expect(PARAMETERIZED_SOURCE_PARAMS["hubble-flows"]).toEqual([
+      PARAM_KEY_NAMESPACE,
+    ]);
+  });
+
+  test("a two-value key round-trips through the decoder", () => {
+    const key = sourceKeyFor("mesh-golden-signals", {
+      namespace: "prod",
+      service: "checkout",
+    });
+    expect(decodeSourceKey(key)).toEqual({
+      base: "mesh-golden-signals",
+      params: { namespace: "prod", service: "checkout" },
+    });
   });
 });
