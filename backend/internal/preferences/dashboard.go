@@ -103,6 +103,14 @@ var allowedWidgets = map[string]widgetSpec{
 	"workload-health":      {MinW: 3, MinH: 3},
 	"pending-pods":         {MinW: 3, MinH: 3},
 	"pod-restarts":         {MinW: 3, MinH: 3},
+	"hpa-status":           {MinW: 3, MinH: 3},
+	"pdb-risk":             {MinW: 3, MinH: 3},
+	// Wider than its neighbours: each row carries a pod name, its namespace
+	// and a value, and three columns inside three grid columns truncate the
+	// names to uselessness. The card's CPU/memory switch is NOT a parameter
+	// -- it is component state, so nothing about it is stored and there is
+	// nothing here to validate.
+	"top-consumers": {MinW: 4, MinH: 4},
 	// The first parameterized widget. The empty value slice is load-bearing
 	// and is NOT the same as omitting the key: it says the legal values are
 	// not knowable from a catalog -- they are whatever namespaces this cluster

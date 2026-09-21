@@ -81,6 +81,21 @@ export const DATA_SOURCE_KEYS = [
   "statefulsets-list",
   "daemonsets-list",
   "pods-list",
+  // Two more of the same, for the scaling widgets. The route kind is `hpas`
+  // and `pdbs` -- the resource adapters' `Kind()`, which is NOT the
+  // `horizontalpodautoscalers` / `poddisruptionbudgets` spelling the counts
+  // route and the RBAC checks use. Requesting the long form gets a 404 for a
+  // kind that is very much present.
+  "hpas-list",
+  "pdbs-list",
+  // The first sources that are neither an informer read nor a discovery
+  // route: two named, server-owned PromQL templates from the slug registry
+  // (`backend/internal/monitoring/query_registry.go`). The widget names a
+  // slug and nothing else -- no query text, no URL (D-8) -- and the raw
+  // `/monitoring/query` routes stay admin-gated and unreachable from here
+  // (R15).
+  "top-consumers-cpu",
+  "top-consumers-memory",
   ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
@@ -152,6 +167,15 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   "statefulsets-list": "expensive",
   "daemonsets-list": "expensive",
   "pods-list": "expensive",
+  // Same route, same reasons.
+  "hpas-list": "expensive",
+  "pdbs-list": "expensive",
+  // Prometheus, which is the definition of this class: seconds rather than
+  // milliseconds, and a cost the backend pays per request. The slug handler
+  // adds a SelfSubjectAccessReview in front of the query, so a refused caller
+  // pays for the check and gets nothing.
+  "top-consumers-cpu": "expensive",
+  "top-consumers-memory": "expensive",
 
   "policies-status": "discovery",
   "gitops-status": "discovery",
@@ -187,6 +211,43 @@ export function sourceCost(key: string): SourceCost {
  */
 export const RANGE_SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   "dashboard-trends",
+]);
+
+/**
+ * Sources whose 404 is a refusal, not a missing object.
+ *
+ * The slug-query handler answers a caller who lacks the slug's declared grant
+ * with 404 and the body "not found or forbidden" -- the SAME response it gives
+ * for a slug that does not exist. That is deliberate: a 403 there would let
+ * anyone enumerate the query catalog by watching which slugs come back
+ * forbidden (F#29 of the 2026-05-22 audit). The opacity is a property of that
+ * route, and the backend is not the thing to change.
+ *
+ * But the failure classifier in data.ts maps 403 and nothing else to the
+ * permission state, so without this a user who simply lacks cluster-wide pod
+ * read lands the top-consumers card in the plain error state -- "could not be
+ * loaded", with a retry that will never work -- instead of the permission
+ * state R2 built for exactly that person. The widget cannot fix it itself:
+ * `resolveWidgetState` decides the outcome before `render` is ever called, so
+ * by the time the widget runs, the choice has been made.
+ *
+ * So the widening is declared per source rather than applied to the status
+ * code globally. A 404 from an ordinary resource route means the object is
+ * gone, which is not a permission problem and must not read as one; a 404
+ * from a route that has no other way to say "forbidden" is the only place the
+ * reading is right. Two keys today, both pointing at the one handler that
+ * refuses this way.
+ *
+ * The residual imprecision is named rather than hidden: a frontend asking a
+ * backend too old to carry the slug also gets a 404, and this classifies that
+ * as a permission problem too. Both mean "this build will not serve you this
+ * query", the card is identical either way, and the alternative -- reading
+ * every genuine refusal as a server error -- is wrong for the far more common
+ * case.
+ */
+export const NOT_FOUND_IS_REFUSAL: ReadonlySet<string> = new Set([
+  "top-consumers-cpu",
+  "top-consumers-memory",
 ]);
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
