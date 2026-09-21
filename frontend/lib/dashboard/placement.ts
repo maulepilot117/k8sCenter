@@ -125,11 +125,22 @@ function firstFit(
  * `columns` comes from the layout being edited rather than from the constant,
  * because the stored config carries its own column count and a placement wider
  * than that one is off the grid the server will validate it against.
+ *
+ * `params` are the values the caller collected before placing -- empty for
+ * every widget that declares none, which is the path that shipped. They are
+ * narrowed to the keys the widget actually declared: a value for an undeclared
+ * key is refused outright by the server (`does not take a parameter named`),
+ * and carrying one would make the whole layout unsaveable over a field nothing
+ * on screen reads. Values are otherwise passed through untouched -- validating
+ * them is `paramValueError`'s job and belongs where the user can still fix
+ * one, not here where the only available response is to place a widget that
+ * cannot be saved.
  */
 export function placeNewWidget(
   items: readonly LayoutItem[],
   def: WidgetDef,
   columns: number = DASHBOARD_COLUMNS,
+  params: Readonly<Record<string, string>> = {},
 ): LayoutItem | null {
   // The minimum wins over a smaller default: both come from the same
   // registration, so disagreeing is a catalog bug, but the editor refuses to
@@ -147,11 +158,35 @@ export function placeNewWidget(
   const cell = firstFit(items, w, h, columns);
   if (!cell) return null;
 
+  const carried = narrowParams(def, params);
+
   return {
     instanceId: newInstanceId(def.id),
     id: def.id,
     ...cell,
     w,
     h,
+    // Omitted rather than written as an empty object. The server refuses any
+    // parameter on a widget that declares none, so `params` is the one field
+    // on a placement that must be absent rather than empty for the common
+    // case -- and an empty object is the shape through which a future bug
+    // would smuggle a key onto a widget that takes none.
+    ...(Object.keys(carried).length > 0 ? { params: carried } : {}),
   };
+}
+
+/** The values `def` actually declares, with blanks dropped. See
+ * `placeNewWidget` for why an undeclared key cannot be carried. */
+export function narrowParams(
+  def: WidgetDef,
+  params: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const declared = def.params;
+  if (declared === undefined) return {};
+  const out: Record<string, string> = {};
+  for (const key of Object.keys(declared)) {
+    const value = params[key] ?? "";
+    if (value !== "") out[key] = value;
+  }
+  return out;
 }

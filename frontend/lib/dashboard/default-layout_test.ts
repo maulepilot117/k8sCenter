@@ -17,15 +17,34 @@ test("default layout: every id resolves to a registered widget", () => {
   expect(missing.map((i) => i.id)).toEqual([]);
 });
 
-test("default layout: contains every shipped widget exactly once", () => {
+test("default layout: contains every shipped parameterless widget exactly once", () => {
   // Compared by id, not by count: registry_test registers `fixture-*`
   // widgets, and bun shares module state across test files in one run.
+  //
+  // Parameterless is the whole set that CAN be here. A widget that needs a
+  // value has no defensible default -- the layout every user starts from
+  // cannot know which namespace any of them cares about, and picking one
+  // would put a card on every dashboard that most accounts are not permitted
+  // to read and that the server would withhold on load. So the default ships
+  // the widgets that need nothing, and a parameterized one arrives when a
+  // user adds it and chooses.
   const shipped = allWidgets()
+    .filter((w) => !w.id.startsWith("fixture-"))
+    .filter((w) => w.params === undefined)
     .map((w) => w.id)
-    .filter((id) => !id.startsWith("fixture-"))
     .sort();
   expect(items.map((i) => i.id).sort()).toEqual(shipped);
   expect(shipped).toHaveLength(10);
+});
+
+test("default layout: carries no parameters", () => {
+  // The other half of the rule above, stated on the data rather than on the
+  // catalog: a default placement with a `params` field would be a namespace
+  // chosen on the user's behalf, and the server refuses parameters outright
+  // on a widget that declares none -- so a stray one here would make the
+  // STARTING dashboard unsaveable.
+  const parameterized = items.filter((i) => i.params !== undefined);
+  expect(parameterized.map((i) => i.id)).toEqual([]);
 });
 
 test("default layout: instance ids are unique", () => {

@@ -13,6 +13,7 @@ import { join } from "node:path";
 // invariants cover.
 import "@/components/dashboard/widgets/index.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
+import { KNOWN_PARAM_KEYS } from "./params.ts";
 import {
   allWidgets,
   getWidget,
@@ -226,18 +227,158 @@ test("optionalSources is always a subset of sources", () => {
   expect(offenders).toEqual([]);
 });
 
+/**
+ * The widget ids the server will accept, read from the Go allowlist itself.
+ *
+ * This used to be a hand-typed literal, mirrored by a second hand-typed
+ * literal on the Go side, and the pair did not do what both files claimed.
+ * Each test compared its own registry against its own literal, in its own
+ * language; neither read the other. So the natural edit -- add the widget to
+ * `registry.ts` and to the literal right here, which is where the failure
+ * points you -- left the Go allowlist untouched and both suites green. The
+ * user then builds a layout the editor offers and the server refuses to
+ * store, with nothing red anywhere.
+ *
+ * Reading the real map closes that. A widget added on one side only now fails
+ * here, which is what the contract always said it did.
+ */
+/** One widget's spec exactly as the Go catalog declares it. */
+interface ServerWidgetSpec {
+  minW: number;
+  minH: number;
+  /**
+   * Parameter key -> the closed set of values it accepts. An empty array is
+   * the "any value inside the generic bounds" case and is NOT the same as the
+   * key being absent. Null when the widget declares no parameters at all.
+   */
+  params: Record<string, string[]> | null;
+}
+
+/**
+ * Returns the inner text of the brace group that opens at `openIndex`.
+ *
+ * A widget entry is written either inline (`{MinW: 2, MinH: 2}`) or across
+ * several lines with a nested `map[string][]string{...}` inside it, so the
+ * end of an entry cannot be found by scanning for the next `}`.
+ */
+function braceBody(src: string, openIndex: number): string {
+  let depth = 0;
+  for (let i = openIndex; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") {
+      depth--;
+      if (depth === 0) return src.slice(openIndex + 1, i);
+    }
+  }
+  throw new Error(
+    "unbalanced braces while parsing allowedWidgets; the map's shape changed",
+  );
+}
+
+/**
+ * Parses the whole `allowedWidgets` catalog out of the Go source -- ids,
+ * minimums and parameters.
+ *
+ * Reading the real Go values rather than keeping a second hand-typed copy is
+ * the entire point of this helper. A pin that compares each language's
+ * catalog against a table written in that same language is two
+ * self-comparisons wearing one name: the natural edit, changing the widget
+ * and the table sitting beside it, leaves both suites green while the two
+ * catalogs disagree. Only the ids were read here before, so the size and
+ * parameter halves of the contract were exactly that.
+ */
+function serverAllowedWidgets(): Record<string, ServerWidgetSpec> {
+  const goFile = join(
+    import.meta.dir,
+    "../../../backend/internal/preferences/dashboard.go",
+  );
+  const src = readFileSync(goFile, "utf8");
+  const open = src.indexOf("allowedWidgets = map[string]widgetSpec{");
+  if (open === -1) {
+    throw new Error(
+      `could not find allowedWidgets in ${goFile}. If the map was renamed or ` +
+        `moved, point this at it -- do not delete this test, because it is ` +
+        `the only thing that checks the two catalogs against each other.`,
+    );
+  }
+  const block = braceBody(src, src.indexOf("{", open));
+
+  // Parameter keys are Go constants, not string literals, and the constant is
+  // where the spelling the server actually stores is decided -- a namespace
+  // key spelled any other way stores and renders identically while silently
+  // opting the widget out of per-read re-authorization. Resolve them so this
+  // pin checks the stored spelling rather than the identifier someone typed.
+  const constants: Record<string, string> = {};
+  for (const m of src.matchAll(/^const (paramKey\w+) = "([^"]+)"$/gm)) {
+    constants[m[1]] = m[2];
+  }
+
+  const specs: Record<string, ServerWidgetSpec> = {};
+  for (const m of block.matchAll(/^\t"([a-z0-9-]+)":\s*\{/gm)) {
+    const id = m[1];
+    const body = braceBody(block, m.index + m[0].length - 1);
+    const minW = Number(/\bMinW:\s*(\d+)/.exec(body)?.[1]);
+    const minH = Number(/\bMinH:\s*(\d+)/.exec(body)?.[1]);
+    if (!Number.isInteger(minW) || !Number.isInteger(minH)) {
+      throw new Error(
+        `could not parse MinW/MinH for "${id}" out of allowedWidgets in ` +
+          `${goFile}; the entry's shape changed and this parse is now blind ` +
+          `to it. Fix the parse -- a silently unparsed entry is an unpinned ` +
+          `one.`,
+      );
+    }
+    specs[id] = { minW, minH, params: parseServerParams(body, constants, id) };
+  }
+  if (Object.keys(specs).length === 0) {
+    throw new Error(
+      `parsed zero widget ids out of allowedWidgets in ${goFile}; the map's ` +
+        `shape changed and this parse is now vacuous.`,
+    );
+  }
+  return specs;
+}
+
+/** Parses one entry's `Params:` map, resolving Go constant keys. */
+function parseServerParams(
+  body: string,
+  constants: Record<string, string>,
+  id: string,
+): Record<string, string[]> | null {
+  const at = body.indexOf("Params:");
+  if (at === -1) return null;
+  const mapAt = body.indexOf("map[string][]string", at);
+  if (mapAt === -1) {
+    throw new Error(
+      `"${id}" declares Params in a shape this parse does not understand; ` +
+        `fix the parse rather than leaving the parameter half unpinned.`,
+    );
+  }
+  const inner = braceBody(body, body.indexOf("{", mapAt));
+  const params: Record<string, string[]> = {};
+  for (const m of inner.matchAll(/(?:"([^"]+)"|(\w+))\s*:\s*\{([^}]*)\}/g)) {
+    const key = m[1] ?? constants[m[2]];
+    if (key === undefined) {
+      throw new Error(
+        `"${id}" declares parameter key \`${m[2]}\`, which is not a ` +
+          `paramKey* constant in dashboard.go, so this parse cannot resolve ` +
+          `the spelling the server stores.`,
+      );
+    }
+    params[key] = [...m[3].matchAll(/"([^"]*)"/g)].map((v) => v[1]);
+  }
+  return params;
+}
+
+function serverAllowedWidgetIDs(): string[] {
+  return Object.keys(serverAllowedWidgets()).sort();
+}
+
 test("registry ids are pinned to the server-side allowlist", () => {
   // The other half of a cross-language contract. The server validates a saved
-  // layout against `allowedWidgetIDs` in
-  // backend/internal/preferences/dashboard.go, which is a Go map and cannot
-  // read this registry -- so a widget added here and not there produces a
-  // layout the user can build in the editor and the server then refuses on
-  // save, with no test failing anywhere.
-  //
-  // Pinning both sides to the same literal turns that into a red test on
-  // whichever side was forgotten. The Go half is TestContractParity in
-  // backend/internal/preferences/parity_test.go; adding a widget means
-  // editing three places, and forgetting any one of them fails here or there.
+  // layout against `allowedWidgets` in
+  // backend/internal/preferences/dashboard.go -- so a widget added here and
+  // not there produces a layout the user can build in the editor and the
+  // server then refuses on save.
   //
   // `fixture-*` ids are filtered out: `bun test` shares module state across
   // files and the registry is append-only, so the registration tests above
@@ -246,21 +387,27 @@ test("registry ids are pinned to the server-side allowlist", () => {
     .map((w) => w.id)
     .filter((id) => !id.startsWith("fixture-"))
     .sort();
-  expect(ids).toEqual([
-    "active-alerts",
-    "cluster-health",
-    "cpu-tile",
-    "memory-tile",
-    "network-tile",
-    "nodes",
-    "pod-status",
-    "pods-tile",
-    "recent-events",
-    "resource-utilization",
-  ]);
+  const server = serverAllowedWidgetIDs();
+
+  // Subset, not equality. The server's map is deliberately a superset: a
+  // retired widget keeps its entry there so a stored layout that still
+  // carries the placement is not bricked, while the registry loses it. That
+  // is the documented retirement procedure, so asserting equality would make
+  // the first correct retirement fail this test.
+  const unregistered = ids.filter((id) => !server.includes(id));
+  expect(unregistered).toEqual([]);
+
+  // The other direction is not free, though: an id the server accepts and the
+  // registry does not know is either a retirement or a widget someone deleted
+  // without retiring it. Only the first is allowed, and RETIRED_WIDGET_IDS is
+  // where that is declared.
+  const serverOnly = server.filter(
+    (id) => !ids.includes(id) && !isRetiredWidgetId(id),
+  );
+  expect(serverOnly).toEqual([]);
 });
 
-test("registry minimums are pinned to the server-side catalog", () => {
+test("registry minimums and parameters are pinned to the server-side catalog", () => {
   // The other half of the size contract. The server refuses a placement below
   // a widget's declared minimum, using its own copy of these numbers in
   // `allowedWidgets` (backend/internal/preferences/dashboard.go) because it
@@ -269,38 +416,109 @@ test("registry minimums are pinned to the server-side catalog", () => {
   // citing a bound the client never showed -- or the reverse, an editor that
   // refuses a size the server would have taken.
   //
+  // The Go values are PARSED out of dashboard.go rather than restated here.
+  // A literal in this file would only be this language's copy of the numbers,
+  // so the natural edit -- change the widget, change the table beside it --
+  // would keep both suites green while the two catalogs disagreed. That is
+  // precisely what a mutation of cpu-tile's MinW proved before this changed.
+  //
   // The Go half is TestContractParity/"widget specs" in
-  // backend/internal/preferences/parity_test.go, which pins the same pairs.
-  const mins = Object.fromEntries(
+  // backend/internal/preferences/parity_test.go. It is an in-language pin
+  // against accidental edits to allowedWidgets; THIS test is the one that
+  // actually compares the two languages.
+  const server = serverAllowedWidgets();
+  const drift: string[] = [];
+
+  for (const w of allWidgets()) {
+    if (w.id.startsWith("fixture-")) continue;
+    const spec = server[w.id];
+    // A widget registered here and absent there is the ids test's finding,
+    // not this one's; reporting it twice would just double the noise.
+    if (!spec) continue;
+
+    if (w.minW !== spec.minW || w.minH !== spec.minH) {
+      drift.push(
+        `${w.id} minimum: registry ${w.minW}x${w.minH}, ` +
+          `server ${spec.minW}x${spec.minH}`,
+      );
+    }
+
+    const here = normalizeParams(w.params ?? null);
+    const there = normalizeParams(spec.params);
+    if (here !== there) {
+      drift.push(`${w.id} parameters: registry ${here}, server ${there}`);
+    }
+  }
+
+  expect(drift).toEqual([]);
+});
+
+/**
+ * Canonical string for a parameter surface, so the two languages compare by
+ * value. Key order and value order are not part of the contract; the set of
+ * keys and the set of values each key accepts are.
+ */
+function normalizeParams(
+  params: Readonly<Record<string, readonly string[]>> | null,
+): string {
+  if (params === null || Object.keys(params).length === 0) return "none";
+  return Object.keys(params)
+    .sort()
+    .map((k) => `${k}=[${[...params[k]].sort().join(",")}]`)
+    .join(" ");
+}
+
+test("the parameterized widgets and their declared keys are pinned", () => {
+  // This replaced the "no shipped widget declares parameters yet" tripwire the
+  // moment the first parameterized widget landed, which is exactly what that
+  // tripwire was for. The pin is stricter than the one it replaced: the server
+  // validates a stored value against the widget's own declaration
+  // (`allowedWidgets` in backend/internal/preferences/dashboard.go), so a key
+  // added here and not there makes every layout carrying it unsaveable, and a
+  // value set narrowed on one side only makes the two disagree about which
+  // values are legal.
+  //
+  // An empty array means "any value inside the generic bounds" -- a namespace
+  // name, whose legal values are not knowable ahead of time -- and is
+  // deliberately NOT the same as the key being absent. The Go half is
+  // TestContractParity/"widget specs".
+  const declared = Object.fromEntries(
     allWidgets()
       .filter((w) => !w.id.startsWith("fixture-"))
-      .map((w) => [w.id, [w.minW, w.minH]]),
+      .filter((w) => w.params !== undefined)
+      .map((w) => [w.id, w.params]),
   );
-  expect(mins).toEqual({
-    "active-alerts": [2, 3],
-    "cluster-health": [3, 4],
-    "cpu-tile": [2, 2],
-    "memory-tile": [2, 2],
-    "network-tile": [2, 2],
-    nodes: [3, 4],
-    "pod-status": [3, 4],
-    "pods-tile": [2, 2],
-    "recent-events": [3, 3],
-    "resource-utilization": [4, 4],
+  expect(declared).toEqual({
+    "diagnostics-summary": { namespace: [] },
   });
 });
 
-test("no shipped widget declares parameters yet", () => {
-  // The server refuses any parameter on a widget that declares none, which is
-  // every widget today. This test is the tripwire for that changing: the day a
-  // widget gains a `params` spec, this fails and so does the Go side's
-  // parameterless assertion, forcing the ParamSpec to be written in both
-  // catalogs rather than the server quietly accepting whatever arrives.
-  const parameterized = allWidgets()
-    .filter((w) => !w.id.startsWith("fixture-"))
-    .filter((w) => w.params !== undefined)
-    .map((w) => w.id);
-  expect(parameterized).toEqual([]);
+test("every declared parameter key is one the server recognises", () => {
+  // The namespace key is special-cased by the read path, which re-authorizes
+  // its value on every read (R5). A widget spelling it differently would look
+  // identical in the editor and in storage and would silently opt out of that
+  // -- the placement would never be withheld, and a user who lost access to
+  // the namespace would go on seeing the card. Nothing else would notice, so
+  // this and `registerWidget`'s own guard are the whole defence.
+  const offenders: string[] = [];
+  for (const w of allWidgets()) {
+    for (const key of Object.keys(w.params ?? {})) {
+      if (!KNOWN_PARAM_KEYS.includes(key)) {
+        offenders.push(`${w.id} declares unknown param ${key}`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
+test("registerWidget: an unknown parameter key is rejected", () => {
+  // Enforced at the runtime boundary and not only by the invariant above: a
+  // definition registered from anywhere has to satisfy it, and the failure
+  // this prevents is invisible by construction.
+  expect(() =>
+    registerWidget(defFixture("fixture-bad-param", { params: { ns: [] } })),
+  ).toThrow("ns");
+  expect(getWidget("fixture-bad-param")).toBeUndefined();
 });
 
 test("the default layout satisfies every widget's declared minimum", () => {

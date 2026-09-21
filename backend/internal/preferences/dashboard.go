@@ -100,6 +100,20 @@ var allowedWidgets = map[string]widgetSpec{
 	"nodes":                {MinW: 3, MinH: 4},
 	"recent-events":        {MinW: 3, MinH: 3},
 	"active-alerts":        {MinW: 2, MinH: 3},
+	// The first parameterized widget. The empty value slice is load-bearing
+	// and is NOT the same as omitting the key: it says the legal values are
+	// not knowable from a catalog -- they are whatever namespaces this cluster
+	// has -- so only the generic length and control-character bounds apply.
+	//
+	// The key is `paramKeyNamespace` exactly, which is what makes a stored
+	// value re-authorized on every read (see the const's docstring and
+	// `withholdUnauthorized`). Any other spelling would store and serve
+	// identically while silently opting the widget out of that.
+	"diagnostics-summary": {
+		MinW:   3,
+		MinH:   3,
+		Params: map[string][]string{paramKeyNamespace: {}},
+	},
 }
 
 // MaxDashboardLayoutsPerUser is the per-user, per-cluster ceiling. One layout
@@ -309,6 +323,19 @@ func ValidateDashboardLayout(raw json.RawMessage) (DashboardLayoutConfig, json.R
 				return cfg, nil, invalidf("invalid_config",
 					"items[%d] param %q has an invalid value", i, k)
 			}
+			// The empty string is not a value. It passed every bound above,
+			// and three layers below here read it differently: the read path
+			// treats a namespace of "" as naming no namespace and skips the
+			// re-authorization the key exists for, the browser's key encoding
+			// drops the pair so the placement collapses onto the unscoped
+			// source, and the fetcher issues a path with an empty segment
+			// that the resource layer accepts as "every namespace". The
+			// dialog cannot produce this, but the dialog is not what makes it
+			// safe.
+			if v == "" {
+				return cfg, nil, invalidf("invalid_config",
+					"items[%d] param %q has an invalid value", i, k)
+			}
 
 			// Then the widget's own declaration. No URLs, no queries, no
 			// scripts -- KTD4 -- is enforced by the value being drawn from a
@@ -325,6 +352,24 @@ func ValidateDashboardLayout(raw json.RawMessage) (DashboardLayoutConfig, json.R
 			if len(allowed) > 0 && !containsString(allowed, v) {
 				return cfg, nil, invalidf("invalid_config",
 					"items[%d]: %q is not a value %s accepts for %q", i, v, it.ID, k)
+			}
+		}
+
+		// The loop above checks every parameter that was sent. This checks
+		// the other direction -- that a widget declaring a parameter actually
+		// carries one -- which nothing did, so a placement naming a namespace
+		// and omitting the service it also declares was stored happily and
+		// then failed on every read for the life of the layout. The browser
+		// refuses the same case before it sends; this is its missing twin.
+		//
+		// Every declared key is mandatory today, which is true of all four
+		// parameterized widgets: their backing routes refuse without the
+		// value. An optional parameter would need a per-key flag rather than
+		// this blanket rule.
+		for k := range spec.Params {
+			if _, ok := it.Params[k]; !ok {
+				return cfg, nil, invalidf("invalid_config",
+					"items[%d]: %s requires a value for %q", i, it.ID, k)
 			}
 		}
 

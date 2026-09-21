@@ -84,6 +84,25 @@ var testParamWidgetSpec = widgetSpec{
 	},
 }
 
+// fullParams returns a complete parameter set for testParamWidgetSpec, with
+// the given keys overridden.
+//
+// Every key a widget declares is mandatory -- the validator refuses a
+// partially filled placement -- so a test interested in one parameter still
+// has to supply the others. Without this, adding a key to the stand-in breaks
+// every test that names a different one.
+func fullParams(over map[string]string) map[string]string {
+	out := map[string]string{
+		"namespace": "ns",
+		"mode":      "full",
+		"n":         "1",
+	}
+	for k, v := range over {
+		out[k] = v
+	}
+	return out
+}
+
 func withParamWidget(t *testing.T) func() {
 	t.Helper()
 	return withTestWidget(t, testParamWidgetID, testParamWidgetSpec)
@@ -136,11 +155,11 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 			raw: layoutWithItems(t,
 				item(map[string]any{
 					"instanceId": "prod", "id": testParamWidgetID, "x": 0, "w": 6,
-					"params": map[string]string{"namespace": "prod"},
+					"params": map[string]string{"namespace": "prod", "mode": "compact", "n": "1"},
 				}),
 				item(map[string]any{
 					"instanceId": "staging", "id": testParamWidgetID, "x": 6, "w": 6,
-					"params": map[string]string{"namespace": "staging"},
+					"params": map[string]string{"namespace": "staging", "mode": "compact", "n": "1"},
 				}),
 			),
 		},
@@ -148,7 +167,8 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 			name:  "value drawn from a closed enum",
 			setup: withParamWidget,
 			raw: layoutWithItems(t, item(map[string]any{
-				"id": testParamWidgetID, "params": map[string]string{"mode": "compact"},
+				"id":     testParamWidgetID,
+				"params": map[string]string{"mode": "compact", "namespace": "ns", "n": "1"},
 			})),
 		},
 		{
@@ -160,7 +180,7 @@ func TestValidateDashboardLayout_Accepts(t *testing.T) {
 					items = append(items, item(map[string]any{
 						"instanceId": "w" + strconv.Itoa(i),
 						"id":         testParamWidgetID,
-						"params":     map[string]string{"n": strconv.Itoa(i)},
+						"params":     map[string]string{"n": strconv.Itoa(i), "namespace": "ns", "mode": "full"},
 						"x":          0, "w": 12, "y": i, "h": 1,
 					}))
 				}
@@ -899,14 +919,22 @@ func TestCanonicalParams(t *testing.T) {
 	}
 }
 
-// TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate is the
-// end-to-end form of the collision above: before the separator was fixed, two
-// placements of one widget carrying genuinely different params were refused as
-// duplicates of each other.
+// TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate checks that two
+// placements of one widget carrying genuinely different params survive
+// duplicate detection end to end, with a key that contains the separator.
 //
-// It needs a widget that accepts parameters, and no shipped widget does, so it
-// installs one for the duration of the test. That is also the only way to
-// exercise the param-membership path at all today.
+// It no longer reproduces the original separator collision, and should not
+// claim to. That bug needed a placement whose param map omitted one of the
+// widget's declared keys -- `{"a=b": "c"}` against `{"a": "b=c"}`, each one
+// key, both folding to the same identity string. Declared params are
+// mandatory now, so neither placement is a layout the validator will accept,
+// and with the join key-sorted two full two-key maps cannot fold together
+// unless their values are equal, which makes them the same placement.
+//
+// The separator property itself is pinned where it does not need a valid
+// layout: the injectivity pairs in TestCanonicalParams, which call the
+// derivation directly. What survives here is the end-to-end half that still
+// means something -- that a key containing `=` does not confuse identity.
 func TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate(t *testing.T) {
 	restore := withTestWidget(t, "nodes", widgetSpec{
 		MinW: 3, MinH: 4,
@@ -914,14 +942,19 @@ func TestValidateDashboardLayout_EqualsInParamKeyIsNotADuplicate(t *testing.T) {
 	})
 	defer restore()
 
+	// Both placements carry both declared keys. A widget that declares a
+	// parameter must be given one -- the validator refuses a partially filled
+	// placement now -- so the collision this test is about is expressed by
+	// swapping which key holds the value that looks like the other key, not
+	// by omitting one.
 	raw := layoutWithItems(t,
 		item(map[string]any{
 			"instanceId": "one", "id": "nodes", "x": 0, "w": 6, "h": 4,
-			"params": map[string]string{"a=b": "c"},
+			"params": map[string]string{"a=b": "c", "a": "z"},
 		}),
 		item(map[string]any{
 			"instanceId": "two", "id": "nodes", "x": 6, "w": 6, "h": 4,
-			"params": map[string]string{"a": "b=c"},
+			"params": map[string]string{"a=b": "z", "a": "b=c"},
 		}),
 	)
 
@@ -944,5 +977,225 @@ func withTestWidget(t *testing.T, id string, spec widgetSpec) func() {
 			return
 		}
 		delete(allowedWidgets, id)
+	}
+}
+
+// TestValidateDashboardLayout_DiagnosticsSummaryParams exercises the param
+// rules against the REAL catalog entry rather than the stand-in above.
+//
+// The stand-in proves the validator's logic; this proves the shipped widget is
+// wired into it. The two are different failures: a catalog entry that declared
+// no params, or declared the namespace key under another name, would leave
+// every case in TestValidateDashboardLayout_RejectsParams passing while the
+// one widget that actually needs parameters could not carry them -- or could
+// carry one the read path never re-authorizes.
+func TestValidateDashboardLayout_DiagnosticsSummaryParams(t *testing.T) {
+	const id = "diagnostics-summary"
+
+	place := func(instance, namespace string, extra map[string]string) map[string]any {
+		params := map[string]string{}
+		if namespace != "" {
+			params[paramKeyNamespace] = namespace
+		}
+		for k, v := range extra {
+			params[k] = v
+		}
+		return item(map[string]any{
+			"instanceId": instance, "id": id,
+			"x": 0, "y": 0, "w": 3, "h": 3,
+			"params": params,
+		})
+	}
+
+	t.Run("accepts a namespace", func(t *testing.T) {
+		if _, _, err := ValidateDashboardLayout(
+			layoutWithItems(t, place("a", "prod", nil)),
+		); err != nil {
+			t.Fatalf("a namespace parameter was refused: %v", err)
+		}
+	})
+
+	t.Run("accepts two namespaces side by side", func(t *testing.T) {
+		// The reason instanceId exists: prod beside staging is two views, not
+		// one widget placed twice.
+		first := place("a", "prod", nil)
+		second := place("b", "staging", nil)
+		second["x"] = 3
+		if _, _, err := ValidateDashboardLayout(
+			layoutWithItems(t, first, second),
+		); err != nil {
+			t.Fatalf("two namespaces were refused: %v", err)
+		}
+	})
+
+	t.Run("refuses the same namespace twice", func(t *testing.T) {
+		first := place("a", "prod", nil)
+		second := place("b", "prod", nil)
+		second["x"] = 3
+		_, _, err := ValidateDashboardLayout(layoutWithItems(t, first, second))
+		if reasonOf(err) != "invalid_config" {
+			t.Fatalf("a duplicate namespace was accepted: %v", err)
+		}
+	})
+
+	t.Run("refuses an undeclared key", func(t *testing.T) {
+		// R14's server half: the widget declares `namespace` and nothing else,
+		// so a client sending anything more is refused with the field named
+		// rather than having it silently stored.
+		_, _, err := ValidateDashboardLayout(
+			layoutWithItems(t, place("a", "prod", map[string]string{"ns": "prod"})),
+		)
+		if reasonOf(err) != "invalid_config" {
+			t.Fatalf("an undeclared parameter was accepted: %v", err)
+		}
+	})
+
+	t.Run("refuses a value outside the generic bounds", func(t *testing.T) {
+		for name, value := range map[string]string{
+			"over-long":        strings.Repeat("a", maxParamValueLen+1),
+			"control char":     "pr\u0000od",
+			"newline injected": "prod\nstaging",
+		} {
+			t.Run(name, func(t *testing.T) {
+				_, _, err := ValidateDashboardLayout(
+					layoutWithItems(t, place("a", value, nil)),
+				)
+				if reasonOf(err) != "invalid_config" {
+					t.Fatalf("%q was accepted as a namespace: %v", name, err)
+				}
+			})
+		}
+	})
+}
+
+// TestValidateDashboardLayout_DeclaredParamsAreMandatory covers the direction
+// the param loop never checked: it validated every parameter that was sent and
+// nothing asserted that a widget declaring one was given it.
+//
+// Both halves matter for the same reason. A placement missing a declared value
+// was stored and then failed on every read for the life of the layout, because
+// the backing route refuses without it. A placement carrying the empty string
+// was worse than useless: the read path reads "" as naming no namespace and
+// skips the per-read re-authorization the key exists for, the browser's key
+// encoding drops the pair so the card collapses onto the unscoped source, and
+// the fetcher issues a path with an empty segment that the resource layer
+// accepts as every namespace.
+//
+// Neither is reachable from the dialog, which refuses both before it sends.
+// That is not what makes them safe.
+func TestValidateDashboardLayout_DeclaredParamsAreMandatory(t *testing.T) {
+	cases := []struct {
+		name   string
+		params map[string]string
+	}{
+		{"one declared key omitted", map[string]string{"namespace": "prod", "mode": "compact"}},
+		{"no params at all", nil},
+		{"declared key carries the empty string", map[string]string{
+			"namespace": "", "mode": "compact", "n": "1",
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer withParamWidget(t)()
+
+			over := map[string]any{"id": testParamWidgetID}
+			if tc.params != nil {
+				over["params"] = tc.params
+			}
+			raw := layoutWithItems(t, item(over))
+
+			_, _, err := ValidateDashboardLayout(raw)
+			if err == nil {
+				t.Fatal("a partially filled parameterized placement was accepted")
+			}
+			if reason := reasonOf(err); reason != "invalid_config" {
+				t.Fatalf("reason = %q, want invalid_config", reason)
+			}
+		})
+	}
+}
+
+// TestWithholdNamespaces_EmptyValueFailsClosed covers the read half of the
+// mandatory-parameter rule.
+//
+// The validator refuses an empty declared value on write now, but a row
+// stored before that rule existed still has to be read, and the two readings
+// of an empty string are not the same. Treating "present and empty" the way
+// "absent" is treated -- as naming no namespace -- serves the placement
+// without ever asking whether the caller may see it, which is the one thing
+// this filter exists to prevent.
+func TestWithholdNamespaces_EmptyValueFailsClosed(t *testing.T) {
+	cases := []struct {
+		name       string
+		params     map[string]string
+		wantKept   int
+		wantAsked  bool
+		wantAskFor string
+	}{
+		{
+			name:      "no namespace key: nothing to re-authorize",
+			params:    nil,
+			wantKept:  1,
+			wantAsked: false,
+		},
+		{
+			name:      "namespace present and empty: withheld without asking",
+			params:    map[string]string{paramKeyNamespace: ""},
+			wantKept:  0,
+			wantAsked: false,
+		},
+		{
+			name:       "namespace present: asked, and kept when allowed",
+			params:     map[string]string{paramKeyNamespace: "prod"},
+			wantKept:   1,
+			wantAsked:  true,
+			wantAskFor: "prod",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DashboardLayoutConfig{
+				SchemaVersion: DashboardLayoutSchemaVersion,
+				Scope:         "overview",
+				Columns:       dashboardColumns,
+				Items: []DashboardLayoutItem{{
+					InstanceID: "w1", ID: "cluster-health",
+					X: 0, Y: 0, W: 4, H: 4,
+					Params: tc.params,
+				}},
+			}
+			raw, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			var askedFor []string
+			out, withheld, err := withholdNamespaces(raw,
+				func(ns string) (bool, error) {
+					askedFor = append(askedFor, ns)
+					return true, nil
+				})
+			if err != nil {
+				t.Fatalf("withholdNamespaces: %v", err)
+			}
+
+			var got DashboardLayoutConfig
+			if err := json.Unmarshal(out, &got); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			if len(got.Items) != tc.wantKept {
+				t.Fatalf("kept %d items, want %d (withheld %v)",
+					len(got.Items), tc.wantKept, withheld)
+			}
+			if tc.wantAsked {
+				if len(askedFor) != 1 || askedFor[0] != tc.wantAskFor {
+					t.Fatalf("asked %v, want one call for %q", askedFor, tc.wantAskFor)
+				}
+			} else if len(askedFor) != 0 {
+				t.Fatalf("asked %v, want no re-authorization call", askedFor)
+			}
+		})
 	}
 }

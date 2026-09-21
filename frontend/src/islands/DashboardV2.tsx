@@ -1,16 +1,18 @@
-import { useSignal } from "@preact/signals";
+import { useComputed, useSignal } from "@preact/signals";
 import type { JSX } from "preact";
 import { useEffect, useMemo, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import EditToolbar from "@/components/dashboard/EditToolbar.tsx";
 import LayoutCopyDialog from "@/components/dashboard/LayoutCopyDialog.tsx";
 import WidgetPalette from "@/components/dashboard/WidgetPalette.tsx";
+import WidgetParamDialog from "@/components/dashboard/WidgetParamDialog.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 // Registers every shipped widget before first render.
 import "@/components/dashboard/widgets/index.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
+import type { FamilyStatuses } from "@/lib/dashboard/catalog.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import type { EditSession } from "@/lib/dashboard/edit-session.ts";
 import {
@@ -42,14 +44,16 @@ import {
   saveLayout,
   WithheldLayoutError,
 } from "@/lib/dashboard/layout-store.ts";
-import { placeNewWidget } from "@/lib/dashboard/placement.ts";
+import { widgetSourceKeys } from "@/lib/dashboard/params.ts";
+import { narrowParams, placeNewWidget } from "@/lib/dashboard/placement.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type {
   DashboardLayoutConfig,
-  DataSourceKey,
   LayoutItem,
   WidgetDef,
 } from "@/lib/dashboard/types.ts";
+import { FAMILY_STATUS_KEYS } from "@/lib/dashboard/types.ts";
+import { sourcesOf } from "@/lib/dashboard/widget-state.ts";
 import type {
   ClusterInfoData,
   DashboardSummary,
@@ -78,18 +82,40 @@ const ROOT_STYLE: JSX.CSSProperties = { minHeight: "400px" };
 
 /**
  * Every source this layout's widgets read, plus the two the header reads for
- * its subtitle.
+ * its subtitle and the six the catalog needs to answer whether a widget can
+ * work on this cluster at all.
  *
  * Derived from the live layout rather than the shipped default: a stored
  * layout carrying a widget the default does not have would otherwise never
  * see its source fetched, and would sit in a loading state forever.
  */
-function sourcesFor(config: DashboardLayoutConfig): DataSourceKey[] {
+function sourcesFor(config: DashboardLayoutConfig): string[] {
   return [
-    ...new Set<DataSourceKey>([
+    ...new Set<string>([
       "cluster-info",
       "dashboard-summary",
-      ...config.items.flatMap((i) => getWidget(i.id)?.sources ?? []),
+      // Every family's discovery status, whether or not a widget reading it is
+      // on this layout. The palette has to mark a widget that cannot work on
+      // this cluster BEFORE it is added (R3), and a widget that is merely in
+      // the catalog has nothing placed to pull its status in -- so the status
+      // set is a property of the catalog, not of the arrangement. Six extra
+      // reads on mount, deduped by `ensure` and refreshed on the same 60s
+      // tick as everything else.
+      ...FAMILY_STATUS_KEYS,
+      // `sourcesOf`, not `.sources`: a widget's declared family status is not
+      // in its own source list, and a widget whose status is never fetched
+      // sits in the skeleton forever.
+      //
+      // And `widgetSourceKeys` over the result, not the source names
+      // themselves: a parameterized widget's read is cached under a key that
+      // carries its values, so this has to ask for the same key `WidgetHost`
+      // will resolve against. Two diagnostics widgets on different namespaces
+      // therefore produce two requests, and two on the same namespace produce
+      // one -- which is the Set here and the dedupe in `ensure` agreeing.
+      ...config.items.flatMap((i) => {
+        const def = getWidget(i.id);
+        return def ? widgetSourceKeys(sourcesOf(def), i.params ?? {}) : [];
+      }),
     ]),
   ];
 }
@@ -203,6 +229,22 @@ export default function DashboardV2() {
   const paletteOpen = useSignal(false);
   /** The copy dialog. Only meaningful while a session is open. */
   const copyOpen = useSignal(false);
+  /**
+   * The widget whose parameters are being collected, or null.
+   *
+   * `editing` distinguishes the two things one dialog does. Absent, the widget
+   * has been chosen from the palette and nothing is on the layout yet --
+   * cancelling places nothing. Present, it is a placed widget being re-pointed
+   * at something else, and cancelling leaves it exactly as it was.
+   *
+   * Held here rather than in the palette or the grid because the values it
+   * collects have to reach the open edit session, and both of those are
+   * components that do not have one.
+   */
+  const paramTarget = useSignal<{
+    def: WidgetDef;
+    editing?: LayoutItem;
+  } | null>(null);
   /** The Cancel confirmation, shown only when there is work to lose. */
   const confirmDiscard = useSignal(false);
   /**
@@ -308,6 +350,24 @@ export default function DashboardV2() {
    */
   const focus = useDashboardFocus(editing, gridEpoch.value);
 
+  /**
+   * The six family statuses, as one value the palette can be handed.
+   *
+   * Computed rather than rebuilt inline on every render: `WidgetPalette`
+   * memoizes its catalog rows on this, and a fresh object per render would
+   * re-run a bounded grid scan per entry on every keystroke in its search box.
+   * A computed changes identity only when one of the six states actually
+   * does.
+   */
+  const familyStatuses = useComputed<FamilyStatuses>(() =>
+    Object.fromEntries(
+      FAMILY_STATUS_KEYS.map((key) => [
+        key,
+        dashboardData.signalFor(key).value,
+      ]),
+    ),
+  );
+
   // The layout on screen decides which sources are fetched, so this re-runs
   // when the load replaces the default with the user's arrangement.
   //
@@ -334,7 +394,23 @@ export default function DashboardV2() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     const config = session.value?.working ?? layout.value;
-    dashboardData.ensure(sourcesFor(config), timeRange.value);
+    const keys = sourcesFor(config);
+    dashboardData.ensure(keys, timeRange.value);
+    // And forget everything else. This is the only place that can truthfully
+    // say what the WHOLE set is -- `ensure` is told what a caller wants, not
+    // what nobody wants any more -- and it matters only now that a key can
+    // carry parameters: re-pointing a diagnostics widget from prod to staging
+    // leaves prod recorded as fetched, and the refresh loop re-requests
+    // everything it has ever fetched. Without this, an afternoon of
+    // re-pointing one card leaves a namespace being polled every 60s per
+    // abandoned value, in the backend's shared 30-request-per-minute bucket.
+    //
+    // Safe against the transient states this effect runs in, because `keys`
+    // is always the superset in play: the working copy while a session is
+    // open (which holds widgets the stored layout does not), the stored
+    // layout otherwise, plus the header's two sources and all six family
+    // statuses unconditionally.
+    dashboardData.retain(keys);
   }, [timeRange.value, layout.value, session.value]);
 
   // Mount only. A cluster switch reloads the page (ClusterSwitcher.tsx:239),
@@ -393,6 +469,7 @@ export default function DashboardV2() {
     // the session that just ended.
     paletteOpen.value = false;
     copyOpen.value = false;
+    paramTarget.value = null;
     editWarnings.value = [];
     session.value = beginEdit(asRendered(layout.value), layoutRevision.value);
     // Read here rather than on mount, so the request is only made by someone
@@ -429,7 +506,35 @@ export default function DashboardV2() {
   function addWidget(def: WidgetDef) {
     const s = session.value;
     if (s === null || saving.value) return;
-    const placed = placeNewWidget(s.working.items, def, s.working.columns);
+    // A widget that needs values is not placed yet. The palette closes, the
+    // parameter dialog opens over the same session, and the placement happens
+    // on confirm -- so cancelling leaves the layout untouched rather than
+    // leaving a half-configured card on it (KTD3). Every other widget places
+    // immediately, exactly as before.
+    if (def.params !== undefined) {
+      paletteOpen.value = false;
+      paramTarget.value = { def };
+      return;
+    }
+    placeWidget(def, {});
+  }
+
+  /**
+   * Puts a widget on the working copy, with whatever values it carries.
+   *
+   * Split out of `addWidget` so the immediate path and the confirm path share
+   * one placement, one session write and one re-mount. They differ only in
+   * where the values came from.
+   */
+  function placeWidget(def: WidgetDef, params: Record<string, string>) {
+    const s = session.value;
+    if (s === null || saving.value) return;
+    const placed = placeNewWidget(
+      s.working.items,
+      def,
+      s.working.columns,
+      params,
+    );
     // No session write, no re-mount, no pending focus: `placeNewWidget`'s own
     // comments explain why a clamped or best-effort position is worse than
     // refusing outright, and this island has no information the placement
@@ -442,8 +547,91 @@ export default function DashboardV2() {
     });
     session.value = applyChange(s, next.items);
     paletteOpen.value = false;
+    paramTarget.value = null;
     focus.focusOnInsert(placed.instanceId);
     mountGrid(next);
+  }
+
+  /**
+   * Takes the values the dialog collected: places a new widget, or re-points
+   * a placed one.
+   *
+   * The re-point writes nothing but `params`. Position and size are copied
+   * through untouched, which is the whole reason this affordance exists --
+   * remove-and-re-add would repair the widget by rearranging the dashboard.
+   * The re-mount is still needed: the grid owns its working copy and takes a
+   * new one only by mounting (see `mountGrid`), and the card has to re-render
+   * against the new namespace's cache entry.
+   */
+  function confirmParams(values: Record<string, string>) {
+    const target = paramTarget.value;
+    const s = session.value;
+    if (target === null || s === null || saving.value) return;
+
+    if (target.editing === undefined) {
+      placeWidget(target.def, values);
+      return;
+    }
+
+    const instanceId = target.editing.instanceId;
+    // Matched by instanceId against the CURRENT working copy rather than
+    // written over the snapshot the dialog was opened with: the snapshot
+    // carries an x, y, w and h that were true when the dialog opened, and
+    // only `params` is this gesture's to change.
+    //
+    // `narrowParams` for the same reason `placeNewWidget` applies it: a value
+    // under a key the widget does not declare is refused outright by the
+    // server, and would make the whole layout unsaveable over a field nothing
+    // on screen reads.
+    const next = asRendered({
+      ...s.working,
+      items: s.working.items.map((i) =>
+        i.instanceId === instanceId
+          ? { ...i, params: narrowParams(target.def, values) }
+          : i,
+      ),
+    });
+    session.value = applyChange(s, next.items);
+    paramTarget.value = null;
+    // The cell is being re-mounted, so this is armed rather than immediate --
+    // the same door an insertion goes through, and the dialog the user was
+    // standing in has gone.
+    focus.focusOnInsert(instanceId);
+    mountGrid(next);
+  }
+
+  /**
+   * Closes the parameter dialog, placing and changing nothing.
+   *
+   * Where the keyboard goes depends on where it came from: re-pointing a
+   * placed widget returns to that widget's cell, while adding one returns to
+   * "Add widget", because the palette that was open when the dialog replaced
+   * it is closed and there is no row to go back to.
+   */
+  function cancelParams() {
+    const target = paramTarget.value;
+    paramTarget.value = null;
+    if (target?.editing !== undefined) {
+      focus.focusPlacement(target.editing.instanceId);
+      return;
+    }
+    focus.focusAddButton();
+  }
+
+  /** Opens the parameter dialog over a placed widget, pre-filled. */
+  function reparameterize(item: LayoutItem) {
+    const s = session.value;
+    if (s === null || saving.value) return;
+    const def = getWidget(item.id);
+    // Unreachable through the control -- the grid renders it only for a
+    // widget whose definition declares parameters, which it looked up to
+    // render the card at all. Guarded because a definition is looked up by a
+    // stored id, and doing nothing is the honest response to an id this build
+    // has no widget for.
+    if (def === undefined || def.params === undefined) return;
+    paletteOpen.value = false;
+    copyOpen.value = false;
+    paramTarget.value = { def, editing: item };
   }
 
   /** Closes the palette and leaves the keyboard on the button that opened it. */
@@ -547,6 +735,7 @@ export default function DashboardV2() {
     if (s === null) return;
     confirmDiscard.value = false;
     confirmReset.value = false;
+    paramTarget.value = null;
     editWarnings.value = [];
     session.value = null;
     focus.armReturnToEdit();
@@ -593,6 +782,7 @@ export default function DashboardV2() {
       // does not bump the generation, so the grid is not re-mounted: it is
       // already displaying the saved arrangement.
       session.value = null;
+      paramTarget.value = null;
       // What the arrangement dropped on its way here is now what was saved,
       // and the user has been told once already. Keeping it would leave a
       // warning about a copy standing over a dashboard that is now stored.
@@ -618,6 +808,7 @@ export default function DashboardV2() {
   async function reloadStoredLayout() {
     conflict.value = false;
     session.value = null;
+    paramTarget.value = null;
     editWarnings.value = [];
     focus.armReturnToEdit();
     // No local restore: this is the one exit where the baseline is known to be
@@ -942,6 +1133,11 @@ export default function DashboardV2() {
         // the widget that went was the last one, and the only place left to
         // put the keyboard is a toolbar button the grid does not own.
         onRemoved={focus.focusAfterRemoval}
+        // The grid renders the control only for a widget that declares
+        // parameters and reports the gesture; collecting the values and
+        // deciding what the layout becomes is this island's job, the same
+        // division `onRemoved` already follows.
+        onReparameterize={reparameterize}
         onExitEdit={requestExit}
       />
 
@@ -964,6 +1160,7 @@ export default function DashboardV2() {
           scope={session.value.working.scope}
           placed={session.value.working.items}
           columns={session.value.working.columns}
+          familyStatuses={familyStatuses.value}
           onAdd={addWidget}
           onClose={closePalette}
         />
@@ -982,6 +1179,22 @@ export default function DashboardV2() {
             layouts={copyOptions}
             onCopy={copyFrom}
             onClose={closeCopyDialog}
+          />
+        )}
+
+      {/* The same three gates the palette carries -- its own flag, an open
+          session, and no save in flight -- for the same reasons. A dialog
+          collecting values for a layout that is being written, or for a
+          session that has closed underneath it, would confirm into nothing. */}
+      {paramTarget.value !== null &&
+        session.value !== null &&
+        !saving.value && (
+          <WidgetParamDialog
+            def={paramTarget.value.def}
+            placed={session.value.working.items}
+            editing={paramTarget.value.editing}
+            onConfirm={confirmParams}
+            onCancel={cancelParams}
           />
         )}
 

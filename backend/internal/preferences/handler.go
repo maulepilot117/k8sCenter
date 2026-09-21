@@ -781,9 +781,21 @@ func withholdNamespaces(config json.RawMessage,
 	kept := make([]DashboardLayoutItem, 0, len(cfg.Items))
 	var withheld []string
 	for _, it := range cfg.Items {
-		ns := it.Params[paramKeyNamespace]
-		if ns == "" {
+		ns, named := it.Params[paramKeyNamespace]
+		if !named {
+			// Declares no namespace, so there is nothing to re-authorize.
 			kept = append(kept, it)
+			continue
+		}
+		if ns == "" {
+			// Names a namespace and gives none. The validator refuses this on
+			// write now, but a row stored before that rule existed still has
+			// to be read, and the two readings of an empty string are not the
+			// same: treating it as "names no namespace" would serve the
+			// placement without ever asking whether the caller may see it.
+			// Withheld rather than kept, because the safe answer to a
+			// question that cannot be asked is no.
+			withheld = append(withheld, it.InstanceID)
 			continue
 		}
 		allowed, err := allow(ns)

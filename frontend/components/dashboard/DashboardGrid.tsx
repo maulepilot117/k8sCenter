@@ -157,6 +157,16 @@ interface GridItemProps {
   onKeyDown: (event: JSX.TargetedKeyboardEvent<HTMLElement>) => void;
   /** Takes this widget off the working copy. */
   onRemove: () => void;
+  /**
+   * Asks the caller to re-collect this widget's parameters, or undefined for
+   * a widget that declares none.
+   *
+   * The grid does not own the dialog: the values it collects have to reach the
+   * edit session, and the session lives in the island. Same division as
+   * `onRemoved` -- the grid reports the gesture and the caller decides what
+   * the layout becomes.
+   */
+  onReparameterize?: () => void;
 }
 
 /**
@@ -178,6 +188,7 @@ export function GridItem({
   onResizeStart,
   onKeyDown,
   onRemove,
+  onReparameterize,
 }: GridItemProps) {
   const style: JSX.CSSProperties = narrow
     ? { gridColumn: "1 / -1", gridRow: `span ${item.h}` }
@@ -261,6 +272,72 @@ export function GridItem({
             touchAction: "none",
           }}
         />
+      )}
+      {removable && onReparameterize !== undefined && (
+        // The repair path for a parameterized widget, and the reason it is a
+        // control rather than a documented "remove it and add it again": the
+        // namespace a widget reads can be deleted, or the user's access to it
+        // revoked, and re-adding the widget loses the position and the size on
+        // a dashboard the user arranged deliberately. That is a layout edit
+        // as a side effect of fixing a card.
+        //
+        // Beside the remove button rather than inside the card, because the
+        // card body is `inert` for the whole session -- and because this is
+        // chrome on a data surface, which is the same thing the remove button
+        // is. The same 24px target, the same pill, the same two guards against
+        // a press being read as a grab.
+        //
+        // Rendered only for a widget that declares parameters. A button that
+        // opens a dialog with no fields in it would be an affordance that
+        // promises something the widget cannot do.
+        <button
+          type="button"
+          data-testid="configure-widget"
+          aria-label={`Change what ${def.title} reads`}
+          title={`Change what ${def.title} reads`}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onReparameterize();
+          }}
+          class={REMOVE_BUTTON_CLASS}
+          style={{
+            position: "absolute",
+            // One target's width plus the 4px gutter, so the two sit side by
+            // side rather than on top of each other.
+            right: `${REMOVE_HANDLE_SIZE + 8}px`,
+            top: `${(DRAG_HANDLE_HEIGHT - REMOVE_HANDLE_SIZE) / 2}px`,
+            width: `${REMOVE_HANDLE_SIZE}px`,
+            height: `${REMOVE_HANDLE_SIZE}px`,
+            zIndex: 2,
+            display: "grid",
+            placeItems: "center",
+            padding: 0,
+            color: "var(--text-secondary)",
+            fontSize: "12px",
+            lineHeight: 1,
+          }}
+        >
+          {/* Decoration: the accessible name above already says what this
+              changes, and a gear read aloud beside it is noise. */}
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" />
+          </svg>
+        </button>
       )}
       {removable && (
         // The title row's right end, painted over the drag handle rather than
@@ -449,6 +526,15 @@ interface DashboardGridProps {
    * reach. `useDashboardFocus` owns both halves -- see `focusAfterRemoval`.
    */
   onRemoved?: (vacatedIndex: number) => void;
+  /**
+   * The user asked to change what a placed widget reads.
+   *
+   * Only ever fired for a widget whose definition declares parameters -- the
+   * control is not rendered otherwise. The grid does not apply the result:
+   * the caller collects the values and hands back a whole layout, the way it
+   * does for an insertion and for a copy.
+   */
+  onReparameterize?: (item: LayoutItem) => void;
 }
 
 /**
@@ -465,6 +551,7 @@ export default function DashboardGrid({
   onExitEdit,
   onChange,
   onRemoved,
+  onReparameterize,
 }: DashboardGridProps) {
   // Resolved once, on the way in, so the working copy is exactly what the grid
   // renders. The pointer sessions below read this signal while the DOM is laid
@@ -896,6 +983,13 @@ export default function DashboardGrid({
             onResizeStart={(e) => startResize(item.instanceId, def, e)}
             onKeyDown={(e) => handleItemKey(item, def, e)}
             onRemove={() => removeItem(item.instanceId, def)}
+            // Undefined for a widget that declares no parameters, which is
+            // what withholds the control: there would be nothing to collect.
+            onReparameterize={
+              def.params !== undefined && onReparameterize !== undefined
+                ? () => onReparameterize(item)
+                : undefined
+            }
           />
         ))}
       </div>

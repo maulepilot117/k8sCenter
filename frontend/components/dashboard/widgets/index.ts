@@ -17,6 +17,7 @@
 import "./ActiveAlertsWidget.tsx";
 import "./ClusterHealthWidget.tsx";
 import "./CpuTileWidget.tsx";
+import "./DiagnosticsSummaryWidget.tsx";
 import "./MemoryTileWidget.tsx";
 import "./NetworkTileWidget.tsx";
 import "./NodesWidget.tsx";

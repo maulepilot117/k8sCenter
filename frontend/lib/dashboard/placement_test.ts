@@ -66,8 +66,9 @@ function place(
   items: readonly LayoutItem[],
   d: WidgetDef,
   columns?: number,
+  params?: Record<string, string>,
 ): LayoutItem {
-  const out = placeNewWidget(items, d, columns);
+  const out = placeNewWidget(items, d, columns, params);
   if (!out) throw new Error("expected placeNewWidget to find room");
   return out;
 }
@@ -296,5 +297,51 @@ describe("newInstanceId", () => {
     expect(
       newInstanceId("external-secrets-sync-history").length,
     ).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("placeNewWidget: parameters", () => {
+  const paramDef = def("diagnostics-summary", 4, 4, {
+    params: { namespace: [] },
+  });
+
+  test("a parameterless widget carries no params field", () => {
+    // The field has existed on LayoutItem since P3 and nothing ever wrote it.
+    // `undefined` rather than `{}` matters on the wire: the server refuses any
+    // parameter on a widget that declares none, and an empty object is the
+    // shape a future bug would smuggle one in through.
+    expect(place([], def("nodes", 4, 4)).params).toBeUndefined();
+  });
+
+  test("a parameterized widget carries the values it was placed with", () => {
+    expect(
+      place([], paramDef, undefined, { namespace: "prod" }).params,
+    ).toEqual({ namespace: "prod" });
+  });
+
+  test("the values do not change where the widget lands", () => {
+    // Placement is geometry; parameters are not. The first-fit scan must give
+    // the same cell for the same layout whatever the values are, or a user
+    // re-pointing a widget would watch it move.
+    const occupied = [item("a", 0, 0, 6, 4)];
+    const prod = place(occupied, paramDef, undefined, { namespace: "prod" });
+    const staging = place(occupied, paramDef, undefined, {
+      namespace: "staging",
+    });
+    expect({ x: prod.x, y: prod.y }).toEqual({ x: staging.x, y: staging.y });
+  });
+
+  test("an empty values map leaves the field off", () => {
+    expect(place([], paramDef, undefined, {}).params).toBeUndefined();
+  });
+
+  test("two placements with different values get different instance ids", () => {
+    // They are two cards, not one rendered twice, which is the entire reason
+    // identity is the instanceId rather than the widget id.
+    const prod = place([], paramDef, undefined, { namespace: "prod" });
+    const staging = place([prod], paramDef, undefined, {
+      namespace: "staging",
+    });
+    expect(prod.instanceId).not.toBe(staging.instanceId);
   });
 });

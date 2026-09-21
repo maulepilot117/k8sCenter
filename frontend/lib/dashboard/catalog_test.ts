@@ -4,7 +4,10 @@ import {
   DASHBOARD_FULL,
   disabledReasonFor,
   NO_ROOM,
+  NOT_INSTALLED,
+  NOT_PERMITTED,
 } from "./catalog.ts";
+import type { SourceState } from "./data.ts";
 import type { LayoutItem, WidgetDef } from "./types.ts";
 import {
   DASHBOARD_COLUMNS,
@@ -157,5 +160,172 @@ describe("disabledReasonFor", () => {
     const placed = [item("a", 0, 0, 6, DASHBOARD_MAX_ROWS)];
     expect(disabledReasonFor(d, placed, 12)).toBeNull();
     expect(disabledReasonFor(d, placed, 6)).toBe(NO_ROOM);
+  });
+});
+
+// --- Availability and permission (R3) -------------------------------------
+//
+// These two reasons differ from the three above in where they come from: the
+// three above are facts about the layout being edited, these are facts about
+// the cluster and the account. They are what stops the palette offering a
+// cert-manager widget on a cluster with no cert-manager -- a row whose Add
+// would succeed and then render an explicitly empty card forever.
+
+/** A resolved family status carrying `detected`. */
+function status(detected: unknown): SourceState {
+  return {
+    data: { detected },
+    error: null,
+    errorKind: null,
+    loading: false,
+    range: null,
+  };
+}
+
+const statusForbidden: SourceState = {
+  data: null,
+  error: "Forbidden",
+  errorKind: "permission",
+  loading: false,
+  range: null,
+};
+
+const statusLoading: SourceState = {
+  data: null,
+  error: null,
+  errorKind: null,
+  loading: true,
+  range: null,
+};
+
+describe("disabledReasonFor -- family availability", () => {
+  const certWidget = () =>
+    def("expiring-certificates", 4, 4, { familyStatus: "certificates-status" });
+
+  test("an entry whose feature is absent reports NOT_INSTALLED", () => {
+    // Deliberately not on the dashboard: the widget-host path only fetches
+    // what is placed, so this is the case R3 exists for.
+    expect(
+      disabledReasonFor(certWidget(), [], DASHBOARD_COLUMNS, {
+        "certificates-status": status(false),
+      }),
+    ).toBe(NOT_INSTALLED);
+  });
+
+  test("an entry whose feature is present is addable", () => {
+    expect(
+      disabledReasonFor(certWidget(), [], DASHBOARD_COLUMNS, {
+        "certificates-status": status(true),
+      }),
+    ).toBeNull();
+  });
+
+  test("a string family names its implementation rather than reporting absence", () => {
+    const mesh = def("mesh-health", 4, 4, { familyStatus: "mesh-status" });
+    expect(
+      disabledReasonFor(mesh, [], DASHBOARD_COLUMNS, {
+        "mesh-status": status("istio"),
+      }),
+    ).toBeNull();
+    expect(
+      disabledReasonFor(mesh, [], DASHBOARD_COLUMNS, {
+        "mesh-status": status(""),
+      }),
+    ).toBe(NOT_INSTALLED);
+  });
+
+  test("an entry the account cannot read reports NOT_PERMITTED", () => {
+    expect(
+      disabledReasonFor(certWidget(), [], DASHBOARD_COLUMNS, {
+        "certificates-status": statusForbidden,
+      }),
+    ).toBe(NOT_PERMITTED);
+  });
+
+  test("a status that has not answered yet blocks nothing", () => {
+    // Refusing on a status still in flight would make the palette's contents
+    // depend on how fast six discovery routes answer.
+    expect(
+      disabledReasonFor(certWidget(), [], DASHBOARD_COLUMNS, {
+        "certificates-status": statusLoading,
+      }),
+    ).toBeNull();
+    expect(
+      disabledReasonFor(certWidget(), [], DASHBOARD_COLUMNS, {}),
+    ).toBeNull();
+  });
+
+  test("a status that failed for some other reason blocks nothing", () => {
+    // A transient 500 on a discovery route is not evidence the feature is
+    // missing, and the widget's own error state covers it once it is added.
+    expect(
+      disabledReasonFor(certWidget(), [], DASHBOARD_COLUMNS, {
+        "certificates-status": {
+          data: null,
+          error: "500",
+          errorKind: "failure",
+          loading: false,
+          range: null,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  test("a widget declaring no family status ignores the statuses entirely", () => {
+    expect(
+      disabledReasonFor(def("nodes", 4, 4), [], DASHBOARD_COLUMNS, {
+        "certificates-status": status(false),
+        "mesh-status": statusForbidden,
+      }),
+    ).toBeNull();
+  });
+
+  test("unavailable beats already-placed", () => {
+    // Both are true and only one can be shown. The cluster fact wins: it is
+    // the one that says the card already on the dashboard cannot ever fill,
+    // which is information the already-placed badge would hide.
+    const d = certWidget();
+    const placed = [item("a", 0, 0, 4, 4, "expiring-certificates")];
+    expect(
+      disabledReasonFor(d, placed, DASHBOARD_COLUMNS, {
+        "certificates-status": status(false),
+      }),
+    ).toBe(NOT_INSTALLED);
+  });
+
+  test("not-permitted beats unavailable when the status was refused", () => {
+    // A refused status carries no payload, so absence is not something we
+    // know -- only that this account may not ask.
+    expect(
+      disabledReasonFor(certWidget(), [], DASHBOARD_COLUMNS, {
+        "certificates-status": statusForbidden,
+      }),
+    ).toBe(NOT_PERMITTED);
+  });
+
+  test("the item cap still beats both", () => {
+    const placed = fillerItems(DASHBOARD_MAX_ITEMS);
+    expect(
+      disabledReasonFor(certWidget(), placed, DASHBOARD_COLUMNS, {
+        "certificates-status": status(false),
+      }),
+    ).toBe(DASHBOARD_FULL);
+  });
+
+  test("unavailable beats no-room", () => {
+    const d = def(
+      "expiring-certificates",
+      DASHBOARD_COLUMNS,
+      DASHBOARD_MAX_ROWS,
+      {
+        familyStatus: "certificates-status",
+      },
+    );
+    const placed = [item("a", 0, 0, DASHBOARD_COLUMNS, DASHBOARD_MAX_ROWS)];
+    expect(
+      disabledReasonFor(d, placed, DASHBOARD_COLUMNS, {
+        "certificates-status": status(false),
+      }),
+    ).toBe(NOT_INSTALLED);
   });
 });

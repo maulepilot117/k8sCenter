@@ -1,6 +1,7 @@
 package preferences
 
 import (
+	"reflect"
 	"sort"
 	"testing"
 )
@@ -75,9 +76,10 @@ func TestContractParity(t *testing.T) {
 				name: "allowedWidgets (ids)",
 				got:  widgetIDSet(),
 				want: []string{
-					"active-alerts", "cluster-health", "cpu-tile", "memory-tile",
-					"network-tile", "nodes", "pod-status", "pods-tile",
-					"recent-events", "resource-utilization",
+					"active-alerts", "cluster-health", "cpu-tile",
+					"diagnostics-summary", "memory-tile", "network-tile",
+					"nodes", "pod-status", "pods-tile", "recent-events",
+					"resource-utilization",
 				},
 				tsConstName: "the widget registry",
 				tsFile:      "frontend/lib/dashboard/registry.ts",
@@ -113,16 +115,33 @@ func TestContractParity(t *testing.T) {
 	// showed. The mirror assertion is "registry minimums are pinned to the
 	// server-side catalog" in frontend/lib/dashboard/registry_test.ts.
 	//
-	// Parameters are pinned here too, by their absence. Every widget shipped
-	// today declares none, and the validator refuses params outright for such
-	// a widget -- so the day one declares some, this test fails and forces the
-	// ParamSpec to be written on both sides rather than the server quietly
-	// accepting whatever the client sends.
+	// Parameters are pinned here too, and by their VALUE rather than by their
+	// absence. This subtest used to assert that no widget declared any -- a
+	// tripwire for the first parameterized widget, which diagnostics-summary
+	// then tripped. The pin that replaced it is stricter than the one it
+	// replaced: a key declared on one side only makes every layout carrying it
+	// unsaveable, and a value set narrowed on one side only makes the two
+	// catalogs disagree about which values are legal, neither of which the id
+	// list above would catch.
+	//
+	// A nil map means the widget takes no parameters at all, and the validator
+	// refuses params outright for such a widget. A declared key whose value
+	// slice is EMPTY means the legal values are not knowable here -- a
+	// namespace name -- so only the generic bounds apply. The two are
+	// deliberately different, and `reflect.DeepEqual` below tells them apart.
+	//
+	// The mirror assertion is "the parameterized widgets and their declared
+	// keys are pinned" in frontend/lib/dashboard/registry_test.ts.
 	t.Run("widget specs", func(t *testing.T) {
 		want := map[string]widgetSpec{
-			"active-alerts":        {MinW: 2, MinH: 3},
-			"cluster-health":       {MinW: 3, MinH: 4},
-			"cpu-tile":             {MinW: 2, MinH: 2},
+			"active-alerts":  {MinW: 2, MinH: 3},
+			"cluster-health": {MinW: 3, MinH: 4},
+			"cpu-tile":       {MinW: 2, MinH: 2},
+			"diagnostics-summary": {
+				MinW:   3,
+				MinH:   3,
+				Params: map[string][]string{paramKeyNamespace: {}},
+			},
 			"memory-tile":          {MinW: 2, MinH: 2},
 			"network-tile":         {MinW: 2, MinH: 2},
 			"nodes":                {MinW: 3, MinH: 4},
@@ -143,10 +162,25 @@ func TestContractParity(t *testing.T) {
 						"(update frontend/components/dashboard/widgets/ to match, or update this test)",
 						id, got.MinW, got.MinH, w.MinW, w.MinH)
 				}
-				if len(got.Params) != 0 {
-					t.Fatalf("%s now declares %d parameter(s); add the matching ParamSpec to "+
-						"frontend/lib/dashboard/types.ts and its registry entry, then update this test",
-						id, len(got.Params))
+				if !reflect.DeepEqual(got.Params, w.Params) {
+					t.Fatalf("%s parameter drift: got %v, want %v (update the widget's `params` "+
+						"in frontend/components/dashboard/widgets/ and its pin in "+
+						"frontend/lib/dashboard/registry_test.ts to match, or update this test)",
+						id, got.Params, w.Params)
+				}
+				// A namespace parameter is the one key the read path
+				// re-authorizes (R5). A widget that meant to take one and
+				// spelled it differently would store and render identically
+				// and simply never be withheld, so the spelling is pinned
+				// rather than left to the catalog literal above to match by
+				// eye.
+				for key := range got.Params {
+					if key != paramKeyNamespace && len(got.Params[key]) == 0 {
+						t.Fatalf("%s declares an open-valued parameter %q; only %q is "+
+							"re-authorized on read, so an open value under any other key "+
+							"is unvalidated caller text in a stored layout",
+							id, key, paramKeyNamespace)
+					}
 				}
 				// A minimum below 1 would be a zero-area widget. The validator
 				// floors it independently, so this is the catalog's own bound.

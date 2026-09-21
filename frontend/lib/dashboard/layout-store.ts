@@ -34,6 +34,7 @@ import {
   preferencesApi,
 } from "@/lib/preferences.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
+import { missingParamKeys } from "./params.ts";
 import { getWidget } from "./registry.ts";
 import type {
   DashboardLayoutConfig,
@@ -183,19 +184,41 @@ export function dropUnknownWidgets(
   // list keys wherever the warnings are rendered, which is a rendering bug
   // rather than a wording one. A Set preserves first-encounter order.
   const missing = new Set<string>();
+  const unfilled = new Set<string>();
 
   for (const it of config.items) {
-    if (getWidget(it.id) === undefined) {
+    const def = getWidget(it.id);
+    if (def === undefined) {
       missing.add(it.id);
+      continue;
+    }
+    // The client twin of the server's rule that a declared parameter must
+    // carry a value. Without it a placement stored before that rule existed
+    // loads, renders a card that can never resolve, and then fails every
+    // subsequent save of the whole layout with a message that names no
+    // widget -- leaving the user a dashboard they cannot save and no way to
+    // tell which of up to forty cards is at fault.
+    //
+    // Dropped rather than repaired, for the reason an unknown id is dropped:
+    // there is no value to repair it with, and a notice naming the widget is
+    // the recovery path.
+    if (missingParamKeys(def.params, it.params ?? {}).length > 0) {
+      unfilled.add(it.id);
       continue;
     }
     kept.push(it);
   }
 
-  const warnings = [...missing].map(
-    (id) =>
-      `Removed "${id}" from this dashboard: this build has no such widget.`,
-  );
+  const warnings = [
+    ...[...missing].map(
+      (id) =>
+        `Removed "${id}" from this dashboard: this build has no such widget.`,
+    ),
+    ...[...unfilled].map(
+      (id) =>
+        `Removed "${id}" from this dashboard: it was stored without the values it needs.`,
+    ),
+  ];
 
   // Dropping everything yields an empty layout, never the shipped default.
   // Substituting the default would discard an arrangement the user spent time

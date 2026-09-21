@@ -1,6 +1,22 @@
 import { expect, test } from "bun:test";
-import type { SourceFetcher } from "./data.ts";
-import { createSourceCache } from "./data.ts";
+import { ApiError } from "@/lib/api.ts";
+import type { SourceCache, SourceFetcher } from "./data.ts";
+import {
+  createSourceCache,
+  DASHBOARD_FETCHERS,
+  DASHBOARD_REFRESH_MS,
+  MAX_CONCURRENT_EXPENSIVE_FETCHES,
+  sourceRefreshOffsetMs,
+} from "./data.ts";
+import { sourceKeyFor } from "./params.ts";
+import type { DataSourceKey } from "./types.ts";
+import {
+  DATA_SOURCE_KEYS,
+  FAMILY_STATUS_KEYS,
+  RANGE_SENSITIVE_KEYS,
+  SOURCE_COST,
+  sourceCost,
+} from "./types.ts";
 
 // The cache exists so that N widgets declaring the same source produce one
 // request, and so that a failure is a value a widget can render rather than a
@@ -650,4 +666,760 @@ test("startRefresh: a tick waits while a superseded request is still on the wire
 
   pending.get("6h")?.resolve("6h-data");
   await cache.settled();
+});
+
+// --- Permission classification (R2) ---------------------------------------
+//
+// A 403 and a 500 are both "the fetch failed", and the dashboard has to tell
+// them apart: one is a transient condition worth retrying and the other is a
+// standing fact about the account, which the shell renders without a retry
+// affordance. The cache is the only place that still holds the thrown error,
+// so the distinction is made here and carried on the state.
+
+test("errorKind: a forbidden response is classified as a permission outcome", async () => {
+  const cache = createSourceCache({
+    "dashboard-summary": () =>
+      Promise.reject(new ApiError(403, 403, "Forbidden")),
+  });
+
+  cache.ensure(["dashboard-summary"], "1h");
+  await cache.settled();
+
+  const s = cache.state("dashboard-summary");
+  expect(s.errorKind).toBe("permission");
+  expect(s.error).toContain("Forbidden");
+});
+
+test("errorKind: any other failure stays an ordinary failure", async () => {
+  const cache = createSourceCache({
+    "dashboard-summary": () => Promise.reject(new ApiError(500, 500, "boom")),
+    "cluster-info": () => Promise.reject(new Error("network down")),
+  });
+
+  cache.ensure(["dashboard-summary", "cluster-info"], "1h");
+  await cache.settled();
+  expect(cache.state("dashboard-summary").errorKind).toBe("failure");
+  expect(cache.state("cluster-info").errorKind).toBe("failure");
+});
+
+test("errorKind: a recovered refresh clears the earlier classification", async () => {
+  // Permissions change under a live session -- a role binding added while the
+  // dashboard is open -- and a widget left in the permission state after the
+  // next refresh succeeded would be telling the user something untrue.
+  let attempt = 0;
+  const cache = createSourceCache({
+    "dashboard-summary": () => {
+      attempt++;
+      return attempt === 1
+        ? Promise.reject(new ApiError(403, 403, "Forbidden"))
+        : Promise.resolve("ok");
+    },
+  });
+
+  cache.ensure(["dashboard-summary"], "1h");
+  await cache.settled();
+  expect(cache.state("dashboard-summary").errorKind).toBe("permission");
+
+  cache.refresh();
+  await cache.settled();
+  const s = cache.state("dashboard-summary");
+  expect(s.errorKind).toBeNull();
+  expect(s.error).toBeNull();
+  expect(s.data).toBe("ok");
+});
+
+test("errorKind: an idle key carries no classification", () => {
+  const cache = createSourceCache({});
+  expect(cache.state("dashboard-summary").errorKind).toBeNull();
+});
+
+test("every declared source key has a fetcher", () => {
+  // A key in the union with no entry in the table is invisible: `ensure`
+  // returns without issuing anything, the state stays idle, and a widget
+  // declaring it sits in the skeleton forever with nothing in the console.
+  const missing = DATA_SOURCE_KEYS.filter((k) => !(k in DASHBOARD_FETCHERS));
+  expect(missing).toEqual([]);
+});
+
+test("refresh: a settled family status is not re-polled", async () => {
+  // Three of the six discovery routes (policies, gitops, mesh) share the
+  // backend's 30-request-per-minute YAML bucket with /yaml/* and /wizards/*.
+  // The dashboard asks for all six on mount whether or not a widget reads
+  // them, so re-asking every 60s would spend a tenth of that shared budget,
+  // per IP, for as long as a dashboard tab is open -- to re-learn an answer
+  // that changes when someone installs an operator. Fetched once per page
+  // load instead.
+  let calls = 0;
+  const cache = createSourceCache({
+    "mesh-status": () => {
+      calls++;
+      return Promise.resolve({ detected: "istio" });
+    },
+    "dashboard-summary": () => Promise.resolve("s"),
+  });
+
+  cache.ensure(["mesh-status", "dashboard-summary"], "1h");
+  await cache.settled();
+  expect(calls).toBe(1);
+
+  cache.refresh();
+  await cache.settled();
+  expect(calls).toBe(1);
+  // The ordinary sources are unaffected.
+  expect(cache.state("dashboard-summary").data).toBe("s");
+});
+
+test("refresh: a family status that has never landed is retried", async () => {
+  // The exemption above is "do not re-ask a question already answered", not
+  // "ask once and give up": a widget whose family status hit a transient 500
+  // would otherwise sit in the error state until the page is reloaded.
+  let calls = 0;
+  const cache = createSourceCache({
+    "mesh-status": () => {
+      calls++;
+      return calls === 1
+        ? Promise.reject(new ApiError(500, 500, "boom"))
+        : Promise.resolve({ detected: "istio" });
+    },
+  });
+
+  cache.ensure(["mesh-status"], "1h");
+  await cache.settled();
+  expect(cache.state("mesh-status").error).toBeTruthy();
+
+  cache.refresh();
+  await cache.settled();
+  expect(calls).toBe(2);
+  expect(cache.state("mesh-status").data).toEqual({ detected: "istio" });
+
+  // And once it has landed, the exemption applies again.
+  cache.refresh();
+  await cache.settled();
+  expect(calls).toBe(2);
+});
+
+// --- Cost classes, the expensive bound and refresh offsets (R6 / KTD5) -----
+//
+// The catalog admits forty items pointing at distinct routes, several of them
+// Prometheus- or Hubble-backed. Without a class on each source they would all
+// be issued on the same 60s tick, for every viewer. These tests pin the two
+// mechanisms that stop that: a bound on how many expensive reads are on the
+// wire at once, and a stable per-source offset inside the refresh interval.
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, ms);
+  });
+}
+
+/** Every source the scheduler does not treat as cheap, in declaration order. */
+const NON_CHEAP_KEYS = DATA_SOURCE_KEYS.filter(
+  (k) => sourceCost(k) !== "cheap",
+);
+
+function saturate(): {
+  cache: SourceCache;
+  started: DataSourceKey[];
+  pending: Map<string, ReturnType<typeof deferred<string>>>;
+} {
+  const started: DataSourceKey[] = [];
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const fetchers: Partial<Record<DataSourceKey, SourceFetcher>> = {};
+  for (const key of NON_CHEAP_KEYS) {
+    fetchers[key] = (signal) => {
+      started.push(key);
+      const d = deferred<string>();
+      pending.set(key, d);
+      signal.addEventListener("abort", () => {
+        d.reject(new DOMException("Aborted", "AbortError"));
+      });
+      return d.promise;
+    };
+  }
+  return { cache: createSourceCache(fetchers), started, pending };
+}
+
+/**
+ * Resolves every deferred the saturated cache is holding, in passes, until
+ * none is left outstanding.
+ *
+ * One pass is not enough and the number of passes needed is the number of
+ * queued requests, which is `NON_CHEAP_KEYS.length - MAX_CONCURRENT_...` and
+ * therefore changes whenever a source is added. A queued request is admitted
+ * from a settled one's `.finally`, which is a microtask -- so it registers its
+ * own deferred strictly AFTER a synchronous loop over `pending` has finished,
+ * and a single pass leaves it unresolved and `settled()` waiting on it
+ * forever. The "cheap sources are not subject to the bound" test above already
+ * drains in passes for this reason; this is the same loop, sized off the key
+ * list instead of a hardcoded count so adding a source cannot silently turn a
+ * passing test into a five-second timeout.
+ */
+async function drain(
+  pending: Map<string, ReturnType<typeof deferred<string>>>,
+): Promise<void> {
+  for (let pass = 0; pass <= NON_CHEAP_KEYS.length; pass++) {
+    for (const d of pending.values()) d.resolve("ok");
+    await sleep(0);
+  }
+}
+
+test("cost: every declared source key carries an explicit class", () => {
+  // Omission is the failure mode the default guards, not the one it excuses:
+  // an unlisted key falls back to expensive by design, but a key the author
+  // meant to classify and forgot should be named here rather than inferred.
+  const missing = DATA_SOURCE_KEYS.filter((k) => SOURCE_COST[k] === undefined);
+  expect(missing).toEqual([]);
+});
+
+test("cost: an unclassified key is expensive, never cheap", () => {
+  // KTD5's default. A contributor who adds a source and forgets the table
+  // gets one throttled too hard, not one that joins the stampede.
+  expect(sourceCost("some-future-source")).toBe("expensive");
+});
+
+test("cost: informer reads are cheap and discovery routes are their own class", () => {
+  const misfiled = FAMILY_STATUS_KEYS.filter(
+    (k) => sourceCost(k) !== "discovery",
+  );
+  expect(misfiled).toEqual([]);
+
+  const informerBacked: DataSourceKey[] = [
+    "dashboard-summary",
+    "cluster-info",
+    "recent-events",
+  ];
+  const notCheap = informerBacked.filter((k) => sourceCost(k) !== "cheap");
+  expect(notCheap).toEqual([]);
+
+  // The trends endpoint is not informer-backed: the Go handler runs Prometheus
+  // range queries and its own comment calls them multi-second. Under KTD5 that
+  // is expensive, whatever its neighbours on the same dashboard cost.
+  expect(sourceCost("dashboard-trends")).toBe("expensive");
+});
+
+test("bound: expensive fetches beyond the limit wait for a slot", async () => {
+  // Precondition: there have to be more non-cheap sources than slots for this
+  // test to mean anything. Seven exist today against a bound of six.
+  expect(NON_CHEAP_KEYS.length).toBeGreaterThan(
+    MAX_CONCURRENT_EXPENSIVE_FETCHES,
+  );
+
+  const { cache, started, pending } = saturate();
+  cache.ensure(NON_CHEAP_KEYS, "1h");
+  expect(started.length).toBe(MAX_CONCURRENT_EXPENSIVE_FETCHES);
+
+  // Freeing one slot admits exactly the one that was waiting.
+  pending.get(started[0])?.resolve("ok");
+  await sleep(0);
+  expect(started.length).toBe(MAX_CONCURRENT_EXPENSIVE_FETCHES + 1);
+
+  await drain(pending);
+  await cache.settled();
+  const blank = NON_CHEAP_KEYS.filter((k) => cache.state(k).data === null);
+  expect(blank).toEqual([]);
+});
+
+test("bound: a failing expensive fetch releases its slot", async () => {
+  // A rejection has to hand the slot on. Otherwise one endpoint returning 500
+  // permanently shrinks the dashboard's capacity to fetch anything else.
+  const { cache, started, pending } = saturate();
+  cache.ensure(NON_CHEAP_KEYS, "1h");
+  const queued = NON_CHEAP_KEYS[MAX_CONCURRENT_EXPENSIVE_FETCHES];
+  expect(started).not.toContain(queued);
+
+  const first = started[0];
+  pending.get(first)?.reject(new Error("boom"));
+  await sleep(0);
+  expect(started).toContain(queued);
+
+  await drain(pending);
+  await cache.settled();
+  expect(cache.state(first).error).toBe("boom");
+});
+
+test("bound: a queued fetch torn down before it starts never reaches the network", async () => {
+  // The widget that asked for it is gone -- the island unmounted, or the user
+  // removed the card -- and the request was still waiting for a slot. It has
+  // to be dropped, not issued on behalf of nobody.
+  const { cache, started, pending } = saturate();
+  cache.ensure(NON_CHEAP_KEYS, "1h");
+  const queued = NON_CHEAP_KEYS[MAX_CONCURRENT_EXPENSIVE_FETCHES];
+  expect(started).not.toContain(queued);
+
+  cache.abort();
+  expect(started).not.toContain(queued);
+  expect(cache.state(queued).loading).toBe(false);
+
+  await cache.settled();
+  expect(started).not.toContain(queued);
+  expect(pending.has(queued)).toBe(false);
+});
+
+test("bound: cheap sources are not subject to the bound", async () => {
+  // The bound protects Prometheus and the API server; it is not there to make
+  // an informer read queue behind one.
+  const started: DataSourceKey[] = [];
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const fetchers: Partial<Record<DataSourceKey, SourceFetcher>> = {};
+  for (const key of DATA_SOURCE_KEYS) {
+    fetchers[key] = () => {
+      started.push(key);
+      const d = deferred<string>();
+      pending.set(key, d);
+      return d.promise;
+    };
+  }
+  const cache = createSourceCache(fetchers);
+
+  // Every expensive slot is occupied and nothing will free one.
+  cache.ensure(NON_CHEAP_KEYS, "1h");
+  const cheap = DATA_SOURCE_KEYS.filter((k) => sourceCost(k) === "cheap");
+  cache.ensure(cheap, "1h");
+
+  const stalled = cheap.filter((k) => !started.includes(k));
+  expect(stalled).toEqual([]);
+
+  // Drain in passes: resolving the running ones admits the queued one, which
+  // registers a deferred of its own.
+  for (let pass = 0; pass < 3; pass++) {
+    for (const d of pending.values()) d.resolve("ok");
+    await sleep(0);
+  }
+  await cache.settled();
+});
+
+test("bound: two widgets sharing one expensive key still issue one fetch", async () => {
+  // The dedupe the cache already had has to survive the queue: a key already
+  // waiting for a slot is a key already asked for.
+  const { cache, started } = saturate();
+  cache.ensure(["mesh-status", "mesh-status"], "1h");
+  cache.ensure(["mesh-status"], "1h");
+  expect(started).toEqual(["mesh-status"]);
+  cache.abort();
+  await cache.settled();
+});
+
+test("offset: a cheap source refreshes on the tick, with no offset", () => {
+  const offset = DATA_SOURCE_KEYS.filter(
+    (k) => sourceCost(k) === "cheap",
+  ).filter((k) => sourceRefreshOffsetMs(k, DASHBOARD_REFRESH_MS) !== 0);
+  expect(offset).toEqual([]);
+});
+
+test("offset: expensive sources get distinct offsets inside the interval", () => {
+  const seen = new Map<number, string>();
+  const collisions: string[] = [];
+  const outOfRange: string[] = [];
+  for (const key of NON_CHEAP_KEYS) {
+    const offset = sourceRefreshOffsetMs(key, DASHBOARD_REFRESH_MS);
+    if (offset <= 0 || offset >= DASHBOARD_REFRESH_MS) outOfRange.push(key);
+    const prior = seen.get(offset);
+    if (prior !== undefined) collisions.push(prior + "/" + key);
+    seen.set(offset, key);
+  }
+  expect(collisions).toEqual([]);
+  expect(outOfRange).toEqual([]);
+});
+
+test("offset: the same key gets the same offset on every tick", () => {
+  // Derived from the key, not from a counter or the clock. A source that
+  // wandered across the interval would make the request pattern unreadable
+  // and could drift into lockstep with another one.
+  const first = NON_CHEAP_KEYS.map((k) =>
+    sourceRefreshOffsetMs(k, DASHBOARD_REFRESH_MS),
+  );
+  const again = NON_CHEAP_KEYS.map((k) =>
+    sourceRefreshOffsetMs(k, DASHBOARD_REFRESH_MS),
+  );
+  const drifted = NON_CHEAP_KEYS.filter((_k, i) => first[i] !== again[i]);
+  expect(drifted).toEqual([]);
+});
+
+test("offset: an interval too short to divide degrades to no offset", () => {
+  // Guards the arithmetic rather than a behaviour anyone wants: a test that
+  // ticks every millisecond must not produce a negative or fractional delay.
+  expect(sourceRefreshOffsetMs("mesh-status", 1)).toBe(0);
+  expect(sourceRefreshOffsetMs("mesh-status", 0)).toBe(0);
+});
+
+test("startRefresh: an expensive source waits out its offset, cheap ones do not", async () => {
+  // The point of R6: at the tick the cheap reads go, and the expensive one is
+  // scheduled into its own slot later in the same interval.
+  const INTERVAL = 400;
+  // The discovery route furthest into the interval, so the assertion has a
+  // margin. Offsets are fixed by the key hash, so the choice is stable.
+  const target = [...FAMILY_STATUS_KEYS].sort(
+    (a, b) =>
+      sourceRefreshOffsetMs(b, INTERVAL) - sourceRefreshOffsetMs(a, INTERVAL),
+  )[0];
+  const offset = sourceRefreshOffsetMs(target, INTERVAL);
+  expect(offset).toBeGreaterThan(40);
+
+  let cheapCalls = 0;
+  let targetCalls = 0;
+  const cache = createSourceCache({
+    "dashboard-summary": () => {
+      cheapCalls++;
+      return Promise.resolve("s");
+    },
+    [target]: () => {
+      targetCalls++;
+      // Failing keeps it eligible for the next refresh. A settled discovery
+      // status is exempt from refresh entirely -- see the test below.
+      return Promise.reject(new Error("boom"));
+    },
+  });
+
+  cache.ensure(["dashboard-summary", target], "1h");
+  await cache.settled();
+  expect(cheapCalls).toBe(1);
+  expect(targetCalls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  await sleep(INTERVAL + offset / 2);
+  expect(cheapCalls).toBe(2);
+  expect(targetCalls).toBe(1);
+
+  await sleep(offset / 2 + 60);
+  expect(targetCalls).toBe(2);
+  stop();
+  await cache.settled();
+});
+
+test("startRefresh: stopping cancels an offset fetch that has not fired", async () => {
+  const INTERVAL = 400;
+  const target = [...FAMILY_STATUS_KEYS].sort(
+    (a, b) =>
+      sourceRefreshOffsetMs(b, INTERVAL) - sourceRefreshOffsetMs(a, INTERVAL),
+  )[0];
+  const offset = sourceRefreshOffsetMs(target, INTERVAL);
+
+  let targetCalls = 0;
+  const cache = createSourceCache({
+    [target]: () => {
+      targetCalls++;
+      return Promise.reject(new Error("boom"));
+    },
+  });
+  cache.ensure([target], "1h");
+  await cache.settled();
+
+  const stop = cache.startRefresh(INTERVAL);
+  await sleep(INTERVAL + offset / 2);
+  stop();
+  await sleep(offset / 2 + 60);
+  expect(targetCalls).toBe(1);
+});
+
+test("startRefresh: a settled family status stays exempt despite having an offset", async () => {
+  // U1's REFRESH_ONCE_SETTLED and this unit's offsets have to compose: the
+  // offset decides *when* a due source is issued, not *whether* it is due. A
+  // discovery route that already answered is never due, so its offset never
+  // fires and the answer is not re-asked once per interval on a delay.
+  let meshCalls = 0;
+  let summaryCalls = 0;
+  const cache = createSourceCache({
+    "mesh-status": () => {
+      meshCalls++;
+      return Promise.resolve({ detected: "istio" });
+    },
+    "dashboard-summary": () => {
+      summaryCalls++;
+      return Promise.resolve("s");
+    },
+  });
+
+  cache.ensure(["mesh-status", "dashboard-summary"], "1h");
+  await cache.settled();
+  expect(meshCalls).toBe(1);
+
+  const stop = cache.startRefresh(20);
+  await sleep(140);
+  stop();
+  await cache.settled();
+
+  expect(meshCalls).toBe(1);
+  expect(summaryCalls).toBeGreaterThan(1);
+});
+
+test("range: the range-sensitive set names real source keys", () => {
+  // Mechanical on purpose: a unit adding a range-backed source adds its key to
+  // that set. This only catches a key that is not a source at all.
+  const unknown = [...RANGE_SENSITIVE_KEYS].filter(
+    (k) => !(DATA_SOURCE_KEYS as readonly string[]).includes(k),
+  );
+  expect(unknown).toEqual([]);
+});
+
+// `retain` -- dropping keys nothing on the layout asks for any more.
+//
+// Before parameters, the set of keys a session could ever fetch was the source
+// union: eleven, fixed, and every one of them belonged to a widget that might
+// come back. A parameterized key is not like that. Re-pointing one widget from
+// prod to staging leaves `diagnostics-summary` for prod recorded as fetched,
+// and `dueEntries` re-requests everything it has ever fetched -- so the
+// abandoned namespace goes on being polled every 60s, in the backend's shared
+// 30-request-per-minute bucket, for as long as the tab is open, for a card
+// that no longer exists.
+
+test("retain: a key nothing asks for any more stops being refreshed", async () => {
+  let prodCalls = 0;
+  let stagingCalls = 0;
+  const cache = createSourceCache({
+    "diagnostics-summary": (_signal, _range, params) => {
+      if (params.namespace === "prod") prodCalls++;
+      else stagingCalls++;
+      return Promise.resolve({ total: 0, failing: [] });
+    },
+  });
+
+  const prod = sourceKeyFor("diagnostics-summary", { namespace: "prod" });
+  const staging = sourceKeyFor("diagnostics-summary", { namespace: "staging" });
+
+  cache.ensure([prod], "1h");
+  await cache.settled();
+  expect(prodCalls).toBe(1);
+
+  // The widget is re-pointed: staging is now the only key on the layout.
+  cache.ensure([staging], "1h");
+  cache.retain([staging]);
+  await cache.settled();
+
+  const stop = cache.startRefresh(20);
+  await sleep(140);
+  stop();
+  await cache.settled();
+
+  expect(prodCalls).toBe(1);
+  expect(stagingCalls).toBeGreaterThan(1);
+});
+
+test("retain: a dropped key's state is forgotten, not left stale", async () => {
+  // Re-adding the same namespace later must refetch rather than render
+  // whatever was on screen when the card was removed.
+  const cache = createSourceCache({
+    "dashboard-summary": () => Promise.resolve("s"),
+  });
+  cache.ensure(["dashboard-summary"], "1h");
+  await cache.settled();
+  expect(cache.state("dashboard-summary").data).toBe("s");
+
+  cache.retain([]);
+  expect(cache.state("dashboard-summary").data).toBeNull();
+});
+
+test("retain: a key still asked for is untouched", async () => {
+  const cache = createSourceCache({
+    "dashboard-summary": () => Promise.resolve("s"),
+    "cluster-info": () => Promise.resolve("c"),
+  });
+  cache.ensure(["dashboard-summary", "cluster-info"], "1h");
+  await cache.settled();
+
+  cache.retain(["dashboard-summary"]);
+  expect(cache.state("dashboard-summary").data).toBe("s");
+  expect(cache.state("cluster-info").data).toBeNull();
+});
+
+test("retain: an in-flight request for a dropped key is cancelled", async () => {
+  // It is a request on behalf of a card that is gone. Leaving it would let it
+  // land and re-fill a key `retain` just cleared.
+  const d = deferred<string>();
+  let aborted = false;
+  const cache = createSourceCache({
+    "dashboard-summary": (signal) => {
+      signal.addEventListener("abort", () => {
+        aborted = true;
+        d.reject(new DOMException("Aborted", "AbortError"));
+      });
+      return d.promise;
+    },
+  });
+  cache.ensure(["dashboard-summary"], "1h");
+  cache.retain([]);
+  await cache.settled();
+
+  expect(aborted).toBe(true);
+  expect(cache.state("dashboard-summary").data).toBeNull();
+  expect(cache.state("dashboard-summary").loading).toBe(false);
+});
+
+test("startRefresh: one hung source does not stop the others refreshing", async () => {
+  // The property the tick guard was removed to provide, and the one nothing
+  // asserted. Before, a single outstanding request returned early from the
+  // whole cycle, so one wedged backend froze all forty cards -- silently,
+  // because a request that never settles never records an error and nothing
+  // ever reads as stale.
+  const INTERVAL = 200;
+  let hungCalls = 0;
+  let cheapCalls = 0;
+  const cache = createSourceCache({
+    // Never resolves, never rejects: a dead connection, not a slow one.
+    "dashboard-trends": () => {
+      hungCalls++;
+      return new Promise<unknown>(() => {});
+    },
+    "dashboard-summary": () => {
+      cheapCalls++;
+      return Promise.resolve({ ok: true });
+    },
+  });
+
+  cache.ensure(["dashboard-trends", "dashboard-summary"], "1h");
+  await sleep(0);
+  expect(hungCalls).toBe(1);
+  expect(cheapCalls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  await sleep(INTERVAL * 2 + 40);
+  stop();
+
+  // The hung key is still outstanding, so it is correctly never re-issued.
+  expect(hungCalls).toBe(1);
+  // Its neighbour is not hostage to it.
+  expect(cheapCalls).toBeGreaterThan(1);
+});
+
+test("startRefresh: a hung request releases its slot on the deadline", async () => {
+  // Without a deadline the hung promise never reaches `finally`, so its
+  // concurrency slot is gone for the life of the tab. Six of those retire the
+  // whole expensive budget and every other expensive key queues behind them
+  // forever -- the frozen dashboard again, arrived at cumulatively.
+  const cache = createSourceCache({
+    "dashboard-trends": (signal) =>
+      new Promise<unknown>((_res, rej) => {
+        signal.addEventListener("abort", () => rej(signal.reason));
+      }),
+  });
+
+  cache.ensure(["dashboard-trends"], "1h");
+  await sleep(0);
+  expect(cache.state("dashboard-trends").loading).toBe(true);
+
+  // The deadline is half the refresh interval; this test does not wait it
+  // out, it asserts the abort path is wired by tearing down and confirming
+  // the cache settles rather than hanging forever.
+  cache.abort();
+  await cache.settled();
+  expect(cache.state("dashboard-trends").loading).toBe(false);
+});
+
+test("the deadline is a visible failure, not a silent teardown", async () => {
+  // The deadline aborts its own controller, so it lands in the same catch as
+  // a teardown abort with `controller.signal.aborted` true. Reading it as a
+  // teardown made a hung source silent in both directions: no error was
+  // recorded, and on a first fetch `settleAborted` dropped the key out of
+  // `fetchedRange`, which is what the refresh tick iterates -- so the card
+  // sat in its skeleton for the life of the tab and was never re-requested.
+  //
+  // Restoring the old guard (dropping `!timedOut`) fails exactly this test.
+  const TIMEOUT = 30;
+  let calls = 0;
+  const cache = createSourceCache(
+    {
+      "dashboard-trends": (signal) => {
+        calls++;
+        return new Promise<unknown>((_res, rej) => {
+          signal.addEventListener("abort", () => rej(signal.reason));
+        });
+      },
+    },
+    TIMEOUT,
+  );
+
+  cache.ensure(["dashboard-trends"], "1h");
+  await sleep(TIMEOUT + 20);
+  await cache.settled();
+
+  // The reader is told. A source that did not answer is a failure, and
+  // `failure` rather than `permission` because a wedged backend is transient
+  // as far as this layer can tell.
+  const state = cache.state("dashboard-trends");
+  expect(state.loading).toBe(false);
+  expect(state.errorKind).toBe("failure");
+  expect(state.error).not.toBeNull();
+
+  // And it is still in the refresh set, so the next tick retries it. This is
+  // the half that made the old behaviour permanent rather than merely quiet.
+  const stop = cache.startRefresh(TIMEOUT * 2);
+  await sleep(TIMEOUT * 2 + 40);
+  stop();
+  expect(calls).toBeGreaterThan(1);
+});
+
+test("refresh: supersedes a pending offset rather than skipping the key", async () => {
+  // `refresh()` is the immediate path -- "refresh the dashboard" means issue
+  // the requests, not schedule them. Pending offset timers count as busy for
+  // the periodic tick, so without cancelling them first this call would find
+  // every expensive key not-due and quietly do nothing for most of the page.
+  const INTERVAL = 400;
+  let trendCalls = 0;
+  const cache = createSourceCache({
+    "dashboard-trends": () => {
+      trendCalls++;
+      return Promise.resolve({ ok: true });
+    },
+  });
+  const offset = sourceRefreshOffsetMs("dashboard-trends", INTERVAL);
+  expect(offset).toBeGreaterThan(0);
+
+  cache.ensure(["dashboard-trends"], "1h");
+  await cache.settled();
+  expect(trendCalls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  // Past the tick that schedules the offset, short of the offset firing.
+  await sleep(INTERVAL + 10);
+  expect(trendCalls).toBe(1);
+
+  cache.refresh();
+  await cache.settled();
+  expect(trendCalls).toBe(2);
+  stop();
+});
+
+test("startRefresh: an affirmative discovery verdict is never re-asked", async () => {
+  const INTERVAL = 20;
+  let calls = 0;
+  const cache = createSourceCache({
+    "mesh-status": () => {
+      calls++;
+      return Promise.resolve({ detected: "istio" });
+    },
+  });
+  cache.ensure(["mesh-status"], "1h");
+  await cache.settled();
+  expect(calls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  await sleep(INTERVAL * 12 + 40);
+  stop();
+  expect(calls).toBe(1);
+});
+
+test("startRefresh: a negative discovery verdict is re-asked, slowly", async () => {
+  // The backend's discovery check answers "absent" when the check itself
+  // failed, so a blip reads exactly like an uninstalled operator -- and the
+  // widget then sits at "not installed" with its palette row refusing to be
+  // re-added. Re-asking a negative is what lets that heal without a reload.
+  const INTERVAL = 20;
+  let calls = 0;
+  const cache = createSourceCache({
+    "mesh-status": () => {
+      calls++;
+      return Promise.resolve({ detected: "" });
+    },
+  });
+  cache.ensure(["mesh-status"], "1h");
+  await cache.settled();
+  expect(calls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  // Short of the recheck cadence: still settled, still one call.
+  await sleep(INTERVAL * 3 + 10);
+  expect(calls).toBe(1);
+  // Past it: asked again.
+  await sleep(INTERVAL * 9 + 40);
+  stop();
+  expect(calls).toBeGreaterThan(1);
 });

@@ -200,17 +200,25 @@ func (h *Handler) checkSnapshotCRDs() bool {
 		return h.snapshotAvail
 	}
 
-	h.snapshotAvail = false
-	h.snapshotCheckedAt = time.Now()
-
+	// The cache is stamped only when the check actually answered. Writing the
+	// negative first and stamping it meant a transient discovery failure --
+	// an API-server blip, a momentarily unreachable aggregation layer -- was
+	// cached as "not installed" for the whole TTL, indistinguishable from an
+	// operator that genuinely is not there. The dashboard then reports the
+	// feature absent, and its palette entry refuses to be re-added, so
+	// nothing short of a page reload revisits it. Not answering is not the
+	// same as answering no.
 	disc := h.K8sClient.DiscoveryClient()
 	if disc == nil {
-		return false
+		return h.snapshotAvail
 	}
 	resources, err := disc.ServerResourcesForGroupVersion("snapshot.storage.k8s.io/v1")
 	if err != nil {
-		return false
+		return h.snapshotAvail
 	}
+
+	h.snapshotAvail = false
+	h.snapshotCheckedAt = time.Now()
 	for _, r := range resources.APIResources {
 		if r.Name == "volumesnapshots" {
 			h.snapshotAvail = true

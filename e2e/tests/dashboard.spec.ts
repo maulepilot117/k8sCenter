@@ -242,12 +242,19 @@ test.describe("Dashboard widget registry", () => {
     await expect(cpu).toHaveAttribute("data-widget-state", "ready");
     await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
 
-    // The next refresh tick fails the trends request after it has loaded once.
+    // The next refresh fails the trends request after it has loaded once.
+    //
+    // Trends is an expensive source, so it no longer refreshes on the tick --
+    // it refreshes at a stable offset inside the interval, to stop every
+    // expensive read in the catalog going out at the same instant for every
+    // viewer. The window below therefore has to clear one whole interval plus
+    // that offset, not just the interval. Advancing only 61s waits for a
+    // request that is correctly not due yet.
     await page.route(TRENDS, (route) => route.abort("failed"));
     const failed = page.waitForEvent("requestfailed", (r) =>
       r.url().includes("/api/v1/cluster/dashboard-trends"),
     );
-    await page.clock.runFor(61_000);
+    await page.clock.runFor(95_000);
     await failed;
 
     await expect(cpu.getByTestId("widget-stale")).toBeVisible();

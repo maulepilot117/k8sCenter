@@ -55,3 +55,19 @@ export interface DashboardTrends {
   networkRx: number[] | null;
   networkTx: number[] | null;
 }
+
+/**
+ * Mirrors the backend payload from GET /v1/diagnostics/{namespace}/summary --
+ * every pod in the namespace the backend considers failing, and how many pods
+ * it counted in total.
+ *
+ * `total` is what tells "nothing is wrong here" apart from "there is nothing
+ * here", which is the distinction the widget turns on: the handler lists pods
+ * out of the informer cache, so a namespace that has been DELETED answers 200
+ * with an empty list and a zero total rather than 404. See
+ * `rollUpDiagnostics`.
+ */
+export interface DiagnosticsSummary {
+  failing: Array<{ kind: string; name: string; reason: string }>;
+  total: number;
+}

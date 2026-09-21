@@ -4,6 +4,7 @@ import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 // The disabled-reason decision lives in lib/, not here, because this repo has
 // no component test harness (D-10): logic that needs a unit test has to sit
 // somewhere a test can import it. Do not move it back into this file.
+import type { FamilyStatuses } from "@/lib/dashboard/catalog.ts";
 import { disabledReasonFor } from "@/lib/dashboard/catalog.ts";
 import { widgetsForScope } from "@/lib/dashboard/registry.ts";
 import type {
@@ -18,6 +19,21 @@ import { fuzzySearch } from "@/lib/fuzzy-search.ts";
 
 /**
  * The catalog of widgets that can be added to the dashboard being edited.
+ *
+ * A row is offered or refused by `disabledReasonFor`, which now answers with
+ * two reasons that are not about the layout at all: a widget whose family is
+ * not installed on this cluster, and one this account may not read. They reuse
+ * the affordance the other three already have -- the badge, the blocked Add,
+ * the skipped keyboard stop -- so the palette gained no new mechanism, only
+ * new reasons (R3).
+ *
+ * Choosing a row does not always place a widget. A widget that declares
+ * parameters needs values first, so `onAdd` for one of those opens the
+ * parameter dialog instead and the placement happens on confirm -- which is
+ * why such a row says so before it is chosen. Without the hint, pressing
+ * Enter on it looks like an Add that produced a dialog for no stated reason;
+ * with it, the dialog is the thing the row promised. The branch itself is the
+ * caller's: this dialog neither places widgets nor knows what a session is.
  *
  * A modal dialog, not a menu: it takes the screen, it closes on Escape and on
  * the scrim, and focus goes into it and comes back out to the control that
@@ -71,6 +87,18 @@ export interface WidgetPaletteProps {
    * lands on would be offering a row whose Add then does nothing.
    */
   columns: number;
+  /**
+   * The CRD-discovered families' discovery statuses, as the caller last read
+   * them.
+   *
+   * Passed in rather than read here because this dialog owns no data layer --
+   * and because the statuses it needs are the whole catalog's, not the placed
+   * widgets'. The source cache fetches what placed widgets declare, so a
+   * widget that has never been added would have no status at all to judge, and
+   * the palette could not mark it before it is added (R3). The caller requests
+   * all six regardless of what is on the layout.
+   */
+  familyStatuses: FamilyStatuses;
   /** Adds the widget. The caller places it and closes this dialog. */
   onAdd: (def: WidgetDef) => void;
   onClose: () => void;
@@ -80,6 +108,7 @@ export default function WidgetPalette({
   scope,
   placed,
   columns,
+  familyStatuses,
   onAdd,
   onClose,
 }: WidgetPaletteProps) {
@@ -88,13 +117,20 @@ export default function WidgetPalette({
   const selectedIndex = useSignal(-1);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Depends only on the scope, the placed items and the column count -- never
-  // on the query or the selection -- so this is the one list here worth
-  // memoizing. Without it, every keystroke, arrow press and hover re-ran
-  // `widgetsForScope` and a bounded grid scan per entry for no reason: none
-  // of those interactions can change what is addable. The filtered and
-  // grouped lists below are deliberately left unmemoized -- they genuinely
-  // depend on the query, which changes on nearly every render anyway.
+  // Depends only on the scope, the placed items, the column count and the
+  // family statuses -- never on the query or the selection -- so this is the
+  // one list here worth memoizing. Without it, every keystroke, arrow press
+  // and hover re-ran `widgetsForScope` and a bounded grid scan per entry for
+  // no reason: none of those interactions can change what is addable. The
+  // filtered and grouped lists below are deliberately left unmemoized -- they
+  // genuinely depend on the query, which changes on nearly every render
+  // anyway.
+  //
+  // `familyStatuses` belongs in the dependency list for the same reason the
+  // other three do: a discovery route answering mid-session changes which rows
+  // are addable, and a row left stale here is one the user cannot add and is
+  // not told why. The caller hands it over as a computed, so its identity
+  // changes only when a status actually does.
   const entries: Entry[] = useMemo(
     () =>
       widgetsForScope(scope).map((def) => ({
@@ -102,9 +138,9 @@ export default function WidgetPalette({
         label: def.title,
         detail: FAMILY_LABELS[def.family],
         def,
-        disabledReason: disabledReasonFor(def, placed, columns),
+        disabledReason: disabledReasonFor(def, placed, columns, familyStatuses),
       })),
-    [scope, placed, columns],
+    [scope, placed, columns, familyStatuses],
   );
 
   // What the query shows, grouped for display in the families' declared order,
@@ -320,6 +356,21 @@ export default function WidgetPalette({
                   }`}
                 >
                   <span class="flex-1 truncate">{entry.def.title}</span>
+                  {/* Not a disabled reason: this row CAN be added, it just
+                      asks a question first. So it is rendered on its own
+                      rather than through `disabledReason`, which is read by
+                      the keyboard as "skip this row". Hidden while the row is
+                      blocked, because a reason and a hint competing for the
+                      same end of the same row reads as two badges about the
+                      same refusal. */}
+                  {!blocked && entry.def.params !== undefined && (
+                    <span
+                      data-testid="widget-option-needs-values"
+                      class="shrink-0 text-[11px] text-text-muted"
+                    >
+                      Asks for {Object.keys(entry.def.params).join(", ")}
+                    </span>
+                  )}
                   {blocked && (
                     <span class="shrink-0 rounded-md border border-glass-border px-1.5 py-0.5 text-[11px] text-text-muted">
                       {entry.disabledReason}

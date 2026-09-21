@@ -51,3 +51,37 @@ guard the oracle checks and confirm the seeds then fail. Where an oracle checks 
 that could itself drift, the oracle re-derives that constant independently instead of
 reading the production value, so it detects the guard being removed rather than silently
 agreeing with it.
+
+## Dashboard
+
+### Widget
+A single card on a personal dashboard, declared once in a registry and rendered by a
+shared host that owns its sizing, loading and failure states. A Widget declares what it
+needs rather than fetching for itself: which cached data sources it reads, which display
+modes it implements, and its minimum grid footprint. The host measures the card, picks a
+mode from that size, and calls the Widget only once the data it requires is present — so a
+Widget's own code never handles loading or failure.
+
+A Widget is registered twice, in the browser and on the server, because the server refuses
+a saved layout naming an id it does not know. The two halves are pinned to literals by
+tests on both sides, so registering one without the other fails the build rather than
+producing an editor that offers something the server will reject.
+
+### Widget Catalog
+The set of Widgets an operator can add to a dashboard, grouped into families and searched
+from the editor's palette. Catalog membership is not the same as availability: an entry
+whose backing feature is not installed on the cluster, or which the account cannot read,
+stays in the Catalog but is marked and cannot be added.
+
+### Widget Availability
+What a Widget can say when it has no data to show, as four distinct outcomes rather than
+one. **Unavailable** means the backing feature is not installed on this cluster, resolved
+from that feature's own status route — never inferred from an empty list, because a
+CRD-discovered feature returns an empty list whether it is absent or merely quiet.
+**Not permitted** means the account cannot read the data and never will from here, so it
+carries no retry. **Empty** is the Widget's own content: installed, readable, nothing to
+report. **Error** is a failure that may resolve on its own.
+
+Conflating the first with the third is the failure this distinction exists to prevent: a
+compliance card on a cluster with no policy engine would otherwise read as full
+compliance.

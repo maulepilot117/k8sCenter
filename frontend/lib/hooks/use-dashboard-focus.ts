@@ -124,6 +124,19 @@ export interface DashboardFocus {
   /** Put focus on "Copy from cluster" now. Same case as `focusAddButton`. */
   focusCopyButton: () => void;
   /**
+   * Put focus on a placed widget's cell now, falling back to "Add widget".
+   *
+   * The immediate counterpart of `focusOnInsert`, for a dialog that opened
+   * FROM a cell and closed without changing the layout -- cancelling the
+   * parameter dialog on a placed widget. Nothing is re-mounted in that case,
+   * so there is no render to arm against and the cell is already on screen.
+   *
+   * It lives here rather than as a `querySelector` in the island for the
+   * reason this hook exists at all: focus has one owner, and the last time a
+   * second one appeared the editor lost the keyboard on an empty grid.
+   */
+  focusPlacement: (instanceId: string) => void;
+  /**
    * Put focus on "Reset" now.
    *
    * Immediate, like the two above, and safe for the same reason: the toolbar
@@ -352,6 +365,17 @@ export function useDashboardFocus(
     },
     focusCopyButton() {
       copyButton.current?.focus();
+    },
+    focusPlacement(instanceId: string) {
+      const el = document.querySelector<HTMLElement>(
+        `[data-instance-id="${instanceId}"]`,
+      );
+      el?.focus();
+      // Below the narrow breakpoint a cell is not a tab stop at all, and the
+      // widget may also simply be gone -- removed from another gesture while
+      // the dialog was open. Same fallback `focusOnInsert` uses, for the same
+      // reason: "Add widget" is mounted for the whole session.
+      if (document.activeElement !== el) addButton.current?.focus();
     },
     focusResetButton() {
       resetButton.current?.focus();

@@ -29,6 +29,31 @@ export const WIDGET_FAMILIES = [
 ] as const;
 export type WidgetFamily = (typeof WIDGET_FAMILIES)[number];
 
+/**
+ * The discovery routes that say whether a CRD-discovered feature is installed.
+ *
+ * These are data sources like any other, but they are named apart because they
+ * are the only ones that answer a question about the CLUSTER rather than about
+ * a workload: is cert-manager here at all? A family's list endpoint cannot
+ * answer it -- the backend returns 200 with an empty array whether the
+ * operator is absent or merely has nothing to report, so a widget inferring
+ * absence from an empty list renders "no expiring certificates" on a cluster
+ * with no cert-manager, which is the exact failure R1 forbids.
+ *
+ * Six families, three payload shapes, one rule: `detected` is `false` or `""`
+ * when the feature is absent, and names the implementation otherwise. See
+ * `featurePresent` in widget-state.ts, which is the only place that reads it.
+ */
+export const FAMILY_STATUS_KEYS = [
+  "policies-status",
+  "gitops-status",
+  "certificates-status",
+  "mesh-status",
+  "external-secrets-status",
+  "velero-status",
+] as const;
+export type FamilyStatusKey = (typeof FAMILY_STATUS_KEYS)[number];
+
 /** Every distinct backend read the dashboard performs. A widget declares which
  * it needs; the cache in data.ts fetches each key at most once per cycle. */
 export const DATA_SOURCE_KEYS = [
@@ -36,8 +61,105 @@ export const DATA_SOURCE_KEYS = [
   "dashboard-trends",
   "cluster-info",
   "recent-events",
+  // The first source whose response depends on a widget's own parameters:
+  // one read per namespace rather than one per page. The cache keys it by
+  // source AND parameters (see `sourceKeyFor` in params.ts), so two
+  // diagnostics widgets pointed at different namespaces are two entries and
+  // two pointed at the same one are still a single fetch.
+  "diagnostics-summary",
+  ...FAMILY_STATUS_KEYS,
 ] as const;
 export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
+
+/**
+ * What a source costs the backend to answer, which is what decides whether
+ * the refresh scheduler may issue it on the tick with everything else.
+ *
+ * Three classes, not two (KTD5):
+ *
+ * - `cheap` -- served from the backend's informer cache. The read is a map
+ *   lookup in a process that already holds the objects; several at once cost
+ *   nothing worth managing.
+ * - `discovery` -- a CRD discovery route. Dearer than an informer read and
+ *   cheaper than a range query: a live API-server call behind a 5-minute
+ *   cache, and three of the six share the backend's 30-request-per-minute
+ *   YAML bucket with `/yaml/*` and `/wizards/*`. Named apart because it backs
+ *   most of the growing catalog, and scheduled under the expensive policy.
+ * - `expensive` -- a Prometheus, Hubble or PostgreSQL read. Seconds rather
+ *   than milliseconds, and a cost the backend pays per request rather than
+ *   amortising across viewers.
+ *
+ * The classification is declarative here and consumed in one place --
+ * `data.ts`, which bounds how many non-cheap reads are on the wire at once
+ * and gives each one an offset inside the refresh interval. Widgets never see
+ * it; it is not part of the render contract.
+ */
+export const SOURCE_COSTS = ["cheap", "discovery", "expensive"] as const;
+export type SourceCost = (typeof SOURCE_COSTS)[number];
+
+/**
+ * The cost of each declared source.
+ *
+ * `dashboard-trends` is the one entry worth reading twice. It sits beside
+ * three informer reads on the same dashboard and looks like them, but
+ * `HandleDashboardTrends` in backend/internal/k8s/resources/dashboard.go runs
+ * Prometheus range queries and its own comment calls them multi-second -- it
+ * was split out of the summary handler precisely so they would not eat that
+ * endpoint's 1-second Prometheus budget. Under KTD5 that is expensive, and
+ * classifying it by its neighbours rather than by what it does would leave
+ * the only expensive source the dashboard has today on the unmanaged path.
+ */
+export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
+  "dashboard-summary": "cheap",
+  "cluster-info": "cheap",
+  "recent-events": "cheap",
+  "dashboard-trends": "expensive",
+  // Informer-backed like the three above it, and still not cheap. Three
+  // reasons, none of which the list shape shows: the handler runs a
+  // SelfSubjectAccessReview before it reads anything (60s-cached, which is
+  // exactly the refresh interval, so most ticks pay for one); the route sits
+  // under the backend's 30-request-per-minute YAML bucket, shared with
+  // `/yaml/*` and `/wizards/*`; and it is the only source issued once per
+  // distinct parameter value, so its cost grows with the dashboard rather
+  // than being fixed per page. That is "a cost the backend pays per request
+  // rather than amortising across viewers", which is this class.
+  "diagnostics-summary": "expensive",
+
+  "policies-status": "discovery",
+  "gitops-status": "discovery",
+  "certificates-status": "discovery",
+  "mesh-status": "discovery",
+  "external-secrets-status": "discovery",
+  "velero-status": "discovery",
+};
+
+/**
+ * The cost of a source, defaulting to `expensive` for anything unlisted.
+ *
+ * Expensive, never cheap: a contributor who adds a source to the catalog and
+ * forgets `SOURCE_COST` gets a read that is throttled harder than it needs to
+ * be, which is a slower dashboard. The other default gets a read that joins
+ * the stampede KTD5 exists to prevent, which is a slower cluster. Takes a
+ * plain string so a key arriving from a stored layout, rather than from the
+ * union, still classifies.
+ */
+export function sourceCost(key: string): SourceCost {
+  return SOURCE_COST[key as DataSourceKey] ?? "expensive";
+}
+
+/**
+ * Sources whose response depends on the selected time range. Re-ensuring one
+ * of these under a new range refetches; the others do not.
+ *
+ * Deliberately a hand-written set rather than anything derived: a unit adding
+ * a range-backed source adds its key here, in the same edit that adds it to
+ * `DATA_SOURCE_KEYS` and `SOURCE_COST`. Range-sensitivity does not follow
+ * from cost -- a cheap source could take a window and an expensive one need
+ * not -- so inferring it would be wrong in both directions.
+ */
+export const RANGE_SENSITIVE_KEYS: ReadonlySet<string> = new Set([
+  "dashboard-trends",
+]);
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
  * what the pre-registry three-row layout already approximated. */
@@ -116,6 +238,23 @@ export interface WidgetDef {
    * `render` is called. Omitted means every source is required.
    */
   optionalSources?: DataSourceKey[];
+  /**
+   * The CRD-discovered family this widget needs installed, if any.
+   *
+   * Declaring it is what buys the widget an explicit "not installed on this
+   * cluster" state, resolved by WidgetHost before `render` is ever called --
+   * so the widget body never learns it is unavailable, and never has to
+   * decide whether its own empty list means "nothing to report" or "no
+   * operator". Deciding that once here, rather than in every widget that
+   * reads a CRD-backed endpoint, is the mitigation the design spec named for
+   * the render contract itself (KTD1).
+   *
+   * The key is fetched and required alongside `sources`: it cannot be listed
+   * in `optionalSources`, because a widget that renders before its family
+   * status has landed is the case this field exists to prevent. A widget that
+   * omits this field behaves exactly as it did before availability existed.
+   */
+  familyStatus?: FamilyStatusKey;
   /**
    * Smallest the editor will let the user resize this widget.
    *
