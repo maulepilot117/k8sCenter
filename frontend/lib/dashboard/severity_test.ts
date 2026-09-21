@@ -462,14 +462,21 @@ describe("vulnerabilitySeverityView", () => {
     expect(view.rows).toEqual([]);
   });
 
-  test("a null vulnerabilities array is an empty list, not an unreadable one", () => {
+  test("a null vulnerabilities array is unreadable, not an empty list", () => {
+    // This asserted the opposite, on the reading that a null list is just an
+    // empty one. It is not, on this route: the handler answers 200 with a
+    // null list when both scanner fetches failed and were only logged, and
+    // when the viewer holds one scanner's grant while every report came from
+    // the other. Treating those as a clean namespace prints "no
+    // vulnerabilities" over a scan that did not happen, and makes the card's
+    // own unreadable copy unreachable -- which is the failure this release
+    // exists to prevent, arriving through the one path left unguarded.
     const view = vulnerabilitySeverityView(
       { vulnerabilities: null, summary: null },
       5,
     );
-    expect(view.readable).toBe(true);
-    expect(view.scanned).toBe(0);
-    expect(view.findings).toBe(0);
+    expect(view.readable).toBe(false);
+    expect(view.rows).toEqual([]);
   });
 
   test("an unreadable payload is unreadable, never a clean namespace", () => {
@@ -613,5 +620,31 @@ describe("page links", () => {
     expect(workloadHref("pro d", "Deployment", "a/b")).toBe(
       "/security/vulnerabilities/pro%20d/Deployment/a%2Fb",
     );
+  });
+});
+
+describe("vulnerabilitySeverityView -- a scan that did not happen", () => {
+  test("a null list is unreadable, not an empty scan", () => {
+    // The handler answers 200 with `"vulnerabilities": null` when both
+    // scanner fetches failed and were only logged, and when the viewer holds
+    // one scanner's grant while every report came from the other. Folding
+    // that into an empty array prints "no vulnerabilities" over a scan that
+    // did not happen or that this account could not read.
+    const view = vulnerabilitySeverityView({ vulnerabilities: null }, 5);
+    expect(view.readable).toBe(false);
+    expect(view.rows).toEqual([]);
+  });
+
+  test("an absent list is unreadable too", () => {
+    const view = vulnerabilitySeverityView({ total: 0 }, 5);
+    expect(view.readable).toBe(false);
+  });
+
+  test("an empty array is a real, readable, clean scan", () => {
+    // The one case that must stay distinguishable from the two above.
+    const view = vulnerabilitySeverityView({ vulnerabilities: [] }, 5);
+    expect(view.readable).toBe(true);
+    expect(view.affected).toBe(0);
+    expect(view.rows).toEqual([]);
   });
 });

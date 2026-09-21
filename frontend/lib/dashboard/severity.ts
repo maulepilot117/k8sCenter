@@ -491,9 +491,32 @@ export function vulnerabilitySeverityView(
     };
   }
 
-  const entries = Array.isArray(body.vulnerabilities)
-    ? body.vulnerabilities
-    : [];
+  // A list that is not a list is not an empty list.
+  //
+  // The handler answers 200 with `"vulnerabilities": null` in three
+  // situations, and only one of them is a clean namespace: both scanner
+  // fetches failed and were logged rather than surfaced, or the viewer holds
+  // one scanner's grant while every report came from the other, or there
+  // genuinely is nothing. Folding the first two into an empty array prints
+  // "no vulnerabilities" over a scan that did not happen or that the account
+  // could not read -- the exact failure this release exists to prevent, and
+  // the one branch the card already has copy for could never fire.
+  //
+  // Absent is treated the same as null: neither is a scan that came back
+  // empty.
+  if (!Array.isArray(body.vulnerabilities)) {
+    return {
+      readable: false,
+      scanned: 0,
+      affected: 0,
+      findings: 0,
+      bySeverity: bucketsFrom(new Map()),
+      rows: [],
+      unreadableRows: 0,
+    };
+  }
+
+  const entries = body.vulnerabilities;
   const rows: VulnWorkloadRow[] = [];
   let unreadableRows = 0;
   for (const entry of entries) {
