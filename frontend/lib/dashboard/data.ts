@@ -21,6 +21,9 @@ import {
   RANGE_SENSITIVE_KEYS,
   sourceCost,
 } from "./types.ts";
+// Safe despite the apparent cycle: widget-state's only import from this
+// file is `import type`, which is erased, so there is no runtime edge back.
+import { featurePresent } from "./widget-state.ts";
 
 /**
  * Why a source failed, as far as it can be told apart from the response.
@@ -89,9 +92,25 @@ const RANGE_SENSITIVE = RANGE_SENSITIVE_KEYS;
  * "Once it has answered", not "once it has been asked": a status that failed
  * has nothing on screen to protect, and a widget left in the error state until
  * the page is reloaded because one discovery call hit a transient 500 is a
- * worse trade than one extra request a minute. See `refresh` below.
+ * worse trade than one extra request a minute.
+ *
+ * And only once it has answered YES. A negative verdict is re-asked on a
+ * long multiple of the interval, because the backend's discovery check
+ * reports "absent" when the check itself failed -- see `isDue`.
  */
 const REFRESH_ONCE_SETTLED: ReadonlySet<string> = new Set(FAMILY_STATUS_KEYS);
+
+/**
+ * How many refresh cycles pass before a NEGATIVE discovery verdict is
+ * re-asked. An affirmative one is never re-asked at all.
+ *
+ * Ten, against a 60s interval, is a ten-minute worst case for a cluster
+ * whose operator was there all along and whose discovery check happened to
+ * fail once -- slow enough that an absent family costs six requests an hour
+ * rather than sixty, fast enough that nobody has to know a page reload is
+ * the cure.
+ */
+const NEGATIVE_RECHECK_TICKS = 10;
 
 /** Matches the pre-registry dashboard's 60s interval. */
 export const DASHBOARD_REFRESH_MS = 60_000;
@@ -514,24 +533,41 @@ export function createSourceCache(
    * already answered is never due, so its offset never fires -- the two
    * compose without either needing to know about the other.
    */
-  function isDue(key: string, busy: Set<string>): boolean {
+  function isDue(key: string, busy: Set<string>, tick = 0): boolean {
     if (busy.has(key)) return false;
-    // A discovery status that already answered stays answered until the next
-    // page load -- see REFRESH_ONCE_SETTLED. One that failed is retried like
-    // anything else.
-    if (REFRESH_ONCE_SETTLED.has(key) && sig(key).value.data !== null) {
-      return false;
+    const data = sig(key).value.data;
+    if (REFRESH_ONCE_SETTLED.has(key) && data !== null) {
+      // A discovery status that says the feature IS here is settled: it will
+      // not stop being here while the tab is open, and re-asking spends a
+      // shared rate-limit budget for an answer that cannot change.
+      //
+      // A status that says the feature is NOT here is a different claim, and
+      // one the backend can get wrong in a way nothing recovers from. Its
+      // discovery check answers "absent" when the check itself failed -- a
+      // transient API-server blip reads identically to an uninstalled
+      // operator -- and once that lands, the widget is unavailable, the
+      // palette refuses to re-add it, and no refresh revisits it. A cluster
+      // that does run the operator shows "not installed" until someone
+      // reloads the page, with nothing anywhere saying why.
+      //
+      // So a negative verdict is re-asked, but slowly: once every
+      // NEGATIVE_RECHECK_TICKS cycles rather than every one. That self-heals
+      // within minutes, costs a handful of requests an hour per absent
+      // family, and leaves the expensive case -- the affirmative answer --
+      // exactly as settled as it was.
+      if (featurePresent(data)) return false;
+      if (tick % NEGATIVE_RECHECK_TICKS !== 0) return false;
     }
     return true;
   }
 
   /** The keys a refresh would re-request right now, with their ranges.
    * Snapshotted, because running one mutates `fetchedRange`. */
-  function dueEntries(): Array<[string, string]> {
+  function dueEntries(tick = 0): Array<[string, string]> {
     const busy = busyKeys();
     const due: Array<[string, string]> = [];
     for (const [key, range] of fetchedRange) {
-      if (isDue(key, busy)) {
+      if (isDue(key, busy, tick)) {
         due.push([key, range]);
       }
     }
@@ -669,9 +705,14 @@ export function createSourceCache(
       };
       // Replace rather than stack: a second caller must not double the rate.
       stop();
+      // Counts cycles, so a negative discovery verdict can be re-asked on a
+      // multiple of the interval rather than on every one. Starts at 1 so the
+      // first tick is not a recheck tick: the verdict landed moments ago.
+      let tick = 0;
       refreshTimer = globalThis.setInterval(() => {
         // Matches the pre-registry behavior: a hidden tab does not poll.
         if (typeof document !== "undefined" && document.hidden) return;
+        tick++;
         // Deliberately not gated on the cache being quiet.
         //
         // This used to return early whenever anything anywhere was
@@ -684,7 +725,7 @@ export function createSourceCache(
         // goes stale and nothing says why. With up to forty cards over
         // separate backends, and no timeout below this layer, that is a
         // dashboard quietly serving yesterday's numbers.
-        for (const [key, range] of dueEntries()) {
+        for (const [key, range] of dueEntries(tick)) {
           const offset = sourceRefreshOffsetMs(key, intervalMs);
           if (offset === 0) {
             run(key, range);

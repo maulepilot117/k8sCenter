@@ -1334,3 +1334,49 @@ test("refresh: supersedes a pending offset rather than skipping the key", async 
   expect(trendCalls).toBe(2);
   stop();
 });
+
+test("startRefresh: an affirmative discovery verdict is never re-asked", async () => {
+  const INTERVAL = 20;
+  let calls = 0;
+  const cache = createSourceCache({
+    "mesh-status": () => {
+      calls++;
+      return Promise.resolve({ detected: "istio" });
+    },
+  });
+  cache.ensure(["mesh-status"], "1h");
+  await cache.settled();
+  expect(calls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  await sleep(INTERVAL * 12 + 40);
+  stop();
+  expect(calls).toBe(1);
+});
+
+test("startRefresh: a negative discovery verdict is re-asked, slowly", async () => {
+  // The backend's discovery check answers "absent" when the check itself
+  // failed, so a blip reads exactly like an uninstalled operator -- and the
+  // widget then sits at "not installed" with its palette row refusing to be
+  // re-added. Re-asking a negative is what lets that heal without a reload.
+  const INTERVAL = 20;
+  let calls = 0;
+  const cache = createSourceCache({
+    "mesh-status": () => {
+      calls++;
+      return Promise.resolve({ detected: "" });
+    },
+  });
+  cache.ensure(["mesh-status"], "1h");
+  await cache.settled();
+  expect(calls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  // Short of the recheck cadence: still settled, still one call.
+  await sleep(INTERVAL * 3 + 10);
+  expect(calls).toBe(1);
+  // Past it: asked again.
+  await sleep(INTERVAL * 9 + 40);
+  stop();
+  expect(calls).toBeGreaterThan(1);
+});
