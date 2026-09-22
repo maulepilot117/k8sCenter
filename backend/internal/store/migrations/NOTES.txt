@@ -177,3 +177,67 @@ Locking:
   Recreating a CHECK constraint takes ACCESS EXCLUSIVE on user_preferences
   while PostgreSQL validates the whole table. Milliseconds on a normal
   preferences table; use a maintenance window on a very large one.
+
+------------------------------------------------------------------------
+000020_scope_eso_history (Release B ESO evidence, U13, 2026-09-22)
+------------------------------------------------------------------------
+
+Index-only. Replaces the cluster-blind sync-history dedup key
+UNIQUE (uid, attempt_at) with UNIQUE (cluster_id, uid, attempt_at), adds the
+keyset-pagination index (cluster_id, uid, attempt_at DESC, id DESC), and drops
+the (uid, attempt_at DESC) index that no query uses any more. No columns
+change and nothing is backfilled: cluster_id has been NOT NULL DEFAULT 'local'
+since 000011 and the poller has always bound it, so no row is unstamped.
+
+Why: a cluster restored from a Velero backup into a second registered cluster
+reproduces identical object UIDs. Under the old key the second cluster's sync
+attempts collided with the first's and were silently discarded by
+ON CONFLICT DO NOTHING, merging two timelines into one.
+
+Operator action required:
+  None on the way up. The new unique index is strictly weaker than the one it
+  replaces, so it cannot fail on existing data.
+
+  Ship the binary and the migration together. The backend's INSERT names
+  (cluster_id, uid, attempt_at) as its conflict target, and PostgreSQL refuses
+  a conflict target no unique index matches (SQLSTATE 42P10). A new binary on
+  an unmigrated database cannot happen in practice -- the backend migrates on
+  start -- but an OLD binary on a MIGRATED database (a binary-only rollback)
+  fails every history insert the same way. Roll the migration back with the
+  binary, or not at all.
+
+Legacy rows after a KUBECENTER_CLUSTERID change:
+  History rows carry the cluster id that was configured when they were
+  written. If the local cluster id was ever changed, rows from before the
+  change stay under the old id and are invisible to the cluster-scoped reads.
+  They are deliberately NOT rewritten: an UPDATE cannot tell a renamed cluster
+  from a genuinely different one, and guessing would attribute one cluster's
+  history to another. Those rows age out under the normal 90-day retention.
+
+Rollback:
+  The down migration recreates the stricter UNIQUE (uid, attempt_at) and WILL
+  FAIL if two clusters ever recorded the same (uid, attempt_at). Find them
+  first:
+
+      SELECT uid, attempt_at, count(DISTINCT cluster_id)
+        FROM eso_sync_history GROUP BY 1, 2
+      HAVING count(DISTINCT cluster_id) > 1;
+
+  There is no automatic resolution. Deleting either side destroys one
+  cluster's audit trail, so choose which rows go and delete them explicitly.
+
+  A refused rollback leaves the version table dirty at 19 while the schema is
+  still at 20 (the file runs in one implicit transaction, so its statements
+  roll back together, but golang-migrate records the attempt first). The
+  backend refuses to start on a dirty version. Correct it before restarting:
+
+      migrate -path <migrations> -database <url> force 20
+
+  or UPDATE schema_migrations SET version = 20, dirty = false;
+
+Locking:
+  golang-migrate wraps each file in a transaction, so CREATE INDEX
+  CONCURRENTLY is unavailable. The two builds take a SHARE lock that blocks
+  writes to eso_sync_history for their duration: seconds at the table's
+  stated steady state of about 2M rows. The single-replica poller is the only
+  writer, and an insert blocked past its tick is re-observed on the next one.
