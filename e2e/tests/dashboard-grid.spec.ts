@@ -935,7 +935,9 @@ test.describe("Dashboard grid keyboard", () => {
     await widget(page, "d-cluster-health").focus();
     const before = await scroll();
     await page.keyboard.press("ArrowDown");
+    await expect(widget(page, "d-cluster-health")).toBeFocused();
     await page.keyboard.press("ArrowDown");
+    await expect(widget(page, "d-cluster-health")).toBeFocused();
 
     expect(await scroll()).toEqual(before);
   });
