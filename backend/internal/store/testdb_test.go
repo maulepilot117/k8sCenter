@@ -43,7 +43,8 @@ package store
 //     (cluster_id, snapshot_date), eso_bulk_refresh_jobs (the 000014 partial
 //     unique index on cluster_id, action, scope_target) and (Release F)
 //     backup_assurance_collector_lease are isolated by a unique test cluster;
-//   - a natural key the test picks — eso_sync_history (uid, attempt_at),
+//   - a natural key the test picks — eso_sync_history (cluster_id, uid,
+//     attempt_at) since 000020,
 //     git_commit_cache (canonical_url, sha), and the TEXT/UUID primary keys
 //     on local_users, auth_providers, nc_channels, nc_notifications, nc_rules.
 //
