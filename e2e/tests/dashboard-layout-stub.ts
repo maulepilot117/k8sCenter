@@ -311,3 +311,99 @@ export async function stubLayoutStore(
 
   return writes;
 }
+
+export interface CatalogSourceReply {
+  data: unknown;
+  metadata?: Record<string, unknown>;
+  status?: number;
+  message?: string;
+}
+
+/**
+ * Deterministic P5 source responses, independent of the operators CI runs.
+ * Overrides model endpoint outcomes, never widget state: the real cache,
+ * shell and parameter wiring run. Layout writes use stubLayoutStore.
+ */
+export async function stubCatalogSources(
+  page: Page,
+  overrides: Record<string, CatalogSourceReply> = {},
+): Promise<void> {
+  const sources: Record<string, CatalogSourceReply> = {
+    "/cluster/info": {
+      data: { clusterID: "local", platform: "catalog-fixture", nodeCount: 1 },
+    },
+    "/cluster/dashboard-summary": {
+      data: {
+        nodes: { total: 1, ready: 1 },
+        pods: { total: 0, running: 0, pending: 0, failed: 0 },
+        alerts: { active: 0, critical: 0 },
+        cpu: null,
+        memory: null,
+      },
+    },
+    "/cluster/dashboard-trends": {
+      data: { pods: [], cpu: [], memory: [], networkRx: [], networkTx: [] },
+    },
+    "/resources/events": { data: [], metadata: { total: 0 } },
+    "/resources/nodes": {
+      data: [
+        {
+          metadata: { name: "catalog-node" },
+          status: { conditions: [{ type: "Ready", status: "True" }] },
+        },
+      ],
+      metadata: { total: 1 },
+    },
+    "/resources/namespaces": {
+      data: ["default", "prod", "staging", "forbidden"].map((name) => ({
+        metadata: { name },
+      })),
+    },
+    "/resources/services/prod": { data: [{ metadata: { name: "checkout" } }] },
+    "/resources/services/staging": {
+      data: [{ metadata: { name: "preview" } }],
+    },
+    "/resources/services/forbidden": { data: null, status: 403 },
+    "/policies/status": { data: { detected: "kyverno" } },
+    "/gitops/status": { data: { detected: "" } },
+    "/certificates/status": { data: { detected: false } },
+    "/mesh/status": { data: { status: { detected: "istio" } } },
+    "/externalsecrets/status": { data: { detected: false } },
+    "/velero/status": { data: { detected: false } },
+    "/scanning/status": { data: { detected: "" } },
+    "/storage/snapshot-classes": { data: [], metadata: { available: false } },
+    "/gateway/status": { data: { available: false } },
+    "/networking/cni": { data: { features: { hubble: false } } },
+    "/policies/compliance": { data: { total: 0, pass: 0, fail: 0, warn: 0 } },
+    "/policies/compliance/history": { data: [] },
+    // The real violations handler serializes its empty Go slice as null.
+    "/policies/violations": { data: null },
+    ...overrides,
+  };
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname.replace(/^\/api\/v1/, "");
+    const reply: CatalogSourceReply | undefined =
+      sources[path] ??
+      (/^\/diagnostics\/[^/]+\/summary$/.test(path)
+        ? { data: { total: 2, failing: [] } }
+        : undefined);
+    if (request.method() !== "GET" || reply === undefined) {
+      await route.fallback();
+      return;
+    }
+    const status = reply.status ?? 200;
+    await json(
+      route,
+      status,
+      status === 200
+        ? { data: reply.data, metadata: reply.metadata }
+        : {
+            error: {
+              code: status,
+              message: reply.message ?? "Catalog fixture refusal",
+            },
+          },
+    );
+  });
+}

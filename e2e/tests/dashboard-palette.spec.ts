@@ -169,7 +169,16 @@ test.describe("dashboard widget palette", () => {
     await expect(visibleOptions(page)).toHaveCount(CATALOG_SIZE);
     // The families the shipped catalog actually spans. Grouping is the whole
     // reason a flat list was not enough.
-    for (const family of ["Cluster", "Workloads", "Reliability", "Networking"]) {
+    for (const family of [
+      "Cluster",
+      "Workloads",
+      "Reliability",
+      "Security",
+      "Delivery",
+      "Data protection",
+      "Networking",
+      "Platform",
+    ]) {
       await expect(
         palette(page).getByRole("group", { name: family }),
       ).toBeVisible();

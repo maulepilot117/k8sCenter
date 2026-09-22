@@ -338,6 +338,28 @@ export function useDashboardFocus(
     (cells[vacated] ?? cells[cells.length - 1]).focus();
   }, [removals.value]);
 
+  // A keyboard move can reorder the same grid cell in the DOM, which blurs
+  // it even though the widget still exists. Capture before the child patch;
+  // restore afterwards only if that patch dropped focus to the document.
+  const activePlacement =
+    IS_BROWSER &&
+    editing &&
+    document.activeElement instanceof HTMLElement &&
+    document.activeElement.matches("[data-instance-id]")
+      ? document.activeElement
+      : null;
+  useLayoutEffect(() => {
+    if (
+      activePlacement?.isConnected &&
+      activePlacement.tabIndex >= 0 &&
+      document.activeElement === document.body
+    ) {
+      // Explicit toolbar/dialog/removal focus wins, and keeping the cell's
+      // focus must not scroll the dashboard while the user arranges it.
+      activePlacement.focus({ preventScroll: true });
+    }
+  });
+
   return {
     editButton,
     cancelButton,
