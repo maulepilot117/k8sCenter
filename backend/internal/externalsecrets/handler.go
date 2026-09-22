@@ -68,6 +68,13 @@ type Handler struct {
 	// offline"}` rather than 500. Wired in main.go after monDiscoverer.
 	MonitoringDisc *monitoring.Discoverer
 
+	// HistoryStore is optional; nil => the history endpoint answers 503
+	// history_unavailable rather than panicking. Wired in main.go.
+	HistoryStore ESOHistoryReader
+	// ClusterID is the configured id this process polls (cfg.ClusterID).
+	// History rows are stamped with it; the read path pins it.
+	ClusterID string
+
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cache      *cachedData
@@ -266,6 +273,24 @@ func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource
 		user.KubernetesGroups,
 		verb,
 		GroupName,
+		resource,
+		namespace,
+	)
+	return err == nil && can
+}
+
+// canAccessCore is canAccess for the core API group (apiGroup ""), which
+// canAccess cannot express because it pins GroupName. A failed check is a
+// denial: every caller uses it to decide whether to widen a response.
+func (h *Handler) canAccessCore(ctx context.Context, user *auth.User, verb, resource, namespace string) bool {
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	can, err := h.AccessChecker.CanAccessGroupResource(
+		ctx,
+		clusterID,
+		user.KubernetesUsername,
+		user.KubernetesGroups,
+		verb,
+		"",
 		resource,
 		namespace,
 	)
