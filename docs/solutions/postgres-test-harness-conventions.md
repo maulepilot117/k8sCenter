@@ -239,12 +239,12 @@ released in `t.Cleanup`:
 SELECT pg_advisory_lock(hashtext('app_settings'))
 ```
 
-Everything else is covered by one of three test-controlled keys (`testdb_test.go:36-48`):
+Everything else is covered by one of three test-controlled keys (`testdb_test.go:36-49`):
 an **owner column** (`audit_logs."user"`, `nc_reads.user_id`, `mobile_push_devices.user_id`,
 Release A's `user_preferences.owner_id`); a **cluster id** (`clusters`,
 `cluster_monitoring`, `compliance_snapshots (cluster_id, snapshot_date)`,
 `eso_bulk_refresh_jobs`, Release F's `backup_assurance_collector_lease`); or a **natural key
-the test picks** (`eso_sync_history (uid, attempt_at)`, `git_commit_cache (canonical_url, sha)`,
+the test picks** (`eso_sync_history (cluster_id, uid, attempt_at)` since migration 000020, `git_commit_cache (canonical_url, sha)`,
 and the `TEXT`/`UUID` primary keys on `local_users`, `auth_providers`, `nc_channels`,
 `nc_notifications`, `nc_rules`). That accounts for all 15 current tables: 3 owner-column,
 4 cluster-id, 7 natural-key, plus `app_settings`.

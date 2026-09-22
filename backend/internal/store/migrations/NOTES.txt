@@ -202,9 +202,45 @@ Operator action required:
   (cluster_id, uid, attempt_at) as its conflict target, and PostgreSQL refuses
   a conflict target no unique index matches (SQLSTATE 42P10). A new binary on
   an unmigrated database cannot happen in practice -- the backend migrates on
-  start -- but an OLD binary on a MIGRATED database (a binary-only rollback)
-  fails every history insert the same way. Roll the migration back with the
-  binary, or not at all.
+  start -- but an OLD binary on a MIGRATED database fails every history insert
+  the same way. Two situations produce that pairing:
+
+  1. The upgrade itself. The chart's backend Deployment uses the default
+     RollingUpdate strategy, so the new pod starts, migrates, and drops the
+     old (uid, attempt_at) index while the old pod is still running. Until
+     the old pod terminates, its ESO poller logs
+       "externalsecrets poller: history insert failed ... (SQLSTATE 42P10)"
+     on every attempt it tries to record. Nothing crashes and no row is
+     written wrongly. History is only at risk for a sync attempt that the
+     old pod alone observed AND that was superseded before the new pod's
+     first poll: the new pod starts with no memory of prior attempts, so its
+     first tick records every ExternalSecret's current attempt. With a 60s
+     poll and an overlap of well under a minute, that needs an
+     ExternalSecret refreshing faster than the rollout, and it costs one
+     timeline entry, not the timeline.
+
+     To avoid the window entirely, stop the old pod before the new one
+     migrates:
+
+         kubectl -n <ns> scale deploy/<fullname>-backend --replicas=0
+         helm upgrade <release> ... (restores replicaCount)
+
+     <fullname> is the chart's kubecenter.fullname: the release name when it
+     already contains "kubecenter", otherwise <release>-kubecenter.
+     `kubectl -n <ns> get deploy` shows it.
+
+     This is a one-time concern for the 000019 -> 000020 upgrade; no later
+     migration inherits it.
+
+  2. A binary-only rollback. Roll the migration back with the binary, or not
+     at all.
+
+  Why one migration and not an expand/contract pair across two releases: the
+  old index cannot coexist with the cluster-scoped key. Kept, it goes on
+  rejecting the second cluster's attempts (the bug this migration fixes), and
+  the new binary's INSERT would then fail with a unique violation instead of
+  deduplicating. A split would only move the same window to the second
+  release.
 
 Legacy rows after a KUBECENTER_CLUSTERID change:
   History rows carry the cluster id that was configured when they were

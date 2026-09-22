@@ -23,6 +23,7 @@ package store
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -478,6 +479,100 @@ func TestESOHistory_QueryPage_ContextCancelled(t *testing.T) {
 	}
 	if len(page.Entries) != 0 {
 		t.Errorf("cancelled QueryPage returned %d entries", len(page.Entries))
+	}
+}
+
+// Both page queries must seek the keyset index under a GENERIC plan, the kind
+// PostgreSQL settles on after pgx has run a cached prepared statement five
+// times. Result-based tests cannot see this: a query that degrades to scanning
+// from the newest row down to the cursor returns the same rows, just in
+// O(depth) time. Before this test existed QueryPage used one text with
+// "$3 IS NULL OR (attempt_at, id) < (...)", whose generic plan moved the row
+// comparison into a post-scan Filter.
+func TestESOHistory_PageSQL_KeysetUnderGenericPlan(t *testing.T) {
+	pool := testDB(t)
+	ctx := t.Context()
+
+	var serverVersion int
+	if err := pool.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&serverVersion); err != nil {
+		t.Fatalf("reading server version: %v", err)
+	}
+	if serverVersion < 160000 {
+		t.Skipf("EXPLAIN (GENERIC_PLAN) needs PostgreSQL 16+; server is %d", serverVersion)
+	}
+
+	tests := []struct {
+		name string
+		sql  string
+		// wantKeysetCond is true when the plan must push the cursor's row
+		// comparison into the index condition.
+		wantKeysetCond bool
+	}{
+		{"first page", esoHistoryFirstPageSQL, false},
+		{"next page", esoHistoryNextPageSQL, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer func() { _ = tx.Rollback(context.Background()) }()
+
+			// The shared test table is small, so a sequential scan is the
+			// cheapest plan and would hide the question. Disabling it asks
+			// what the planner does when it must use an index, which is the
+			// production situation for an object with a long history.
+			if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+				t.Fatalf("disabling seqscan: %v", err)
+			}
+			// Simple-query protocol: GENERIC_PLAN explains a statement with
+			// unbound $n placeholders, which pgx's extended protocol refuses
+			// to send without arguments.
+			results, err := tx.Conn().PgConn().Exec(ctx, `EXPLAIN (GENERIC_PLAN, FORMAT JSON) `+tc.sql).ReadAll()
+			if err != nil {
+				t.Fatalf("EXPLAIN: %v", err)
+			}
+			if len(results) != 1 || len(results[0].Rows) != 1 || len(results[0].Rows[0]) != 1 {
+				t.Fatalf("EXPLAIN returned an unexpected shape: %+v", results)
+			}
+			raw := results[0].Rows[0][0]
+			var plans []struct {
+				Plan map[string]any `json:"Plan"`
+			}
+			if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+				t.Fatalf("decoding plan %s: %v", raw, err)
+			}
+
+			var keysetScan map[string]any
+			var walk func(node map[string]any)
+			walk = func(node map[string]any) {
+				if filter, _ := node["Filter"].(string); strings.Contains(filter, "attempt_at") {
+					t.Errorf("plan filters on attempt_at after the scan (%q); the cursor is not an index condition:\n%s", filter, raw)
+				}
+				if name, _ := node["Index Name"].(string); name == "idx_eso_sync_history_keyset" {
+					keysetScan = node
+				}
+				children, _ := node["Plans"].([]any)
+				for _, c := range children {
+					if child, ok := c.(map[string]any); ok {
+						walk(child)
+					}
+				}
+			}
+			walk(plans[0].Plan)
+
+			if keysetScan == nil {
+				t.Fatalf("generic plan does not use idx_eso_sync_history_keyset:\n%s", raw)
+			}
+			cond, _ := keysetScan["Index Cond"].(string)
+			if !strings.Contains(cond, "cluster_id") || !strings.Contains(cond, "uid") {
+				t.Errorf("keyset Index Cond = %q; want it to pin cluster_id and uid", cond)
+			}
+			if tc.wantKeysetCond && !strings.Contains(cond, "attempt_at") {
+				t.Errorf("keyset Index Cond = %q; want the (attempt_at, id) row comparison in it", cond)
+			}
+		})
 	}
 }
 

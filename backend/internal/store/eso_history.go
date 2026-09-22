@@ -185,6 +185,32 @@ func DecodeESOHistoryCursor(s string) (ESOHistoryCursor, error) {
 	return ESOHistoryCursor{AttemptAt: time.UnixMicro(micros).UTC(), ID: id}, nil
 }
 
+// The two page queries QueryPage chooses between. They are two fixed SQL texts
+// rather than one text with "$3 IS NULL OR (attempt_at, id) < (...)", because
+// pgx prepares each text once per pooled connection and PostgreSQL switches a
+// prepared statement to a generic plan after five executions. A generic plan
+// cannot know whether $3 is NULL, so the OR form degrades to scanning every
+// row from the newest down to the cursor and filtering: O(depth) per page.
+// With the predicate fixed in the text, the row-value comparison stays an
+// index condition on idx_eso_sync_history_keyset under either plan type
+// (TestESOHistory_NextPageSQL_KeysetUnderGenericPlan pins this).
+const (
+	esoHistoryFirstPageSQL = `
+		SELECT` + esoHistoryColumns + `
+		FROM eso_sync_history
+		WHERE cluster_id = $1 AND uid = $2
+		ORDER BY attempt_at DESC, id DESC
+		LIMIT $3`
+
+	esoHistoryNextPageSQL = `
+		SELECT` + esoHistoryColumns + `
+		FROM eso_sync_history
+		WHERE cluster_id = $1 AND uid = $2
+		  AND (attempt_at, id) < ($3::timestamptz, $4::bigint)
+		ORDER BY attempt_at DESC, id DESC
+		LIMIT $5`
+)
+
 // QueryPage returns one page of history for an ExternalSecret, newest first,
 // starting after the cursor (or at the newest row when after is nil). limit
 // is clamped by clampESOHistoryLimit.
@@ -204,24 +230,15 @@ func DecodeESOHistoryCursor(s string) (ESOHistoryCursor, error) {
 func (s *ESOHistoryStore) QueryPage(ctx context.Context, clusterID, uid string, after *ESOHistoryCursor, limit int) (ESOHistoryPage, error) {
 	limit = clampESOHistoryLimit(limit)
 
-	// Nil pointers rather than zero values: the IS NULL branch is what tells
-	// PostgreSQL there is no lower bound on the first page.
-	var afterAt *time.Time
-	var afterID *int64
-	if after != nil {
-		afterAt, afterID = &after.AttemptAt, &after.ID
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if after == nil {
+		rows, err = s.pool.Query(ctx, esoHistoryFirstPageSQL, clusterID, uid, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, esoHistoryNextPageSQL, clusterID, uid, after.AttemptAt, after.ID, limit)
 	}
-
-	// The row-value comparison walks idx_eso_sync_history_keyset directly.
-	rows, err := s.pool.Query(ctx, `
-		SELECT`+esoHistoryColumns+`
-		FROM eso_sync_history
-		WHERE cluster_id = $1
-		  AND uid = $2
-		  AND ($3::timestamptz IS NULL OR (attempt_at, id) < ($3::timestamptz, $4::bigint))
-		ORDER BY attempt_at DESC, id DESC
-		LIMIT $5`,
-		clusterID, uid, afterAt, afterID, limit)
 	if err != nil {
 		return ESOHistoryPage{}, fmt.Errorf("query eso_sync_history page: %w", err)
 	}
