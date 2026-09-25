@@ -53,6 +53,9 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
   const evidenceTab = useSignal<EvidenceTabKey | null>(null);
   const forceSyncing = useSignal(false);
   const forceSyncMsg = useSignal<string | null>(null);
+  // Bumped on a successful force-sync so the kept-mounted evidence panel
+  // remounts and reloads the open tab instead of showing pre-sync evidence.
+  const evidenceEpoch = useSignal(0);
 
   const onForceSync = async () => {
     forceSyncing.value = true;
@@ -60,6 +63,7 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
     try {
       await esoApi.forceSyncExternalSecret(namespace, name);
       forceSyncMsg.value = "Force-sync requested.";
+      evidenceEpoch.value++;
     } catch (err) {
       if (err instanceof ApiError) {
         const reason = err.body?.error?.reason as string | undefined;
@@ -270,6 +274,7 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
       {evidenceTab.value && (
         <div hidden={!isEvidenceTab(activeTab.value)}>
           <ESOEvidencePanel
+            key={evidenceEpoch.value}
             kind="externalsecrets"
             namespace={es.namespace}
             name={es.name}

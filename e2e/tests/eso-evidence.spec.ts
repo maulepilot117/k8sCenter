@@ -51,10 +51,12 @@ async function serveESO(page: Page, evidence: Evidence = {}) {
 
   // Anything not answered below reads as ESO absent rather than reaching a
   // backend that has no ESO to ask.
-  await page.route("**/api/v1/externalsecrets/**", (route) =>
-    json(route, 503, {
+  await page.route("**/api/v1/externalsecrets/**", (route) => {
+    requested.push(new URL(route.request().url()).pathname);
+    return json(route, 503, {
       error: { code: 503, message: "ESO not detected", reason: "eso_not_detected" },
-    }));
+    });
+  });
 
   await page.route(`**/api/v1/externalsecrets/externalsecrets/${NS}/${ES}`, (route) =>
     json(route, 200, {
@@ -205,6 +207,10 @@ test.describe("eso evidence — ES and SecretStore", () => {
                 outcome: "success",
                 reason: "SecretSynced",
                 diffKeyCounts: { added: 1, removed: 0, changed: 0 },
+                // Sent anyway, so the assertions below also catch the page
+                // rendering fields the projection says are withheld.
+                message: "RESTRICTED_MESSAGE",
+                diffKeysAdded: ["password"],
               },
             ],
           },
@@ -220,6 +226,7 @@ test.describe("eso evidence — ES and SecretStore", () => {
     // No diff-key chip: the key names are what the projection withholds.
     await expect(page.getByText("Added", { exact: true })).toHaveCount(0);
     await expect(page.locator("li code")).toHaveCount(0);
+    await expect(page.getByText("RESTRICTED_MESSAGE")).toHaveCount(0);
   });
 
   test("SecretStore detail has no History tab", async ({ page }) => {
