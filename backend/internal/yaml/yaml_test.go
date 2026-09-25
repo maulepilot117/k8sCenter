@@ -432,3 +432,24 @@ func TestExportToYAML_ProducesValidYAML(t *testing.T) {
 		t.Error("YAML should not contain resourceVersion")
 	}
 }
+
+func TestUIDMatchesExpected(t *testing.T) {
+	obj := &unstructured.Unstructured{}
+	obj.SetUID("uid-live")
+	cases := []struct {
+		name     string
+		expected string
+		want     bool
+	}{
+		{"no expectation keeps the original behaviour", "", true},
+		{"same object", "uid-live", true},
+		{"same-name replacement is refused", "uid-old", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := uidMatchesExpected(obj, tc.expected); got != tc.want {
+				t.Errorf("uidMatchesExpected(%q) = %t; want %t", tc.expected, got, tc.want)
+			}
+		})
+	}
+}

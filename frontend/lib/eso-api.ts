@@ -8,13 +8,17 @@
  */
 
 import { apiGet, apiPost } from "@/lib/api.ts";
+import { evidenceNamespaceSegment } from "@/lib/eso-evidence.ts";
 import type {
   BulkRefreshAction,
   BulkRefreshJob,
   BulkScopeResponse,
   ClusterExternalSecret,
   ESOStatus,
+  EvidenceEventsResponse,
+  EvidenceKind,
   ExternalSecret,
+  HistoryPage,
   PathDiscoveryResponse,
   PushSecret,
   SecretStore,
@@ -204,4 +208,57 @@ export const esoApi = {
   /** ExternalSecret wizard preview — returns rendered YAML. */
   previewExternalSecret: (input: unknown) =>
     apiPost<{ yaml: string }>("/v1/wizards/external-secret/preview", input),
+
+  // --- Release B evidence (U14a history, U15 events) ----------------------
+
+  /** One page of an ExternalSecret's sync history, newest first. The next
+   *  page's cursor is the response's `metadata.continue`. */
+  getExternalSecretHistory: (
+    namespace: string,
+    name: string,
+    opts: { limit?: number; cursor?: string; signal?: AbortSignal } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+    if (opts.cursor) qs.set("cursor", opts.cursor);
+    const query = qs.size > 0 ? `?${qs}` : "";
+    return apiGet<HistoryPage>(
+      `/v1/externalsecrets/externalsecrets/${pathParam(namespace)}/${pathParam(
+        name,
+      )}/history${query}`,
+      opts.signal,
+    );
+  },
+
+  /** Kubernetes events for one live ESO object, UID-scoped server-side.
+   *  `namespace === null` addresses a cluster-scoped kind. */
+  getEvidenceEvents: (
+    kind: EvidenceKind,
+    namespace: string | null,
+    name: string,
+    signal?: AbortSignal,
+  ) =>
+    apiGet<EvidenceEventsResponse>(
+      `/v1/externalsecrets/evidence/${kind}/${evidenceNamespaceSegment(
+        namespace,
+      )}/${pathParam(name)}/events`,
+      signal,
+    ),
+
+  /** Authorized YAML for any ESO kind via the generic export endpoint. */
+  exportEvidenceYaml: (
+    kind: EvidenceKind,
+    namespace: string | null,
+    name: string,
+    expectUID: string,
+    signal?: AbortSignal,
+  ) =>
+    // The export strips metadata.uid, so identity is checked server-side:
+    // a same-name replacement answers 409 uid_mismatch instead of its YAML.
+    apiGet<string>(
+      `/v1/yaml/export/${kind}/${evidenceNamespaceSegment(
+        namespace,
+      )}/${pathParam(name)}?expectUID=${encodeURIComponent(expectUID)}`,
+      signal,
+    ),
 };

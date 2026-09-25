@@ -41,12 +41,13 @@
     "d3-force": "^3.0.0"
   },
   "devDependencies": {
-    "preact-render-to-string": "^6.7.0",
     "@astrojs/check": "^0.9.10",
     "@babel/parser": "7.29.8",
     "@biomejs/biome": "2.5.12",
+    "@happy-dom/global-registrator": "20.14.5",
     "@types/bun": "1.4.1",
     "@types/ws": "^8.18.1",
+    "preact-render-to-string": "^6.7.0",
     "typescript": "^6.0.3"
   },
   "overrides": {
