@@ -628,10 +628,9 @@ func TestEvidenceEvents_ContextCancelled(t *testing.T) {
 	w := httptest.NewRecorder()
 	f.h.HandleGetEvidenceEvents(w, r.WithContext(ctx))
 
-	if w.Code == http.StatusOK {
-		t.Fatalf("cancelled request returned 200: %s", w.Body.String())
-	}
-	assertErrorReason(t, w, w.Code, "")
+	// A cancelled events List is a failed read: one well-formed 500 envelope,
+	// never a 200 page or an empty list.
+	assertErrorReason(t, w, http.StatusInternalServerError, "")
 	if strings.Contains(w.Body.String(), "EVENT_MSG_MARKER") {
 		t.Error("cancelled request leaked event content")
 	}

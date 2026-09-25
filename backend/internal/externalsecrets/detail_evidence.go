@@ -27,16 +27,18 @@ import (
 )
 
 // evidenceResources is the kind allowlist for the evidence endpoints: the
-// five ESO plurals, matched exactly. The version and namespaced flag are NOT
-// stored here — they come from live discovery, so this table cannot drift
-// from what the cluster serves.
-var evidenceResources = map[string]struct{}{
-	"externalsecrets":        {},
-	"clusterexternalsecrets": {},
-	"secretstores":           {},
-	"clustersecretstores":    {},
-	"pushsecrets":            {},
-}
+// five ESO plurals, matched exactly, taken from the package GVRs so the set
+// of kinds has one source. Only the plural is used — the version and
+// namespaced flag come from live discovery, never from those v1-pinned vars.
+var evidenceResources = func() map[string]struct{} {
+	m := map[string]struct{}{}
+	for _, gvr := range []schema.GroupVersionResource{
+		ExternalSecretGVR, ClusterExternalSecretGVR, SecretStoreGVR, ClusterSecretStoreGVR, PushSecretGVR,
+	} {
+		m[gvr.Resource] = struct{}{}
+	}
+	return m
+}()
 
 // Bounds on what the events endpoint reads and returns.
 const (
