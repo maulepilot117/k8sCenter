@@ -1,5 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
+import type { EvidenceKind } from "../../frontend/lib/eso-types.ts";
 
 // Release B evidence tabs on the five ESO detail pages (U17 and U18).
 //
@@ -31,7 +32,7 @@ const PUSH_PATH = `/external-secrets/push-secrets/${NS}/${PUSH}`;
 
 // The UID each kind's events response names. The panel discards a response
 // for any other UID, so the stub must answer for the object the page shows.
-const EVIDENCE_UIDS: Record<string, string> = {
+const EVIDENCE_UIDS: Record<EvidenceKind, string> = {
   externalsecrets: ES_UID,
   secretstores: STORE_UID,
   clustersecretstores: CLUSTER_STORE_UID,
@@ -60,7 +61,7 @@ function json(route: Route, status: number, body: unknown) {
 interface Evidence {
   history?: (route: Route) => Promise<void>;
   /** Answers one kind's events request; return undefined for the default. */
-  events?: (route: Route, kind: string) => Promise<void> | undefined;
+  events?: (route: Route, kind: EvidenceKind) => Promise<void> | undefined;
 }
 
 /**
@@ -178,7 +179,7 @@ async function serveESO(page: Page, evidence: Evidence = {}) {
     const path = new URL(route.request().url()).pathname;
     requested.push(path);
     // .../evidence/{kind}/{namespace|_}/{name}/events
-    const kind = path.split("/evidence/")[1].split("/")[0];
+    const kind = path.split("/evidence/")[1].split("/")[0] as EvidenceKind;
     const custom = evidence.events?.(route, kind);
     if (custom) return custom;
     return json(route, 200, {
