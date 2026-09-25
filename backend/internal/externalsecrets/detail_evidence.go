@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/sync/singleflight"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,6 +23,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
@@ -43,10 +45,14 @@ var evidenceResources = func() map[string]struct{} {
 // Bounds on what the events endpoint reads and returns.
 const (
 	evidenceEventsListLimit   = 200
+	evidenceEventsMaxPages    = 5
 	evidenceMessageMaxBytes   = 1024
 	evidenceTokenMaxBytes     = 256
 	evidenceClusterNamespace  = "_"
 	evidenceDiscoveryCacheTTL = staleDuration
+	// evidenceDiscoveryWalkTimeout bounds one shared discovery walk, which
+	// runs detached from the request that started it.
+	evidenceDiscoveryWalkTimeout = 30 * time.Second
 )
 
 // evidenceOutcomeOnlyDroppedFields names the event keys an outcome-only
@@ -66,12 +72,14 @@ type evidenceResource struct {
 
 // evidenceGVRCache holds the last successful discovery walk of the ESO
 // group. The zero value is ready to use. now is a test seam; nil means
-// time.Now.
+// time.Now. group coalesces concurrent refreshes into one walkESOGroup call
+// (see resolveESOGVR).
 type evidenceGVRCache struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	at         time.Time
 	byResource map[string]evidenceResource
 	now        func() time.Time
+	group      singleflight.Group
 }
 
 func (c *evidenceGVRCache) clock() time.Time {
@@ -125,7 +133,11 @@ type evidenceEventsResponse struct {
 //     (cluster-wide for a cluster-scoped kind); without it they are omitted.
 //  9. Events are listed with an involvedObject.uid field selector, so a
 //     deleted-and-recreated object never inherits its predecessor's events,
-//     and filtered on the UID again in-process. A forbidden list is 403
+//     paging up to evidenceEventsMaxPages pages of evidenceEventsListLimit
+//     each and filtering on the UID again in-process. The accumulated pages
+//     are sorted newest first and cut to evidenceEventsListLimit; truncated
+//     is true when a Continue token remains after the page cap, or when the
+//     top-N cut dropped events. A forbidden list on any page is 403
 //     events_forbidden naming the grant — never an empty 200.
 //
 // The generic /resources/events path cannot be reused: it ignores the
@@ -235,32 +247,54 @@ func (h *Handler) HandleGetEvidenceEvents(w http.ResponseWriter, r *http.Request
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
 		return
 	}
-	list, err := kube.CoreV1().Events(ns).List(ctx, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("involvedObject.uid", uid).String(),
-		Limit:         evidenceEventsListLimit,
-	})
-	if err != nil {
-		if apierrors.IsForbidden(err) {
-			httputil.WriteErrorWithReason(w, http.StatusForbidden,
-				"access denied: this object's events require "+eventsGrant(ns),
-				"events_forbidden", map[string]any{"requiredGrant": eventsGrant(ns)})
+	// The API server returns items in key (name) order, which for
+	// client-go-named events (<obj>.<hex UnixNano>) is oldest first — a
+	// single page would silently hand back the OLDEST evidenceEventsListLimit
+	// events for an object with more than that many. Page up to
+	// evidenceEventsMaxPages, accumulate, then sort and cut to newest.
+	var items []corev1.Event
+	continueToken := ""
+	for page := 0; page < evidenceEventsMaxPages; page++ {
+		list, err := kube.CoreV1().Events(ns).List(ctx, metav1.ListOptions{
+			FieldSelector: fields.OneTermEqualSelector("involvedObject.uid", uid).String(),
+			Limit:         evidenceEventsListLimit,
+			Continue:      continueToken,
+		})
+		if err != nil {
+			if apierrors.IsForbidden(err) {
+				httputil.WriteErrorWithReason(w, http.StatusForbidden,
+					"access denied: this object's events require "+eventsGrant(ns),
+					"events_forbidden", map[string]any{"requiredGrant": eventsGrant(ns)})
+				return
+			}
+			h.Logger.Error("list eso object events", "kind", kind, "namespace", ns, "name", name, "error", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to list events", "")
 			return
 		}
-		h.Logger.Error("list eso object events", "kind", kind, "namespace", ns, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to list events", "")
-		return
+		items = append(items, list.Items...)
+		continueToken = list.Continue
+		if continueToken == "" {
+			break
+		}
 	}
+	pagesRemain := continueToken != ""
 
 	// The field selector already filtered server-side; this repeats it so the
 	// UID boundary does not rest on one API-server feature alone.
-	items := slices.DeleteFunc(list.Items, func(ev corev1.Event) bool { return string(ev.InvolvedObject.UID) != uid })
+	items = slices.DeleteFunc(items, func(ev corev1.Event) bool { return string(ev.InvolvedObject.UID) != uid })
 	slices.SortStableFunc(items, compareEventsNewestFirst)
+
+	truncated := pagesRemain
+	if len(items) > evidenceEventsListLimit {
+		truncated = true
+		items = items[:evidenceEventsListLimit]
+	}
 
 	resp := evidenceEventsResponse{
 		UID:        uid,
 		Projection: historyProjection{Level: level, DroppedFields: []string{}},
 		Events:     make([]evidenceEventDTO, 0, len(items)),
-		Truncated:  list.Continue != "",
+		Truncated:  truncated,
 	}
 	if level == projectionOutcomeOnly {
 		resp.Projection.DroppedFields = evidenceOutcomeOnlyDroppedFields
@@ -285,19 +319,57 @@ func (h *Handler) HandleGetEvidenceEvents(w http.ResponseWriter, r *http.Request
 // to keep this package off internal/yaml. The walk is cached for
 // evidenceDiscoveryCacheTTL, mirroring the Discoverer's own TTL; a failed
 // walk is not cached.
+//
+// A fresh cache is read under an RLock and returned without touching the
+// network. On a miss or a stale entry the walk runs through the cache's
+// singleflight.Group so concurrent refreshes coalesce into one walkESOGroup
+// call — no lock is held across that I/O, mirroring Discoverer.Probe.
+//
+// The shared walk runs on a context detached from any one caller and bounded
+// by evidenceDiscoveryWalkTimeout, so a client that disconnects does not fail
+// the others coalesced onto its walk; each caller still stops waiting when
+// its own context ends. DoChan runs the walk on its own goroutine, outside
+// chi's recovery, hence recoverutil.Safe.
 func (h *Handler) resolveESOGVR(ctx context.Context, resource string) (evidenceResource, error) {
 	c := &h.evidenceGVRs
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	if c.byResource == nil || c.clock().Sub(c.at) >= evidenceDiscoveryCacheTTL {
-		byResource, err := walkESOGroup(ctx, discovery.ToDiscoveryInterfaceWithContext(h.Discoverer.discovery()))
-		if err != nil {
-			return evidenceResource{}, err
+	c.mu.RLock()
+	if c.byResource != nil && c.clock().Sub(c.at) < evidenceDiscoveryCacheTTL {
+		res, ok := c.byResource[resource]
+		c.mu.RUnlock()
+		if !ok {
+			return evidenceResource{}, errEvidenceNotServed
 		}
-		c.byResource, c.at = byResource, c.clock()
+		return res, nil
 	}
-	res, ok := c.byResource[resource]
+	c.mu.RUnlock()
+
+	walk := c.group.DoChan("eso-gvr", func() (any, error) {
+		walkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), evidenceDiscoveryWalkTimeout)
+		defer cancel()
+		var byResource map[string]evidenceResource
+		err := fmt.Errorf("%w: discovery walk panicked", errEvidenceDiscovery)
+		recoverutil.Safe(h.Logger, "eso evidence discovery walk", func() {
+			byResource, err = walkESOGroup(walkCtx, discovery.ToDiscoveryInterfaceWithContext(h.Discoverer.discovery()))
+		})
+		if err != nil {
+			return nil, err
+		}
+		c.mu.Lock()
+		c.byResource, c.at = byResource, c.clock()
+		c.mu.Unlock()
+		return byResource, nil
+	})
+	var result singleflight.Result
+	select {
+	case <-ctx.Done():
+		return evidenceResource{}, fmt.Errorf("%w: %w", errEvidenceDiscovery, ctx.Err())
+	case result = <-walk:
+	}
+	if result.Err != nil {
+		return evidenceResource{}, result.Err
+	}
+	res, ok := result.Val.(map[string]evidenceResource)[resource]
 	if !ok {
 		return evidenceResource{}, errEvidenceNotServed
 	}

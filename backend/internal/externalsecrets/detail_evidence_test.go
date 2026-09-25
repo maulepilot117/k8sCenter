@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	goruntime "runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -149,6 +152,20 @@ func esoEvent(ns, name, uid string, last time.Time) corev1.Event {
 		LastTimestamp:  metav1.NewTime(last),
 		Source:         corev1.EventSource{Component: "external-secrets"},
 	}
+}
+
+// makeEventPage builds n events about uid, named sequentially from
+// startIndex with LastTimestamp increasing one minute per global index — the
+// shape a real API-server page for a long-lived, frequently-firing object
+// would have. Concatenating pages built this way keeps a single unambiguous
+// "globally newest" event at the highest index across the whole run.
+func makeEventPage(ns, uid string, base time.Time, n, startIndex int) []corev1.Event {
+	out := make([]corev1.Event, n)
+	for i := 0; i < n; i++ {
+		idx := startIndex + i
+		out[i] = esoEvent(ns, fmt.Sprintf("ev-%05d", idx), uid, base.Add(time.Duration(idx)*time.Minute))
+	}
+	return out
 }
 
 var evidenceUser = &auth.User{KubernetesUsername: "alice", KubernetesGroups: []string{"dev"}}
@@ -542,6 +559,9 @@ func TestEvidenceEvents_NewestFirst(t *testing.T) {
 	}
 }
 
+// The reactor never returns an empty Continue, so this exercises the
+// evidenceEventsMaxPages cap itself: the walk must stop after exactly that
+// many pages rather than following Continue forever.
 func TestEvidenceEvents_ContinueTokenMarksTruncated(t *testing.T) {
 	f := newEvidenceFixture(allKindsAtV1(),
 		[]runtime.Object{esoObject("v1", "ExternalSecret", "apps", "db-creds", "uid-1")},
@@ -556,10 +576,103 @@ func TestEvidenceEvents_ContinueTokenMarksTruncated(t *testing.T) {
 
 	b := decodeEvidence(t, getEvidence(f.h, "externalsecrets", "apps", "db-creds", evidenceUser))
 	if !b.Data.Truncated {
-		t.Error("truncated = false although the API server returned a continue token")
+		t.Error("truncated = false although a continue token remained after the page cap")
 	}
 	if limit != 200 {
 		t.Errorf("List limit = %d; want 200", limit)
+	}
+	if got := len(eventListCalls(f.kube)); got != evidenceEventsMaxPages {
+		t.Errorf("List calls = %d; want evidenceEventsMaxPages (%d) — the walk must stop at the page cap", got, evidenceEventsMaxPages)
+	}
+}
+
+// TestEvidenceEvents_MultiPage_ReturnsNewestAcrossPages is R-3's real-world
+// case: an object with more than evidenceEventsListLimit matching events,
+// where the API server serves them oldest-first across several pages. The
+// response must hold the newest evidenceEventsListLimit, not the oldest.
+func TestEvidenceEvents_MultiPage_ReturnsNewestAcrossPages(t *testing.T) {
+	f := newEvidenceFixture(allKindsAtV1(),
+		[]runtime.Object{esoObject("v1", "ExternalSecret", "apps", "db-creds", "uid-1")},
+		nil, resources.NewAlwaysAllowAccessChecker())
+
+	base := evidenceNow.Add(-10 * time.Hour)
+	pages := [][]corev1.Event{
+		makeEventPage("apps", "uid-1", base, 200, 0),   // oldest 200
+		makeEventPage("apps", "uid-1", base, 200, 200), // next 200, newer
+		makeEventPage("apps", "uid-1", base, 50, 400),  // newest 50
+	}
+	continues := []string{"", "p1", "p2"}
+	callN := 0
+	f.kube.PrependReactor("list", "events", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		got := a.(clienttesting.ListActionImpl).ListOptions.Continue
+		if callN >= len(continues) {
+			t.Fatalf("unexpected extra List call (continue=%q); page cap must stop the walk", got)
+		}
+		if got != continues[callN] {
+			t.Fatalf("call %d: continue = %q; want %q", callN, got, continues[callN])
+		}
+		list := &corev1.EventList{Items: pages[callN]}
+		if callN < len(pages)-1 {
+			list.Continue = continues[callN+1]
+		}
+		callN++
+		return true, list, nil
+	})
+
+	b := decodeEvidence(t, getEvidence(f.h, "externalsecrets", "apps", "db-creds", evidenceUser))
+	if !b.Data.Truncated {
+		t.Error("truncated = false; want true — 450 matching events cut to 200")
+	}
+	if len(b.Data.Events) != evidenceEventsListLimit {
+		t.Fatalf("events = %d; want evidenceEventsListLimit (%d)", len(b.Data.Events), evidenceEventsListLimit)
+	}
+	var newest time.Time
+	if err := json.Unmarshal(b.Data.Events[0]["lastTimestamp"], &newest); err != nil {
+		t.Fatalf("lastTimestamp: %v", err)
+	}
+	wantNewest := base.Add(449 * time.Minute).UTC()
+	if !newest.Equal(wantNewest) {
+		t.Errorf("first event lastTimestamp = %v; want the globally newest %v", newest, wantNewest)
+	}
+}
+
+// TestEvidenceEvents_AllFitAcrossTwoPages is the non-truncating case: every
+// matching event across the paged walk fits under evidenceEventsListLimit,
+// so nothing is cut and truncated stays false.
+func TestEvidenceEvents_AllFitAcrossTwoPages(t *testing.T) {
+	f := newEvidenceFixture(allKindsAtV1(),
+		[]runtime.Object{esoObject("v1", "ExternalSecret", "apps", "db-creds", "uid-1")},
+		nil, resources.NewAlwaysAllowAccessChecker())
+
+	base := evidenceNow.Add(-2 * time.Hour)
+	pages := [][]corev1.Event{
+		makeEventPage("apps", "uid-1", base, 100, 0),
+		makeEventPage("apps", "uid-1", base, 50, 100),
+	}
+	callN := 0
+	f.kube.PrependReactor("list", "events", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		got := a.(clienttesting.ListActionImpl).ListOptions.Continue
+		wantContinue := ""
+		if callN == 1 {
+			wantContinue = "p2"
+		}
+		if got != wantContinue {
+			t.Fatalf("call %d: continue = %q; want %q", callN, got, wantContinue)
+		}
+		list := &corev1.EventList{Items: pages[callN]}
+		if callN == 0 {
+			list.Continue = "p2"
+		}
+		callN++
+		return true, list, nil
+	})
+
+	b := decodeEvidence(t, getEvidence(f.h, "externalsecrets", "apps", "db-creds", evidenceUser))
+	if b.Data.Truncated {
+		t.Error("truncated = true; want false — all 150 matching events fit under the limit")
+	}
+	if len(b.Data.Events) != 150 {
+		t.Errorf("events = %d; want all 150", len(b.Data.Events))
 	}
 }
 
@@ -622,6 +735,11 @@ func TestEvidenceEvents_ContextCancelled(t *testing.T) {
 	f.kube.PrependReactor("list", "events", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, nil, context.Canceled
 	})
+	// Warm the discovery cache so the cancellation reaches the events List;
+	// on a cold cache the caller would stop waiting on discovery first.
+	if _, err := f.h.resolveESOGVR(context.Background(), "externalsecrets"); err != nil {
+		t.Fatalf("warm discovery cache: %v", err)
+	}
 	r := evidenceRequest("externalsecrets", "apps", "db-creds", evidenceUser)
 	ctx, cancel := context.WithCancel(r.Context())
 	cancel()
@@ -633,6 +751,55 @@ func TestEvidenceEvents_ContextCancelled(t *testing.T) {
 	assertErrorReason(t, w, http.StatusInternalServerError, "")
 	if strings.Contains(w.Body.String(), "EVENT_MSG_MARKER") {
 		t.Error("cancelled request leaked event content")
+	}
+}
+
+// Every 500 branch before the events List must stop there: an evidence page
+// is never served for an object whose identity or client could not be
+// established, and events are never listed in that case. Mirrors
+// TestHistory_InternalErrors_Return500WithoutQuerying in history_handler_test.go.
+func TestEvidenceEvents_InternalErrors_Return500WithoutListingEvents(t *testing.T) {
+	cases := map[string]func(f *evidenceFixture){
+		"dynForUser fails": func(f *evidenceFixture) {
+			f.h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) {
+				return nil, errors.New("no rest config")
+			}
+		},
+		"live get fails": func(f *evidenceFixture) {
+			dyn := evidenceDynClient(allKindsAtV1(), esoObject("v1", "ExternalSecret", "apps", "db-creds", "uid-1"))
+			dyn.PrependReactor("get", "externalsecrets", func(clienttesting.Action) (bool, runtime.Object, error) {
+				return true, nil, errors.New("etcd timeout")
+			})
+			f.h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) { return dyn, nil }
+		},
+		"object has no uid": func(f *evidenceFixture) {
+			dyn := evidenceDynClient(allKindsAtV1(), esoObject("v1", "ExternalSecret", "apps", "db-creds", ""))
+			f.h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) { return dyn, nil }
+		},
+		"clientForUser fails": func(f *evidenceFixture) {
+			f.h.clientForUserOverride = func(string, []string) (kubernetes.Interface, error) {
+				return nil, errors.New("impersonation denied")
+			}
+		},
+	}
+	for name, breakIt := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newEvidenceFixture(allKindsAtV1(),
+				[]runtime.Object{esoObject("v1", "ExternalSecret", "apps", "db-creds", "uid-1")},
+				nil, resources.NewAlwaysAllowAccessChecker())
+			breakIt(f)
+
+			w := getEvidence(f.h, "externalsecrets", "apps", "db-creds", evidenceUser)
+			assertErrorReason(t, w, http.StatusInternalServerError, "")
+			if len(eventListCalls(f.kube)) != 0 {
+				t.Error("events listed after the object or client could not be resolved")
+			}
+			for _, leak := range []string{"no rest config", "etcd timeout", "impersonation denied"} {
+				if strings.Contains(w.Body.String(), leak) {
+					t.Errorf("internal error text %q reached the client", leak)
+				}
+			}
+		})
 	}
 }
 
@@ -692,5 +859,65 @@ func TestResolveESOGVR_FailureIsNotCached(t *testing.T) {
 	fail.Store(false)
 	if _, err := f.h.resolveESOGVR(context.Background(), "externalsecrets"); err != nil {
 		t.Errorf("a transient failure was cached: %v", err)
+	}
+}
+
+// TestResolveESOGVR_ConcurrentColdLookupsCoalesce guards the singleflight
+// wiring: a slow discovery walk must not be re-run once per waiter. The
+// discovery reactor blocks until this test has given every goroutine a
+// scheduling window to pile onto the same in-flight walk, so the assertion
+// that exactly one walk happened is meaningful rather than a race.
+func TestResolveESOGVR_ConcurrentColdLookupsCoalesce(t *testing.T) {
+	f := newEvidenceFixture(allKindsAtV1(), nil, nil, resources.NewAlwaysAllowAccessChecker())
+
+	release := make(chan struct{})
+	var entered atomic.Int32
+	fake := &clienttesting.Fake{Resources: allKindsAtV1()}
+	fake.AddReactor("get", "group", func(clienttesting.Action) (bool, runtime.Object, error) {
+		entered.Add(1)
+		<-release
+		return false, nil, nil
+	})
+	f.h.Discoverer.discoOverride = func() discovery.DiscoveryInterface { return &fakediscovery.FakeDiscovery{Fake: fake} }
+
+	const n = 10
+	var wg sync.WaitGroup
+	var started atomic.Int32
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Barrier: don't call resolveESOGVR until all n goroutines have
+			// been scheduled, so the calls arrive close together.
+			started.Add(1)
+			for started.Load() < n {
+				goruntime.Gosched()
+			}
+			_, err := f.h.resolveESOGVR(context.Background(), "externalsecrets")
+			errs[i] = err
+		}(i)
+	}
+
+	// Wait for the walk to start, then give the remaining goroutines a
+	// scheduling window to join the same singleflight call before it's
+	// allowed to complete.
+	for entered.Load() == 0 {
+		goruntime.Gosched()
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: resolve failed: %v", i, err)
+		}
+	}
+	// entered is this test's own discovery reactor's call count — the
+	// fixture's f.discoCalls is wired to the original fixture-level fake and
+	// is not incremented once discoOverride is replaced above.
+	if got := entered.Load(); got != 1 {
+		t.Errorf("discovery reactor entered %d times across %d concurrent cold lookups; want exactly 1 (singleflight must coalesce)", got, n)
 	}
 }
