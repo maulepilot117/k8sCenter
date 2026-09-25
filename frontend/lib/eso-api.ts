@@ -250,12 +250,15 @@ export const esoApi = {
     kind: EvidenceKind,
     namespace: string | null,
     name: string,
+    expectUID: string,
     signal?: AbortSignal,
   ) =>
+    // The export strips metadata.uid, so identity is checked server-side:
+    // a same-name replacement answers 409 uid_mismatch instead of its YAML.
     apiGet<string>(
       `/v1/yaml/export/${kind}/${evidenceNamespaceSegment(
         namespace,
-      )}/${pathParam(name)}`,
+      )}/${pathParam(name)}?expectUID=${encodeURIComponent(expectUID)}`,
       signal,
     ),
 };

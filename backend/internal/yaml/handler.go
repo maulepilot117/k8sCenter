@@ -310,6 +310,16 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ?expectUID= lets a caller that already holds an object's identity
+	// refuse a same-name replacement: the export strips metadata.uid, so the
+	// caller could not tell otherwise. Absent, nothing changes.
+	if !uidMatchesExpected(obj, r.URL.Query().Get("expectUID")) {
+		httputil.WriteErrorWithReason(w, http.StatusConflict,
+			fmt.Sprintf("%s '%s' was replaced by a different object with the same name", kind, name),
+			"uid_mismatch", nil)
+		return
+	}
+
 	yamlBytes, err := ExportToYAML(obj)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to export YAML", err.Error())
@@ -322,6 +332,13 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Helpers ---
+
+// uidMatchesExpected reports whether obj is the object the caller expects.
+// An empty expectation matches anything, so callers that do not send one
+// keep the endpoint's original behaviour.
+func uidMatchesExpected(obj *unstructured.Unstructured, expected string) bool {
+	return expected == "" || string(obj.GetUID()) == expected
+}
 
 // readYAMLBody reads and validates the raw YAML body from the request.
 func readYAMLBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {

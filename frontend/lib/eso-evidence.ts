@@ -78,6 +78,9 @@ export function classifyEvidenceError(err: unknown): EvidenceUnavailableReason {
       return err.reason === "evidence_kind_not_served"
         ? "unsupported_kind"
         : "not_found";
+    case 409:
+      // The YAML export refuses a same-name replacement (expectUID).
+      return err.reason === "uid_mismatch" ? "replaced" : "error";
     case 501:
       return "remote_unsupported";
     case 503:

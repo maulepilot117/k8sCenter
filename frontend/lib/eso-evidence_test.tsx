@@ -109,6 +109,8 @@ test("classifyEvidenceError maps every server answer to a distinct reason", () =
     [apiError(404), "not_found"],
     [apiError(500), "error"],
     [apiError(400, "invalid_cursor"), "error"],
+    [apiError(409, "uid_mismatch"), "replaced"],
+    [apiError(409), "error"],
     [new Error("network down"), "error"],
     ["not an error", "error"],
   ];

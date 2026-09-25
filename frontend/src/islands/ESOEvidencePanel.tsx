@@ -133,7 +133,7 @@ export default function ESOEvidencePanel(props: Props) {
     const { signal, target } = begin("yaml");
     yaml.value = { state: "loading" };
     esoApi
-      .exportEvidenceYaml(kind, namespace, name, signal)
+      .exportEvidenceYaml(kind, namespace, name, uid, signal)
       .then((res) => {
         if (!stillCurrent(signal, target)) return;
         yaml.value = { state: "ready", data: String(res.data ?? "") };
