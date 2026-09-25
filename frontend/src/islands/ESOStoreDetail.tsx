@@ -3,9 +3,11 @@ import { useEffect } from "preact/hooks";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
+import { type EvidenceTabKey, evidenceTabsFor } from "@/lib/eso-evidence.ts";
 import type { SecretStore } from "@/lib/eso-types.ts";
 import ESOBulkRefreshDialog from "@/src/islands/ESOBulkRefreshDialog.tsx";
 import ESOChainPanel from "@/src/islands/ESOChainPanel.tsx";
+import ESOEvidencePanel from "@/src/islands/ESOEvidencePanel.tsx";
 import ESOStoreMetricsPanel from "@/src/islands/ESOStoreMetricsPanel.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
@@ -14,7 +16,20 @@ interface Props {
   name: string;
 }
 
-type TabKey = "overview" | "yaml" | "events" | "history" | "chain";
+type TabKey = "overview" | EvidenceTabKey | "chain";
+
+// No History tab: history is collected per ExternalSecret, and the D5 matrix
+// gives a store none of its own (R12). Deriving the strip from it keeps an
+// ExternalSecret's attempts from ever being offered as the store's.
+const TABS: Array<{ key: TabKey; label: string }> = [
+  { key: "overview", label: "Overview" },
+  ...evidenceTabsFor("secretstores"),
+  { key: "chain", label: "Chain" },
+];
+
+function isEvidenceTab(tab: TabKey): tab is EvidenceTabKey {
+  return tab !== "overview" && tab !== "chain";
+}
 
 const EM_DASH = "—";
 
@@ -23,6 +38,8 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
   const error = useSignal<string | null>(null);
   const data = useSignal<SecretStore | null>(null);
   const activeTab = useSignal<TabKey>("overview");
+  // The last evidence tab opened; the panel stays mounted once opened.
+  const evidenceTab = useSignal<EvidenceTabKey | null>(null);
   const showRefreshDialog = useSignal(false);
 
   useEffect(() => {
@@ -87,15 +104,7 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
       )}
 
       <div role="tablist" class="flex gap-1 border-b border-border-primary">
-        {(
-          [
-            ["overview", "Overview"],
-            ["yaml", "YAML"],
-            ["events", "Events"],
-            ["history", "History"],
-            ["chain", "Chain"],
-          ] as Array<[TabKey, string]>
-        ).map(([key, label]) => {
+        {TABS.map(({ key, label }) => {
           const active = activeTab.value === key;
           return (
             <button
@@ -103,7 +112,10 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
               type="button"
               role="tab"
               aria-selected={active}
-              onClick={() => (activeTab.value = key)}
+              onClick={() => {
+                activeTab.value = key;
+                if (isEvidenceTab(key)) evidenceTab.value = key;
+              }}
               class={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
                 active
                   ? "border-brand text-text-primary"
@@ -168,6 +180,11 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
                 </div>
               )}
             </dl>
+            <p class="mt-4 text-sm text-text-muted">
+              Reconciliation history is collected per ExternalSecret. Open an
+              ExternalSecret that references this store to see its sync
+              attempts.
+            </p>
           </div>
 
           <ESOStoreMetricsPanel
@@ -192,30 +209,15 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
         </div>
       )}
 
-      {activeTab.value === "yaml" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          YAML editor coming in Phase&nbsp;B.
-        </div>
-      )}
-
-      {activeTab.value === "events" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          Events feed coming in Phase&nbsp;B.
-        </div>
-      )}
-
-      {activeTab.value === "history" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          History timeline coming in Phase&nbsp;C.
+      {evidenceTab.value && (
+        <div hidden={!isEvidenceTab(activeTab.value)}>
+          <ESOEvidencePanel
+            kind="secretstores"
+            namespace={namespace}
+            name={name}
+            uid={store.uid}
+            activeTab={evidenceTab.value}
+          />
         </div>
       )}
 

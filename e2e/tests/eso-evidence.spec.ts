@@ -1,0 +1,284 @@
+import type { Page, Route } from "@playwright/test";
+import { expect, test } from "../fixtures/base.ts";
+
+// Release B evidence tabs on the two primary ESO detail pages (U17).
+//
+// The kind cluster CI runs against has no External Secrets Operator, so the
+// ESO endpoints are answered here at the network boundary with the wire
+// shapes the backend serves. What these specs pin is the page contract: which
+// tabs exist, what each response class renders as, and that controller text
+// stays text. The server-side decisions behind those responses -- the
+// projection level a caller gets, UID scoping, the store having no collector
+// -- are covered by the backend tests for U14a and U15.
+
+const NS = "e2e-evidence";
+const ES = "app-creds";
+const STORE = "vault-backend";
+const ES_UID = "11111111-1111-4111-8111-111111111111";
+const STORE_UID = "22222222-2222-4222-8222-222222222222";
+
+const ES_PATH = `/external-secrets/external-secrets/${NS}/${ES}`;
+const STORE_PATH = `/external-secrets/stores/${NS}/${STORE}`;
+
+// Controller text that would run if the page rendered it as HTML.
+const HOSTILE_MESSAGE =
+  `<script>window.__esoEvidenceXss = 1</script><img src=x onerror="window.__esoEvidenceXss = 2">`;
+
+const FULL = { level: "full", droppedFields: [] };
+const RESTRICTED = {
+  level: "outcome-only",
+  droppedFields: ["message", "diffKeysAdded", "diffKeysRemoved", "diffKeysChanged"],
+};
+
+function json(route: Route, status: number, body: unknown) {
+  return route.fulfill({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+}
+
+interface Evidence {
+  history?: (route: Route) => Promise<void>;
+}
+
+/**
+ * Serves one ExternalSecret and one SecretStore plus their evidence. Returns
+ * the evidence request paths seen, so a spec can assert what a page asked for.
+ */
+async function serveESO(page: Page, evidence: Evidence = {}) {
+  const requested: string[] = [];
+
+  // Anything not answered below reads as ESO absent rather than reaching a
+  // backend that has no ESO to ask.
+  await page.route("**/api/v1/externalsecrets/**", (route) =>
+    json(route, 503, {
+      error: { code: 503, message: "ESO not detected", reason: "eso_not_detected" },
+    }));
+
+  await page.route(`**/api/v1/externalsecrets/externalsecrets/${NS}/${ES}`, (route) =>
+    json(route, 200, {
+      data: {
+        namespace: NS,
+        name: ES,
+        uid: ES_UID,
+        status: "Synced",
+        storeRef: { kind: "SecretStore", name: STORE },
+        targetSecretName: ES,
+        refreshInterval: "1h",
+      },
+    }));
+
+  await page.route(`**/api/v1/externalsecrets/stores/${NS}/${STORE}`, (route) =>
+    json(route, 200, {
+      data: {
+        namespace: NS,
+        name: STORE,
+        uid: STORE_UID,
+        scope: "Namespaced",
+        status: "Synced",
+        ready: true,
+        provider: "vault",
+      },
+    }));
+
+  await page.route(
+    `**/api/v1/externalsecrets/externalsecrets/${NS}/${ES}/history**`,
+    (route) => {
+      requested.push(new URL(route.request().url()).pathname);
+      if (evidence.history) return evidence.history(route);
+      return json(route, 200, {
+        data: {
+          uid: ES_UID,
+          clusterId: "local",
+          projection: FULL,
+          entries: [
+            {
+              id: 2,
+              attemptAt: "2026-09-25T10:05:00Z",
+              outcome: "failure",
+              reason: "SecretSyncedError",
+              diffKeyCounts: { added: 0, removed: 0, changed: 0 },
+              message: HOSTILE_MESSAGE,
+            },
+            {
+              id: 1,
+              attemptAt: "2026-09-25T10:00:00Z",
+              outcome: "success",
+              reason: "SecretSynced",
+              diffKeyCounts: { added: 1, removed: 0, changed: 0 },
+              diffKeysAdded: ["password"],
+            },
+          ],
+        },
+      });
+    },
+  );
+
+  await page.route("**/api/v1/externalsecrets/evidence/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    requested.push(path);
+    const uid = path.includes("/secretstores/") ? STORE_UID : ES_UID;
+    return json(route, 200, {
+      data: {
+        uid,
+        projection: FULL,
+        truncated: false,
+        events: [{ type: "Normal", reason: "Valid", count: 3, message: "store validated" }],
+      },
+    });
+  });
+
+  await page.route("**/api/v1/yaml/export/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    requested.push(path);
+    const name = path.split("/").pop();
+    return json(route, 200, {
+      data: `apiVersion: external-secrets.io/v1\nmetadata:\n  name: ${name}\n`,
+    });
+  });
+
+  return requested;
+}
+
+async function openTab(page: Page, name: string) {
+  await page.getByRole("tab", { name, exact: true }).click();
+}
+
+test.describe("eso evidence — ES and SecretStore", () => {
+  test("ES detail renders YAML, Events and History tabs", async ({ page }) => {
+    await serveESO(page);
+    await page.goto(ES_PATH);
+    await expect(page.getByRole("heading", { name: ES })).toBeVisible();
+
+    const tabs = page.getByRole("tablist").first().getByRole("tab");
+    await expect(tabs).toHaveText(["Overview", "YAML", "Events", "History", "Chain"]);
+
+    await openTab(page, "YAML");
+    await expect(page.getByText("apiVersion: external-secrets.io/v1")).toBeVisible();
+
+    await openTab(page, "Events");
+    await expect(page.getByRole("cell", { name: "store validated" })).toBeVisible();
+
+    await openTab(page, "History");
+    await expect(page.getByText("SecretSynced", { exact: true })).toBeVisible();
+
+    await expect(page.getByText(/coming in Phase/)).toHaveCount(0);
+  });
+
+  test("ES History renders real rows or an explicit unavailable reason", async ({ page }) => {
+    await serveESO(page, {
+      history: (route) =>
+        json(route, 503, {
+          error: {
+            code: 503,
+            message: "history unavailable",
+            reason: "history_unavailable",
+          },
+        }),
+    });
+    await page.goto(ES_PATH);
+    await openTab(page, "History");
+
+    // A failure says why; it is never a blank panel or an empty-history claim.
+    const reason = page.locator('[data-evidence-state="history_unavailable"]');
+    await expect(reason).toBeVisible();
+    await expect(reason).not.toBeEmpty();
+    await expect(page.locator('[data-evidence-state="empty"]')).toHaveCount(0);
+    await expect(reason.getByRole("button", { name: "Try again" })).toBeVisible();
+  });
+
+  test("ES-only reader sees the restricted history projection", async ({ page }) => {
+    // The body a caller without Secret read receives: outcome-only, with the
+    // message and diff key names dropped by the server.
+    await serveESO(page, {
+      history: (route) =>
+        json(route, 200, {
+          data: {
+            uid: ES_UID,
+            clusterId: "local",
+            projection: RESTRICTED,
+            entries: [
+              {
+                id: 1,
+                attemptAt: "2026-09-25T10:00:00Z",
+                outcome: "success",
+                reason: "SecretSynced",
+                diffKeyCounts: { added: 1, removed: 0, changed: 0 },
+              },
+            ],
+          },
+        }),
+    });
+    await page.goto(ES_PATH);
+    await openTab(page, "History");
+
+    await expect(page.locator('[data-evidence-state="redacted"]')).toContainText(
+      "requires Secret read",
+    );
+    await expect(page.getByText("SecretSynced", { exact: true })).toBeVisible();
+    // No diff-key chip: the key names are what the projection withholds.
+    await expect(page.getByText("Added", { exact: true })).toHaveCount(0);
+    await expect(page.locator("li code")).toHaveCount(0);
+  });
+
+  test("SecretStore detail has no History tab", async ({ page }) => {
+    await serveESO(page);
+    await page.goto(STORE_PATH);
+    await expect(page.getByRole("heading", { name: STORE })).toBeVisible();
+
+    const tabs = page.getByRole("tablist").first().getByRole("tab");
+    await expect(tabs).toHaveText(["Overview", "YAML", "Events", "Chain"]);
+    await expect(page.getByRole("tab", { name: "History" })).toHaveCount(0);
+    await expect(
+      page.getByText("Reconciliation history is collected per ExternalSecret."),
+    ).toBeVisible();
+  });
+
+  test("SecretStore never labels ES attempts as its own sync history", async ({ page }) => {
+    const requested = await serveESO(page);
+    await page.goto(STORE_PATH);
+    await expect(page.getByRole("heading", { name: STORE })).toBeVisible();
+
+    await openTab(page, "YAML");
+    await expect(page.getByText(`name: ${STORE}`)).toBeVisible();
+    await openTab(page, "Events");
+    await expect(page.getByRole("cell", { name: "store validated" })).toBeVisible();
+
+    // The store's evidence is the store's own: events and YAML addressed to
+    // it, and no ExternalSecret history fetched or shown.
+    expect(requested).toContain(
+      `/api/v1/externalsecrets/evidence/secretstores/${NS}/${STORE}/events`,
+    );
+    expect(requested.some((p) => p.endsWith("/history"))).toBe(false);
+    await expect(page.getByText(ES, { exact: true })).toHaveCount(0);
+  });
+
+  test("no ESO detail page contains \"coming in Phase\"", async ({ page }) => {
+    await serveESO(page);
+    for (const [path, tabs] of [
+      [ES_PATH, ["YAML", "Events", "History"]],
+      [STORE_PATH, ["YAML", "Events"]],
+    ] as const) {
+      await page.goto(path);
+      await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible();
+      for (const tab of tabs) {
+        await openTab(page, tab);
+        await expect(page.locator("body")).not.toContainText("coming in Phase");
+      }
+    }
+  });
+
+  test("controller text renders as text", async ({ page }) => {
+    await serveESO(page);
+    await page.goto(ES_PATH);
+    await openTab(page, "History");
+
+    await expect(page.getByText(HOSTILE_MESSAGE)).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => (window as unknown as { __esoEvidenceXss?: number }).__esoEvidenceXss,
+      ),
+    ).toBeUndefined();
+  });
+});

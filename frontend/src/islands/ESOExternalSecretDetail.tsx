@@ -5,10 +5,12 @@ import { ESODriftIndicator } from "@/components/eso/ESODriftIndicator.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { esoApi } from "@/lib/eso-api.ts";
+import { type EvidenceTabKey, evidenceTabsFor } from "@/lib/eso-evidence.ts";
 import type { ExternalSecret } from "@/lib/eso-types.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import ESOChainPanel from "@/src/islands/ESOChainPanel.tsx";
+import ESOEvidencePanel from "@/src/islands/ESOEvidencePanel.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface Props {
@@ -16,7 +18,19 @@ interface Props {
   name: string;
 }
 
-type TabKey = "overview" | "yaml" | "events" | "history" | "chain";
+type TabKey = "overview" | EvidenceTabKey | "chain";
+
+// The evidence tabs come from the D5 matrix, so this strip cannot offer a tab
+// the panel would not render.
+const TABS: Array<{ key: TabKey; label: string }> = [
+  { key: "overview", label: "Overview" },
+  ...evidenceTabsFor("externalsecrets"),
+  { key: "chain", label: "Chain" },
+];
+
+function isEvidenceTab(tab: TabKey): tab is EvidenceTabKey {
+  return tab !== "overview" && tab !== "chain";
+}
 
 const EM_DASH = "—";
 
@@ -34,6 +48,9 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
   const error = useSignal<string | null>(null);
   const data = useSignal<ExternalSecret | null>(null);
   const activeTab = useSignal<TabKey>("overview");
+  // The last evidence tab opened. The panel stays mounted (hidden) once one
+  // has been opened, so returning from Overview or Chain keeps what it loaded.
+  const evidenceTab = useSignal<EvidenceTabKey | null>(null);
   const forceSyncing = useSignal(false);
   const forceSyncMsg = useSignal<string | null>(null);
 
@@ -135,15 +152,7 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
 
       {/* Tab strip */}
       <div role="tablist" class="flex gap-1 border-b border-border-primary">
-        {(
-          [
-            ["overview", "Overview"],
-            ["yaml", "YAML"],
-            ["events", "Events"],
-            ["history", "History"],
-            ["chain", "Chain"],
-          ] as Array<[TabKey, string]>
-        ).map(([key, label]) => {
+        {TABS.map(({ key, label }) => {
           const active = activeTab.value === key;
           return (
             <button
@@ -151,7 +160,10 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
               type="button"
               role="tab"
               aria-selected={active}
-              onClick={() => (activeTab.value = key)}
+              onClick={() => {
+                activeTab.value = key;
+                if (isEvidenceTab(key)) evidenceTab.value = key;
+              }}
               class={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
                 active
                   ? "border-brand text-text-primary"
@@ -255,30 +267,15 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
         </div>
       )}
 
-      {activeTab.value === "yaml" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          YAML editor coming in Phase&nbsp;B.
-        </div>
-      )}
-
-      {activeTab.value === "events" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          Events feed coming in Phase&nbsp;B.
-        </div>
-      )}
-
-      {activeTab.value === "history" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          History timeline coming in Phase&nbsp;C.
+      {evidenceTab.value && (
+        <div hidden={!isEvidenceTab(activeTab.value)}>
+          <ESOEvidencePanel
+            kind="externalsecrets"
+            namespace={es.namespace}
+            name={es.name}
+            uid={es.uid}
+            activeTab={evidenceTab.value}
+          />
         </div>
       )}
 
