@@ -749,6 +749,12 @@ func (s *Server) registerExternalSecretsRoutes(ar chi.Router) {
 		er.With(resources.ValidateURLParams).
 			Get("/externalsecrets/{namespace}/{name}/history", h.HandleGetExternalSecretHistory)
 
+		// Release B / U15 — UID-scoped Kubernetes events for any ESO kind.
+		// `_` in {namespace} selects the cluster-scoped form, mirroring
+		// /yaml/export; ValidateURLParams is intentionally NOT attached
+		// because it rejects "_" as a namespace. The handler validates inline.
+		er.Get("/evidence/{kind}/{namespace}/{name}/events", h.HandleGetEvidenceEvents)
+
 		// Bulk refresh actions (Phase E Unit 15). Async job model:
 		// scope GET resolves targets the user can refresh; POST creates a
 		// job + returns 202+jobId; client polls bulk-refresh-jobs/{jobId}
