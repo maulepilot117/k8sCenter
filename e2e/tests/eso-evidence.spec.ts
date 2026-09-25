@@ -391,7 +391,7 @@ test.describe("eso evidence — cluster-scoped and PushSecret", () => {
   });
 
   test("CES History tab is replaced by Generated ExternalSecrets", async ({ page }) => {
-    await serveESO(page);
+    const requested = await serveESO(page);
     await page.goto(CES_PATH);
     await expect(page.getByRole("heading", { name: CES })).toBeVisible();
 
@@ -404,6 +404,16 @@ test.describe("eso evidence — cluster-scoped and PushSecret", () => {
       "Chain",
     ]);
     await expect(page.getByRole("tab", { name: "History" })).toHaveCount(0);
+
+    // The CES's own evidence is addressed at cluster scope ("_").
+    await openTab(page, "YAML");
+    await expect(page.getByText(`name: ${CES}`)).toBeVisible();
+    await openTab(page, "Events");
+    await expect(page.getByRole("cell", { name: "store validated" })).toBeVisible();
+    expect(requested).toContain(`/api/v1/yaml/export/clusterexternalsecrets/_/${CES}`);
+    expect(requested).toContain(
+      `/api/v1/externalsecrets/evidence/clusterexternalsecrets/_/${CES}/events`,
+    );
 
     await openTab(page, "Generated ExternalSecrets");
     // Each child links to its own ExternalSecret page, where its history is;
@@ -418,6 +428,8 @@ test.describe("eso evidence — cluster-scoped and PushSecret", () => {
       `/external-secrets/external-secrets/team-b/${CES}`,
     );
     await expect(failed.getByText("failed", { exact: true })).toBeVisible();
+    const provisioned = page.getByRole("listitem").filter({ hasText: `team-a/${CES}` });
+    await expect(provisioned.getByText("failed", { exact: true })).toHaveCount(0);
   });
 
   test("CES never presents child attempts as its own history", async ({ page }) => {
@@ -447,6 +459,9 @@ test.describe("eso evidence — cluster-scoped and PushSecret", () => {
     await expect(page.getByRole("cell", { name: "store validated" })).toBeVisible();
 
     expect(requested).toContain(`/api/v1/yaml/export/pushsecrets/${NS}/${PUSH}`);
+    expect(requested).toContain(
+      `/api/v1/externalsecrets/evidence/pushsecrets/${NS}/${PUSH}/events`,
+    );
     expect(requested.some((p) => p.endsWith("/history"))).toBe(false);
     // Read-only in v1: no sync, edit, delete or apply control in the page body.
     await expect(
