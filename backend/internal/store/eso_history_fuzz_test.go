@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/base64"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,9 +24,10 @@ const fuzzCursorMaxDecodedBytes = 64
 //
 //   - Oracle A: DecodeESOHistoryCursor never panics.
 //   - Oracle B: any accepted cursor is well-formed (id >= 1, attempt time in
-//     [epoch, 2100-01-01], encoded payload at most 64 bytes), and
-//     Decode∘Encode reproduces it exactly, so a page boundary survives the
-//     round trip through the client.
+//     [epoch, 2100-01-01], encoded payload at most 64 bytes), carries exactly
+//     the values its "<micros>:<id>" payload spells, and Decode∘Encode
+//     reproduces it exactly, so a page boundary survives the round trip
+//     through the client.
 //
 // Each input is decoded twice: as given, and base64url-encoded first. The
 // fuzzer rarely produces valid base64 of structured text on its own, so the
@@ -67,8 +69,19 @@ func checkCursorDecode(t *testing.T, s string) {
 		return
 	}
 
-	if raw, derr := base64.RawURLEncoding.DecodeString(s); derr != nil || len(raw) > fuzzCursorMaxDecodedBytes {
+	raw, derr := base64.RawURLEncoding.DecodeString(s)
+	if derr != nil || len(raw) > fuzzCursorMaxDecodedBytes {
 		t.Fatalf("Decode accepted %q, whose payload is not base64url of at most %d bytes", s, fuzzCursorMaxDecodedBytes)
+	}
+	// The accepted values must be the ones the payload spells, not a fallback
+	// such as epoch/id 1 that would pass the range and round-trip checks.
+	// Parsed independently; non-canonical spellings like "+5:01" are accepted
+	// by the decoder, so the comparison is on values, not on re-encoded text.
+	microsText, idText, ok := strings.Cut(string(raw), ":")
+	micros, merr := strconv.ParseInt(microsText, 10, 64)
+	id, ierr := strconv.ParseInt(idText, 10, 64)
+	if !ok || merr != nil || ierr != nil || c.AttemptAt.UnixMicro() != micros || c.ID != id {
+		t.Fatalf("Decode(%q) = %+v; payload %q does not spell those values", s, c, raw)
 	}
 	if c.ID < 1 {
 		t.Fatalf("Decode(%q) accepted id %d; ids start at 1", s, c.ID)
