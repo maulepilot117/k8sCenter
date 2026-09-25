@@ -108,6 +108,8 @@ const UNAVAILABLE_MESSAGES: Readonly<
   forbidden: "You do not have permission to view this evidence.",
   not_found: "This resource no longer exists.",
   unsupported_kind: "This cluster does not serve this kind of resource.",
+  replaced:
+    "This resource was deleted and recreated under the same name. Reload the page to see the current object's evidence.",
   error: "This evidence could not be loaded.",
 });
 
@@ -140,6 +142,27 @@ export function mergeHistoryPages(
     }
   }
   return merged.sort(newestFirst);
+}
+
+/**
+ * Reduces history rows to what `projection` allows. When Secret read is
+ * revoked between pages, the newest page arrives outcome-only while earlier
+ * rows still carry messages and key names; the whole list is shown under the
+ * newest projection, so those rows are stripped to match it rather than kept
+ * visible under an "outcome-only" note. Inputs are not mutated.
+ */
+export function redactEntriesTo(
+  entries: readonly HistoryEntry[],
+  projection: EvidenceProjection,
+): HistoryEntry[] {
+  if (projection.level === "full") return [...entries];
+  return entries.map(({ id, attemptAt, outcome, reason, diffKeyCounts }) => ({
+    id,
+    attemptAt,
+    outcome,
+    reason,
+    diffKeyCounts,
+  }));
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   generatedExternalSecrets,
   isStaleResponse,
   mergeHistoryPages,
+  redactEntriesTo,
   unavailableMessage,
 } from "./eso-evidence.ts";
 import type {
@@ -125,6 +126,7 @@ test("every unavailable reason has its own message", () => {
     "forbidden",
     "not_found",
     "unsupported_kind",
+    "replaced",
     "error",
   ];
   const messages = reasons.map((r) => unavailableMessage(r));
@@ -134,6 +136,43 @@ test("every unavailable reason has its own message", () => {
     // None of them may read as "there is simply nothing here".
     expect(m.toLowerCase()).not.toContain("no data");
   }
+});
+
+// --- Projection downgrade ------------------------------------------------------
+
+test("redactEntriesTo strips full-only fields when the projection is outcome-only", () => {
+  const full: HistoryEntry = {
+    ...entry(1, "2026-09-10T12:00:00Z"),
+    message: "key prod/db/PASSWORD not found",
+    messageTruncated: false,
+    diffKeysAdded: ["DB_PASS"],
+    diffKeysRemoved: [],
+    diffKeysChanged: ["DB_USER"],
+    syncedResourceVersion: "4711",
+  };
+  // Secret read was revoked between pages: rows already on screen must not
+  // keep showing what the current grant no longer allows.
+  const [down] = redactEntriesTo([full], {
+    level: "outcome-only",
+    droppedFields: ["message"],
+  });
+  for (const k of [
+    "message",
+    "messageTruncated",
+    "diffKeysAdded",
+    "diffKeysRemoved",
+    "diffKeysChanged",
+    "syncedResourceVersion",
+  ]) {
+    expect(k in down).toBe(false);
+  }
+  expect(down.diffKeyCounts).toEqual(full.diffKeyCounts);
+  expect(down.reason).toBe(full.reason);
+  // Full projection keeps every field, and the input is never mutated.
+  expect(
+    redactEntriesTo([full], { level: "full", droppedFields: [] })[0],
+  ).toEqual(full);
+  expect(full.message).toBe("key prod/db/PASSWORD not found");
 });
 
 // --- History paging ----------------------------------------------------------

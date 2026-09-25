@@ -13,6 +13,7 @@ import {
   generatedExternalSecrets,
   isStaleResponse,
   mergeHistoryPages,
+  redactEntriesTo,
   unavailableMessage,
 } from "@/lib/eso-evidence.ts";
 import type {
@@ -79,7 +80,7 @@ function unavailable(err: unknown): Load<never> {
   // detail tells the operator what to ask for.
   const detail =
     err instanceof ApiError && err.reason === "events_forbidden"
-      ? err.body?.error?.message
+      ? err.detail
       : undefined;
   return { state: "unavailable", reason, detail };
 }
@@ -149,8 +150,11 @@ export default function ESOEvidencePanel(props: Props) {
       .getEvidenceEvents(kind, namespace, name, signal)
       .then((res) => {
         if (!stillCurrent(signal, target)) return;
-        if (isStaleResponse(uid, res.data?.uid)) return;
-        events.value = { state: "ready", data: res.data };
+        // The server resolved this name to a different object: it was
+        // deleted and recreated. Say so rather than leave the tab loading.
+        events.value = isStaleResponse(uid, res.data?.uid)
+          ? { state: "unavailable", reason: "replaced" }
+          : { state: "ready", data: res.data };
       })
       .catch((err) => {
         if (stillCurrent(signal, target)) events.value = unavailable(err);
@@ -177,16 +181,29 @@ export default function ESOEvidencePanel(props: Props) {
       })
       .then((res) => {
         if (!stillCurrent(signal, target)) return;
-        if (isStaleResponse(uid, res.data?.uid)) return;
+        if (isStaleResponse(uid, res.data?.uid)) {
+          history.value =
+            more && prev
+              ? {
+                  state: "ready",
+                  data: { ...prev, loadingMore: false, moreError: "replaced" },
+                }
+              : { state: "unavailable", reason: "replaced" };
+          return;
+        }
         const page = res.data;
         history.value = {
           state: "ready",
           data: {
             projection: page.projection,
-            entries:
+            // Rows from earlier pages are shown under this page's projection,
+            // so they are reduced to it if Secret read was revoked meanwhile.
+            entries: redactEntriesTo(
               more && prev
                 ? mergeHistoryPages(prev.entries, page.entries)
                 : mergeHistoryPages([], page.entries),
+              page.projection,
+            ),
             next: res.metadata?.continue || undefined,
             loadingMore: false,
           },

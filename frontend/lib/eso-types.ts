@@ -427,4 +427,6 @@ export type EvidenceUnavailableReason =
   | "forbidden"
   | "not_found"
   | "unsupported_kind"
+  /** The object was deleted and recreated under the same name. */
+  | "replaced"
   | "error";
