@@ -80,6 +80,10 @@ type Handler struct {
 	cache      *cachedData
 	cacheGen   uint64
 
+	// evidenceGVRs caches the discovery walk that resolves each ESO kind's
+	// served version for the evidence endpoints (detail_evidence.go).
+	evidenceGVRs evidenceGVRCache
+
 	// observedDrift is the poller's last-observed DriftStatus per ES UID,
 	// populated by RecordDrift on every successful Secret fetch. The list
 	// endpoint reads from this map to surface a coarse drift hint without
