@@ -261,36 +261,24 @@ func (h *Handler) PruneObservedDrift(currentUIDs map[string]bool) {
 	})
 }
 
-// canAccess checks a single (verb, resource, namespace) tuple via the
-// AccessChecker. Phase A only ever passes "list" / "get"; write verbs land
-// in Phases D / E.
+// canAccess checks a single (verb, resource, namespace) tuple in the ESO API
+// group via the AccessChecker. Phase A only ever passes "list" / "get"; write
+// verbs land in Phases D / E.
 func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource, namespace string) bool {
-	clusterID := middleware.ClusterIDFromContext(ctx)
-	can, err := h.AccessChecker.CanAccessGroupResource(
-		ctx,
-		clusterID,
-		user.KubernetesUsername,
-		user.KubernetesGroups,
-		verb,
-		GroupName,
-		resource,
-		namespace,
-	)
-	return err == nil && can
+	return h.canAccessGroup(ctx, user, verb, GroupName, resource, namespace)
 }
 
-// canAccessCore is canAccess for the core API group (apiGroup ""), which
-// canAccess cannot express because it pins GroupName. A failed check is a
-// denial: every caller uses it to decide whether to widen a response.
-func (h *Handler) canAccessCore(ctx context.Context, user *auth.User, verb, resource, namespace string) bool {
-	clusterID := middleware.ClusterIDFromContext(ctx)
+// canAccessGroup is canAccess for an explicit API group ("" is the core
+// group). A failed check is a denial: every caller uses it to decide whether
+// to allow or widen a response.
+func (h *Handler) canAccessGroup(ctx context.Context, user *auth.User, verb, apiGroup, resource, namespace string) bool {
 	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx,
-		clusterID,
+		middleware.ClusterIDFromContext(ctx),
 		user.KubernetesUsername,
 		user.KubernetesGroups,
 		verb,
-		"",
+		apiGroup,
 		resource,
 		namespace,
 	)

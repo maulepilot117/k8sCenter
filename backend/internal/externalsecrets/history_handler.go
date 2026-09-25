@@ -47,11 +47,16 @@ const (
 	historyReasonMaxBytes  = 256
 )
 
-// outcomeOnlyDroppedFields names, for the client, the entry fields an
+// outcomeOnlyDroppedFields names, for the client, the entry keys an
 // outcome-only response leaves out, so it can say "hidden" rather than
-// "empty". Presentation only — the omission itself is done by
-// projectHistoryEntry leaving those DTO fields nil.
-var outcomeOnlyDroppedFields = []string{"message", "diffKeys", "syncedResourceVersion"}
+// "empty". Each is a historyEntryDTO JSON key verbatim, so a client can match
+// it against the keys an entry does not carry. Presentation only — the
+// omission itself is done by projectHistoryEntry leaving those fields nil.
+var outcomeOnlyDroppedFields = []string{
+	"message", "messageTruncated",
+	"diffKeysAdded", "diffKeysRemoved", "diffKeysChanged",
+	"syncedResourceVersion",
+}
 
 // knownESOReasons is the closed set of Ready-condition reasons an
 // outcome-only caller may see verbatim. It is ESO's own condition vocabulary
@@ -197,7 +202,7 @@ func (h *Handler) HandleGetExternalSecretHistory(w http.ResponseWriter, r *http.
 	}
 
 	level := projectionOutcomeOnly
-	if h.canAccessCore(ctx, user, "get", "secrets", ns) {
+	if h.canAccessGroup(ctx, user, "get", "", "secrets", ns) {
 		level = projectionFull
 	}
 

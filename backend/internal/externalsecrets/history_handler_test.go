@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/go-chi/chi/v5"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
@@ -228,8 +230,10 @@ func TestHistory_ESOnlyReader_OmitsKeysAndMessage(t *testing.T) {
 	if b.Data.Projection.Level != "outcome-only" {
 		t.Errorf("projection level = %q; want outcome-only", b.Data.Projection.Level)
 	}
-	if len(b.Data.Projection.DroppedFields) == 0 {
-		t.Error("droppedFields is empty at L1; the client cannot say what is hidden")
+	// droppedFields must name exactly the keys the entry leaves out, so a
+	// client matching it against entry keys marks every one as hidden.
+	if !slices.Equal(b.Data.Projection.DroppedFields, l1Absent) {
+		t.Errorf("droppedFields = %v; want %v", b.Data.Projection.DroppedFields, l1Absent)
 	}
 	if len(b.Data.Entries) != 1 {
 		t.Fatalf("entries = %d; want 1", len(b.Data.Entries))
@@ -378,13 +382,32 @@ func TestHistory_RevokedSecretAccess_DropsToL1(t *testing.T) {
 	}
 }
 
-// A Secret check that errors must fail closed to L1, never open to L2.
+// A Secret check that errors must fail closed to L1, never open to L2. The
+// real AccessChecker runs over a fake SSAR client that allows the ESO-group
+// check and errors only on core Secrets, so the handler itself is exercised.
 func TestHistory_SecretCheckError_FailsClosedToL1(t *testing.T) {
-	// An erroring checker also fails the ES pre-check (403), so the Secret
-	// decision is asserted on the helper directly.
-	h := historyHandler(nil, &fakeHistoryReader{}, resources.NewErroringAccessChecker(errors.New("apiserver down")))
-	if h.canAccessCore(context.Background(), historyUser, "get", "secrets", "apps") {
-		t.Error("canAccessCore returned true on a failed check")
+	cs := kubefake.NewClientset()
+	cs.PrependReactor("create", "selfsubjectaccessreviews", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		review := a.(clienttesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
+		if attrs := review.Spec.ResourceAttributes; attrs.Group == "" && attrs.Resource == "secrets" {
+			return true, nil, errors.New("apiserver down")
+		}
+		review.Status.Allowed = true
+		return true, review, nil
+	})
+	ac := resources.NewAccessChecker(clientFactoryFunc(func(string, []string) (kubernetes.Interface, error) {
+		return cs, nil
+	}), slog.Default())
+	reader := &fakeHistoryReader{rows: []store.ESOSyncHistoryEntry{sensitiveEntry("local", "uid-1", 7)}}
+	h := historyHandler([]runtime.Object{makeES("apps", "db-creds", "uid-1")}, reader, ac)
+
+	w := getHistory(t, h, "apps", "db-creds", "", historyUser)
+	b := decodeHistory(t, w)
+	if b.Data.Projection.Level != "outcome-only" {
+		t.Errorf("projection level = %q; want outcome-only on a failed Secret check", b.Data.Projection.Level)
+	}
+	if strings.Contains(w.Body.String(), "PROVIDER_PATH_MARKER") {
+		t.Error("a failed Secret check leaked the controller message")
 	}
 }
 
@@ -583,6 +606,106 @@ func TestHistory_ESNotFound_Returns404(t *testing.T) {
 	assertErrorReason(t, getHistory(t, h, "apps", "missing", "", historyUser), http.StatusNotFound, "")
 	if len(reader.calls) != 0 {
 		t.Error("history store queried for an ExternalSecret that does not exist")
+	}
+}
+
+// Every 500 branch before the store read must stop there: a history page is
+// never served for an object whose identity could not be established.
+func TestHistory_InternalErrors_Return500WithoutQuerying(t *testing.T) {
+	cases := map[string]func(h *Handler){
+		"impersonating client fails": func(h *Handler) {
+			h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) {
+				return nil, errors.New("no rest config")
+			}
+		},
+		"live get fails": func(h *Handler) {
+			dyn := newEsoFakeDynClient(makeES("apps", "db-creds", "uid-1"))
+			dyn.PrependReactor("get", "externalsecrets", func(clienttesting.Action) (bool, runtime.Object, error) {
+				return true, nil, errors.New("etcd timeout")
+			})
+			h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) { return dyn, nil }
+		},
+		"object has no uid": func(h *Handler) {
+			dyn := newEsoFakeDynClient(makeES("apps", "db-creds", ""))
+			h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) { return dyn, nil }
+		},
+	}
+	for name, breakIt := range cases {
+		t.Run(name, func(t *testing.T) {
+			reader := &fakeHistoryReader{rows: []store.ESOSyncHistoryEntry{sensitiveEntry("local", "", 7)}}
+			h := historyHandler(nil, reader, resources.NewAlwaysAllowAccessChecker())
+			breakIt(h)
+
+			w := getHistory(t, h, "apps", "db-creds", "", historyUser)
+			assertErrorReason(t, w, http.StatusInternalServerError, "")
+			if len(reader.calls) != 0 {
+				t.Error("history store queried after the object could not be resolved")
+			}
+			for _, leak := range []string{"no rest config", "etcd timeout"} {
+				if strings.Contains(w.Body.String(), leak) {
+					t.Errorf("internal error text %q reached the client", leak)
+				}
+			}
+		})
+	}
+}
+
+// An unwired Handler.ClusterID reads the rows a default-configured poller
+// writes, which are stamped "local".
+func TestHistory_UnsetClusterID_FallsBackToLocal(t *testing.T) {
+	reader := &fakeHistoryReader{rows: []store.ESOSyncHistoryEntry{sensitiveEntry("local", "uid-1", 7)}}
+	h := historyHandler([]runtime.Object{makeES("apps", "db-creds", "uid-1")}, reader,
+		resources.NewAlwaysAllowAccessChecker())
+	h.ClusterID = ""
+
+	b := decodeHistory(t, getHistory(t, h, "apps", "db-creds", "", historyUser))
+	if len(b.Data.Entries) != 1 || b.Data.ClusterID != "local" {
+		t.Errorf("entries=%d clusterId=%q; want 1/local", len(b.Data.Entries), b.Data.ClusterID)
+	}
+	if call := reader.lastCall(t); call.clusterID != "local" {
+		t.Errorf("store queried for cluster %q; want local", call.clusterID)
+	}
+}
+
+// Through the real ClusterContext middleware a remote X-Cluster-ID is refused
+// for a non-admin before the handler runs, and an admin reaches the handler's
+// 501. Neither reads the store.
+func TestHistory_RemoteCluster_ThroughClusterContext(t *testing.T) {
+	cases := []struct {
+		name   string
+		roles  []string
+		status int
+		reason string
+	}{
+		{"non-admin", nil, http.StatusForbidden, ""},
+		{"admin", []string{"admin"}, http.StatusNotImplemented, "remote_history_unsupported"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &fakeHistoryReader{}
+			h := historyHandler([]runtime.Object{makeES("apps", "db-creds", "uid-1")}, reader,
+				resources.NewAlwaysAllowAccessChecker())
+			router := chi.NewRouter()
+			router.With(middleware.ClusterContext).
+				Get("/externalsecrets/externalsecrets/{namespace}/{name}/history", h.HandleGetExternalSecretHistory)
+
+			u := &auth.User{KubernetesUsername: "alice", Roles: tc.roles}
+			r := withUser(httptest.NewRequest(http.MethodGet,
+				"/externalsecrets/externalsecrets/apps/db-creds/history", nil), u)
+			r.Header.Set("X-Cluster-ID", "prod")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, r)
+
+			if w.Code != tc.status {
+				t.Fatalf("status = %d; want %d\nbody: %s", w.Code, tc.status, w.Body.String())
+			}
+			if tc.reason != "" {
+				assertErrorReason(t, w, tc.status, tc.reason)
+			}
+			if len(reader.calls) != 0 {
+				t.Error("history store queried for a remote cluster")
+			}
+		})
 	}
 }
 
