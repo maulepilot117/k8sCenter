@@ -2,6 +2,7 @@ import { type Signal, useSignal } from "@preact/signals";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import { Tabs } from "@/components/ui/Tabs.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { esoApi } from "@/lib/eso-api.ts";
 import {
@@ -31,7 +32,16 @@ interface Props {
   name: string;
   /** The live object's UID; a response for any other UID is discarded. */
   uid: string;
+  /** Uncontrolled: the tab the panel's own strip opens on. */
   initialTab?: EvidenceTabKey;
+  /**
+   * Controlled: a host page that owns its own tab strip (a detail page with
+   * Overview and Chain beside the evidence tabs) passes the selected evidence
+   * tab here. The panel then renders only that tab's body, with no strip of
+   * its own, and loads it on first selection. A tab the kind does not
+   * support renders nothing.
+   */
+  activeTab?: EvidenceTabKey;
   /** ClusterExternalSecret only: the source of its "Generated ExternalSecrets". */
   clusterExternalSecret?: Pick<
     ClusterExternalSecret,
@@ -96,9 +106,18 @@ export default function ESOEvidencePanel(props: Props) {
   // target compares unequal and is dropped even if it resolves last.
   const targetKey = `${kind}/${namespace ?? "_"}/${name}/${uid}`;
   const currentTarget = useRef(targetKey);
-  const controllers = useRef(new Map<string, AbortController>());
+  const controllers = useRef(new Map<EvidenceTabKey, AbortController>());
 
-  function begin(tab: string): { signal: AbortSignal; target: string } {
+  const supported = (tab: EvidenceTabKey | undefined) =>
+    tab !== undefined && tabs.some((t) => t.key === tab);
+  const controlled = props.activeTab !== undefined;
+  const shown: EvidenceTabKey | null = controlled
+    ? supported(props.activeTab)
+      ? (props.activeTab as EvidenceTabKey)
+      : null
+    : active.value;
+
+  function begin(tab: EvidenceTabKey): { signal: AbortSignal; target: string } {
     controllers.current.get(tab)?.abort();
     const c = new AbortController();
     controllers.current.set(tab, c);
@@ -204,8 +223,7 @@ export default function ESOEvidencePanel(props: Props) {
     yaml.value = { state: "idle" };
     events.value = { state: "idle" };
     history.value = { state: "idle" };
-    if (!tabs.some((t) => t.key === active.value)) active.value = tabs[0].key;
-    ensureLoaded(active.value);
+    if (!supported(active.value)) active.value = tabs[0].key;
     const inFlight = controllers.current;
     return () => {
       for (const c of inFlight.values()) c.abort();
@@ -213,35 +231,16 @@ export default function ESOEvidencePanel(props: Props) {
     };
   }, [targetKey]);
 
-  return (
-    <div class="space-y-4">
-      <div role="tablist" class="flex gap-1 border-b border-border-primary">
-        {tabs.map(({ key, label }) => {
-          const selected = active.value === key;
-          return (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              onClick={() => {
-                active.value = key;
-                ensureLoaded(key);
-              }}
-              class={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
-                selected
-                  ? "border-brand text-text-primary"
-                  : "border-transparent text-text-muted hover:text-text-primary"
-              }`}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
+  // Load whatever tab is shown, on first view and after a target change. It
+  // runs after the reset above, which is declared first.
+  useEffect(() => {
+    if (shown) ensureLoaded(shown);
+  }, [targetKey, shown]);
 
-      <div role="tabpanel">
-        {active.value === "yaml" && (
+  function renderTab(tab: EvidenceTabKey) {
+    switch (tab) {
+      case "yaml":
+        return (
           <TabBody load={yaml} retry={loadYaml}>
             {(text) => (
               <pre class="max-h-[32rem] overflow-auto rounded-lg border border-border-primary bg-base p-4 font-mono text-xs text-text-primary">
@@ -249,24 +248,42 @@ export default function ESOEvidencePanel(props: Props) {
               </pre>
             )}
           </TabBody>
-        )}
-        {active.value === "events" && (
+        );
+      case "events":
+        return (
           <TabBody load={events} retry={loadEvents}>
             {(data) => <EventsView data={data} />}
           </TabBody>
-        )}
-        {active.value === "history" && (
+        );
+      case "history":
+        return (
           <TabBody load={history} retry={() => loadHistory(false)}>
             {(data) => (
               <HistoryView data={data} loadMore={() => loadHistory(true)} />
             )}
           </TabBody>
-        )}
-        {active.value === "generated" && (
-          <GeneratedView ces={props.clusterExternalSecret} />
-        )}
-      </div>
-    </div>
+        );
+      case "generated":
+        return <GeneratedView ces={props.clusterExternalSecret} />;
+    }
+  }
+
+  if (controlled) {
+    return shown ? <div role="tabpanel">{renderTab(shown)}</div> : null;
+  }
+
+  return (
+    <Tabs
+      tabs={tabs.map(({ key, label }) => ({
+        id: key,
+        label,
+        content: () => <div class="pt-4">{renderTab(key)}</div>,
+      }))}
+      activeTab={active.value}
+      onTabChange={(id) => {
+        active.value = id as EvidenceTabKey;
+      }}
+    />
   );
 }
 

@@ -283,3 +283,31 @@ test("the rendered panel ignores an initialTab its kind does not support", () =>
   expect(html).not.toContain(">History<");
   expect(html).toMatch(/aria-selected="true"[^>]*>YAML</);
 });
+
+test("controlled mode renders only the selected tab body, never a strip", () => {
+  const html = render(
+    <ESOEvidencePanel
+      kind="externalsecrets"
+      namespace="apps"
+      name="db-creds"
+      uid="uid-1"
+      activeTab="history"
+    />,
+  );
+  // The host page owns the strip; a second one would be a nested duplicate.
+  expect(html).not.toContain('role="tab"');
+  expect(html).toContain('role="tabpanel"');
+});
+
+test("controlled mode renders nothing for a tab the kind does not support", () => {
+  const html = render(
+    <ESOEvidencePanel
+      kind="secretstores"
+      namespace="apps"
+      name="vault"
+      uid="uid-1"
+      activeTab="history"
+    />,
+  );
+  expect(html).toBe("");
+});
