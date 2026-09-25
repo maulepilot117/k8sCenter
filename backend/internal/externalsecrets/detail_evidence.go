@@ -57,7 +57,27 @@ const (
 
 // evidenceOutcomeOnlyDroppedFields names the event keys an outcome-only
 // response leaves out, as evidenceEventDTO JSON keys verbatim.
-var evidenceOutcomeOnlyDroppedFields = []string{"message", "messageTruncated"}
+var evidenceOutcomeOnlyDroppedFields = []string{"message", "messageTruncated", "source"}
+
+// knownESOEventReasons is the closed set of event reasons an outcome-only
+// caller may see verbatim: the reasons ESO's controllers record, checked
+// against v2.4.1 (the homelab's version) — externalsecret_types.go,
+// secretstore_types.go and v1alpha1/pushsecret_types.go, as passed to
+// recorder.Event in pkg/controllers. Anyone who may `create events` can
+// record an Event against an object's UID with any reason, so the reason is
+// untrusted text; anything else is reported as "Unknown", mirroring
+// knownESOReasons for sync history.
+var knownESOEventReasons = map[string]struct{}{
+	// ExternalSecret
+	"Created": {}, "Updated": {}, "Deleted": {}, "UpdateFailed": {},
+	"ParameterDeprecated": {}, "MissingProviderSecret": {},
+	// SecretStore / ClusterSecretStore
+	"Valid": {}, "InvalidStoreConfiguration": {}, "InvalidProviderConfig": {},
+	"ValidationFailed": {}, "ValidationUnknown": {},
+	"StoreUnmaintained": {}, "StoreDeprecated": {},
+	// PushSecret
+	"Synced": {}, "Errored": {}, "SourceDeleted": {},
+}
 
 var (
 	errEvidenceDiscovery = errors.New("eso discovery unavailable")
@@ -97,7 +117,7 @@ type evidenceEventDTO struct {
 	Count            int32      `json:"count"`
 	FirstTimestamp   *time.Time `json:"firstTimestamp,omitempty"`
 	LastTimestamp    *time.Time `json:"lastTimestamp,omitempty"`
-	Source           string     `json:"source"`
+	Source           *string    `json:"source,omitempty"`
 }
 
 type evidenceEventsResponse struct {
@@ -349,7 +369,7 @@ func (h *Handler) resolveESOGVR(ctx context.Context, resource string) (evidenceR
 		defer cancel()
 		var byResource map[string]evidenceResource
 		err := fmt.Errorf("%w: discovery walk panicked", errEvidenceDiscovery)
-		recoverutil.Safe(h.Logger, "eso evidence discovery walk", func() {
+		recoverutil.Safe(h.Logger, "externalsecrets evidence discovery walk", func() {
 			byResource, err = walkESOGroup(walkCtx, discovery.ToDiscoveryInterfaceWithContext(h.Discoverer.discovery()))
 		})
 		if err != nil {
@@ -437,26 +457,52 @@ func eventsGrant(ns string) string {
 	return "`list events` in namespace " + ns
 }
 
-// projectEvent renders one event at the given level. Every controller-written
-// string is sanitized; the message is additionally withheld below full.
+// projectEvent renders one event at the given level. At full, every
+// event-writer-supplied string is sanitized and returned. Below full, none of
+// that text crosses: the reason and type are mapped onto a closed vocabulary
+// and the message and source are withheld.
 func projectEvent(ev *corev1.Event, lvl projectionLevel) evidenceEventDTO {
-	typ, _ := sanitizeControllerText(ev.Type, evidenceTokenMaxBytes)
-	reason, _ := sanitizeControllerText(ev.Reason, evidenceTokenMaxBytes)
-	source, _ := sanitizeControllerText(cmp.Or(ev.Source.Component, ev.ReportingController), evidenceTokenMaxBytes)
 	dto := evidenceEventDTO{
-		Type:           typ,
-		Reason:         reason,
+		Type:           projectEventType(ev.Type, lvl),
+		Reason:         projectEventReason(ev.Reason, lvl),
 		Count:          eventCount(ev),
 		FirstTimestamp: optionalTime(ev.FirstTimestamp.Time, ev.EventTime.Time),
 		LastTimestamp:  optionalTime(eventLastSeen(ev), time.Time{}),
-		Source:         source,
 	}
 	if lvl == projectionFull {
 		msg, truncated := sanitizeControllerText(ev.Message, evidenceMessageMaxBytes)
+		source, _ := sanitizeControllerText(cmp.Or(ev.Source.Component, ev.ReportingController), evidenceTokenMaxBytes)
 		dto.Message = &msg
 		dto.MessageTruncated = &truncated
+		dto.Source = &source
 	}
 	return dto
+}
+
+// projectEventReason returns the reason itself when it is on the ESO
+// allowlist, "Unknown" otherwise — or, at full, the sanitized original.
+func projectEventReason(reason string, lvl projectionLevel) string {
+	if lvl == projectionFull {
+		out, _ := sanitizeControllerText(reason, evidenceTokenMaxBytes)
+		return out
+	}
+	if _, ok := knownESOEventReasons[reason]; ok {
+		return reason
+	}
+	return "Unknown"
+}
+
+// projectEventType returns Normal or Warning, "Unknown" for anything else,
+// or at full the sanitized original.
+func projectEventType(typ string, lvl projectionLevel) string {
+	if lvl == projectionFull {
+		out, _ := sanitizeControllerText(typ, evidenceTokenMaxBytes)
+		return out
+	}
+	if typ == corev1.EventTypeNormal || typ == corev1.EventTypeWarning {
+		return typ
+	}
+	return "Unknown"
 }
 
 // eventLastSeen is when the event last occurred, across the core/v1 and

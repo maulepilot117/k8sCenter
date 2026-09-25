@@ -293,6 +293,38 @@ func TestEvidenceEvents_DiscoveryFailure_Returns503(t *testing.T) {
 	}
 }
 
+// The group prefers v1, but PushSecret is served only at v1alpha1 (the
+// homelab's shape). If listing v1alpha1 fails transiently, the walk cannot
+// know PushSecret exists, and answering "not served" would be a lie: it must
+// be discovery_unavailable.
+func TestEvidenceEvents_OneVersionListFails_Returns503NotNotServed(t *testing.T) {
+	disco := []*metav1.APIResourceList{
+		servedAt("v1", esoAPIResource("externalsecrets", "ExternalSecret", true)),
+		servedAt("v1alpha1", esoAPIResource("pushsecrets", "PushSecret", true)),
+	}
+	f := newEvidenceFixture(disco,
+		[]runtime.Object{esoObject("v1alpha1", "PushSecret", "apps", "push", "uid-push")},
+		nil, resources.NewAlwaysAllowAccessChecker())
+	fake := &clienttesting.Fake{Resources: disco}
+	var versionLists atomic.Int32
+	fake.AddReactor("get", "resource", func(clienttesting.Action) (bool, runtime.Object, error) {
+		if versionLists.Add(1) == 2 { // the preferred v1 lists; v1alpha1 fails
+			return true, nil, errors.New("transient v1alpha1 discovery failure")
+		}
+		return false, nil, nil
+	})
+	f.h.Discoverer.discoOverride = func() discovery.DiscoveryInterface { return &fakediscovery.FakeDiscovery{Fake: fake} }
+
+	w := getEvidence(f.h, "pushsecrets", "apps", "push", evidenceUser)
+	assertErrorReason(t, w, http.StatusServiceUnavailable, "discovery_unavailable")
+	if versionLists.Load() != 2 {
+		t.Errorf("per-version lists = %d; want 2 (v1, then the failing v1alpha1)", versionLists.Load())
+	}
+	if len(eventListCalls(f.kube)) != 0 {
+		t.Error("events were listed from a partial discovery walk")
+	}
+}
+
 func TestEvidenceEvents_KindNotServed_Returns404(t *testing.T) {
 	disco := []*metav1.APIResourceList{servedAt("v1", esoAPIResource("externalsecrets", "ExternalSecret", true))}
 	f := newEvidenceFixture(disco, nil, nil, resources.NewAlwaysAllowAccessChecker())
@@ -484,7 +516,9 @@ func TestEvidenceEvents_ESOnlyReader_OmitsMessages(t *testing.T) {
 	if b.Data.Projection.Level != "outcome-only" {
 		t.Errorf("projection level = %q; want outcome-only", b.Data.Projection.Level)
 	}
-	wantDropped := []string{"message", "messageTruncated"}
+	// Re-derived here, not imported, so shrinking the production drop list
+	// cannot also weaken this oracle.
+	wantDropped := []string{"message", "messageTruncated", "source"}
 	if strings.Join(b.Data.Projection.DroppedFields, ",") != strings.Join(wantDropped, ",") {
 		t.Errorf("droppedFields = %v; want %v", b.Data.Projection.DroppedFields, wantDropped)
 	}
@@ -497,12 +531,56 @@ func TestEvidenceEvents_ESOnlyReader_OmitsMessages(t *testing.T) {
 			t.Errorf("outcome-only event carries %q; it must be absent, not empty", k)
 		}
 	}
+	// UpdateFailed is on the ESO reason allowlist, so it survives verbatim.
 	for k, want := range map[string]string{
-		"type": `"Warning"`, "reason": `"UpdateFailed"`, "count": `3`, "source": `"external-secrets"`,
+		"type": `"Warning"`, "reason": `"UpdateFailed"`, "count": `3`,
 	} {
 		if string(ev[k]) != want {
 			t.Errorf("%s = %s; want %s", k, ev[k], want)
 		}
+	}
+}
+
+// Anyone with `create events` can record an Event against this object's UID
+// with any reason, type and source text. An outcome-only caller must see only
+// ESO's own vocabulary, exactly as the history endpoint's reason allowlist
+// does; the full level still sees the sanitized original.
+func TestEvidenceEvents_OutcomeOnly_MasksUnlistedControllerText(t *testing.T) {
+	planted := esoEvent("apps", "ev-planted", "uid-1", evidenceNow)
+	planted.Reason = "key prod/db/REASON_MARKER not found"
+	planted.Type = "TYPE_MARKER"
+	planted.Source = corev1.EventSource{Component: "SOURCE_MARKER"}
+
+	for _, tc := range []struct {
+		name       string
+		ac         *resources.AccessChecker
+		wantReason string
+		wantType   string
+		wantLeak   bool
+	}{
+		{"outcome-only", resources.NewPredicateAccessChecker(esOnly), `"Unknown"`, `"Unknown"`, false},
+		{"full", resources.NewAlwaysAllowAccessChecker(), `"key prod/db/REASON_MARKER not found"`, `"TYPE_MARKER"`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newEvidenceFixture(allKindsAtV1(),
+				[]runtime.Object{esoObject("v1", "ExternalSecret", "apps", "db-creds", "uid-1")},
+				[]corev1.Event{planted}, tc.ac)
+
+			w := getEvidence(f.h, "externalsecrets", "apps", "db-creds", evidenceUser)
+			b := decodeEvidence(t, w)
+			if len(b.Data.Events) != 1 {
+				t.Fatalf("events = %d; want 1", len(b.Data.Events))
+			}
+			ev := b.Data.Events[0]
+			if string(ev["reason"]) != tc.wantReason || string(ev["type"]) != tc.wantType {
+				t.Errorf("reason = %s, type = %s; want %s, %s", ev["reason"], ev["type"], tc.wantReason, tc.wantType)
+			}
+			for _, marker := range []string{"REASON_MARKER", "TYPE_MARKER", "SOURCE_MARKER"} {
+				if got := strings.Contains(w.Body.String(), marker); got != tc.wantLeak {
+					t.Errorf("body contains %s = %t; want %t\nbody: %s", marker, got, tc.wantLeak, w.Body.String())
+				}
+			}
+		})
 	}
 }
 
