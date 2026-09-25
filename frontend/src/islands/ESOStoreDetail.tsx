@@ -211,6 +211,8 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
 
       {evidenceTab.value && (
         <div hidden={!isEvidenceTab(activeTab.value)}>
+          {/* Route params, not store.namespace: that field is optional on the
+              shared SecretStore type, and this page is always namespaced. */}
           <ESOEvidencePanel
             kind="secretstores"
             namespace={namespace}
