@@ -349,3 +349,82 @@ export interface BulkRefreshJob {
   failed: BulkRefreshOutcome[];
   skipped: BulkRefreshOutcome[];
 }
+
+// --- Release B evidence (U14a history, U15 events) --------------------------
+
+/** The five ESO kinds the evidence endpoints serve, by their API plural. */
+export type EvidenceKind =
+  | "externalsecrets"
+  | "clusterexternalsecrets"
+  | "secretstores"
+  | "clustersecretstores"
+  | "pushsecrets";
+
+/**
+ * How much of an evidence record the caller may see. Resolved server-side
+ * from the caller's own `get secrets` grant; `droppedFields` names the entry
+ * keys an outcome-only response leaves out entirely (absent, not empty).
+ */
+export interface EvidenceProjection {
+  level: "full" | "outcome-only";
+  droppedFields: string[];
+}
+
+/** One sync attempt from GET .../externalsecrets/{ns}/{name}/history. */
+export interface HistoryEntry {
+  id: number;
+  attemptAt: string;
+  outcome: string;
+  reason: string;
+  diffKeyCounts: { added: number; removed: number; changed: number };
+  // Present only at the full projection.
+  message?: string;
+  messageTruncated?: boolean;
+  diffKeysAdded?: string[];
+  diffKeysRemoved?: string[];
+  diffKeysChanged?: string[];
+  syncedResourceVersion?: string;
+}
+
+/** `data` of the history endpoint; the next cursor is `metadata.continue`. */
+export interface HistoryPage {
+  uid: string;
+  clusterId: string;
+  projection: EvidenceProjection;
+  entries: HistoryEntry[];
+}
+
+/** One Kubernetes event from GET .../evidence/{kind}/{ns|_}/{name}/events. */
+export interface EvidenceEvent {
+  type: string;
+  reason: string;
+  count: number;
+  firstTimestamp?: string;
+  lastTimestamp?: string;
+  // Present only at the full projection.
+  message?: string;
+  messageTruncated?: boolean;
+  source?: string;
+}
+
+export interface EvidenceEventsResponse {
+  uid: string;
+  projection: EvidenceProjection;
+  events: EvidenceEvent[];
+  /** More events matched than the newest page the server returned. */
+  truncated: boolean;
+}
+
+/**
+ * Why an evidence tab has nothing to show. Each value renders its own
+ * explanation; none of them is "empty".
+ */
+export type EvidenceUnavailableReason =
+  | "remote_unsupported"
+  | "eso_not_detected"
+  | "history_unavailable"
+  | "discovery_unavailable"
+  | "forbidden"
+  | "not_found"
+  | "unsupported_kind"
+  | "error";
