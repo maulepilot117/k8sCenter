@@ -45,7 +45,15 @@ const (
 //     resource version appears anywhere in the output.
 //   - Full level: controller text comes back as valid UTF-8 without control
 //     characters other than \n and \t, with no run of three newlines, within
-//     its byte bound, and truncation is reported; key names come back verbatim.
+//     its byte bound, and truncation is reported. For input that is already
+//     plain (valid UTF-8, no control character at all — so no \n or \t
+//     either), the sanitized message and reason must additionally equal the
+//     input verbatim when within bound, or a truncated prefix of it plus "…"
+//     when over bound, with the truncation flag set accordingly — this is a
+//     fidelity oracle, not just a safety-shape check, so it catches a
+//     sanitizer that returns "", never reports truncation, or otherwise
+//     drops content while still passing the safety checks. Key names and the
+//     resource version come back verbatim.
 //
 // Key lists are the comma-separated fields of the three key arguments.
 func FuzzESOHistoryProjection(f *testing.F) {
@@ -150,6 +158,8 @@ func checkFull(t *testing.T, e store.ESOSyncHistoryEntry) {
 	}
 	checkControllerText(t, "message", *dto.Message, fuzzMessageMaxBytes, *dto.MessageTruncated)
 	checkControllerText(t, "reason", dto.Reason, fuzzReasonMaxBytes, false) // the reason carries no truncation flag
+	checkPlainFidelity(t, "message", e.Message, *dto.Message, fuzzMessageMaxBytes, dto.MessageTruncated)
+	checkPlainFidelity(t, "reason", e.Reason, dto.Reason, fuzzReasonMaxBytes, nil)
 
 	for _, pair := range []struct {
 		name      string
@@ -186,5 +196,35 @@ func checkControllerText(t *testing.T, field, s string, maxBytes int, truncated 
 	}
 	if truncated && !strings.HasSuffix(s, "…") {
 		t.Fatalf("full %s reports truncation but does not end in an ellipsis: %q", field, s)
+	}
+}
+
+// checkPlainFidelity asserts that input with nothing to sanitize survives
+// sanitization: verbatim within bound, otherwise a prefix of the input cut no
+// more than one rune short of the bound, plus an ellipsis. truncated is nil
+// for fields that carry no truncation flag. Input that is not plain is left
+// to checkControllerText's safety-shape checks.
+func checkPlainFidelity(t *testing.T, field, in, out string, maxBytes int, truncated *bool) {
+	t.Helper()
+	if !utf8.ValidString(in) || strings.IndexFunc(in, unicode.IsControl) >= 0 {
+		return
+	}
+	over := len(in) > maxBytes
+	if truncated != nil && *truncated != over {
+		t.Fatalf("full %s truncated = %t for %d-byte plain input; bound is %d", field, *truncated, len(in), maxBytes)
+	}
+	if !over {
+		if out != in {
+			t.Fatalf("full %s = %q; want plain input %q verbatim", field, out, in)
+		}
+		return
+	}
+	const ellipsis = "…"
+	prefix, ok := strings.CutSuffix(out, ellipsis)
+	if !ok || !strings.HasPrefix(in, prefix) {
+		t.Fatalf("full %s = %q; want a prefix of the plain input plus %q", field, out, ellipsis)
+	}
+	if minPrefix := maxBytes - len(ellipsis) - (utf8.UTFMax - 1); len(prefix) < minPrefix {
+		t.Fatalf("full %s keeps %d bytes of %d-byte plain input; want at least %d", field, len(prefix), len(in), minPrefix)
 	}
 }
