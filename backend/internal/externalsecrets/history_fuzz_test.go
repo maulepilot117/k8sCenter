@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -19,9 +20,9 @@ import (
 // so removing or loosening a guard fails the oracle instead of silently
 // agreeing with it.
 var (
-	fuzzL1Keys = []string{"attemptAt", "diffKeyCounts", "id", "outcome", "reason"}
+	fuzzOutcomeOnlyKeys = []string{"attemptAt", "diffKeyCounts", "id", "outcome", "reason"}
 
-	fuzzL1Reasons = []string{
+	fuzzKnownReasons = []string{
 		"SecretSynced", "SecretSyncedError", "SecretDeleted", "SecretMissing",
 		"ResourceSynced", "ResourceSyncedError", "ResourceDeleted", "ResourceMissing",
 		"Unknown",
@@ -93,20 +94,16 @@ func checkOutcomeOnly(t *testing.T, e store.ESOSyncHistoryEntry) {
 		t.Fatalf("outcome-only entry is not a JSON object: %v\n%s", err, out)
 	}
 
-	keys := make([]string, 0, len(fields))
-	for k := range fields {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	if !slices.Equal(keys, fuzzL1Keys) {
-		t.Fatalf("outcome-only entry keys = %v; want exactly %v\n%s", keys, fuzzL1Keys, out)
+	keys := slices.Sorted(maps.Keys(fields))
+	if !slices.Equal(keys, fuzzOutcomeOnlyKeys) {
+		t.Fatalf("outcome-only entry keys = %v; want exactly %v\n%s", keys, fuzzOutcomeOnlyKeys, out)
 	}
 
 	var reason string
 	if err := json.Unmarshal(fields["reason"], &reason); err != nil {
 		t.Fatalf("reason: %v", err)
 	}
-	if !slices.Contains(fuzzL1Reasons, reason) {
+	if !slices.Contains(fuzzKnownReasons, reason) {
 		t.Fatalf("outcome-only reason %q is not an allowlisted token", reason)
 	}
 
@@ -125,7 +122,7 @@ func checkOutcomeOnly(t *testing.T, e store.ESOSyncHistoryEntry) {
 	// are compared decoded, not by byte search, so JSON punctuation in an
 	// input cannot match the output's own structure.
 	permitted := map[string]bool{fuzzOutcome: true, reason: true, "added": true, "removed": true, "changed": true}
-	for _, k := range fuzzL1Keys {
+	for _, k := range fuzzOutcomeOnlyKeys {
 		permitted[k] = true
 	}
 	permitted[e.AttemptAt.Format(time.RFC3339Nano)] = true
@@ -162,7 +159,7 @@ func checkFull(t *testing.T, e store.ESOSyncHistoryEntry) {
 		{"diffKeysRemoved", *dto.DiffKeysRemoved, e.DiffKeysRemoved},
 		{"diffKeysChanged", *dto.DiffKeysChanged, e.DiffKeysChanged},
 	} {
-		if !slices.Equal(pair.got, pair.want) && !(len(pair.got) == 0 && len(pair.want) == 0) {
+		if !slices.Equal(pair.got, pair.want) { // nil and [] compare equal
 			t.Fatalf("full %s = %q; want %q verbatim", pair.name, pair.got, pair.want)
 		}
 	}
