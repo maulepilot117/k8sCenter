@@ -743,6 +743,12 @@ func (s *Server) registerExternalSecretsRoutes(ar chi.Router) {
 		er.With(resources.ValidateURLParams).
 			Post("/externalsecrets/{namespace}/{name}/force-sync", h.HandleForceSyncExternalSecret)
 
+		// Release B / U14 — paginated, redacted sync history for one
+		// ExternalSecret. Key names and controller messages require
+		// `get secrets` in the ES namespace; see history_handler.go.
+		er.With(resources.ValidateURLParams).
+			Get("/externalsecrets/{namespace}/{name}/history", h.HandleGetExternalSecretHistory)
+
 		// Bulk refresh actions (Phase E Unit 15). Async job model:
 		// scope GET resolves targets the user can refresh; POST creates a
 		// job + returns 202+jobId; client polls bulk-refresh-jobs/{jobId}

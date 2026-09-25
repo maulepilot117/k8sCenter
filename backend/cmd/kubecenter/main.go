@@ -792,6 +792,14 @@ func main() {
 	// through the shared monitoring discoverer. Optional: handler degrades
 	// to `{error: "rate metrics offline"}` when nil.
 	esoHandler.MonitoringDisc = monDiscoverer
+	// Release B / U14 — history read path. nil-safe: the endpoint answers
+	// 503 history_unavailable when no DB is configured. The nil check is
+	// load-bearing: assigning a nil *ESOHistoryStore would make a non-nil
+	// interface and the endpoint would panic instead of answering 503.
+	if esoHistoryStore != nil {
+		esoHandler.HistoryStore = esoHistoryStore
+	}
+	esoHandler.ClusterID = cfg.ClusterID
 	esoPoller := externalsecrets.NewPoller(
 		k8sClient, esoDisc, esoHandler,
 		notifService, notifStore, esoHistoryStore, cfg.ClusterID,

@@ -68,6 +68,13 @@ type Handler struct {
 	// offline"}` rather than 500. Wired in main.go after monDiscoverer.
 	MonitoringDisc *monitoring.Discoverer
 
+	// HistoryStore is optional; nil => the history endpoint answers 503
+	// history_unavailable rather than panicking. Wired in main.go.
+	HistoryStore ESOHistoryReader
+	// ClusterID is the configured id this process polls (cfg.ClusterID).
+	// History rows are stamped with it; the read path pins it.
+	ClusterID string
+
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cache      *cachedData
@@ -254,18 +261,24 @@ func (h *Handler) PruneObservedDrift(currentUIDs map[string]bool) {
 	})
 }
 
-// canAccess checks a single (verb, resource, namespace) tuple via the
-// AccessChecker. Phase A only ever passes "list" / "get"; write verbs land
-// in Phases D / E.
+// canAccess checks a single (verb, resource, namespace) tuple in the ESO API
+// group via the AccessChecker. Phase A only ever passes "list" / "get"; write
+// verbs land in Phases D / E.
 func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource, namespace string) bool {
-	clusterID := middleware.ClusterIDFromContext(ctx)
+	return h.canAccessGroup(ctx, user, verb, GroupName, resource, namespace)
+}
+
+// canAccessGroup is canAccess for an explicit API group ("" is the core
+// group). A failed check is a denial: every caller uses it to decide whether
+// to allow or widen a response.
+func (h *Handler) canAccessGroup(ctx context.Context, user *auth.User, verb, apiGroup, resource, namespace string) bool {
 	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx,
-		clusterID,
+		middleware.ClusterIDFromContext(ctx),
 		user.KubernetesUsername,
 		user.KubernetesGroups,
 		verb,
-		GroupName,
+		apiGroup,
 		resource,
 		namespace,
 	)
