@@ -3,14 +3,29 @@ import { useEffect } from "preact/hooks";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
+import { type EvidenceTabKey, evidenceTabsFor } from "@/lib/eso-evidence.ts";
 import type { ClusterExternalSecret } from "@/lib/eso-types.ts";
+import ESOEvidencePanel from "@/src/islands/ESOEvidencePanel.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface Props {
   name: string;
 }
 
-type TabKey = "overview" | "yaml" | "events" | "history" | "chain";
+type TabKey = "overview" | EvidenceTabKey | "chain";
+
+// History is replaced by "Generated ExternalSecrets": a CES has no collector
+// of its own, so it links to each child's history instead of claiming the
+// children's attempts as its own (D5, R12).
+const TABS: Array<{ key: TabKey; label: string }> = [
+  { key: "overview", label: "Overview" },
+  ...evidenceTabsFor("clusterexternalsecrets"),
+  { key: "chain", label: "Chain" },
+];
+
+function isEvidenceTab(tab: TabKey): tab is EvidenceTabKey {
+  return tab !== "overview" && tab !== "chain";
+}
 
 const EM_DASH = "—";
 
@@ -28,6 +43,8 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
   const error = useSignal<string | null>(null);
   const data = useSignal<ClusterExternalSecret | null>(null);
   const activeTab = useSignal<TabKey>("overview");
+  // The last evidence tab opened; the panel stays mounted once opened.
+  const evidenceTab = useSignal<EvidenceTabKey | null>(null);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -81,15 +98,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
 
       {/* Tab strip */}
       <div role="tablist" class="flex gap-1 border-b border-border-primary">
-        {(
-          [
-            ["overview", "Overview"],
-            ["yaml", "YAML"],
-            ["events", "Events"],
-            ["history", "History"],
-            ["chain", "Chain"],
-          ] as Array<[TabKey, string]>
-        ).map(([key, label]) => {
+        {TABS.map(({ key, label }) => {
           const active = activeTab.value === key;
           return (
             <button
@@ -97,7 +106,10 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
               type="button"
               role="tab"
               aria-selected={active}
-              onClick={() => (activeTab.value = key)}
+              onClick={() => {
+                activeTab.value = key;
+                if (isEvidenceTab(key)) evidenceTab.value = key;
+              }}
               class={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
                 active
                   ? "border-brand text-text-primary"
@@ -240,30 +252,16 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
         </div>
       )}
 
-      {activeTab.value === "yaml" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          YAML editor coming in Phase&nbsp;B.
-        </div>
-      )}
-
-      {activeTab.value === "events" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          Events feed coming in Phase&nbsp;B.
-        </div>
-      )}
-
-      {activeTab.value === "history" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          History timeline coming in Phase&nbsp;C.
+      {evidenceTab.value && (
+        <div hidden={!isEvidenceTab(activeTab.value)}>
+          <ESOEvidencePanel
+            kind="clusterexternalsecrets"
+            namespace={null}
+            name={name}
+            uid={ces.uid}
+            activeTab={evidenceTab.value}
+            clusterExternalSecret={ces}
+          />
         </div>
       )}
 
