@@ -175,7 +175,7 @@ Release A               U1 → U2 → U3 → U4 → U5a → U5b                 
 DX                      discoverability fix for shipped Release A surfaces   [done]
 C (partial)             U7 → U8 → U11a          pulled forward — see below   [done]
 Release G               D0 → P1 → P2 → P3 → P4  personal dashboard builder   [done]
-Release B               U13 → U14a → U14b → U15 → U16 → U17 → U18 → U19a → U19b   [U13–U19a done; U19b next]
+Release B               U13 → U14a → U14b → U15 → U16 → U17 → U18 → U19a → U19b   [done]
 Release C (remainder)   U9a → U9b → U10 → U11b → U11c → U12*
 Release F               U32 → U32b → U33 → U34a → U34b → U34c → U35 → U36 → U36b → U37**
 U20                     pulled forward from Release D
