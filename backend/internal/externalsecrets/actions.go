@@ -280,8 +280,12 @@ func (h *Handler) patchForceSyncPinned(ctx context.Context, client dynamic.Inter
 
 // patchForceSyncObserved is patchForceSyncPinned plus the refresh baseline
 // of the attempt that was accepted. Each retry re-reads the ES, so the
-// baseline always describes the object immediately before the patch that
-// landed. The single force-sync handler returns it; the bulk worker does not.
+// baseline describes the object immediately before that attempt's patch.
+// One case falls short: a timed-out patch the apiserver applied anyway is
+// retried, and the retry reads the already-annotated object. Its status is
+// still pre-reconcile unless ESO has finished in between, in which case the
+// in-flight window above usually returns 409 instead. The single force-sync
+// handler returns the baseline; the bulk worker does not.
 func (h *Handler) patchForceSyncObserved(ctx context.Context, client dynamic.Interface, ns, name, expectedUID string) (forceSyncAttempt, error) {
 	var result forceSyncAttempt
 	var lastErr error

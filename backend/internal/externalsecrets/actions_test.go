@@ -539,7 +539,9 @@ func makeSyncedES(ns, name, uid string) (*unstructured.Unstructured, string, str
 	es.Object["status"] = map[string]any{
 		"refreshTime":           refreshTime,
 		"syncedResourceVersion": "1-abc123",
+		// A non-Ready condition first, so the Ready lookup must skip it.
 		"conditions": []any{
+			map[string]any{"type": "Deleted", "status": "False", "lastTransitionTime": "2020-01-01T00:00:00Z"},
 			map[string]any{"type": "Ready", "status": "True", "reason": "SecretSynced", "lastTransitionTime": readyLTT},
 		},
 	}
@@ -568,6 +570,40 @@ func TestForceSync_202IncludesBaseline(t *testing.T) {
 	}
 	if requestedAt.Before(before) || requestedAt.After(after) {
 		t.Errorf("requestedAt %s outside the request window [%s, %s]", requestedAt, before, after)
+	}
+}
+
+// The wire keys are a contract with the U19b observer's TypeScript types, so
+// they are pinned against the raw body rather than round-tripped through the
+// same struct that encodes them.
+func TestForceSync_202BaselineWireKeys(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es, _, _ := makeSyncedES(ns, name, "uid-1")
+	h, _ := newForceSyncHandler([]runtime.Object{es}, resources.NewAlwaysAllowAccessChecker())
+
+	w := postForceSync(t, h, ns, name)
+	var raw struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v / %s", err, w.Body.String())
+	}
+	for _, k := range []string{"status", "correlation", "baseline"} {
+		if _, ok := raw.Data[k]; !ok {
+			t.Errorf("data.%s missing: %s", k, w.Body.String())
+		}
+	}
+	var baseline map[string]any
+	if err := json.Unmarshal(raw.Data["baseline"], &baseline); err != nil {
+		t.Fatalf("decode baseline: %v", err)
+	}
+	for _, k := range []string{
+		"uid", "resourceVersion", "generation", "refreshTime",
+		"readyLastTransitionTime", "syncedResourceVersion", "requestedAt",
+	} {
+		if _, ok := baseline[k]; !ok {
+			t.Errorf("baseline.%s missing: %s", k, raw.Data["baseline"])
+		}
 	}
 }
 
