@@ -258,13 +258,13 @@ U7-U12 are required for remote versions of incident capture, tracked YAML change
 
 ### Delivery Status
 
-As of `main` @ `9aad22ca` (2026-09-26). Per-unit status sits under each unit heading below; `2026-09-10-EXECUTION-ORDER.md` holds the execution sequence.
+As of `main` @ `c2fc26cd` (2026-09-26). Per-unit status sits under each unit heading below; `2026-09-10-EXECUTION-ORDER.md` holds the execution sequence.
 
 | Release | Status |
 |---|---|
 | A. Personal views and pins (U1–U5) | ✅ Done — #423–#430, DX follow-up #435 |
 | Dashboard builder (U6 + U38, superseded by Release G) | ✅ Done — #456, #466–#481 |
-| B. ESO evidence (U13–U19) | 🟡 U13–U18 and U19a done (#482–#489); U19b remains |
+| B. ESO evidence (U13–U19) | ✅ Done — #482–#489, #491 |
 | C. Remote workflow (U7–U12) | 🟡 U7, U8 and U11a done (#436, #438, #440); U9, U10, U11b/c and U12 remain |
 | D. Persistent incidents (U20–U25) | ⬜ Not started (U20 runs ahead of Release E) |
 | E. Tracked changes (U26–U31) | ⬜ Not started |
@@ -685,7 +685,7 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U19. Observe a refresh outcome instead of only acceptance
 
-**Status:** 🟡 Partial — U19a (force-sync baseline) done in #489; U19b (UI refresh observer) remains.
+**Status:** ✅ Done — #489 (B/U19a, force-sync baseline), #491 (B/U19b, UI refresh observer).
 
 **Covers:** R1, R13; AE5. **Depends on:** U17.
 
