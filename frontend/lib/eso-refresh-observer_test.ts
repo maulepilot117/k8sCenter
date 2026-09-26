@@ -5,6 +5,7 @@ import {
   describeObserver,
   INITIAL_OBSERVER_STATE,
   isNewEvidence,
+  isObserving,
   nextPollDelayMs,
   OBSERVE_TIMEOUT_MS,
   type ObserverEvent,
@@ -223,6 +224,47 @@ test("uid change mid-wait yields targetChanged", () => {
   expect(s.phase).toBe("targetChanged");
 });
 
+test("cancel or a cluster change while the request is pending is terminal", () => {
+  const requested = run([{ type: "request" }]);
+  const cancelled = reduceObserver(requested, { type: "cancel" });
+  const moved = reduceObserver(requested, { type: "clusterChanged" });
+  expect(cancelled.phase).toBe("cancelled");
+  expect(moved.phase).toBe("targetChanged");
+  // The POST answering afterwards must not revive the observation.
+  const accepted: ObserverEvent = {
+    type: "accepted",
+    baseline: BASELINE,
+    correlation: "strong",
+    priorStatus: "Synced",
+    nowMs: T0,
+  };
+  expect(reduceObserver(moved, accepted)).toBe(moved);
+  expect(reduceObserver(cancelled, accepted)).toBe(cancelled);
+});
+
+test("isObserving is true only while a request or its observation is open", () => {
+  const phases: Array<[ObserverState["phase"], boolean]> = [
+    ["idle", false],
+    ["requested", true],
+    ["awaitingObservation", true],
+    ["observedSuccess", false],
+    ["observedFailure", false],
+    ["timeout", false],
+    ["cancelled", false],
+    ["accessLost", false],
+    ["targetChanged", false],
+  ];
+  for (const [phase, open] of phases) expect(isObserving(phase)).toBe(open);
+});
+
+test("the timeout copy states the configured bound", () => {
+  const s = reduceObserver(awaiting(), {
+    type: "tick",
+    nowMs: T0 + OBSERVE_TIMEOUT_MS,
+  });
+  expect(describeObserver(s)?.text).toContain(`${OBSERVE_TIMEOUT_MS / 1000} s`);
+});
+
 test("clusterChanged yields targetChanged", () => {
   expect(reduceObserver(awaiting(), { type: "clusterChanged" }).phase).toBe(
     "targetChanged",
@@ -352,9 +394,15 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 function fakeClock() {
   let now = T0;
   let next = 0;
+  // How far the wall clock (now) trails the timer clock: setTimeout runs on
+  // a monotonic clock, so a timer can fire before Date.now() reaches its mark.
+  let lag = 0;
   const timers = new Map<number, { at: number; fn: () => void }>();
   return {
-    now: () => now,
+    now: () => now - lag,
+    setLag: (ms: number) => {
+      lag = ms;
+    },
     setTimer: (fn: () => void, ms: number) => {
       next += 1;
       timers.set(next, { at: now + ms, fn });
@@ -511,5 +559,17 @@ test("poller: stop aborts the in-flight poll and a late answer writes nothing", 
   h.fetches[0].resolve({ ...UNCHANGED, lastSyncTime: "2026-09-26T12:00:05Z" });
   await flush();
   expect(h.state()).toBe(before);
+  expect(h.clock.pending()).toBe(0);
+});
+
+test("poller: a deadline timer that fires before the wall clock reaches it still ends the observation", async () => {
+  const h = pollerHarness();
+  h.begin();
+  await h.clock.advance(1000);
+  expect(h.fetches).toHaveLength(1); // in flight, never answered
+  h.clock.setLag(1);
+  await h.clock.advance(OBSERVE_TIMEOUT_MS);
+  expect(h.state().phase).toBe("timeout");
+  expect(h.poller.running).toBe(false);
   expect(h.clock.pending()).toBe(0);
 });

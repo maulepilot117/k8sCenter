@@ -121,6 +121,11 @@ const TERMINAL: ReadonlySet<ObserverPhase> = new Set([
   "targetChanged",
 ]);
 
+/** True while a request or its observation is still open. */
+export function isObserving(phase: ObserverPhase): boolean {
+  return phase === "requested" || phase === "awaitingObservation";
+}
+
 export function isTerminal(phase: ObserverPhase): boolean {
   return TERMINAL.has(phase);
 }
@@ -323,7 +328,9 @@ export function describeObserver(
         text:
           st.detail === "observation_unavailable"
             ? "Request accepted, but this ExternalSecret could not be read to confirm the outcome."
-            : "Request accepted. No new reconciliation observed within 90 s.",
+            : `Request accepted. No new reconciliation observed within ${
+                OBSERVE_TIMEOUT_MS / 1000
+              } s.`,
         tone: "muted",
       };
     case "accessLost":
@@ -424,14 +431,16 @@ export function createRefreshPoller(deps: PollerDeps): RefreshPoller {
   const begin = (state: ObserverState) => {
     if (running || state.phase !== "awaitingObservation") return;
     running = true;
-    const remaining = Math.max(
-      0,
-      (state.deadlineMs ?? deps.now()) - deps.now(),
-    );
+    const deadlineMs = state.deadlineMs ?? deps.now();
+    const remaining = Math.max(0, deadlineMs - deps.now());
     deadlineTimer = deps.setTimer(() => {
       deadlineTimer = undefined;
       inFlight?.abort();
-      stillWaiting(deps.dispatch({ type: "tick", nowMs: deps.now() }));
+      // Timers run on a monotonic clock, so this can fire a moment before
+      // now() reaches the deadline. The timer firing is the deadline: tick at
+      // least at it, or the aborted poll would leave nothing to end the wait.
+      const nowMs = Math.max(deps.now(), deadlineMs);
+      stillWaiting(deps.dispatch({ type: "tick", nowMs }));
     }, remaining);
     schedule(state.attempt);
   };

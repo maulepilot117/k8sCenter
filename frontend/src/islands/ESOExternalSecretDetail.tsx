@@ -11,6 +11,7 @@ import {
   createRefreshPoller,
   describeObserver,
   INITIAL_OBSERVER_STATE,
+  isObserving,
   isTerminal,
   type ObserverEvent,
   type ObserverState,
@@ -212,9 +213,7 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
 
   const es = data.value;
   const observation = describeObserver(observer.value);
-  const observing =
-    observer.value.phase === "requested" ||
-    observer.value.phase === "awaitingObservation";
+  const observing = isObserving(observer.value.phase);
   const showMessage =
     es.status === "SyncFailed" ||
     (es.readyMessage && es.readyMessage.length > 0);

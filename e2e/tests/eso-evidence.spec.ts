@@ -518,21 +518,41 @@ test.describe("eso evidence — cluster-scoped and PushSecret", () => {
 const LAST_SYNC = "2026-09-26T11:30:00Z";
 const LATER_SYNC = "2026-09-26T12:00:05Z";
 
+interface ForceSyncStub {
+  /** The ES status on its n-th read. Defaults to Synced. */
+  status?: (read: number) => string;
+  /** Answer with a pre-U19a 202: no baseline or correlation. */
+  withoutBaseline?: boolean;
+}
+
 /**
  * Answers force-sync with a strong-correlation 202 and serves the ES with
  * `lastSyncTime(n)` on its n-th read (1-based, the page's own load included).
  * Returns a counter of ES reads.
  */
-async function serveForceSync(page: Page, lastSyncTime: (read: number) => string) {
+async function serveForceSync(
+  page: Page,
+  lastSyncTime: (read: number) => string,
+  stub: ForceSyncStub = {},
+) {
   const reads = { count: 0 };
   await page.route(`**/api/v1/externalsecrets/externalsecrets/${NS}/${ES}`, (route) => {
     reads.count += 1;
+    const status = stub.status?.(reads.count) ?? "Synced";
+    const failure =
+      status === "SyncFailed"
+        ? {
+            readyReason: "SecretSyncedError",
+            readyMessage: "could not get secret data from provider",
+          }
+        : {};
     return json(route, 200, {
       data: {
         namespace: NS,
         name: ES,
         uid: ES_UID,
-        status: "Synced",
+        status,
+        ...failure,
         storeRef: { kind: "SecretStore", name: STORE },
         targetSecretName: ES,
         refreshInterval: "1h",
@@ -545,7 +565,7 @@ async function serveForceSync(page: Page, lastSyncTime: (read: number) => string
     `**/api/v1/externalsecrets/externalsecrets/${NS}/${ES}/force-sync`,
     (route) =>
       json(route, 202, {
-        data: {
+        data: stub.withoutBaseline ? { status: "force-syncing" } : {
           status: "force-syncing",
           correlation: "strong",
           baseline: {
@@ -590,6 +610,41 @@ test.describe("eso evidence — refresh observation", () => {
     const line = page.locator('[data-observer-phase="observedSuccess"]');
     await expect(line).toBeVisible({ timeout: 10_000 });
     await expect(line).toContainText("after your request");
+  });
+
+  test("a failure after the request is shown with its reason, not claimed as caused", async ({
+    page,
+  }) => {
+    await serveESO(page);
+    // Read 1 (page load) is Synced; every poll after the request has failed,
+    // with no new refreshTime, so only the status change is evidence.
+    await serveForceSync(page, () => LAST_SYNC, {
+      status: (read) => (read === 1 ? "Synced" : "SyncFailed"),
+    });
+    await page.goto(ES_PATH);
+    await page.getByRole("button", { name: "Force sync" }).click();
+
+    const line = page.locator('[data-observer-phase="observedFailure"]');
+    await expect(line).toBeVisible({ timeout: 10_000 });
+    await expect(line).toContainText("observed after your request");
+    await expect(line).toContainText("SecretSyncedError");
+    await expect(line).not.toContainText("Sync failed after your request");
+  });
+
+  test("a backend without the baseline falls back to plain acceptance", async ({ page }) => {
+    await serveESO(page);
+    const reads = await serveForceSync(page, () => LAST_SYNC, { withoutBaseline: true });
+    await page.goto(ES_PATH);
+    await expect(page.getByRole("heading", { name: ES })).toBeVisible();
+    const afterLoad = reads.count;
+
+    await page.getByRole("button", { name: "Force sync" }).click();
+    await expect(page.getByText("Force-sync requested.")).toBeVisible();
+    await expect(observerLine(page)).toHaveCount(0);
+    // Nothing to observe against, so nothing polls the ES.
+    await page.waitForTimeout(2_500);
+    expect(reads.count).toBe(afterLoad);
+    await expect(page.getByRole("button", { name: "Force sync" })).toBeEnabled();
   });
 
   test("navigating away mid-wait leaves no orphaned banner", async ({ page }) => {
