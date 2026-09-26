@@ -1,11 +1,22 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESODriftIndicator } from "@/components/eso/ESODriftIndicator.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ApiError } from "@/lib/api.ts";
+import { selectedCluster } from "@/lib/cluster.ts";
 import { esoApi } from "@/lib/eso-api.ts";
 import { type EvidenceTabKey, evidenceTabsFor } from "@/lib/eso-evidence.ts";
+import {
+  describeObserver,
+  INITIAL_OBSERVER_STATE,
+  isTerminal,
+  nextPollDelayMs,
+  type ObserverEvent,
+  type ObserverState,
+  type ObserverTone,
+  reduceObserver,
+} from "@/lib/eso-refresh-observer.ts";
 import type { ExternalSecret } from "@/lib/eso-types.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
@@ -34,6 +45,14 @@ function isEvidenceTab(tab: TabKey): tab is EvidenceTabKey {
 
 const EM_DASH = "—";
 
+const OBSERVER_TONE: Record<ObserverTone, string> = {
+  info: "text-text-primary bg-base border-border-subtle",
+  success: "text-success bg-success/10 border-success",
+  danger: "text-danger border-danger",
+  muted: "text-text-muted bg-base border-border-subtle",
+  warning: "text-warning bg-warning/10 border-warning/30",
+};
+
 function storeHref(kind: string, namespace: string, name: string): string {
   if (kind === "ClusterSecretStore") {
     return `/external-secrets/cluster-stores/${encodeURIComponent(name)}`;
@@ -52,19 +71,116 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
   // has been opened, so returning from Overview or Chain keeps what it loaded.
   const evidenceTab = useSignal<EvidenceTabKey | null>(null);
   const forceSyncing = useSignal(false);
+  // The request's own failure (409, 403, …). The outcome of an accepted
+  // request is the observer's to report.
   const forceSyncMsg = useSignal<string | null>(null);
-  // Bumped on a successful force-sync so the kept-mounted evidence panel
-  // remounts and reloads the open tab instead of showing pre-sync evidence.
+  // Bumped when the observer sees the outcome, so the kept-mounted evidence
+  // panel remounts and History shows the attempt the request produced.
   const evidenceEpoch = useSignal(0);
+  const observer = useSignal<ObserverState>(INITIAL_OBSERVER_STATE);
+  const poll = useRef<{
+    timer?: ReturnType<typeof setTimeout>;
+    abort?: AbortController;
+  }>({});
+
+  const stopPolling = () => {
+    clearTimeout(poll.current.timer);
+    poll.current.abort?.abort();
+    poll.current = {};
+  };
+
+  const dispatch = (e: ObserverEvent) => {
+    const next = reduceObserver(observer.value, e);
+    if (next === observer.value) return;
+    observer.value = next;
+    if (isTerminal(next.phase)) {
+      stopPolling();
+      if (
+        next.phase === "observedSuccess" ||
+        next.phase === "observedFailure"
+      ) {
+        evidenceEpoch.value++;
+      }
+    }
+  };
+
+  // One poll per timer; the next is scheduled only after this one settles.
+  const schedulePoll = () => {
+    const { phase, attempt } = observer.value;
+    if (phase !== "awaitingObservation") return;
+    poll.current.timer = setTimeout(async () => {
+      dispatch({ type: "tick", nowMs: Date.now() });
+      if (observer.value.phase !== "awaitingObservation") return;
+      const abort = new AbortController();
+      poll.current.abort = abort;
+      try {
+        const res = await esoApi.getExternalSecret(
+          namespace,
+          name,
+          abort.signal,
+        );
+        if (abort.signal.aborted) return;
+        const sample = res.data;
+        if (!sample) {
+          dispatch({ type: "error" });
+        } else {
+          // Keep the overview live, but never swap in a replaced object.
+          if (sample.uid === observer.value.baseline?.uid) data.value = sample;
+          dispatch({ type: "sample", sample, nowMs: Date.now() });
+        }
+      } catch (err) {
+        if (abort.signal.aborted) return;
+        const status = err instanceof ApiError ? err.status : 0;
+        dispatch({
+          type:
+            status === 403
+              ? "forbidden"
+              : status === 404
+                ? "notFound"
+                : "error",
+        });
+      }
+      schedulePoll();
+    }, nextPollDelayMs(attempt));
+  };
+
+  // Navigation away: stop timers and in-flight polls without writing state.
+  useEffect(() => stopPolling, []);
+
+  // Any other cluster makes the pending observation meaningless.
+  const cluster = selectedCluster.value;
+  const observedCluster = useRef(cluster);
+  useEffect(() => {
+    if (cluster === observedCluster.current) return;
+    observedCluster.current = cluster;
+    stopPolling();
+    dispatch({ type: "clusterChanged" });
+  }, [cluster]);
 
   const onForceSync = async () => {
     forceSyncing.value = true;
     forceSyncMsg.value = null;
+    stopPolling();
+    dispatch({ type: "request" });
     try {
-      await esoApi.forceSyncExternalSecret(namespace, name);
-      forceSyncMsg.value = "Force-sync requested.";
-      evidenceEpoch.value++;
+      const res = await esoApi.forceSyncExternalSecret(namespace, name);
+      const accepted = res.data;
+      if (accepted?.baseline && accepted.correlation) {
+        dispatch({
+          type: "accepted",
+          baseline: accepted.baseline,
+          correlation: accepted.correlation,
+          priorStatus: data.value?.status,
+          nowMs: Date.now(),
+        });
+        schedulePoll();
+      } else {
+        // A backend without the U19a baseline: acceptance is all we know.
+        dispatch({ type: "cancel" });
+        forceSyncMsg.value = "Force-sync requested.";
+      }
     } catch (err) {
+      dispatch({ type: "cancel" });
       if (err instanceof ApiError) {
         const reason = err.body?.error?.reason as string | undefined;
         if (err.status === 409 && reason === "already_refreshing") {
@@ -119,6 +235,10 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
   if (!data.value) return null;
 
   const es = data.value;
+  const observation = describeObserver(observer.value);
+  const observing =
+    observer.value.phase === "requested" ||
+    observer.value.phase === "awaitingObservation";
   const showMessage =
     es.status === "SyncFailed" ||
     (es.readyMessage && es.readyMessage.length > 0);
@@ -141,7 +261,7 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
         <button
           type="button"
           onClick={onForceSync}
-          disabled={forceSyncing.value}
+          disabled={forceSyncing.value || observing}
           class="ml-auto px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base disabled:opacity-50"
         >
           {forceSyncing.value ? "Force-syncing…" : "Force sync"}
@@ -151,6 +271,16 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
       {forceSyncMsg.value && (
         <p class="text-sm text-text-muted bg-base border border-border-subtle rounded px-3 py-2">
           {forceSyncMsg.value}
+        </p>
+      )}
+
+      {observation && (
+        <p
+          role="status"
+          data-observer-phase={observer.value.phase}
+          class={`text-sm border rounded px-3 py-2 ${OBSERVER_TONE[observation.tone]}`}
+        >
+          {observation.text}
         </p>
       )}
 
