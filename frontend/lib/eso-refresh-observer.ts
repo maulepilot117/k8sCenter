@@ -29,8 +29,9 @@ export interface Baseline {
 /** The 202 body of POST .../force-sync. */
 export interface ForceSyncAccepted {
   status: "force-syncing";
-  correlation: Correlation;
-  baseline: Baseline;
+  /** Absent from a backend that predates U19a. */
+  correlation?: Correlation;
+  baseline?: Baseline;
 }
 
 /** The fields of one ExternalSecret detail poll the observer judges. */
@@ -72,6 +73,8 @@ export interface ObserverState {
 
 export type ObserverEvent =
   | { type: "request" }
+  /** The request was refused, or accepted without a baseline to observe. */
+  | { type: "requestFailed" }
   | {
       type: "accepted";
       baseline: Baseline;
@@ -203,6 +206,8 @@ export function reduceObserver(
   if (isTerminal(st.phase) || st.phase === "idle") return st;
 
   switch (e.type) {
+    case "requestFailed":
+      return st.phase === "requested" ? INITIAL_OBSERVER_STATE : st;
     case "accepted":
       if (st.phase !== "requested") return st;
       return {

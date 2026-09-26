@@ -61,6 +61,16 @@ const sample = (s: Partial<Sample>, nowMs = T0 + 1000): ObserverEvent => ({
   nowMs,
 });
 
+test("a request that is not accepted returns to idle with no line", () => {
+  const s = run([{ type: "request" }, { type: "requestFailed" }]);
+  expect(s.phase).toBe("idle");
+  expect(describeObserver(s)).toBeNull();
+  // Only a pending request can fail; an observation in progress cannot.
+  expect(reduceObserver(awaiting(), { type: "requestFailed" }).phase).toBe(
+    "awaitingObservation",
+  );
+});
+
 test("request then accepted awaits observation with a 90 s deadline", () => {
   const s = awaiting();
   expect(s.phase).toBe("awaitingObservation");

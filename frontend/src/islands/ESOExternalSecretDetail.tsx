@@ -4,7 +4,7 @@ import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESODriftIndicator } from "@/components/eso/ESODriftIndicator.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ApiError } from "@/lib/api.ts";
-import { selectedCluster } from "@/lib/cluster.ts";
+import { clusterEpoch } from "@/lib/cluster.ts";
 import { esoApi } from "@/lib/eso-api.ts";
 import { type EvidenceTabKey, evidenceTabsFor } from "@/lib/eso-evidence.ts";
 import {
@@ -147,15 +147,17 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
   // Navigation away: stop timers and in-flight polls without writing state.
   useEffect(() => stopPolling, []);
 
-  // Any other cluster makes the pending observation meaningless.
-  const cluster = selectedCluster.value;
-  const observedCluster = useRef(cluster);
+  // A cluster switch makes the pending observation meaningless. The switcher
+  // reloads the page today, so this is the guard for any switch that doesn't;
+  // the epoch catches A → B → A, which an id comparison would miss.
+  const epoch = clusterEpoch.value;
+  const observedEpoch = useRef(epoch);
   useEffect(() => {
-    if (cluster === observedCluster.current) return;
-    observedCluster.current = cluster;
+    if (epoch === observedEpoch.current) return;
+    observedEpoch.current = epoch;
     stopPolling();
     dispatch({ type: "clusterChanged" });
-  }, [cluster]);
+  }, [epoch]);
 
   const onForceSync = async () => {
     forceSyncing.value = true;
@@ -176,11 +178,11 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
         schedulePoll();
       } else {
         // A backend without the U19a baseline: acceptance is all we know.
-        dispatch({ type: "cancel" });
+        dispatch({ type: "requestFailed" });
         forceSyncMsg.value = "Force-sync requested.";
       }
     } catch (err) {
-      dispatch({ type: "cancel" });
+      dispatch({ type: "requestFailed" });
       if (err instanceof ApiError) {
         const reason = err.body?.error?.reason as string | undefined;
         if (err.status === 409 && reason === "already_refreshing") {
