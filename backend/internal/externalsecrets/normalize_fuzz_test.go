@@ -2,6 +2,7 @@ package externalsecrets
 
 import (
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
@@ -198,6 +199,8 @@ status:
 	f.Add([]byte(`{"status":{"refreshTime":"not-a-time"}}`))
 	f.Add([]byte(`{"status":{"refreshTime":12345}}`))
 	f.Add([]byte(`{"status":{"refreshTime":null}}`))
+	// ahead of the fuzz requestedAt: must never anchor strong correlation
+	f.Add([]byte(`{"status":{"refreshTime":"2099-01-01T00:00:00Z"}}`))
 
 	// annotations with invalid values
 	f.Add([]byte(`{"metadata":{"annotations":{"kubecenter.io/eso-stale-after-minutes":"-5"}}}`))
@@ -217,5 +220,29 @@ status:
 		_ = normalizeSecretStore(u, "Namespaced")
 		_ = normalizeSecretStore(u, "Cluster")
 		_ = normalizePushSecret(u)
+
+		// The force-sync refresh baseline reads the same controller-written
+		// status. Oracle: "strong" only ever vouches for a parseable
+		// refreshTime no later than requestedAt, and "weak" never carries
+		// one. requestedAt sits after the seeds' 2026 timestamps so the
+		// strong branch stays reachable.
+		requestedAt := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+		b, correlation := baselineFromObject(u, requestedAt)
+		switch correlation {
+		case correlationStrong:
+			rt, err := time.Parse(time.RFC3339, b.RefreshTime)
+			if err != nil {
+				t.Fatalf("strong correlation with unparseable refreshTime %q", b.RefreshTime)
+			}
+			if rt.After(requestedAt) {
+				t.Fatalf("strong correlation with refreshTime %q after requestedAt", b.RefreshTime)
+			}
+		case correlationWeak:
+			if b.RefreshTime != "" {
+				t.Fatalf("weak correlation carries refreshTime %q", b.RefreshTime)
+			}
+		default:
+			t.Fatalf("unknown correlation %q", correlation)
+		}
 	})
 }

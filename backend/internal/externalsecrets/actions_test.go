@@ -1,6 +1,7 @@
 package externalsecrets
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -481,5 +482,320 @@ func TestForceSync_RejectsNonLocalCluster(t *testing.T) {
 	}
 	if anns := got.GetAnnotations(); anns["force-sync"] != "" {
 		t.Errorf("force-sync annotation present on local ES; guard failed: anns=%v", anns)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("baseline")) {
+		t.Errorf("501 body carries a baseline: %s", w.Body.String())
+	}
+}
+
+// forceSyncAccepted is the 202 body shape (plan D6).
+type forceSyncAccepted struct {
+	Data struct {
+		Status      string           `json:"status"`
+		Correlation string           `json:"correlation"`
+		Baseline    *refreshBaseline `json:"baseline"`
+	} `json:"data"`
+}
+
+// postForceSync drives the handler for (ns, name) and returns the recorder.
+func postForceSync(t *testing.T, h *Handler, ns, name string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r := withUser(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		&auth.User{Username: "alice", KubernetesUsername: "u"},
+	)
+	r = urlWithChiParams(r, map[string]string{"namespace": ns, "name": name})
+	h.HandleForceSyncExternalSecret(w, r)
+	return w
+}
+
+func decodeAccepted(t *testing.T, w *httptest.ResponseRecorder) forceSyncAccepted {
+	t.Helper()
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202; body = %s", w.Code, w.Body.String())
+	}
+	var body forceSyncAccepted
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode 202 body: %v / %s", err, w.Body.String())
+	}
+	if body.Data.Status != "force-syncing" {
+		t.Errorf("data.status = %q; want force-syncing (R4: mobile reads it)", body.Data.Status)
+	}
+	if body.Data.Baseline == nil {
+		t.Fatalf("202 body has no baseline: %s", w.Body.String())
+	}
+	return body
+}
+
+// makeSyncedES is an ES that ESO reconciled two minutes ago, outside the
+// in-flight window, with every field the baseline records.
+func makeSyncedES(ns, name, uid string) (*unstructured.Unstructured, string, string) {
+	es := makeES(ns, name, uid)
+	es.SetResourceVersion("918273")
+	es.SetGeneration(7)
+	refreshTime := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	readyLTT := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+	es.Object["status"] = map[string]any{
+		"refreshTime":           refreshTime,
+		"syncedResourceVersion": "1-abc123",
+		// A non-Ready condition first, so the Ready lookup must skip it.
+		"conditions": []any{
+			map[string]any{"type": "Deleted", "status": "False", "lastTransitionTime": "2020-01-01T00:00:00Z"},
+			map[string]any{"type": "Ready", "status": "True", "reason": "SecretSynced", "lastTransitionTime": readyLTT},
+		},
+	}
+	return es, refreshTime, readyLTT
+}
+
+func TestForceSync_202IncludesBaseline(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es, refreshTime, readyLTT := makeSyncedES(ns, name, "uid-1")
+	h, _ := newForceSyncHandler([]runtime.Object{es}, resources.NewAlwaysAllowAccessChecker())
+
+	before := time.Now().UTC()
+	body := decodeAccepted(t, postForceSync(t, h, ns, name))
+	after := time.Now().UTC()
+
+	b := body.Data.Baseline
+	if b.UID != "uid-1" || b.ResourceVersion != "918273" || b.Generation != 7 {
+		t.Errorf("baseline identity = %+v; want uid-1 / 918273 / 7", b)
+	}
+	if b.RefreshTime != refreshTime || b.ReadyLastTransitionTime != readyLTT || b.SyncedResourceVersion != "1-abc123" {
+		t.Errorf("baseline status fields = %+v", b)
+	}
+	requestedAt, err := time.Parse(time.RFC3339Nano, b.RequestedAt)
+	if err != nil {
+		t.Fatalf("requestedAt %q is not RFC3339: %v", b.RequestedAt, err)
+	}
+	if requestedAt.Before(before) || requestedAt.After(after) {
+		t.Errorf("requestedAt %s outside the request window [%s, %s]", requestedAt, before, after)
+	}
+}
+
+// A patch that times out after the apiserver applied it is retried, and the
+// retry's Get reads the already-annotated object. This pins the documented
+// caveat on patchForceSyncObserved: the baseline comes from the final
+// attempt, so its resourceVersion has moved, but its status fields are still
+// the pre-reconcile ones, which are the only fields a reconcile is judged by.
+func TestForceSync_RetryBaselineComesFromFinalAttempt(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es, refreshTime, readyLTT := makeSyncedES(ns, name, "uid-1")
+	dynFake := newEsoFakeDynClient(es)
+
+	var patchCalls int
+	dynFake.PrependReactor("patch", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		patchCalls++
+		if patchCalls == 1 {
+			// Applied server-side, then the response timed out.
+			applied := es.DeepCopy()
+			applied.SetResourceVersion("918274")
+			applied.SetAnnotations(map[string]string{"force-sync": "applied-before-timeout"})
+			if err := dynFake.Tracker().Update(ExternalSecretGVR, applied, ns); err != nil {
+				t.Fatalf("simulate applied patch: %v", err)
+			}
+			return true, nil, apierrors.NewTimeoutError("patch timed out", 1)
+		}
+		return false, nil, nil
+	})
+
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
+			return dynFake, nil
+		},
+	}
+	body := decodeAccepted(t, postForceSync(t, h, ns, name))
+
+	if patchCalls != 2 {
+		t.Fatalf("patch calls = %d; want 2 (timeout, then retry)", patchCalls)
+	}
+	b := body.Data.Baseline
+	if b.ResourceVersion != "918274" {
+		t.Errorf("baseline resourceVersion = %q; want the retry's read, 918274", b.ResourceVersion)
+	}
+	if b.RefreshTime != refreshTime || b.ReadyLastTransitionTime != readyLTT || b.SyncedResourceVersion != "1-abc123" {
+		t.Errorf("baseline status fields moved without a reconcile: %+v", b)
+	}
+	if body.Data.Correlation != "strong" {
+		t.Errorf("correlation = %q; want strong (refreshTime unchanged)", body.Data.Correlation)
+	}
+}
+
+// The wire keys are a contract with the U19b observer's TypeScript types, so
+// they are pinned against the raw body rather than round-tripped through the
+// same struct that encodes them.
+func TestForceSync_202BaselineWireKeys(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es, _, _ := makeSyncedES(ns, name, "uid-1")
+	h, _ := newForceSyncHandler([]runtime.Object{es}, resources.NewAlwaysAllowAccessChecker())
+
+	w := postForceSync(t, h, ns, name)
+	var raw struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v / %s", err, w.Body.String())
+	}
+	for _, k := range []string{"status", "correlation", "baseline"} {
+		if _, ok := raw.Data[k]; !ok {
+			t.Errorf("data.%s missing: %s", k, w.Body.String())
+		}
+	}
+	var baseline map[string]any
+	if err := json.Unmarshal(raw.Data["baseline"], &baseline); err != nil {
+		t.Fatalf("decode baseline: %v", err)
+	}
+	for _, k := range []string{
+		"uid", "resourceVersion", "generation", "refreshTime",
+		"readyLastTransitionTime", "syncedResourceVersion", "requestedAt",
+	} {
+		if _, ok := baseline[k]; !ok {
+			t.Errorf("baseline.%s missing: %s", k, raw.Data["baseline"])
+		}
+	}
+}
+
+func TestForceSync_CorrelationStrongWhenRefreshTimePresent(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es, _, _ := makeSyncedES(ns, name, "uid-1")
+	h, _ := newForceSyncHandler([]runtime.Object{es}, resources.NewAlwaysAllowAccessChecker())
+
+	body := decodeAccepted(t, postForceSync(t, h, ns, name))
+	if body.Data.Correlation != "strong" {
+		t.Errorf("correlation = %q; want strong (refreshTime present)", body.Data.Correlation)
+	}
+}
+
+func TestForceSync_CorrelationWeakWhenRefreshTimeAbsent(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	for label, rt := range map[string]any{
+		"absent":      nil,
+		"unparseable": "not-a-time",
+		"empty":       "",
+		// Ahead of the server clock (controller skew, NTP step): a later
+		// refreshTime can't be relied on to exceed it, so it can't anchor
+		// strong correlation.
+		"futureDated": time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+	} {
+		t.Run(label, func(t *testing.T) {
+			es := makeES(ns, name, "uid-1")
+			if rt != nil {
+				status, _ := es.Object["status"].(map[string]any)
+				status["refreshTime"] = rt
+			}
+			h, _ := newForceSyncHandler([]runtime.Object{es}, resources.NewAlwaysAllowAccessChecker())
+
+			body := decodeAccepted(t, postForceSync(t, h, ns, name))
+			if body.Data.Correlation != "weak" {
+				t.Errorf("correlation = %q; want weak", body.Data.Correlation)
+			}
+			if body.Data.Baseline.RefreshTime != "" {
+				t.Errorf("baseline.refreshTime = %q; a weak baseline must not carry one", body.Data.Baseline.RefreshTime)
+			}
+		})
+	}
+}
+
+// The baseline describes the object as it was before the patch landed: a
+// baseline read after the patch could already include the sync it is meant
+// to be compared against.
+func TestForceSync_BaselineCapturedBeforePatch(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es, _, _ := makeSyncedES(ns, name, "uid-1")
+	dynFake := newEsoFakeDynClient(es)
+
+	var calls []string
+	var patchedAt time.Time
+	dynFake.PrependReactor("get", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		calls = append(calls, "get")
+		return false, nil, nil
+	})
+	dynFake.PrependReactor("patch", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		calls = append(calls, "patch")
+		patchedAt = time.Now().UTC()
+		post := es.DeepCopy()
+		post.SetResourceVersion("918274")
+		return true, post, nil
+	})
+
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
+			return dynFake, nil
+		},
+	}
+	body := decodeAccepted(t, postForceSync(t, h, ns, name))
+
+	if len(calls) != 2 || calls[0] != "get" || calls[1] != "patch" {
+		t.Fatalf("apiserver calls = %v; want [get patch]", calls)
+	}
+	if got := body.Data.Baseline.ResourceVersion; got != "918273" {
+		t.Errorf("baseline resourceVersion = %q; want the pre-patch 918273", got)
+	}
+	requestedAt, err := time.Parse(time.RFC3339Nano, body.Data.Baseline.RequestedAt)
+	if err != nil {
+		t.Fatalf("requestedAt: %v", err)
+	}
+	if requestedAt.After(patchedAt) {
+		t.Errorf("requestedAt %s is after the patch at %s", requestedAt, patchedAt)
+	}
+}
+
+func TestForceSync_MalformedStatusYieldsWeakBaselineNoPanic(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	for label, status := range map[string]any{
+		"string":            "garbage",
+		"array":             []any{"a", int64(1)},
+		"conditionsNotList": map[string]any{"conditions": "x", "refreshTime": int64(42)},
+		"conditionNotMap":   map[string]any{"conditions": []any{"Ready", int64(7)}},
+		"lttWrongType":      map[string]any{"conditions": []any{map[string]any{"type": "Ready", "lastTransitionTime": int64(5)}}},
+	} {
+		t.Run(label, func(t *testing.T) {
+			es := makeES(ns, name, "uid-1")
+			es.Object["status"] = status
+			h, _ := newForceSyncHandler([]runtime.Object{es}, resources.NewAlwaysAllowAccessChecker())
+
+			body := decodeAccepted(t, postForceSync(t, h, ns, name))
+			b := body.Data.Baseline
+			if body.Data.Correlation != "weak" {
+				t.Errorf("correlation = %q; want weak", body.Data.Correlation)
+			}
+			if b.UID != "uid-1" || b.RequestedAt == "" {
+				t.Errorf("baseline lost identity on malformed status: %+v", b)
+			}
+			if b.RefreshTime != "" || b.ReadyLastTransitionTime != "" || b.SyncedResourceVersion != "" {
+				t.Errorf("malformed status leaked into baseline: %+v", b)
+			}
+		})
+	}
+}
+
+// The 409 is unchanged: mobile's executeAction path keys off error.reason and
+// never sees a baseline for a request that was not accepted (R4).
+func TestForceSync_AlreadyRefreshing409StillHasNoBaseline(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es := makeES(ns, name, "uid-1")
+	status, _ := es.Object["status"].(map[string]any)
+	status["refreshTime"] = time.Now().UTC().Add(-5 * time.Second).Format(time.RFC3339)
+	h, _ := newForceSyncHandler([]runtime.Object{es}, resources.NewAlwaysAllowAccessChecker())
+
+	w := postForceSync(t, h, ns, name)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d; want 409", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body["data"]; ok {
+		t.Errorf("409 body carries data: %s", w.Body.String())
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("baseline")) {
+		t.Errorf("409 body carries a baseline: %s", w.Body.String())
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
@@ -32,16 +33,89 @@ const inFlightWindow = 30 * time.Second
 // forceSyncResult captures the audit detail JSON written for force-sync
 // outcomes. Renders inline via the audit log viewer.
 type forceSyncResult struct {
-	RequestedBy string         `json:"requestedBy"`
-	Target      forceSyncTgt   `json:"target"`
-	Result      string         `json:"result"`
-	Reason      string         `json:"reason,omitempty"`
+	RequestedBy string       `json:"requestedBy"`
+	Target      forceSyncTgt `json:"target"`
+	Result      string       `json:"result"`
+	Reason      string       `json:"reason,omitempty"`
 }
 
 type forceSyncTgt struct {
 	Namespace string `json:"ns"`
 	Name      string `json:"name"`
 	UID       string `json:"uid,omitempty"`
+}
+
+// refreshBaseline is the pre-patch observation a force-sync 202 returns
+// (plan D6). The UI polls the ES afterwards and counts a reconcile as new
+// only when a field here has moved, so an ES already at Ready=True cannot
+// satisfy a fresh request (AE5).
+type refreshBaseline struct {
+	UID                     string `json:"uid"`
+	ResourceVersion         string `json:"resourceVersion"`
+	Generation              int64  `json:"generation,omitempty"`
+	RefreshTime             string `json:"refreshTime,omitempty"`
+	ReadyLastTransitionTime string `json:"readyLastTransitionTime,omitempty"`
+	SyncedResourceVersion   string `json:"syncedResourceVersion,omitempty"`
+	RequestedAt             string `json:"requestedAt"`
+}
+
+// Correlation strengths for a refresh baseline. "strong" means the baseline
+// carries a parseable status.refreshTime no later than requestedAt, so a
+// strictly later value proves ESO ran a new reconcile. "weak" means the UI may only say a change was
+// observed after the request, never that the request caused it.
+type correlation string
+
+const (
+	correlationStrong correlation = "strong"
+	correlationWeak   correlation = "weak"
+)
+
+// baselineFromObject reads the refresh baseline from the pre-patch ES.
+// status is controller-written and read through guarded assertions only: a
+// malformed status yields empty fields and a weak correlation, never a panic.
+func baselineFromObject(obj *unstructured.Unstructured, requestedAt time.Time) (refreshBaseline, correlation) {
+	b := refreshBaseline{
+		UID:             string(obj.GetUID()),
+		ResourceVersion: obj.GetResourceVersion(),
+		Generation:      obj.GetGeneration(),
+		RequestedAt:     requestedAt.UTC().Format(time.RFC3339Nano),
+	}
+	status, _ := obj.Object["status"].(map[string]any)
+	b.SyncedResourceVersion = stringFrom(status, "syncedResourceVersion")
+	b.ReadyLastTransitionTime = readyLastTransitionTime(status)
+
+	// A refreshTime ahead of requestedAt (controller clock skew, an NTP step)
+	// is recorded as weak: once the clocks agree, a genuine reconcile may not
+	// compare as strictly later, so it can't anchor the strong proof.
+	if rt := parseTimeField(status, "refreshTime"); rt != nil && !rt.After(requestedAt) {
+		b.RefreshTime = stringFrom(status, "refreshTime")
+		return b, correlationStrong
+	}
+	return b, correlationWeak
+}
+
+// readyLastTransitionTime returns the Ready condition's lastTransitionTime,
+// or "" when status, conditions or the field are missing or mistyped.
+func readyLastTransitionTime(status map[string]any) string {
+	conditions, _ := status["conditions"].([]any)
+	for _, c := range conditions {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := cm["type"].(string); t == "Ready" {
+			return stringFrom(cm, "lastTransitionTime")
+		}
+	}
+	return ""
+}
+
+// forceSyncAttempt is what one accepted force-sync patch observed: the live
+// UID (for audit) and the pre-patch baseline with its correlation strength.
+type forceSyncAttempt struct {
+	UID         string
+	Baseline    refreshBaseline
+	Correlation correlation
 }
 
 // errAlreadyRefreshing is returned by patchForceSync when the target ES has
@@ -82,10 +156,14 @@ func rejectNonLocalClusterWrite(w http.ResponseWriter, r *http.Request) bool {
 // `kubecenter.io/eso-stale-after-minutes`) survive the patch — JSON-merge
 // against `metadata.annotations` only overlays the named keys.
 //
-//   POST /externalsecrets/externalsecrets/{namespace}/{name}/force-sync
+//	POST /externalsecrets/externalsecrets/{namespace}/{name}/force-sync
 //
 // Outcomes:
 //   - 202 Accepted: patch applied; cache invalidated; audit Result=success.
+//     Body: {data: {status: "force-syncing", correlation: "strong"|"weak",
+//     baseline: {...}}}, the pre-patch observation the refresh observer
+//     compares against (plan D6). data.status is unchanged for mobile (R4).
+//     No other outcome carries a baseline.
 //   - 403 Forbidden: user lacks `update externalsecret`; audit Result=denied.
 //   - 404 Not Found: target ES absent.
 //   - 409 Conflict {reason: "already_refreshing"}: refreshTime within
@@ -128,7 +206,8 @@ func (h *Handler) HandleForceSyncExternalSecret(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	uid, err := h.patchForceSync(r.Context(), dynClient, ns, name)
+	attempt, err := h.patchForceSyncObserved(r.Context(), dynClient, ns, name, "")
+	uid := attempt.UID
 	switch {
 	case errors.Is(err, errAlreadyRefreshing):
 		h.auditForceSync(r, user, ns, name, uid, audit.ResultFailure, "skipped:already_refreshing")
@@ -155,8 +234,14 @@ func (h *Handler) HandleForceSyncExternalSecret(w http.ResponseWriter, r *http.R
 	// click-storm would trigger 50 SA fetchAlls. The 30s cache TTL is plenty
 	// fresh. Bulk worker still invalidates once at the end of a job.
 
+	// Additive to the original {"status": "force-syncing"} body, which the
+	// mobile executeAction path still reads unchanged (R4).
 	httputil.WriteJSON(w, http.StatusAccepted, map[string]any{
-		"data": map[string]string{"status": "force-syncing"},
+		"data": map[string]any{
+			"status":      "force-syncing",
+			"correlation": attempt.Correlation,
+			"baseline":    attempt.Baseline,
+		},
 	})
 }
 
@@ -196,13 +281,26 @@ func (h *Handler) patchForceSync(ctx context.Context, client dynamic.Interface, 
 }
 
 func (h *Handler) patchForceSyncPinned(ctx context.Context, client dynamic.Interface, ns, name, expectedUID string) (string, error) {
-	var uid string
+	attempt, err := h.patchForceSyncObserved(ctx, client, ns, name, expectedUID)
+	return attempt.UID, err
+}
+
+// patchForceSyncObserved is patchForceSyncPinned plus the refresh baseline
+// of the attempt that was accepted. Each retry re-reads the ES, so the
+// baseline describes the object immediately before that attempt's patch.
+// One case falls short: a timed-out patch the apiserver applied anyway is
+// retried, and the retry reads the already-annotated object. Its status is
+// still pre-reconcile unless ESO has finished in between, in which case the
+// in-flight window above usually returns 409 instead. The single force-sync
+// handler returns the baseline; the bulk worker does not.
+func (h *Handler) patchForceSyncObserved(ctx context.Context, client dynamic.Interface, ns, name, expectedUID string) (forceSyncAttempt, error) {
+	var result forceSyncAttempt
 	var lastErr error
 	delay := patchRetryBaseDelay
 	for attempt := range maxPatchRetries {
-		uid, lastErr = h.patchForceSyncOnce(ctx, client, ns, name, expectedUID)
+		result, lastErr = h.patchForceSyncOnce(ctx, client, ns, name, expectedUID)
 		if !isTransientPatchError(lastErr) {
-			return uid, lastErr
+			return result, lastErr
 		}
 		// Don't sleep past parent ctx cancellation.
 		if attempt == maxPatchRetries-1 {
@@ -210,64 +308,65 @@ func (h *Handler) patchForceSyncPinned(ctx context.Context, client dynamic.Inter
 		}
 		select {
 		case <-ctx.Done():
-			return uid, lastErr
+			return result, lastErr
 		case <-time.After(delay):
 		}
 		delay *= 2
 	}
-	return uid, lastErr
+	return result, lastErr
 }
 
 // patchForceSyncOnce is the single-attempt patch primitive. Each call gets
 // its own perPatchTimeout-bounded context.
-func (h *Handler) patchForceSyncOnce(ctx context.Context, client dynamic.Interface, ns, name, expectedUID string) (string, error) {
+func (h *Handler) patchForceSyncOnce(ctx context.Context, client dynamic.Interface, ns, name, expectedUID string) (forceSyncAttempt, error) {
 	ctx, cancel := context.WithTimeout(ctx, perPatchTimeout)
 	defer cancel()
 
 	obj, err := client.Resource(ExternalSecretGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return "", err
+		return forceSyncAttempt{}, err
 	}
-	uid := string(obj.GetUID())
+	result := forceSyncAttempt{UID: string(obj.GetUID())}
 
 	// Pin enforcement: when the caller pinned a UID at scope-resolve time,
 	// reject if the live ES has a different UID (deleted-and-recreated
 	// race). Returns the LIVE uid alongside errUIDDrifted so the worker can
 	// log both for forensic clarity. See todo #349.
-	if expectedUID != "" && uid != expectedUID {
-		return uid, errUIDDrifted
+	if expectedUID != "" && result.UID != expectedUID {
+		return result, errUIDDrifted
 	}
 
 	// In-flight detection: check status.refreshTime against inFlightWindow.
 	// Missing / unparseable refreshTime is treated as "not in flight" — fall
-	// through to the patch.
-	if status, ok := obj.Object["status"].(map[string]any); ok {
-		if rt, ok := status["refreshTime"].(string); ok && rt != "" {
-			if parsed, parseErr := time.Parse(time.RFC3339, rt); parseErr == nil {
-				// Clamp to non-negative — a future-dated refreshTime (NTP
-				// step or malicious controller) would otherwise produce a
-				// negative duration that satisfies `< inFlightWindow`
-				// indefinitely. See todo #355 item 2.
-				since := time.Since(parsed)
-				if since >= 0 && since < inFlightWindow {
-					return uid, errAlreadyRefreshing
-				}
-			}
+	// through to the patch. It is parsed by the same parseTimeField rule the
+	// baseline's correlation uses, so the two cannot disagree on validity.
+	if parsed := parseTimeField(obj.Object, "status", "refreshTime"); parsed != nil {
+		// Clamp to non-negative — a future-dated refreshTime (NTP step or
+		// malicious controller) would otherwise produce a negative duration
+		// that satisfies `< inFlightWindow` indefinitely. See todo #355 item 2.
+		since := time.Since(*parsed)
+		if since >= 0 && since < inFlightWindow {
+			return result, errAlreadyRefreshing
 		}
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	// requestedAt is taken on the server clock before the patch is sent, and
+	// the baseline from the object read above, so neither can already
+	// reflect the reconcile this patch triggers.
+	requestedAt := time.Now()
+	result.Baseline, result.Correlation = baselineFromObject(obj, requestedAt)
+
 	patch := fmt.Appendf(nil,
-		`{"metadata":{"annotations":{"force-sync":%q}}}`, now,
+		`{"metadata":{"annotations":{"force-sync":%q}}}`, requestedAt.UTC().Format(time.RFC3339),
 	)
 
 	_, err = client.Resource(ExternalSecretGVR).Namespace(ns).Patch(
 		ctx, name, types.MergePatchType, patch, metav1.PatchOptions{},
 	)
 	if err != nil {
-		return uid, err
+		return result, err
 	}
-	return uid, nil
+	return result, nil
 }
 
 // isTransientPatchError returns true for k8s API errors worth retrying.
