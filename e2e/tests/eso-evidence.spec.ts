@@ -2,7 +2,8 @@ import type { Page, Route } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
 import type { EvidenceKind } from "../../frontend/lib/eso-types.ts";
 
-// Release B evidence tabs on the five ESO detail pages (U17 and U18).
+// Release B evidence tabs on the five ESO detail pages (U17 and U18), and the
+// force-sync refresh observer on the ExternalSecret page (U19b).
 //
 // The kind cluster CI runs against has no External Secrets Operator, so the
 // ESO endpoints are answered here at the network boundary with the wire
@@ -508,5 +509,140 @@ test.describe("eso evidence — cluster-scoped and PushSecret", () => {
       await openTab(page, "Chain");
       await expect(page.getByText(/Chain visualization coming in Phase/)).toBeVisible();
     }
+  });
+});
+
+// Release B U19b: the page reports what it observes after a force-sync, not
+// just that the request was accepted. The ES starts Ready=True, so a page
+// that equated "Ready" with "done" would claim success on the first poll.
+const LAST_SYNC = "2026-09-26T11:30:00Z";
+const LATER_SYNC = "2026-09-26T12:00:05Z";
+
+/**
+ * Answers force-sync with a strong-correlation 202 and serves the ES with
+ * `lastSyncTime(n)` on its n-th read (1-based, the page's own load included).
+ * Returns a counter of ES reads.
+ */
+async function serveForceSync(page: Page, lastSyncTime: (read: number) => string) {
+  const reads = { count: 0 };
+  await page.route(`**/api/v1/externalsecrets/externalsecrets/${NS}/${ES}`, (route) => {
+    reads.count += 1;
+    return json(route, 200, {
+      data: {
+        namespace: NS,
+        name: ES,
+        uid: ES_UID,
+        status: "Synced",
+        storeRef: { kind: "SecretStore", name: STORE },
+        targetSecretName: ES,
+        refreshInterval: "1h",
+        lastSyncTime: lastSyncTime(reads.count),
+        syncedResourceVersion: "3-aaa",
+      },
+    });
+  });
+  await page.route(
+    `**/api/v1/externalsecrets/externalsecrets/${NS}/${ES}/force-sync`,
+    (route) =>
+      json(route, 202, {
+        data: {
+          status: "force-syncing",
+          correlation: "strong",
+          baseline: {
+            uid: ES_UID,
+            resourceVersion: "100",
+            refreshTime: LAST_SYNC,
+            syncedResourceVersion: "3-aaa",
+            requestedAt: new Date().toISOString(),
+          },
+        },
+      }),
+  );
+  return reads;
+}
+
+const observerLine = (page: Page) => page.locator("[data-observer-phase]");
+
+test.describe("eso evidence — refresh observation", () => {
+  test("force-sync on a Ready ES shows an explicit awaiting state, never an immediate success", async ({
+    page,
+  }) => {
+    await serveESO(page);
+    const reads = await serveForceSync(page, () => LAST_SYNC);
+    await page.goto(ES_PATH);
+    await page.getByRole("button", { name: "Force sync" }).click();
+
+    await expect(observerLine(page)).toHaveAttribute("data-observer-phase", "awaitingObservation");
+    await expect(observerLine(page)).toContainText("Waiting");
+    // Two polls of an unchanged, already-Ready ES must not read as success.
+    await expect.poll(() => reads.count, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+    await expect(observerLine(page)).toHaveAttribute("data-observer-phase", "awaitingObservation");
+    await expect(page.locator('[data-observer-phase="observedSuccess"]')).toHaveCount(0);
+  });
+
+  test("a later refreshTime is reported as a reconcile after the request", async ({ page }) => {
+    await serveESO(page);
+    // Read 1 is the page load; every poll after the request sees a new sync.
+    await serveForceSync(page, (read) => (read === 1 ? LAST_SYNC : LATER_SYNC));
+    await page.goto(ES_PATH);
+    await page.getByRole("button", { name: "Force sync" }).click();
+
+    const line = page.locator('[data-observer-phase="observedSuccess"]');
+    await expect(line).toBeVisible({ timeout: 10_000 });
+    await expect(line).toContainText("after your request");
+  });
+
+  test("navigating away mid-wait leaves no orphaned banner", async ({ page }) => {
+    await serveESO(page);
+    const reads = await serveForceSync(page, () => LAST_SYNC);
+    await page.goto(ES_PATH);
+    await page.getByRole("button", { name: "Force sync" }).click();
+    await expect(observerLine(page)).toHaveAttribute("data-observer-phase", "awaitingObservation");
+
+    await page.getByRole("link", { name: `SecretStore/${STORE}` }).click();
+    await expect(page.getByRole("heading", { name: STORE })).toBeVisible();
+    await expect(observerLine(page)).toHaveCount(0);
+    // Nothing keeps polling the ES from the page that was left.
+    const after = reads.count;
+    await page.waitForTimeout(3_000);
+    expect(reads.count).toBe(after);
+  });
+
+  test("switching clusters mid-wait discards the observation", async ({ page }) => {
+    // Pins the product behaviour end to end. The switcher reloads the page,
+    // and that reload is what drops the observation here; the island's own
+    // clusterEpoch guard and the poller's stop/abort paths are covered by
+    // frontend/lib/eso-refresh-observer_test.ts, which this spec cannot fail.
+    await serveESO(page);
+    await serveForceSync(page, () => LAST_SYNC);
+    await page.route("**/api/v1/clusters", (route) =>
+      json(route, 200, {
+        data: [
+          { id: "local", name: "local", isLocal: true, status: "connected" },
+          {
+            id: "e2e-remote",
+            name: "e2e-remote",
+            status: "connected",
+            createdAt: "2026-09-01T00:00:00Z",
+          },
+        ],
+      }));
+
+    await page.goto(ES_PATH);
+    await page.getByRole("button", { name: "Force sync" }).click();
+    await expect(observerLine(page)).toHaveAttribute("data-observer-phase", "awaitingObservation");
+
+    await page.getByRole("button", { name: /Change cluster/ }).click();
+    await page.getByRole("option", { name: /e2e-remote/ }).click();
+    await expect(page.getByRole("heading", { name: ES })).toBeVisible();
+    // The pending observation belonged to the previous cluster.
+    await expect(observerLine(page)).toHaveCount(0);
+
+    await page.evaluate(() => {
+      localStorage.setItem(
+        "k8scenter.clusterTarget",
+        JSON.stringify({ clusterId: "local", generation: "local" }),
+      );
+    });
   });
 });
