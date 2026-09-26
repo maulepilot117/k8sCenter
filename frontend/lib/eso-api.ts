@@ -9,6 +9,7 @@
 
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { evidenceNamespaceSegment } from "@/lib/eso-evidence.ts";
+import type { ForceSyncAccepted } from "@/lib/eso-refresh-observer.ts";
 import type {
   BulkRefreshAction,
   BulkRefreshJob,
@@ -45,11 +46,12 @@ export const esoApi = {
     ),
 
   /** Single ExternalSecret with drift resolution. */
-  getExternalSecret: (namespace: string, name: string) =>
+  getExternalSecret: (namespace: string, name: string, signal?: AbortSignal) =>
     apiGet<ExternalSecret>(
       `/v1/externalsecrets/externalsecrets/${pathParam(namespace)}/${pathParam(
         name,
       )}`,
+      signal,
     ),
 
   /** ClusterExternalSecrets — cluster-scoped, permissive-read RBAC. */
@@ -100,9 +102,12 @@ export const esoApi = {
 
   // --- Phase E force-sync + bulk refresh ----------------------------------
 
-  /** Force-sync a single ExternalSecret. 202 on success, 409 already_refreshing. */
+  /**
+   * Force-sync a single ExternalSecret. 202 carries the pre-patch baseline the
+   * refresh observer compares against; 409 already_refreshing.
+   */
   forceSyncExternalSecret: (namespace: string, name: string) =>
-    apiPost<{ status: string }>(
+    apiPost<ForceSyncAccepted>(
       `/v1/externalsecrets/externalsecrets/${pathParam(namespace)}/${pathParam(
         name,
       )}/force-sync`,

@@ -32,12 +32,13 @@
  * switching A then B then A returns the id to its original value while every
  * in-flight A-response is still stale.
  *
- * **`clusterEpoch` and `currentTarget()` have no in-product consumer yet.**
- * They are the contract U11b's YAML pin/gate UI is built against. Today a
- * switch is a hard boundary (`ClusterSwitcher` reloads the page), so nothing
- * needs to discard a late reply; when U11b lands the pinned-apply flow, it
- * becomes the first reader. Do not describe epoch-based staleness rejection as
- * something the product currently enforces.
+ * **`clusterEpoch` has one reader, and `currentTarget()` none yet.** The
+ * ExternalSecret detail page's force-sync observer (U19b) discards a pending
+ * observation when the epoch moves. They are also the contract U11b's YAML
+ * pin/gate UI is built against. Today a switch is a hard boundary
+ * (`ClusterSwitcher` reloads the page), so that observer's guard is defence in
+ * depth rather than a path the product exercises; do not describe epoch-based
+ * staleness rejection as something the product currently enforces.
  */
 import { batch, effect, signal } from "@preact/signals";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
