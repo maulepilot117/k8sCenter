@@ -2,6 +2,7 @@ package externalsecrets
 
 import (
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
@@ -217,5 +218,22 @@ status:
 		_ = normalizeSecretStore(u, "Namespaced")
 		_ = normalizeSecretStore(u, "Cluster")
 		_ = normalizePushSecret(u)
+
+		// The force-sync refresh baseline reads the same controller-written
+		// status. Oracle: "strong" only ever vouches for a parseable
+		// refreshTime, and "weak" never carries one.
+		b, correlation := baselineFromObject(u, time.Unix(0, 0))
+		switch correlation {
+		case correlationStrong:
+			if _, err := time.Parse(time.RFC3339, b.RefreshTime); err != nil {
+				t.Fatalf("strong correlation with unparseable refreshTime %q", b.RefreshTime)
+			}
+		case correlationWeak:
+			if b.RefreshTime != "" {
+				t.Fatalf("weak correlation carries refreshTime %q", b.RefreshTime)
+			}
+		default:
+			t.Fatalf("unknown correlation %q", correlation)
+		}
 	})
 }
