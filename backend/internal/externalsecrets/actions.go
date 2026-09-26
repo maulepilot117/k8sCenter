@@ -63,15 +63,17 @@ type refreshBaseline struct {
 // carries a parseable status.refreshTime, so a strictly later value proves
 // ESO ran a new reconcile. "weak" means the UI may only say a change was
 // observed after the request, never that the request caused it.
+type correlation string
+
 const (
-	correlationStrong = "strong"
-	correlationWeak   = "weak"
+	correlationStrong correlation = "strong"
+	correlationWeak   correlation = "weak"
 )
 
 // baselineFromObject reads the refresh baseline from the pre-patch ES.
 // status is controller-written and read through guarded assertions only: a
 // malformed status yields empty fields and a weak correlation, never a panic.
-func baselineFromObject(obj *unstructured.Unstructured, requestedAt time.Time) (refreshBaseline, string) {
+func baselineFromObject(obj *unstructured.Unstructured, requestedAt time.Time) (refreshBaseline, correlation) {
 	b := refreshBaseline{
 		UID:             string(obj.GetUID()),
 		ResourceVersion: obj.GetResourceVersion(),
@@ -82,14 +84,11 @@ func baselineFromObject(obj *unstructured.Unstructured, requestedAt time.Time) (
 	b.SyncedResourceVersion = stringFrom(status, "syncedResourceVersion")
 	b.ReadyLastTransitionTime = readyLastTransitionTime(status)
 
-	correlation := correlationWeak
-	if rt := stringFrom(status, "refreshTime"); rt != "" {
-		if _, err := time.Parse(time.RFC3339, rt); err == nil {
-			b.RefreshTime = rt
-			correlation = correlationStrong
-		}
+	if parseTimeField(status, "refreshTime") != nil {
+		b.RefreshTime = stringFrom(status, "refreshTime")
+		return b, correlationStrong
 	}
-	return b, correlation
+	return b, correlationWeak
 }
 
 // readyLastTransitionTime returns the Ready condition's lastTransitionTime,
@@ -113,7 +112,7 @@ func readyLastTransitionTime(status map[string]any) string {
 type forceSyncAttempt struct {
 	UID         string
 	Baseline    refreshBaseline
-	Correlation string
+	Correlation correlation
 }
 
 // errAlreadyRefreshing is returned by patchForceSync when the target ES has
@@ -328,19 +327,15 @@ func (h *Handler) patchForceSyncOnce(ctx context.Context, client dynamic.Interfa
 
 	// In-flight detection: check status.refreshTime against inFlightWindow.
 	// Missing / unparseable refreshTime is treated as "not in flight" — fall
-	// through to the patch.
-	if status, ok := obj.Object["status"].(map[string]any); ok {
-		if rt, ok := status["refreshTime"].(string); ok && rt != "" {
-			if parsed, parseErr := time.Parse(time.RFC3339, rt); parseErr == nil {
-				// Clamp to non-negative — a future-dated refreshTime (NTP
-				// step or malicious controller) would otherwise produce a
-				// negative duration that satisfies `< inFlightWindow`
-				// indefinitely. See todo #355 item 2.
-				since := time.Since(parsed)
-				if since >= 0 && since < inFlightWindow {
-					return result, errAlreadyRefreshing
-				}
-			}
+	// through to the patch. It is parsed by the same parseTimeField rule the
+	// baseline's correlation uses, so the two cannot disagree on validity.
+	if parsed := parseTimeField(obj.Object, "status", "refreshTime"); parsed != nil {
+		// Clamp to non-negative — a future-dated refreshTime (NTP step or
+		// malicious controller) would otherwise produce a negative duration
+		// that satisfies `< inFlightWindow` indefinitely. See todo #355 item 2.
+		since := time.Since(*parsed)
+		if since >= 0 && since < inFlightWindow {
+			return result, errAlreadyRefreshing
 		}
 	}
 
