@@ -256,6 +256,20 @@ Priority from ideation is preserved; execution can ship the contained ESO comple
 
 U7-U12 are required for remote versions of incident capture, tracked YAML changes, and any remote rehearsal. Local releases of incidents, receipts, and backup assurance can ship independently. Shared edits to routes, server wiring, and main must be sequenced to avoid conflicting changes.
 
+### Delivery Status
+
+As of `main` @ `9aad22ca` (2026-09-26). Per-unit status sits under each unit heading below; `2026-09-10-EXECUTION-ORDER.md` holds the execution sequence.
+
+| Release | Status |
+|---|---|
+| A. Personal views and pins (U1–U5) | ✅ Done — #423–#430, DX follow-up #435 |
+| Dashboard builder (U6 + U38, superseded by Release G) | ✅ Done — #456, #466–#481 |
+| B. ESO evidence (U13–U19) | 🟡 U13–U18 and U19a done (#482–#489); U19b remains |
+| C. Remote workflow (U7–U12) | 🟡 U7, U8 and U11a done (#436, #438, #440); U9, U10, U11b/c and U12 remain |
+| D. Persistent incidents (U20–U25) | ⬜ Not started (U20 runs ahead of Release E) |
+| E. Tracked changes (U26–U31) | ⬜ Not started |
+| F. Backup assurance (U32–U37) | ⬜ Not started |
+
 ---
 
 ## Implementation Units
@@ -263,6 +277,8 @@ U7-U12 are required for remote versions of incident capture, tracked YAML change
 Each unit is a review boundary, not a calendar estimate. File lists are intended touch sets, including tests, capped at five files. New paths are marked **new**; existing paths are integration anchors, not permission to refactor the whole file. If implementation discovers more required files, split the unit before editing. Large existing files must follow the repository's separate cleanup and phased-refactor rules.
 
 ### U1. Persist personal views and pins
+
+**Status:** ✅ Done — #423 (A/U1).
 
 **Covers:** R1, R5, R6; KTD3-KTD4. **Depends on:** None.
 
@@ -285,6 +301,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U2. Expose validated preference APIs
 
+**Status:** ✅ Done — #424 (A/U2).
+
 **Covers:** R2, R5, R6; KTD4. **Depends on:** U1.
 
 **Files:**
@@ -305,6 +323,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Endpoints are reachable behind existing auth/CSRF with explicit error behavior.
 
 ### U3. Wire preference persistence and client contracts
+
+**Status:** ✅ Done — #425 (A/U3).
 
 **Covers:** R4-R6; KTD1. **Depends on:** U2.
 
@@ -327,6 +347,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U4. Save and reopen resource views
 
+**Status:** ✅ Done — #427 (A/U4).
+
 **Covers:** R1, R3, R5; AE1. **Depends on:** U3.
 
 **Files:**
@@ -347,6 +369,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Saved views remove repeated setup without bypassing resource authorization.
 
 ### U5. Add resource pins and workspace navigation
+
+**Status:** ✅ Done — #429, #430 (A/U5a, A/U5b); discoverability follow-up #435 (DX).
 
 **Covers:** R1, R6; AE1. **Depends on:** U4.
 
@@ -369,6 +393,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U6. Add constrained personal dashboard layouts
 
+**Status:** ✅ Done — superseded by Release G (`2026-09-13-dashboard-builder-design.md`), delivered as #456, #466–#481.
+
 **Covers:** R7; KTD4. **Depends on:** U5, U38; extension scope confirmed.
 
 **Files:**
@@ -390,6 +416,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U7. Resolve discovery for the actual target cluster
 
+**Status:** ✅ Done — #436 (C/U7).
+
 **Covers:** R1, R9; KTD2-KTD5. **Depends on:** None.
 
 **Files:**
@@ -409,6 +437,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Per-target discovery works without weakening SSRF/TLS/impersonation protections.
 
 ### U8. Publish per-operation capabilities
+
+**Status:** ✅ Done — #438 (C/U8).
 
 **Covers:** R3, R8; KTD2. **Depends on:** U7.
 
@@ -430,6 +460,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Clients can explain the selected operation's actual availability.
 
 ### U9. Enable target-specific YAML operations
+
+**Status:** ⬜ Not started — C/U9a, C/U9b.
 
 **Covers:** R1, R9; AE2. **Depends on:** U7.
 
@@ -453,6 +485,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U10. Build a remote core dashboard summary
 
+**Status:** ⬜ Not started — C/U10.
+
 **Covers:** R3, R10; AE3. **Depends on:** U7.
 
 **Files:**
@@ -471,6 +505,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Remote core resource health is useful and accurately qualified.
 
 ### U11. Surface capabilities and partial remote results in the UI
+
+**Status:** 🟡 Partial — U11a (web cluster switcher) done in #440; U11b and U11c remain.
 
 **Covers:** R3, R8-R10. **Depends on:** U8-U10.
 
@@ -493,6 +529,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U12. Verify two-cluster isolation and document support
 
+**Status:** ⬜ Not started — C/U12 (live two-cluster run gated on Q2).
+
 **Covers:** R1-R4, R8-R10; AE2-AE3. **Depends on:** U11.
 
 **Files:**
@@ -514,6 +552,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U13. Strengthen ESO history scoping and pagination
 
+**Status:** ✅ Done — #482 (B/U13).
+
 **Covers:** R1, R11; KTD7. **Depends on:** None.
 
 **Files:**
@@ -533,6 +573,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** History storage can safely back an authenticated read endpoint.
 
 ### U14. Expose redacted ES history
+
+**Status:** ✅ Done — #483, #484 (B/U14a, B/U14b).
 
 **Covers:** R2, R11; AE4. **Depends on:** U13.
 
@@ -555,6 +597,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U15. Provide ESO YAML and event adapters
 
+**Status:** ✅ Done — #485 (B/U15).
+
 **Covers:** R11, R12. **Depends on:** U14.
 
 **Files:**
@@ -576,6 +620,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U16. Build reusable ESO evidence panels
 
+**Status:** ✅ Done — #486 (B/U16).
+
 **Covers:** R3, R11, R12. **Depends on:** U15.
 
 **Files:**
@@ -596,6 +642,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U17. Complete ES and SecretStore detail integration
 
+**Status:** ✅ Done — #487 (B/U17).
+
 **Covers:** R11, R12; AE4. **Depends on:** U16.
 
 **Files:**
@@ -614,6 +662,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** The two primary detail routes have no misleading coming-soon tabs.
 
 ### U18. Complete the remaining ESO detail kinds
+
+**Status:** ✅ Done — #488 (B/U18).
 
 **Covers:** R12. **Depends on:** U17.
 
@@ -634,6 +684,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** All five ESO detail kinds have truthful evidence coverage.
 
 ### U19. Observe a refresh outcome instead of only acceptance
+
+**Status:** 🟡 Partial — U19a (force-sync baseline) done in #489; U19b (UI refresh observer) remains.
 
 **Covers:** R1, R13; AE5. **Depends on:** U17.
 
@@ -656,6 +708,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U20. Normalize reusable diagnostic check results
 
+**Status:** ⬜ Not started — pulled forward ahead of Release E.
+
 **Covers:** R17; KTD8. **Depends on:** None.
 
 **Files:**
@@ -675,6 +729,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Checks can feed incidents and change verification through one contract.
 
 ### U21. Store incidents, evidence, notes, and grants
+
+**Status:** ⬜ Not started.
 
 **Covers:** R14-R16; KTD8. **Depends on:** Q1 resolved.
 
@@ -696,6 +752,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U22. Capture bounded evidence through source adapters
 
+**Status:** ⬜ Not started.
+
 **Covers:** R2, R3, R15, R17. **Depends on:** U20-U21.
 
 **Files:**
@@ -715,6 +773,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Capture produces a bounded, provenance-aware evidence bundle.
 
 ### U23. Expose authorized incident APIs and wiring
+
+**Status:** ⬜ Not started.
 
 **Covers:** R14-R16. **Depends on:** U22.
 
@@ -737,6 +797,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U24. Build the persistent incident workspace
 
+**Status:** ⬜ Not started.
+
 **Covers:** R14-R16; AE6. **Depends on:** U23.
 
 **Files:**
@@ -757,6 +819,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Users can reopen and hand off an incident without rebuilding context.
 
 ### U25. Connect investigations and ship retention controls
+
+**Status:** ⬜ Not started.
 
 **Covers:** R14-R17. **Depends on:** U24.
 
@@ -779,6 +843,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U26. Resolve GitOps ownership evidence
 
+**Status:** ⬜ Not started.
+
 **Covers:** R18; KTD10. **Depends on:** None.
 
 **Files:**
@@ -797,6 +863,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Ownership results are evidence-backed and controller-specific.
 
 ### U27. Persist operation intent and receipts
+
+**Status:** ⬜ Not started.
 
 **Covers:** R19, R20; KTD6, KTD9. **Depends on:** Receipt retention/access default in Q1 resolved.
 
@@ -818,6 +886,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U28. Coordinate tracked apply and verification
 
+**Status:** ⬜ Not started.
+
 **Covers:** R18-R20; KTD6, KTD9. **Depends on:** U20, U26-U27.
 
 **Files:**
@@ -837,6 +907,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Tracked operations have honest execution and verification state.
 
 ### U29. Expose receipts and tracked-change dependencies
+
+**Status:** ⬜ Not started.
 
 **Covers:** R2, R19, R20. **Depends on:** U28.
 
@@ -859,6 +931,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U30. Integrate tracked YAML apply
 
+**Status:** ⬜ Not started.
+
 **Covers:** R19, R20; AE7. **Depends on:** U29; U9 for remote support.
 
 **Files:**
@@ -878,6 +952,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** API outcomes and receipt outcomes agree under normal and interrupted execution.
 
 ### U31. Build ownership preview and change receipts
+
+**Status:** ⬜ Not started.
 
 **Covers:** R18-R20; AE7. **Depends on:** U30.
 
@@ -900,6 +976,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U32. Store backup assurance policies and exception state
 
+**Status:** ⬜ Not started.
+
 **Covers:** R22, R23; KTD11. **Depends on:** None.
 
 **Files:**
@@ -920,6 +998,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U33. Evaluate backup freshness and schedule outcomes
 
+**Status:** ⬜ Not started.
+
 **Covers:** R3, R22; KTD11. **Depends on:** U32.
 
 **Files:**
@@ -938,6 +1018,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Policy evaluation is deterministic and independent of the UI.
 
 ### U34. Run background assurance and deduplicated delivery
+
+**Status:** ⬜ Not started.
 
 **Covers:** R22, R23; AE8. **Depends on:** U33.
 
@@ -960,6 +1042,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U35. Expose policy and exception APIs
 
+**Status:** ⬜ Not started.
+
 **Covers:** R2, R22, R23. **Depends on:** U34.
 
 **Files:**
@@ -980,6 +1064,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** Policy APIs and feeds honor current access boundaries.
 
 ### U36. Build recovery readiness UI and release evidence
+
+**Status:** ⬜ Not started.
 
 **Covers:** R22, R23; AE8. **Depends on:** U35.
 
@@ -1002,6 +1088,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 
 ### U37. Specify and validate a named rehearsal profile
 
+**Status:** ⬜ Not started — docs and fixtures only; rehearsal execution gated on Q3.
+
 **Covers:** R24, R25; KTD12. **Depends on:** Q3 resolved; U20 and U32-U36; U7-U12 for remote destination.
 
 **Files:**
@@ -1020,6 +1108,8 @@ Each unit is a review boundary, not a calendar estimate. File lists are intended
 **Exit:** A concrete profile and reviewed execution contract replace generic compatibility assumptions.
 
 ### U38. Add dashboard preference validation
+
+**Status:** ✅ Done — superseded by Release G (#466–#468: dashboard_layout kind, validation, endpoints).
 
 **Covers:** R7; KTD4. **Depends on:** U2; approved widget catalog.
 
