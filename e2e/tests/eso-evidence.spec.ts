@@ -609,6 +609,10 @@ test.describe("eso evidence — refresh observation", () => {
   });
 
   test("switching clusters mid-wait discards the observation", async ({ page }) => {
+    // Pins the product behaviour end to end. The switcher reloads the page,
+    // and that reload is what drops the observation here; the island's own
+    // clusterEpoch guard and the poller's stop/abort paths are covered by
+    // frontend/lib/eso-refresh-observer_test.ts, which this spec cannot fail.
     await serveESO(page);
     await serveForceSync(page, () => LAST_SYNC);
     await page.route("**/api/v1/clusters", (route) =>

@@ -1,8 +1,13 @@
 /**
  * Refresh-outcome observer for ExternalSecret force-sync (Release B, U19b;
- * plan D6). A pure reducer: no fetch, no timers, no signals. The island owns
- * setTimeout and AbortController and feeds everything in as events, with
- * time arriving as `nowMs`, so these rules are testable without a clock.
+ * plan D6). Two parts:
+ *
+ * - `reduceObserver`, a pure reducer: no fetch, no timers, no signals; time
+ *   arrives as `nowMs` on events.
+ * - `createRefreshPoller`, the lifecycle around it: the poll schedule, the
+ *   deadline timer and one AbortController per poll. Fetch and timers are
+ *   injected, so it runs under a fake clock in tests and the island only
+ *   wires it to the real ones.
  *
  * The rule it enforces (AE5): an ES that was already Ready=True never counts
  * as the outcome of a new request. Only evidence that moved relative to the
@@ -68,7 +73,12 @@ export interface ObserverState {
   deadlineMs?: number;
   /** Set on a timeout caused by unreadable polls rather than silence. */
   detail?: "observation_unavailable";
-  outcome?: { reason?: string; message?: string };
+  outcome?: {
+    reason?: string;
+    message?: string;
+    /** True only when a new reconcile ties the failure to this request. */
+    attributable?: boolean;
+  };
 }
 
 export type ObserverEvent =
@@ -167,24 +177,37 @@ function applySample(
   if (s.uid !== b.uid) return { ...st, phase: "targetChanged" };
 
   const polled = { ...st, attempt: st.attempt + 1, consecutiveErrors: 0 };
-  if (isNewFailure(st.priorStatus, s)) {
-    return {
-      ...polled,
-      phase: "observedFailure",
-      outcome: { reason: s.readyReason, message: s.readyMessage },
-    };
-  }
+  // The bound comes first: evidence that only arrives after it is not
+  // reported as this request's outcome.
+  if (expired(polled, nowMs)) return { ...polled, phase: "timeout" };
   if (isNewEvidence(b, s, st.correlation)) {
     // Evidence of a new reconcile: read the outcome from the new sample.
     return s.status === "SyncFailed"
       ? {
           ...polled,
           phase: "observedFailure",
-          outcome: { reason: s.readyReason, message: s.readyMessage },
+          outcome: {
+            reason: s.readyReason,
+            message: s.readyMessage,
+            attributable: st.correlation === "strong",
+          },
         }
       : { ...polled, phase: "observedSuccess" };
   }
-  return expired(polled, nowMs) ? { ...polled, phase: "timeout" } : polled;
+  if (isNewFailure(st.priorStatus, s)) {
+    // Only a status change: the pre-request status is the page's, which may
+    // be stale, so this is never worded as the request's result.
+    return {
+      ...polled,
+      phase: "observedFailure",
+      outcome: {
+        reason: s.readyReason,
+        message: s.readyMessage,
+        attributable: false,
+      },
+    };
+  }
+  return polled;
 }
 
 function expired(st: ObserverState, nowMs: number): boolean {
@@ -261,10 +284,9 @@ export type ObserverTone = "info" | "success" | "danger" | "muted" | "warning";
 function failureText(st: ObserverState): string {
   const { reason, message } = st.outcome ?? {};
   const why = [reason, message].filter(Boolean).join(": ");
-  const lead =
-    st.correlation === "strong"
-      ? "Sync failed after your request"
-      : "A sync failure was observed after your request";
+  const lead = st.outcome?.attributable
+    ? "Sync failed after your request"
+    : "A sync failure was observed after your request";
   return why ? `${lead}: ${why}` : `${lead}.`;
 }
 
@@ -317,4 +339,108 @@ export function describeObserver(
     default:
       return null;
   }
+}
+
+/** What the poller needs from its host. Everything with side effects. */
+export interface PollerDeps {
+  /** One ES read. Must reject once `signal` aborts. */
+  fetchSample: (signal: AbortSignal) => Promise<Sample | undefined>;
+  /** The HTTP status of a failed read, if it has one. */
+  statusOf: (err: unknown) => number | undefined;
+  /** Applies an event to the observer and returns the resulting state. */
+  dispatch: (e: ObserverEvent) => ObserverState;
+  now: () => number;
+  setTimer: (fn: () => void, ms: number) => unknown;
+  clearTimer: (handle: unknown) => void;
+}
+
+export interface RefreshPoller {
+  /** Starts polling for an observer in awaitingObservation; no-op if running. */
+  begin: (state: ObserverState) => void;
+  /** Clears both timers and aborts an in-flight poll; nothing is dispatched. */
+  stop: () => void;
+  readonly running: boolean;
+}
+
+/**
+ * Runs one serial chain of polls for an accepted force-sync. A single chain
+ * is guaranteed: `begin` while running is ignored, and each poll schedules
+ * the next only after it settles. The deadline is its own timer, so a poll
+ * that never answers is aborted and the observer still times out on time.
+ */
+export function createRefreshPoller(deps: PollerDeps): RefreshPoller {
+  let pollTimer: unknown;
+  let deadlineTimer: unknown;
+  let inFlight: AbortController | undefined;
+  let running = false;
+
+  const stop = () => {
+    if (pollTimer !== undefined) deps.clearTimer(pollTimer);
+    if (deadlineTimer !== undefined) deps.clearTimer(deadlineTimer);
+    inFlight?.abort();
+    pollTimer = deadlineTimer = inFlight = undefined;
+    running = false;
+  };
+
+  // Continue only while the observer is still waiting.
+  const stillWaiting = (st: ObserverState) => {
+    if (st.phase === "awaitingObservation") return true;
+    stop();
+    return false;
+  };
+
+  const schedule = (attempt: number) => {
+    pollTimer = deps.setTimer(poll, nextPollDelayMs(attempt));
+  };
+
+  async function poll() {
+    pollTimer = undefined;
+    if (!stillWaiting(deps.dispatch({ type: "tick", nowMs: deps.now() }))) {
+      return;
+    }
+    const abort = new AbortController();
+    inFlight = abort;
+    let st: ObserverState;
+    try {
+      const sample = await deps.fetchSample(abort.signal);
+      if (abort.signal.aborted) return;
+      st = deps.dispatch(
+        sample
+          ? { type: "sample", sample, nowMs: deps.now() }
+          : { type: "error" },
+      );
+    } catch (err) {
+      if (abort.signal.aborted) return;
+      const status = deps.statusOf(err);
+      st = deps.dispatch({
+        type:
+          status === 403 ? "forbidden" : status === 404 ? "notFound" : "error",
+      });
+    }
+    inFlight = undefined;
+    if (stillWaiting(st)) schedule(st.attempt);
+  }
+
+  const begin = (state: ObserverState) => {
+    if (running || state.phase !== "awaitingObservation") return;
+    running = true;
+    const remaining = Math.max(
+      0,
+      (state.deadlineMs ?? deps.now()) - deps.now(),
+    );
+    deadlineTimer = deps.setTimer(() => {
+      deadlineTimer = undefined;
+      inFlight?.abort();
+      stillWaiting(deps.dispatch({ type: "tick", nowMs: deps.now() }));
+    }, remaining);
+    schedule(state.attempt);
+  };
+
+  return {
+    begin,
+    stop,
+    get running() {
+      return running;
+    },
+  };
 }

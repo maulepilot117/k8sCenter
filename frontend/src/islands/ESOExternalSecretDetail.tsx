@@ -8,13 +8,14 @@ import { clusterEpoch } from "@/lib/cluster.ts";
 import { esoApi } from "@/lib/eso-api.ts";
 import { type EvidenceTabKey, evidenceTabsFor } from "@/lib/eso-evidence.ts";
 import {
+  createRefreshPoller,
   describeObserver,
   INITIAL_OBSERVER_STATE,
   isTerminal,
-  nextPollDelayMs,
   type ObserverEvent,
   type ObserverState,
   type ObserverTone,
+  type RefreshPoller,
   reduceObserver,
 } from "@/lib/eso-refresh-observer.ts";
 import type { ExternalSecret } from "@/lib/eso-types.ts";
@@ -78,23 +79,12 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
   // panel remounts and History shows the attempt the request produced.
   const evidenceEpoch = useSignal(0);
   const observer = useSignal<ObserverState>(INITIAL_OBSERVER_STATE);
-  const poll = useRef<{
-    timer?: ReturnType<typeof setTimeout>;
-    abort?: AbortController;
-  }>({});
-
-  const stopPolling = () => {
-    clearTimeout(poll.current.timer);
-    poll.current.abort?.abort();
-    poll.current = {};
-  };
-
-  const dispatch = (e: ObserverEvent) => {
+  const dispatch = (e: ObserverEvent): ObserverState => {
     const next = reduceObserver(observer.value, e);
-    if (next === observer.value) return;
+    if (next === observer.value) return next;
     observer.value = next;
     if (isTerminal(next.phase)) {
-      stopPolling();
+      poller.stop();
       if (
         next.phase === "observedSuccess" ||
         next.phase === "observedFailure"
@@ -102,50 +92,32 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
         evidenceEpoch.value++;
       }
     }
+    return next;
   };
 
-  // One poll per timer; the next is scheduled only after this one settles.
-  const schedulePoll = () => {
-    const { phase, attempt } = observer.value;
-    if (phase !== "awaitingObservation") return;
-    poll.current.timer = setTimeout(async () => {
-      dispatch({ type: "tick", nowMs: Date.now() });
-      if (observer.value.phase !== "awaitingObservation") return;
-      const abort = new AbortController();
-      poll.current.abort = abort;
-      try {
-        const res = await esoApi.getExternalSecret(
-          namespace,
-          name,
-          abort.signal,
-        );
-        if (abort.signal.aborted) return;
-        const sample = res.data;
-        if (!sample) {
-          dispatch({ type: "error" });
-        } else {
-          // Keep the overview live, but never swap in a replaced object.
-          if (sample.uid === observer.value.baseline?.uid) data.value = sample;
-          dispatch({ type: "sample", sample, nowMs: Date.now() });
-        }
-      } catch (err) {
-        if (abort.signal.aborted) return;
-        const status = err instanceof ApiError ? err.status : 0;
-        dispatch({
-          type:
-            status === 403
-              ? "forbidden"
-              : status === 404
-                ? "notFound"
-                : "error",
-        });
+  // The poll schedule, the 90 s deadline and per-poll aborts live in the
+  // poller; this island only supplies the real clock and the ES read.
+  const pollerRef = useRef<RefreshPoller | null>(null);
+  pollerRef.current ??= createRefreshPoller({
+    fetchSample: async (signal) => {
+      const res = await esoApi.getExternalSecret(namespace, name, signal);
+      const sample = res.data;
+      // Keep the overview live, but never swap in a replaced object.
+      if (sample && sample.uid === observer.value.baseline?.uid) {
+        data.value = sample;
       }
-      schedulePoll();
-    }, nextPollDelayMs(attempt));
-  };
+      return sample;
+    },
+    statusOf: (err) => (err instanceof ApiError ? err.status : undefined),
+    dispatch: (e) => dispatch(e),
+    now: Date.now,
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  });
+  const poller = pollerRef.current;
 
   // Navigation away: stop timers and in-flight polls without writing state.
-  useEffect(() => stopPolling, []);
+  useEffect(() => poller.stop, [poller]);
 
   // A cluster switch makes the pending observation meaningless. The switcher
   // reloads the page today, so this is the guard for any switch that doesn't;
@@ -155,14 +127,16 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
   useEffect(() => {
     if (epoch === observedEpoch.current) return;
     observedEpoch.current = epoch;
-    stopPolling();
+    poller.stop();
     dispatch({ type: "clusterChanged" });
   }, [epoch]);
 
   const onForceSync = async () => {
+    // Synchronous guard: a double click lands before the disabled attribute
+    // renders, and a second request would restart an observation mid-wait.
+    if (forceSyncing.value || poller.running) return;
     forceSyncing.value = true;
     forceSyncMsg.value = null;
-    stopPolling();
     dispatch({ type: "request" });
     try {
       const res = await esoApi.forceSyncExternalSecret(namespace, name);
@@ -175,7 +149,7 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
           priorStatus: data.value?.status,
           nowMs: Date.now(),
         });
-        schedulePoll();
+        poller.begin(observer.value);
       } else {
         // A backend without the U19a baseline: acceptance is all we know.
         dispatch({ type: "requestFailed" });
