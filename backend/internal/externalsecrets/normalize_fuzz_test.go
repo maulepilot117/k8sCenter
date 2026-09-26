@@ -199,6 +199,8 @@ status:
 	f.Add([]byte(`{"status":{"refreshTime":"not-a-time"}}`))
 	f.Add([]byte(`{"status":{"refreshTime":12345}}`))
 	f.Add([]byte(`{"status":{"refreshTime":null}}`))
+	// ahead of the fuzz requestedAt: must never anchor strong correlation
+	f.Add([]byte(`{"status":{"refreshTime":"2099-01-01T00:00:00Z"}}`))
 
 	// annotations with invalid values
 	f.Add([]byte(`{"metadata":{"annotations":{"kubecenter.io/eso-stale-after-minutes":"-5"}}}`))
@@ -221,12 +223,19 @@ status:
 
 		// The force-sync refresh baseline reads the same controller-written
 		// status. Oracle: "strong" only ever vouches for a parseable
-		// refreshTime, and "weak" never carries one.
-		b, correlation := baselineFromObject(u, time.Unix(0, 0))
+		// refreshTime no later than requestedAt, and "weak" never carries
+		// one. requestedAt sits after the seeds' 2026 timestamps so the
+		// strong branch stays reachable.
+		requestedAt := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+		b, correlation := baselineFromObject(u, requestedAt)
 		switch correlation {
 		case correlationStrong:
-			if _, err := time.Parse(time.RFC3339, b.RefreshTime); err != nil {
+			rt, err := time.Parse(time.RFC3339, b.RefreshTime)
+			if err != nil {
 				t.Fatalf("strong correlation with unparseable refreshTime %q", b.RefreshTime)
+			}
+			if rt.After(requestedAt) {
+				t.Fatalf("strong correlation with refreshTime %q after requestedAt", b.RefreshTime)
 			}
 		case correlationWeak:
 			if b.RefreshTime != "" {

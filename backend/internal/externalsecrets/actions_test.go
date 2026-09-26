@@ -573,6 +573,57 @@ func TestForceSync_202IncludesBaseline(t *testing.T) {
 	}
 }
 
+// A patch that times out after the apiserver applied it is retried, and the
+// retry's Get reads the already-annotated object. This pins the documented
+// caveat on patchForceSyncObserved: the baseline comes from the final
+// attempt, so its resourceVersion has moved, but its status fields are still
+// the pre-reconcile ones, which are the only fields a reconcile is judged by.
+func TestForceSync_RetryBaselineComesFromFinalAttempt(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es, refreshTime, readyLTT := makeSyncedES(ns, name, "uid-1")
+	dynFake := newEsoFakeDynClient(es)
+
+	var patchCalls int
+	dynFake.PrependReactor("patch", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		patchCalls++
+		if patchCalls == 1 {
+			// Applied server-side, then the response timed out.
+			applied := es.DeepCopy()
+			applied.SetResourceVersion("918274")
+			applied.SetAnnotations(map[string]string{"force-sync": "applied-before-timeout"})
+			if err := dynFake.Tracker().Update(ExternalSecretGVR, applied, ns); err != nil {
+				t.Fatalf("simulate applied patch: %v", err)
+			}
+			return true, nil, apierrors.NewTimeoutError("patch timed out", 1)
+		}
+		return false, nil, nil
+	})
+
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
+			return dynFake, nil
+		},
+	}
+	body := decodeAccepted(t, postForceSync(t, h, ns, name))
+
+	if patchCalls != 2 {
+		t.Fatalf("patch calls = %d; want 2 (timeout, then retry)", patchCalls)
+	}
+	b := body.Data.Baseline
+	if b.ResourceVersion != "918274" {
+		t.Errorf("baseline resourceVersion = %q; want the retry's read, 918274", b.ResourceVersion)
+	}
+	if b.RefreshTime != refreshTime || b.ReadyLastTransitionTime != readyLTT || b.SyncedResourceVersion != "1-abc123" {
+		t.Errorf("baseline status fields moved without a reconcile: %+v", b)
+	}
+	if body.Data.Correlation != "strong" {
+		t.Errorf("correlation = %q; want strong (refreshTime unchanged)", body.Data.Correlation)
+	}
+}
+
 // The wire keys are a contract with the U19b observer's TypeScript types, so
 // they are pinned against the raw body rather than round-tripped through the
 // same struct that encodes them.
@@ -620,7 +671,15 @@ func TestForceSync_CorrelationStrongWhenRefreshTimePresent(t *testing.T) {
 
 func TestForceSync_CorrelationWeakWhenRefreshTimeAbsent(t *testing.T) {
 	ns, name := "apps", "db-creds"
-	for label, rt := range map[string]any{"absent": nil, "unparseable": "not-a-time", "empty": ""} {
+	for label, rt := range map[string]any{
+		"absent":      nil,
+		"unparseable": "not-a-time",
+		"empty":       "",
+		// Ahead of the server clock (controller skew, NTP step): a later
+		// refreshTime can't be relied on to exceed it, so it can't anchor
+		// strong correlation.
+		"futureDated": time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+	} {
 		t.Run(label, func(t *testing.T) {
 			es := makeES(ns, name, "uid-1")
 			if rt != nil {

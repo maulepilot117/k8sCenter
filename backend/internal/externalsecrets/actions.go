@@ -60,8 +60,8 @@ type refreshBaseline struct {
 }
 
 // Correlation strengths for a refresh baseline. "strong" means the baseline
-// carries a parseable status.refreshTime, so a strictly later value proves
-// ESO ran a new reconcile. "weak" means the UI may only say a change was
+// carries a parseable status.refreshTime no later than requestedAt, so a
+// strictly later value proves ESO ran a new reconcile. "weak" means the UI may only say a change was
 // observed after the request, never that the request caused it.
 type correlation string
 
@@ -84,7 +84,10 @@ func baselineFromObject(obj *unstructured.Unstructured, requestedAt time.Time) (
 	b.SyncedResourceVersion = stringFrom(status, "syncedResourceVersion")
 	b.ReadyLastTransitionTime = readyLastTransitionTime(status)
 
-	if parseTimeField(status, "refreshTime") != nil {
+	// A refreshTime ahead of requestedAt (controller clock skew, an NTP step)
+	// is recorded as weak: once the clocks agree, a genuine reconcile may not
+	// compare as strictly later, so it can't anchor the strong proof.
+	if rt := parseTimeField(status, "refreshTime"); rt != nil && !rt.After(requestedAt) {
 		b.RefreshTime = stringFrom(status, "refreshTime")
 		return b, correlationStrong
 	}
@@ -157,6 +160,10 @@ func rejectNonLocalClusterWrite(w http.ResponseWriter, r *http.Request) bool {
 //
 // Outcomes:
 //   - 202 Accepted: patch applied; cache invalidated; audit Result=success.
+//     Body: {data: {status: "force-syncing", correlation: "strong"|"weak",
+//     baseline: {...}}}, the pre-patch observation the refresh observer
+//     compares against (plan D6). data.status is unchanged for mobile (R4).
+//     No other outcome carries a baseline.
 //   - 403 Forbidden: user lacks `update externalsecret`; audit Result=denied.
 //   - 404 Not Found: target ES absent.
 //   - 409 Conflict {reason: "already_refreshing"}: refreshTime within
