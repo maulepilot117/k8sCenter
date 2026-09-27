@@ -223,7 +223,6 @@ func New(deps Deps) *Server {
 			ClusterRouter: deps.ClusterRouter,
 			AuditLogger:   deps.AuditLogger,
 			Logger:        deps.Logger,
-			ClusterID:     deps.Config.ClusterID,
 		}
 		s.WizardHandler = &wizard.Handler{
 			Logger: deps.Logger,

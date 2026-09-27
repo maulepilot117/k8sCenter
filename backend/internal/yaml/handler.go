@@ -26,7 +26,6 @@ type Handler struct {
 	ClusterRouter *k8s.ClusterRouter
 	AuditLogger   audit.Logger
 	Logger        *slog.Logger
-	ClusterID     string
 }
 
 // HandleValidate validates YAML against the cluster's schema using dry-run apply.
@@ -156,8 +155,8 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 	resp := ApplyDocuments(r.Context(), dynClient, mapper, docs, force, h.Logger)
 
 	// Audit log each document apply. F#6 — record the per-request cluster ID
-	// from the request context (not the handler's static h.ClusterID) so the
-	// audit row points at the cluster the apply actually targeted.
+	// from the request context (not a static per-handler value) so the audit
+	// row points at the cluster the apply actually targeted.
 	auditClusterID := clusterID
 	for _, result := range resp.Results {
 		auditResult := audit.ResultSuccess
