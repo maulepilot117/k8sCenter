@@ -62,6 +62,18 @@ function StateCard({
   );
 }
 
+/**
+ * A closed padlock: the thing is there, and shut. Shared by every state that
+ * means "this account may not read it", so the permission card and the
+ * forbidden-coverage card cannot drift apart.
+ */
+const LOCK_ICON = (
+  <>
+    <rect x="3" y="11" width="18" height="11" rx="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </>
+);
+
 interface WidgetHostProps {
   def: WidgetDef;
   params?: Record<string, string>;
@@ -195,12 +207,7 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
             testId="widget-coverage-forbidden"
             heading="You do not have access on this cluster"
             detail={coverageMessage(coverage)}
-            icon={
-              <>
-                <rect x="3" y="11" width="18" height="11" rx="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </>
-            }
+            icon={LOCK_ICON}
           />
         ) : (
           <StateCard
@@ -312,13 +319,7 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
           testId="widget-permission"
           heading="You do not have access"
           detail={`Your account is not permitted to read ${def.title}.`}
-          icon={
-            // A closed padlock: the thing is there, and shut.
-            <>
-              <rect x="3" y="11" width="18" height="11" rx="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </>
-          }
+          icon={LOCK_ICON}
         />
       ) : resolved.state === "error" ? (
         <div

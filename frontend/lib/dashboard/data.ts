@@ -841,9 +841,17 @@ export function createSourceCache(
   return cache;
 }
 
-/** GET an endpoint and hand back the `data` envelope every handler writes. */
-async function read(path: string, signal: AbortSignal): Promise<unknown> {
-  return (await api<unknown>(path, { method: "GET", signal })).data;
+/**
+ * GET an endpoint and hand back the `data` envelope every handler writes.
+ * `clusterId` pins the request's X-Cluster-ID; omitted, `api()` reads the
+ * selected cluster itself.
+ */
+async function read(
+  path: string,
+  signal: AbortSignal,
+  clusterId?: string,
+): Promise<unknown> {
+  return (await api<unknown>(path, { method: "GET", signal, clusterId })).data;
 }
 
 /**
@@ -933,16 +941,10 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // path fills unobservable sections with (see coverage.ts). The local request
   // is left byte-identical. The cluster is read once and pinned, so the
   // parameter and the X-Cluster-ID header cannot describe two targets.
-  "dashboard-summary": async (signal) => {
+  "dashboard-summary": (signal) => {
     const clusterId = selectedCluster.peek();
     const query = clusterId === LOCAL_CLUSTER_ID ? "" : "?coverage=1";
-    return (
-      await api<unknown>(`/v1/cluster/dashboard-summary${query}`, {
-        method: "GET",
-        signal,
-        clusterId,
-      })
-    ).data;
+    return read(`/v1/cluster/dashboard-summary${query}`, signal, clusterId);
   },
   "dashboard-trends": (signal, range) =>
     read(`/v1/cluster/dashboard-trends?range=${range}`, signal),

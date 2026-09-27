@@ -16,7 +16,7 @@
  * means "nothing to disclose": every section renders exactly as it did before
  * coverage existed. That keeps the local dashboard byte-for-byte unchanged.
  */
-import type { ApiError } from "@/lib/api.ts";
+import { ApiError } from "@/lib/api.ts";
 import { durationShort } from "@/lib/format.ts";
 import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
 import type { DashboardSummary } from "./wire-types.ts";
@@ -263,7 +263,7 @@ export function countsUnavailableReason(
   err: unknown,
   clusterId: string,
 ): string | null {
-  const status = (err as Partial<ApiError> | null)?.status;
-  if (status !== 400 || clusterId === LOCAL_CLUSTER_ID) return null;
+  if (!(err instanceof ApiError) || err.status !== 400) return null;
+  if (clusterId === LOCAL_CLUSTER_ID) return null;
   return "Resource counts are only available for the local cluster.";
 }
