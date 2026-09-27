@@ -639,13 +639,15 @@ func formatMem(q resource.Quantity) string {
 func utilizationFrom(t capacityTotals, kind resourceKind, pct *float64) *Utilization {
 	allocatable, requests, limits := t.CPUAllocatable, t.CPURequests, t.CPULimits
 	format := formatCPU
+	hasCapacity := allocatable.MilliValue() > 0
 	if kind == resourceKindMemory {
 		allocatable, requests, limits = t.MemAllocatable, t.MemRequests, t.MemLimits
 		format = formatMem
+		hasCapacity = allocatable.Value() > 0
 	}
 
 	if pct == nil {
-		if allocatable.MilliValue() <= 0 {
+		if !hasCapacity {
 			return nil
 		}
 		return &Utilization{
