@@ -211,12 +211,16 @@ and docs land; the live run is a documented human runbook.
 \*\* U37 is documentation + fixture only. It authorizes **no live restore**.
 Rehearsal execution stays gated on Q3 (unanswered).
 
-\*\*\* U10i is a test-only follow-up added after U10 (PR #495). Every remote
-feature relies on `ClusterRouter` building a remote `rest.Config` that
-impersonates the caller, and no test asserted that. U10i pins it in
-`internal/k8s`: the config carries the caller's username and groups, each
-identity gets its own config and cached clients, and concurrent builds never
-cross identities. It was split out so #495 stayed within the 5-file cap.
+\*\*\* U10i is a follow-up added after U10 (PR #495). Every remote feature
+relies on `ClusterRouter` building a remote `rest.Config` that impersonates
+the caller, and no test asserted that. U10i pins it in `internal/k8s`: the
+config carries the caller's username and groups, each identity gets its own
+config and cached clients, and concurrent builds never cross identities. Its
+review turned up two router hardenings, which U10i also makes: `remoteConfig`
+now refuses an empty username instead of building a client that runs as the
+stored credential, and callers coalesced onto one build get deep copies of
+the impersonated groups. It was split out so #495 stayed within the 5-file
+cap.
 
 ### U0 — prep unit (2 files)
 
