@@ -219,13 +219,12 @@ func newFixture(t *testing.T, localObjs, remoteObjs []runtime.Object) *fixture {
 		local:     local,
 		remoteDyn: remoteDyn,
 		targeter:  targeter,
-		handler:   newTestHandler(local.factory, targeter),
+		handler:   newTestHandler(targeter),
 	}
 }
 
-func newTestHandler(factory *k8s.ClientFactory, targeter clusterTargeter) *Handler {
+func newTestHandler(targeter clusterTargeter) *Handler {
 	return &Handler{
-		K8sClient:     factory,
 		ClusterRouter: targeter,
 		AuditLogger:   audit.NewSlogLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -492,7 +491,7 @@ func TestHandleValidate_RemoteDiscoveryFailureIsNotLocalFallback(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			local := newLocalCluster(t, configMap("settings", "team-a"))
-			h := newTestHandler(local.factory, tc.targeter(local))
+			h := newTestHandler(tc.targeter(local))
 
 			for verb, w := range map[string]*httptest.ResponseRecorder{
 				"validate": serve(h.HandleValidate, newRequest(http.MethodPost, "/yaml/validate", remoteClusterID, configMapYAML)),

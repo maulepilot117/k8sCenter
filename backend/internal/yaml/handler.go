@@ -144,29 +144,43 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 
 	force := r.URL.Query().Get("force") == "true"
 
+	// D4 / AE2 — a pinned apply runs only against the cluster the operator
+	// previewed. The cluster half of the pin is checked before routing, so a
+	// mismatch costs no remote round trip; the generation half needs the
+	// resolved target. Both refusals happen before any document is applied.
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
+	pin := parseTargetPin(r)
+	if pin.TargetCluster != "" && k8s.NormalizedClusterID(pin.TargetCluster) != k8s.NormalizedClusterID(clusterID) {
+		h.refusePin(w, r, user, clusterID, "the cluster you previewed is not the cluster this request targets",
+			"cluster_pin_mismatch", map[string]any{
+				"pinnedClusterId":  k8s.NormalizedClusterID(pin.TargetCluster),
+				"requestClusterId": k8s.NormalizedClusterID(clusterID),
+			})
 		return
 	}
-	// F#7 / F#19 — see HandleValidate. Remote-cluster YAML apply needs a
-	// remote-discovery-backed RESTMapper before it can be re-enabled.
-	if !pair.IsLocal {
-		httputil.WriteError(w, http.StatusNotImplemented,
-			"YAML apply is not yet supported on remote clusters",
-			"Connect to that cluster directly to use this feature")
+
+	// F#7 / F#19 — see HandleValidate.
+	pair, target, ok := h.resolveTarget(w, r, user)
+	if !ok {
+		return
+	}
+	if pin.TargetGeneration != "" && pin.TargetGeneration != target.Generation {
+		h.refusePin(w, r, user, clusterID, "the cluster you previewed has been re-registered since the preview",
+			"cluster_generation_mismatch", map[string]any{
+				"pinnedGeneration": pin.TargetGeneration,
+				"targetGeneration": target.Generation,
+			})
 		return
 	}
 	dynClient := pair.Dynamic
-	mapper := h.K8sClient.RESTMapper()
+	mapper := (&schemaRefresh{target: target}).mapper()
 
 	resp := ApplyDocuments(r.Context(), dynClient, mapper, docs, force, h.Logger)
 
 	// Audit log each document apply. F#6 — record the per-request cluster ID
 	// from the request context (not a static per-handler value) so the audit
 	// row points at the cluster the apply actually targeted.
-	auditClusterID := clusterID
+	auditClusterID := target.ClusterID
 	for _, result := range resp.Results {
 		auditResult := audit.ResultSuccess
 		if result.Action == "failed" {
@@ -349,6 +363,31 @@ type targetPin struct {
 
 func pinFor(target *k8s.TargetSchema) targetPin {
 	return targetPin{TargetCluster: target.ClusterID, TargetGeneration: target.Generation}
+}
+
+// parseTargetPin reads the pin an apply echoes back from its preview. The
+// apply body is raw YAML, so the pin travels as query parameters. Absent
+// fields mean "unpinned" and keep the pre-pinning contract for existing
+// clients, mobile included.
+func parseTargetPin(r *http.Request) targetPin {
+	q := r.URL.Query()
+	return targetPin{TargetCluster: q.Get("targetCluster"), TargetGeneration: q.Get("targetGeneration")}
+}
+
+// refusePin answers 409 for an apply whose pin disagrees with its target and
+// audits the refusal: a refused apply is exactly what an operator looks for
+// in the audit trail, and the 409 alone would leave no record.
+func (h *Handler) refusePin(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID, message, reason string, extra map[string]any) {
+	h.AuditLogger.Log(r.Context(), audit.Entry{
+		Timestamp: time.Now(),
+		ClusterID: k8s.NormalizedClusterID(clusterID),
+		User:      user.Username,
+		SourceIP:  r.RemoteAddr,
+		Action:    audit.ActionApply,
+		Result:    audit.ResultFailure,
+		Detail:    reason,
+	})
+	httputil.WriteErrorWithReason(w, http.StatusConflict, message, reason, extra)
 }
 
 // resolveTarget resolves the client pair and schema for the request's
