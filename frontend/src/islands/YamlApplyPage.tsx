@@ -1,6 +1,7 @@
 import { useSignal } from "@preact/signals";
 import type * as preact from "preact";
 import { useCallback, useEffect, useState } from "preact/hooks";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
 import { apiGet } from "@/lib/api.ts";
@@ -48,7 +49,7 @@ type CapabilityState =
   | { status: "ready"; caps: CapabilitiesResponse }
   | { status: "error" };
 
-interface ClusterListItem {
+interface ClusterRecord {
   id: string;
   name: string;
   displayName?: string;
@@ -108,30 +109,31 @@ export default function YamlApplyPage() {
     return () => controller.abort();
   }, [epoch]);
 
-  // Remote cluster ids are opaque, so name them from the registry when one is
-  // on screen. Best effort: an id is still an unambiguous label.
+  // Remote cluster ids are opaque, so name the ones on screen from the
+  // registry. Best effort: an id is still an unambiguous label.
+  const pinnedClusterId = pin.value?.target.clusterId;
   useEffect(() => {
-    if (!IS_BROWSER || selectedCluster.peek() === LOCAL_CLUSTER_ID) return;
+    if (!IS_BROWSER) return;
+    const known = clusterNames.peek();
+    const wanted = [selectedCluster.peek(), pinnedClusterId].filter(
+      (id): id is string => !!id && id !== LOCAL_CLUSTER_ID && !known.has(id),
+    );
     const controller = new AbortController();
-    apiGet<ClusterListItem[]>("/v1/clusters", { signal: controller.signal })
-      .then((res) => {
-        clusterNames.value = new Map(
-          (res.data ?? []).map((c) => [c.id, c.displayName || c.name || c.id]),
-        );
+    for (const id of new Set(wanted)) {
+      apiGet<ClusterRecord>(`/v1/clusters/${encodeURIComponent(id)}`, {
+        signal: controller.signal,
       })
-      .catch(() => {});
+        .then((res) => {
+          const c = res.data;
+          if (!c) return;
+          const next = new Map(clusterNames.peek());
+          next.set(id, c.displayName || c.name || id);
+          clusterNames.value = next;
+        })
+        .catch(() => {});
+    }
     return () => controller.abort();
-  }, [epoch]);
-
-  // Re-renders every 30s while a pin is held, so "previewed 2m ago" stays
-  // true; timeAgo reads the clock itself.
-  const [, setTick] = useState(0);
-  const hasPin = pin.value !== null;
-  useEffect(() => {
-    if (!hasPin) return;
-    const id = globalThis.setInterval(() => setTick((t) => t + 1), 30_000);
-    return () => globalThis.clearInterval(id);
-  }, [hasPin]);
+  }, [epoch, pinnedClusterId]);
 
   const clusterLabel = (id: string) =>
     id === LOCAL_CLUSTER_ID
@@ -217,36 +219,26 @@ export default function YamlApplyPage() {
       {error.value && <ErrorBanner message={error.value} />}
 
       {pin.value && pinStale.value && (
-        <div
-          role="status"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "12px",
-            flexWrap: "wrap",
-            borderRadius: "9px",
-            border:
-              "1px solid color-mix(in srgb, var(--warning) 35%, transparent)",
-            background: "color-mix(in srgb, var(--warning) 8%, transparent)",
-            padding: "10px 14px",
-            fontSize: "13px",
-            color: "var(--text-primary)",
-          }}
-        >
-          <span>
-            You are now viewing{" "}
-            <strong>{clusterLabel(selectedCluster.value)}</strong>. Apply still
-            targets <strong>{clusterLabel(pin.value.target.clusterId)}</strong>.
-          </span>
-          <button
-            type="button"
-            onClick={handleRepreview}
-            disabled={isWorking || isEmpty}
-            style={ghostButtonStyle(isWorking || isEmpty)}
+        <div role="status">
+          <Alert
+            variant="warning"
+            class="flex flex-wrap items-center justify-between gap-3"
           >
-            Re-preview on {clusterLabel(selectedCluster.value)}
-          </button>
+            <span>
+              You are now viewing{" "}
+              <strong>{clusterLabel(selectedCluster.value)}</strong>. Apply
+              still targets{" "}
+              <strong>{clusterLabel(pin.value.target.clusterId)}</strong>.
+            </span>
+            <button
+              type="button"
+              onClick={handleRepreview}
+              disabled={isWorking || isEmpty}
+              style={ghostButtonStyle(isWorking || isEmpty)}
+            >
+              Re-preview on {clusterLabel(selectedCluster.value)}
+            </button>
+          </Alert>
         </div>
       )}
 
@@ -305,8 +297,7 @@ export default function YamlApplyPage() {
                 <strong style={{ color: "var(--text-primary)" }}>
                   {clusterLabel(pin.value.target.clusterId)}
                 </strong>{" "}
-                — previewed{" "}
-                {timeAgo(new Date(pin.value.pinnedAt).toISOString())}
+                — previewed <PinAge pinnedAt={pin.value.pinnedAt} />
               </>
             ) : (
               "Validate to choose the cluster Apply targets"
@@ -405,38 +396,42 @@ function noticesFor(caps: CapabilitiesResponse): CapabilityExplanation[] {
 }
 
 /**
- * Each tone gets its own colour and its own leading word, so "the cluster is
+ * Each tone gets its own variant and its own leading word, so "the cluster is
  * down" or "you lack RBAC" can never be read as "k8sCenter cannot do this"
  * (D3).
  */
 const NOTICE_STYLE: Record<
   Exclude<CapabilityTone, "ok">,
-  { color: string; heading: string }
+  { variant: "error" | "warning" | "info"; heading: string }
 > = {
-  blocked: { color: "var(--error)", heading: "Blocked right now" },
-  unsupported: { color: "var(--text-muted)", heading: "Not supported" },
-  unknown: { color: "var(--warning)", heading: "Could not confirm" },
+  blocked: { variant: "error", heading: "Blocked right now" },
+  unsupported: { variant: "info", heading: "Not supported" },
+  unknown: { variant: "warning", heading: "Could not confirm" },
 };
 
 function CapabilityNotice({ notice }: { notice: CapabilityExplanation }) {
   if (notice.tone === "ok") return null;
-  const { color, heading } = NOTICE_STYLE[notice.tone];
+  const { variant, heading } = NOTICE_STYLE[notice.tone];
   return (
-    <div
-      role="status"
-      data-tone={notice.tone}
-      style={{
-        borderRadius: "9px",
-        border: `1px solid color-mix(in srgb, ${color} 35%, transparent)`,
-        background: `color-mix(in srgb, ${color} 8%, transparent)`,
-        padding: "10px 14px",
-        fontSize: "13px",
-        color: "var(--text-primary)",
-      }}
-    >
-      <strong style={{ color }}>{heading}:</strong> {notice.message}
+    <div role="status" data-tone={notice.tone}>
+      <Alert variant={variant}>
+        <strong>{heading}:</strong> {notice.message}
+      </Alert>
     </div>
   );
+}
+
+/**
+ * "previewed 2m ago", refreshed every 30s. Owns its own tick so the refresh
+ * re-renders this text alone, not the page and its editor.
+ */
+function PinAge({ pinnedAt }: { pinnedAt: number }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = globalThis.setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => globalThis.clearInterval(id);
+  }, []);
+  return <>{timeAgo(new Date(pinnedAt).toISOString())}</>;
 }
 
 function PreviewResults({ response }: { response: ValidateResponse }) {
