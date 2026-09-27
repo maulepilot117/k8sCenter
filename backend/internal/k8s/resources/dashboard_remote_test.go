@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -20,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -756,6 +760,32 @@ func TestRemoteSummary_ClientResolveFailureDoesNotFallBackLocal(t *testing.T) {
 	}
 	if strings.Contains(rr.Body.String(), `"nodes"`) {
 		t.Errorf("error response carries summary data: %s", rr.Body.String())
+	}
+}
+
+func TestRemoteSummary_ProductionRouterFailsClosed(t *testing.T) {
+	// Every other remote test installs h.remoteClient. This one leaves it
+	// nil, so remoteClientFor takes the production branch through a real
+	// ClusterRouter. With no cluster registry wired, the router must refuse
+	// the remote target rather than fall back to local clients.
+	h, _ := testHandler(t, readyNode("l-n1"), runningPod("default", "l-p1"))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// A local factory the fallback would have to use. It wraps an empty
+	// clientset, so any local list through it would fail loudly, and the
+	// informers seeded above make any local count in the body detectable.
+	local := k8s.NewTestClientFactoryWithDynamic(&kubernetes.Clientset{}, dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()))
+	h.ClusterRouter = k8s.NewClusterRouter(local, nil, "", logger)
+	if h.remoteClient != nil {
+		t.Fatal("test precondition: remoteClient override must be unset")
+	}
+
+	rr := callRemoteDashboard(t, h, "coverage=1")
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when the router cannot resolve the remote target: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"nodes"`) || strings.Contains(rr.Body.String(), `"coverage"`) {
+		t.Errorf("error response carries summary data, so something answered locally: %s", rr.Body.String())
 	}
 }
 
