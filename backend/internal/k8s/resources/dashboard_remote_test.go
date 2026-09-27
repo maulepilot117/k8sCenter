@@ -794,3 +794,207 @@ type fakeUtilization struct{ cpu, mem float64 }
 
 func (f *fakeUtilization) CPUPercent(context.Context) (float64, error)    { return f.cpu, nil }
 func (f *fakeUtilization) MemoryPercent(context.Context) (float64, error) { return f.mem, nil }
+
+// ── Review round 2 follow-ups ──────────────────────────────────────────────
+
+// truncatingReactor makes every list page of resource claim there is more,
+// so the pager stops at its cap and reports the section partial.
+func truncatingReactor(remote *fake.Clientset, resource string, page func(n int) runtime.Object) {
+	n := 0
+	remote.PrependReactor("list", resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+		n++
+		return true, page(n), nil
+	})
+}
+
+func TestRemoteSummary_TruncatedSectionsArePartial(t *testing.T) {
+	cases := map[string]func(n int) runtime.Object{
+		"pods": func(n int) runtime.Object {
+			return &corev1.PodList{
+				ListMeta: metav1.ListMeta{Continue: fmt.Sprintf("tok-%d", n)},
+				Items:    []corev1.Pod{*podWithResources(fmt.Sprintf("p-%d", n), corev1.PodRunning, "100m", "200m", "64Mi", "128Mi")},
+			}
+		},
+		"services": func(n int) runtime.Object {
+			return &corev1.ServiceList{
+				ListMeta: metav1.ListMeta{Continue: fmt.Sprintf("tok-%d", n)},
+				Items:    []corev1.Service{*service(fmt.Sprintf("s-%d", n))},
+			}
+		},
+	}
+	for section, page := range cases {
+		t.Run(section, func(t *testing.T) {
+			h, remote := remoteDashboardHandler(t, nil, nodeWithAllocatable("r-n1", "4", "8Gi"))
+			truncatingReactor(remote, section, page)
+
+			s := remoteSummaryOK(t, h)
+
+			row := coverageRow(t, s, section)
+			if row.Status != "partial" || row.ObservedAt == "" || !strings.Contains(row.Detail, "truncated") {
+				t.Errorf("%s row = %+v, want partial with observedAt and a truncation detail", section, row)
+			}
+		})
+	}
+}
+
+func TestRemoteSummary_PartialPodsQualifyReservations(t *testing.T) {
+	h, remote := remoteDashboardHandler(t, nil, nodeWithAllocatable("r-n1", "4", "8Gi"))
+	truncatingReactor(remote, "pods", func(n int) runtime.Object {
+		return &corev1.PodList{
+			ListMeta: metav1.ListMeta{Continue: fmt.Sprintf("tok-%d", n)},
+			Items:    []corev1.Pod{*podWithResources(fmt.Sprintf("p-%d", n), corev1.PodRunning, "100m", "200m", "64Mi", "128Mi")},
+		}
+	})
+
+	s := remoteSummaryOK(t, h)
+
+	// The sums over the pods that were read are a real lower bound, so they
+	// are kept, but the cpu/memory rows must say so.
+	wantCPU := Utilization{Percentage: 0, Used: "N/A", Total: "4.0 cores", Requests: "1.0 cores", Limits: "2.0 cores"}
+	if s.CPU == nil || *s.CPU != wantCPU {
+		t.Errorf("cpu = %+v, want %+v (sums over the %d pods read)", s.CPU, wantCPU, remoteListMaxPages)
+	}
+	for _, sec := range []string{"cpu", "memory"} {
+		if d := coverageRow(t, s, sec).Detail; !strings.Contains(d, "truncated pod list") {
+			t.Errorf("%s row detail %q does not say requests/limits come from a truncated pod list", sec, d)
+		}
+	}
+}
+
+func TestRemoteSummary_PartialNodesQualifyAllocatable(t *testing.T) {
+	h, remote := remoteDashboardHandler(t, nil)
+	truncatingReactor(remote, "nodes", func(n int) runtime.Object {
+		return &corev1.NodeList{
+			ListMeta: metav1.ListMeta{Continue: fmt.Sprintf("tok-%d", n)},
+			Items:    []corev1.Node{*nodeWithAllocatable(fmt.Sprintf("n-%d", n), "1", "1Gi")},
+		}
+	})
+
+	s := remoteSummaryOK(t, h)
+
+	if s.CPU == nil || s.CPU.Total != "10.0 cores" {
+		t.Errorf("cpu = %+v, want total over the %d nodes read", s.CPU, remoteListMaxPages)
+	}
+	for _, sec := range []string{"cpu", "memory"} {
+		if d := coverageRow(t, s, sec).Detail; !strings.Contains(d, "nodes that loaded") {
+			t.Errorf("%s row detail %q does not say allocatable covers only the nodes that loaded", sec, d)
+		}
+	}
+}
+
+func TestRemoteSummary_LaterPageFailureKeepsReadItems(t *testing.T) {
+	h, remote := remoteDashboardHandler(t, nil)
+	pages := 0
+	remote.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		pages++
+		if pages == 1 {
+			return true, &corev1.PodList{
+				ListMeta: metav1.ListMeta{Continue: "tok-1"},
+				Items:    []corev1.Pod{*runningPod("default", "p-1"), *runningPod("default", "p-2")},
+			}, nil
+		}
+		return true, nil, errors.New("connection reset by peer")
+	})
+
+	s := remoteSummaryOK(t, h)
+
+	row := coverageRow(t, s, "pods")
+	if row.Status != "partial" || row.ReasonCode != "unreachable" || row.ObservedAt == "" {
+		t.Errorf("pods row = %+v, want partial/unreachable with observedAt", row)
+	}
+	if !strings.Contains(row.Detail, "2 items") {
+		t.Errorf("pods row detail %q does not say how many items were read before the failure", row.Detail)
+	}
+	if s.Pods.Total != 2 || s.Pods.Running != 2 {
+		t.Errorf("pods = %+v, want the 2 pods read before the failure", s.Pods)
+	}
+}
+
+func TestRemoteSummary_LaterPageForbiddenDropsItems(t *testing.T) {
+	// A permission refusal mid-list is still a refusal: counting what was
+	// read before RBAC changed would report data the user may no longer see.
+	h, remote := remoteDashboardHandler(t, nil)
+	pages := 0
+	remote.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		pages++
+		if pages == 1 {
+			return true, &corev1.PodList{ListMeta: metav1.ListMeta{Continue: "tok-1"}, Items: []corev1.Pod{*runningPod("default", "p-1")}}, nil
+		}
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New("denied"))
+	})
+
+	s := remoteSummaryOK(t, h)
+	assertRow(t, s, "pods", "forbidden", "authz_namespace_scoped")
+	if s.Pods != (PodSummary{}) {
+		t.Errorf("pods = %+v, want zero after a mid-list refusal", s.Pods)
+	}
+}
+
+func TestRemoteSummary_BudgetCoversClientResolution(t *testing.T) {
+	// Resolving the remote client (cluster-store read, credential decrypt,
+	// dial) is part of the request and must also end at the budget.
+	prev := remoteDashboardBudget
+	remoteDashboardBudget = 200 * time.Millisecond
+	t.Cleanup(func() { remoteDashboardBudget = prev })
+
+	h, _ := testHandler(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	h.remoteClient = func(ctx context.Context, _ string, _ *auth.User) (kubernetes.Interface, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-release:
+			return nil, errors.New("released by test cleanup")
+		}
+	}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- callRemoteDashboard(t, h, "coverage=1") }()
+	select {
+	case rr := <-done:
+		if rr.Code != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500 when client resolution runs out of budget", rr.Code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("handler did not return within 3s on a %s budget; client resolution is not bounded by it", remoteDashboardBudget)
+	}
+}
+
+// goldenLocalSummary is the exact local response produced by main @ 1e3a053c
+// (before U10) for the fixture in TestDashboardSummary_LocalResponseMatchesPreU10Golden.
+// It was captured by running that fixture against the pre-U10 code, so any
+// drift in the local shape, counts, capacity strings or health fails here.
+const goldenLocalSummary = `{"data":{"nodes":{"total":2,"ready":1},"pods":{"total":3,"running":1,"pending":1,"failed":1},"services":{"total":1},"alerts":{"active":3,"critical":1},"cpu":{"percentage":0,"used":"N/A","total":"4.0 cores","requests":"250m","limits":"1.0 cores"},"memory":{"percentage":0,"used":"N/A","total":"8.0 Gi","requests":"256 Mi","limits":"1.0 Gi"},"health":{"status":"critical","score":81,"signals":[{"name":"nodes","status":"ok","score":50},{"name":"workloads","status":"ok","score":100},{"name":"pods","status":"ok","score":100},{"name":"alerts","status":"ok","score":84},{"name":"certificates","status":"skipped","score":null,"reason":"cert-manager not configured"},{"name":"storage","status":"ok","score":null},{"name":"controlPlane","status":"skipped","score":null,"reason":"control plane data unavailable"}],"reasons":["1 of 2 nodes not ready","1 critical alert(s) firing"]}}}`
+
+func TestDashboardSummary_LocalResponseMatchesPreU10Golden(t *testing.T) {
+	n := readyNode("n1")
+	n.Status.Allocatable = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4"), corev1.ResourceMemory: resource.MustParse("8Gi")}
+	notReady := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n2"}}
+	p := runningPod("default", "p1")
+	p.Spec.Containers = []corev1.Container{{Name: "c", Resources: corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m"), corev1.ResourceMemory: resource.MustParse("256Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")},
+	}}}
+	pending := runningPod("default", "p2")
+	pending.Status.Phase = corev1.PodPending
+	failed := runningPod("default", "p3")
+	failed.Status.Phase = corev1.PodFailed
+	h, _ := testHandler(t, n, notReady, p, pending, failed, service("s1"), deployment1x1("default", "d1"))
+	h.Alerts = &fakeAlertCounter{active: 3, critical: 1}
+
+	for _, query := range []string{"", "coverage=1"} {
+		path := "/api/v1/cluster/dashboard-summary"
+		if query != "" {
+			path += "?" + query
+		}
+		rr := httptest.NewRecorder()
+		h.HandleDashboardSummary(rr, requestWithUser("GET", path, ""))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%q: status = %d", query, rr.Code)
+		}
+		if got := strings.TrimSpace(rr.Body.String()); got != goldenLocalSummary {
+			t.Errorf("local response (query %q) differs from the pre-U10 golden:\n got: %s\nwant: %s", query, got, goldenLocalSummary)
+		}
+	}
+}

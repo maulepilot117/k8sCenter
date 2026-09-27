@@ -70,6 +70,10 @@ const (
 	// detailReservationsUnknown is appended when requests/limits could not be
 	// summed because the pods section did not load.
 	detailReservationsUnknown = "; requests and limits need the pods section, which did not load"
+	// detailReservationsPartial and detailAllocatablePartial are appended when
+	// the pods or nodes read was partial, so the sums are lower bounds.
+	detailReservationsPartial = "; requests and limits are summed over a truncated pod list"
+	detailAllocatablePartial  = "; allocatable covers only the nodes that loaded"
 	detailRemoteAlerts        = "alert counts are bound to the local Alertmanager"
 	detailRemoteHealth        = "remote health scoring requires the remote metrics binding (deferred)"
 )
@@ -90,16 +94,18 @@ type remoteSection[T any] struct {
 // confident score built from nodes alone. The remote path has no workloads, metrics, or alert
 // signal, so no score is the only truthful answer (plan decision D5).
 func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID string) {
-	cs, err := h.remoteClientFor(r.Context(), clusterID, user)
+	// The budget starts before client resolution: the cluster-store read,
+	// credential decrypt and dial are part of this request too.
+	ctx, cancel := context.WithTimeout(r.Context(), remoteDashboardBudget)
+	defer cancel()
+
+	cs, err := h.remoteClientFor(ctx, clusterID, user)
 	if err != nil {
 		// No local fallback: an unresolvable remote target fails the request.
 		h.Logger.Error("remote dashboard: resolve cluster client", "cluster", clusterID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), remoteDashboardBudget)
-	defer cancel()
 
 	var (
 		nodes    remoteSection[*corev1.Node]
@@ -155,11 +161,20 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 	// Requests and limits are sums over pods. When pods did not load, an
 	// empty pod list would report a measured zero reservation beside a real
 	// allocatable total, so report them as unknown instead.
+	// A partial read keeps its numbers, which are real lower bounds, but the
+	// cpu/memory rows say which input was incomplete.
 	metricsDetail := detailRemoteMetrics
-	if pods.coverage.Status != coverageOK && pods.coverage.Status != coveragePartial {
+	switch pods.coverage.Status {
+	case coverageOK:
+	case coveragePartial:
+		metricsDetail += detailReservationsPartial
+	default:
 		reservationsUnknown(summary.CPU)
 		reservationsUnknown(summary.Memory)
 		metricsDetail += detailReservationsUnknown
+	}
+	if nodes.coverage.Status == coveragePartial {
+		metricsDetail += detailAllocatablePartial
 	}
 
 	summary.Coverage = []SectionCoverage{
@@ -187,8 +202,11 @@ func (h *Handler) remoteClientFor(ctx context.Context, clusterID string, user *a
 }
 
 // readRemoteSection authorizes a cluster-wide list of resource on the remote
-// cluster, then pages through it. Every outcome is reported as a coverage row;
-// only a successful (possibly truncated) read returns items.
+// cluster, then pages through it. Every outcome is reported as a coverage row.
+// Items are returned whenever at least one page was read, unless the API
+// server refused the list: a truncated read or a later-page failure is
+// partial, while a refusal at any page is forbidden with no items, since
+// what was read before the refusal may no longer be the user's to see.
 func readRemoteSection[T any](
 	h *Handler, ctx context.Context, clusterID string, user *auth.User, resource string,
 	list func(context.Context, metav1.ListOptions) ([]T, string, error),
@@ -211,6 +229,12 @@ func readRemoteSection[T any](
 		if err != nil {
 			if apierrors.IsForbidden(err) {
 				return remoteSection[T]{coverage: forbiddenSection(resource)}
+			}
+			if len(items) > 0 {
+				return remoteSection[T]{items: items, coverage: SectionCoverage{
+					Section: resource, Status: coveragePartial, ReasonCode: reasonUnreachable, ObservedAt: observedNow(),
+					Detail: fmt.Sprintf("list stopped after %d items: a later page failed on the remote cluster", len(items)),
+				}}
 			}
 			return remoteSection[T]{coverage: SectionCoverage{
 				Section: resource, Status: coverageUnavailable, ReasonCode: reasonUnreachable,
