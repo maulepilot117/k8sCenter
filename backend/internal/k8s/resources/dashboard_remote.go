@@ -78,10 +78,10 @@ type remoteSection[T any] struct {
 // cluster from direct, impersonated API lists — never informers, which exist
 // only for the local cluster.
 //
-// Health is always nil here and computeClusterHealth is deliberately not
-// called: it renormalises weights across whichever signals resolved, so a
-// remote cluster where only node listing succeeded would get a confident score
-// built from nodes alone. The remote path has no workloads, metrics, or alert
+// Health is always nil here and the local health scorer (health.go) is
+// deliberately not called: it renormalises weights across whichever signals
+// resolved, so a remote cluster where only node listing succeeded would get a
+// confident score built from nodes alone. The remote path has no workloads, metrics, or alert
 // signal, so no score is the only truthful answer (plan decision D5).
 func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID string) {
 	cs, err := h.remoteClientFor(r.Context(), clusterID, user)
@@ -102,8 +102,8 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 	)
 	// A plain errgroup.Group (not WithContext): a failed section must not
 	// cancel its siblings. Workers never return errors of their own; a
-	// non-nil Wait() means a recovered panic, and that section keeps the
-	// "unavailable" row it was seeded with.
+	// non-nil Wait() means a recovered panic, and that section's zero-value
+	// result is turned into an "unavailable" row by sectionOrFailed below.
 	var g errgroup.Group
 	recoverutil.Go(&g, h.Logger, "resources remote dashboard nodes", func() error {
 		nodes = readRemoteSection(h, ctx, clusterID, user, "nodes", func(ctx context.Context, opts metav1.ListOptions) ([]*corev1.Node, string, error) {

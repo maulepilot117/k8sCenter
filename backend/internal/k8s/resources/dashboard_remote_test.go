@@ -436,6 +436,28 @@ func TestRemoteSummary_OneSectionTimeoutDoesNotFailOthers(t *testing.T) {
 	}
 }
 
+func TestRemoteSummary_SectionPanicIsRecoveredAsUnavailable(t *testing.T) {
+	h, remote := remoteDashboardHandler(t, nil, readyNode("r-n1"), runningPod("default", "r-p1"), service("r-s1"))
+	remote.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		panic("boom")
+	})
+
+	s := remoteSummaryOK(t, h)
+
+	row := coverageRow(t, s, "pods")
+	if row.Status != "unavailable" || row.ReasonCode != "unreachable" || row.Detail != "section failed to load" {
+		t.Errorf("pods row = %+v, want unavailable/unreachable/'section failed to load'", row)
+	}
+	assertRow(t, s, "nodes", "ok", "ok")
+	assertRow(t, s, "services", "ok", "ok")
+	if s.Nodes.Total != 1 || s.Services.Total != 1 {
+		t.Errorf("sibling sections lost data: nodes=%+v services=%+v", s.Nodes, s.Services)
+	}
+	if s.Pods != (PodSummary{}) {
+		t.Errorf("pods = %+v, want zero after a recovered panic", s.Pods)
+	}
+}
+
 func TestRemoteSummary_EmptyCluster(t *testing.T) {
 	h, _ := remoteDashboardHandler(t, nil)
 
