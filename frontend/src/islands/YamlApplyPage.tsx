@@ -1,10 +1,30 @@
 import { useSignal } from "@preact/signals";
 import type * as preact from "preact";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback, useEffect, useState } from "preact/hooks";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
-import { type ApplyResponse, useYamlApply } from "@/lib/yaml-apply.ts";
+import { apiGet } from "@/lib/api.ts";
+import {
+  type CapabilityExplanation,
+  type CapabilityTone,
+  capabilityFor,
+  explain,
+  fetchCapabilities,
+} from "@/lib/capabilities.ts";
+import type { CapabilitiesResponse } from "@/lib/capability-types.ts";
+import { timeAgo } from "@/lib/timeAgo.ts";
+import {
+  type ApplyResponse,
+  useYamlApply,
+  type ValidateResponse,
+} from "@/lib/yaml-apply.ts";
 import YamlEditor from "@/src/islands/YamlEditor.tsx";
+import {
+  clusterEpoch,
+  currentTarget,
+  LOCAL_CLUSTER_ID,
+  selectedCluster,
+} from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const PLACEHOLDER_YAML = `# Paste or type your Kubernetes YAML here.
@@ -20,6 +40,20 @@ const PLACEHOLDER_YAML = `# Paste or type your Kubernetes YAML here.
 # key: value
 `;
 
+/** The YAML operations this page performs, in the order it performs them. */
+const PAGE_OPERATIONS = ["yaml.validate", "yaml.apply"] as const;
+
+type CapabilityState =
+  | { status: "loading" }
+  | { status: "ready"; caps: CapabilitiesResponse }
+  | { status: "error" };
+
+interface ClusterListItem {
+  id: string;
+  name: string;
+  displayName?: string;
+}
+
 export default function YamlApplyPage() {
   const forceConflicts = useSignal(false);
   const {
@@ -28,9 +62,22 @@ export default function YamlApplyPage() {
     validating,
     error,
     result: results,
+    preview,
+    pin,
+    pinStale,
+    clearPin,
     handleValidate,
     handleApply,
-  } = useYamlApply(PLACEHOLDER_YAML, { forceConflicts });
+  } = useYamlApply(PLACEHOLDER_YAML, {
+    forceConflicts,
+    pinApplyToPreview: true,
+  });
+  const capability = useSignal<CapabilityState>({ status: "loading" });
+  const clusterNames = useSignal<ReadonlyMap<string, string>>(new Map());
+
+  // Reading the epoch here subscribes the page to cluster switches, so the
+  // capability check below re-runs for whichever cluster is now selected.
+  const epoch = clusterEpoch.value;
 
   // Set document title
   useEffect(() => {
@@ -39,6 +86,61 @@ export default function YamlApplyPage() {
     return () => {
       document.title = "k8sCenter";
     };
+  }, []);
+
+  // Resolve what this cluster allows before anything is typed, so an
+  // operation that cannot succeed here is explained up front rather than
+  // after a failed apply.
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const target = currentTarget();
+    const controller = new AbortController();
+    capability.value = { status: "loading" };
+    fetchCapabilities(target, controller.signal)
+      .then((caps) => {
+        if (clusterEpoch.peek() === target.epoch) {
+          capability.value = { status: "ready", caps };
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) capability.value = { status: "error" };
+      });
+    return () => controller.abort();
+  }, [epoch]);
+
+  // Remote cluster ids are opaque, so name them from the registry when one is
+  // on screen. Best effort: an id is still an unambiguous label.
+  useEffect(() => {
+    if (!IS_BROWSER || selectedCluster.peek() === LOCAL_CLUSTER_ID) return;
+    const controller = new AbortController();
+    apiGet<ClusterListItem[]>("/v1/clusters", { signal: controller.signal })
+      .then((res) => {
+        clusterNames.value = new Map(
+          (res.data ?? []).map((c) => [c.id, c.displayName || c.name || c.id]),
+        );
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [epoch]);
+
+  // Re-renders every 30s while a pin is held, so "previewed 2m ago" stays
+  // true; timeAgo reads the clock itself.
+  const [, setTick] = useState(0);
+  const hasPin = pin.value !== null;
+  useEffect(() => {
+    if (!hasPin) return;
+    const id = globalThis.setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => globalThis.clearInterval(id);
+  }, [hasPin]);
+
+  const clusterLabel = (id: string) =>
+    id === LOCAL_CLUSTER_ID
+      ? "the local cluster"
+      : (clusterNames.value.get(id) ?? id);
+
+  const handleRepreview = useCallback(() => {
+    clearPin();
+    void handleValidate();
   }, []);
 
   const handleFileUpload = useCallback(() => {
@@ -59,12 +161,27 @@ export default function YamlApplyPage() {
       const text = await file.text();
       yamlContent.value = text;
       results.value = null;
+      clearPin();
       error.value = null;
     };
     input.click();
   }, []);
 
   const isWorking = applying.value || validating.value;
+  const isEmpty = yamlContent.value === PLACEHOLDER_YAML;
+  const applyDisabled = isWorking || isEmpty || pin.value === null;
+  const capabilityNotices =
+    capability.value.status === "ready"
+      ? noticesFor(capability.value.caps)
+      : capability.value.status === "error"
+        ? [
+            {
+              tone: "unknown" as const,
+              message:
+                "Could not check what this cluster allows. Validate and Apply will still report any problem.",
+            },
+          ]
+        : [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
@@ -93,7 +210,45 @@ export default function YamlApplyPage() {
         </p>
       </div>
 
+      {capabilityNotices.map((n) => (
+        <CapabilityNotice key={n.message} notice={n} />
+      ))}
+
       {error.value && <ErrorBanner message={error.value} />}
+
+      {pin.value && pinStale.value && (
+        <div
+          role="status"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            flexWrap: "wrap",
+            borderRadius: "9px",
+            border:
+              "1px solid color-mix(in srgb, var(--warning) 35%, transparent)",
+            background: "color-mix(in srgb, var(--warning) 8%, transparent)",
+            padding: "10px 14px",
+            fontSize: "13px",
+            color: "var(--text-primary)",
+          }}
+        >
+          <span>
+            You are now viewing{" "}
+            <strong>{clusterLabel(selectedCluster.value)}</strong>. Apply still
+            targets <strong>{clusterLabel(pin.value.target.clusterId)}</strong>.
+          </span>
+          <button
+            type="button"
+            onClick={handleRepreview}
+            disabled={isWorking || isEmpty}
+            style={ghostButtonStyle(isWorking || isEmpty)}
+          >
+            Re-preview on {clusterLabel(selectedCluster.value)}
+          </button>
+        </div>
+      )}
 
       {/* Toolbar — glass chrome */}
       <div
@@ -102,6 +257,7 @@ export default function YamlApplyPage() {
           alignItems: "center",
           justifyContent: "space-between",
           gap: "12px",
+          flexWrap: "wrap",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
@@ -134,21 +290,40 @@ export default function YamlApplyPage() {
             Force conflicts
           </label>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+            {pin.value ? (
+              <>
+                Applies to{" "}
+                <strong style={{ color: "var(--text-primary)" }}>
+                  {clusterLabel(pin.value.target.clusterId)}
+                </strong>{" "}
+                — previewed{" "}
+                {timeAgo(new Date(pin.value.pinnedAt).toISOString())}
+              </>
+            ) : (
+              "Validate to choose the cluster Apply targets"
+            )}
+          </span>
           <button
             type="button"
             onClick={handleValidate}
-            disabled={isWorking || yamlContent.value === PLACEHOLDER_YAML}
-            style={ghostButtonStyle(
-              isWorking || yamlContent.value === PLACEHOLDER_YAML,
-            )}
+            disabled={isWorking || isEmpty}
+            style={ghostButtonStyle(isWorking || isEmpty)}
           >
             {validating.value ? "Validating…" : "Validate"}
           </button>
           <button
             type="button"
             onClick={handleApply}
-            disabled={isWorking || yamlContent.value === PLACEHOLDER_YAML}
+            disabled={applyDisabled}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -161,12 +336,8 @@ export default function YamlApplyPage() {
               fontSize: "13px",
               fontWeight: 600,
               fontFamily: "inherit",
-              cursor:
-                isWorking || yamlContent.value === PLACEHOLDER_YAML
-                  ? "not-allowed"
-                  : "pointer",
-              opacity:
-                isWorking || yamlContent.value === PLACEHOLDER_YAML ? 0.5 : 1,
+              cursor: applyDisabled ? "not-allowed" : "pointer",
+              opacity: applyDisabled ? 0.5 : 1,
               transition: "opacity 0.15s",
             }}
           >
@@ -207,7 +378,110 @@ export default function YamlApplyPage() {
         </div>
       )}
 
+      {preview.value && !results.value && (
+        <PreviewResults response={preview.value} />
+      )}
       {results.value && <ApplyResults response={results.value} />}
+    </div>
+  );
+}
+
+/**
+ * The page's capability rows worth showing, one per distinct explanation.
+ * Plain "ok" says nothing the operator needs to read.
+ */
+function noticesFor(caps: CapabilitiesResponse): CapabilityExplanation[] {
+  const seen = new Set<string>();
+  const out: CapabilityExplanation[] = [];
+  for (const op of PAGE_OPERATIONS) {
+    const cap = capabilityFor(caps, op);
+    if (!cap) continue;
+    const e = explain(cap);
+    if (e.tone === "ok" || seen.has(e.message)) continue;
+    seen.add(e.message);
+    out.push(e);
+  }
+  return out;
+}
+
+/**
+ * Each tone gets its own colour and its own leading word, so "the cluster is
+ * down" or "you lack RBAC" can never be read as "k8sCenter cannot do this"
+ * (D3).
+ */
+const NOTICE_STYLE: Record<
+  Exclude<CapabilityTone, "ok">,
+  { color: string; heading: string }
+> = {
+  blocked: { color: "var(--error)", heading: "Blocked right now" },
+  unsupported: { color: "var(--text-muted)", heading: "Not supported" },
+  unknown: { color: "var(--warning)", heading: "Could not confirm" },
+};
+
+function CapabilityNotice({ notice }: { notice: CapabilityExplanation }) {
+  if (notice.tone === "ok") return null;
+  const { color, heading } = NOTICE_STYLE[notice.tone];
+  return (
+    <div
+      role="status"
+      data-tone={notice.tone}
+      style={{
+        borderRadius: "9px",
+        border: `1px solid color-mix(in srgb, ${color} 35%, transparent)`,
+        background: `color-mix(in srgb, ${color} 8%, transparent)`,
+        padding: "10px 14px",
+        fontSize: "13px",
+        color: "var(--text-primary)",
+      }}
+    >
+      <strong style={{ color }}>{heading}:</strong> {notice.message}
+    </div>
+  );
+}
+
+function PreviewResults({ response }: { response: ValidateResponse }) {
+  const invalid = response.documents.filter((d) => !d.valid).length;
+  const tone = response.valid ? "var(--success)" : "var(--warning)";
+  const total = response.documents.length;
+  return (
+    <div
+      style={{
+        borderRadius: "12px",
+        border: `1px solid color-mix(in srgb, ${tone} 30%, transparent)`,
+        background: `color-mix(in srgb, ${tone} 8%, transparent)`,
+        padding: "16px",
+      }}
+    >
+      <p style={{ fontSize: "13px", fontWeight: 600, color: tone, margin: 0 }}>
+        {total} resource{total !== 1 ? "s" : ""} validated
+        {invalid > 0 ? `: ${invalid} with errors` : ": all valid"}
+      </p>
+      {response.documents
+        .filter((d) => !d.valid)
+        .map((d) => (
+          <div
+            key={`${d.index}-${d.kind}-${d.name}`}
+            style={{ marginTop: "8px", fontSize: "13px" }}
+          >
+            <span
+              style={{
+                color: "var(--text-primary)",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {d.kind}/{d.name}
+            </span>
+            {(d.errors ?? []).map((e) => (
+              <div
+                key={`${e.field ?? ""}:${e.message}`}
+                style={{ color: "var(--error)" }}
+              >
+                {e.field ? `${e.field}: ` : ""}
+                {e.message}
+              </div>
+            ))}
+          </div>
+        ))}
     </div>
   );
 }
