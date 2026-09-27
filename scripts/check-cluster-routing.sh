@@ -16,11 +16,20 @@
 #   - The file path matches one of the ALLOWED_PREFIXES below (informer
 #     setup, prober, the LocalFactory() implementation in cluster_router.go,
 #     client.go where the methods are defined)
-#   - The line itself is a func declaration for ClientForUser/RESTMapper/
-#     DiscoveryClient, or a whole-line comment (its first non-whitespace
+#   - The line itself is a whole-line comment (its first non-whitespace
 #     characters are `//`). A trailing inline comment on a real call
 #     (`h.K8sClient.RESTMapper() // keep`) does NOT exempt the line — see
 #     classify_line below.
+#
+# There is deliberately no separate func-declaration exemption: a genuine
+# declaration of ClientForUser/RESTMapper/DiscoveryClient (a method
+# definition or an interface method line) never contains the dot-prefixed
+# call form the detector matches on (`.RESTMapper()`, `.DiscoveryClient()`,
+# `.ClientForUser(`, `.DynamicClientForUser(`), so it is already clean
+# without any extra rule. A dedicated exemption used to live here and also
+# matched a gofmt-legal one-line method body or an inline func literal that
+# makes a real dot-prefixed call on the same line as a `func ` token —
+# hiding real violations (Finding #3).
 #
 # Self-test: before every scan, run_self_test exercises classify_line
 # directly against a fixed set of known-good/known-bad cases (the same
@@ -147,11 +156,7 @@ classify_line() {
   esac
   [ "$_hit" -eq 1 ] || return 1
 
-  # Skip lines that are interface / type / comment definitions
-  # (they contain the bare function signature, not a call expression).
-  case "$_line" in
-    *"func "*"ClientForUser("*|*"func "*"RESTMapper()"*|*"func "*"DiscoveryClient()"*) return 1 ;;
-  esac
+  # No func-declaration exemption: see the header comment.
 
   # Exempt whole-line comments only — a trailing inline comment on a real
   # call is still a violation (Finding #2).
@@ -189,99 +194,92 @@ scan_file() {
 # the scan itself in warn mode.
 # -----------------------------------------------------------------------
 
+# expect_violation LABEL PATH LINE PREV — asserts classify_line treats LINE
+# (at PATH, with previous source line PREV) as a violation. Shares the _n/
+# _pass counters with expect_clean; prints a labeled failure to stderr and
+# exits 1 immediately on a mismatch, regardless of CHECK_CLUSTER_ROUTING_GATE.
+expect_violation() {
+  _label="$1"
+  _n=$(( _n + 1 ))
+  if classify_line "$2" "$3" "$4"; then
+    _pass=$(( _pass + 1 ))
+  else
+    printf '[check-cluster-routing] self-test FAILED: case %d — %s\n' "$_n" "$_label" >&2
+    exit 1
+  fi
+}
+
+# expect_clean LABEL PATH LINE PREV — asserts classify_line treats LINE as
+# NOT a violation. Same counters and fail-and-exit behavior as
+# expect_violation, inverted.
+expect_clean() {
+  _label="$1"
+  _n=$(( _n + 1 ))
+  if classify_line "$2" "$3" "$4"; then
+    printf '[check-cluster-routing] self-test FAILED: case %d — %s\n' "$_n" "$_label" >&2
+    exit 1
+  else
+    _pass=$(( _pass + 1 ))
+  fi
+}
+
 run_self_test() {
   _n=0
   _pass=0
 
-  # 1: RESTMapper call in a schema-routed dir -> violation
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/yaml/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""; then
-    _pass=$(( _pass + 1 ))
-  else
-    printf '[check-cluster-routing] self-test FAILED: case %d — RESTMapper() in a schema-routed dir must be a violation\n' "$_n" >&2
-    exit 1
-  fi
+  expect_violation "RESTMapper() in a schema-routed dir must be a violation" \
+    "backend/internal/yaml/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""
 
-  # 2: same call, non-schema-routed dir -> not a violation
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/certmanager/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""; then
-    printf '[check-cluster-routing] self-test FAILED: case %d — RESTMapper() outside SCHEMA_ROUTED_DIRS must NOT be a violation\n' "$_n" >&2
-    exit 1
-  else
-    _pass=$(( _pass + 1 ))
-  fi
+  expect_clean "RESTMapper() outside SCHEMA_ROUTED_DIRS must NOT be a violation" \
+    "backend/internal/certmanager/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""
 
-  # 3: ClientForUser call, non-schema-routed dir -> violation (unconditional pattern)
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/certmanager/x.go" "${TAB}cs, err := h.K8sClient.ClientForUser(u, g)" ""; then
-    _pass=$(( _pass + 1 ))
-  else
-    printf '[check-cluster-routing] self-test FAILED: case %d — ClientForUser() must be a violation regardless of schema routing\n' "$_n" >&2
-    exit 1
-  fi
+  expect_violation "ClientForUser() must be a violation regardless of schema routing" \
+    "backend/internal/certmanager/x.go" "${TAB}cs, err := h.K8sClient.ClientForUser(u, g)" ""
 
-  # 4 (Finding #2): RESTMapper call with a trailing inline comment -> still a violation
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/yaml/x.go" "${TAB}mapper := h.K8sClient.RESTMapper() // keep" ""; then
-    _pass=$(( _pass + 1 ))
-  else
-    printf '[check-cluster-routing] self-test FAILED: case %d — a trailing inline comment must NOT exempt a real call (Finding #2)\n' "$_n" >&2
-    exit 1
-  fi
+  # Finding #2
+  expect_violation "a trailing inline comment must NOT exempt a real call (Finding #2)" \
+    "backend/internal/yaml/x.go" "${TAB}mapper := h.K8sClient.RESTMapper() // keep" ""
 
-  # 5: whole-line comment merely mentioning the call -> not a violation
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/yaml/x.go" "${TAB}// h.K8sClient.RESTMapper() is not used here" ""; then
-    printf '[check-cluster-routing] self-test FAILED: case %d — a whole-line comment must NOT be a violation\n' "$_n" >&2
-    exit 1
-  else
-    _pass=$(( _pass + 1 ))
-  fi
+  expect_clean "a whole-line comment must NOT be a violation" \
+    "backend/internal/yaml/x.go" "${TAB}// h.K8sClient.RESTMapper() is not used here" ""
 
-  # 6: func declaration -> not a violation
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/yaml/x.go" "func (f *ClientFactory) RESTMapper() meta.RESTMapper {" ""; then
-    printf '[check-cluster-routing] self-test FAILED: case %d — a func declaration must NOT be a violation\n' "$_n" >&2
-    exit 1
-  else
-    _pass=$(( _pass + 1 ))
-  fi
+  expect_clean "a func declaration must NOT be a violation" \
+    "backend/internal/yaml/x.go" "func (f *ClientFactory) RESTMapper() meta.RESTMapper {" ""
 
-  # 7: nolint on previous line -> not a violation
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/yaml/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" "${TAB}// nolint:cluster-routing reason here"; then
-    printf '[check-cluster-routing] self-test FAILED: case %d — // nolint:cluster-routing on the previous line must exempt\n' "$_n" >&2
-    exit 1
-  else
-    _pass=$(( _pass + 1 ))
-  fi
+  expect_clean "// nolint:cluster-routing on the previous line must exempt" \
+    "backend/internal/yaml/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" "${TAB}// nolint:cluster-routing reason here"
 
-  # 8: DiscoveryClient call in server (schema-routed) -> violation
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/server/x.go" "${TAB}disc := h.K8sClient.DiscoveryClient()" ""; then
-    _pass=$(( _pass + 1 ))
-  else
-    printf '[check-cluster-routing] self-test FAILED: case %d — DiscoveryClient() in the schema-routed server dir must be a violation\n' "$_n" >&2
-    exit 1
-  fi
+  expect_violation "DiscoveryClient() in the schema-routed server dir must be a violation" \
+    "backend/internal/server/x.go" "${TAB}disc := h.K8sClient.DiscoveryClient()" ""
 
-  # 9: same call, sibling dir with an overlapping name prefix -> not a violation
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/yamlextra/x.go" "${TAB}disc := h.K8sClient.DiscoveryClient()" ""; then
-    printf '[check-cluster-routing] self-test FAILED: case %d — yamlextra must not match the yaml schema-routed dir prefix\n' "$_n" >&2
-    exit 1
-  else
-    _pass=$(( _pass + 1 ))
-  fi
+  expect_clean "yamlextra must not match the yaml schema-routed dir prefix" \
+    "backend/internal/yamlextra/x.go" "${TAB}disc := h.K8sClient.DiscoveryClient()" ""
 
-  # 10: ClientForUser call under an ALLOWED_PREFIXES path -> not a violation
-  _n=$(( _n + 1 ))
-  if classify_line "backend/internal/k8s/client.go" "${TAB}cs, err := h.K8sClient.ClientForUser(u, g)" ""; then
-    printf '[check-cluster-routing] self-test FAILED: case %d — an ALLOWED_PREFIXES path must NOT be a violation\n' "$_n" >&2
-    exit 1
-  else
-    _pass=$(( _pass + 1 ))
-  fi
+  expect_clean "an ALLOWED_PREFIXES path must NOT be a violation" \
+    "backend/internal/k8s/client.go" "${TAB}cs, err := h.K8sClient.ClientForUser(u, g)" ""
+
+  # Finding #3 — a gofmt-legal one-line method body whose BODY makes a real
+  # call must still be a violation; the old func-declaration exemption
+  # matched "func " anywhere on the line followed by "RESTMapper()" anywhere
+  # after, so it wrongly exempted this.
+  expect_violation "a one-line method body making a real dot-prefixed call must be a violation (Finding #3)" \
+    "backend/internal/yaml/x.go" "${TAB}func (h *Handler) m() meta.RESTMapper { return h.K8sClient.RESTMapper() }" ""
+
+  # Finding #3 — a real call inside an inline func literal on the same line
+  # must still be a violation.
+  expect_violation "a call inside an inline func literal must be a violation (Finding #3)" \
+    "backend/internal/yaml/x.go" "${TAB}defer func() { _ = h.K8sClient.RESTMapper() }()" ""
+
+  # Finding #3 — a genuine method declaration in a schema-routed dir stays
+  # clean without any dedicated func-declaration exemption, because it never
+  # contains the dot-prefixed call form.
+  expect_clean "a genuine method declaration in a schema-routed dir must NOT be a violation (Finding #3)" \
+    "backend/internal/server/x.go" "func (f *ClientFactory) RESTMapper() meta.RESTMapper {" ""
+
+  # Finding #3 — an interface method line in a schema-routed dir stays clean
+  # for the same reason.
+  expect_clean "an interface method line in a schema-routed dir must NOT be a violation (Finding #3)" \
+    "backend/internal/server/x.go" "${TAB}RESTMapper() meta.RESTMapper" ""
 
   printf '[check-cluster-routing] self-test: %d/%d detector cases passed\n' "$_pass" "$_n"
 }
