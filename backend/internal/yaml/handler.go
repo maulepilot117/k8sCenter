@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -140,14 +141,15 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	force := r.URL.Query().Get("force") == "true"
+	query := r.URL.Query()
+	force := query.Get("force") == "true"
 
 	// D4 / AE2 — a pinned apply runs only against the cluster the operator
 	// previewed. The cluster half of the pin is checked before routing, so a
 	// mismatch costs no remote round trip; the generation half needs the
 	// resolved target. Both refusals happen before any document is applied.
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	pin := parseTargetPin(r)
+	pin := parseTargetPin(query)
 	if pin.TargetCluster != "" && k8s.NormalizedClusterID(pin.TargetCluster) != k8s.NormalizedClusterID(clusterID) {
 		h.refusePin(w, r, user, clusterID, "the cluster you previewed is not the cluster this request targets",
 			"cluster_pin_mismatch", map[string]any{
@@ -367,8 +369,7 @@ func pinFor(target *k8s.TargetSchema) targetPin {
 // apply body is raw YAML, so the pin travels as query parameters. Absent
 // fields mean "unpinned" and keep the pre-pinning contract for existing
 // clients, mobile included.
-func parseTargetPin(r *http.Request) targetPin {
-	q := r.URL.Query()
+func parseTargetPin(q url.Values) targetPin {
 	return targetPin{TargetCluster: q.Get("targetCluster"), TargetGeneration: q.Get("targetGeneration")}
 }
 
