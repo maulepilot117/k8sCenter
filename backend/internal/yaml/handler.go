@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,13 +34,11 @@ import (
 // clusterGetter and server's clusterRecordGetter exist. Production always
 // assigns a *k8s.ClusterRouter.
 type clusterTargeter interface {
-	RouterFor(ctx context.Context, clusterID, username string, groups []string) (*k8s.ClientPair, error)
 	TargetFor(ctx context.Context, clusterID, username string, groups []string) (*k8s.ClientPair, *k8s.TargetSchema, error)
 }
 
 // Handler provides HTTP handlers for YAML operations.
 type Handler struct {
-	K8sClient     *k8s.ClientFactory
 	ClusterRouter clusterTargeter
 	AuditLogger   audit.Logger
 	Logger        *slog.Logger
@@ -72,7 +71,7 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dynClient := pair.Dynamic
-	mapper := (&schemaRefresh{target: target}).mapper()
+	mapper := newReadSchemaRefresh(target).mapper()
 
 	type validationError struct {
 		Field   string `json:"field,omitempty"`
@@ -142,31 +141,46 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	force := r.URL.Query().Get("force") == "true"
+	query := r.URL.Query()
+	force := query.Get("force") == "true"
 
+	// D4 / AE2 — a pinned apply runs only against the cluster the operator
+	// previewed. The cluster half of the pin is checked before routing, so a
+	// mismatch costs no remote round trip; the generation half needs the
+	// resolved target. Both refusals happen before any document is applied.
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
+	pin := parseTargetPin(query)
+	if pin.TargetCluster != "" && k8s.NormalizedClusterID(pin.TargetCluster) != k8s.NormalizedClusterID(clusterID) {
+		h.refusePin(w, r, user, clusterID, "the cluster you previewed is not the cluster this request targets",
+			"cluster_pin_mismatch", map[string]any{
+				"pinnedClusterId":  k8s.NormalizedClusterID(pin.TargetCluster),
+				"requestClusterId": k8s.NormalizedClusterID(clusterID),
+			})
 		return
 	}
-	// F#7 / F#19 — see HandleValidate. Remote-cluster YAML apply needs a
-	// remote-discovery-backed RESTMapper before it can be re-enabled.
-	if !pair.IsLocal {
-		httputil.WriteError(w, http.StatusNotImplemented,
-			"YAML apply is not yet supported on remote clusters",
-			"Connect to that cluster directly to use this feature")
+
+	// F#7 / F#19 — see HandleValidate.
+	pair, target, ok := h.resolveTarget(w, r, user)
+	if !ok {
+		return
+	}
+	if pin.TargetGeneration != "" && pin.TargetGeneration != target.Generation {
+		h.refusePin(w, r, user, clusterID, "the cluster you previewed has been re-registered since the preview",
+			"cluster_generation_mismatch", map[string]any{
+				"pinnedGeneration": pin.TargetGeneration,
+				"targetGeneration": target.Generation,
+			})
 		return
 	}
 	dynClient := pair.Dynamic
-	mapper := h.K8sClient.RESTMapper()
+	mapper := newApplySchemaRefresh(target).mapper()
 
 	resp := ApplyDocuments(r.Context(), dynClient, mapper, docs, force, h.Logger)
 
 	// Audit log each document apply. F#6 — record the per-request cluster ID
 	// from the request context (not a static per-handler value) so the audit
 	// row points at the cluster the apply actually targeted.
-	auditClusterID := clusterID
+	auditClusterID := target.ClusterID
 	for _, result := range resp.Results {
 		auditResult := audit.ResultSuccess
 		if result.Action == "failed" {
@@ -225,7 +239,7 @@ func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mapper := (&schemaRefresh{target: target}).mapper()
+	mapper := newReadSchemaRefresh(target).mapper()
 	resp := DiffDocuments(r.Context(), pair.Dynamic, mapper, docs, h.Logger)
 	httputil.WriteData(w, struct {
 		*DiffResponse
@@ -281,7 +295,7 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	dynClient := pair.Dynamic
 
-	refresh := &schemaRefresh{target: target}
+	refresh := newReadSchemaRefresh(target)
 	gvr, err := resolveGVR(target.Discovery, kind)
 	if err != nil && refresh.once() {
 		gvr, err = resolveGVR(target.Discovery, kind)
@@ -351,6 +365,30 @@ func pinFor(target *k8s.TargetSchema) targetPin {
 	return targetPin{TargetCluster: target.ClusterID, TargetGeneration: target.Generation}
 }
 
+// parseTargetPin reads the pin an apply echoes back from its preview. The
+// apply body is raw YAML, so the pin travels as query parameters. Absent
+// fields mean "unpinned" and keep the pre-pinning contract for existing
+// clients, mobile included.
+func parseTargetPin(q url.Values) targetPin {
+	return targetPin{TargetCluster: q.Get("targetCluster"), TargetGeneration: q.Get("targetGeneration")}
+}
+
+// refusePin answers 409 for an apply whose pin disagrees with its target and
+// audits the refusal: a refused apply is exactly what an operator looks for
+// in the audit trail, and the 409 alone would leave no record.
+func (h *Handler) refusePin(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID, message, reason string, extra map[string]any) {
+	h.AuditLogger.Log(r.Context(), audit.Entry{
+		Timestamp: time.Now(),
+		ClusterID: k8s.NormalizedClusterID(clusterID),
+		User:      user.Username,
+		SourceIP:  r.RemoteAddr,
+		Action:    audit.ActionApply,
+		Result:    audit.ResultFailure,
+		Detail:    reason,
+	})
+	httputil.WriteErrorWithReason(w, http.StatusConflict, message, reason, extra)
+}
+
 // resolveTarget resolves the client pair and schema for the request's
 // X-Cluster-ID in a single TargetFor call and writes the error response
 // itself on failure. There is no local fallback: a remote target that cannot
@@ -365,21 +403,51 @@ func (h *Handler) resolveTarget(w http.ResponseWriter, r *http.Request, user *au
 	return pair, target, true
 }
 
-// schemaRefresh lets one request invalidate a remote target's cached
-// discovery at most once, on a miss. The cached remote mapper never resets
-// itself on a miss (memCacheClient.Fresh stays true once populated), so a CRD
-// installed on the remote cluster after the cache entry was built would
-// otherwise stay unknown until the entry expires. A local target is never
-// refreshed: its discovery is process-shared and TargetSchema.Invalidate is
-// deliberately inert there. Once per request bounds a bundle of unknown kinds
-// to a single re-discovery against the remote API server.
+// applyRESTMappingAttempts mirrors applyOne's RESTMapping retry count in
+// applier.go; keep the two in sync. Apply may invalidate a GroupKind's schema
+// once per attempt, because discovery on a real API server lags a CRD applied
+// earlier in the same bundle and only a post-backoff refresh can see it.
+const applyRESTMappingAttempts = 3
+
+// applyMaxInvalidations caps one apply request's invalidations across all
+// kinds, so a bundle naming many unserved kinds cannot multiply the per-kind
+// budget. Twice the per-kind budget still covers a CRD-then-CR bundle.
+const applyMaxInvalidations = 2 * applyRESTMappingAttempts
+
+// schemaRefresh lets a request invalidate a remote target's cached discovery
+// on a RESTMapping miss. The cached remote mapper never resets itself on a
+// miss (memCacheClient.Fresh stays true once populated), so a CRD installed
+// after the cache entry was built would otherwise stay unknown until the
+// entry expires. A local target is never refreshed: its discovery is
+// process-shared and TargetSchema.Invalidate is inert there.
+//
+// The budget is chosen by constructor: newReadSchemaRefresh (validate, diff,
+// export) invalidates at most once per request; newApplySchemaRefresh
+// invalidates once per miss, capped per GroupKind at applyRESTMappingAttempts
+// and per request at applyMaxInvalidations.
 type schemaRefresh struct {
-	target *k8s.TargetSchema
-	done   bool
+	target  *k8s.TargetSchema
+	apply   bool                     // apply budget; false is the once-per-request read budget
+	done    bool                     // read budget spent
+	perKind map[schema.GroupKind]int // apply: invalidations per GroupKind
+	total   int                      // apply: invalidations this request
 }
 
-// once invalidates the remote target's schema if this request has not done
-// so yet, and reports whether it did (so the caller should retry).
+// newReadSchemaRefresh returns the once-per-request budget.
+func newReadSchemaRefresh(target *k8s.TargetSchema) *schemaRefresh {
+	return &schemaRefresh{target: target}
+}
+
+// newApplySchemaRefresh returns the per-attempt apply budget.
+func newApplySchemaRefresh(target *k8s.TargetSchema) *schemaRefresh {
+	return &schemaRefresh{target: target, apply: true, perKind: make(map[schema.GroupKind]int)}
+}
+
+// once invalidates the remote target's schema under the once-per-request
+// budget if this request has not done so yet, and reports whether it did (so
+// the caller should retry). Called directly by HandleExport's resolveGVR
+// fallback, which has no GroupKind to key a per-kind budget by, and via
+// invalidateOnMiss for every read-policy schemaRefresh.
 func (s *schemaRefresh) once() bool {
 	if s.target.IsLocal || s.done {
 		return false
@@ -389,8 +457,27 @@ func (s *schemaRefresh) once() bool {
 	return true
 }
 
+// invalidateOnMiss invalidates the schema for a RESTMapping miss on gk under
+// whichever budget this schemaRefresh was constructed with, and reports
+// whether it did (so the caller should retry). Under the apply policy, both
+// the per-GroupKind and the request-wide counters are charged for every
+// invalidation, and either being exhausted refuses the next one.
+func (s *schemaRefresh) invalidateOnMiss(gk schema.GroupKind) bool {
+	if !s.apply {
+		return s.once()
+	}
+	if s.target.IsLocal || s.perKind[gk] >= applyRESTMappingAttempts || s.total >= applyMaxInvalidations {
+		return false
+	}
+	s.perKind[gk]++
+	s.total++
+	s.target.Invalidate()
+	return true
+}
+
 // mapper returns the target's RESTMapper, wrapped for a remote target so a
-// no-match refreshes the schema once and retries.
+// no-match refreshes the schema (under whichever budget this schemaRefresh
+// was constructed with) and retries.
 func (s *schemaRefresh) mapper() meta.RESTMapper {
 	if s.target.IsLocal {
 		return s.target.Mapper
@@ -398,8 +485,10 @@ func (s *schemaRefresh) mapper() meta.RESTMapper {
 	return refreshingMapper{RESTMapper: s.target.Mapper, refresh: s}
 }
 
-// refreshingMapper retries RESTMapping once after a schema refresh. Only
-// RESTMapping is wrapped: it is the one method DiffDocuments uses.
+// refreshingMapper retries RESTMapping once per call after a schema refresh.
+// Only RESTMapping is wrapped: it is the one method DiffDocuments and
+// applyOne use. For apply, applyOne's own outer retry loop supplies the
+// repeated calls that let the per-GroupKind budget span multiple attempts.
 type refreshingMapper struct {
 	meta.RESTMapper
 	refresh *schemaRefresh
@@ -407,7 +496,7 @@ type refreshingMapper struct {
 
 func (m refreshingMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*meta.RESTMapping, error) {
 	mapping, err := m.RESTMapper.RESTMapping(gk, versions...)
-	if meta.IsNoMatchError(err) && m.refresh.once() {
+	if meta.IsNoMatchError(err) && m.refresh.invalidateOnMiss(gk) {
 		return m.RESTMapper.RESTMapping(gk, versions...)
 	}
 	return mapping, err

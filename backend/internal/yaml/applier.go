@@ -77,6 +77,12 @@ func ApplyDocuments(
 	return resp
 }
 
+// restMappingRetryBackoff is the wait before RESTMapping retry attempt+1:
+// 500ms, then 1s. A variable so tests can drop the wait.
+var restMappingRetryBackoff = func(attempt int) time.Duration {
+	return time.Duration(500*(1<<attempt)) * time.Millisecond
+}
+
 // applyOne applies a single unstructured object via server-side apply.
 func applyOne(
 	ctx context.Context,
@@ -116,7 +122,7 @@ func applyOne(
 			result.Action = "failed"
 			result.Error = fmt.Sprintf("context cancelled waiting for CRD %s", gvk.String())
 			return result
-		case <-time.After(time.Duration(500*(1<<attempt)) * time.Millisecond): // 500ms, 1s
+		case <-time.After(restMappingRetryBackoff(attempt)):
 		}
 	}
 

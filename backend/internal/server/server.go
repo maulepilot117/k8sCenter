@@ -219,7 +219,6 @@ func New(deps Deps) *Server {
 			OriginValidator: s.validateWSOrigin,
 		}
 		s.YAMLHandler = &yamlpkg.Handler{
-			K8sClient:     deps.K8sClient,
 			ClusterRouter: deps.ClusterRouter,
 			AuditLogger:   deps.AuditLogger,
 			Logger:        deps.Logger,
