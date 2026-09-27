@@ -267,22 +267,21 @@ test("validate results land in preview, not result", async () => {
   expect(hook.preview.value?.documents[0].name).toBe("cm");
 });
 
-test("unpinned validate failure surfaces through error, since that consumer renders only error/result", async () => {
-  // SecretStoreFromTemplateEditor (unpinned) renders only `error` and
-  // `result` (apply-shaped) — it never reads `preview`, so a failing
-  // validate must show up in `error` or that page shows no outcome at all.
+test("a failing verdict lands in preview, not error, pinned or not", async () => {
+  // Both editors render `preview`; a dry-run rejection is a verdict to show,
+  // not a request failure, so `error` stays for requests that did not answer.
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount();
+  const unpinned = mount();
 
-  await run(hook.handleValidate, 200, invalidPreview("cluster-a", "gen-a"));
+  await run(unpinned.handleValidate, 200, invalidPreview("cluster-a", "gen-a"));
 
-  expect(hook.error.value).toContain("ConfigMap/cm");
-  expect(hook.error.value).toContain("must be a string");
-  expect(hook.result.value).toBeNull();
+  expect(unpinned.error.value).toBeNull();
+  expect(unpinned.result.value).toBeNull();
+  expect(unpinned.preview.value?.valid).toBe(false);
 });
 
-test("pinned validate failure leaves error null; the pinned consumer reads preview itself", async () => {
+test("pinned validate failure leaves error null and carries the errors in preview", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
   const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });

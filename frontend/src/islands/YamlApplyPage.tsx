@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "preact/hooks";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
+import { ValidationResults } from "@/components/ui/ValidationResults.tsx";
 import { apiGet } from "@/lib/api.ts";
 import {
   type CapabilityExplanation,
@@ -14,11 +15,7 @@ import {
 } from "@/lib/capabilities.ts";
 import type { CapabilitiesResponse } from "@/lib/capability-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
-import {
-  type ApplyResponse,
-  useYamlApply,
-  type ValidateResponse,
-} from "@/lib/yaml-apply.ts";
+import { type ApplyResponse, useYamlApply } from "@/lib/yaml-apply.ts";
 import YamlEditor from "@/src/islands/YamlEditor.tsx";
 import {
   clusterEpoch,
@@ -91,9 +88,9 @@ export default function YamlApplyPage() {
 
   // Resolve what this cluster allows before anything is typed, so an
   // operation that cannot succeed here is explained up front rather than
-  // after a failed apply.
+  // after a failed apply. Effects never run during SSR, so no IS_BROWSER
+  // guard is needed here or below.
   useEffect(() => {
-    if (!IS_BROWSER) return;
     const target = currentTarget();
     const controller = new AbortController();
     capability.value = { status: "loading" };
@@ -113,7 +110,6 @@ export default function YamlApplyPage() {
   // registry. Best effort: an id is still an unambiguous label.
   const pinnedClusterId = pin.value?.target.clusterId;
   useEffect(() => {
-    if (!IS_BROWSER) return;
     const known = clusterNames.peek();
     const wanted = [selectedCluster.peek(), pinnedClusterId].filter(
       (id): id is string => !!id && id !== LOCAL_CLUSTER_ID && !known.has(id),
@@ -376,7 +372,7 @@ export default function YamlApplyPage() {
       )}
 
       {preview.value && !results.value && (
-        <PreviewResults response={preview.value} />
+        <ValidationResults response={preview.value} />
       )}
       {results.value && <ApplyResults response={results.value} />}
     </div>
@@ -438,53 +434,6 @@ function PinAge({ pinnedAt }: { pinnedAt: number }) {
     return () => globalThis.clearInterval(id);
   }, []);
   return <>{timeAgo(new Date(pinnedAt).toISOString())}</>;
-}
-
-function PreviewResults({ response }: { response: ValidateResponse }) {
-  const invalid = response.documents.filter((d) => !d.valid).length;
-  const tone = response.valid ? "var(--success)" : "var(--warning)";
-  const total = response.documents.length;
-  return (
-    <div
-      style={{
-        borderRadius: "12px",
-        border: `1px solid color-mix(in srgb, ${tone} 30%, transparent)`,
-        background: `color-mix(in srgb, ${tone} 8%, transparent)`,
-        padding: "16px",
-      }}
-    >
-      <p style={{ fontSize: "13px", fontWeight: 600, color: tone, margin: 0 }}>
-        {total} resource{total !== 1 ? "s" : ""} validated
-        {invalid > 0 ? `: ${invalid} with errors` : ": all valid"}
-      </p>
-      {response.documents
-        .filter((d) => !d.valid)
-        .map((d) => (
-          <div
-            key={`${d.index}-${d.kind}-${d.name}`}
-            style={{ marginTop: "8px", fontSize: "13px" }}
-          >
-            <span
-              style={{
-                color: "var(--text-primary)",
-                fontFamily: "var(--font-mono)",
-              }}
-            >
-              {d.kind}/{d.name}
-            </span>
-            {(d.errors ?? []).map((e) => (
-              <div
-                key={`${e.field ?? ""}:${e.message}`}
-                style={{ color: "var(--error)" }}
-              >
-                {e.field ? `${e.field}: ` : ""}
-                {e.message}
-              </div>
-            ))}
-          </div>
-        ))}
-    </div>
-  );
 }
 
 function ApplyResults({ response }: { response: ApplyResponse }) {
