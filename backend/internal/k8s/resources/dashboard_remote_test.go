@@ -376,7 +376,9 @@ func TestRemoteSummary_PartialListPermissions(t *testing.T) {
 
 	s := remoteSummaryOK(t, h)
 
-	assertRow(t, s, "pods", "forbidden", "forbidden")
+	// A cluster-wide deny on a namespaced resource does not prove the user
+	// lacks access in every namespace, so the reason is namespace-scoped.
+	assertRow(t, s, "pods", "forbidden", "authz_namespace_scoped")
 	assertRow(t, s, "nodes", "ok", "ok")
 	if s.Pods != (PodSummary{}) {
 		t.Errorf("pods = %+v, want zero when forbidden", s.Pods)
@@ -400,8 +402,25 @@ func TestRemoteSummary_APIForbiddenIsForbidden(t *testing.T) {
 	})
 
 	s := remoteSummaryOK(t, h)
-	assertRow(t, s, "services", "forbidden", "forbidden")
+	assertRow(t, s, "services", "forbidden", "authz_namespace_scoped")
 	assertRow(t, s, "nodes", "ok", "ok")
+}
+
+func TestRemoteSummary_NodesDeniedIsForbidden(t *testing.T) {
+	// Nodes are cluster-scoped: a cluster-wide deny is the whole answer, from
+	// the permission check and from the API server alike.
+	h, _ := remoteDashboardHandler(t, nil, readyNode("r-n1"), runningPod("default", "r-p1"))
+	h.AccessChecker = NewDenyResourcesAccessChecker("nodes")
+	s := remoteSummaryOK(t, h)
+	assertRow(t, s, "nodes", "forbidden", "forbidden")
+	assertRow(t, s, "pods", "ok", "ok")
+
+	h, remote := remoteDashboardHandler(t, nil, readyNode("r-n1"))
+	remote.PrependReactor("list", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "nodes"}, "", errors.New("denied"))
+	})
+	s = remoteSummaryOK(t, h)
+	assertRow(t, s, "nodes", "forbidden", "forbidden")
 }
 
 func TestRemoteSummary_SARErrorIsAuthzUnknown(t *testing.T) {

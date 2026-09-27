@@ -21,11 +21,12 @@ func TestRemoteDashboardReasonCodeParity(t *testing.T) {
 	canonical := serverReasonCodes(t)
 
 	mirrored := map[string]string{
-		"ReasonOK":                  reasonOK,
-		"ReasonUnsupportedPlatform": reasonUnsupportedPlatform,
-		"ReasonUnreachable":         reasonUnreachable,
-		"ReasonForbidden":           reasonForbidden,
-		"ReasonAuthzUnknown":        reasonAuthzUnknown,
+		"ReasonOK":                   reasonOK,
+		"ReasonUnsupportedPlatform":  reasonUnsupportedPlatform,
+		"ReasonUnreachable":          reasonUnreachable,
+		"ReasonForbidden":            reasonForbidden,
+		"ReasonAuthzUnknown":         reasonAuthzUnknown,
+		"ReasonAuthzNamespaceScoped": reasonAuthzNamespaced,
 	}
 	for name, got := range mirrored {
 		want, ok := canonical[name]

@@ -46,6 +46,7 @@ const (
 	reasonUnreachable         = "unreachable"
 	reasonForbidden           = "forbidden"
 	reasonAuthzUnknown        = "authz_unknown"
+	reasonAuthzNamespaced     = "authz_namespace_scoped"
 )
 
 const (
@@ -228,10 +229,22 @@ func readRemoteSection[T any](
 	}}
 }
 
+// forbiddenSection reports a denied cluster-wide list. Every section is
+// listed across all namespaces, so the section cannot be read either way,
+// but the reason differs by scope, matching /capabilities: for cluster-scoped
+// nodes the deny is the whole answer (forbidden), while for namespaced pods
+// and services it only proves the user lacks access in every namespace
+// (authz_namespace_scoped); they may still read some namespaces.
 func forbiddenSection(section string) SectionCoverage {
+	if section == "nodes" {
+		return SectionCoverage{
+			Section: section, Status: coverageForbidden, ReasonCode: reasonForbidden,
+			Detail: "you do not have permission to list nodes on this cluster",
+		}
+	}
 	return SectionCoverage{
-		Section: section, Status: coverageForbidden, ReasonCode: reasonForbidden,
-		Detail: "you do not have permission to list " + section + " on this cluster",
+		Section: section, Status: coverageForbidden, ReasonCode: reasonAuthzNamespaced,
+		Detail: "you do not have permission to list " + section + " across all namespaces on this cluster",
 	}
 }
 
