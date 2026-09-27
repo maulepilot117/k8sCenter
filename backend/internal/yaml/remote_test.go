@@ -181,17 +181,6 @@ type fakeTargeter struct {
 	calls     atomic.Int64
 }
 
-func (f *fakeTargeter) RouterFor(ctx context.Context, clusterID, username string, groups []string) (*k8s.ClientPair, error) {
-	f.calls.Add(1)
-	if k8s.IsLocalClusterID(clusterID) {
-		return f.local.RouterFor(ctx, clusterID, username, groups)
-	}
-	if f.err != nil {
-		return nil, f.err
-	}
-	return &k8s.ClientPair{ClusterID: clusterID, IsLocal: false, Dynamic: f.remoteDyn}, nil
-}
-
 func (f *fakeTargeter) TargetFor(ctx context.Context, clusterID, username string, groups []string) (*k8s.ClientPair, *k8s.TargetSchema, error) {
 	f.calls.Add(1)
 	if k8s.IsLocalClusterID(clusterID) {

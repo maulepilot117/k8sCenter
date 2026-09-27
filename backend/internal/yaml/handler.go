@@ -33,13 +33,11 @@ import (
 // clusterGetter and server's clusterRecordGetter exist. Production always
 // assigns a *k8s.ClusterRouter.
 type clusterTargeter interface {
-	RouterFor(ctx context.Context, clusterID, username string, groups []string) (*k8s.ClientPair, error)
 	TargetFor(ctx context.Context, clusterID, username string, groups []string) (*k8s.ClientPair, *k8s.TargetSchema, error)
 }
 
 // Handler provides HTTP handlers for YAML operations.
 type Handler struct {
-	K8sClient     *k8s.ClientFactory
 	ClusterRouter clusterTargeter
 	AuditLogger   audit.Logger
 	Logger        *slog.Logger
