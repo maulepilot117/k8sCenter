@@ -1,8 +1,9 @@
 import BarRow from "@/components/charts/BarRow.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
+import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";
+import { withheldReason } from "@/lib/dashboard/coverage.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
-import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
 
 /**
  * Node capacity: CPU, memory, pod and readiness bars, with a readiness
@@ -15,13 +16,21 @@ import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
  * on an endpoint it never reads.
  */
 function Nodes() {
-  const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
+  const s = dashboardData.state<CoveredSummary>("dashboard-summary").data;
 
   const nodeCount = s?.nodes.total ?? 0;
   const nodesReady = s?.nodes.ready ?? 0;
   const podCount = s?.pods.total ?? 0;
   const cpuPct = Math.round(s?.cpu?.percentage ?? 0);
   const memPct = Math.round(s?.memory?.percentage ?? 0);
+
+  // The host gates this card on `nodes` only; CPU, memory and pods are other
+  // sections, and on a remote cluster the first two are never observed. Their
+  // bars go empty with an em-dash and the reason as a tooltip rather than
+  // showing the backend's placeholder 0%.
+  const cpuWithheld = withheldReason(s, "cpu") ?? undefined;
+  const memWithheld = withheldReason(s, "memory") ?? undefined;
+  const podsWithheld = withheldReason(s, "pods") ?? undefined;
 
   return (
     <WidgetShell
@@ -56,27 +65,33 @@ function Nodes() {
         </div>
       ) : (
         <div>
-          <BarRow
-            label="CPU"
-            value={cpuPct}
-            max={100}
-            suffix={`${cpuPct}%`}
-            color="var(--accent)"
-          />
-          <BarRow
-            label="Memory"
-            value={memPct}
-            max={100}
-            suffix={`${memPct}%`}
-            color="var(--accent-secondary)"
-          />
-          <BarRow
-            label="Pods"
-            value={podCount}
-            max={Math.max(podCount, 440)}
-            suffix={String(podCount)}
-            color="var(--success)"
-          />
+          <div title={cpuWithheld}>
+            <BarRow
+              label="CPU"
+              value={cpuWithheld ? 0 : cpuPct}
+              max={100}
+              suffix={cpuWithheld ? "—" : `${cpuPct}%`}
+              color="var(--accent)"
+            />
+          </div>
+          <div title={memWithheld}>
+            <BarRow
+              label="Memory"
+              value={memWithheld ? 0 : memPct}
+              max={100}
+              suffix={memWithheld ? "—" : `${memPct}%`}
+              color="var(--accent-secondary)"
+            />
+          </div>
+          <div title={podsWithheld}>
+            <BarRow
+              label="Pods"
+              value={podsWithheld ? 0 : podCount}
+              max={Math.max(podCount, 440)}
+              suffix={podsWithheld ? "—" : String(podCount)}
+              color="var(--success)"
+            />
+          </div>
           {/* Node readiness bar */}
           <BarRow
             label="Ready"

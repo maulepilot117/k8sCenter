@@ -1,0 +1,269 @@
+/**
+ * Per-section coverage for the dashboard summary (Release C, D5 / AE3).
+ *
+ * A remote cluster's summary is assembled from impersonated direct lists, and
+ * some of it cannot be assembled at all: there is no remote metrics binding,
+ * no remote Alertmanager, and no remote health score. The backend says so one
+ * section at a time in `coverage` (`dashboard_remote.go`), and it still fills
+ * the numeric fields it could not observe with zeroes -- `alerts: {active: 0}`,
+ * `cpu.percentage: 0` -- because those fields are not nullable on the wire.
+ *
+ * So the zeroes are not data. This module is what the dashboard consults
+ * before it prints one: a section whose row is `unavailable` or `forbidden`
+ * renders its reason, never its number.
+ *
+ * A local summary carries no `coverage` at all (`omitempty`), and "no row"
+ * means "nothing to disclose": every section renders exactly as it did before
+ * coverage existed. That keeps the local dashboard byte-for-byte unchanged.
+ */
+import type { ApiError } from "@/lib/api.ts";
+import { durationShort } from "@/lib/format.ts";
+import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
+import type { DashboardSummary } from "./wire-types.ts";
+
+/**
+ * The sections the backend reports on. Mirrors the `Section` comment on
+ * `SectionCoverage` in `dashboard_remote.go`.
+ */
+export type CoverageSection =
+  | "nodes"
+  | "pods"
+  | "services"
+  | "cpu"
+  | "memory"
+  | "alerts"
+  | "health";
+
+/**
+ * One section's coverage row, exactly as the backend writes it.
+ *
+ * `status` and `reasonCode` are typed as plain strings on purpose: they arrive
+ * from a server this build does not control, and a newer backend can send a
+ * status this build has never seen. `sectionTone` is where that is narrowed,
+ * and it narrows an unknown status to the safe answer rather than trusting it.
+ */
+export interface SectionCoverage {
+  section: string;
+  status: string;
+  reasonCode: string;
+  observedAt?: string;
+  detail?: string;
+}
+
+/**
+ * How a section renders.
+ *
+ * Five tones for five statuses, and they are deliberately not collapsed:
+ *
+ * - `ok`          the value is shown as-is.
+ * - `partial`     the value is shown, flagged as a lower bound -- the list
+ *                 behind it was truncated or stopped early.
+ * - `stale`       the value is shown with the age of the observation.
+ * - `unavailable` the value is withheld and the reason is shown. Something
+ *                 k8sCenter cannot read here, or a read that failed.
+ * - `forbidden`   the value is withheld because this account may not read
+ *                 it. Distinct from `unavailable` because the fix is a
+ *                 permission, not a feature or an outage.
+ */
+export type CoverageTone =
+  | "ok"
+  | "partial"
+  | "stale"
+  | "unavailable"
+  | "forbidden";
+
+/** The summary as the dashboard receives it once it has opted in. */
+export type CoveredSummary = DashboardSummary & {
+  coverage?: SectionCoverage[];
+};
+
+/**
+ * The coverage row for `section`, or null when the summary reports none.
+ *
+ * Null is the local case and means "render normally". It is not the same as a
+ * row saying `ok`, but it renders the same, which is the point: the local path
+ * has nothing to disclose.
+ */
+export function coverageFor(
+  summary: CoveredSummary | null | undefined,
+  section: CoverageSection,
+): SectionCoverage | null {
+  const rows = summary?.coverage;
+  if (!Array.isArray(rows)) return null;
+  return rows.find((r) => r?.section === section) ?? null;
+}
+
+/**
+ * The render tone for a row.
+ *
+ * An unrecognised status withholds the value. The alternative -- showing the
+ * number beside a status nobody can interpret -- is exactly the manufactured
+ * reading this module exists to prevent, and the backend fills unobserved
+ * sections with zeroes.
+ */
+export function sectionTone(cov: SectionCoverage | null): CoverageTone {
+  if (cov === null) return "ok";
+  switch (cov.status) {
+    case "ok":
+    case "partial":
+    case "stale":
+    case "unavailable":
+    case "forbidden":
+      return cov.status;
+    default:
+      return "unavailable";
+  }
+}
+
+/** Whether a tone lets the section's value be shown at all. */
+export function isRenderable(tone: CoverageTone): boolean {
+  return tone === "ok" || tone === "partial" || tone === "stale";
+}
+
+/**
+ * Relative age of a row's observation, e.g. "5m ago".
+ *
+ * `now` is injectable so the arithmetic is testable; components pass nothing.
+ * An absent or unparseable timestamp yields null rather than "0s ago", which
+ * would claim the reading is brand new.
+ */
+export function observedAgo(
+  cov: SectionCoverage | null,
+  now: number = Date.now(),
+): string | null {
+  const at = cov?.observedAt ? Date.parse(cov.observedAt) : Number.NaN;
+  if (!Number.isFinite(at)) return null;
+  return `${durationShort(now - at)} ago`;
+}
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
+}
+
+/**
+ * What to tell the operator about a section that is not plain `ok`.
+ *
+ * The backend writes a `detail` on every non-ok row, and it is the most
+ * specific thing available ("you do not have permission to list pods across
+ * all namespaces on this cluster"), so it wins. The fallbacks cover a row
+ * without one, per tone, and never invent specifics.
+ */
+export function coverageMessage(
+  cov: SectionCoverage | null,
+  now: number = Date.now(),
+): string {
+  const tone = sectionTone(cov);
+  const detail = cov?.detail?.trim();
+  if (tone === "stale") {
+    const ago = observedAgo(cov, now);
+    const base = detail ? capitalize(detail) : "Last observed value";
+    return ago ? `${base} (observed ${ago}).` : `${base}.`;
+  }
+  if (detail) return `${capitalize(detail)}.`;
+  switch (tone) {
+    case "ok":
+      return "";
+    case "partial":
+      return "Only part of this cluster could be read, so this is a lower bound.";
+    case "forbidden":
+      return "Your account does not have permission to read this on this cluster.";
+    default:
+      return "Not available on this cluster.";
+  }
+}
+
+/**
+ * Why `section`'s value must not be shown, or null when it may be.
+ *
+ * For a card that reads more than the one section its host gates on: each
+ * extra section it prints asks here first, and prints an em-dash with this
+ * reason instead of the backend's placeholder zero.
+ */
+export function withheldReason(
+  summary: CoveredSummary | null | undefined,
+  section: CoverageSection,
+): string | null {
+  const cov = coverageFor(summary, section);
+  return isRenderable(sectionTone(cov)) ? null : coverageMessage(cov);
+}
+
+/**
+ * Whether the health score may be drawn.
+ *
+ * False when health is absent, when its score is null (the backend's "no
+ * weighted signal resolved" answer, `computeClusterHealth` returning
+ * `Status: unknown, Score: nil`), or when the health row is anything but a
+ * plain `ok`. Health is a composite: a `partial` or `stale` score is a score
+ * computed from inputs that are known to be incomplete, which is precisely
+ * the synthesised reading AE3 forbids. The remote path always reports health
+ * `unavailable` in v1.
+ */
+export function shouldRenderHealth(
+  summary: CoveredSummary | null | undefined,
+): boolean {
+  const score = summary?.health?.score;
+  if (typeof score !== "number" || !Number.isFinite(score)) return false;
+  const cov = coverageFor(summary, "health");
+  return cov === null || sectionTone(cov) === "ok";
+}
+
+/**
+ * The health score as text: the number when `shouldRenderHealth` allows it,
+ * an em-dash otherwise. Never "0" for a score that does not exist.
+ */
+export function formatHealthScore(
+  summary: CoveredSummary | null | undefined,
+): string {
+  return shouldRenderHealth(summary) ? String(summary?.health?.score) : "—";
+}
+
+/**
+ * The summary section each summary-backed widget headlines.
+ *
+ * A widget listed here is replaced by its section's reason when that section
+ * is not renderable, and flagged when it is partial or stale -- in one place,
+ * `WidgetHost`, rather than in each widget body. A widget that reads several
+ * sections (nodes, cluster-health) is listed under the one its card cannot
+ * exist without, and masks the others itself.
+ *
+ * Every widget whose sources include `dashboard-summary` must appear here;
+ * coverage_test.ts fails when one does not, because an unlisted widget would
+ * print the backend's placeholder zeroes on a remote cluster.
+ */
+export const WIDGET_SECTIONS: Readonly<Record<string, CoverageSection>> = {
+  "cluster-health": "health",
+  "cpu-tile": "cpu",
+  "memory-tile": "memory",
+  "pods-tile": "pods",
+  "pod-status": "pods",
+  "active-alerts": "alerts",
+  nodes: "nodes",
+};
+
+/** The coverage row that gates `widgetId`, or null when nothing gates it. */
+export function widgetCoverage(
+  widgetId: string,
+  summary: CoveredSummary | null | undefined,
+): SectionCoverage | null {
+  const section = WIDGET_SECTIONS[widgetId];
+  return section === undefined ? null : coverageFor(summary, section);
+}
+
+/**
+ * Why a resource-counts read failed, when the failure is the known remote
+ * refusal rather than an error.
+ *
+ * `GET /v1/resources/counts` reads the local informer cache and answers 400
+ * for any other cluster (`counts.go`). That is a standing fact about the
+ * target, so it is reported as unavailability, not as a failed request. Keyed
+ * on the status plus the cluster the request was pinned to, not on the
+ * message: the handler's prose is not a contract.
+ */
+export function countsUnavailableReason(
+  err: unknown,
+  clusterId: string,
+): string | null {
+  const status = (err as Partial<ApiError> | null)?.status;
+  if (status !== 400 || clusterId === LOCAL_CLUSTER_ID) return null;
+  return "Resource counts are only available for the local cluster.";
+}

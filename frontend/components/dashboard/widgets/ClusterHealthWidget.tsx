@@ -1,10 +1,16 @@
 import Gauge from "@/components/charts/Gauge.tsx";
 import { CheckItem } from "@/components/ui/CheckItem.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
+import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";
+import {
+  coverageFor,
+  coverageMessage,
+  formatHealthScore,
+  shouldRenderHealth,
+} from "@/lib/dashboard/coverage.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
-import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
 import { healthStatusColor } from "@/lib/score-color.ts";
 
 /**
@@ -15,7 +21,7 @@ import { healthStatusColor } from "@/lib/score-color.ts";
  * placement belongs to the grid, not the widget.
  */
 function ClusterHealth({ mode }: WidgetProps) {
-  const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
+  const s = dashboardData.state<CoveredSummary>("dashboard-summary").data;
 
   // The island wrote `s?.nodes.total ?? info?.nodeCount ?? 0`, but that
   // cluster-info fallback cannot fire here: WidgetHost guarantees the summary
@@ -28,11 +34,19 @@ function ClusterHealth({ mode }: WidgetProps) {
   const criticalAlerts = s?.alerts.critical ?? 0;
 
   const health = s?.health;
-  const healthScore = health?.score ?? 0;
+  // No score is drawn unless one exists AND its inputs were complete. The
+  // backend answers `score: null` when no weighted signal resolved, and this
+  // used to print that as a confident gauge at 0 -- the manufactured reading
+  // AE3 forbids, inverted. See `shouldRenderHealth`.
+  const scored = shouldRenderHealth(s);
   const healthStatus = health?.status ?? "unknown";
   const healthColor = healthStatusColor(healthStatus);
   const healthLabel =
     healthStatus === "unknown" ? "UNKNOWN" : healthStatus.toUpperCase();
+  const healthCoverage = coverageFor(s, "health");
+  const unscoredReason = healthCoverage
+    ? coverageMessage(healthCoverage)
+    : "Too few health signals resolved to score this cluster.";
 
   return (
     <WidgetShell title="Cluster Health">
@@ -44,16 +58,58 @@ function ClusterHealth({ mode }: WidgetProps) {
           flexWrap: "wrap",
         }}
       >
-        {/* Gauge ring */}
+        {/* Gauge ring, or the reason there is none. Same footprint either
+            way, so the checklist does not jump when a score arrives. */}
         <div style={{ flexShrink: 0 }}>
-          <Gauge
-            value={healthScore}
-            size={140}
-            thickness={12}
-            color={healthColor}
-            label={`${healthScore}`}
-            sublabel={healthLabel}
-          />
+          {scored ? (
+            <Gauge
+              value={health?.score ?? 0}
+              size={140}
+              thickness={12}
+              color={healthColor}
+              label={formatHealthScore(s)}
+              sublabel={healthLabel}
+            />
+          ) : (
+            <div
+              data-testid="health-unscored"
+              title={unscoredReason}
+              style={{
+                width: "140px",
+                height: "140px",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "4px",
+                textAlign: "center",
+                color: "var(--text-muted)",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "30px",
+                  fontWeight: 750,
+                  color: "var(--text-primary)",
+                }}
+              >
+                {formatHealthScore(s)}
+              </span>
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                Not scored
+              </span>
+              <span style={{ fontSize: "11px", lineHeight: 1.4 }}>
+                {unscoredReason}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Checklist. Dropped in compact: the gauge alone is the headline, and
