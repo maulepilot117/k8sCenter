@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -20,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -433,6 +436,86 @@ func TestRemoteSummary_SARErrorIsAuthzUnknown(t *testing.T) {
 	}
 	if n := len(remote.Actions()); n != 0 {
 		t.Errorf("remote received %d list calls without an authorization answer, want 0", n)
+	}
+}
+
+func TestRemoteSummary_BudgetExpiryCutsOffHungSection(t *testing.T) {
+	// A real clientset over HTTP, because the fake clientset ignores the
+	// request context and so cannot show a deadline firing. The API server
+	// answers nodes and pods, but holds the services list open until the
+	// client gives up; only the dashboard's own budget can end that request.
+	prev := remoteDashboardBudget
+	remoteDashboardBudget = 300 * time.Millisecond
+	t.Cleanup(func() { remoteDashboardBudget = prev })
+
+	servicesCancelled := make(chan struct{})
+	var cancelOnce sync.Once
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/nodes":
+			_ = json.NewEncoder(w).Encode(&corev1.NodeList{
+				TypeMeta: metav1.TypeMeta{Kind: "NodeList", APIVersion: "v1"},
+				Items:    []corev1.Node{*readyNode("r-n1")},
+			})
+		case "/api/v1/pods":
+			_ = json.NewEncoder(w).Encode(&corev1.PodList{
+				TypeMeta: metav1.TypeMeta{Kind: "PodList", APIVersion: "v1"},
+				Items:    []corev1.Pod{*runningPod("default", "r-p1")},
+			})
+		case "/api/v1/services":
+			select {
+			case <-r.Context().Done():
+				cancelOnce.Do(func() { close(servicesCancelled) })
+			case <-release:
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	// Cleanups run last-in-first-out: release any held request before Close
+	// waits for in-flight handlers.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	cs, err := kubernetes.NewForConfig(&rest.Config{Host: srv.URL})
+	if err != nil {
+		t.Fatalf("build clientset: %v", err)
+	}
+	h, _ := testHandler(t)
+	h.remoteClient = func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+		return cs, nil
+	}
+
+	// Serve in a goroutine so a missing deadline fails this test with a
+	// message instead of hanging the package run. The release cleanup above
+	// unblocks the stuck handler either way.
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- callRemoteDashboard(t, h, "coverage=1") }()
+	var rr *httptest.ResponseRecorder
+	select {
+	case rr = <-done:
+	case <-time.After(3 * time.Second):
+		// Well under the 5s production budget, so only the shortened budget
+		// can have ended the request in time.
+		t.Fatalf("handler did not return within 3s on a %s budget; the hung services list was not cut off", remoteDashboardBudget)
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	s := decodeDashboard(t, rr)
+
+	select {
+	case <-servicesCancelled:
+	case <-time.After(2 * time.Second):
+		t.Error("the services request was never cancelled by the budget deadline")
+	}
+	assertRow(t, s, "services", "unavailable", "unreachable")
+	assertRow(t, s, "nodes", "ok", "ok")
+	assertRow(t, s, "pods", "ok", "ok")
+	if s.Nodes.Total != 1 || s.Pods.Total != 1 {
+		t.Errorf("sections read before the deadline lost data: nodes=%+v pods=%+v", s.Nodes, s.Pods)
 	}
 }
 

@@ -57,10 +57,12 @@ const (
 	// remoteListMaxPages bounds one section to 5,000 items. A list still
 	// carrying a continue token after this many pages is reported as partial.
 	remoteListMaxPages = 10
-	// remoteDashboardBudget is the shared deadline for every section's SAR and
-	// list calls on one request.
-	remoteDashboardBudget = 5 * time.Second
 )
+
+// remoteDashboardBudget is the shared deadline for every section's SAR and
+// list calls on one request. A variable only so the budget-expiry test can
+// shorten it; nothing in production writes it.
+var remoteDashboardBudget = 5 * time.Second
 
 // Detail strings for the sections the remote path cannot serve in v1.
 const (
