@@ -1,6 +1,7 @@
 import { useEffect } from "preact/hooks";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
+import { ValidationResults } from "@/components/ui/ValidationResults.tsx";
 import type { TemplateOnlyProvider } from "@/lib/eso-types.ts";
 import {
   ESO_YAML_TEMPLATES,
@@ -33,6 +34,8 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
     validating,
     error,
     result,
+    preview,
+    clearPin,
     handleValidate,
     handleApply,
   } = useYamlApply(template?.yaml ?? "", {
@@ -137,7 +140,10 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
         <YamlEditor
           value={yamlContent.value}
           onChange={(v) => {
+            if (v === yamlContent.value) return;
             yamlContent.value = v;
+            // The last verdict described the text before this edit.
+            clearPin();
           }}
           readOnly={isWorking}
           height="calc(100vh - 420px)"
@@ -150,6 +156,9 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
         </div>
       )}
 
+      {preview.value && !result.value && (
+        <ValidationResults response={preview.value} />
+      )}
       {result.value && <ApplyResultPanel response={result.value} />}
     </div>
   );
