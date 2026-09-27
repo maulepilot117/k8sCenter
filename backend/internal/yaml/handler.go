@@ -1,6 +1,7 @@
 package yaml
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
@@ -18,12 +20,25 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 )
+
+// clusterTargeter is the subset of *k8s.ClusterRouter the YAML handlers use.
+// It is an interface rather than the concrete router only so remote_test.go
+// can inject a remote TargetSchema: from outside package k8s a remote target
+// cannot be pointed at a test server (the SSRF policy blocks loopback and
+// TargetSchemaFor needs a live cluster store) — the same reason k8s's
+// clusterGetter and server's clusterRecordGetter exist. Production always
+// assigns a *k8s.ClusterRouter.
+type clusterTargeter interface {
+	RouterFor(ctx context.Context, clusterID, username string, groups []string) (*k8s.ClientPair, error)
+	TargetFor(ctx context.Context, clusterID, username string, groups []string) (*k8s.ClientPair, *k8s.TargetSchema, error)
+}
 
 // Handler provides HTTP handlers for YAML operations.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
-	ClusterRouter *k8s.ClusterRouter
+	ClusterRouter clusterTargeter
 	AuditLogger   audit.Logger
 	Logger        *slog.Logger
 }
@@ -47,25 +62,15 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
-		return
-	}
-	// F#7 / F#19 — RESTMapper is built against the local cluster's discovery,
-	// so validating against a remote cluster's schema can return wrong results
-	// for CRDs that only exist remotely (or differ between local and remote).
-	// Reject non-local with 501 until a per-cluster discovery-backed mapper
-	// ships (Phase 4 follow-up).
-	if !pair.IsLocal {
-		httputil.WriteError(w, http.StatusNotImplemented,
-			"YAML validate is not yet supported on remote clusters",
-			"Connect to that cluster directly to use this feature")
+	// F#7 / F#19 — the client and the RESTMapper both come from the header's
+	// cluster in one call, so a CRD that exists only remotely resolves
+	// against the cluster the dry-run executes on.
+	pair, target, ok := h.resolveTarget(w, r, user)
+	if !ok {
 		return
 	}
 	dynClient := pair.Dynamic
-	mapper := h.K8sClient.RESTMapper()
+	mapper := target.Mapper
 
 	type validationError struct {
 		Field   string `json:"field,omitempty"`
@@ -82,11 +87,13 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	type validateResponse struct {
 		Documents []docResult `json:"documents"`
 		Valid     bool        `json:"valid"`
+		targetPin
 	}
 
 	resp := validateResponse{
 		Documents: make([]docResult, 0, len(docs)),
 		Valid:     true,
+		targetPin: pinFor(target),
 	}
 
 	for i, obj := range docs {
@@ -209,24 +216,18 @@ func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
+	// F#7 / F#19 — see HandleValidate. The Secret refusal above stays ahead
+	// of routing so it holds identically for every target.
+	pair, target, ok := h.resolveTarget(w, r, user)
+	if !ok {
 		return
 	}
-	// F#7 / F#19 — see HandleValidate.
-	if !pair.IsLocal {
-		httputil.WriteError(w, http.StatusNotImplemented,
-			"YAML diff is not yet supported on remote clusters",
-			"Connect to that cluster directly to use this feature")
-		return
-	}
-	dynClient := pair.Dynamic
-	mapper := h.K8sClient.RESTMapper()
 
-	resp := DiffDocuments(r.Context(), dynClient, mapper, docs, h.Logger)
-	httputil.WriteData(w, resp)
+	resp := DiffDocuments(r.Context(), pair.Dynamic, target.Mapper, docs, h.Logger)
+	httputil.WriteData(w, struct {
+		*DiffResponse
+		targetPin
+	}{resp, pinFor(target)})
 }
 
 // HandleExport exports a resource as clean, reapply-ready YAML.
@@ -269,24 +270,15 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
-		return
-	}
-	// F#7 / F#19 — Export resolves GVR via the local cluster's discovery API,
-	// which won't see CRDs that only exist on the remote cluster. Reject
-	// non-local until per-cluster discovery ships.
-	if !pair.IsLocal {
-		httputil.WriteError(w, http.StatusNotImplemented,
-			"YAML export is not yet supported on remote clusters",
-			"Connect to that cluster directly to use this feature")
+	// F#7 / F#19 — the GVR resolves through the header cluster's discovery,
+	// so a CRD that exists only remotely is visible to the export.
+	pair, target, ok := h.resolveTarget(w, r, user)
+	if !ok {
 		return
 	}
 	dynClient := pair.Dynamic
 
-	gvr, err := resolveGVR(h.K8sClient, kind)
+	gvr, err := resolveGVR(target.Discovery, kind)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("unknown resource kind: %s", kind), err.Error())
 		return
@@ -332,6 +324,33 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 
 // --- Helpers ---
 
+// targetPin identifies the cluster schema a validate or diff response was
+// computed against. The client stores it so a later apply can refuse to run
+// against a different cluster (or a re-registered one under the same ID)
+// than the one the operator reviewed.
+type targetPin struct {
+	TargetCluster    string `json:"targetCluster"`
+	TargetGeneration string `json:"targetGeneration"`
+}
+
+func pinFor(target *k8s.TargetSchema) targetPin {
+	return targetPin{TargetCluster: target.ClusterID, TargetGeneration: target.Generation}
+}
+
+// resolveTarget resolves the client pair and schema for the request's
+// X-Cluster-ID in a single TargetFor call and writes the error response
+// itself on failure. There is no local fallback: a remote target that cannot
+// be resolved fails the request.
+func (h *Handler) resolveTarget(w http.ResponseWriter, r *http.Request, user *auth.User) (*k8s.ClientPair, *k8s.TargetSchema, bool) {
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pair, target, err := h.ClusterRouter.TargetFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
+		return nil, nil, false
+	}
+	return pair, target, true
+}
+
 // uidMatchesExpected reports whether obj is the object the caller expects.
 // An empty expectation matches anything, so callers that do not send one
 // keep the endpoint's original behaviour.
@@ -361,12 +380,12 @@ func readYAMLBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return data, nil
 }
 
-// resolveGVR resolves a plural resource kind name to a GroupVersionResource
-// using the API server's discovery API.
-func resolveGVR(clientFactory *k8s.ClientFactory, kind string) (schema.GroupVersionResource, error) {
+// resolveGVR resolves a plural resource name to a GroupVersionResource using
+// the TARGET cluster's discovery. Passing the local ClientFactory's discovery
+// here is the bug this signature change exists to prevent.
+func resolveGVR(disc discovery.DiscoveryInterface, kind string) (schema.GroupVersionResource, error) {
 	kind = strings.ToLower(kind)
 
-	disc := clientFactory.DiscoveryClient()
 	_, apiResourceLists, err := disc.ServerGroupsAndResources()
 	if err != nil {
 		// ServerGroupsAndResources may return partial results with an error
