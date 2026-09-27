@@ -98,6 +98,9 @@ type Handler struct {
 	// isSynced overrides the default h.Informers.IsSynced for tests. When nil,
 	// gatherHealthInputs uses h.Informers.IsSynced.
 	isSynced func(string) bool
+	// remoteClient overrides remote-cluster client resolution for tests of the
+	// remote dashboard path. When nil, h.ClusterRouter.ClientForCluster is used.
+	remoteClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
 	// OriginValidator checks the Origin header for WebSocket connections.
 	// Set by the server at wiring time. If nil, rejects all WS upgrades.
 	OriginValidator func(w http.ResponseWriter, r *http.Request) bool

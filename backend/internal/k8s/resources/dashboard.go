@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 	appsv1 "k8s.io/api/apps/v1"
@@ -28,6 +29,9 @@ type DashboardSummary struct {
 	CPU      *Utilization   `json:"cpu"`
 	Memory   *Utilization   `json:"memory"`
 	Health   *ClusterHealth `json:"health"` // always present in new-backend responses (no omitempty)
+	// Coverage is set only on the opt-in remote path (?coverage=1). omitempty
+	// keeps the local response byte-identical to its pre-coverage shape.
+	Coverage []SectionCoverage `json:"coverage,omitempty"`
 }
 
 // NodeSummary contains node counts.
@@ -530,19 +534,165 @@ func countPDBViolations(pdbs []*policyv1.PodDisruptionBudget) int {
 	return count
 }
 
+// resourceKind selects which capacity series utilizationFrom renders.
+type resourceKind int
+
+const (
+	resourceKindCPU resourceKind = iota
+	resourceKindMemory
+)
+
+// aggregateCounts is pure: no informers, no SARs, no clock, no network. It is
+// shared by the local (informer) and remote (direct list) summary paths.
+func aggregateCounts(nodes []*corev1.Node, pods []*corev1.Pod, serviceCount int) (NodeSummary, PodSummary, ServiceCount) {
+	var ns NodeSummary
+	ns.Total = len(nodes)
+	for _, n := range nodes {
+		for _, c := range n.Status.Conditions {
+			if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+				ns.Ready++
+				break
+			}
+		}
+	}
+
+	var ps PodSummary
+	ps.Total = len(pods)
+	for _, p := range pods {
+		switch p.Status.Phase {
+		case corev1.PodRunning:
+			ps.Running++
+		case corev1.PodPending:
+			ps.Pending++
+		case corev1.PodFailed:
+			ps.Failed++
+		}
+	}
+
+	return ns, ps, ServiceCount{Total: serviceCount}
+}
+
+// capacityTotals holds allocatable capacity plus the requests and limits of
+// non-terminal pods.
+type capacityTotals struct {
+	CPUAllocatable, CPURequests, CPULimits resource.Quantity
+	MemAllocatable, MemRequests, MemLimits resource.Quantity
+}
+
+// aggregateCapacity is pure. Only Running and Pending pods contribute
+// requests and limits; terminal pods no longer hold their reservations.
+func aggregateCapacity(nodes []*corev1.Node, pods []*corev1.Pod) capacityTotals {
+	var t capacityTotals
+	for _, n := range nodes {
+		if cpu, ok := n.Status.Allocatable[corev1.ResourceCPU]; ok {
+			t.CPUAllocatable.Add(cpu)
+		}
+		if mem, ok := n.Status.Allocatable[corev1.ResourceMemory]; ok {
+			t.MemAllocatable.Add(mem)
+		}
+	}
+	for _, p := range pods {
+		if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
+			continue
+		}
+		for _, c := range p.Spec.Containers {
+			if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+				t.CPURequests.Add(req)
+			}
+			if lim, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+				t.CPULimits.Add(lim)
+			}
+			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+				t.MemRequests.Add(req)
+			}
+			if lim, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
+				t.MemLimits.Add(lim)
+			}
+		}
+	}
+	return t
+}
+
+func formatCPU(q resource.Quantity) string {
+	millis := q.MilliValue()
+	if millis >= 1000 {
+		return fmt.Sprintf("%.1f cores", float64(millis)/1000)
+	}
+	return fmt.Sprintf("%dm", millis)
+}
+
+func formatMem(q resource.Quantity) string {
+	bytes := q.Value()
+	gi := float64(bytes) / (1024 * 1024 * 1024)
+	if gi >= 1 {
+		return fmt.Sprintf("%.1f Gi", gi)
+	}
+	mi := float64(bytes) / (1024 * 1024)
+	return fmt.Sprintf("%.0f Mi", mi)
+}
+
+// utilizationFrom renders capacity as a *Utilization. pct is the observed
+// usage percentage, or nil when none is available (no Prometheus, a failed
+// query, or a remote target). With pct == nil the result is the
+// {Percentage: 0, Used: "N/A"} shape that web and mobile render as
+// "unavailable", or nil when there is no allocatable capacity to report.
+func utilizationFrom(t capacityTotals, kind resourceKind, pct *float64) *Utilization {
+	allocatable, requests, limits := t.CPUAllocatable, t.CPURequests, t.CPULimits
+	format := formatCPU
+	if kind == resourceKindMemory {
+		allocatable, requests, limits = t.MemAllocatable, t.MemRequests, t.MemLimits
+		format = formatMem
+	}
+
+	if pct == nil {
+		if allocatable.MilliValue() <= 0 {
+			return nil
+		}
+		return &Utilization{
+			Percentage: 0,
+			Used:       "N/A",
+			Total:      format(allocatable),
+			Requests:   format(requests),
+			Limits:     format(limits),
+		}
+	}
+
+	var used resource.Quantity
+	if kind == resourceKindMemory {
+		used = *resource.NewQuantity(int64(*pct/100*float64(allocatable.Value())), resource.BinarySI)
+	} else {
+		used = *resource.NewMilliQuantity(int64(*pct/100*float64(allocatable.MilliValue())), resource.DecimalSI)
+	}
+	return &Utilization{
+		Percentage: *pct,
+		Used:       format(used),
+		Total:      format(allocatable),
+		Requests:   format(requests),
+		Limits:     format(limits),
+	}
+}
+
 // HandleDashboardSummary returns aggregated cluster health data from the informer cache.
 // Prometheus metrics (CPU/Memory) are fetched asynchronously with a 1-second timeout.
-// Only available for the local cluster (informer cache is not available for remote clusters).
+//
+// Remote clusters have no informer cache. They are served only when the caller
+// opts in with ?coverage=1 (handleRemoteDashboardSummary); without it the
+// legacy 400 below is returned unchanged.
 func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
 	if !ok {
 		return
 	}
 
-	// Check for local cluster only
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	if clusterID != "" && clusterID != "local" {
-		writeError(w, http.StatusBadRequest, "dashboard summary is only available for the local cluster", "")
+	if !k8s.IsLocalClusterID(clusterID) {
+		if r.URL.Query().Get("coverage") != "1" {
+			// Unchanged 400 — mobile's DashboardLocalOnlyError matches this
+			// exact status + "local cluster" substring. Release C plan, D5.
+			writeError(w, http.StatusBadRequest, "dashboard summary is only available for the local cluster", "")
+			return
+		}
+		h.handleRemoteDashboardSummary(w, r, user, clusterID)
 		return
 	}
 
@@ -570,36 +720,14 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Node counts
-	summary.Nodes.Total = len(nodes)
-	for _, n := range nodes {
-		for _, c := range n.Status.Conditions {
-			if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-				summary.Nodes.Ready++
-				break
-			}
-		}
-	}
-
-	// Pod phase counts
-	summary.Pods.Total = len(pods)
-	for _, p := range pods {
-		switch p.Status.Phase {
-		case corev1.PodRunning:
-			summary.Pods.Running++
-		case corev1.PodPending:
-			summary.Pods.Pending++
-		case corev1.PodFailed:
-			summary.Pods.Failed++
-		}
-	}
-
 	// Service count
+	serviceCount := 0
 	if h.canList(ctx, user, "services", "") {
 		if services, err := h.Informers.Services().List(labels.Everything()); err == nil {
-			summary.Services.Total = len(services)
+			serviceCount = len(services)
 		}
 	}
+	summary.Nodes, summary.Pods, summary.Services = aggregateCounts(nodes, pods, serviceCount)
 
 	// Alert counts
 	if h.Alerts != nil {
@@ -612,59 +740,7 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Aggregate resource requests/limits from cached node and pod lists.
-	var cpuRequests, cpuLimits, memRequests, memLimits resource.Quantity
-	var cpuAllocatable, memAllocatable resource.Quantity
-
-	for _, n := range nodes {
-		if cpu, ok := n.Status.Allocatable[corev1.ResourceCPU]; ok {
-			cpuAllocatable.Add(cpu)
-		}
-		if mem, ok := n.Status.Allocatable[corev1.ResourceMemory]; ok {
-			memAllocatable.Add(mem)
-		}
-	}
-
-	for _, p := range pods {
-		if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
-			continue
-		}
-		for _, c := range p.Spec.Containers {
-			if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
-				cpuRequests.Add(req)
-			}
-			if lim, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
-				cpuLimits.Add(lim)
-			}
-			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
-				memRequests.Add(req)
-			}
-			if lim, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
-				memLimits.Add(lim)
-			}
-		}
-	}
-
-	// Format helpers
-	formatCPU := func(q resource.Quantity) string {
-		millis := q.MilliValue()
-		if millis >= 1000 {
-			return fmt.Sprintf("%.1f cores", float64(millis)/1000)
-		}
-		return fmt.Sprintf("%dm", millis)
-	}
-	formatMem := func(q resource.Quantity) string {
-		bytes := q.Value()
-		gi := float64(bytes) / (1024 * 1024 * 1024)
-		if gi >= 1 {
-			return fmt.Sprintf("%.1f Gi", gi)
-		}
-		mi := float64(bytes) / (1024 * 1024)
-		return fmt.Sprintf("%.0f Mi", mi)
-	}
-
-	cpuTotalStr := formatCPU(cpuAllocatable)
-	memTotalStr := formatMem(memAllocatable)
+	capacity := aggregateCapacity(nodes, pods)
 
 	// Run CPU/memory queries and the control-plane health check concurrently
 	// within a shared 1-second Prometheus budget. We use sync.WaitGroup (not
@@ -702,24 +778,10 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 
 		if h.Utilization != nil {
 			if cpuErr == nil {
-				cpuUsedMillis := cpuPct / 100 * float64(cpuAllocatable.MilliValue())
-				summary.CPU = &Utilization{
-					Percentage: cpuPct,
-					Used:       formatCPU(*resource.NewMilliQuantity(int64(cpuUsedMillis), resource.DecimalSI)),
-					Total:      cpuTotalStr,
-					Requests:   formatCPU(cpuRequests),
-					Limits:     formatCPU(cpuLimits),
-				}
+				summary.CPU = utilizationFrom(capacity, resourceKindCPU, &cpuPct)
 			}
 			if memErr == nil {
-				memUsedBytes := memPct / 100 * float64(memAllocatable.Value())
-				summary.Memory = &Utilization{
-					Percentage: memPct,
-					Used:       formatMem(*resource.NewQuantity(int64(memUsedBytes), resource.BinarySI)),
-					Total:      memTotalStr,
-					Requests:   formatMem(memRequests),
-					Limits:     formatMem(memLimits),
-				}
+				summary.Memory = utilizationFrom(capacity, resourceKindMemory, &memPct)
 			}
 		}
 	} else {
@@ -745,24 +807,13 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// If Prometheus was unavailable, still provide requests/limits/total from k8s API
-	if summary.CPU == nil && cpuAllocatable.MilliValue() > 0 {
-		summary.CPU = &Utilization{
-			Percentage: 0,
-			Used:       "N/A",
-			Total:      cpuTotalStr,
-			Requests:   formatCPU(cpuRequests),
-			Limits:     formatCPU(cpuLimits),
-		}
+	// Without an observed percentage, still report requests/limits/total from
+	// the k8s API (or nil when there is no allocatable capacity).
+	if summary.CPU == nil {
+		summary.CPU = utilizationFrom(capacity, resourceKindCPU, nil)
 	}
-	if summary.Memory == nil && memAllocatable.Value() > 0 {
-		summary.Memory = &Utilization{
-			Percentage: 0,
-			Used:       "N/A",
-			Total:      memTotalStr,
-			Requests:   formatMem(memRequests),
-			Limits:     formatMem(memLimits),
-		}
+	if summary.Memory == nil {
+		summary.Memory = utilizationFrom(capacity, resourceKindMemory, nil)
 	}
 
 	// Compute and attach cluster health (always present, never nil).
