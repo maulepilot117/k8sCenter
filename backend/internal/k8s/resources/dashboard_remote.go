@@ -64,8 +64,11 @@ const (
 // Detail strings for the sections the remote path cannot serve in v1.
 const (
 	detailRemoteMetrics = "remote CPU/memory usage requires the remote metrics binding (deferred)"
-	detailRemoteAlerts  = "alert counts are bound to the local Alertmanager"
-	detailRemoteHealth  = "remote health scoring requires the remote metrics binding (deferred)"
+	// detailReservationsUnknown is appended when requests/limits could not be
+	// summed because the pods section did not load.
+	detailReservationsUnknown = "; requests and limits need the pods section, which did not load"
+	detailRemoteAlerts        = "alert counts are bound to the local Alertmanager"
+	detailRemoteHealth        = "remote health scoring requires the remote metrics binding (deferred)"
 )
 
 // remoteSection is the outcome of reading one live section.
@@ -146,12 +149,22 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 	summary.CPU = utilizationFrom(capacity, resourceKindCPU, nil)
 	summary.Memory = utilizationFrom(capacity, resourceKindMemory, nil)
 
+	// Requests and limits are sums over pods. When pods did not load, an
+	// empty pod list would report a measured zero reservation beside a real
+	// allocatable total, so report them as unknown instead.
+	metricsDetail := detailRemoteMetrics
+	if pods.coverage.Status != coverageOK && pods.coverage.Status != coveragePartial {
+		reservationsUnknown(summary.CPU)
+		reservationsUnknown(summary.Memory)
+		metricsDetail += detailReservationsUnknown
+	}
+
 	summary.Coverage = []SectionCoverage{
 		sectionOrFailed(nodes.coverage, "nodes"),
 		sectionOrFailed(pods.coverage, "pods"),
 		sectionOrFailed(services.coverage, "services"),
-		unsupportedSection("cpu", detailRemoteMetrics),
-		unsupportedSection("memory", detailRemoteMetrics),
+		unsupportedSection("cpu", metricsDetail),
+		unsupportedSection("memory", metricsDetail),
 		unsupportedSection("alerts", detailRemoteAlerts),
 		unsupportedSection("health", detailRemoteHealth),
 	}
@@ -236,6 +249,16 @@ func sectionOrFailed(c SectionCoverage, section string) SectionCoverage {
 		Section: section, Status: coverageUnavailable, ReasonCode: reasonUnreachable,
 		Detail: "section failed to load",
 	}
+}
+
+// reservationsUnknown marks u's requests and limits as not observed, using
+// the same "N/A" the Used field already carries for an unobserved value.
+func reservationsUnknown(u *Utilization) {
+	if u == nil {
+		return
+	}
+	u.Requests = "N/A"
+	u.Limits = "N/A"
 }
 
 func observedNow() string {

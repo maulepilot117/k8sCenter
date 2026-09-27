@@ -458,6 +458,55 @@ func TestRemoteSummary_SectionPanicIsRecoveredAsUnavailable(t *testing.T) {
 	}
 }
 
+func TestRemoteSummary_PodsUnreadReservationsUnknown(t *testing.T) {
+	// Nodes load, so allocatable capacity is real. Requests and limits come
+	// from pods, so when pods did not load they are unknown, not zero.
+	cases := map[string]func(h *Handler, remote *fake.Clientset){
+		"forbidden": func(h *Handler, _ *fake.Clientset) {
+			h.AccessChecker = NewDenyResourcesAccessChecker("pods")
+		},
+		"unreachable": func(_ *Handler, remote *fake.Clientset) {
+			remote.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, errors.New("connection refused")
+			})
+		},
+		"panicked": func(_ *Handler, remote *fake.Clientset) {
+			remote.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+				panic("boom")
+			})
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			h, remote := remoteDashboardHandler(t, nil,
+				nodeWithAllocatable("r-n1", "4", "8Gi"),
+				podWithResources("r-p1", corev1.PodRunning, "1", "2", "1Gi", "2Gi"),
+			)
+			setup(h, remote)
+
+			s := remoteSummaryOK(t, h)
+
+			wantCPU := Utilization{Percentage: 0, Used: "N/A", Total: "4.0 cores", Requests: "N/A", Limits: "N/A"}
+			if s.CPU == nil || *s.CPU != wantCPU {
+				t.Errorf("cpu = %+v, want %+v", s.CPU, wantCPU)
+			}
+			wantMem := Utilization{Percentage: 0, Used: "N/A", Total: "8.0 Gi", Requests: "N/A", Limits: "N/A"}
+			if s.Memory == nil || *s.Memory != wantMem {
+				t.Errorf("memory = %+v, want %+v", s.Memory, wantMem)
+			}
+			for _, sec := range []string{"cpu", "memory"} {
+				row := coverageRow(t, s, sec)
+				if row.Status != "unavailable" || row.ReasonCode != "unsupported_platform" {
+					t.Errorf("%s row = %+v, want unavailable/unsupported_platform", sec, row)
+				}
+				if !strings.Contains(row.Detail, "pods") {
+					t.Errorf("%s row detail %q does not say requests/limits need the pods section", sec, row.Detail)
+				}
+			}
+		})
+	}
+}
+
 func TestRemoteSummary_EmptyCluster(t *testing.T) {
 	h, _ := remoteDashboardHandler(t, nil)
 
