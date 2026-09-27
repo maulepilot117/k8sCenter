@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	dynfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
@@ -560,8 +561,16 @@ func TestResolveGVR_PartialDiscoveryError(t *testing.T) {
 		t.Errorf("gvr = %v; want %v", gvr, widgetGVR)
 	}
 
-	if _, err := resolveGVR(disc, "gadgets"); err == nil {
-		t.Error("resolveGVR(gadgets) = nil error; want not-found for a resource absent from the partial list")
+	// A miss on a partial list is not a definite "not served": the kind may
+	// live in the group that failed to load.
+	if _, err := resolveGVR(disc, "gadgets"); err == nil || errors.Is(err, errKindNotServed) {
+		t.Errorf("resolveGVR(gadgets) on partial discovery = %v; want a discovery error, not errKindNotServed", err)
+	}
+
+	// A miss on complete discovery is a definite "not served".
+	complete := &fakediscovery.FakeDiscovery{Fake: &clienttesting.Fake{Resources: disc.lists}}
+	if _, err := resolveGVR(complete, "gadgets"); !errors.Is(err, errKindNotServed) {
+		t.Errorf("resolveGVR(gadgets) on complete discovery = %v; want errKindNotServed", err)
 	}
 
 	if _, err := resolveGVR(&partialDiscovery{}, "widgets"); err == nil {
@@ -606,5 +615,174 @@ func TestHandleValidate_LocalPathUnchanged(t *testing.T) {
 	}
 	if len(fx.remoteDyn.Actions()) != 0 {
 		t.Error("remote dynamic client recorded actions on a local request")
+	}
+}
+
+// --- Late-installed remote CRDs --------------------------------------------
+
+const gadgetYAML = `apiVersion: example.com/v1
+kind: Gadget
+metadata:
+  name: sprocket
+  namespace: team-a
+`
+
+var gadgetResource = metav1.APIResource{
+	Name: "gadgets", SingularName: "gadget", Namespaced: true, Kind: "Gadget",
+	Verbs: metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
+}
+
+// cachedRemoteSchema builds the remote TargetSchema the way production does
+// (k8s.TargetSchemaFor): a DeferredDiscoveryRESTMapper over a memory-cached
+// discovery client, with Invalidate wired to the mapper's Reset. It returns
+// the fake discovery so a test can install a CRD after the cache is warm,
+// and a counter of Invalidate calls.
+func cachedRemoteSchema(t *testing.T) (*k8s.TargetSchema, *fakediscovery.FakeDiscovery, *atomic.Int64) {
+	t.Helper()
+	disc := &fakediscovery.FakeDiscovery{Fake: &clienttesting.Fake{Resources: []*metav1.APIResourceList{{
+		GroupVersion: "example.com/v1",
+		APIResources: []metav1.APIResource{{
+			Name: "widgets", SingularName: "widget", Namespaced: true, Kind: "Widget",
+			Verbs: metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
+		}},
+	}}}}
+	cached := memory.NewMemCacheClient(disc)
+	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cached)
+	invalidations := &atomic.Int64{}
+	return &k8s.TargetSchema{
+		ClusterID:  remoteClusterID,
+		Generation: remoteGeneration,
+		IsLocal:    false,
+		Discovery:  cached,
+		Mapper:     mapper,
+		Invalidate: func() {
+			invalidations.Add(1)
+			mapper.Reset()
+		},
+	}, disc, invalidations
+}
+
+// installGadgets adds the Gadget CRD to the remote cluster's discovery. It
+// installs a fresh list rather than appending in place: FakeDiscovery hands
+// the cache its own pointers, so an in-place edit would leak into the warm
+// cache and make the stale-cache scenario impossible to observe.
+func installGadgets(disc *fakediscovery.FakeDiscovery) {
+	old := disc.Resources[0]
+	resources := append(append([]metav1.APIResource{}, old.APIResources...), gadgetResource)
+	disc.Resources = []*metav1.APIResourceList{{GroupVersion: old.GroupVersion, APIResources: resources}}
+}
+
+// A CRD installed on the remote cluster after the schema cache was built
+// must resolve on the next request. The cached remote mapper never resets
+// itself on a miss (memCacheClient.Fresh stays true once populated), so the
+// handlers invalidate the target schema once and retry.
+func TestHandleValidate_RemoteCRDInstalledAfterCacheWarmResolves(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	schema, disc, _ := cachedRemoteSchema(t)
+	fx.targeter.schema = schema
+
+	// Warm the cache with the CRD absent.
+	if w := serve(fx.handler.HandleValidate, newRequest(http.MethodPost, "/yaml/validate", remoteClusterID, widgetYAML)); w.Code != http.StatusOK {
+		t.Fatalf("warm-up status = %d; body=%s", w.Code, w.Body.String())
+	}
+
+	installGadgets(disc)
+
+	w := serve(fx.handler.HandleValidate, newRequest(http.MethodPost, "/yaml/validate", remoteClusterID, gadgetYAML))
+	if w.Code != http.StatusOK {
+		t.Fatalf("validate status = %d; body=%s", w.Code, w.Body.String())
+	}
+	if body := decodeData[validateBody](t, w); !body.Valid {
+		t.Errorf("validate = %+v; want the just-installed Gadget CRD to resolve", body)
+	}
+	fx.local.assertUntouched(t)
+}
+
+func TestHandleDiff_RemoteCRDInstalledAfterCacheWarmResolves(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	schema, disc, _ := cachedRemoteSchema(t)
+	fx.targeter.schema = schema
+
+	if w := serve(fx.handler.HandleDiff, newRequest(http.MethodPost, "/yaml/diff", remoteClusterID, widgetYAML)); w.Code != http.StatusOK {
+		t.Fatalf("warm-up status = %d; body=%s", w.Code, w.Body.String())
+	}
+
+	installGadgets(disc)
+
+	w := serve(fx.handler.HandleDiff, newRequest(http.MethodPost, "/yaml/diff", remoteClusterID, gadgetYAML))
+	if w.Code != http.StatusOK {
+		t.Fatalf("diff status = %d; body=%s", w.Code, w.Body.String())
+	}
+	if body := decodeData[diffBody](t, w); len(body.Documents) != 1 || body.Documents[0].Error != "" {
+		t.Errorf("diff = %+v; want the just-installed Gadget CRD to resolve", body)
+	}
+	fx.local.assertUntouched(t)
+}
+
+func TestHandleExport_RemoteCRDInstalledAfterCacheWarmResolves(t *testing.T) {
+	gadget := &unstructured.Unstructured{}
+	gadget.SetAPIVersion("example.com/v1")
+	gadget.SetKind("Gadget")
+	gadget.SetName("sprocket")
+	gadget.SetNamespace("team-a")
+	fx := newFixture(t, nil, []runtime.Object{widget("gizmo", "team-a"), gadget})
+	schema, disc, _ := cachedRemoteSchema(t)
+	fx.targeter.schema = schema
+
+	if w := exportRequest(fx.handler, remoteClusterID, "widgets", "team-a", "gizmo"); w.Code != http.StatusOK {
+		t.Fatalf("warm-up export status = %d; body=%s", w.Code, w.Body.String())
+	}
+	installGadgets(disc)
+
+	w := exportRequest(fx.handler, remoteClusterID, "gadgets", "team-a", "sprocket")
+	if w.Code != http.StatusOK {
+		t.Fatalf("export status = %d; want 200 for the just-installed Gadget CRD, body=%s", w.Code, w.Body.String())
+	}
+	fx.local.assertUntouched(t)
+}
+
+// A request invalidates the remote schema at most once, however many of its
+// documents miss: a bundle of unknown kinds must not trigger one discovery
+// round-trip per document against the remote API server.
+func TestHandleValidate_RemoteInvalidatesAtMostOncePerRequest(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	schema, _, invalidations := cachedRemoteSchema(t)
+	fx.targeter.schema = schema
+
+	body := gadgetYAML + "---\n" + strings.ReplaceAll(gadgetYAML, "Gadget", "Doohickey")
+	w := serve(fx.handler.HandleValidate, newRequest(http.MethodPost, "/yaml/validate", remoteClusterID, body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+	}
+	if got := decodeData[validateBody](t, w); got.Valid {
+		t.Errorf("validate = %+v; want both unknown kinds reported invalid", got)
+	}
+	if n := invalidations.Load(); n != 1 {
+		t.Errorf("Invalidate called %d times; want exactly 1 per request", n)
+	}
+}
+
+// --- Export status mapping ------------------------------------------------
+
+// When the target cluster's discovery cannot be reached at all, export is
+// failing on the server side, not rejecting the caller's kind: it must not
+// answer 400 "unknown resource kind".
+func TestHandleExport_RemoteDiscoveryUnavailableIs5xx(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	fx.targeter.schema.Discovery = &partialDiscovery{} // no lists + an error
+
+	w := exportRequest(fx.handler, remoteClusterID, "widgets", "team-a", "gizmo")
+	if w.Code < 500 {
+		t.Fatalf("status = %d; want 5xx when the target's discovery is unavailable, body=%s", w.Code, w.Body.String())
+	}
+	fx.local.assertUntouched(t)
+}
+
+func TestHandleExport_UnknownKindStays400(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+
+	w := exportRequest(fx.handler, remoteClusterID, "gadgets", "team-a", "sprocket")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 for a kind the target does not serve, body=%s", w.Code, w.Body.String())
 	}
 }

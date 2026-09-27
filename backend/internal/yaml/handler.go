@@ -2,6 +2,7 @@ package yaml
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -70,7 +72,7 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dynClient := pair.Dynamic
-	mapper := target.Mapper
+	mapper := (&schemaRefresh{target: target}).mapper()
 
 	type validationError struct {
 		Field   string `json:"field,omitempty"`
@@ -223,7 +225,8 @@ func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := DiffDocuments(r.Context(), pair.Dynamic, target.Mapper, docs, h.Logger)
+	mapper := (&schemaRefresh{target: target}).mapper()
+	resp := DiffDocuments(r.Context(), pair.Dynamic, mapper, docs, h.Logger)
 	httputil.WriteData(w, struct {
 		*DiffResponse
 		targetPin
@@ -278,9 +281,20 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	dynClient := pair.Dynamic
 
+	refresh := &schemaRefresh{target: target}
 	gvr, err := resolveGVR(target.Discovery, kind)
-	if err != nil {
+	if err != nil && refresh.once() {
+		gvr, err = resolveGVR(target.Discovery, kind)
+	}
+	if errors.Is(err, errKindNotServed) {
 		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("unknown resource kind: %s", kind), err.Error())
+		return
+	}
+	if err != nil {
+		// Discovery failed or came back incomplete, so the kind can be
+		// neither confirmed nor ruled out: the target cluster is at fault,
+		// not the caller's request.
+		httputil.WriteError(w, http.StatusBadGateway, "failed to discover resource kinds on the target cluster", err.Error())
 		return
 	}
 
@@ -351,6 +365,54 @@ func (h *Handler) resolveTarget(w http.ResponseWriter, r *http.Request, user *au
 	return pair, target, true
 }
 
+// schemaRefresh lets one request invalidate a remote target's cached
+// discovery at most once, on a miss. The cached remote mapper never resets
+// itself on a miss (memCacheClient.Fresh stays true once populated), so a CRD
+// installed on the remote cluster after the cache entry was built would
+// otherwise stay unknown until the entry expires. A local target is never
+// refreshed: its discovery is process-shared and TargetSchema.Invalidate is
+// deliberately inert there. Once per request bounds a bundle of unknown kinds
+// to a single re-discovery against the remote API server.
+type schemaRefresh struct {
+	target *k8s.TargetSchema
+	done   bool
+}
+
+// once invalidates the remote target's schema if this request has not done
+// so yet, and reports whether it did (so the caller should retry).
+func (s *schemaRefresh) once() bool {
+	if s.target.IsLocal || s.done {
+		return false
+	}
+	s.done = true
+	s.target.Invalidate()
+	return true
+}
+
+// mapper returns the target's RESTMapper, wrapped for a remote target so a
+// no-match refreshes the schema once and retries.
+func (s *schemaRefresh) mapper() meta.RESTMapper {
+	if s.target.IsLocal {
+		return s.target.Mapper
+	}
+	return refreshingMapper{RESTMapper: s.target.Mapper, refresh: s}
+}
+
+// refreshingMapper retries RESTMapping once after a schema refresh. Only
+// RESTMapping is wrapped: it is the one method DiffDocuments uses.
+type refreshingMapper struct {
+	meta.RESTMapper
+	refresh *schemaRefresh
+}
+
+func (m refreshingMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*meta.RESTMapping, error) {
+	mapping, err := m.RESTMapper.RESTMapping(gk, versions...)
+	if meta.IsNoMatchError(err) && m.refresh.once() {
+		return m.RESTMapper.RESTMapping(gk, versions...)
+	}
+	return mapping, err
+}
+
 // uidMatchesExpected reports whether obj is the object the caller expects.
 // An empty expectation matches anything, so callers that do not send one
 // keep the endpoint's original behaviour.
@@ -380,19 +442,25 @@ func readYAMLBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return data, nil
 }
 
+// errKindNotServed means discovery answered completely and no API group
+// serves the requested resource: the caller named a kind that does not exist.
+var errKindNotServed = errors.New("resource not served by the API server")
+
 // resolveGVR resolves a plural resource name to a GroupVersionResource using
 // the TARGET cluster's discovery. Passing the local ClientFactory's discovery
 // here is the bug this signature change exists to prevent.
+//
+// A miss wraps errKindNotServed only when discovery was complete. When some
+// API groups failed to load, a miss cannot tell "not installed" from "in a
+// group we never saw", so it returns the discovery error instead.
 func resolveGVR(disc discovery.DiscoveryInterface, kind string) (schema.GroupVersionResource, error) {
 	kind = strings.ToLower(kind)
 
-	_, apiResourceLists, err := disc.ServerGroupsAndResources()
-	if err != nil {
+	_, apiResourceLists, discErr := disc.ServerGroupsAndResources()
+	if discErr != nil && apiResourceLists == nil {
 		// ServerGroupsAndResources may return partial results with an error
-		// for unavailable API groups. Only fail if no results were returned.
-		if apiResourceLists == nil {
-			return schema.GroupVersionResource{}, fmt.Errorf("discovering API resources: %w", err)
-		}
+		// for unavailable API groups. Only fail outright if nothing loaded.
+		return schema.GroupVersionResource{}, fmt.Errorf("discovering API resources: %w", discErr)
 	}
 
 	for _, list := range apiResourceLists {
@@ -411,5 +479,8 @@ func resolveGVR(disc discovery.DiscoveryInterface, kind string) (schema.GroupVer
 		}
 	}
 
-	return schema.GroupVersionResource{}, fmt.Errorf("resource %q not found in API server", kind)
+	if discErr != nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("resource %q not found and discovery was incomplete: %w", kind, discErr)
+	}
+	return schema.GroupVersionResource{}, fmt.Errorf("resource %q: %w", kind, errKindNotServed)
 }
