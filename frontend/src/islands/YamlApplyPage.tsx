@@ -349,7 +349,13 @@ export default function YamlApplyPage() {
         <YamlEditor
           value={yamlContent.value}
           onChange={(v) => {
+            // Editors can echo programmatic value changes (e.g. re-applying
+            // the same value); ignore those so a valid pin isn't dropped for
+            // content that never actually changed. A real edit invalidates
+            // the previous verdict, so clear the pin until re-validated.
+            if (v === yamlContent.value) return;
             yamlContent.value = v;
+            clearPin();
           }}
           readOnly={isWorking}
           height="calc(100vh - 320px)"

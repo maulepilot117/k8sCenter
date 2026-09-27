@@ -230,6 +230,24 @@ export function useYamlApply(
         targetGeneration: data.targetGeneration,
         pinnedAt: Date.now(),
       };
+      // Pinned consumers (YamlApplyPage) render `preview` themselves, so a
+      // failing verdict already reaches them there — leave `error` alone.
+      // Unpinned consumers (SecretStoreFromTemplateEditor) render only
+      // `error`/`result`, and `result` is apply-shaped (its renderer reads
+      // `summary.failed`, which a validate body doesn't have), so the only
+      // channel left to show a failing verdict is `error`.
+      if (!options.pinApplyToPreview && !data.valid) {
+        const failing = data.documents.filter((d) => !d.valid);
+        const summary = failing
+          .map((d) => {
+            const messages = d.errors?.length
+              ? d.errors.map((e) => e.message).join(", ")
+              : "invalid";
+            return `${d.kind}/${d.name}: ${messages}`;
+          })
+          .join("; ");
+        error.value = `${failing.length} document${failing.length === 1 ? "" : "s"} failed validation: ${summary}`;
+      }
     } catch (err) {
       if (controller.signal.aborted || clusterEpoch.peek() !== target.epoch) {
         return;

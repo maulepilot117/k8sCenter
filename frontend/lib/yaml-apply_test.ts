@@ -108,6 +108,26 @@ function preview(targetCluster: string, targetGeneration: string) {
   };
 }
 
+function invalidPreview(targetCluster: string, targetGeneration: string) {
+  return {
+    data: {
+      documents: [
+        {
+          index: 0,
+          kind: "ConfigMap",
+          name: "cm",
+          namespace: "default",
+          valid: false,
+          errors: [{ field: "data.foo", message: "must be a string" }],
+        },
+      ],
+      valid: false,
+      targetCluster,
+      targetGeneration,
+    } satisfies ValidateResponse,
+  };
+}
+
 const applied: { data: ApplyResponse } = {
   data: {
     results: [{ index: 0, kind: "ConfigMap", name: "cm", action: "created" }],
@@ -245,6 +265,35 @@ test("validate results land in preview, not result", async () => {
 
   expect(hook.result.value).toBeNull();
   expect(hook.preview.value?.documents[0].name).toBe("cm");
+});
+
+test("unpinned validate failure surfaces through error, since that consumer renders only error/result", async () => {
+  // SecretStoreFromTemplateEditor (unpinned) renders only `error` and
+  // `result` (apply-shaped) — it never reads `preview`, so a failing
+  // validate must show up in `error` or that page shows no outcome at all.
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount();
+
+  await run(hook.handleValidate, 200, invalidPreview("cluster-a", "gen-a"));
+
+  expect(hook.error.value).toContain("ConfigMap/cm");
+  expect(hook.error.value).toContain("must be a string");
+  expect(hook.result.value).toBeNull();
+});
+
+test("pinned validate failure leaves error null; the pinned consumer reads preview itself", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
+
+  await run(hook.handleValidate, 200, invalidPreview("cluster-a", "gen-a"));
+
+  expect(hook.error.value).toBeNull();
+  expect(hook.preview.value?.valid).toBe(false);
+  expect(hook.preview.value?.documents[0].errors?.[0].message).toBe(
+    "must be a string",
+  );
 });
 
 test("a 409 cluster_pin_mismatch surfaces its reason", async () => {
