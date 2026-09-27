@@ -25,6 +25,7 @@ jobs:
           - { pkg: ./internal/k8s/resources/, target: FuzzSecretPipeline }
           - { pkg: ./internal/auth/, target: FuzzParsePHC }
           - { pkg: ./internal/yaml/, target: FuzzParseMultiDoc }
+          - { pkg: ./internal/yaml/, target: FuzzResolveGVR }
           - { pkg: ./internal/wizard/, target: FuzzIsPublicIP }
           - { pkg: ./internal/certmanager/, target: FuzzCertManagerNormalizers }
           - { pkg: ./internal/servicemesh/, target: FuzzServiceMeshNormalizers }
