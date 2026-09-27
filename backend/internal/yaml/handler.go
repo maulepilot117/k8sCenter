@@ -71,7 +71,7 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dynClient := pair.Dynamic
-	mapper := (&schemaRefresh{target: target}).mapper()
+	mapper := newReadSchemaRefresh(target).mapper()
 
 	type validationError struct {
 		Field   string `json:"field,omitempty"`
@@ -239,7 +239,7 @@ func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mapper := (&schemaRefresh{target: target}).mapper()
+	mapper := newReadSchemaRefresh(target).mapper()
 	resp := DiffDocuments(r.Context(), pair.Dynamic, mapper, docs, h.Logger)
 	httputil.WriteData(w, struct {
 		*DiffResponse
@@ -295,7 +295,7 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	dynClient := pair.Dynamic
 
-	refresh := &schemaRefresh{target: target}
+	refresh := newReadSchemaRefresh(target)
 	gvr, err := resolveGVR(target.Discovery, kind)
 	if err != nil && refresh.once() {
 		gvr, err = resolveGVR(target.Discovery, kind)
@@ -403,57 +403,51 @@ func (h *Handler) resolveTarget(w http.ResponseWriter, r *http.Request, user *au
 	return pair, target, true
 }
 
-// applyRESTMappingAttempts mirrors applyOne's RESTMapping retry loop in
-// applier.go (3 attempts, 500ms/1s backoff between them, waiting for a CRD
-// applied earlier in the same bundle to reach discovery). It lives here,
-// rather than being read from applier.go, because it bounds a budget this
-// file owns: the number of schema invalidations HandleApply's per-GroupKind
-// refresh policy allows for a single GroupKind. Keep the two numbers in sync
-// if applyOne's attempt count ever changes.
+// applyRESTMappingAttempts mirrors applyOne's RESTMapping retry count in
+// applier.go; keep the two in sync. Apply may invalidate a GroupKind's schema
+// once per attempt, because discovery on a real API server lags a CRD applied
+// earlier in the same bundle and only a post-backoff refresh can see it.
 const applyRESTMappingAttempts = 3
+
+// applyMaxInvalidations caps one apply request's invalidations across all
+// kinds, so a bundle naming many unserved kinds cannot multiply the per-kind
+// budget. Twice the per-kind budget still covers a CRD-then-CR bundle.
+const applyMaxInvalidations = 2 * applyRESTMappingAttempts
 
 // schemaRefresh lets a request invalidate a remote target's cached discovery
 // on a RESTMapping miss. The cached remote mapper never resets itself on a
 // miss (memCacheClient.Fresh stays true once populated), so a CRD installed
-// on the remote cluster after the cache entry was built would otherwise stay
-// unknown until the entry expires. A local target is never refreshed: its
-// discovery is process-shared and TargetSchema.Invalidate is deliberately
-// inert there.
+// after the cache entry was built would otherwise stay unknown until the
+// entry expires. A local target is never refreshed: its discovery is
+// process-shared and TargetSchema.Invalidate is inert there.
 //
-// Two budgets are supported, selected by construction:
-//   - The zero value (used by validate/diff/export) invalidates at most once
-//     for the whole request, however many documents or distinct kinds miss.
-//     These paths have no caller-side retry loop of their own, so a bundle of
-//     unknown kinds is bounded to a single re-discovery against the remote
-//     API server.
-//   - newApplySchemaRefresh (used by apply) invalidates at most once per
-//     RESTMapping miss, capped per GroupKind at applyRESTMappingAttempts.
-//     applyOne retries RESTMapping applyRESTMappingAttempts times specifically
-//     to give a CRD applied earlier in the same bundle time to reach
-//     discovery on a real API server, where discovery lags the CRD patch: the
-//     first invalidation fires immediately, before any backoff wait, and so
-//     still repopulates the cache with the stale set. Granting each retry its
-//     own invalidation lets a later attempt (after its wait) observe the CRD
-//     once discovery has caught up, while the per-GroupKind cap keeps a
-//     bundle containing one truly unserved kind from invalidating unboundedly.
+// The budget is chosen by constructor: newReadSchemaRefresh (validate, diff,
+// export) invalidates at most once per request; newApplySchemaRefresh
+// invalidates once per miss, capped per GroupKind at applyRESTMappingAttempts
+// and per request at applyMaxInvalidations.
 type schemaRefresh struct {
 	target  *k8s.TargetSchema
-	done    bool                     // once-per-request budget state
-	perKind map[schema.GroupKind]int // non-nil selects the per-GroupKind apply budget
+	apply   bool                     // apply budget; false is the once-per-request read budget
+	done    bool                     // read budget spent
+	perKind map[schema.GroupKind]int // apply: invalidations per GroupKind
+	total   int                      // apply: invalidations this request
 }
 
-// newApplySchemaRefresh returns a schemaRefresh using the per-GroupKind
-// retry budget described above. Only HandleApply uses this constructor;
-// HandleValidate, HandleDiff and HandleExport use the zero value.
+// newReadSchemaRefresh returns the once-per-request budget.
+func newReadSchemaRefresh(target *k8s.TargetSchema) *schemaRefresh {
+	return &schemaRefresh{target: target}
+}
+
+// newApplySchemaRefresh returns the per-attempt apply budget.
 func newApplySchemaRefresh(target *k8s.TargetSchema) *schemaRefresh {
-	return &schemaRefresh{target: target, perKind: make(map[schema.GroupKind]int)}
+	return &schemaRefresh{target: target, apply: true, perKind: make(map[schema.GroupKind]int)}
 }
 
 // once invalidates the remote target's schema under the once-per-request
 // budget if this request has not done so yet, and reports whether it did (so
 // the caller should retry). Called directly by HandleExport's resolveGVR
 // fallback, which has no GroupKind to key a per-kind budget by, and via
-// invalidateOnMiss for every schemaRefresh built with the zero value.
+// invalidateOnMiss for every read-policy schemaRefresh.
 func (s *schemaRefresh) once() bool {
 	if s.target.IsLocal || s.done {
 		return false
@@ -465,15 +459,18 @@ func (s *schemaRefresh) once() bool {
 
 // invalidateOnMiss invalidates the schema for a RESTMapping miss on gk under
 // whichever budget this schemaRefresh was constructed with, and reports
-// whether it did (so the caller should retry).
+// whether it did (so the caller should retry). Under the apply policy, both
+// the per-GroupKind and the request-wide counters are charged for every
+// invalidation, and either being exhausted refuses the next one.
 func (s *schemaRefresh) invalidateOnMiss(gk schema.GroupKind) bool {
-	if s.perKind == nil {
+	if !s.apply {
 		return s.once()
 	}
-	if s.target.IsLocal || s.perKind[gk] >= applyRESTMappingAttempts {
+	if s.target.IsLocal || s.perKind[gk] >= applyRESTMappingAttempts || s.total >= applyMaxInvalidations {
 		return false
 	}
 	s.perKind[gk]++
+	s.total++
 	s.target.Invalidate()
 	return true
 }

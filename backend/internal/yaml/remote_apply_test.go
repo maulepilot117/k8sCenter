@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -592,4 +593,244 @@ func TestHandleApply_SecretIsAppliedNotRefused(t *testing.T) {
 		t.Errorf("remote patches = %v; want exactly secrets/creds", got)
 	}
 	fx.local.assertUntouched(t)
+}
+
+// --- Request-wide invalidation budget ---------------------------------------
+
+// TestHandleApply_InvalidationsCappedPerRequest guards the request-wide
+// ceiling on top of the per-GroupKind cap: without it, a bundle naming many
+// distinct never-served kinds invalidates applyRESTMappingAttempts times PER
+// KIND, unbounded in kind count. Kept at exactly 4 kinds: applyOne's
+// 500ms+1s backoff sleeps unconditionally between attempts regardless of
+// whether invalidateOnMiss actually refreshed, so each never-served document
+// costs ~1.5s and the count is chosen to stay well under ~8s.
+func TestHandleApply_InvalidationsCappedPerRequest(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	ts, _, invalidations := cachedRemoteSchema(t)
+	fx.targeter.schema = ts
+
+	kinds := []string{"Gadget", "Doohickey", "Widgetoid", "Thingamajig"}
+	docs := make([]string, len(kinds))
+	for i, k := range kinds {
+		docs[i] = strings.ReplaceAll(gadgetYAML, "Gadget", k)
+	}
+
+	w := fx.apply(remoteClusterID, nil, strings.Join(docs, "---\n"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	body := decodeData[applyBody](t, w)
+	if body.Summary.Failed != len(kinds) {
+		t.Fatalf("apply = %+v; want all %d never-served kinds to fail", body.Summary, len(kinds))
+	}
+	for _, r := range body.Results {
+		if r.Action != "failed" || !strings.Contains(r.Error, "unknown resource type") {
+			t.Errorf("result = %+v; want failed with unknown resource type", r)
+		}
+	}
+	if n := invalidations.Load(); n != applyMaxInvalidations {
+		t.Errorf("Invalidate called %d times; want exactly %d (the request-wide cap)", n, applyMaxInvalidations)
+	}
+	fx.local.assertUntouched(t)
+}
+
+// TestHandleApply_SameKindTwiceSharesPerKindBudget guards that the
+// per-GroupKind budget is keyed by GroupKind, not by document: two documents
+// naming the same never-served kind must not each earn their own
+// applyRESTMappingAttempts invalidations.
+func TestHandleApply_SameKindTwiceSharesPerKindBudget(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	ts, _, invalidations := cachedRemoteSchema(t)
+	fx.targeter.schema = ts
+
+	doc2 := strings.Replace(gadgetYAML, "sprocket", "cog", 1)
+	w := fx.apply(remoteClusterID, nil, gadgetYAML+"---\n"+doc2)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	if body := decodeData[applyBody](t, w); body.Summary.Failed != 2 {
+		t.Fatalf("apply = %+v; want both never-served Gadgets to fail", body.Summary)
+	}
+	if n := invalidations.Load(); n != applyRESTMappingAttempts {
+		t.Errorf("Invalidate called %d times; want exactly %d (budget shared across documents of the same kind)", n, applyRESTMappingAttempts)
+	}
+	fx.local.assertUntouched(t)
+}
+
+// TestHandleApply_DistinctKindsEachGetOwnPerKindBudget guards that the
+// per-GroupKind budget is keyed independently per kind: two distinct
+// never-served kinds must each exhaust their own applyRESTMappingAttempts,
+// not share a single counter, while staying within the request-wide cap.
+func TestHandleApply_DistinctKindsEachGetOwnPerKindBudget(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	ts, _, invalidations := cachedRemoteSchema(t)
+	fx.targeter.schema = ts
+
+	doc2 := strings.ReplaceAll(gadgetYAML, "Gadget", "Doohickey")
+	w := fx.apply(remoteClusterID, nil, gadgetYAML+"---\n"+doc2)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	if body := decodeData[applyBody](t, w); body.Summary.Failed != 2 {
+		t.Fatalf("apply = %+v; want both never-served kinds to fail", body.Summary)
+	}
+	if n := invalidations.Load(); n != 2*applyRESTMappingAttempts {
+		t.Errorf("Invalidate called %d times; want %d (%d per distinct kind, within the request-wide cap)",
+			n, 2*applyRESTMappingAttempts, applyRESTMappingAttempts)
+	}
+	fx.local.assertUntouched(t)
+}
+
+// --- Pin edge cases ----------------------------------------------------------
+
+// TestHandleApply_ClusterOnlyPinApplies guards a pin naming only the cluster
+// half — parseTargetPin leaves TargetGeneration empty, which HandleApply's
+// generation check treats as unpinned — still applies normally, on both a
+// remote target and the local cluster's "" / "local" spellings.
+func TestHandleApply_ClusterOnlyPinApplies(t *testing.T) {
+	cases := []struct {
+		name, header, pin, body string
+		dyn                     func(fx *fixture) *dynfake.FakeDynamicClient
+	}{
+		{"remote", remoteClusterID, remoteClusterID, widgetYAML,
+			func(fx *fixture) *dynfake.FakeDynamicClient { return fx.remoteDyn }},
+		{"local, header empty pin local", "", k8s.LocalClusterID, configMapYAML,
+			func(fx *fixture) *dynfake.FakeDynamicClient { return fx.local.dyn }},
+		{"local, header local pin empty", k8s.LocalClusterID, "", configMapYAML,
+			func(fx *fixture) *dynfake.FakeDynamicClient { return fx.local.dyn }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newFixture(t, nil, nil)
+
+			w := fx.apply(tc.header, map[string]string{"targetCluster": tc.pin}, tc.body)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+			}
+			if body := decodeData[applyBody](t, w); body.Summary.Failed != 0 || body.Summary.Created != 1 {
+				t.Errorf("apply = %+v; want one document created", body)
+			}
+			if got := patchedNames(tc.dyn(fx)); len(got) != 1 {
+				t.Errorf("patches = %v; want exactly one", got)
+			}
+		})
+	}
+}
+
+// TestHandleApply_PinMatchesButRoutingFailsIsRoutingError guards that a pin
+// matching the header cluster does not shortcut past a genuine routing
+// failure: TargetFor's error must surface as the routing 5xx it already is,
+// not get reinterpreted as a 409 pin refusal, and the local cluster must stay
+// untouched.
+func TestHandleApply_PinMatchesButRoutingFailsIsRoutingError(t *testing.T) {
+	local := newLocalCluster(t, configMap("settings", "team-a"))
+	targeter := &fakeTargeter{local: local.router, err: errors.New("dial tcp 203.0.113.9:6443: i/o timeout")}
+	h := newTestHandler(targeter)
+
+	w := serve(h.HandleApply, newRequest(http.MethodPost,
+		applyURL(map[string]string{"targetCluster": remoteClusterID}), remoteClusterID, widgetYAML))
+	if w.Code < 500 {
+		t.Fatalf("status = %d; want 5xx from the routing failure, body=%s", w.Code, w.Body.String())
+	}
+	if e := decodeError(t, w); e.Error.Reason == "cluster_pin_mismatch" || e.Error.Reason == "cluster_generation_mismatch" {
+		t.Errorf("reason = %q; want a routing failure, not a pin refusal", e.Error.Reason)
+	}
+	local.assertUntouched(t)
+}
+
+// TestHandleApply_PinRoundTripFromRealResponseJSON guards the JSON tag and
+// the query key from drifting apart: it decodes targetCluster/targetGeneration
+// from HandleValidate's and HandleDiff's own response JSON — not a fixture
+// literal — and feeds them back as HandleApply's query params.
+func TestHandleApply_PinRoundTripFromRealResponseJSON(t *testing.T) {
+	for _, verb := range []string{"validate", "diff"} {
+		t.Run(verb, func(t *testing.T) {
+			fx := newFixture(t, nil, nil)
+
+			var w *httptest.ResponseRecorder
+			if verb == "validate" {
+				w = serve(fx.handler.HandleValidate, newRequest(http.MethodPost, "/yaml/validate", remoteClusterID, widgetYAML))
+			} else {
+				w = serve(fx.handler.HandleDiff, newRequest(http.MethodPost, "/yaml/diff", remoteClusterID, widgetYAML))
+			}
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s status = %d; want 200, body=%s", verb, w.Code, w.Body.String())
+			}
+
+			var env struct {
+				Data json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("decoding %s envelope: %v", verb, err)
+			}
+			var pin struct {
+				TargetCluster    string `json:"targetCluster"`
+				TargetGeneration string `json:"targetGeneration"`
+			}
+			if err := json.Unmarshal(env.Data, &pin); err != nil {
+				t.Fatalf("decoding %s pin: %v", verb, err)
+			}
+			if pin.TargetCluster == "" || pin.TargetGeneration == "" {
+				t.Fatalf("%s pin = %+v; want both fields populated", verb, pin)
+			}
+
+			aw := fx.apply(remoteClusterID, map[string]string{
+				"targetCluster":    pin.TargetCluster,
+				"targetGeneration": pin.TargetGeneration,
+			}, widgetYAML)
+			if aw.Code != http.StatusOK {
+				t.Fatalf("apply status = %d; want 200, body=%s", aw.Code, aw.Body.String())
+			}
+			if body := decodeData[applyBody](t, aw); body.Summary.Failed != 0 || body.Summary.Created != 1 {
+				t.Errorf("apply = %+v; want one document created", body)
+			}
+		})
+	}
+}
+
+// --- Concurrency --------------------------------------------------------------
+
+// TestHandleApply_ConcurrentAppliesShareTargetSchemaSafely guards concurrent
+// HandleApply calls against one shared remote TargetSchema — each call gets
+// its own schemaRefresh, but Invalidate resets the same underlying mapper —
+// where some calls need a refresh to resolve a CRD installed after the
+// mapper cache warmed. No timing assertions: only that every goroutine's
+// apply succeeds, proving no race corrupts the shared mapper or the shared
+// fake dynamic client.
+func TestHandleApply_ConcurrentAppliesShareTargetSchemaSafely(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	ts, disc, _ := cachedRemoteSchema(t)
+	fx.targeter.schema = ts
+
+	// Warm the mapper cache with gadgets absent, then install them — mirrors
+	// TestHandleValidate_RemoteCRDInstalledAfterCacheWarmResolves, so half the
+	// goroutines below each need exactly one refresh to resolve.
+	if w := fx.apply(remoteClusterID, nil, widgetYAML); w.Code != http.StatusOK {
+		t.Fatalf("warm-up status = %d; body=%s", w.Code, w.Body.String())
+	}
+	installGadgets(disc)
+
+	const n = 8
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			var body string
+			if i%2 == 0 {
+				body = widgetDoc(fmt.Sprintf("gizmo-%d", i))
+			} else {
+				body = strings.Replace(gadgetYAML, "sprocket", fmt.Sprintf("sprocket-%d", i), 1)
+			}
+			codes[i] = fx.apply(remoteClusterID, nil, body).Code
+		}(i)
+	}
+	wg.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusOK {
+			t.Errorf("goroutine %d status = %d; want 200", i, code)
+		}
+	}
 }
