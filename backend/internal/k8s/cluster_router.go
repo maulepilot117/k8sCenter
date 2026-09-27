@@ -646,6 +646,13 @@ func (cr *ClusterRouter) remoteDynamicClient(ctx context.Context, clusterID, use
 // deadline, we preserve it via context.WithDeadline so a slow remote
 // still respects the HTTP request budget.
 func (cr *ClusterRouter) remoteConfig(ctx context.Context, clusterID, username string, groups []string) (*rest.Config, error) {
+	// Fail closed: an empty username leaves Impersonate unset, so client-go
+	// would send the request with the stored cluster credential's own
+	// permissions. Every auth provider sets a username today; this keeps a
+	// future provider or claims change from silently widening access.
+	if username == "" {
+		return nil, fmt.Errorf("cluster %s: refusing to build a remote client with no user to impersonate", clusterID)
+	}
 	sfKey := clusterID + "\x00" + cacheKey(username, groups)
 	val, err, _ := cr.configSF.Do(sfKey, func() (any, error) {
 		// Preserve caller context VALUES (request_id, trace span) but
@@ -674,7 +681,26 @@ func (cr *ClusterRouter) remoteConfig(ctx context.Context, clusterID, username s
 	if !ok {
 		return nil, fmt.Errorf("singleflight returned unexpected type for cluster %s", clusterID)
 	}
-	return rest.CopyConfig(cfg), nil
+	return copyRemoteConfig(cfg), nil
+}
+
+// copyRemoteConfig returns an independent copy of a singleflight result.
+// rest.CopyConfig copies the Impersonate slice and map headers only, so every
+// caller coalesced onto one build would otherwise share the same Groups
+// backing array and Extra map, and one caller editing its identity in place
+// would change the identity another caller sends.
+func copyRemoteConfig(cfg *rest.Config) *rest.Config {
+	c := rest.CopyConfig(cfg)
+	if cfg.Impersonate.Groups != nil {
+		c.Impersonate.Groups = append([]string(nil), cfg.Impersonate.Groups...)
+	}
+	if cfg.Impersonate.Extra != nil {
+		c.Impersonate.Extra = make(map[string][]string, len(cfg.Impersonate.Extra))
+		for k, v := range cfg.Impersonate.Extra {
+			c.Impersonate.Extra[k] = append([]string(nil), v...)
+		}
+	}
+	return c
 }
 
 // buildRemoteConfig is the singleflight-protected body of remoteConfig.
