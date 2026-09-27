@@ -176,7 +176,7 @@ DX                      discoverability fix for shipped Release A surfaces   [do
 C (partial)             U7 → U8 → U11a          pulled forward — see below   [done]
 Release G               D0 → P1 → P2 → P3 → P4  personal dashboard builder   [done]
 Release B               U13 → U14a → U14b → U15 → U16 → U17 → U18 → U19a → U19b   [done]
-Release C (remainder)   U9a → U9b → U10 → U11b → U11c → U12*
+Release C (remainder)   U9a → U9b → U10 → U10i*** → U11b → U11c → U12*
 Release F               U32 → U32b → U33 → U34a → U34b → U34c → U35 → U36 → U36b → U37**
 U20                     pulled forward from Release D
 Release E               U26 → U27 → U28 → U29a → U29b → U30a → U30b → U31
@@ -210,6 +210,13 @@ and docs land; the live run is a documented human runbook.
 
 \*\* U37 is documentation + fixture only. It authorizes **no live restore**.
 Rehearsal execution stays gated on Q3 (unanswered).
+
+\*\*\* U10i is a test-only follow-up added after U10 (PR #495). Every remote
+feature relies on `ClusterRouter` building a remote `rest.Config` that
+impersonates the caller, and no test asserted that. U10i pins it in
+`internal/k8s`: the config carries the caller's username and groups, each
+identity gets its own config and cached clients, and concurrent builds never
+cross identities. It was split out so #495 stayed within the 5-file cap.
 
 ### U0 — prep unit (2 files)
 
