@@ -222,6 +222,85 @@ func installGadgetsKeeping(disc *fakediscovery.FakeDiscovery) {
 	disc.Resources = resources
 }
 
+// TestHandleApply_CRDDiscoveryLagResolvesOnRetry mirrors a real remote API
+// server, where discovery lags the CRD patch: the CR's first RESTMapping
+// miss fires an invalidation immediately, before applyOne's retry loop has
+// waited at all, so that first refresh still repopulates the cache with the
+// stale, gadget-less set. Only a LATER invalidation — after a real backoff
+// wait — observes the CRD once discovery has caught up. This is unlike
+// TestHandleApply_CRDAndCRInOneBundle, whose reactor installs the kind
+// synchronously during the CRD patch itself.
+func TestHandleApply_CRDDiscoveryLagResolvesOnRetry(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	ts, disc, invalidations := cachedRemoteSchema(t)
+	disc.Resources = append(disc.Resources, &metav1.APIResourceList{
+		GroupVersion: "apiextensions.k8s.io/v1",
+		APIResources: []metav1.APIResource{{
+			Name: "customresourcedefinitions", SingularName: "customresourcedefinition", Namespaced: false,
+			Kind: "CustomResourceDefinition", Verbs: metav1.Verbs{"get", "list", "create", "update", "patch", "delete"},
+		}},
+	})
+
+	// Gadgets are installed only on the SECOND invalidation, not synchronously
+	// in the CRD patch reactor: the first invalidation (fired on the CR's
+	// initial miss) sees the pre-patch discovery set, just as it would
+	// against a real API server whose discovery has not caught up yet.
+	baseInvalidate := ts.Invalidate
+	ts.Invalidate = func() {
+		before := invalidations.Load()
+		baseInvalidate()
+		if before == 1 {
+			installGadgetsKeeping(disc)
+		}
+	}
+	fx.targeter.schema = ts
+
+	// The CRD patch succeeds but does NOT make the remote server start
+	// serving gadgets right away, unlike TestHandleApply_CRDAndCRInOneBundle.
+	fx.remoteDyn.PrependReactor("patch", "customresourcedefinitions", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return false, nil, nil
+	})
+
+	w := fx.apply(remoteClusterID, nil, gadgetCRDYAML+"---\n"+gadgetYAML)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	body := decodeData[applyBody](t, w)
+	if body.Summary.Total != 2 || body.Summary.Failed != 0 {
+		t.Fatalf("apply = %+v; want both the CRD and its CR applied once discovery catches up on retry, results=%+v", body.Summary, body.Results)
+	}
+	if n := invalidations.Load(); n < 2 {
+		t.Errorf("Invalidate called %d times; want at least 2 (the CR needed a later retry to resolve)", n)
+	}
+	fx.local.assertUntouched(t)
+}
+
+// TestHandleApply_NeverServedKindInvalidatesBoundedTimes guards the other
+// side of the same budget: a bundle referencing a kind the remote cluster
+// never serves must not invalidate the schema unboundedly while applyOne
+// retries. The budget is capped per GroupKind at applyRESTMappingAttempts (3)
+// — one chance per applyOne attempt, not one chance per document or per
+// retry-within-a-retry.
+func TestHandleApply_NeverServedKindInvalidatesBoundedTimes(t *testing.T) {
+	fx := newFixture(t, nil, nil)
+	ts, _, invalidations := cachedRemoteSchema(t)
+	fx.targeter.schema = ts
+
+	// gadgets are never installed on the remote cluster's discovery.
+	w := fx.apply(remoteClusterID, nil, gadgetYAML)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	body := decodeData[applyBody](t, w)
+	if body.Summary.Failed != 1 {
+		t.Fatalf("apply = %+v; want the never-served Gadget to fail", body)
+	}
+	if n := invalidations.Load(); n != applyRESTMappingAttempts {
+		t.Errorf("Invalidate called %d times; want exactly %d (bounded per GroupKind)", n, applyRESTMappingAttempts)
+	}
+	fx.local.assertUntouched(t)
+}
+
 // TestHandleApply_RemoteUnreachableDoesNotTouchLocal is D6 mechanism 4: when
 // the remote target cannot be resolved the apply fails, and the LOCAL
 // cluster's side of the wire proves nothing ran there instead.

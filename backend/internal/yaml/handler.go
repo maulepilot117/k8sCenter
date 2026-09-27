@@ -173,7 +173,7 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dynClient := pair.Dynamic
-	mapper := (&schemaRefresh{target: target}).mapper()
+	mapper := newApplySchemaRefresh(target).mapper()
 
 	resp := ApplyDocuments(r.Context(), dynClient, mapper, docs, force, h.Logger)
 
@@ -403,21 +403,57 @@ func (h *Handler) resolveTarget(w http.ResponseWriter, r *http.Request, user *au
 	return pair, target, true
 }
 
-// schemaRefresh lets one request invalidate a remote target's cached
-// discovery at most once, on a miss. The cached remote mapper never resets
-// itself on a miss (memCacheClient.Fresh stays true once populated), so a CRD
-// installed on the remote cluster after the cache entry was built would
-// otherwise stay unknown until the entry expires. A local target is never
-// refreshed: its discovery is process-shared and TargetSchema.Invalidate is
-// deliberately inert there. Once per request bounds a bundle of unknown kinds
-// to a single re-discovery against the remote API server.
+// applyRESTMappingAttempts mirrors applyOne's RESTMapping retry loop in
+// applier.go (3 attempts, 500ms/1s backoff between them, waiting for a CRD
+// applied earlier in the same bundle to reach discovery). It lives here,
+// rather than being read from applier.go, because it bounds a budget this
+// file owns: the number of schema invalidations HandleApply's per-GroupKind
+// refresh policy allows for a single GroupKind. Keep the two numbers in sync
+// if applyOne's attempt count ever changes.
+const applyRESTMappingAttempts = 3
+
+// schemaRefresh lets a request invalidate a remote target's cached discovery
+// on a RESTMapping miss. The cached remote mapper never resets itself on a
+// miss (memCacheClient.Fresh stays true once populated), so a CRD installed
+// on the remote cluster after the cache entry was built would otherwise stay
+// unknown until the entry expires. A local target is never refreshed: its
+// discovery is process-shared and TargetSchema.Invalidate is deliberately
+// inert there.
+//
+// Two budgets are supported, selected by construction:
+//   - The zero value (used by validate/diff/export) invalidates at most once
+//     for the whole request, however many documents or distinct kinds miss.
+//     These paths have no caller-side retry loop of their own, so a bundle of
+//     unknown kinds is bounded to a single re-discovery against the remote
+//     API server.
+//   - newApplySchemaRefresh (used by apply) invalidates at most once per
+//     RESTMapping miss, capped per GroupKind at applyRESTMappingAttempts.
+//     applyOne retries RESTMapping applyRESTMappingAttempts times specifically
+//     to give a CRD applied earlier in the same bundle time to reach
+//     discovery on a real API server, where discovery lags the CRD patch: the
+//     first invalidation fires immediately, before any backoff wait, and so
+//     still repopulates the cache with the stale set. Granting each retry its
+//     own invalidation lets a later attempt (after its wait) observe the CRD
+//     once discovery has caught up, while the per-GroupKind cap keeps a
+//     bundle containing one truly unserved kind from invalidating unboundedly.
 type schemaRefresh struct {
-	target *k8s.TargetSchema
-	done   bool
+	target  *k8s.TargetSchema
+	done    bool                     // once-per-request budget state
+	perKind map[schema.GroupKind]int // non-nil selects the per-GroupKind apply budget
 }
 
-// once invalidates the remote target's schema if this request has not done
-// so yet, and reports whether it did (so the caller should retry).
+// newApplySchemaRefresh returns a schemaRefresh using the per-GroupKind
+// retry budget described above. Only HandleApply uses this constructor;
+// HandleValidate, HandleDiff and HandleExport use the zero value.
+func newApplySchemaRefresh(target *k8s.TargetSchema) *schemaRefresh {
+	return &schemaRefresh{target: target, perKind: make(map[schema.GroupKind]int)}
+}
+
+// once invalidates the remote target's schema under the once-per-request
+// budget if this request has not done so yet, and reports whether it did (so
+// the caller should retry). Called directly by HandleExport's resolveGVR
+// fallback, which has no GroupKind to key a per-kind budget by, and via
+// invalidateOnMiss for every schemaRefresh built with the zero value.
 func (s *schemaRefresh) once() bool {
 	if s.target.IsLocal || s.done {
 		return false
@@ -427,8 +463,24 @@ func (s *schemaRefresh) once() bool {
 	return true
 }
 
+// invalidateOnMiss invalidates the schema for a RESTMapping miss on gk under
+// whichever budget this schemaRefresh was constructed with, and reports
+// whether it did (so the caller should retry).
+func (s *schemaRefresh) invalidateOnMiss(gk schema.GroupKind) bool {
+	if s.perKind == nil {
+		return s.once()
+	}
+	if s.target.IsLocal || s.perKind[gk] >= applyRESTMappingAttempts {
+		return false
+	}
+	s.perKind[gk]++
+	s.target.Invalidate()
+	return true
+}
+
 // mapper returns the target's RESTMapper, wrapped for a remote target so a
-// no-match refreshes the schema once and retries.
+// no-match refreshes the schema (under whichever budget this schemaRefresh
+// was constructed with) and retries.
 func (s *schemaRefresh) mapper() meta.RESTMapper {
 	if s.target.IsLocal {
 		return s.target.Mapper
@@ -436,8 +488,10 @@ func (s *schemaRefresh) mapper() meta.RESTMapper {
 	return refreshingMapper{RESTMapper: s.target.Mapper, refresh: s}
 }
 
-// refreshingMapper retries RESTMapping once after a schema refresh. Only
-// RESTMapping is wrapped: it is the one method DiffDocuments uses.
+// refreshingMapper retries RESTMapping once per call after a schema refresh.
+// Only RESTMapping is wrapped: it is the one method DiffDocuments and
+// applyOne use. For apply, applyOne's own outer retry loop supplies the
+// repeated calls that let the per-GroupKind budget span multiple attempts.
 type refreshingMapper struct {
 	meta.RESTMapper
 	refresh *schemaRefresh
@@ -445,7 +499,7 @@ type refreshingMapper struct {
 
 func (m refreshingMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*meta.RESTMapping, error) {
 	mapping, err := m.RESTMapper.RESTMapping(gk, versions...)
-	if meta.IsNoMatchError(err) && m.refresh.once() {
+	if meta.IsNoMatchError(err) && m.refresh.invalidateOnMiss(gk) {
 		return m.RESTMapper.RESTMapping(gk, versions...)
 	}
 	return mapping, err
