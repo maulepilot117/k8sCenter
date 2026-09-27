@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -627,6 +628,11 @@ var gadgetResource = metav1.APIResource{
 // and a counter of Invalidate calls.
 func cachedRemoteSchema(t *testing.T) (*k8s.TargetSchema, *fakediscovery.FakeDiscovery, *atomic.Int64) {
 	t.Helper()
+	// Apply against this schema retries RESTMapping; skip applyOne's real
+	// backoff so those tests run in milliseconds.
+	orig := restMappingRetryBackoff
+	restMappingRetryBackoff = func(int) time.Duration { return 0 }
+	t.Cleanup(func() { restMappingRetryBackoff = orig })
 	disc := &fakediscovery.FakeDiscovery{Fake: &clienttesting.Fake{Resources: []*metav1.APIResourceList{{
 		GroupVersion: "example.com/v1",
 		APIResources: []metav1.APIResource{{
