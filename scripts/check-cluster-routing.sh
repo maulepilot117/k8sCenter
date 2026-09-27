@@ -6,6 +6,11 @@
 # ClusterRouter.RouterFor and silently routing remote-cluster requests
 # to the local cluster.
 #
+# Release C (U9b, plan D6) — in the packages listed in SCHEMA_ROUTED_DIRS,
+# also flag .RESTMapper() / .DiscoveryClient(). Those return the LOCAL
+# cluster's schema; pairing it with a remote client is the bug
+# ClusterRouter.TargetFor / TargetSchemaFor exist to prevent.
+#
 # A line is exempt when:
 #   - The line above carries `// nolint:cluster-routing` AND a free-form reason
 #   - The file path matches one of the ALLOWED_PREFIXES below (informer
@@ -44,6 +49,15 @@ HANDLER_DIRS="backend/internal/yaml backend/internal/k8s backend/internal/certma
 #   cluster_prober.go  — background goroutine; no per-request user context
 ALLOWED_PREFIXES="backend/internal/k8s/cluster_router.go backend/internal/k8s/client.go backend/internal/k8s/informers backend/internal/k8s/cluster_prober.go"
 
+# Directories (relative to ROOT) whose handlers resolve discovery and
+# RESTMappers through ClusterRouter.TargetFor / TargetSchemaFor. In these, a
+# .RESTMapper() or .DiscoveryClient() call is a violation too. A package
+# joins this list when it migrates to per-target schema; until then its
+# direct calls are deliberate local-cluster reads (the CRD-discovery caches
+# in certmanager, gitops, policy and friends, for example) and flagging them
+# would bury the real regressions.
+SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server"
+
 # -----------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------
@@ -73,6 +87,18 @@ nolint_on_prev_line() {
   return 1
 }
 
+# is_schema_routed PATH — returns 0 (true) if PATH is inside a
+# SCHEMA_ROUTED_DIRS entry.
+is_schema_routed() {
+  _p="$1"
+  for _dir in $SCHEMA_ROUTED_DIRS; do
+    case "$_p" in
+      "$_dir"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # scan_file FILE — writes violation lines to stdout.
 # Each violation is two lines: "VIOLATION rel/path:N" then "  <source line>".
 scan_file() {
@@ -80,25 +106,31 @@ scan_file() {
   _rel="${_abs#"$ROOT/"}"
 
   is_allowed_path "$_rel" && return 0
+  _schema=0
+  is_schema_routed "$_rel" && _schema=1
 
   _lineno=0
   while IFS= read -r _line; do
     _lineno=$(( _lineno + 1 ))
 
+    _hit=0
     case "$_line" in
-      *".ClientForUser("*|*".DynamicClientForUser("*)
-        # Skip lines that are interface / type / comment definitions
-        # (they contain the bare function signature, not a call expression).
-        case "$_line" in
-          *"func "*"ClientForUser("*|*"// "*) continue ;;
-        esac
-
-        # Exempt when annotated on the previous line.
-        nolint_on_prev_line "$_abs" "$_lineno" && continue
-
-        printf 'VIOLATION  %s:%d\n  %s\n' "$_rel" "$_lineno" "$_line"
-        ;;
+      *".ClientForUser("*|*".DynamicClientForUser("*) _hit=1 ;;
+      *".RESTMapper()"*|*".DiscoveryClient()"*)
+        if [ "$_schema" -eq 1 ]; then _hit=1; fi ;;
     esac
+    [ "$_hit" -eq 1 ] || continue
+
+    # Skip lines that are interface / type / comment definitions
+    # (they contain the bare function signature, not a call expression).
+    case "$_line" in
+      *"func "*"ClientForUser("*|*"func "*"RESTMapper()"*|*"func "*"DiscoveryClient()"*|*"// "*) continue ;;
+    esac
+
+    # Exempt when annotated on the previous line.
+    nolint_on_prev_line "$_abs" "$_lineno" && continue
+
+    printf 'VIOLATION  %s:%d\n  %s\n' "$_rel" "$_lineno" "$_line"
   done < "$_abs"
 }
 
@@ -149,9 +181,12 @@ if [ "$VIOLATIONS" -eq 0 ]; then
 fi
 
 printf 'FOUND %d violation(s) — handlers calling .ClientForUser / .DynamicClientForUser\n' "$VIOLATIONS"
+printf '(or, in SCHEMA_ROUTED_DIRS, .RESTMapper / .DiscoveryClient)\n'
 printf 'directly instead of routing through ClusterRouter.\n\n'
 printf 'To fix: replace h.K8sClient.ClientForUser / DynamicClientForUser with\n'
-printf '        h.ClusterRouter.ClientForCluster / DynamicClientForCluster.\n'
+printf '        h.ClusterRouter.ClientForCluster / DynamicClientForCluster, and\n'
+printf '        .RESTMapper / .DiscoveryClient with the Mapper / Discovery of the\n'
+printf '        TargetSchema returned by h.ClusterRouter.TargetFor / TargetSchemaFor.\n'
 printf 'To suppress a legitimate call site, add a comment on the line above:\n'
 printf '    // nolint:cluster-routing <reason>\n\n'
 
