@@ -401,20 +401,29 @@ func TestHandleValidate_ResponseCarriesTargetPin(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for verb, h := range map[string]http.HandlerFunc{
-				"validate": fx.handler.HandleValidate,
-				"diff":     fx.handler.HandleDiff,
-			} {
-				w := serve(h, newRequest(http.MethodPost, "/yaml/"+verb, tc.clusterID, tc.body))
-				if w.Code != http.StatusOK {
-					t.Fatalf("%s status = %d; want 200, body=%s", verb, w.Code, w.Body.String())
+			checkPin := func(verb, cluster, generation string, docs int) {
+				t.Helper()
+				if cluster != tc.wantCluster || generation != tc.wantGeneration {
+					t.Errorf("%s pin = (%q, %q); want (%q, %q)", verb, cluster, generation, tc.wantCluster, tc.wantGeneration)
 				}
-				pin := decodeData[validateBody](t, w)
-				if pin.TargetCluster != tc.wantCluster || pin.TargetGeneration != tc.wantGeneration {
-					t.Errorf("%s pin = (%q, %q); want (%q, %q)", verb,
-						pin.TargetCluster, pin.TargetGeneration, tc.wantCluster, tc.wantGeneration)
+				if docs != 1 {
+					t.Errorf("%s documents = %d; want 1 — the pin must sit beside the verb's own payload, not replace it", verb, docs)
 				}
 			}
+
+			w := serve(fx.handler.HandleValidate, newRequest(http.MethodPost, "/yaml/validate", tc.clusterID, tc.body))
+			if w.Code != http.StatusOK {
+				t.Fatalf("validate status = %d; want 200, body=%s", w.Code, w.Body.String())
+			}
+			v := decodeData[validateBody](t, w)
+			checkPin("validate", v.TargetCluster, v.TargetGeneration, len(v.Documents))
+
+			w = serve(fx.handler.HandleDiff, newRequest(http.MethodPost, "/yaml/diff", tc.clusterID, tc.body))
+			if w.Code != http.StatusOK {
+				t.Fatalf("diff status = %d; want 200, body=%s", w.Code, w.Body.String())
+			}
+			d := decodeData[diffBody](t, w)
+			checkPin("diff", d.TargetCluster, d.TargetGeneration, len(d.Documents))
 		})
 	}
 }
