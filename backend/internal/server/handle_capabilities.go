@@ -12,12 +12,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
@@ -932,28 +935,12 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 		reach = resolveReachability(ctx, capabilityClusterGetter(s), isLocal, normID, now)
 	}
 
-	// Discovery lists are fetched at most once per response (both GVR-probed
-	// operations share the same schema.Discovery) and ONLY when the target is
-	// known-reachable — attempting a live discovery call against a target
-	// already reported down or unknown would just duplicate a slow, possibly
-	// hanging network round-trip the ClusterProber already owns.
-	var discoveryLists []*metav1.APIResourceList
-	discoveryChecked := false
-	discoveryListsUnavailable := false
-	var discoveryFailedGroups map[string]bool
-	fetchDiscoveryOnce := func() {
-		if discoveryChecked {
-			return
-		}
-		discoveryChecked = true
-		if targetSchema == nil || targetSchema.Discovery == nil {
-			discoveryListsUnavailable = true
-			return
-		}
-		discoveryLists, discoveryListsUnavailable, discoveryFailedGroups = fetchDiscoveryLists(targetSchema.Discovery)
-	}
-
+	// Live probes run ONLY when the target is known-reachable — attempting a
+	// live discovery call against a target already reported down or unknown
+	// would just duplicate a slow, possibly hanging network round-trip the
+	// ClusterProber already owns.
 	reachableNow := globalReason == "" && reach.reachable != nil && *reach.reachable
+	probes := s.runCapabilityProbes(ctx, reachableNow, isLocal, targetSchema, normID, user.KubernetesUsername, user.KubernetesGroups)
 
 	capabilities := make([]Capability, 0, len(capabilityOperations))
 	for _, op := range capabilityOperations {
@@ -967,12 +954,11 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 
 		if platformSupported && globalReason == "" && reachableNow {
 			if op.Probe != nil {
-				fetchDiscoveryOnce()
-				present := !discoveryListsUnavailable && gvrPresentIn(discoveryLists, op.Probe.Group, op.Probe.Resource)
+				present := !probes.discoveryUnavailable && gvrPresentIn(probes.discoveryLists, op.Probe.Group, op.Probe.Resource)
 				switch {
-				case discoveryListsUnavailable:
+				case probes.discoveryUnavailable:
 					discoveryUnavailable = true
-				case !present && discoveryFailedGroups[op.Probe.Group]:
+				case !present && probes.discoveryFailedGroups[op.Probe.Group]:
 					// The one group we needed is precisely the one that
 					// failed to load, so its absence from the partial list
 					// is no evidence at all. Unknown, not missing (#12).
@@ -981,21 +967,10 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 					discoveryPresent = &present
 				}
 			}
-			if s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil {
-				// The trailing "" is the SAR namespace: this is a
-				// CLUSTER-WIDE probe, which is an exact question only for a
-				// cluster-scoped resource. authorizedFromClusterWideSAR
-				// decides what a negative verdict is worth on each scope.
-				var allowed bool
-				allowed, authErr = s.ResourceHandler.AccessChecker.CanAccessGroupResource(
-					ctx, normID, user.KubernetesUsername, user.KubernetesGroups,
-					op.AuthVerb, op.AuthGroup, op.AuthResource, "",
-				)
-				if authErr == nil {
-					authorized, authReason = authorizedFromClusterWideSAR(op, allowed)
-				}
-			} else {
-				authErr = errNoAccessChecker
+			verdict := probes.sar[sarQuestionFor(op)]
+			authErr = verdict.err
+			if authErr == nil {
+				authorized, authReason = authorizedFromClusterWideSAR(op, verdict.allowed)
 			}
 		}
 
@@ -1019,3 +994,125 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 // to authz_unknown via the same authErr != nil branch as a real SAR error,
 // rather than needing a second code path.
 var errNoAccessChecker = errors.New("no AccessChecker wired")
+
+// errProbeNotRun marks a probe whose worker never recorded a result, which
+// only happens when it panicked: recoverutil.Go logged the panic and turned
+// it into an errgroup error, and the slot keeps this value so the rows that
+// depended on it report authz_unknown instead of a guessed answer.
+var errProbeNotRun = errors.New("capability probe did not complete")
+
+// capabilityProbeConcurrency caps the live calls one capabilities request has
+// in flight at once. Each is a round trip to the target's API server, so the
+// cap keeps a single page load from bursting the remote cluster, while still
+// collapsing the old serial sum (discovery plus every SAR, one after another)
+// into roughly the slowest few.
+const capabilityProbeConcurrency = 4
+
+// sarQuestion is one distinct access question. Several rows ask the same
+// verb/group/resource (patch configmaps, list pods), so each distinct
+// question is asked once per request and its verdict shared by those rows.
+type sarQuestion struct{ verb, group, resource string }
+
+func sarQuestionFor(op capabilityOp) sarQuestion {
+	return sarQuestion{verb: op.AuthVerb, group: op.AuthGroup, resource: op.AuthResource}
+}
+
+// sarVerdict is the raw answer to one sarQuestion. What a denial is worth on
+// a given row is still decided per row by authorizedFromClusterWideSAR.
+type sarVerdict struct {
+	allowed bool
+	err     error
+}
+
+// capabilityProbes holds the results of the live calls one request makes.
+// It is written by runCapabilityProbes' workers and read only after they
+// have all finished.
+type capabilityProbes struct {
+	discoveryLists        []*metav1.APIResourceList
+	discoveryUnavailable  bool
+	discoveryFailedGroups map[string]bool
+	sar                   map[sarQuestion]sarVerdict
+}
+
+// runCapabilityProbes makes the live calls behind the discovery and
+// authorized dimensions concurrently: at most one discovery fetch (both
+// GVR-probed rows share schema.Discovery) and one cluster-wide SAR per
+// distinct question, for the rows supported on this target class. On a
+// remote cluster each is a network round trip, and asking them serially made
+// the endpoint's latency their sum.
+//
+// Nothing runs unless the target is reachable. Workers run off the request
+// goroutine, where chi's Recoverer cannot catch a panic, so each goes through
+// recoverutil.Go; a panicking worker leaves its result at the unavailable /
+// errProbeNotRun default rather than taking the process down.
+func (s *Server) runCapabilityProbes(ctx context.Context, reachable, isLocal bool, targetSchema *k8s.TargetSchema, clusterID, username string, groups []string) capabilityProbes {
+	probes := capabilityProbes{sar: map[sarQuestion]sarVerdict{}}
+	if !reachable {
+		return probes
+	}
+
+	needDiscovery := false
+	var questions []sarQuestion
+	seen := map[sarQuestion]bool{}
+	for _, op := range capabilityOperations {
+		if !op.supportedFor(isLocal) {
+			continue
+		}
+		if op.Probe != nil {
+			needDiscovery = true
+		}
+		if q := sarQuestionFor(op); !seen[q] {
+			seen[q] = true
+			questions = append(questions, q)
+		}
+	}
+
+	var ac *resources.AccessChecker
+	if s.ResourceHandler != nil {
+		ac = s.ResourceHandler.AccessChecker
+	}
+
+	var g errgroup.Group
+	g.SetLimit(capabilityProbeConcurrency)
+
+	if needDiscovery {
+		// Unavailable until the fetch actually completes, so a missing
+		// schema or a panicking fetch both read as discovery_unavailable.
+		probes.discoveryUnavailable = true
+		if targetSchema != nil && targetSchema.Discovery != nil {
+			recoverutil.Go(&g, s.Logger, "capabilities discovery", func() error {
+				lists, unavailable, failed := fetchDiscoveryLists(targetSchema.Discovery)
+				probes.discoveryLists, probes.discoveryUnavailable, probes.discoveryFailedGroups = lists, unavailable, failed
+				return nil
+			})
+		}
+	}
+
+	verdicts := make([]sarVerdict, len(questions))
+	for i, q := range questions {
+		if ac == nil {
+			verdicts[i] = sarVerdict{err: errNoAccessChecker}
+			continue
+		}
+		verdicts[i] = sarVerdict{err: errProbeNotRun}
+		recoverutil.Go(&g, s.Logger, "capabilities access check", func() error {
+			// The trailing "" is the SAR namespace: this is a CLUSTER-WIDE
+			// probe, which is an exact question only for a cluster-scoped
+			// resource. authorizedFromClusterWideSAR decides what a negative
+			// verdict is worth on each scope.
+			allowed, err := ac.CanAccessGroupResource(ctx, clusterID, username, groups, q.verb, q.group, q.resource, "")
+			verdicts[i] = sarVerdict{allowed: allowed, err: err}
+			return nil
+		})
+	}
+
+	// Workers never return an error of their own; a non-nil Wait means a
+	// recovered panic, already logged by recoverutil, whose slot kept its
+	// default above.
+	_ = g.Wait()
+
+	for i, q := range questions {
+		probes.sar[q] = verdicts[i]
+	}
+	return probes
+}
