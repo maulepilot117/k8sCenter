@@ -1,0 +1,29 @@
+# Second, "remote" cluster for the Release C two-cluster fixture
+# (scripts/test-remote-capabilities.sh). Same shape as kind-config.yaml, with a
+# distinct name so both clusters run side by side.
+#
+# The API server port is pinned (not random) so the fixture can name it, and
+# the listen address is 0.0.0.0 so the API server is reachable on whatever
+# address the host is published at. That address MUST be public:
+# k8sCenter's SSRF guard (ValidateRemoteURLContext) refuses to register a
+# cluster whose API server resolves to loopback, RFC1918, link-local, CGNAT or
+# unspecified space, and re-checks on every dial. kind puts the listen address
+# in the serving certificate's SANs; the script adds the public name through
+# the kubeadm patch below, so registration uses the real CA and TLS stays
+# verified (no allowInsecureTLS).
+#
+# KUBECENTER_REMOTE_API_HOST is substituted by the script before `kind create`.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: k8scenter-remote
+networking:
+  apiServerAddress: "0.0.0.0"
+  apiServerPort: 16443
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          certSANs:
+            - "${KUBECENTER_REMOTE_API_HOST}"

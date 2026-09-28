@@ -40,10 +40,84 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - Cluster routing via X-Cluster-ID header with encrypted credential storage
 - SSRF-protected registration, background health probing (60s), connection testing
 - Admin role required for non-local clusters
+- Top-bar cluster switcher; every request is pinned to the cluster it was issued against
+- Per-operation capability disclosure (`GET /api/v1/capabilities/{clusterId}`) that tells an operator what a cluster supports before they enter data — see [Remote cluster support](#remote-cluster-support)
 
 **Networking**
 - Cilium Network Policy editor with rule table, YAML preview, and dangerous policy warnings
 - Hubble network flow visibility with real-time gRPC-to-WebSocket streaming
+
+## Remote cluster support
+
+What works against a registered remote cluster, operation by operation. The table mirrors `capabilityOperations` in `backend/internal/server/handle_capabilities.go`, the source the capabilities endpoint and the YAML page read. Each "No" names the guard that refuses the operation, so a reader can check the claim against the code.
+
+| Operation | Local | Remote | Note |
+|---|---|---|---|
+| Validate YAML | Yes | Yes | Schema resolves against the target cluster's own discovery, never the local one |
+| Diff YAML against live state | Yes | Yes | Same target-scoped discovery; Secrets are refused on both |
+| Export YAML | Yes | Yes | Same; Secrets are refused on both |
+| Apply YAML | Yes | Yes | Apply is pinned to the cluster the preview ran against. A mismatch is refused with 409 (`cluster_pin_mismatch` / `cluster_generation_mismatch`) and nothing is applied |
+| Dashboard summary | Yes | Partial | Node, pod and service counts and capacity, each with a per-section coverage row (opt-in `?coverage=1`). CPU/memory usage, alert counts and the health score are shown as unavailable, never as 0: there is no remote metrics binding yet |
+| Resource counts | Yes | No | `k8s/resources/counts.go` (400: counts read the local informer cache). List pages say so instead of loading |
+| Pod exec | Yes | No | `k8s/resources/pods.go` (501) |
+| Live log stream | Yes | No | `server/handle_ws_logs.go` (WebSocket close) |
+| Log search | Yes | No | `server/handle_ws_logs_search.go` (WebSocket close) |
+| Network flow stream | Yes | No | `server/handle_ws_flows.go` (WebSocket close) |
+| External Secrets write actions | Yes | No | `externalsecrets/actions.go` (501) |
+
+Dashboard trends (the sparklines) are local-only as well; the cards render without them.
+
+"Unsupported" is reported only for the rows above marked "No". A remote cluster that is down, or an account without RBAC for an operation, shows as blocked right now or unknown, never as something k8sCenter cannot do.
+
+**Verification status: verified against fixtures only.** Release C's remote paths are covered by unit and handler tests against fake clusters, plus a two-cluster e2e spec (`e2e/tests/remote-capabilities.spec.ts`) that runs only against a real registered remote. That live run has not been executed yet, so no two-cluster evidence is claimed here. The procedure is below; record its result in this section when it has been run.
+
+<details>
+<summary>Live two-cluster verification runbook (manual)</summary>
+
+**Prerequisites**
+
+1. Two Kubernetes clusters reachable from the k8sCenter backend. The remote cluster's API server must resolve to a **public** address: registration and every dial refuse loopback, RFC1918, link-local, CGNAT and unspecified addresses (`ValidateRemoteURLContext` / `StrictDialContext`). A laptop kind cluster on 127.0.0.1 or a homelab address on 10.x is refused. That is correct behaviour, not something to work around.
+2. The remote cluster's real CA bundle. Do not set `allowInsecureTLS`; the point is to exercise the production TLS path.
+3. `kubectl`, `curl` and `jq`, plus `kind` if the script creates the remote cluster.
+4. An admin k8sCenter account. Non-local clusters are admin-only.
+
+**Procedure**
+
+Export the shared environment once, in the shell you will run every step from. Teardown (step 6) needs the same variables as create: it logs in to deregister, and it must target the same remote context.
+
+```sh
+export KUBECENTER_URL=https://<k8scenter>
+export KUBECENTER_ADMIN_USER=<admin>
+read -rs KUBECENTER_ADMIN_PASSWORD && export KUBECENTER_ADMIN_PASSWORD   # bash/zsh; keeps it out of shell history
+export KUBECENTER_REMOTE_REGISTRATION_FILE="$HOME/.k8scenter-remote-registration.json"
+# EITHER a kind cluster the script creates on a host with a public address:
+export KUBECENTER_REMOTE_API_HOST=<public-name-of-kind-host>
+# OR an existing public cluster (leave KUBECENTER_REMOTE_API_HOST unset):
+# export KUBECENTER_REMOTE_CONTEXT=<context>
+```
+
+1. Build and register the fixture with `sh scripts/test-remote-capabilities.sh`. It prints `K8SCENTER_REMOTE_CLUSTER_ID=<id>`. It refuses to run, and changes nothing, if the remote already has an object with one of the fixture's names that does not carry the fixture label, or if a kind cluster named `k8scenter-remote` exists that the script did not create. The fixture's probe token can impersonate any user but only the admin's own Kubernetes groups plus `system:authenticated`, never `system:masters`.
+2. Export that id and the spec's own variables, then run the suite:
+   ```sh
+   export K8SCENTER_REMOTE_CLUSTER_ID=<id>
+   export K8SCENTER_REMOTE_REGISTRATION_FILE="$KUBECENTER_REMOTE_REGISTRATION_FILE"
+   export K8SCENTER_LOCAL_KUBE_CONTEXT=<local-context>
+   cd e2e && npm test
+   ```
+   All eight remote specs must pass, alongside the existing suite. The eviction spec deletes the registration and re-registers the cluster, then deregisters that replacement itself, so after the run the id from step 1 no longer exists.
+3. Check AE2 by hand: preview the remote-only `Widget` on the YAML page, switch the UI to the local cluster, and confirm that Apply still targets the remote cluster. Confirm the object exists there, and that `kubectl --context <local> get widgets.k8scenter.test` reports the kind does not exist locally. If step 2 already removed the registration, re-register first with `sh scripts/test-remote-capabilities.sh` and use the new id it prints.
+4. Check AE3 by hand: with no Prometheus on the remote, the dashboard shows node and pod counts, explicit metrics-unavailable cards, and **no** health score or gauge.
+5. Check eviction: delete the cluster in Settings → Clusters, re-register it, and confirm the remote-only CRD resolves under the new id while the old id does not. **Note the new id**: it is the registration teardown must remove.
+6. Tear down, in the same shell, with the id of the registration that is still live (the new id from step 5, not the one from step 1):
+   ```sh
+   KUBECENTER_REMOTE_CLUSTER_ID=<current-id> sh scripts/test-remote-capabilities.sh --teardown
+   rm -f "$KUBECENTER_REMOTE_REGISTRATION_FILE"   # it holds a token
+   ```
+   Teardown deregisters that id, then deletes only objects labelled `app.kubernetes.io/managed-by=k8scenter-e2e-remote-fixture`, selected by label. It deletes the kind cluster only if the cluster carries the ownership marker the script writes when it creates it (ConfigMap `kube-system/k8scenter-remote-fixture-owner`); a same-named cluster without the marker is left in place and the script says why. With `KUBECENTER_REMOTE_CONTEXT` set, no cluster is ever deleted.
+
+**Recording the result:** add the date, both clusters' Kubernetes versions, the identity used, and the pass/fail of each step to this section, and replace "verified against fixtures only" with what was actually verified.
+
+</details>
 
 ## Mobile App
 

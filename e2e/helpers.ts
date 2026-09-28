@@ -19,6 +19,61 @@ export async function getAuthHeaders(
   };
 }
 
+/**
+ * localStorage key the app restores its cluster target from. Mirrors
+ * TARGET_KEY in frontend/src/lib/cluster.ts (readPersistedTarget /
+ * persistTarget); update both together if that storage contract changes.
+ *
+ * The legacy "k8scenter.selectedCluster" key is consulted only when this one
+ * is absent, so a spec that writes the legacy key after the app has run once
+ * stays on whatever this key holds and passes without ever switching.
+ */
+export const CLUSTER_TARGET_KEY = "k8scenter.clusterTarget";
+
+/**
+ * The JSON value stored under CLUSTER_TARGET_KEY for `clusterId`, in the
+ * shape persistTarget writes. The local cluster's generation is the literal
+ * "local"; a remote whose real generation the spec does not know is restored
+ * under "unknown", which the app replaces once the cluster list resolves.
+ */
+export function clusterTargetValue(clusterId: string): string {
+  return JSON.stringify({
+    clusterId,
+    generation: clusterId === "local" ? "local" : "unknown",
+  });
+}
+
+/**
+ * Select `clusterId` before the next load, the way ClusterSwitcher persists
+ * it. An init script, so it runs on every later navigation in that page or
+ * context too.
+ */
+export async function seedClusterTarget(
+  target: Page | BrowserContext,
+  clusterId: string,
+): Promise<void> {
+  // Serialized into the browser: it cannot close over this module, so the
+  // key and value travel as arguments.
+  await target.addInitScript(
+    ([key, value]: [string, string]) => localStorage.setItem(key, value),
+    [CLUSTER_TARGET_KEY, clusterTargetValue(clusterId)] as [string, string],
+  );
+}
+
+/**
+ * Select `clusterId` in an already-loaded page. Takes effect on the next
+ * load; the running page keeps its current target until then.
+ */
+export async function setClusterTarget(
+  page: Page,
+  clusterId: string,
+): Promise<void> {
+  await page.evaluate(
+    ([key, value]: [string, string]) => localStorage.setItem(key, value),
+    [CLUSTER_TARGET_KEY, clusterTargetValue(clusterId)] as [string, string],
+  );
+}
+
 /** Generate a unique E2E resource name (8-char random suffix) */
 export function e2eName(kind: string): string {
   const rand = Math.random().toString(36).slice(2, 10);

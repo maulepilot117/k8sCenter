@@ -261,6 +261,13 @@ Operator-facing annotations are honored on specific CRD kinds. **Resolution chai
   - `kubecenter.io/eso-alert-on-lifecycle` (default false)
   - **ClusterSecretStore propagation**: annotations on a shared ClusterSecretStore apply to every namespaced ES referencing it; tenants can override at the ES level.
 
+### YAML target-pin contract (Release C, D4)
+The only endpoint that can change a remote cluster refuses to run against a cluster the operator did not review.
+
+- A preview (`POST /yaml/validate` or `/yaml/diff`) returns `targetCluster` and `targetGeneration`. That pair **is** the pin. The generation is the literal `local` for the local cluster and the cluster record's `created_at` for a remote one, so a delete-and-re-register mints a new generation.
+- `POST /yaml/apply?targetCluster=<id>&targetGeneration=<gen>` compares both against the header-derived target **before** any document reaches the applier: a cluster mismatch is 409 `cluster_pin_mismatch`, a generation mismatch 409 `cluster_generation_mismatch`, and nothing is applied. Without `targetCluster` the request is an unpinned legacy apply (mobile, scripts).
+- Clients send `X-Cluster-ID` from the **pin**, never from the live selection. The web client (`lib/yaml-apply.ts`, `pinApplyToPreview`) never retargets a pinned apply after a cluster switch; it shows a stale-pin notice and requires a fresh preview to move the pin.
+
 ---
 
 ## Multi-Cluster Architecture
@@ -270,7 +277,10 @@ Operator-facing annotations are honored on specific CRD kinds. **Resolution chai
 - **Cluster registry**: PostgreSQL-backed, AES-256-GCM encrypted credentials, SSRF-validated URLs.
 - **Remote clusters use direct API calls only** — no informers, no WebSocket events. Local cluster uses informers.
 - **ClusterProber** (`k8s/cluster_prober.go`): Background goroutine probes remote clusters every 60s (10s timeout). `POST /clusters/:id/test` for on-demand probing.
-- **Known limitation:** AccessChecker queries local cluster RBAC, not remote. Kubernetes API enforces real permissions.
+- **AccessChecker is cluster-aware:** non-local SARs go to the target cluster through `ClusterRouter.ClientForCluster` (`resources/access.go` `clientForCluster`, wired by `SetClusterRouter` in `main.go`), and its cache key includes the cluster id.
+- **Schema comes from the target, never the local cluster.** YAML validate/diff/apply/export resolve discovery and the REST mapper against the target cluster via `ClusterRouter.TargetFor` / `TargetSchemaFor` (per-identity, per-cluster cache, evicted on cluster delete). A handler on a routed path must never call `LocalFactory().RESTMapper()` or `.DiscoveryClient()`: that pairs a remote client with the local schema. `scripts/check-cluster-routing.sh` flags it.
+- **What remote supports** is declared once, in `capabilityOperations` (`server/handle_capabilities.go`), served at `GET /capabilities/{clusterID}`, and mirrored in README's "Remote cluster support" table. Keep all three in step when a guard is added or removed: an operation that works remotely but is still marked unsupported tells operators it cannot be done.
+- **Remote dashboard** is opt-in (`GET /cluster/dashboard-summary?coverage=1`): per-section coverage rows, health always null, CPU/memory/alerts reported unavailable. Without the parameter the legacy 400 stays byte-identical for mobile's `DashboardLocalOnlyError`.
 
 ---
 

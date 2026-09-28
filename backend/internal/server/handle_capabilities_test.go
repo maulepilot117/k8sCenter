@@ -226,35 +226,53 @@ func findCapability(t *testing.T, resp CapabilitiesResponse, op string) Capabili
 	return Capability{}
 }
 
-// syntheticRemoteOp / syntheticRemoteProbeOp exist purely to drive
-// buildCapability's remote-branch dimension-priority logic (reachable ->
-// discovery -> authz -> ok) directly, with a real, falsifiable verdict.
-//
-// As of task review round 1 (finding #3), every row in the REAL
-// capabilityOperations table is honestly RemoteSupported: false — none of
-// yaml.validate/diff/export/apply or dashboard.summary claim remote support
-// today, because every one of them still 501s/400s the moment it's actually
-// called. That is correct product behavior, but it means no real operation
-// can reach buildCapability's reachable/discovery/authz branches on the
-// remote class anymore: buildCapability's very first check
-// (!row.PlatformSupported) now short-circuits every real op to
-// unsupported_platform before any of that logic runs. These two synthetic,
-// test-only rows (never added to the real table) are what let this file
-// keep pinning that logic with real verdicts instead of losing the
-// coverage — see TestCapabilities_UnreachableIsNotUnsupported,
-// TestCapabilities_StaleProbeYieldsNullReachable, and the "remote-only"
-// cases in TestCapabilities_ReasonCodesAreClosed.
-var syntheticRemoteOp = capabilityOp{
-	ID: "test.synthetic", Label: "synthetic (test-only, not a real operation)",
-	LocalSupported: true, RemoteSupported: true,
-	AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
+// assertCapabilities asserts that every operation in ids reports
+// PlatformSupported == wantSupported and ReasonCode == wantReason. Callers
+// with an extra per-row check (e.g. Reachable/Authorized nil) that this
+// helper doesn't express keep that check in its own inline loop alongside
+// this call.
+func assertCapabilities(t *testing.T, body CapabilitiesResponse, ids []string, wantSupported bool, wantReason ReasonCode) {
+	t.Helper()
+	for _, id := range ids {
+		c := findCapability(t, body, id)
+		if c.PlatformSupported != wantSupported || c.ReasonCode != wantReason {
+			t.Errorf("%s = (platformSupported %v, reason %q); want (%v, %q)", id, c.PlatformSupported, c.ReasonCode, wantSupported, wantReason)
+		}
+	}
 }
 
-var syntheticRemoteProbeOp = capabilityOp{
-	ID: "test.synthetic-probe", Label: "synthetic probe (test-only, not a real operation)",
-	LocalSupported: true, RemoteSupported: true,
-	Probe:    &gvrProbe{Group: "", Resource: "nodes"},
-	AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
+// wantRemoteSupported / wantRemoteUnsupported are the exact partition of the
+// production table on the REMOTE class.
+//
+// yaml.validate/diff/export shipped remote in U9a (#493), yaml.apply in U9b
+// (#494), and dashboard.summary in U10 (#495, via the ?coverage=1 opt-in).
+// The other six still carry a remote guard (400/501 or a WebSocket refusal)
+// and must keep reporting unsupported_platform. TestCapabilityOperations_
+// RemoteSupportPinned asserts the table matches these sets exactly; every
+// other remote test reads them rather than hard-coding its own copy.
+var (
+	wantRemoteSupported = []string{
+		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply", "dashboard.summary",
+	}
+	wantRemoteUnsupported = []string{
+		"resources.counts", "pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
+	}
+)
+
+// productionOp returns the REAL capabilityOperations row with the given id.
+// The remote-branch priority tests drive buildCapability with real rows —
+// yaml.validate as the plain op, dashboard.summary as the GVR-probing op —
+// rather than test-only synthetic rows, so a change to either row's flags
+// shows up here too.
+func productionOp(t *testing.T, id string) capabilityOp {
+	t.Helper()
+	for _, op := range capabilityOperations {
+		if op.ID == id {
+			return op
+		}
+	}
+	t.Fatalf("operation %q is not in capabilityOperations", id)
+	return capabilityOp{}
 }
 
 // fakeClusterRecordGetter is a hermetic clusterRecordGetter — see the
@@ -575,11 +593,13 @@ func TestCapabilities_PredicateDenialPinsCanAccessGroupResource(t *testing.T) {
 }
 
 func TestCapabilities_RemoteExecUnsupported(t *testing.T) {
-	// Bare server: ClusterRouter and ClusterStore are both left nil. pod.exec
-	// is unsupported for the remote target class regardless of whether the
-	// target itself can even be resolved (buildCapability's top-priority
-	// check), so this needs no ClusterRouter/ClusterStore/ResourceHandler
-	// wiring at all.
+	// Bare server: ClusterRouter and ClusterStore are both left nil, so the
+	// remote target cannot be resolved (A4: db_unavailable). pod.exec is
+	// unsupported for the remote target class regardless of that
+	// (buildCapability's top-priority check). TestCapabilities_
+	// RemoteNoClusterStoreIsDBUnavailable owns the full remote-supported/
+	// remote-unsupported partition for this db_unavailable scenario; this
+	// test only pins pod.exec's own contract.
 	srv := testServer(t)
 	token := capabilitiesIssueToken(t, srv, "admin-1", true)
 
@@ -610,11 +630,9 @@ func TestCapabilities_UnreachableIsNotUnsupported(t *testing.T) {
 		t.Fatalf("resolveReachability reachable = %v; want false for a disconnected cluster", reach.reachable)
 	}
 
-	// syntheticRemoteOp, not a real operation: as of task review round 1
-	// (finding #3) every real row is honestly RemoteSupported: false today,
-	// so no real op could reach this test's assertions without first
-	// short-circuiting to unsupported_platform. See its doc comment.
-	cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, "", now)
+	// yaml.apply is RemoteSupported (U9b), so a down cluster must surface as
+	// unreachable, never as unsupported_platform.
+	cap := buildCapability(productionOp(t, "yaml.apply"), false, "", reach, nil, false, nil, nil, "", now)
 	if !cap.PlatformSupported {
 		t.Error("PlatformSupported = false; want true — a down cluster is still a supported target class")
 	}
@@ -638,8 +656,7 @@ func TestCapabilities_StaleProbeYieldsNullReachable(t *testing.T) {
 		t.Fatalf("resolveReachability reachable = %v; want nil for a 5-minute-old probe", *reach.reachable)
 	}
 
-	// syntheticRemoteOp, not a real operation — see its doc comment.
-	cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, "", now)
+	cap := buildCapability(productionOp(t, "yaml.validate"), false, "", reach, nil, false, nil, nil, "", now)
 	if cap.Reachable != nil {
 		t.Fatalf("Reachable = %v; want nil", *cap.Reachable)
 	}
@@ -833,14 +850,15 @@ func TestClassifyTargetSchemaErr(t *testing.T) {
 // ignores discoveryPresent/discoveryUnavailable entirely), so each scenario
 // carries two expectations, not one.
 //
-// Task review round 1 (finding #3) made every real row RemoteSupported:
-// false, so every "remote" scenario below correctly asserts
-// unsupported_platform for BOTH probe and plain real ops — that is not a
-// vacuous check, it is the assertion that finding #3's fix actually landed
-// on every row, probe-carrying or not. It does mean no REAL operation can
-// exercise the reachable/discovery/authz priority chain on the remote
-// class any more, which is why TestCapabilities_ReasonCodesAreClosed_Remote
-// (below) pins that logic against the test-only synthetic ops instead.
+// The want* fields are the verdict for an op that IS platform-supported on
+// the scenario's class. An op that is not (the six rows still in
+// wantRemoteUnsupported, on the remote scenarios) must report
+// unsupported_platform whatever the scenario claims — that is the static
+// top-priority rule. The remote scenarios therefore split the real table
+// both ways in one pass: the five remote-supported rows must carry the
+// scenario's real verdict (unreachable is never unsupported — D3), and the
+// six unsupported rows must not. The loop counts both kinds so neither half
+// can silently go vacuous if the table drifts.
 func TestCapabilities_ReasonCodesAreClosed(t *testing.T) {
 	now := time.Now()
 	trueVal, falseVal := true, false
@@ -906,42 +924,56 @@ func TestCapabilities_ReasonCodesAreClosed(t *testing.T) {
 			wantProbeOp: ReasonAuthzUnknown, wantPlainOp: ReasonAuthzUnknown,
 		},
 		{
-			// Every real row is RemoteSupported: false (finding #3): both
-			// probe-carrying and plain ops must report unsupported_platform
-			// here regardless of what reach/discovery/authorized claim.
-			name: "remote — every real row is unsupported today", isLocal: false,
+			name: "remote ok", isLocal: false,
 			reach: reachabilityResult{reachable: &trueVal, observedAt: now}, discoveryPresent: &trueVal, authorized: &trueVal,
-			wantProbeOp: ReasonUnsupportedPlatform, wantPlainOp: ReasonUnsupportedPlatform,
+			wantProbeOp: ReasonOK, wantPlainOp: ReasonOK,
 		},
 		{
-			name: "remote unreachable — still unsupported today", isLocal: false,
+			name: "remote forbidden", isLocal: false,
+			reach: reachabilityResult{reachable: &trueVal, observedAt: now}, discoveryPresent: &trueVal, authorized: &falseVal,
+			wantProbeOp: ReasonForbidden, wantPlainOp: ReasonForbidden,
+		},
+		{
+			name: "remote namespaced cluster-wide denial", isLocal: false,
+			reach: reachabilityResult{reachable: &trueVal, observedAt: now}, discoveryPresent: &trueVal,
+			authReason:  ReasonAuthzNamespaceScoped,
+			wantProbeOp: ReasonAuthzNamespaceScoped, wantPlainOp: ReasonAuthzNamespaceScoped,
+		},
+		{
+			name: "remote discovery missing", isLocal: false,
+			reach: reachabilityResult{reachable: &trueVal, observedAt: now}, discoveryPresent: &falseVal, authorized: &trueVal,
+			wantProbeOp: ReasonDiscoveryMissing, wantPlainOp: ReasonOK,
+		},
+		{
+			name: "remote unreachable", isLocal: false,
 			reach:       reachabilityResult{reachable: &falseVal, observedAt: now},
-			wantProbeOp: ReasonUnsupportedPlatform, wantPlainOp: ReasonUnsupportedPlatform,
+			wantProbeOp: ReasonUnreachable, wantPlainOp: ReasonUnreachable,
 		},
 		{
-			name: "remote stale — still unsupported today", isLocal: false,
+			name: "remote stale", isLocal: false,
 			reach:       reachabilityResult{observedAt: now},
-			wantProbeOp: ReasonUnsupportedPlatform, wantPlainOp: ReasonUnsupportedPlatform,
+			wantProbeOp: ReasonStaleObservation, wantPlainOp: ReasonStaleObservation,
 		},
 		{
-			name: "remote cluster_unknown — still unsupported today", isLocal: false,
+			name: "remote cluster_unknown", isLocal: false,
 			globalReason: ReasonClusterUnknown,
-			wantProbeOp:  ReasonUnsupportedPlatform, wantPlainOp: ReasonUnsupportedPlatform,
+			wantProbeOp:  ReasonClusterUnknown, wantPlainOp: ReasonClusterUnknown,
 		},
 		{
-			name: "remote credentials_invalid — still unsupported today", isLocal: false,
+			name: "remote credentials_invalid", isLocal: false,
 			globalReason: ReasonCredentialsInvalid,
-			wantProbeOp:  ReasonUnsupportedPlatform, wantPlainOp: ReasonUnsupportedPlatform,
+			wantProbeOp:  ReasonCredentialsInvalid, wantPlainOp: ReasonCredentialsInvalid,
 		},
 		{
-			name: "remote db_unavailable — still unsupported today", isLocal: false,
+			name: "remote db_unavailable", isLocal: false,
 			globalReason: ReasonDBUnavailable,
-			wantProbeOp:  ReasonUnsupportedPlatform, wantPlainOp: ReasonUnsupportedPlatform,
+			wantProbeOp:  ReasonDBUnavailable, wantPlainOp: ReasonDBUnavailable,
 		},
 	}
 
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
+			supported, unsupported := 0, 0
 			for _, op := range capabilityOperations {
 				cap := buildCapability(op, sc.isLocal, sc.globalReason, sc.reach,
 					sc.discoveryPresent, sc.discoveryUnavailable, sc.authorized, sc.authErr, sc.authReason, now)
@@ -949,6 +981,15 @@ func TestCapabilities_ReasonCodesAreClosed(t *testing.T) {
 				want := sc.wantPlainOp
 				if op.Probe != nil {
 					want = sc.wantProbeOp
+				}
+				if op.supportedFor(sc.isLocal) {
+					supported++
+				} else {
+					want = ReasonUnsupportedPlatform
+					unsupported++
+				}
+				if cap.PlatformSupported != op.supportedFor(sc.isLocal) {
+					t.Errorf("operation %q: PlatformSupported = %v; want %v", op.ID, cap.PlatformSupported, op.supportedFor(sc.isLocal))
 				}
 				// Exact equality, and deliberately NOT also a
 				// validReasonCodes membership check: every `want` literal
@@ -962,23 +1003,29 @@ func TestCapabilities_ReasonCodesAreClosed(t *testing.T) {
 					t.Errorf("operation %q (Probe!=nil: %v): reasonCode = %q; want %q", op.ID, op.Probe != nil, cap.ReasonCode, want)
 				}
 			}
+			if supported == 0 {
+				t.Errorf("no operation is platform-supported on this class; the verdict half of the scenario was never exercised")
+			}
+			if !sc.isLocal && unsupported == 0 {
+				t.Errorf("no operation is remote-unsupported; the unsupported_platform half of the scenario was never exercised")
+			}
 		})
 	}
 }
 
 // TestCapabilities_ReasonCodesAreClosed_Remote pins buildCapability's
 // reachable -> discovery -> authz -> ok priority chain on the REMOTE class
-// with real verdicts, using the test-only syntheticRemoteOp /
-// syntheticRemoteProbeOp (see their doc comment): as of finding #3, no real
-// operation is RemoteSupported: true today, so none of unreachable,
-// stale_observation, cluster_unknown, credentials_invalid, db_unavailable,
-// forbidden, authz_unknown, authz_namespace_scoped, discovery_missing,
-// discovery_unavailable, or ok
-// could otherwise be positively verdict-tested on the remote branch any
-// more — every real op would short-circuit to unsupported_platform first.
+// with real verdicts for every reason code, driving REAL remote-supported
+// rows: yaml.validate as the plain op and dashboard.summary as the
+// GVR-probing op.
 func TestCapabilities_ReasonCodesAreClosed_Remote(t *testing.T) {
 	now := time.Now()
 	trueVal, falseVal := true, false
+	plainOp := productionOp(t, "yaml.validate")
+	probeOp := productionOp(t, "dashboard.summary")
+	if !plainOp.RemoteSupported || !probeOp.RemoteSupported || plainOp.Probe != nil || probeOp.Probe == nil {
+		t.Fatalf("premise broken: want yaml.validate (plain) and dashboard.summary (probe) both RemoteSupported; got %+v / %+v", plainOp, probeOp)
+	}
 
 	t.Run("plain op", func(t *testing.T) {
 		scenarios := []struct {
@@ -1011,7 +1058,7 @@ func TestCapabilities_ReasonCodesAreClosed_Remote(t *testing.T) {
 		}
 		for _, sc := range scenarios {
 			t.Run(sc.name, func(t *testing.T) {
-				cap := buildCapability(syntheticRemoteOp, false, sc.globalReason, sc.reach, nil, false, sc.authorized, sc.authErr, sc.authReason, now)
+				cap := buildCapability(plainOp, false, sc.globalReason, sc.reach, nil, false, sc.authorized, sc.authErr, sc.authReason, now)
 				if cap.ReasonCode != sc.want {
 					t.Errorf("reasonCode = %q; want %q", cap.ReasonCode, sc.want)
 				}
@@ -1040,7 +1087,7 @@ func TestCapabilities_ReasonCodesAreClosed_Remote(t *testing.T) {
 		reach := reachabilityResult{reachable: &trueVal, observedAt: now}
 		for _, sc := range scenarios {
 			t.Run(sc.name, func(t *testing.T) {
-				cap := buildCapability(syntheticRemoteProbeOp, false, "", reach, sc.discoveryPresent, sc.discoveryUnavailable, sc.authorized, nil, sc.authReason, now)
+				cap := buildCapability(probeOp, false, "", reach, sc.discoveryPresent, sc.discoveryUnavailable, sc.authorized, nil, sc.authReason, now)
 				if cap.ReasonCode != sc.want {
 					t.Errorf("reasonCode = %q; want %q", cap.ReasonCode, sc.want)
 				}
@@ -1069,7 +1116,7 @@ func TestCapabilities_RegistryReadFailureIsDBUnavailable(t *testing.T) {
 			t.Fatalf("reason = %q; want %q", reach.reason, ReasonDBUnavailable)
 		}
 
-		cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, "", now)
+		cap := buildCapability(productionOp(t, "yaml.validate"), false, "", reach, nil, false, nil, nil, "", now)
 		if cap.ReasonCode != ReasonDBUnavailable {
 			t.Errorf("ReasonCode = %q; want %q — stale_observation would send the operator to wait out an outage", cap.ReasonCode, ReasonDBUnavailable)
 		}
@@ -1094,7 +1141,7 @@ func TestCapabilities_RegistryReadFailureIsDBUnavailable(t *testing.T) {
 		if reach.reason != "" {
 			t.Fatalf("reason = %q; want empty for an ordinary stale probe", reach.reason)
 		}
-		cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, "", now)
+		cap := buildCapability(productionOp(t, "yaml.validate"), false, "", reach, nil, false, nil, nil, "", now)
 		if cap.ReasonCode != ReasonStaleObservation {
 			t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonStaleObservation)
 		}
@@ -1271,8 +1318,8 @@ func TestAuthorizedFromClusterWideSAR(t *testing.T) {
 // made a conscious namespaced-vs-cluster-scoped choice. capabilityOp's zero
 // value means namespaced (the safe direction), so a new row that forgets the
 // field compiles and behaves plausibly; this test is what makes the omission
-// visible. Three later units (U9a, U9b, U10) are scheduled to edit this
-// table.
+// visible. TestCapabilityOperations_RemoteSupportPinned is its counterpart
+// for the remote-supported dimension.
 func TestCapabilityOperations_ScopePinned(t *testing.T) {
 	// nodes is the only cluster-scoped resource probed today. configmaps,
 	// pods, pods/exec, pods/log and externalsecrets are all namespaced.
@@ -1295,38 +1342,156 @@ func TestCapabilityOperations_ScopePinned(t *testing.T) {
 	}
 }
 
-// withRemoteSupported flips RemoteSupported to true on the named PRODUCTION
-// operation rows for the duration of one test, restoring the table via
-// t.Cleanup so no mutated global leaks into a sibling
-// (TestCapabilityContractParity and TestCapabilities_ReasonCodesAreClosed
-// both read this table).
+// TestCapabilityOperations_RemoteSupportPinned pins the exact remote
+// partition of the production table. RemoteSupported is a static claim about
+// whether a remote request to the operation's endpoint works at all, so each
+// flip must be deliberate: a row reported supported while its handler still
+// rejects remote requests says "try it" and then fails, and a row left false
+// after remote support ships tells the operator k8sCenter cannot do something
+// it can (the false unsupported_platform the YAML Apply page showed for
+// Validate until these five rows were flipped). Either drift fails here.
 //
-// It replaces the slice with a copy rather than mutating rows in place, so
-// even a failed restore cannot leave a half-edited row behind.
-func withRemoteSupported(t *testing.T, ids ...string) {
+// Every row must stay LocalSupported too: TestCapabilities_LocalRequiresNoAdmin
+// relies on it and no operation in this table is remote-only.
+func TestCapabilityOperations_RemoteSupportPinned(t *testing.T) {
+	want := map[string]bool{}
+	for _, id := range wantRemoteSupported {
+		want[id] = true
+	}
+	for _, id := range wantRemoteUnsupported {
+		if _, dup := want[id]; dup {
+			t.Fatalf("%q is listed as both remote-supported and remote-unsupported", id)
+		}
+		want[id] = false
+	}
+
+	seen := map[string]bool{}
+	for _, op := range capabilityOperations {
+		seen[op.ID] = true
+		wantSupported, listed := want[op.ID]
+		if !listed {
+			t.Errorf("operation %q is in capabilityOperations but in neither wantRemoteSupported nor wantRemoteUnsupported; classify it", op.ID)
+			continue
+		}
+		if op.RemoteSupported != wantSupported {
+			t.Errorf("operation %q: RemoteSupported = %v; want %v", op.ID, op.RemoteSupported, wantSupported)
+		}
+		if !op.LocalSupported {
+			t.Errorf("operation %q: LocalSupported = false; want true", op.ID)
+		}
+	}
+	for id := range want {
+		if !seen[id] {
+			t.Errorf("operation %q is expected but missing from capabilityOperations", id)
+		}
+	}
+}
+
+// withNoRemoteSupport replaces the production table, for the duration of one
+// test, with a copy in which no row is RemoteSupported. The production table
+// has remote-supported rows, so this is the only way to reach the
+// anySupported == false gate in handleClusterCapabilities. The slice is
+// replaced rather than mutated in place and restored via t.Cleanup, so no
+// edited row can leak into a sibling test reading the table.
+func withNoRemoteSupport(t *testing.T) {
 	t.Helper()
 
 	original := capabilityOperations
 	swapped := make([]capabilityOp, len(original))
 	copy(swapped, original)
-
-	wanted := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		wanted[id] = true
-	}
-	flipped := 0
 	for i := range swapped {
-		if wanted[swapped[i].ID] {
-			swapped[i].RemoteSupported = true
-			flipped++
-		}
-	}
-	if flipped != len(ids) {
-		t.Fatalf("withRemoteSupported: flipped %d of %d requested operations %v; a row was renamed or removed", flipped, len(ids), ids)
+		swapped[i].RemoteSupported = false
 	}
 
 	capabilityOperations = swapped
 	t.Cleanup(func() { capabilityOperations = original })
+}
+
+// countingClusterRecordGetter records how many times reachability read the
+// registry, which is how the tests below observe whether the handler did
+// any remote target work at all.
+type countingClusterRecordGetter struct {
+	mu    sync.Mutex
+	calls int
+	rec   *store.ClusterRecord
+}
+
+func (g *countingClusterRecordGetter) Get(context.Context, string) (*store.ClusterRecord, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	return g.rec, nil
+}
+
+func (g *countingClusterRecordGetter) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
+}
+
+// TestCapabilities_NoSupportedRowSkipsTargetResolution pins the anySupported
+// gate from both sides. With a table that supports nothing on the remote
+// class, every row is unsupported_platform no matter what the target looks
+// like, so the handler must not read the registry. With the production
+// table (five remote-supported rows) it must: reachability is read and the
+// supported rows carry a real verdict.
+func TestCapabilities_NoSupportedRowSkipsTargetResolution(t *testing.T) {
+	fresh := time.Now().Add(-30 * time.Second)
+	newServer := func(t *testing.T, getter clusterRecordGetter) *Server {
+		t.Helper()
+		withCapabilityClusterGetter(t, getter)
+		srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, resources.NewAlwaysAllowAccessChecker())
+		// Non-nil so A4's "no registry" branch does not decide the answer;
+		// reachability reads through the substituted getter, so the nil pool
+		// is never touched. ClusterRouter is cleared so TargetSchemaFor (which
+		// would fail on the router's nil store) does not pre-empt reachability.
+		srv.ClusterStore = store.NewClusterStore(nil, "test-encryption-key")
+		srv.ClusterRouter = nil
+		return srv
+	}
+	connected := func() *countingClusterRecordGetter {
+		return &countingClusterRecordGetter{rec: &store.ClusterRecord{
+			ID: "remote-1", Status: k8s.StatusConnected.String(), LastProbedAt: &fresh,
+		}}
+	}
+
+	t.Run("no remote-supported row: no registry read", func(t *testing.T) {
+		withNoRemoteSupport(t)
+		getter := connected()
+		srv := newServer(t, getter)
+		token := capabilitiesIssueToken(t, srv, "admin-1", true)
+
+		w := capabilitiesRequest(t, srv, token, "remote-1", "remote-1")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+		}
+		for _, c := range decodeCapabilities(t, w).Capabilities {
+			if c.PlatformSupported || c.ReasonCode != ReasonUnsupportedPlatform {
+				t.Errorf("%s = (platformSupported %v, reason %q); want (false, %q)", c.Operation, c.PlatformSupported, c.ReasonCode, ReasonUnsupportedPlatform)
+			}
+		}
+		if n := getter.count(); n != 0 {
+			t.Errorf("registry read %d time(s); want 0 — no row could use the answer", n)
+		}
+	})
+
+	t.Run("production table: remote target is resolved", func(t *testing.T) {
+		getter := connected()
+		srv := newServer(t, getter)
+		token := capabilitiesIssueToken(t, srv, "admin-1", true)
+
+		w := capabilitiesRequest(t, srv, token, "remote-1", "remote-1")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+		}
+		if n := getter.count(); n == 0 {
+			t.Fatal("registry never read; want reachability resolved for the remote-supported rows")
+		}
+		c := findCapability(t, decodeCapabilities(t, w), "yaml.apply")
+		if c.ReasonCode != ReasonOK || c.Reachable == nil || !*c.Reachable {
+			t.Errorf("yaml.apply = (reason %q, reachable %v); want (%q, true)", c.ReasonCode, c.Reachable, ReasonOK)
+		}
+	})
 }
 
 // withCapabilityClusterGetter substitutes the reachability getter for the
@@ -1339,16 +1504,14 @@ func withCapabilityClusterGetter(t *testing.T, getter clusterRecordGetter) {
 	t.Cleanup(func() { capabilityClusterGetter = original })
 }
 
-// TestCapabilities_RemoteChainEndToEnd closes review finding #3: because
-// every production row is RemoteSupported: false today, anySupported is
-// false for any remote target and the remote chain had never executed end
-// to end. db_unavailable, unreachable and stale_observation were pinned only
-// by direct calls to buildCapability against test-only synthetic rows, which
-// cannot catch a handler that wires those inputs together wrongly.
-//
-// It drives REAL production rows (one plain, one GVR-probing) through the
-// real HTTP handler with RemoteSupported temporarily flipped, exactly as
-// U9a/U9b/U10 will flip them for good.
+// TestCapabilities_RemoteChainEndToEnd drives the remote chain through the
+// real HTTP handler against the unmodified production table, so a handler
+// that wires reachability, discovery or the impersonated SAR together wrongly
+// fails here rather than only in direct buildCapability calls. Every
+// remote-supported row (yaml.validate as the plain op, dashboard.summary as
+// the GVR-probing op, and the other three yaml.* rows alongside) must carry
+// the real verdict, and every remote-unsupported row must still report
+// unsupported_platform in the same response.
 //
 // WHAT IS COVERED: reachability end to end (registry read failure, stale
 // probe, disconnected cluster, reachable), the discovery dimension, the
@@ -1459,7 +1622,6 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			withRemoteSupported(t, "yaml.validate", "dashboard.summary")
 			withCapabilityClusterGetter(t, tt.getter)
 
 			srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, tt.checker)
@@ -1481,7 +1643,7 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 
 			plain := findCapability(t, body, "yaml.validate")
 			if !plain.PlatformSupported {
-				t.Fatal("yaml.validate PlatformSupported = false; withRemoteSupported did not take effect")
+				t.Fatal("yaml.validate PlatformSupported = false; want true — remote validate shipped in U9a")
 			}
 			if plain.ReasonCode != tt.wantPlain {
 				t.Errorf("yaml.validate ReasonCode = %q; want %q", plain.ReasonCode, tt.wantPlain)
@@ -1493,19 +1655,30 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 				t.Errorf("yaml.validate Reachable = %v; want null — the target could not be resolved, so the (healthy) registry observation must not be reported as a verdict", *plain.Reachable)
 			}
 
+			// Every other remote-supported row with yaml.validate's shape
+			// (plain, namespaced configmaps probe, no discovery probe) must
+			// share its verdict. Derived from wantRemoteSupported so a row
+			// added there is covered here too.
+			var otherPlain []string
+			for _, id := range wantRemoteSupported {
+				if id != "yaml.validate" && id != "dashboard.summary" {
+					otherPlain = append(otherPlain, id)
+				}
+			}
+			assertCapabilities(t, body, otherPlain, true, tt.wantPlain)
+
 			probe := findCapability(t, body, "dashboard.summary")
+			if !probe.PlatformSupported {
+				t.Error("dashboard.summary PlatformSupported = false; want true — remote summary shipped in U10 (?coverage=1)")
+			}
 			if probe.ReasonCode != tt.wantProbe {
 				t.Errorf("dashboard.summary ReasonCode = %q; want %q", probe.ReasonCode, tt.wantProbe)
 			}
 
-			// Rows that were NOT flipped must still report the honest
-			// unsupported_platform — the flip is per-row, not a global
-			// "remote works now" switch.
-			untouched := findCapability(t, body, "pod.exec")
-			if untouched.PlatformSupported || untouched.ReasonCode != ReasonUnsupportedPlatform {
-				t.Errorf("pod.exec = (platformSupported %v, reason %q); want (false, %q)",
-					untouched.PlatformSupported, untouched.ReasonCode, ReasonUnsupportedPlatform)
-			}
+			// Rows whose handlers still refuse remote requests must report
+			// the honest unsupported_platform in the same response — support
+			// is per row, not a global "remote works now" switch.
+			assertCapabilities(t, body, wantRemoteUnsupported, false, ReasonUnsupportedPlatform)
 
 			for _, c := range body.Capabilities {
 				if !validReasonCodes[c.ReasonCode] {
@@ -1517,12 +1690,11 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 }
 
 // TestCapabilities_RemoteNoClusterStoreIsDBUnavailable drives the other A4
-// branch — no cluster registry wired at all — through the real handler with
-// a production row flipped to RemoteSupported, rather than by handing
-// buildCapability a globalReason directly.
+// branch — no cluster registry wired at all — through the real handler,
+// rather than by handing buildCapability a globalReason directly. Every
+// remote-supported row reports db_unavailable; the unsupported rows keep
+// unsupported_platform, which outranks it.
 func TestCapabilities_RemoteNoClusterStoreIsDBUnavailable(t *testing.T) {
-	withRemoteSupported(t, "yaml.validate")
-
 	srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, resources.NewAlwaysAllowAccessChecker())
 	srv.ClusterStore = nil
 
@@ -1531,25 +1703,20 @@ func TestCapabilities_RemoteNoClusterStoreIsDBUnavailable(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
 	}
+	body := decodeCapabilities(t, w)
 
-	cap := findCapability(t, decodeCapabilities(t, w), "yaml.validate")
-	if !cap.PlatformSupported {
-		t.Fatal("PlatformSupported = false; withRemoteSupported did not take effect")
-	}
-	if cap.ReasonCode != ReasonDBUnavailable {
-		t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonDBUnavailable)
-	}
+	assertCapabilities(t, body, wantRemoteSupported, true, ReasonDBUnavailable)
+	assertCapabilities(t, body, wantRemoteUnsupported, false, ReasonUnsupportedPlatform)
 }
 
 // TestCapabilities_RemoteTargetResolutionFailureClassified drives the real
 // ClusterRouter.TargetSchemaFor error path through the handler: the router
 // has no cluster store, so resolving a remote target fails with
 // requireClusterStore's load-bearing message and classifyTargetSchemaErr
-// must map it to db_unavailable. Before this, classifyTargetSchemaErr was
-// only ever called from a unit test with a hand-built error.
+// must map it to db_unavailable on every remote-supported row. Before this,
+// classifyTargetSchemaErr was only ever called from a unit test with a
+// hand-built error.
 func TestCapabilities_RemoteTargetResolutionFailureClassified(t *testing.T) {
-	withRemoteSupported(t, "yaml.validate")
-
 	srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, resources.NewAlwaysAllowAccessChecker())
 	// Non-nil so the A4 "no registry" branch does not pre-empt the router
 	// call; the router itself was built with a nil store, so TargetSchemaFor
@@ -1562,13 +1729,13 @@ func TestCapabilities_RemoteTargetResolutionFailureClassified(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
 	}
+	body := decodeCapabilities(t, w)
 
-	cap := findCapability(t, decodeCapabilities(t, w), "yaml.validate")
-	if cap.ReasonCode != ReasonDBUnavailable {
-		t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonDBUnavailable)
-	}
-	if cap.Reachable != nil {
-		t.Errorf("Reachable = %v; want null — nothing is knowable once the target cannot be resolved", *cap.Reachable)
+	assertCapabilities(t, body, wantRemoteSupported, true, ReasonDBUnavailable)
+	for _, id := range wantRemoteSupported {
+		if c := findCapability(t, body, id); c.Reachable != nil {
+			t.Errorf("%s Reachable = %v; want null — nothing is knowable once the target cannot be resolved", id, *c.Reachable)
+		}
 	}
 }
 
@@ -1580,9 +1747,9 @@ func TestCapabilities_RemoteTargetResolutionFailureClassified(t *testing.T) {
 // — so one wire code described two different row shapes depending on which
 // branch produced it.
 //
-// Latent today only because every production row is RemoteSupported: false,
-// which short-circuits to unsupported_platform before the global-reason
-// branch runs at all; it goes live the moment U9a/U9b/U10 flips one.
+// This is live on the production table: yaml.validate is RemoteSupported, so
+// a DNS failure resolving a remote target reaches the global-reason branch
+// for it rather than short-circuiting to unsupported_platform.
 func TestCapabilities_UnreachableGlobalReasonReportsReachableFalse(t *testing.T) {
 	now := time.Now()
 
@@ -1598,7 +1765,7 @@ func TestCapabilities_UnreachableGlobalReasonReportsReachableFalse(t *testing.T)
 		t.Fatalf("classifyTargetSchemaErr = %q; want %q — this test's premise depends on it", globalReason, ReasonUnreachable)
 	}
 
-	viaGlobalReason := buildCapability(syntheticRemoteOp, false, globalReason,
+	viaGlobalReason := buildCapability(productionOp(t, "yaml.validate"), false, globalReason,
 		reachabilityResult{}, nil, false, nil, nil, "", now)
 	if viaGlobalReason.ReasonCode != ReasonUnreachable {
 		t.Fatalf("ReasonCode = %q; want %q", viaGlobalReason.ReasonCode, ReasonUnreachable)
@@ -1609,7 +1776,7 @@ func TestCapabilities_UnreachableGlobalReasonReportsReachableFalse(t *testing.T)
 
 	// The other path to the same reason code. Both must produce the same
 	// wire shape, which is the whole point of the assertion above.
-	viaProbe := buildCapability(syntheticRemoteOp, false, "",
+	viaProbe := buildCapability(productionOp(t, "yaml.validate"), false, "",
 		reachabilityResult{reachable: boolPtr(false), observedAt: now}, nil, false, nil, nil, "", now)
 	if viaProbe.ReasonCode != viaGlobalReason.ReasonCode {
 		t.Fatalf("probe-path reasonCode = %q; global-reason path = %q", viaProbe.ReasonCode, viaGlobalReason.ReasonCode)
@@ -1625,7 +1792,7 @@ func TestCapabilities_UnreachableGlobalReasonReportsReachableFalse(t *testing.T)
 	// null — turning every global reason into reachable: false would invent
 	// a verdict.
 	for _, gr := range []ReasonCode{ReasonClusterUnknown, ReasonCredentialsInvalid, ReasonDBUnavailable} {
-		row := buildCapability(syntheticRemoteOp, false, gr, reachabilityResult{}, nil, false, nil, nil, "", now)
+		row := buildCapability(productionOp(t, "yaml.validate"), false, gr, reachabilityResult{}, nil, false, nil, nil, "", now)
 		if row.ReasonCode != gr {
 			t.Errorf("globalReason %q: ReasonCode = %q; want %q", gr, row.ReasonCode, gr)
 		}
@@ -1729,8 +1896,10 @@ func TestCapabilities_NullableDimensionsAreExplicitJSONNull(t *testing.T) {
 	}
 
 	t.Run("remote — all three dimensions null", func(t *testing.T) {
-		// Every production row is RemoteSupported: false, so every row is
-		// unsupported_platform with all three nullable dimensions unset.
+		// The bare server has no cluster registry, so the remote-supported
+		// rows report db_unavailable (A4) and the rest unsupported_platform;
+		// neither path resolves any of the three nullable dimensions, so
+		// every row must carry all three as explicit nulls.
 		for _, row := range rawRows(t, capabilitiesRequest(t, srv, token, "remote-42", "remote-42")) {
 			op := string(row["operation"])
 			for _, key := range nullable {

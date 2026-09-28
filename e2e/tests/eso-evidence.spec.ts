@@ -1,5 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
+import { setClusterTarget } from "../helpers.ts";
 import type { EvidenceKind } from "../../frontend/lib/eso-types.ts";
 
 // Release B evidence tabs on the five ESO detail pages (U17 and U18), and the
@@ -693,11 +694,6 @@ test.describe("eso evidence — refresh observation", () => {
     // The pending observation belonged to the previous cluster.
     await expect(observerLine(page)).toHaveCount(0);
 
-    await page.evaluate(() => {
-      localStorage.setItem(
-        "k8scenter.clusterTarget",
-        JSON.stringify({ clusterId: "local", generation: "local" }),
-      );
-    });
+    await setClusterTarget(page, "local");
   });
 });
