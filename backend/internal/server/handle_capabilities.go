@@ -1053,6 +1053,7 @@ func (s *Server) runCapabilityProbes(ctx context.Context, reachable, isLocal boo
 
 	needDiscovery := false
 	var questions []sarQuestion
+	seen := map[sarQuestion]bool{}
 	for _, op := range capabilityOperations {
 		if !op.supportedFor(isLocal) {
 			continue
@@ -1060,9 +1061,8 @@ func (s *Server) runCapabilityProbes(ctx context.Context, reachable, isLocal boo
 		if op.Probe != nil {
 			needDiscovery = true
 		}
-		q := sarQuestionFor(op)
-		if _, seen := probes.sar[q]; !seen {
-			probes.sar[q] = sarVerdict{err: errProbeNotRun}
+		if q := sarQuestionFor(op); !seen[q] {
+			seen[q] = true
 			questions = append(questions, q)
 		}
 	}
