@@ -96,11 +96,19 @@ func TestCapabilities_OneAccessCheckPerDistinctQuestion(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	// Compare the exact questions, not just how many: a dedup key that
+	// dropped a field (say the API group) would still yield the same count
+	// while asking the wrong question for a row.
 	want := distinctSARKeys()
-	if len(calls) != len(want) {
-		t.Errorf("asked %d distinct questions; want %d (%v)", len(calls), len(want), calls)
+	for key := range want {
+		if _, asked := calls[key]; !asked {
+			t.Errorf("never asked %s %s/%s", key.verb, key.group, key.resource)
+		}
 	}
 	for key, n := range calls {
+		if !want[key] {
+			t.Errorf("asked %s %s/%s, which no local row asks", key.verb, key.group, key.resource)
+		}
 		if n != 1 {
 			t.Errorf("%s %s/%s asked %d times; want once", key.verb, key.group, key.resource, n)
 		}
