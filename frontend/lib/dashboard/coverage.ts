@@ -14,7 +14,8 @@
  *
  * A local summary carries no `coverage` at all (`omitempty`), and "no row"
  * means "nothing to disclose": every section renders exactly as it did before
- * coverage existed. That keeps the local dashboard byte-for-byte unchanged.
+ * coverage existed. The one local exception is cpu/memory usage, whose
+ * payload carries its own "not observed" sentinel (see `withheldReason`).
  */
 import { durationShort } from "@/lib/format.ts";
 import type { HealthSignal } from "@/lib/score-color.ts";
@@ -172,18 +173,46 @@ export function coverageMessage(
 }
 
 /**
+ * Whether the cpu or memory block carries an observed usage percentage.
+ *
+ * The local path has no coverage block, so it signals "no usage was read"
+ * (no Prometheus, a failed or timed-out query) in the payload itself:
+ * `utilizationFrom` in `dashboard.go` writes `{percentage: 0, used: "N/A"}`,
+ * or omits the block when there is no allocatable capacity. Either is an
+ * absent reading, not 0%. Mirrors mobile's `Utilization.unavailable`, which
+ * also keeps a real zero (`used` is a quantity) renderable.
+ */
+function usageObserved(
+  summary: CoveredSummary | null | undefined,
+  section: "cpu" | "memory",
+): boolean {
+  const u = summary?.[section];
+  if (!u) return false;
+  return !(u.percentage === 0 && u.used.trim().toUpperCase() === "N/A");
+}
+
+/**
  * Why `section`'s value must not be shown, or null when it may be.
  *
  * For a card that reads more than the one section its host gates on: each
  * extra section it prints asks here first, and prints an em-dash with this
- * reason instead of the backend's placeholder zero.
+ * reason instead of the backend's placeholder zero. For cpu and memory that
+ * includes a local summary with no usage reading, which no coverage row
+ * describes; a coverage row's reason, when there is one, is more specific.
  */
 export function withheldReason(
   summary: CoveredSummary | null | undefined,
   section: CoverageSection,
 ): string | null {
   const cov = coverageFor(summary, section);
-  return isRenderable(sectionTone(cov)) ? null : coverageMessage(cov);
+  if (!isRenderable(sectionTone(cov))) return coverageMessage(cov);
+  if (
+    (section === "cpu" || section === "memory") &&
+    !usageObserved(summary, section)
+  ) {
+    return "No usage metrics: Prometheus is not configured or did not answer.";
+  }
+  return null;
 }
 
 /**
