@@ -4,7 +4,11 @@ import HPAWizard from "@/src/islands/HPAWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import {
+  countsPendingText,
+  getCount,
+  resourceCounts,
+} from "@/src/lib/resource-counts.ts";
 
 export default function HPAsDashboard() {
   const _ns = selectedNamespace.value;
@@ -27,7 +31,7 @@ export default function HPAsDashboard() {
   const countsReady = resourceCounts.value !== null;
   const subtitle = countsReady
     ? `${total} horizontalpodautoscalers`
-    : "Loading horizontalpodautoscalers…";
+    : countsPendingText("Loading horizontalpodautoscalers…");
 
   return (
     <div class="flex flex-col h-full">

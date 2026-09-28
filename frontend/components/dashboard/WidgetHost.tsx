@@ -3,6 +3,14 @@ import type { VNode } from "preact";
 import { useContext, useLayoutEffect, useRef } from "preact/hooks";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
+import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";
+import {
+  coverageMessage,
+  isRenderable,
+  sectionTone,
+  WIDGET_SECTIONS,
+  widgetCoverage,
+} from "@/lib/dashboard/coverage.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { pickMode } from "@/lib/dashboard/display-mode.ts";
 import type { WidgetDef } from "@/lib/dashboard/types.ts";
@@ -53,6 +61,18 @@ function StateCard({
     </div>
   );
 }
+
+/**
+ * A closed padlock: the thing is there, and shut. Shared by every state that
+ * means "this account may not read it", so the permission card and the
+ * forbidden-coverage card cannot drift apart.
+ */
+const LOCK_ICON = (
+  <>
+    <rect x="3" y="11" width="18" height="11" rx="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </>
+);
 
 interface WidgetHostProps {
   def: WidgetDef;
@@ -139,6 +159,23 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
     params,
   );
 
+  // Coverage (Release C, AE3), asked only once the summary has landed and only
+  // by the widgets that headline one of its sections -- everything else never
+  // subscribes to the summary. A remote summary fills every section it could
+  // not observe with zeroes, so the section's row decides whether the body is
+  // drawn at all: withheld sections are replaced by their reason here, before
+  // `render`, for the same reason an absent feature is. A local summary has no
+  // rows and `coverage` stays null, which renders exactly as before.
+  const coverage =
+    resolved.state === "ready" && WIDGET_SECTIONS[def.id] !== undefined
+      ? widgetCoverage(
+          def.id,
+          dashboardData.state<CoveredSummary>("dashboard-summary").data,
+        )
+      : null;
+  const tone = sectionTone(coverage);
+  const withheld = !isRenderable(tone);
+
   const mode = pickMode(def.modes, width.value, height.value);
   // In a grid cell the stale notice takes its natural height and the widget
   // takes the rest, so a card that fills its space still fits the cell.
@@ -153,7 +190,7 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
       // Which of the branches below rendered. Lets a test tell a loaded widget
       // from a skeleton -- and a feature this cluster does not run from one
       // that is broken -- which the host element alone cannot.
-      data-widget-state={resolved.state}
+      data-widget-state={withheld ? `coverage-${tone}` : resolved.state}
       style={{
         height: "100%",
         minWidth: 0,
@@ -161,8 +198,49 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
         ...(fill ? { display: "flex", flexDirection: "column" } : {}),
       }}
     >
-      {resolved.state === "ready" ? (
+      {withheld ? (
+        // Two cards, not one: "this cluster cannot report it" and "you may
+        // not read it" have different fixes, and the second is the permission
+        // card's glyph so it reads the same wherever access is the problem.
+        tone === "forbidden" ? (
+          <StateCard
+            testId="widget-coverage-forbidden"
+            heading="You do not have access on this cluster"
+            detail={coverageMessage(coverage)}
+            icon={LOCK_ICON}
+          />
+        ) : (
+          <StateCard
+            testId="widget-coverage-unavailable"
+            heading="Not available on this cluster"
+            detail={coverageMessage(coverage)}
+            icon={
+              <>
+                <circle cx="12" cy="12" r="9" />
+                <path d="M8 12h8" />
+              </>
+            }
+          />
+        )
+      ) : resolved.state === "ready" ? (
         <>
+          {(tone === "partial" || tone === "stale") && (
+            // Drawn, but not as a complete reading: a partial section is a
+            // lower bound and a stale one is an old one, and the number alone
+            // says neither.
+            <div
+              data-testid={`widget-coverage-${tone}`}
+              style={{
+                padding: "4px 8px",
+                fontSize: "11px",
+                lineHeight: 1.4,
+                color:
+                  tone === "partial" ? "var(--warning)" : "var(--text-muted)",
+              }}
+            >
+              {coverageMessage(coverage)}
+            </div>
+          )}
           {resolved.stale && (
             <div
               data-testid="widget-stale"
@@ -241,13 +319,7 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
           testId="widget-permission"
           heading="You do not have access"
           detail={`Your account is not permitted to read ${def.title}.`}
-          icon={
-            // A closed padlock: the thing is there, and shut.
-            <>
-              <rect x="3" y="11" width="18" height="11" rx="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </>
-          }
+          icon={LOCK_ICON}
         />
       ) : resolved.state === "error" ? (
         <div

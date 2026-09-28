@@ -14,6 +14,8 @@ import "@/components/dashboard/widgets/index.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
 import type { FamilyStatuses } from "@/lib/dashboard/catalog.ts";
+import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";
+import { summaryCountLabel } from "@/lib/dashboard/coverage.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import type { EditSession } from "@/lib/dashboard/edit-session.ts";
 import {
@@ -55,10 +57,7 @@ import type {
 } from "@/lib/dashboard/types.ts";
 import { FAMILY_STATUS_KEYS } from "@/lib/dashboard/types.ts";
 import { sourcesOf } from "@/lib/dashboard/widget-state.ts";
-import type {
-  ClusterInfoData,
-  DashboardSummary,
-} from "@/lib/dashboard/wire-types.ts";
+import type { ClusterInfoData } from "@/lib/dashboard/wire-types.ts";
 import { useDashboardFocus } from "@/lib/hooks/use-dashboard-focus.ts";
 import { preferenceReason } from "@/lib/preferences.ts";
 import { showToast } from "@/src/islands/ToastProvider.tsx";
@@ -864,7 +863,7 @@ export default function DashboardV2() {
   }
 
   const info = dashboardData.state<ClusterInfoData>("cluster-info");
-  const summary = dashboardData.state<DashboardSummary>("dashboard-summary");
+  const summary = dashboardData.state<CoveredSummary>("dashboard-summary");
   // Wait for both to settle, so the subtitle never shows "0 nodes" for the
   // moment between one response and the other.
   const headerReady = [info, summary].every(
@@ -872,6 +871,22 @@ export default function DashboardV2() {
   );
   const nodeCount = summary.data?.nodes.total ?? info.data?.nodeCount ?? 0;
   const podCount = summary.data?.pods.total ?? 0;
+  // A remote summary reports a section it could not read as zero, and one it
+  // read only part of as a plain total, so the subtitle asks each coverage row
+  // first: "— pods" beside the reason, never "0 pods" for pods this account
+  // was not allowed to list; "≥ 42 pods" for a truncated list; the age beside
+  // a stale one. With no coverage block (local) the text is unchanged.
+  const nodesLabel = summaryCountLabel(
+    summary.data,
+    "nodes",
+    nodeCount,
+    "nodes",
+    "node",
+  );
+  const podsLabel = summaryCountLabel(summary.data, "pods", podCount, "pods");
+  const countsReason = [nodesLabel.note, podsLabel.note]
+    .filter((r) => r !== null)
+    .join(" ");
   const clusterName = info.data?.platform ?? info.data?.clusterID ?? "cluster";
 
   // A load that failed leaves `layout` on the default. Saying so matters: an
@@ -985,11 +1000,13 @@ export default function DashboardV2() {
                 marginTop: "4px",
               }}
             >
-              {[
-                clusterName,
-                `${nodeCount} node${nodeCount !== 1 ? "s" : ""}`,
-                `${podCount} pods`,
-              ].join(" · ")}
+              {[clusterName, nodesLabel.text, podsLabel.text].join(" · ")}
+              {countsReason && (
+                <span data-testid="summary-counts-withheld">
+                  {" "}
+                  — {countsReason}
+                </span>
+              )}
             </div>
           ) : (
             <Skeleton class="h-4 w-80 mt-1" />

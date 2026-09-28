@@ -1,8 +1,9 @@
 import BarRow from "@/components/charts/BarRow.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
+import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";
+import { withheldReason } from "@/lib/dashboard/coverage.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
-import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
 
 /**
  * Node capacity: CPU, memory, pod and readiness bars, with a readiness
@@ -14,14 +15,53 @@ import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
  * operand was unreachable and declaring that source would only gate this card
  * on an endpoint it never reads.
  */
+
+interface SectionBarProps {
+  label: string;
+  withheld: string | undefined;
+  value: number;
+  max: number;
+  suffix: string;
+  color: string;
+}
+
+function SectionBar({
+  label,
+  withheld,
+  value,
+  max,
+  suffix,
+  color,
+}: SectionBarProps) {
+  return (
+    <div title={withheld}>
+      <BarRow
+        label={label}
+        value={withheld ? 0 : value}
+        max={max}
+        suffix={withheld ? "—" : suffix}
+        color={color}
+      />
+    </div>
+  );
+}
+
 function Nodes() {
-  const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
+  const s = dashboardData.state<CoveredSummary>("dashboard-summary").data;
 
   const nodeCount = s?.nodes.total ?? 0;
   const nodesReady = s?.nodes.ready ?? 0;
   const podCount = s?.pods.total ?? 0;
   const cpuPct = Math.round(s?.cpu?.percentage ?? 0);
   const memPct = Math.round(s?.memory?.percentage ?? 0);
+
+  // The host gates this card on `nodes` only; CPU, memory and pods are other
+  // sections, and on a remote cluster the first two are never observed. Their
+  // bars go empty with an em-dash and the reason as a tooltip rather than
+  // showing the backend's placeholder 0%.
+  const cpuWithheld = withheldReason(s, "cpu") ?? undefined;
+  const memWithheld = withheldReason(s, "memory") ?? undefined;
+  const podsWithheld = withheldReason(s, "pods") ?? undefined;
 
   return (
     <WidgetShell
@@ -56,22 +96,25 @@ function Nodes() {
         </div>
       ) : (
         <div>
-          <BarRow
+          <SectionBar
             label="CPU"
+            withheld={cpuWithheld}
             value={cpuPct}
             max={100}
             suffix={`${cpuPct}%`}
             color="var(--accent)"
           />
-          <BarRow
+          <SectionBar
             label="Memory"
+            withheld={memWithheld}
             value={memPct}
             max={100}
             suffix={`${memPct}%`}
             color="var(--accent-secondary)"
           />
-          <BarRow
+          <SectionBar
             label="Pods"
+            withheld={podsWithheld}
             value={podCount}
             max={Math.max(podCount, 440)}
             suffix={String(podCount)}

@@ -9,7 +9,11 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import StatefulSetWizard from "@/src/islands/StatefulSetWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import {
+  countsPendingText,
+  getCount,
+  resourceCounts,
+} from "@/src/lib/resource-counts.ts";
 
 const workloadsSection = DOMAIN_SECTIONS.find((s) => s.id === "workloads")!;
 
@@ -92,7 +96,7 @@ export default function WorkloadsDashboard({
   // real degraded data (not invented). The resource table itself shows status.
   const subtitle = countsReady
     ? `${total} ${title.toLowerCase()}`
-    : `Loading ${title.toLowerCase()}…`;
+    : countsPendingText(`Loading ${title.toLowerCase()}…`);
 
   return (
     <div class="flex flex-col h-full">

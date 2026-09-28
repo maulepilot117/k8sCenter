@@ -14,6 +14,7 @@
 import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import { ApiError, api } from "@/lib/api.ts";
+import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { HUBBLE_FLOW_BATCH } from "./networking.ts";
 import { decodeSourceKey } from "./params.ts";
 import { COMPLIANCE_HISTORY_DAYS } from "./severity.ts";
@@ -840,9 +841,17 @@ export function createSourceCache(
   return cache;
 }
 
-/** GET an endpoint and hand back the `data` envelope every handler writes. */
-async function read(path: string, signal: AbortSignal): Promise<unknown> {
-  return (await api<unknown>(path, { method: "GET", signal })).data;
+/**
+ * GET an endpoint and hand back the `data` envelope every handler writes.
+ * `clusterId` pins the request's X-Cluster-ID; omitted, `api()` reads the
+ * selected cluster itself.
+ */
+async function read(
+  path: string,
+  signal: AbortSignal,
+  clusterId?: string,
+): Promise<unknown> {
+  return (await api<unknown>(path, { method: "GET", signal, clusterId })).data;
 }
 
 /**
@@ -926,8 +935,17 @@ function withList(body: unknown, field: string): unknown {
  * issuing anything and a widget declaring it sits in the skeleton forever.
  */
 export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
-  "dashboard-summary": (signal) =>
-    read("/v1/cluster/dashboard-summary", signal),
+  // A remote cluster is served only with `?coverage=1` (Release C, D5): the
+  // opt-in is what keeps mobile's legacy 400 intact, and the coverage block it
+  // unlocks is what lets each card withhold the placeholder zeroes the remote
+  // path fills unobservable sections with (see coverage.ts). The local request
+  // is left byte-identical. The cluster is read once and pinned, so the
+  // parameter and the X-Cluster-ID header cannot describe two targets.
+  "dashboard-summary": (signal) => {
+    const clusterId = selectedCluster.peek();
+    const query = clusterId === LOCAL_CLUSTER_ID ? "" : "?coverage=1";
+    return read(`/v1/cluster/dashboard-summary${query}`, signal, clusterId);
+  },
   "dashboard-trends": (signal, range) =>
     read(`/v1/cluster/dashboard-trends?range=${range}`, signal),
   "cluster-info": (signal) => read("/v1/cluster/info", signal),
