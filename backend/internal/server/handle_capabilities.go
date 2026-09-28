@@ -218,19 +218,20 @@ type capabilityOp struct {
 }
 
 // capabilityOperations is the package-level operation table (implementation
-// step 1). Each "no" row's comment cites the exact guard file:line it
-// mirrors, verified against the tree at 5c328337 (brief A6), so a reviewer
-// can diff the claim against the guard instead of trusting prose.
+// step 1). Each "yes" row's comment names what makes remote support real, and
+// each "no" row's comment cites the exact guard file:line it mirrors,
+// re-verified against the tree at 5e567e01, so a reviewer can diff the claim
+// against the code instead of trusting prose. TestCapabilityOperations_
+// RemoteSupportPinned pins the exact remote-supported set, so flipping a row
+// without updating that test (and this comment) fails loudly.
 var capabilityOperations = []capabilityOp{
 	{
-		// RemoteSupported is false TODAY, not "true per the master plan's
-		// 'Remote (after Release C)' column" — that column names the
-		// destination, not the interim, and yaml/handler.go:62 still 501s
-		// every remote request right now. Flip to true when U9a ships and
-		// removes that gate (task review round 1, finding #3): until then,
-		// GET /capabilities/remote-x must not claim platformSupported: true
-		// for an operation that 501s the moment it's actually called — the
-		// exact inversion D3 exists to prevent, pointed the other way.
+		// Remote since U9a (#493): every yaml.* handler resolves its client
+		// AND its RESTMapper from the request's X-Cluster-ID in one
+		// ClusterRouter.TargetFor call (yaml/handler.go resolveTarget), so a
+		// dry-run executes against, and resolves kinds from, the cluster it
+		// names. There is no remote rejection left in yaml/handler.go and no
+		// local fallback: a remote target that cannot be resolved is an error.
 		//
 		// AuthResource: dry-run apply's SAR check is identical to a real
 		// apply — Kubernetes' dryRun flag only skips persistence, it does
@@ -252,76 +253,78 @@ var capabilityOperations = []capabilityOp{
 		// reported authz_namespace_scoped rather than forbidden — see
 		// Capability.Authorized and capabilityOp.ClusterScoped.
 		ID: "yaml.validate", Label: "Validate YAML",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "patch", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// RemoteSupported false until U9a — see yaml.validate's comment
-		// above (finding #3); yaml/handler.go:220 still 501s remote today.
-		// Secrets refused on both classes (enforced inside the yaml
-		// handler, not here). AuthVerb "patch", not "get" (task review round
-		// 2, finding #2a): differ.go:101 does call dr.Get(...) first, but
-		// differ.go:118 then does dr.Patch(..., types.ApplyPatchType, data,
-		// DryRun: []string{metav1.DryRunAll}) to compute the proposed state
-		// — and Kubernetes authorizes a dry-run patch exactly as it
-		// authorizes a real one (dryRun skips persistence, not
-		// authorization), same reasoning as yaml.validate above. Diff needs
-		// BOTH get and patch; probing "patch" is the representative choice
-		// because it is the verb more likely to be denied, so it is the one
-		// that actually carries information — probing "get" would report
-		// authorized: true for a viewer who lacks patch and then hits
-		// Forbidden inside the real call. AuthResource: configmaps — see
-		// yaml.validate's comment for why (finding #2).
+		// Remote since U9a (#493) — same target-scoped resolution as
+		// yaml.validate above. Secrets refused on both classes (enforced
+		// inside the yaml handler, not here). AuthVerb "patch", not "get"
+		// (task review round 2, finding #2a): differ.go:101 does call
+		// dr.Get(...) first, but differ.go:118 then does dr.Patch(...,
+		// types.ApplyPatchType, data, DryRun: []string{metav1.DryRunAll}) to
+		// compute the proposed state — and Kubernetes authorizes a dry-run
+		// patch exactly as it authorizes a real one (dryRun skips
+		// persistence, not authorization), same reasoning as yaml.validate
+		// above. Diff needs BOTH get and patch; probing "patch" is the
+		// representative choice because it is the verb more likely to be
+		// denied, so it is the one that actually carries information —
+		// probing "get" would report authorized: true for a viewer who lacks
+		// patch and then hits Forbidden inside the real call. AuthResource:
+		// configmaps — see yaml.validate's comment for why (finding #2).
 		ID: "yaml.diff", Label: "Diff YAML against live state",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "patch", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// RemoteSupported false until U9a — see yaml.validate's comment
-		// above (finding #3); yaml/handler.go:282 still 501s remote today.
-		// Secrets refused on both classes. AuthVerb "get", not "list" (task
-		// review round 2, finding #2b): handler.go:245 requires kind AND
-		// name to be non-empty (400 otherwise) — export always fetches ONE
-		// named object, never a list — and the only client calls in the
-		// export path are the two dynClient...Get(...) calls at
-		// handler.go:298/300. There is no .List anywhere in it.
+		// Remote since U9a (#493) — same target-scoped resolution as
+		// yaml.validate above, so a CRD that exists only remotely is
+		// exportable. Secrets refused on both classes. AuthVerb "get", not
+		// "list" (task review round 2, finding #2b): handler.go:263 requires
+		// kind AND name to be non-empty (400 otherwise) — export always
+		// fetches ONE named object, never a list — and the only client calls
+		// in the export path are the two dynClient...Get(...) calls at
+		// handler.go:317/319. There is no .List anywhere in it.
 		// AuthResource: configmaps (finding #2).
 		ID: "yaml.export", Label: "Export YAML",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// RemoteSupported false until U9b — see yaml.validate's comment
-		// above (finding #3); yaml/handler.go:147 still 501s remote today.
-		// AuthVerb "patch": server-side apply for all YAML operations is a
-		// PATCH (application/apply-patch+yaml — see CLAUDE.md's backend
-		// architecture principles). AuthResource: configmaps (finding #2).
+		// Remote since U9b (#494): server-side apply runs against the
+		// resolved target, and an apply carrying the preview's
+		// targetCluster/targetGeneration pin is refused with 409 before any
+		// document is applied if the request's cluster or that cluster's
+		// registration generation no longer matches (yaml/handler.go
+		// HandleApply, refusePin). AuthVerb "patch": server-side apply for
+		// all YAML operations is a PATCH (application/apply-patch+yaml — see
+		// CLAUDE.md's backend architecture principles). AuthResource:
+		// configmaps (finding #2).
 		ID: "yaml.apply", Label: "Apply YAML",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "patch", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// RemoteSupported false TODAY (task review round 1, finding #3):
-		// dashboard.go:544 rejects every non-local request outright right
-		// now (400, not even a partial response), so reporting
-		// platformSupported: true would be the exact D3 inversion this unit
-		// exists to prevent. Flip to true when U10 ships remote dashboard
-		// summary — the master plan's "partial" (no health score) note
-		// describes THAT future state, not this one; the plan's "Remote
-		// (after Release C)" column header names the destination, never the
-		// interim. Probed against core/v1 nodes (A2) since the summary's
-		// node/health section is what a hardened remote cluster is most
-		// likely to have hidden from discovery — this GVR probe is already
-		// meaningful on the LOCAL branch today (a stripped-down local
-		// install could lack node-list visibility too) and will carry over
-		// unchanged once U10 flips RemoteSupported.
+		// Remote since U10 (#495), but ONLY on the opt-in
+		// GET /cluster/dashboard-summary?coverage=1 path
+		// (k8s/resources/dashboard.go HandleDashboardSummary →
+		// dashboard_remote.go handleRemoteDashboardSummary). Without the
+		// parameter a remote request still gets the legacy 400 that mobile's
+		// DashboardLocalOnlyError matches, so "supported" here describes the
+		// contract the web client uses (it always sends ?coverage=1 for a
+		// remote cluster). The remote response is partial by design: it
+		// carries per-section coverage and its health is always null — the
+		// health score is never computed remotely. Probed against core/v1
+		// nodes (A2) since the summary's node section is what a hardened
+		// cluster is most likely to have hidden from discovery, on either
+		// target class.
 		//
 		// The ONLY cluster-scoped row in the table: nodes are not namespaced,
 		// so the cluster-wide SAR below is an exact question and a denial is
 		// a real denial (forbidden), not the ambiguous namespaced negative
 		// every other row has to report as authz_namespace_scoped.
 		ID: "dashboard.summary", Label: "Dashboard summary",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		Probe:    &gvrProbe{Group: "", Resource: "nodes"},
 		AuthVerb: "list", AuthGroup: "", AuthResource: "nodes",
 		ClusterScoped: true,
@@ -329,7 +332,7 @@ var capabilityOperations = []capabilityOp{
 	{
 		// Resource counts rely on the local informer cache; remote clusters
 		// use direct API calls and do not populate informers.
-		// counts.go:28.
+		// k8s/resources/counts.go:28 (400).
 		ID: "resources.counts", Label: "Resource counts",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
@@ -337,7 +340,7 @@ var capabilityOperations = []capabilityOp{
 	{
 		// Pod exec requires an SPDY stream upgrade against the target
 		// cluster's own API server, not yet supported for remote clusters.
-		// pods.go:164.
+		// k8s/resources/pods.go:164 (501).
 		//
 		// Subresource shape: CanAccess splits "pods/exec" into
 		// Resource:"pods", Subresource:"exec" (access.go:137-143);
@@ -360,7 +363,7 @@ var capabilityOperations = []capabilityOp{
 	{
 		// WebSocket log streams against remote clusters are not yet
 		// supported — the watch connection lifecycle differs for remote API
-		// servers. handle_ws_logs.go:104.
+		// servers. handle_ws_logs.go:103.
 		//
 		// Same "pods/log" subresource caveat as pod.exec above: an identity
 		// granted access only via a `resources: ["*/log"]` wildcard rule
@@ -373,7 +376,7 @@ var capabilityOperations = []capabilityOp{
 	{
 		// Loki tail always targets the LOCAL cluster's Loki service; a
 		// remote X-Cluster-ID would stream local logs under the remote
-		// cluster's name (confused deputy). handle_ws_logs_search.go:61.
+		// cluster's name (confused deputy). handle_ws_logs_search.go:60.
 		ID: "logs.search", Label: "Log search",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
@@ -381,7 +384,7 @@ var capabilityOperations = []capabilityOp{
 	{
 		// Hubble flow streaming targets the LOCAL cluster's CNI data plane
 		// for the same confused-deputy reason as logs.search.
-		// handle_ws_flows.go:62.
+		// handle_ws_flows.go:61.
 		ID: "flows.stream", Label: "Network flow stream",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
@@ -390,7 +393,8 @@ var capabilityOperations = []capabilityOp{
 		// Phase E ESO writes don't route through ClusterRouter — the
 		// dynamic client always points at the local ClientFactory — so
 		// honoring X-Cluster-ID would desync the audit row from the actual
-		// mutation. externalsecrets/actions.go:66. Probed against
+		// mutation. externalsecrets/actions.go:140 (rejectNonLocalClusterWrite,
+		// 501; called from actions.go:178 and bulk.go:290). Probed against
 		// external-secrets.io/externalsecrets (A2) since ESO is an optional
 		// CRD-based operator that may not be installed even locally.
 		ID: "eso.write", Label: "External Secrets write actions",
@@ -560,9 +564,9 @@ func classifyTargetSchemaErr(err error) ReasonCode {
 
 // fetchDiscoveryLists calls ServerGroupsAndResources once and tolerates the
 // partial-result-with-error shape exactly as resolveGVR does
-// (yaml/handler.go:354-361, cited in brief A6): only a nil list counts as
-// "discovery unavailable" — a non-nil list alongside a non-nil error (some
-// group/version failed to load) is still usable for the groups that did.
+// (yaml/handler.go:548-553): only a nil list counts as "discovery
+// unavailable" — a non-nil list alongside a non-nil error (some group/version
+// failed to load) is still usable for the groups that did.
 //
 // failedGroups is the set of API groups that did NOT load, extracted from
 // client-go's *discovery.ErrGroupDiscoveryFailed. Tolerating a partial
@@ -869,23 +873,23 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 	// anySupported is whether ANY operation in the table is
 	// supportedFor(isLocal). buildCapability checks !row.PlatformSupported
 	// first and returns before globalReason/reach are ever consulted, so
-	// when anySupported is false, every row is going to end up
-	// unsupported_platform regardless of what target resolution or
-	// reachability would have said — resolving them is provably wasted
-	// work. Today that is true of EVERY remote request (every real row is
-	// RemoteSupported: false as of task review round 1's finding #3), which
-	// means the target-schema switch below was, until this fix, still
-	// doing a clusterStore.Get + a live DNS re-resolution + a credential
-	// decrypt (TargetSchemaFor's remote miss path, under a 30s ceiling) and
-	// resolveReachability's own second clusterStore.Get, for a result that
-	// was then discarded — the response to any non-local id was byte-
-	// identical whether the cluster existed, had valid credentials, was
-	// reachable, or was a typo (task review, whole-branch pass, Important
-	// #2). Gating on anySupported removes exactly that dead work and
-	// nothing else: isLocal always makes it true (every row is
-	// LocalSupported: true), so the local response is unchanged, and this
-	// guard removes ITSELF automatically the moment any unit (U9a/U9b/U10)
-	// flips a single row's RemoteSupported to true.
+	// when anySupported is false every row ends up unsupported_platform
+	// regardless of what target resolution or reachability would have said,
+	// and resolving them — a clusterStore.Get, a live DNS re-resolution and a
+	// credential decrypt on TargetSchemaFor's remote miss path (30s ceiling),
+	// plus resolveReachability's own clusterStore.Get — would be work whose
+	// result is discarded.
+	//
+	// With the current table the gate is always open on both classes: every
+	// row is LocalSupported, and yaml.validate/diff/export/apply and
+	// dashboard.summary are RemoteSupported, so every remote request now
+	// resolves the target, reads reachability and issues the impersonated
+	// SARs for those rows (the still-unsupported rows skip that per-row work
+	// in the loop below). The gate only bites for a table with no row
+	// supported on the requested class; it is kept because it costs one
+	// short loop and keeps such a table from paying for a live remote round
+	// trip nobody reads. TestCapabilities_NoSupportedRowSkipsTargetResolution
+	// pins it with a substituted table.
 	anySupported := false
 	for _, op := range capabilityOperations {
 		if op.supportedFor(isLocal) {
