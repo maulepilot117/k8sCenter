@@ -14,7 +14,8 @@
  *
  * A local summary carries no `coverage` at all (`omitempty`), and "no row"
  * means "nothing to disclose": every section renders exactly as it did before
- * coverage existed. That keeps the local dashboard byte-for-byte unchanged.
+ * coverage existed. The one local exception is cpu/memory usage, whose
+ * payload carries its own "not observed" sentinel (see `withheldReason`).
  */
 import { durationShort } from "@/lib/format.ts";
 import type { HealthSignal } from "@/lib/score-color.ts";
@@ -172,18 +173,54 @@ export function coverageMessage(
 }
 
 /**
+ * Why the cpu or memory block carries no observed usage, or null when it does.
+ *
+ * The local path has no coverage block, so `utilizationFrom` in `dashboard.go`
+ * says it in the payload itself, two ways that mean different things:
+ *
+ * - `{percentage: 0, used: "N/A"}`: capacity is known but no usage was read
+ *   (no Prometheus, or a failed or timed-out query).
+ * - no block at all: the nodes report no allocatable capacity, so there is
+ *   nothing to take a percentage of.
+ *
+ * Neither is 0%. Mirrors mobile's `Utilization.unavailable`, which also keeps
+ * a real zero (`used` is then a quantity) renderable.
+ */
+function unobservedUsageReason(
+  summary: CoveredSummary | null | undefined,
+  section: "cpu" | "memory",
+): string | null {
+  const u = summary?.[section];
+  if (!u)
+    return "No allocatable capacity is reported for this cluster's nodes.";
+  const sentinel =
+    u.percentage === 0 &&
+    typeof u.used === "string" &&
+    u.used.trim().toUpperCase() === "N/A";
+  return sentinel
+    ? "No usage metrics: Prometheus is not configured or did not answer."
+    : null;
+}
+
+/**
  * Why `section`'s value must not be shown, or null when it may be.
  *
  * For a card that reads more than the one section its host gates on: each
  * extra section it prints asks here first, and prints an em-dash with this
- * reason instead of the backend's placeholder zero.
+ * reason instead of the backend's placeholder zero. For cpu and memory that
+ * includes a local summary with no usage reading, which no coverage row
+ * describes; a coverage row's reason, when there is one, is more specific.
  */
 export function withheldReason(
   summary: CoveredSummary | null | undefined,
   section: CoverageSection,
 ): string | null {
   const cov = coverageFor(summary, section);
-  return isRenderable(sectionTone(cov)) ? null : coverageMessage(cov);
+  if (!isRenderable(sectionTone(cov))) return coverageMessage(cov);
+  if (section === "cpu" || section === "memory") {
+    return unobservedUsageReason(summary, section);
+  }
+  return null;
 }
 
 /**

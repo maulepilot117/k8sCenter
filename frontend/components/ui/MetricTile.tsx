@@ -10,6 +10,8 @@ export interface MetricTileProps {
   sparkData?: number[] | null;
   sparkColor?: string;
   href?: string;
+  /** Hover text on the value, e.g. why a withheld value shows a dash. */
+  title?: string;
 }
 
 export function MetricTile({
@@ -20,6 +22,7 @@ export function MetricTile({
   sparkData,
   sparkColor = "var(--accent)",
   href,
+  title,
 }: MetricTileProps) {
   const fillHeight = useCellFillHeight();
   const inner = (
@@ -60,6 +63,7 @@ export function MetricTile({
         )}
       </div>
       <div
+        title={title}
         style={{
           display: "flex",
           alignItems: "baseline",

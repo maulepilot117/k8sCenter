@@ -1,4 +1,5 @@
 import { MetricTile } from "@/components/ui/MetricTile.tsx";
+import { withheldReason } from "@/lib/dashboard/coverage.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type {
@@ -17,13 +18,17 @@ import { lastDelta } from "@/lib/format.ts";
 function CpuTile() {
   const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
   const t = dashboardData.state<DashboardTrends>("dashboard-trends").data;
+  // A local cluster without Prometheus reports no usage at all; the backend's
+  // placeholder percentage of 0 must not read as an idle cluster.
+  const withheld = withheldReason(s, "cpu");
   const pct = Math.round(s?.cpu?.percentage ?? 0);
 
   return (
     <MetricTile
       label="CPU"
-      value={`${pct}`}
-      unit="%"
+      value={withheld === null ? `${pct}` : "—"}
+      unit={withheld === null ? "%" : undefined}
+      title={withheld ?? undefined}
       delta={lastDelta(t?.cpu)}
       sparkData={t?.cpu}
       sparkColor="var(--accent)"

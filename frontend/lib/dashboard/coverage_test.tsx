@@ -396,9 +396,78 @@ describe("tones (R3)", () => {
     const s = remoteSummary(V1_REMOTE);
     expect(withheldReason(s, "cpu")).toContain("remote metrics binding");
     expect(withheldReason(s, "nodes")).toBeNull();
-    expect(
-      withheldReason(remoteSummary([], { coverage: undefined }), "cpu"),
-    ).toBeNull();
+    expect(withheldReason(localSummary(), "cpu")).toBeNull();
+  });
+});
+
+/**
+ * A local summary with observed usage. The local path carries no coverage
+ * block, so the cpu/memory payload itself is the only signal of whether
+ * usage was read.
+ */
+function localSummary(over: Partial<CoveredSummary> = {}): CoveredSummary {
+  return remoteSummary([], {
+    coverage: undefined,
+    cpu: {
+      percentage: 37,
+      used: "4.4 cores",
+      total: "12.0 cores",
+      requests: "2.0 cores",
+      limits: "4.0 cores",
+    },
+    memory: {
+      percentage: 61,
+      used: "29.3 Gi",
+      total: "48.0 Gi",
+      requests: "8.0 Gi",
+      limits: "16.0 Gi",
+    },
+    ...over,
+  });
+}
+
+/** The payload `utilizationFrom` writes when no usage percentage was read. */
+const UNOBSERVED = {
+  percentage: 0,
+  used: "N/A",
+  total: "12.0 cores",
+  requests: "2.0 cores",
+  limits: "4.0 cores",
+};
+
+describe("unobserved usage (local, no Prometheus)", () => {
+  test("the N/A sentinel withholds cpu and memory with no coverage block", () => {
+    const s = localSummary({ cpu: UNOBSERVED, memory: UNOBSERVED });
+    expect(withheldReason(s, "cpu")).toContain("Prometheus");
+    expect(withheldReason(s, "memory")).toContain("Prometheus");
+  });
+
+  test("a missing cpu or memory block is withheld as no capacity, not zero", () => {
+    // utilizationFrom omits the block when nodes report no allocatable
+    // capacity; that is not a Prometheus problem and must not say it is.
+    const s = localSummary({ cpu: null, memory: null });
+    for (const section of ["cpu", "memory"] as const) {
+      const reason = withheldReason(s, section);
+      expect(reason).toContain("allocatable");
+      expect(reason).not.toContain("Prometheus");
+    }
+  });
+
+  test("a real zero percentage is data and is shown", () => {
+    const s = localSummary({ cpu: { ...UNOBSERVED, used: "0m" } });
+    expect(withheldReason(s, "cpu")).toBeNull();
+  });
+
+  test("the sentinel only gates cpu and memory", () => {
+    const s = localSummary({ cpu: UNOBSERVED });
+    expect(withheldReason(s, "pods")).toBeNull();
+    expect(withheldReason(s, "nodes")).toBeNull();
+  });
+
+  test("a coverage row's reason outranks the sentinel's", () => {
+    expect(withheldReason(remoteSummary(V1_REMOTE), "cpu")).toContain(
+      "remote metrics binding",
+    );
   });
 });
 
@@ -613,6 +682,40 @@ describe("widget bodies", () => {
     expect(body("nodes")).toContain(">37%<");
   });
 
+  test("local CPU and memory tiles without Prometheus show no 0%", () => {
+    seedSummary(localSummary({ cpu: UNOBSERVED, memory: UNOBSERVED }));
+    for (const id of ["cpu-tile", "memory-tile"]) {
+      const html = host(id);
+      expect(html).toContain('data-widget-state="ready"');
+      expect(html).not.toContain(">0<");
+      expect(html).not.toContain(">%<");
+      expect(html).toContain(">—<");
+      // The dash carries its reason, as the Nodes card's bars do.
+      expect(html).toContain('title="No usage metrics: Prometheus');
+    }
+  });
+
+  test("local CPU and memory tiles with usage show their percentages", () => {
+    seedSummary(localSummary());
+    for (const [id, pct] of [
+      ["cpu-tile", 37],
+      ["memory-tile", 61],
+    ] as const) {
+      const html = body(id);
+      expect(html).toContain(`>${pct}<`);
+      expect(html).not.toContain("title=");
+    }
+  });
+
+  test("the nodes card on a local cluster without Prometheus shows no 0%", () => {
+    seedSummary(localSummary({ cpu: UNOBSERVED, memory: UNOBSERVED }));
+    const html = body("nodes");
+    expect(html).not.toContain(">0%<");
+    expect(html).toContain(">—<");
+    expect(html).toContain("Prometheus");
+    expect(html).toContain("3/3");
+  });
+
   test("the nodes card withholds CPU and memory it could not observe", () => {
     seedSummary(remoteSummary(V1_REMOTE));
     const html = body("nodes");
@@ -623,16 +726,17 @@ describe("widget bodies", () => {
   });
 
   test("the nodes card withholds a forbidden pod count", () => {
-    seedSummary(
-      remoteSummary([
+    seedSummary({
+      ...localSummary(),
+      coverage: [
         row("nodes", "ok"),
         row("cpu", "ok"),
         row("memory", "ok"),
         row("pods", "forbidden", {
           detail: "you may not list pods across all namespaces here",
         }),
-      ]),
-    );
+      ],
+    });
     const html = body("nodes");
     // CPU and memory are ok here, so the only dash is the pods bar.
     expect(html).toContain(">—<");

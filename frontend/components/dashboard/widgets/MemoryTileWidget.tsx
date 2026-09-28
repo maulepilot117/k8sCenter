@@ -1,4 +1,5 @@
 import { MetricTile } from "@/components/ui/MetricTile.tsx";
+import { withheldReason } from "@/lib/dashboard/coverage.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type {
@@ -14,13 +15,15 @@ import { lastDelta } from "@/lib/format.ts";
 function MemoryTile() {
   const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
   const t = dashboardData.state<DashboardTrends>("dashboard-trends").data;
+  const withheld = withheldReason(s, "memory");
   const pct = Math.round(s?.memory?.percentage ?? 0);
 
   return (
     <MetricTile
       label="Memory"
-      value={`${pct}`}
-      unit="%"
+      value={withheld === null ? `${pct}` : "—"}
+      unit={withheld === null ? "%" : undefined}
+      title={withheld ?? undefined}
       delta={lastDelta(t?.memory)}
       sparkData={t?.memory}
       // var(--accent-secondary), matching the live call site. The plan says

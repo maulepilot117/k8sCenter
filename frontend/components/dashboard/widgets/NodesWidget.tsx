@@ -56,9 +56,9 @@ function Nodes() {
   const memPct = Math.round(s?.memory?.percentage ?? 0);
 
   // The host gates this card on `nodes` only; CPU, memory and pods are other
-  // sections, and on a remote cluster the first two are never observed. Their
-  // bars go empty with an em-dash and the reason as a tooltip rather than
-  // showing the backend's placeholder 0%.
+  // sections. CPU and memory go unobserved on a remote cluster, and on a local
+  // one without Prometheus. Their bars go empty with an em-dash and the reason
+  // as a tooltip rather than showing the backend's placeholder 0%.
   const cpuWithheld = withheldReason(s, "cpu") ?? undefined;
   const memWithheld = withheldReason(s, "memory") ?? undefined;
   const podsWithheld = withheldReason(s, "pods") ?? undefined;
