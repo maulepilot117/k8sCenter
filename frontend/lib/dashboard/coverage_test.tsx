@@ -690,13 +690,21 @@ describe("widget bodies", () => {
       expect(html).not.toContain(">0<");
       expect(html).not.toContain(">%<");
       expect(html).toContain(">—<");
+      // The dash carries its reason, as the Nodes card's bars do.
+      expect(html).toContain('title="No usage metrics: Prometheus');
     }
   });
 
   test("local CPU and memory tiles with usage show their percentages", () => {
     seedSummary(localSummary());
-    expect(body("cpu-tile")).toContain(">37<");
-    expect(body("memory-tile")).toContain(">61<");
+    for (const [id, pct] of [
+      ["cpu-tile", 37],
+      ["memory-tile", 61],
+    ] as const) {
+      const html = body(id);
+      expect(html).toContain(`>${pct}<`);
+      expect(html).not.toContain("title=");
+    }
   });
 
   test("the nodes card on a local cluster without Prometheus shows no 0%", () => {

@@ -20,14 +20,15 @@ function CpuTile() {
   const t = dashboardData.state<DashboardTrends>("dashboard-trends").data;
   // A local cluster without Prometheus reports no usage at all; the backend's
   // placeholder percentage of 0 must not read as an idle cluster.
-  const observed = withheldReason(s, "cpu") === null;
+  const withheld = withheldReason(s, "cpu");
   const pct = Math.round(s?.cpu?.percentage ?? 0);
 
   return (
     <MetricTile
       label="CPU"
-      value={observed ? `${pct}` : "—"}
-      unit={observed ? "%" : undefined}
+      value={withheld === null ? `${pct}` : "—"}
+      unit={withheld === null ? "%" : undefined}
+      title={withheld ?? undefined}
       delta={lastDelta(t?.cpu)}
       sparkData={t?.cpu}
       sparkColor="var(--accent)"

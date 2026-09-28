@@ -15,14 +15,15 @@ import { lastDelta } from "@/lib/format.ts";
 function MemoryTile() {
   const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
   const t = dashboardData.state<DashboardTrends>("dashboard-trends").data;
-  const observed = withheldReason(s, "memory") === null;
+  const withheld = withheldReason(s, "memory");
   const pct = Math.round(s?.memory?.percentage ?? 0);
 
   return (
     <MetricTile
       label="Memory"
-      value={observed ? `${pct}` : "—"}
-      unit={observed ? "%" : undefined}
+      value={withheld === null ? `${pct}` : "—"}
+      unit={withheld === null ? "%" : undefined}
+      title={withheld ?? undefined}
       delta={lastDelta(t?.memory)}
       sparkData={t?.memory}
       // var(--accent-secondary), matching the live call site. The plan says
