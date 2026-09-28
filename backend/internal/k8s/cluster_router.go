@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -771,7 +772,18 @@ func NewRemoteRESTConfig(host, token string, caData []byte) *rest.Config {
 		// connection, so this covers every request made with the config,
 		// not just the first dial after validation.
 		Dial: StrictDialContext,
+		// Connect directly, never through an environment proxy. A nil Proxy
+		// makes client-go use http.ProxyFromEnvironment; the strict dialer
+		// would then check the proxy's address while the proxy resolves the
+		// API host itself, so a host rebound to a private address would go
+		// unchecked. KubeCenter has no proxy support for remote clusters.
+		Proxy: directConnection,
 	}
+}
+
+// directConnection is a rest.Config.Proxy that never proxies.
+func directConnection(*http.Request) (*url.URL, error) {
+	return nil, nil
 }
 
 // ApplyClusterTLS is the exported alias for applyClusterTLS, so external
