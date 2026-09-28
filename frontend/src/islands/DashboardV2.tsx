@@ -15,7 +15,7 @@ import { useAuth } from "@/lib/auth.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
 import type { FamilyStatuses } from "@/lib/dashboard/catalog.ts";
 import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";
-import { withheldReason } from "@/lib/dashboard/coverage.ts";
+import { summaryCountLabel } from "@/lib/dashboard/coverage.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import type { EditSession } from "@/lib/dashboard/edit-session.ts";
 import {
@@ -871,12 +871,20 @@ export default function DashboardV2() {
   );
   const nodeCount = summary.data?.nodes.total ?? info.data?.nodeCount ?? 0;
   const podCount = summary.data?.pods.total ?? 0;
-  // A remote summary reports a section it could not read as zero, so the
-  // subtitle asks its coverage row first: "— pods" beside the reason, never
-  // "0 pods" for pods this account was not allowed to list.
-  const nodesWithheld = withheldReason(summary.data, "nodes");
-  const podsWithheld = withheldReason(summary.data, "pods");
-  const countsReason = [nodesWithheld, podsWithheld]
+  // A remote summary reports a section it could not read as zero, and one it
+  // read only part of as a plain total, so the subtitle asks each coverage row
+  // first: "— pods" beside the reason, never "0 pods" for pods this account
+  // was not allowed to list; "≥ 42 pods" for a truncated list; the age beside
+  // a stale one. With no coverage block (local) the text is unchanged.
+  const nodesLabel = summaryCountLabel(
+    summary.data,
+    "nodes",
+    nodeCount,
+    "nodes",
+    "node",
+  );
+  const podsLabel = summaryCountLabel(summary.data, "pods", podCount, "pods");
+  const countsReason = [nodesLabel.note, podsLabel.note]
     .filter((r) => r !== null)
     .join(" ");
   const clusterName = info.data?.platform ?? info.data?.clusterID ?? "cluster";
@@ -992,13 +1000,7 @@ export default function DashboardV2() {
                 marginTop: "4px",
               }}
             >
-              {[
-                clusterName,
-                nodesWithheld === null
-                  ? `${nodeCount} node${nodeCount !== 1 ? "s" : ""}`
-                  : "— nodes",
-                podsWithheld === null ? `${podCount} pods` : "— pods",
-              ].join(" · ")}
+              {[clusterName, nodesLabel.text, podsLabel.text].join(" · ")}
               {countsReason && (
                 <span data-testid="summary-counts-withheld">
                   {" "}

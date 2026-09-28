@@ -1,16 +1,23 @@
 export interface CheckItemProps {
   label: string;
   value: string;
-  status: "success" | "warning" | "error";
+  /**
+   * `neutral` is for a value that was deliberately not evaluated -- a check
+   * with nothing to check, such as alerting on a cluster with no Alertmanager.
+   * It is neither a pass nor something to look at.
+   */
+  status: "success" | "warning" | "error" | "neutral";
 }
 
+const STATUS_COLOR: Record<CheckItemProps["status"], string> = {
+  success: "var(--success)",
+  warning: "var(--warning)",
+  error: "var(--error)",
+  neutral: "var(--text-muted)",
+};
+
 export function CheckItem({ label, value, status }: CheckItemProps) {
-  const color =
-    status === "success"
-      ? "var(--success)"
-      : status === "warning"
-        ? "var(--warning)"
-        : "var(--error)";
+  const color = STATUS_COLOR[status];
   return (
     <div
       style={{

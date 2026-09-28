@@ -15,6 +15,37 @@ import { registerWidget } from "@/lib/dashboard/registry.ts";
  * operand was unreachable and declaring that source would only gate this card
  * on an endpoint it never reads.
  */
+
+interface SectionBarProps {
+  label: string;
+  withheld: string | undefined;
+  value: number;
+  max: number;
+  suffix: string;
+  color: string;
+}
+
+function SectionBar({
+  label,
+  withheld,
+  value,
+  max,
+  suffix,
+  color,
+}: SectionBarProps) {
+  return (
+    <div title={withheld}>
+      <BarRow
+        label={label}
+        value={withheld ? 0 : value}
+        max={max}
+        suffix={withheld ? "—" : suffix}
+        color={color}
+      />
+    </div>
+  );
+}
+
 function Nodes() {
   const s = dashboardData.state<CoveredSummary>("dashboard-summary").data;
 
@@ -65,33 +96,30 @@ function Nodes() {
         </div>
       ) : (
         <div>
-          <div title={cpuWithheld}>
-            <BarRow
-              label="CPU"
-              value={cpuWithheld ? 0 : cpuPct}
-              max={100}
-              suffix={cpuWithheld ? "—" : `${cpuPct}%`}
-              color="var(--accent)"
-            />
-          </div>
-          <div title={memWithheld}>
-            <BarRow
-              label="Memory"
-              value={memWithheld ? 0 : memPct}
-              max={100}
-              suffix={memWithheld ? "—" : `${memPct}%`}
-              color="var(--accent-secondary)"
-            />
-          </div>
-          <div title={podsWithheld}>
-            <BarRow
-              label="Pods"
-              value={podsWithheld ? 0 : podCount}
-              max={Math.max(podCount, 440)}
-              suffix={podsWithheld ? "—" : String(podCount)}
-              color="var(--success)"
-            />
-          </div>
+          <SectionBar
+            label="CPU"
+            withheld={cpuWithheld}
+            value={cpuPct}
+            max={100}
+            suffix={`${cpuPct}%`}
+            color="var(--accent)"
+          />
+          <SectionBar
+            label="Memory"
+            withheld={memWithheld}
+            value={memPct}
+            max={100}
+            suffix={`${memPct}%`}
+            color="var(--accent-secondary)"
+          />
+          <SectionBar
+            label="Pods"
+            withheld={podsWithheld}
+            value={podCount}
+            max={Math.max(podCount, 440)}
+            suffix={String(podCount)}
+            color="var(--success)"
+          />
           {/* Node readiness bar */}
           <BarRow
             label="Ready"

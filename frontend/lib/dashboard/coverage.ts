@@ -16,9 +16,8 @@
  * means "nothing to disclose": every section renders exactly as it did before
  * coverage existed. That keeps the local dashboard byte-for-byte unchanged.
  */
-import { ApiError } from "@/lib/api.ts";
 import { durationShort } from "@/lib/format.ts";
-import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
+import type { HealthSignal } from "@/lib/score-color.ts";
 import type { DashboardSummary } from "./wire-types.ts";
 
 /**
@@ -188,12 +187,99 @@ export function withheldReason(
 }
 
 /**
+ * A count as a line of prose -- "42 pods" -- with what the reader must know
+ * about it before trusting it.
+ *
+ * `withheldReason` answers only "may this be shown?", which is enough for a
+ * bar but not for a sentence: a `partial` section passes it, and printing its
+ * total plainly claims a whole cluster that was never read (a list truncated
+ * at the page cap, or one whose later page failed -- `listAllRemote`). So:
+ *
+ * - withheld (`unavailable`, `forbidden`, unknown status): "— pods", note is
+ *   the reason. Never the backend's placeholder zero.
+ * - `partial`: "≥ 42 pods", note says why it is a lower bound.
+ * - `stale`:   "42 pods", note carries the observation age.
+ * - `ok`, or no row at all (the local path): "42 pods", note null -- output
+ *   identical to the pre-coverage text.
+ *
+ * `singular` is used only for an exact count of 1; "— nodes" and "≥ 1 node"
+ * follow ordinary English.
+ */
+export function summaryCountLabel(
+  summary: CoveredSummary | null | undefined,
+  section: CoverageSection,
+  count: number,
+  plural: string,
+  singular: string = plural,
+  now: number = Date.now(),
+): { text: string; note: string | null } {
+  const cov = coverageFor(summary, section);
+  const tone = sectionTone(cov);
+  if (!isRenderable(tone)) {
+    return { text: `— ${plural}`, note: coverageMessage(cov, now) };
+  }
+  const plain = `${count} ${count === 1 ? singular : plural}`;
+  switch (tone) {
+    case "partial":
+      return { text: `≥ ${plain}`, note: coverageMessage(cov, now) };
+    case "stale":
+      return { text: plain, note: coverageMessage(cov, now) };
+    default:
+      return { text: plain, note: null };
+  }
+}
+
+/** The four signals `computeClusterHealth` weights into the score. */
+const WEIGHTED_SIGNALS = ["nodes", "workloads", "pods", "alerts"] as const;
+
+/**
+ * The named health signal, or null when the summary carries none.
+ *
+ * Null is "not reported" (no health block, or an older backend without
+ * `signals`), and callers treat it as they treat a missing coverage row:
+ * nothing to disclose.
+ */
+export function healthSignal(
+  summary: CoveredSummary | null | undefined,
+  name: string,
+): HealthSignal | null {
+  const signals = summary?.health?.signals;
+  if (!Array.isArray(signals)) return null;
+  return signals.find((sig) => sig?.name === name) ?? null;
+}
+
+/**
+ * The first weighted signal the backend could not read, or null.
+ *
+ * `unknown` is a read that failed -- missing RBAC, an informer still syncing,
+ * an Alertmanager query error (`dashboard.go`). `computeClusterHealth` drops
+ * it and renormalizes the remaining weights, so the score it returns is a
+ * confident number over an input that was never observed: 100% alerts-free
+ * because the alerts query errored.
+ *
+ * `skipped` is deliberately NOT in this set. The backend skips a signal only
+ * when there is nothing to evaluate -- no desired workloads, no Running or
+ * Pending pods, no Alertmanager configured (`health.go`) -- and renormalizing
+ * over the rest is the intended scoring for such a cluster, not a gap in it.
+ */
+function unresolvedWeightedSignal(
+  summary: CoveredSummary | null | undefined,
+): HealthSignal | null {
+  for (const name of WEIGHTED_SIGNALS) {
+    const sig = healthSignal(summary, name);
+    if (sig?.status === "unknown") return sig;
+  }
+  return null;
+}
+
+/**
  * Whether the health score may be drawn.
  *
  * False when health is absent, when its score is null (the backend's "no
  * weighted signal resolved" answer, `computeClusterHealth` returning
- * `Status: unknown, Score: nil`), or when the health row is anything but a
- * plain `ok`. Health is a composite: a `partial` or `stale` score is a score
+ * `Status: unknown, Score: nil`), when any weighted signal is `unknown` (see
+ * `unresolvedWeightedSignal`), or when the health row is anything but a plain
+ * `ok`. Health is a composite: a `partial` or `stale` score is a score
  * computed from inputs that are known to be incomplete, which is precisely
  * the synthesised reading AE3 forbids. The remote path always reports health
  * `unavailable` in v1.
@@ -203,8 +289,29 @@ export function shouldRenderHealth(
 ): boolean {
   const score = summary?.health?.score;
   if (typeof score !== "number" || !Number.isFinite(score)) return false;
+  if (unresolvedWeightedSignal(summary) !== null) return false;
   const cov = coverageFor(summary, "health");
   return cov === null || sectionTone(cov) === "ok";
+}
+
+/**
+ * Why no score is drawn, most specific first: the health coverage row (the
+ * remote path), then the weighted signal that could not be read, then the
+ * generic "too few signals" for a null score with nothing more to say.
+ */
+export function healthUnscoredReason(
+  summary: CoveredSummary | null | undefined,
+): string {
+  const cov = coverageFor(summary, "health");
+  if (cov !== null && sectionTone(cov) !== "ok") return coverageMessage(cov);
+  const sig = unresolvedWeightedSignal(summary);
+  if (sig !== null) {
+    const why = sig.reason?.trim();
+    return why
+      ? `The ${sig.name} signal could not be read (${why}), so no score is shown.`
+      : `The ${sig.name} signal could not be read, so no score is shown.`;
+  }
+  return "Too few health signals resolved to score this cluster.";
 }
 
 /**
@@ -247,23 +354,4 @@ export function widgetCoverage(
 ): SectionCoverage | null {
   const section = WIDGET_SECTIONS[widgetId];
   return section === undefined ? null : coverageFor(summary, section);
-}
-
-/**
- * Why a resource-counts read failed, when the failure is the known remote
- * refusal rather than an error.
- *
- * `GET /v1/resources/counts` reads the local informer cache and answers 400
- * for any other cluster (`counts.go`). That is a standing fact about the
- * target, so it is reported as unavailability, not as a failed request. Keyed
- * on the status plus the cluster the request was pinned to, not on the
- * message: the handler's prose is not a contract.
- */
-export function countsUnavailableReason(
-  err: unknown,
-  clusterId: string,
-): string | null {
-  if (!(err instanceof ApiError) || err.status !== 400) return null;
-  if (clusterId === LOCAL_CLUSTER_ID) return null;
-  return "Resource counts are only available for the local cluster.";
 }

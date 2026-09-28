@@ -4,18 +4,18 @@ import { render } from "preact-render-to-string";
 import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
 // Registers every widget, so the drift guard below sees the real catalog.
 import "@/components/dashboard/widgets/index.ts";
-import { ApiError } from "@/lib/api.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import type { CoveredSummary, SectionCoverage } from "./coverage.ts";
 import {
-  countsUnavailableReason,
   coverageFor,
   coverageMessage,
   formatHealthScore,
+  healthUnscoredReason,
   isRenderable,
   observedAgo,
   sectionTone,
   shouldRenderHealth,
+  summaryCountLabel,
   WIDGET_SECTIONS,
   withheldReason,
 } from "./coverage.ts";
@@ -131,6 +131,198 @@ describe("health (AE3)", () => {
   });
 });
 
+/**
+ * A local health block: all seven signals, the four weighted ones `ok`
+ * unless overridden. Mirrors the fixed set `computeClusterHealth` emits.
+ */
+function localHealth(
+  over: Record<
+    string,
+    { status: "ok" | "skipped" | "unknown"; reason?: string }
+  >,
+  score: number | null = 88,
+): CoveredSummary {
+  const names = [
+    "nodes",
+    "workloads",
+    "pods",
+    "alerts",
+    "certificates",
+    "storage",
+    "controlPlane",
+  ];
+  return remoteSummary([], {
+    coverage: undefined,
+    health: {
+      score,
+      status: score === null ? "unknown" : "healthy",
+      reasons: [],
+      signals: names.map((name) => ({
+        name,
+        score: null,
+        status: over[name]?.status ?? "ok",
+        reason: over[name]?.reason,
+      })),
+    },
+  });
+}
+
+describe("health signals", () => {
+  test("an unknown weighted signal withholds the renormalized score", () => {
+    // The backend dropped alerts and renormalized: 88 is a number over an
+    // input nobody read.
+    for (const name of ["nodes", "workloads", "pods", "alerts"]) {
+      const s = localHealth({
+        [name]: { status: "unknown", reason: "insufficient permissions" },
+      });
+      expect(shouldRenderHealth(s)).toBe(false);
+      expect(formatHealthScore(s)).toBe("—");
+    }
+  });
+
+  test("the unscored reason names the signal and its reason", () => {
+    const s = localHealth({
+      alerts: { status: "unknown", reason: "alerting unavailable" },
+    });
+    expect(healthUnscoredReason(s)).toBe(
+      "The alerts signal could not be read (alerting unavailable), so no score is shown.",
+    );
+    expect(
+      healthUnscoredReason(localHealth({ pods: { status: "unknown" } })),
+    ).toContain("pods signal");
+  });
+
+  test("a skipped signal is intentional and keeps the score", () => {
+    const s = localHealth({
+      alerts: { status: "skipped", reason: "alerting not configured" },
+      workloads: { status: "skipped", reason: "no workloads to evaluate" },
+    });
+    expect(shouldRenderHealth(s)).toBe(true);
+    expect(formatHealthScore(s)).toBe("88");
+  });
+
+  test("an unknown flat-deduction signal does not withhold the score", () => {
+    // certificates/storage/controlPlane never carry a weight.
+    const s = localHealth({ storage: { status: "unknown" } });
+    expect(shouldRenderHealth(s)).toBe(true);
+  });
+
+  test("the health coverage row outranks a signal reason", () => {
+    const s = localHealth({ alerts: { status: "unknown" } });
+    s.coverage = V1_REMOTE;
+    expect(healthUnscoredReason(s)).toContain("health scoring requires");
+  });
+
+  test("a null score with every signal resolved keeps the generic reason", () => {
+    expect(healthUnscoredReason(localHealth({}, null))).toBe(
+      "Too few health signals resolved to score this cluster.",
+    );
+  });
+});
+
+describe("header counts", () => {
+  const now = Date.parse("2026-09-27T12:05:00Z");
+  const label = (
+    coverage: SectionCoverage[] | undefined,
+    section: "nodes" | "pods",
+    count: number,
+  ) =>
+    section === "nodes"
+      ? summaryCountLabel(
+          remoteSummary([], { coverage }),
+          "nodes",
+          count,
+          "nodes",
+          "node",
+          now,
+        )
+      : summaryCountLabel(
+          remoteSummary([], { coverage }),
+          "pods",
+          count,
+          "pods",
+          "pods",
+          now,
+        );
+
+  test("local (no coverage) is exactly the pre-coverage text", () => {
+    expect(label(undefined, "nodes", 3)).toEqual({
+      text: "3 nodes",
+      note: null,
+    });
+    expect(label(undefined, "nodes", 1)).toEqual({
+      text: "1 node",
+      note: null,
+    });
+    expect(label(undefined, "nodes", 0)).toEqual({
+      text: "0 nodes",
+      note: null,
+    });
+    expect(label(undefined, "pods", 42)).toEqual({
+      text: "42 pods",
+      note: null,
+    });
+  });
+
+  test("an ok row is the plain text with no note", () => {
+    expect(label(V1_REMOTE, "pods", 42)).toEqual({
+      text: "42 pods",
+      note: null,
+    });
+  });
+
+  test("partial is a lower bound with its reason", () => {
+    const got = label(
+      [row("pods", "partial", { detail: "list truncated after 5000 items" })],
+      "pods",
+      5000,
+    );
+    expect(got.text).toBe("≥ 5000 pods");
+    expect(got.note).toBe("List truncated after 5000 items.");
+    expect(label([row("nodes", "partial")], "nodes", 1).text).toBe("≥ 1 node");
+    expect(label([row("nodes", "partial")], "nodes", 1).note).toContain(
+      "lower bound",
+    );
+  });
+
+  test("stale keeps the count and notes the age", () => {
+    const got = label(
+      [row("nodes", "stale", { observedAt: "2026-09-27T12:00:00Z" })],
+      "nodes",
+      3,
+    );
+    expect(got.text).toBe("3 nodes");
+    expect(got.note).toContain("5m ago");
+  });
+
+  test("unavailable and forbidden withhold the count with the reason", () => {
+    const forbidden = label(
+      [
+        row("pods", "forbidden", {
+          detail:
+            "you do not have permission to list pods across all namespaces on this cluster",
+        }),
+      ],
+      "pods",
+      0,
+    );
+    expect(forbidden.text).toBe("— pods");
+    expect(forbidden.note).toContain("across all namespaces");
+    const unavailable = label(
+      [
+        row("nodes", "unavailable", {
+          detail: "list failed on the remote cluster",
+        }),
+      ],
+      "nodes",
+      1,
+    );
+    // Plural even for a would-be count of one: there is no count.
+    expect(unavailable.text).toBe("— nodes");
+    expect(unavailable.note).toBe("List failed on the remote cluster.");
+  });
+});
+
 describe("tones (R3)", () => {
   test("all five statuses map to five distinct tones", () => {
     const tones = ["ok", "partial", "unavailable", "forbidden", "stale"].map(
@@ -207,31 +399,6 @@ describe("tones (R3)", () => {
     expect(
       withheldReason(remoteSummary([], { coverage: undefined }), "cpu"),
     ).toBeNull();
-  });
-});
-
-describe("resource counts", () => {
-  test("counts 400 on remote maps to unavailable", () => {
-    const err = new ApiError(
-      400,
-      400,
-      "resource counts are only available for the local cluster",
-    );
-    expect(countsUnavailableReason(err, "abc123")).toBe(
-      "Resource counts are only available for the local cluster.",
-    );
-  });
-
-  test("a 400 on the local cluster is still an error", () => {
-    const err = new ApiError(400, 400, "bad namespace");
-    expect(countsUnavailableReason(err, "local")).toBeNull();
-  });
-
-  test("a remote 500 is still an error", () => {
-    expect(
-      countsUnavailableReason(new ApiError(500, 500, "boom"), "abc123"),
-    ).toBeNull();
-    expect(countsUnavailableReason(new Error("offline"), "abc123")).toBeNull();
   });
 });
 
@@ -448,5 +615,77 @@ describe("widget bodies", () => {
     expect(html).toContain(">—<");
     expect(html).toContain("remote metrics binding");
     expect(html).toContain("3/3");
+  });
+
+  test("the nodes card withholds a forbidden pod count", () => {
+    seedSummary(
+      remoteSummary([
+        row("nodes", "ok"),
+        row("cpu", "ok"),
+        row("memory", "ok"),
+        row("pods", "forbidden", {
+          detail: "you may not list pods across all namespaces here",
+        }),
+      ]),
+    );
+    const html = body("nodes");
+    // CPU and memory are ok here, so the only dash is the pods bar.
+    expect(html).toContain(">—<");
+    expect(html).toContain("You may not list pods across all namespaces here.");
+    expect(html).not.toContain(">42<");
+  });
+
+  test("the health checklist dashes an unread alerts signal, never 0", () => {
+    seedSummary(
+      localHealth({
+        alerts: { status: "unknown", reason: "alerting unavailable" },
+      }),
+    );
+    const html = body("cluster-health");
+    expect(html).toContain("Critical alerts");
+    expect(html).toContain(">—<");
+    expect(html).toContain("alerting unavailable");
+    // No score either: the alerts weight was renormalized away.
+    expect(html).toContain('data-testid="health-unscored"');
+    expect(html).not.toContain(">88<");
+    // The other two rows were observed and still read as numbers.
+    expect(html).toContain(">3 / 3<");
+    expect(html).toContain(">1<");
+  });
+
+  test("a skipped alerts signal dashes the row but keeps the score", () => {
+    seedSummary(
+      localHealth({
+        alerts: { status: "skipped", reason: "alerting not configured" },
+      }),
+    );
+    const html = body("cluster-health");
+    expect(html).toContain(">88<");
+    expect(html).toContain(">—<");
+    expect(html).not.toContain(">0<");
+    // Neutral, not amber: nothing was left unread, there was nothing to read.
+    expect(html).toContain('color:var(--text-muted);">—<');
+  });
+
+  test("a skipped pods signal still shows the failed-pod count it read", () => {
+    // Skipped pods means no Running/Pending pod -- the list was read.
+    seedSummary(
+      localHealth({
+        pods: { status: "skipped", reason: "no eligible pods" },
+      }),
+    );
+    const html = body("cluster-health");
+    expect(html).not.toContain(">—<");
+    expect(html).toContain(">1<");
+  });
+
+  test("with every signal ok the checklist is unchanged", () => {
+    seedSummary(localHealth({}));
+    const html = body("cluster-health");
+    expect(html).toContain(">88<");
+    expect(html).toContain(">3 / 3<");
+    expect(html).toContain(">1<");
+    expect(html).toContain(">0<");
+    expect(html).not.toContain(">—<");
   });
 });

@@ -5,7 +5,11 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import SecretWizard from "@/src/islands/SecretWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import {
+  countsPendingText,
+  getCount,
+  resourceCounts,
+} from "@/src/lib/resource-counts.ts";
 
 type WizardComponent =
   | (({ onClose }: { onClose: () => void }) => preact.JSX.Element)
@@ -82,7 +86,7 @@ export default function ConfigDashboard({
 
   const subtitle = countsReady
     ? `${total} ${title.toLowerCase()}`
-    : `Loading ${title.toLowerCase()}…`;
+    : countsPendingText(`Loading ${title.toLowerCase()}…`);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>

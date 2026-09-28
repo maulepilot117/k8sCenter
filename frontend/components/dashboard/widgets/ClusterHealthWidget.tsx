@@ -1,17 +1,64 @@
 import Gauge from "@/components/charts/Gauge.tsx";
-import { CheckItem } from "@/components/ui/CheckItem.tsx";
+import { CheckItem, type CheckItemProps } from "@/components/ui/CheckItem.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import type { CoveredSummary } from "@/lib/dashboard/coverage.ts";
 import {
-  coverageFor,
-  coverageMessage,
+  type CoverageSection,
   formatHealthScore,
+  healthSignal,
+  healthUnscoredReason,
   shouldRenderHealth,
+  withheldReason,
 } from "@/lib/dashboard/coverage.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
 import { healthStatusColor } from "@/lib/score-color.ts";
+
+type CheckStatus = CheckItemProps["status"];
+
+/**
+ * Signals whose `skipped` still means the underlying list WAS read.
+ *
+ * `computeClusterHealth` skips workloads when nothing desires replicas and
+ * pods when no pod is Running or Pending (`health.go`) -- the informer answered,
+ * there was just nothing to score. A cluster whose every pod has Failed is
+ * exactly that case, so hiding `pods.failed` behind a dash there would hide
+ * the one number that matters. Alerts skip for the opposite reason (no
+ * Alertmanager, or no permission to query it): nothing was observed.
+ */
+const SKIP_STILL_OBSERVED: ReadonlySet<string> = new Set(["workloads", "pods"]);
+
+/**
+ * A checklist row's value, or "—" when what backs it was not observed.
+ *
+ * Checked against both disclosures the summary carries: the section's coverage
+ * row (remote) and the health signal that reads the same source (local). An
+ * unobserved value is never "0" with a green dot -- that is a clean bill of
+ * health for something nobody looked at. A value that could not be read takes
+ * `warning` ("look here"); one the backend deliberately skipped -- nothing to
+ * evaluate, such as alerting with no Alertmanager -- takes `neutral`, because
+ * there is nothing to look at.
+ */
+function checkValue(
+  s: CoveredSummary | null,
+  section: CoverageSection,
+  signal: string,
+  observed: { value: string; status: CheckStatus },
+): { value: string; status: CheckStatus; reason?: string } {
+  const withheld = withheldReason(s, section);
+  if (withheld !== null) {
+    return { value: "—", status: "warning", reason: withheld };
+  }
+  const sig = healthSignal(s, signal);
+  if (sig?.status === "unknown") {
+    return { value: "—", status: "warning", reason: sig.reason };
+  }
+  if (sig?.status === "skipped" && !SKIP_STILL_OBSERVED.has(signal)) {
+    return { value: "—", status: "neutral", reason: sig.reason };
+  }
+  return observed;
+}
 
 /**
  * Cluster health: a score gauge plus a three-item readiness checklist.
@@ -43,10 +90,23 @@ function ClusterHealth({ mode }: WidgetProps) {
   const healthColor = healthStatusColor(healthStatus);
   const healthLabel =
     healthStatus === "unknown" ? "UNKNOWN" : healthStatus.toUpperCase();
-  const healthCoverage = coverageFor(s, "health");
-  const unscoredReason = healthCoverage
-    ? coverageMessage(healthCoverage)
-    : "Too few health signals resolved to score this cluster.";
+  const unscoredReason = healthUnscoredReason(s);
+
+  // `pods.failed` comes from the same pod list the `pods` signal reads
+  // (`aggregateCounts` / `handleDashboardSummary`), so that is the signal
+  // that vouches for it -- not `workloads`, which reads Deployments et al.
+  const nodesCheck = checkValue(s, "nodes", "nodes", {
+    value: `${nodesReady} / ${nodeCount}`,
+    status: nodesReady === nodeCount && nodeCount > 0 ? "success" : "warning",
+  });
+  const degradedCheck = checkValue(s, "pods", "pods", {
+    value: String(workloadsDegraded),
+    status: workloadsDegraded > 0 ? "warning" : "success",
+  });
+  const alertsCheck = checkValue(s, "alerts", "alerts", {
+    value: String(criticalAlerts),
+    status: criticalAlerts > 0 ? "error" : "success",
+  });
 
   return (
     <WidgetShell title="Cluster Health">
@@ -116,25 +176,27 @@ function ClusterHealth({ mode }: WidgetProps) {
             three label/value rows do not fit a small box legibly. */}
         {mode !== "compact" && (
           <div style={{ flex: 1, minWidth: "160px" }}>
-            <CheckItem
-              label="Nodes ready"
-              value={`${nodesReady} / ${nodeCount}`}
-              status={
-                nodesReady === nodeCount && nodeCount > 0
-                  ? "success"
-                  : "warning"
-              }
-            />
-            <CheckItem
-              label="Workloads degraded"
-              value={workloadsDegraded > 0 ? String(workloadsDegraded) : "0"}
-              status={workloadsDegraded > 0 ? "warning" : "success"}
-            />
-            <CheckItem
-              label="Critical alerts"
-              value={criticalAlerts > 0 ? String(criticalAlerts) : "0"}
-              status={criticalAlerts > 0 ? "error" : "success"}
-            />
+            <div title={nodesCheck.reason}>
+              <CheckItem
+                label="Nodes ready"
+                value={nodesCheck.value}
+                status={nodesCheck.status}
+              />
+            </div>
+            <div title={degradedCheck.reason}>
+              <CheckItem
+                label="Workloads degraded"
+                value={degradedCheck.value}
+                status={degradedCheck.status}
+              />
+            </div>
+            <div title={alertsCheck.reason}>
+              <CheckItem
+                label="Critical alerts"
+                value={alertsCheck.value}
+                status={alertsCheck.status}
+              />
+            </div>
           </div>
         )}
       </div>
