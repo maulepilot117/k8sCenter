@@ -157,6 +157,30 @@ test("switchCluster treats a new generation of the same id as a switch", () => {
   expect(selectedClusterGeneration.value).toBe("gen-a-second-registration");
 });
 
+test("resolving the active cluster's unknown generation is not a switch", () => {
+  // A selection restored from a build that stored only the id starts under the
+  // unknown sentinel; the switcher fills in the real generation once the
+  // cluster list loads. Same id, same registration (a re-registration mints a
+  // new random id), so nothing the operator issued has become stale.
+  resetTarget("cluster-a", UNKNOWN_GENERATION);
+  const before = clusterEpoch.value;
+
+  switchCluster("cluster-a", "gen-a");
+
+  expect(clusterEpoch.value).toBe(before);
+  expect(selectedCluster.value).toBe("cluster-a");
+  expect(selectedClusterGeneration.value).toBe("gen-a");
+});
+
+test("resolving an unknown generation onto a different id is still a switch", () => {
+  resetTarget("cluster-a", UNKNOWN_GENERATION);
+  const before = clusterEpoch.value;
+
+  switchCluster("cluster-b", "gen-b");
+
+  expect(clusterEpoch.value).toBe(before + 1);
+});
+
 test("api pins X-Cluster-ID at call entry", async () => {
   resetTarget("cluster-a", "gen-a");
   const { calls, restore } = stubFetch([ok]);
