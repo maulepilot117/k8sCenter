@@ -33,6 +33,7 @@ import {
   LOCAL_CLUSTER_ID,
   selectedCluster,
   selectedClusterGeneration,
+  UNKNOWN_GENERATION,
 } from "./cluster.ts";
 
 export interface ApplyResult {
@@ -169,11 +170,18 @@ export function useYamlApply(
     issuedEpoch: number;
   } | null>(null);
 
+  // A pin taken while the selection was still restored under the unknown
+  // sentinel cannot be stale on generation alone: the id is unchanged, and a
+  // re-registration always mints a new id, so learning the real generation
+  // later is not a move. (The server's targetGeneration is not compared here:
+  // it and the cluster list's createdAt format the same instant differently
+  // unless the backend runs in UTC. The apply is enforced on it server-side.)
   const pinStale = useComputed(() => {
     const p = pin.value;
     if (!p) return false;
+    if (p.target.clusterId !== selectedCluster.value) return true;
     return (
-      p.target.clusterId !== selectedCluster.value ||
+      p.target.generation !== UNKNOWN_GENERATION &&
       p.target.generation !== selectedClusterGeneration.value
     );
   });

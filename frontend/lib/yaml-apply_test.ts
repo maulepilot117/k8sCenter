@@ -4,7 +4,7 @@ import { signal } from "@preact/signals";
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import { setAccessToken } from "./api.ts";
-import { switchCluster } from "./cluster.ts";
+import { switchCluster, UNKNOWN_GENERATION } from "./cluster.ts";
 import {
   type ApplyResponse,
   type UseYamlApplyOptions,
@@ -195,6 +195,51 @@ test("pinStale is set by an epoch change", async () => {
 
   expect(hook.pinStale.value).toBe(true);
   expect(hook.pin.value).toBe(pinned);
+});
+
+test("a preview in flight while the restored generation resolves still pins", async () => {
+  // Page-load race (U11b P3): the selection was restored under the unknown
+  // sentinel and the switcher resolves it while a Validate is in flight.
+  switchCluster("cluster-a", UNKNOWN_GENERATION);
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
+
+  const done = hook.handleValidate();
+  await flush();
+  const inFlight = calls[0];
+
+  act(() => switchCluster("cluster-a", "gen-a"));
+  expect(inFlight.signal?.aborted).toBe(false);
+
+  inFlight.respond(200, preview("cluster-a", "gen-a"));
+  await done;
+
+  expect(hook.pin.value?.targetGeneration).toBe("gen-a");
+  expect(hook.pinStale.value).toBe(false);
+});
+
+test("a pin taken before the restored generation resolves is not stale", async () => {
+  switchCluster("cluster-a", UNKNOWN_GENERATION);
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
+
+  await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
+  act(() => switchCluster("cluster-a", "gen-a"));
+
+  // The server already told us which registration it validated against; the
+  // client learning the same generation later does not make that pin stale.
+  expect(hook.pinStale.value).toBe(false);
+});
+
+test("a pin on a known generation is stale once that generation changes", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
+
+  await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
+  act(() => switchCluster("cluster-a", "gen-a-second-registration"));
+
+  expect(hook.pinStale.value).toBe(true);
 });
 
 test("clearPin forces a fresh preview", async () => {

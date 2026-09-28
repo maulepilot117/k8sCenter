@@ -226,7 +226,9 @@ if (IS_BROWSER) {
  *
  * Re-selecting the cluster that is already active is a no-op: it must not bump
  * the epoch, because the epoch means "the operator moved somewhere else" and a
- * spurious tick would invalidate live caches and mark valid pins stale.
+ * spurious tick would invalidate live caches and mark valid pins stale. For the
+ * same reason, resolving the active cluster's `UNKNOWN_GENERATION` to its real
+ * value updates the generation without a tick.
  */
 export function switchCluster(id: string, generation: string): void {
   // Normalize the pair as a unit. Defaulting the two independently let a
@@ -238,11 +240,18 @@ export function switchCluster(id: string, generation: string): void {
       ? LOCAL_GENERATION
       : generation || UNKNOWN_GENERATION;
 
-  if (
-    clusterId === selectedCluster.peek() &&
-    gen === selectedClusterGeneration.peek()
-  ) {
-    return;
+  if (clusterId === selectedCluster.peek()) {
+    const current = selectedClusterGeneration.peek();
+    if (gen === current) return;
+    // Learning the generation of a selection restored under the unknown
+    // sentinel is not a move: the id is unchanged, and a re-registration
+    // always mints a new random id, so it is the same registration the
+    // operator was already on. Bumping the epoch here discarded a Validate
+    // issued during page load and marked its pin stale against itself.
+    if (current === UNKNOWN_GENERATION) {
+      selectedClusterGeneration.value = gen;
+      return;
+    }
   }
 
   batch(() => {
