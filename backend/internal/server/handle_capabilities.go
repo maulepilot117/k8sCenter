@@ -825,9 +825,8 @@ func authorizedFromClusterWideSAR(op capabilityOp, allowed bool) (*bool, ReasonC
 // seam for faking the router's copy of it either, so substituting a fake
 // here is the only way a package-internal test can drive the handler's
 // REMOTE chain (reachability → discovery → impersonated SAR) end to end
-// through real HTTP instead of by calling resolveReachability and
-// buildCapability directly (review finding #3 — every remote reason code was
-// pinned only by direct calls against test-only synthetic rows).
+// through real HTTP, rather than only through direct resolveReachability
+// and buildCapability calls.
 //
 // Production never reassigns it. It also normalizes the nil case: returning
 // a nil *store.ClusterStore as a non-nil interface (the classic Go

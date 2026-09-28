@@ -1657,9 +1657,14 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 				t.Errorf("yaml.validate Reachable = %v; want null — the target could not be resolved, so the (healthy) registry observation must not be reported as a verdict", *plain.Reachable)
 			}
 
-			// The other three yaml.* rows share yaml.validate's shape (plain,
-			// namespaced configmaps probe), so they must share its verdict.
-			for _, id := range []string{"yaml.diff", "yaml.export", "yaml.apply"} {
+			// Every other remote-supported row with yaml.validate's shape
+			// (plain, namespaced configmaps probe, no discovery probe) must
+			// share its verdict. Derived from wantRemoteSupported so a row
+			// added there is covered here too.
+			for _, id := range wantRemoteSupported {
+				if id == "yaml.validate" || id == "dashboard.summary" {
+					continue
+				}
 				c := findCapability(t, body, id)
 				if !c.PlatformSupported || c.ReasonCode != tt.wantPlain {
 					t.Errorf("%s = (platformSupported %v, reason %q); want (true, %q)", id, c.PlatformSupported, c.ReasonCode, tt.wantPlain)
