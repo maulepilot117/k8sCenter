@@ -10,6 +10,7 @@ import {
   getAuthHeaders,
   loginThroughUI,
   type PinConfigSeed,
+  setClusterTarget,
   watchForSubscription,
 } from "../helpers.ts";
 
@@ -188,12 +189,7 @@ test.describe.serial("Resource pins", () => {
     // Belt and braces with the cluster spec's own finally: these specs are
     // serial, so a cluster left selected by a failed spec would silently
     // re-point every later one at a cluster that does not exist.
-    await page.evaluate(() =>
-      localStorage.setItem(
-        "k8scenter.clusterTarget",
-        JSON.stringify({ clusterId: "local", generation: "local" }),
-      )
-    );
+    await setClusterTarget(page, "local");
     await deleteAllPins(page);
   });
 
@@ -556,18 +552,11 @@ test.describe.serial("Resource pins", () => {
 
     await page.goto(detailPath(name));
     try {
-      // See the note in saved-views.spec.ts: the restored target is the JSON
-      // pair under "k8scenter.clusterTarget", and writing the legacy key here
-      // would leave this spec on the local cluster and passing vacuously.
-      await page.evaluate(() => {
-        localStorage.setItem(
-          "k8scenter.clusterTarget",
-          JSON.stringify({
-            clusterId: "some-remote-cluster",
-            generation: "unknown",
-          }),
-        );
-      });
+      // setClusterTarget writes the current key, not the legacy
+      // "k8scenter.selectedCluster" one: the app consults the legacy key only
+      // when the current one is absent, so writing it here would leave this
+      // spec on the local cluster and passing vacuously.
+      await setClusterTarget(page, "some-remote-cluster");
       await page.reload();
       release?.();
 
@@ -580,12 +569,7 @@ test.describe.serial("Resource pins", () => {
       // Restore on the failure path too: the file is serial, so leaving a
       // nonexistent cluster selected would make every later spec fail for a
       // reason that has nothing to do with what it tests.
-      await page.evaluate(() => {
-        localStorage.setItem(
-          "k8scenter.clusterTarget",
-          JSON.stringify({ clusterId: "local", generation: "local" }),
-        );
-      });
+      await setClusterTarget(page, "local");
     }
   });
 

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
-import { getAuthHeaders } from "../helpers.ts";
+import { getAuthHeaders, seedClusterTarget } from "../helpers.ts";
 
 /**
  * Release C's two-cluster evidence (U12): AE2 (a preview and apply stay pinned
@@ -26,6 +26,14 @@ import { getAuthHeaders } from "../helpers.ts";
  * original id is invalid for anything after it, and it deregisters its own
  * replacement, so no fixture registration remains once the suite ends.
  */
+
+// No traces for this file. The eviction case POSTs the saved registration
+// body, which carries a ServiceAccount token, and under the config's
+// trace: "on-first-retry" a CI retry would record that request body into
+// trace.zip and upload it with the report. trace is a worker-scoped option,
+// so Playwright accepts it only at file level, not on one case or describe;
+// the cost is that the other cases here lose their retry traces too.
+test.use({ trace: "off" });
 
 const REMOTE = process.env.K8SCENTER_REMOTE_CLUSTER_ID;
 const LOCAL_CONTEXT = process.env.K8SCENTER_LOCAL_KUBE_CONTEXT ?? "kind-e2e";
@@ -57,17 +65,39 @@ async function headersFor(
   };
 }
 
-/** Selects `clusterId` the way ClusterSwitcher persists it, before any load. */
-async function selectCluster(page: Page, clusterId: string): Promise<void> {
-  await page.addInitScript((id: string) => {
-    localStorage.setItem(
-      "k8scenter.clusterTarget",
-      JSON.stringify({
-        clusterId: id,
-        generation: id === "local" ? "local" : "unknown",
-      }),
-    );
-  }, clusterId);
+/**
+ * Previews `yaml` on the remote cluster, then applies it pinned to the target
+ * that preview reports (D4) -- the flow the YAML page drives. Server-side
+ * apply, so re-applying an existing object is a no-op and any case can call
+ * this to establish its own fixture.
+ */
+async function previewAndApplyPinned(
+  page: Page,
+  yaml: string,
+): Promise<{ targetCluster: string; targetGeneration: string }> {
+  const validated = await page.request.post("/api/v1/yaml/validate", {
+    headers: await headersFor(page, REMOTE!, "text/yaml"),
+    data: yaml,
+  });
+  expect(validated.status()).toBe(200);
+  const preview = (await validated.json()).data;
+  const applied = await page.request.post(pinnedApplyUrl(preview), {
+    headers: await headersFor(page, REMOTE!, "text/yaml"),
+    data: yaml,
+  });
+  expect(applied.status()).toBe(200);
+  expect((await applied.json()).data.summary.failed).toBe(0);
+  return preview;
+}
+
+/** The apply URL carrying the pin a preview reported. */
+function pinnedApplyUrl(preview: {
+  targetCluster: string;
+  targetGeneration: string;
+}): string {
+  return `/api/v1/yaml/apply?targetCluster=${encodeURIComponent(
+    preview.targetCluster,
+  )}&targetGeneration=${encodeURIComponent(preview.targetGeneration)}`;
 }
 
 /**
@@ -157,7 +187,7 @@ test.describe.serial("Remote cluster capabilities", () => {
 
     // And the YAML page, opened on the remote cluster, says so before the
     // operator types anything: no "not supported" notice for Apply.
-    await selectCluster(page, REMOTE!);
+    await seedClusterTarget(page, REMOTE!);
     await page.route("**/esm.sh/monaco-editor**", (route) => route.abort());
     await page.goto("/tools/yaml-apply");
     await expect(page.getByRole("heading", { name: "YAML Apply" })).toBeVisible();
@@ -213,22 +243,18 @@ test.describe.serial("Remote cluster capabilities", () => {
     // The operator has since switched to local: the request now carries the
     // local header but the pin from the remote preview. The server refuses
     // and applies nothing (D4).
-    const mismatched = await page.request.post(
-      `/api/v1/yaml/apply?targetCluster=${encodeURIComponent(
-        preview.targetCluster,
-      )}&targetGeneration=${encodeURIComponent(preview.targetGeneration)}`,
-      { headers: await headersFor(page, "local", "text/yaml"), data: yaml },
-    );
+    const mismatched = await page.request.post(pinnedApplyUrl(preview), {
+      headers: await headersFor(page, "local", "text/yaml"),
+      data: yaml,
+    });
     expect(mismatched.status()).toBe(409);
     expect((await mismatched.json()).error.reason).toBe("cluster_pin_mismatch");
 
     // Addressed to the pinned target, the same apply lands there.
-    const pinned = await page.request.post(
-      `/api/v1/yaml/apply?targetCluster=${encodeURIComponent(
-        preview.targetCluster,
-      )}&targetGeneration=${encodeURIComponent(preview.targetGeneration)}`,
-      { headers: await headersFor(page, REMOTE!, "text/yaml"), data: yaml },
-    );
+    const pinned = await page.request.post(pinnedApplyUrl(preview), {
+      headers: await headersFor(page, REMOTE!, "text/yaml"),
+      data: yaml,
+    });
     expect(pinned.status()).toBe(200);
     expect((await pinned.json()).data.summary.failed).toBe(0);
   });
@@ -236,6 +262,11 @@ test.describe.serial("Remote cluster capabilities", () => {
   test("a remote-only object is never created on the local cluster", async ({
     page,
   }) => {
+    // Establish the widget here rather than relying on the previous case, so
+    // this case also stands alone under --grep. Same name and same pinned
+    // flow, so in a full run it is a server-side-apply no-op.
+    await previewAndApplyPinned(page, widgetYaml("e2e-pinned-widget"));
+
     // The target-scoped export resolves the kind through the header
     // cluster's discovery (yaml/handler.go resolveGVR), which matches the
     // plural resource name -- "widgets", not the Kind or a group-qualified
@@ -245,7 +276,7 @@ test.describe.serial("Remote cluster capabilities", () => {
       `/api/v1/yaml/export/widgets/${FIXTURE_NS}/e2e-pinned-widget`,
       { headers: await headersFor(page, REMOTE!) },
     );
-    // Present on the remote (created by the previous case)...
+    // Present on the remote...
     expect(res.status()).toBe(200);
     const exported = (await res.json()).data as string;
     expect(exported).toMatch(/^kind: Widget$/m);
@@ -277,7 +308,7 @@ test.describe.serial("Remote cluster capabilities", () => {
     expect(cov.get("cpu")).toBe("unavailable");
     expect(cov.get("memory")).toBe("unavailable");
 
-    await selectCluster(page, REMOTE!);
+    await seedClusterTarget(page, REMOTE!);
     await page.goto("/");
     const cpu = page.locator('[data-widget-id="cpu-tile"]');
     await expect(cpu).toHaveAttribute(
@@ -298,7 +329,7 @@ test.describe.serial("Remote cluster capabilities", () => {
     ).data;
     expect(summary.health).toBeNull();
 
-    await selectCluster(page, REMOTE!);
+    await seedClusterTarget(page, REMOTE!);
     await page.goto("/");
     const health = page.locator('[data-widget-id="cluster-health"]');
     await expect(health).toHaveAttribute(
@@ -320,7 +351,7 @@ test.describe.serial("Remote cluster capabilities", () => {
   test("switching clusters clears the previous cluster's dashboard numbers", async ({
     page,
   }) => {
-    await selectCluster(page, "local");
+    await seedClusterTarget(page, "local");
     await page.goto("/");
     await expect(
       page.locator('[data-widget-id="cpu-tile"]'),
@@ -346,6 +377,7 @@ test.describe.serial("Remote cluster capabilities", () => {
     ).toHaveAttribute("data-widget-state", "coverage-unavailable");
   });
 
+  // Must stay last: see the header.
   test("deleting the cluster invalidates cached discovery", async ({ page }) => {
     test.skip(
       !REGISTRATION_FILE,

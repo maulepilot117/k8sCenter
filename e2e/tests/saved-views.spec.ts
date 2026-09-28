@@ -9,6 +9,7 @@ import {
   getAuthHeaders,
   loginViaApi,
   type SavedViewConfigSeed,
+  setClusterTarget,
 } from "../helpers.ts";
 
 /**
@@ -409,21 +410,12 @@ test.describe.serial("Saved views", () => {
     await page.getByTestId("saved-views-toggle").click();
 
     // The app restores its target from the (clusterId, generation) pair that
-    // frontend/lib/cluster.ts persists as one JSON value under
-    // "k8scenter.clusterTarget". The legacy "k8scenter.selectedCluster" key is
+    // frontend/src/lib/cluster.ts persists as one JSON value, which is what
+    // setClusterTarget writes. The legacy "k8scenter.selectedCluster" key is
     // consulted only when that key is absent, which it is not by now, so
-    // writing it here would leave the page on the local cluster and make this
-    // spec pass without ever switching. Update this line if that storage
-    // contract changes again.
-    await page.evaluate(() => {
-      localStorage.setItem(
-        "k8scenter.clusterTarget",
-        JSON.stringify({
-          clusterId: "some-remote-cluster",
-          generation: "unknown",
-        }),
-      );
-    });
+    // writing the legacy key here would leave the page on the local cluster
+    // and make this spec pass without ever switching.
+    await setClusterTarget(page, "some-remote-cluster");
     await page.reload();
     release?.();
 
@@ -435,11 +427,6 @@ test.describe.serial("Saved views", () => {
     ).toHaveCount(0);
 
     await page.unroute("**/api/v1/preferences/views");
-    await page.evaluate(() => {
-      localStorage.setItem(
-        "k8scenter.clusterTarget",
-        JSON.stringify({ clusterId: "local", generation: "local" }),
-      );
-    });
+    await setClusterTarget(page, "local");
   });
 });

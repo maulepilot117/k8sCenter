@@ -4,6 +4,7 @@ import {
   attachAuthInjection,
   focusedElementName,
   getAuthHeaders,
+  setClusterTarget,
 } from "../helpers.ts";
 // The route glob and the two pure response shapers, and nothing else from the
 // stub. This file does not stub the store (see the header) -- but the endpoint
@@ -320,12 +321,7 @@ test.describe.serial("Dashboard layout acceptance", () => {
     // Belt and braces with the pin and cluster specs: these run serially, so a
     // cluster left selected by a failed spec elsewhere would silently re-point
     // every layout read and write at a cluster that does not exist.
-    await page.evaluate(() =>
-      localStorage.setItem(
-        "k8scenter.clusterTarget",
-        JSON.stringify({ clusterId: "local", generation: "local" }),
-      ),
-    );
+    await setClusterTarget(page, "local");
     await restoreDefaultLayout(page);
   });
 
