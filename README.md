@@ -83,20 +83,37 @@ Dashboard trends (the sparklines) are local-only as well; the cards render witho
 
 **Procedure**
 
-1. Build and register the fixture:
+Export the shared environment once, in the shell you will run every step from. Teardown (step 6) needs the same variables as create: it logs in to deregister, and it must target the same remote context.
+
+```sh
+export KUBECENTER_URL=https://<k8scenter>
+export KUBECENTER_ADMIN_USER=<admin>
+read -rs KUBECENTER_ADMIN_PASSWORD && export KUBECENTER_ADMIN_PASSWORD   # bash/zsh; keeps it out of shell history
+export KUBECENTER_REMOTE_REGISTRATION_FILE="$HOME/.k8scenter-remote-registration.json"
+# EITHER a kind cluster the script creates on a host with a public address:
+export KUBECENTER_REMOTE_API_HOST=<public-name-of-kind-host>
+# OR an existing public cluster (leave KUBECENTER_REMOTE_API_HOST unset):
+# export KUBECENTER_REMOTE_CONTEXT=<context>
+```
+
+1. Build and register the fixture with `sh scripts/test-remote-capabilities.sh`. It prints `K8SCENTER_REMOTE_CLUSTER_ID=<id>`. It refuses to run, and changes nothing, if the remote already has an object with one of the fixture's names that does not carry the fixture label, or if a kind cluster named `k8scenter-remote` exists that the script did not create. The fixture's probe token can impersonate any user but only the admin's own Kubernetes groups plus `system:authenticated`, never `system:masters`.
+2. Export that id and the spec's own variables, then run the suite:
    ```sh
-   KUBECENTER_URL=https://<k8scenter> \
-   KUBECENTER_ADMIN_USER=<admin> KUBECENTER_ADMIN_PASSWORD=<password> \
-   KUBECENTER_REMOTE_API_HOST=<public-name-of-kind-host> \
-   KUBECENTER_REMOTE_REGISTRATION_FILE=$HOME/.k8scenter-remote-registration.json \
-   sh scripts/test-remote-capabilities.sh
+   export K8SCENTER_REMOTE_CLUSTER_ID=<id>
+   export K8SCENTER_REMOTE_REGISTRATION_FILE="$KUBECENTER_REMOTE_REGISTRATION_FILE"
+   export K8SCENTER_LOCAL_KUBE_CONTEXT=<local-context>
+   cd e2e && npm test
    ```
-   To use an existing public cluster instead of kind, set `KUBECENTER_REMOTE_CONTEXT=<context>` and leave `KUBECENTER_REMOTE_API_HOST` unset. The script prints `K8SCENTER_REMOTE_CLUSTER_ID=<id>`.
-2. Export that id (plus `K8SCENTER_LOCAL_KUBE_CONTEXT` and `K8SCENTER_REMOTE_REGISTRATION_FILE`) and run `cd e2e && npm test`. All eight remote specs must pass, alongside the existing suite.
-3. Check AE2 by hand: preview the remote-only `Widget` on the YAML page, switch the UI to the local cluster, and confirm that Apply still targets the remote cluster. Confirm the object exists there, and that `kubectl --context <local> get widgets.k8scenter.test` reports the kind does not exist locally.
+   All eight remote specs must pass, alongside the existing suite. The eviction spec deletes the registration and re-registers the cluster, then deregisters that replacement itself, so after the run the id from step 1 no longer exists.
+3. Check AE2 by hand: preview the remote-only `Widget` on the YAML page, switch the UI to the local cluster, and confirm that Apply still targets the remote cluster. Confirm the object exists there, and that `kubectl --context <local> get widgets.k8scenter.test` reports the kind does not exist locally. If step 2 already removed the registration, re-register first with `sh scripts/test-remote-capabilities.sh` and use the new id it prints.
 4. Check AE3 by hand: with no Prometheus on the remote, the dashboard shows node and pod counts, explicit metrics-unavailable cards, and **no** health score or gauge.
-5. Check eviction: delete the cluster in Settings → Clusters, re-register it, and confirm the remote-only CRD resolves under the new id while the old id does not.
-6. Tear down with `KUBECENTER_REMOTE_CLUSTER_ID=<id> sh scripts/test-remote-capabilities.sh --teardown`. It deletes only objects labelled `app.kubernetes.io/managed-by=k8scenter-e2e-remote-fixture`, selected by label, then the kind cluster if the script created it. Delete the saved registration file, which holds a token.
+5. Check eviction: delete the cluster in Settings → Clusters, re-register it, and confirm the remote-only CRD resolves under the new id while the old id does not. **Note the new id**: it is the registration teardown must remove.
+6. Tear down, in the same shell, with the id of the registration that is still live (the new id from step 5, not the one from step 1):
+   ```sh
+   KUBECENTER_REMOTE_CLUSTER_ID=<current-id> sh scripts/test-remote-capabilities.sh --teardown
+   rm -f "$KUBECENTER_REMOTE_REGISTRATION_FILE"   # it holds a token
+   ```
+   Teardown deregisters that id, then deletes only objects labelled `app.kubernetes.io/managed-by=k8scenter-e2e-remote-fixture`, selected by label. It deletes the kind cluster only if the cluster carries the ownership marker the script writes when it creates it (ConfigMap `kube-system/k8scenter-remote-fixture-owner`); a same-named cluster without the marker is left in place and the script says why. With `KUBECENTER_REMOTE_CONTEXT` set, no cluster is ever deleted.
 
 **Recording the result:** add the date, both clusters' Kubernetes versions, the identity used, and the pass/fail of each step to this section, and replace "verified against fixtures only" with what was actually verified.
 

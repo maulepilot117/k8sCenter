@@ -226,6 +226,21 @@ func findCapability(t *testing.T, resp CapabilitiesResponse, op string) Capabili
 	return Capability{}
 }
 
+// assertCapabilities asserts that every operation in ids reports
+// PlatformSupported == wantSupported and ReasonCode == wantReason. Callers
+// with an extra per-row check (e.g. Reachable/Authorized nil) that this
+// helper doesn't express keep that check in its own inline loop alongside
+// this call.
+func assertCapabilities(t *testing.T, body CapabilitiesResponse, ids []string, wantSupported bool, wantReason ReasonCode) {
+	t.Helper()
+	for _, id := range ids {
+		c := findCapability(t, body, id)
+		if c.PlatformSupported != wantSupported || c.ReasonCode != wantReason {
+			t.Errorf("%s = (platformSupported %v, reason %q); want (%v, %q)", id, c.PlatformSupported, c.ReasonCode, wantSupported, wantReason)
+		}
+	}
+}
+
 // wantRemoteSupported / wantRemoteUnsupported are the exact partition of the
 // production table on the REMOTE class.
 //
@@ -581,8 +596,10 @@ func TestCapabilities_RemoteExecUnsupported(t *testing.T) {
 	// Bare server: ClusterRouter and ClusterStore are both left nil, so the
 	// remote target cannot be resolved (A4: db_unavailable). pod.exec is
 	// unsupported for the remote target class regardless of that
-	// (buildCapability's top-priority check), and so is every other row
-	// still in wantRemoteUnsupported.
+	// (buildCapability's top-priority check). TestCapabilities_
+	// RemoteNoClusterStoreIsDBUnavailable owns the full remote-supported/
+	// remote-unsupported partition for this db_unavailable scenario; this
+	// test only pins pod.exec's own contract.
 	srv := testServer(t)
 	token := capabilitiesIssueToken(t, srv, "admin-1", true)
 
@@ -598,25 +615,6 @@ func TestCapabilities_RemoteExecUnsupported(t *testing.T) {
 	}
 	if cap.ReasonCode != ReasonUnsupportedPlatform {
 		t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonUnsupportedPlatform)
-	}
-
-	for _, id := range wantRemoteUnsupported {
-		c := findCapability(t, body, id)
-		if c.PlatformSupported || c.ReasonCode != ReasonUnsupportedPlatform {
-			t.Errorf("%s = (platformSupported %v, reason %q); want (false, %q)", id, c.PlatformSupported, c.ReasonCode, ReasonUnsupportedPlatform)
-		}
-	}
-	// The D3 half: the rows that DO support remote must not be reported
-	// unsupported just because this target cannot be resolved. With no
-	// registry wired the honest answer is db_unavailable.
-	for _, id := range wantRemoteSupported {
-		c := findCapability(t, body, id)
-		if !c.PlatformSupported {
-			t.Errorf("%s PlatformSupported = false; want true — shipped remote support must not read as unsupported_platform", id)
-		}
-		if c.ReasonCode != ReasonDBUnavailable {
-			t.Errorf("%s ReasonCode = %q; want %q (no cluster registry wired)", id, c.ReasonCode, ReasonDBUnavailable)
-		}
 	}
 }
 
@@ -1661,15 +1659,13 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 			// (plain, namespaced configmaps probe, no discovery probe) must
 			// share its verdict. Derived from wantRemoteSupported so a row
 			// added there is covered here too.
+			var otherPlain []string
 			for _, id := range wantRemoteSupported {
-				if id == "yaml.validate" || id == "dashboard.summary" {
-					continue
-				}
-				c := findCapability(t, body, id)
-				if !c.PlatformSupported || c.ReasonCode != tt.wantPlain {
-					t.Errorf("%s = (platformSupported %v, reason %q); want (true, %q)", id, c.PlatformSupported, c.ReasonCode, tt.wantPlain)
+				if id != "yaml.validate" && id != "dashboard.summary" {
+					otherPlain = append(otherPlain, id)
 				}
 			}
+			assertCapabilities(t, body, otherPlain, true, tt.wantPlain)
 
 			probe := findCapability(t, body, "dashboard.summary")
 			if !probe.PlatformSupported {
@@ -1682,13 +1678,7 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 			// Rows whose handlers still refuse remote requests must report
 			// the honest unsupported_platform in the same response — support
 			// is per row, not a global "remote works now" switch.
-			for _, id := range wantRemoteUnsupported {
-				c := findCapability(t, body, id)
-				if c.PlatformSupported || c.ReasonCode != ReasonUnsupportedPlatform {
-					t.Errorf("%s = (platformSupported %v, reason %q); want (false, %q)",
-						id, c.PlatformSupported, c.ReasonCode, ReasonUnsupportedPlatform)
-				}
-			}
+			assertCapabilities(t, body, wantRemoteUnsupported, false, ReasonUnsupportedPlatform)
 
 			for _, c := range body.Capabilities {
 				if !validReasonCodes[c.ReasonCode] {
@@ -1715,20 +1705,8 @@ func TestCapabilities_RemoteNoClusterStoreIsDBUnavailable(t *testing.T) {
 	}
 	body := decodeCapabilities(t, w)
 
-	for _, id := range wantRemoteSupported {
-		c := findCapability(t, body, id)
-		if !c.PlatformSupported {
-			t.Errorf("%s PlatformSupported = false; want true", id)
-		}
-		if c.ReasonCode != ReasonDBUnavailable {
-			t.Errorf("%s ReasonCode = %q; want %q", id, c.ReasonCode, ReasonDBUnavailable)
-		}
-	}
-	for _, id := range wantRemoteUnsupported {
-		if c := findCapability(t, body, id); c.ReasonCode != ReasonUnsupportedPlatform {
-			t.Errorf("%s ReasonCode = %q; want %q", id, c.ReasonCode, ReasonUnsupportedPlatform)
-		}
-	}
+	assertCapabilities(t, body, wantRemoteSupported, true, ReasonDBUnavailable)
+	assertCapabilities(t, body, wantRemoteUnsupported, false, ReasonUnsupportedPlatform)
 }
 
 // TestCapabilities_RemoteTargetResolutionFailureClassified drives the real
@@ -1753,12 +1731,9 @@ func TestCapabilities_RemoteTargetResolutionFailureClassified(t *testing.T) {
 	}
 	body := decodeCapabilities(t, w)
 
+	assertCapabilities(t, body, wantRemoteSupported, true, ReasonDBUnavailable)
 	for _, id := range wantRemoteSupported {
-		c := findCapability(t, body, id)
-		if c.ReasonCode != ReasonDBUnavailable {
-			t.Errorf("%s ReasonCode = %q; want %q", id, c.ReasonCode, ReasonDBUnavailable)
-		}
-		if c.Reachable != nil {
+		if c := findCapability(t, body, id); c.Reachable != nil {
 			t.Errorf("%s Reachable = %v; want null — nothing is knowable once the target cannot be resolved", id, *c.Reachable)
 		}
 	}

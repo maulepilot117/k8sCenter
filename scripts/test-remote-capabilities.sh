@@ -9,10 +9,12 @@
 #   - a remote-only CRD, widgets.k8scenter.test, that the local cluster does
 #     NOT have (the object AE2 previews and applies);
 #   - namespace k8scenter-remote-fixture;
-#   - ServiceAccount k8scenter-remote-probe with `impersonate` on users and
-#     groups. k8sCenter's connection test (ProbeImpersonateRights) refuses a
-#     registration without users; groups are needed because every remote
-#     request impersonates the user's groups as well;
+#   - ServiceAccount k8scenter-remote-probe with `impersonate` on users and on
+#     a NAMED set of groups. k8sCenter's connection test
+#     (ProbeImpersonateRights) asks about users with no resourceName, so users
+#     stay unrestricted. Groups are limited to exactly the ones k8sCenter sends
+#     for the admin (kubernetesGroups from /auth/me) plus system:authenticated,
+#     so the 24h token cannot impersonate system:masters;
 #   - a deliberately NARROWER role for the impersonated k8sCenter identity:
 #     cluster-wide read on nodes, pods and services (the dashboard summary),
 #     and read/write on widgets only inside the fixture namespace. No secrets,
@@ -45,22 +47,38 @@
 #                                (required when creating the kind cluster)
 #   KUBECENTER_REMOTE_API_URL    API server URL to register (default: from
 #                                the kube context; https://HOST:16443 for kind)
-#   KUBECENTER_REMOTE_CLUSTER_ID with --teardown, also deregister this id
+#   KUBECENTER_REMOTE_CLUSTER_ID with --teardown, also deregister this id. Pass
+#                                the CURRENT registration: if the cluster was
+#                                deleted and re-registered by hand, that is
+#                                the new id printed then, not the original.
 #   KUBECENTER_REMOTE_REGISTRATION_FILE
 #                                if set, also write the registration request
-#                                body there (mode 600). It holds the probe
-#                                token, so treat it as a credential. The e2e
-#                                spec's delete-and-re-register case replays it
-#                                and skips when it is absent.
+#                                body there (always mode 600, replacing any
+#                                existing file). It holds the probe token, so
+#                                treat it as a credential. The e2e spec's
+#                                delete-and-re-register case replays it and
+#                                skips when it is absent.
 #
-# Teardown deletes ONLY objects carrying the fixture label, selected by label,
-# never by name — so running it against a shared cluster cannot remove
-# anything the fixture did not create. The kind cluster is deleted only when
-# this script created it (KUBECENTER_REMOTE_CONTEXT unset).
+# Teardown needs the same environment as create (KUBECENTER_URL, the admin
+# credentials when deregistering, and KUBECENTER_REMOTE_CONTEXT if create used
+# one). It deletes ONLY objects carrying the fixture label, selected by label,
+# never by name. Before applying, create refuses to touch any fixed-name object
+# that already exists WITHOUT the fixture label, so the label only ever marks
+# objects this fixture created and teardown cannot remove anything else.
 #
-# Requires: kubectl, curl, jq; kind unless KUBECENTER_REMOTE_CONTEXT is set.
+# The kind cluster is deleted only when it carries the ownership marker —
+# ConfigMap kube-system/k8scenter-remote-fixture-owner, fixture-labelled — that
+# this script writes right after `kind create cluster`. A pre-existing kind
+# cluster named k8scenter-remote without the marker is never adopted by create
+# and never deleted by teardown.
+#
+# Requires: kubectl, curl (7.55+), jq; kind unless KUBECENTER_REMOTE_CONTEXT
+# is set.
 
 set -eu
+# Every file this script writes (temp secrets, the registration body) is
+# owner-only.
+umask 077
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -70,6 +88,10 @@ FIXTURE_SELECTOR="${FIXTURE_LABEL_KEY}=${FIXTURE_LABEL_VALUE}"
 FIXTURE_NS="k8scenter-remote-fixture"
 PROBE_SA="k8scenter-remote-probe"
 KIND_NAME="k8scenter-remote"
+OWNER_MARKER="k8scenter-remote-fixture-owner"
+# kubectl jsonpath for the fixture label's value. Must name FIXTURE_LABEL_KEY
+# with its dots escaped.
+LABEL_JSONPATH='{.metadata.labels.app\.kubernetes\.io/managed-by}'
 KIND_PORT="16443"
 CLUSTER_NAME="e2e-remote"
 
@@ -97,6 +119,26 @@ resolve_context() {
   else
     CONTEXT="kind-${KIND_NAME}"
   fi
+}
+
+# fixture_label_of ARGS... — prints the fixture label's value on the object
+# named by ARGS ("" if it has none), prints NOTFOUND if the object does not
+# exist, and fails on any other error (unreachable cluster, forbidden, ...).
+fixture_label_of() {
+  exists="$(rk get "$@" --ignore-not-found -o name)" || return 1
+  if [ -z "$exists" ]; then
+    printf 'NOTFOUND'
+    return 0
+  fi
+  rk get "$@" -o "jsonpath=${LABEL_JSONPATH}"
+}
+
+# owns_kind_cluster — true only when the kind cluster carries the ownership
+# marker this script writes right after creating it.
+owns_kind_cluster() {
+  v="$(fixture_label_of -n kube-system "configmap/${OWNER_MARKER}" 2>/dev/null)" ||
+    return 1
+  [ "$v" = "$FIXTURE_LABEL_VALUE" ]
 }
 
 # ---------------------------------------------------------------- teardown --
@@ -133,8 +175,12 @@ teardown() {
   if [ -z "$REMOTE_CONTEXT" ]; then
     need kind
     if kind get clusters 2>/dev/null | grep -qx "$KIND_NAME"; then
-      log "deleting kind cluster ${KIND_NAME}"
-      kind delete cluster --name "$KIND_NAME"
+      if owns_kind_cluster; then
+        log "deleting kind cluster ${KIND_NAME} (ownership marker kube-system/${OWNER_MARKER} present)"
+        kind delete cluster --name "$KIND_NAME"
+      else
+        log "leaving kind cluster ${KIND_NAME} in place: it has no ownership marker kube-system/${OWNER_MARKER} (or is unreachable), so this script did not create it"
+      fi
     fi
   fi
   log "teardown complete"
@@ -143,20 +189,32 @@ teardown() {
 # ------------------------------------------------------------- k8sCenter API --
 
 ACCESS_TOKEN=""
+AUTH_HEADER_FILE=""
 
 login() {
   need curl
   need jq
   [ -n "${KUBECENTER_ADMIN_USER:-}" ] || die "KUBECENTER_ADMIN_USER is required"
   [ -n "${KUBECENTER_ADMIN_PASSWORD:-}" ] || die "KUBECENTER_ADMIN_PASSWORD is required"
-  body="$(jq -n --arg u "$KUBECENTER_ADMIN_USER" --arg p "$KUBECENTER_ADMIN_PASSWORD" \
-    '{username: $u, password: $p}')"
+  # Secrets never go on a command line (visible in the process list): printf
+  # is a shell builtin, and jq and curl read them from owner-only files.
+  pw_file="$TMP_DIR/admin-password"
+  printf '%s' "$KUBECENTER_ADMIN_PASSWORD" >"$pw_file"
+  body_file="$TMP_DIR/login.json"
+  jq -n --arg u "$KUBECENTER_ADMIN_USER" --rawfile p "$pw_file" \
+    '{username: $u, password: ($p | rtrimstr("\n"))}' >"$body_file"
+  rm -f "$pw_file"
   # Login shares the 5 req/min per-IP auth bucket, so this runs once.
   resp="$(curl -sS -X POST "${KUBECENTER_URL}/api/v1/auth/login" \
     -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
-    -d "$body")" || die "login request failed"
+    --data-binary "@${body_file}")" || die "login request failed"
+  rm -f "$body_file"
   ACCESS_TOKEN="$(printf '%s' "$resp" | jq -r '.data.accessToken // empty')"
   [ -n "$ACCESS_TOKEN" ] || die "login failed: $(printf '%s' "$resp" | jq -c '.error // .')"
+  # curl reads the bearer header from this file (-H @file) so the access
+  # token stays out of argv too.
+  AUTH_HEADER_FILE="$TMP_DIR/auth-header"
+  printf 'Authorization: Bearer %s\n' "$ACCESS_TOKEN" >"$AUTH_HEADER_FILE"
 }
 
 # api METHOD PATH [JSON-FILE] — prints the body, fails on a non-2xx status.
@@ -164,12 +222,12 @@ api() {
   out="$TMP_DIR/api-response"
   if [ $# -ge 3 ]; then
     status="$(curl -sS -o "$out" -w '%{http_code}' -X "$1" "${KUBECENTER_URL}$2" \
-      -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+      -H "@${AUTH_HEADER_FILE}" \
       -H 'Content-Type: application/json' -H 'X-Requested-With: XMLHttpRequest' \
       --data-binary "@$3")"
   else
     status="$(curl -sS -o "$out" -w '%{http_code}' -X "$1" "${KUBECENTER_URL}$2" \
-      -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+      -H "@${AUTH_HEADER_FILE}" \
       -H 'X-Requested-With: XMLHttpRequest')"
   fi
   case "$status" in
@@ -185,7 +243,9 @@ create_kind_cluster() {
   [ -n "${KUBECENTER_REMOTE_API_HOST:-}" ] ||
     die "KUBECENTER_REMOTE_API_HOST (the kind host's public name or IP) is required to create the kind cluster"
   if kind get clusters 2>/dev/null | grep -qx "$KIND_NAME"; then
-    log "kind cluster ${KIND_NAME} already exists; reusing it"
+    owns_kind_cluster ||
+      die "a kind cluster named ${KIND_NAME} already exists without this script's ownership marker (kube-system/${OWNER_MARKER}); refusing to adopt a cluster it did not create, because teardown would then delete it. Remove or rename that cluster, or point KUBECENTER_REMOTE_CONTEXT at it explicitly."
+    log "kind cluster ${KIND_NAME} already exists and carries the ownership marker; reusing it"
     return
   fi
   cfg="$TMP_DIR/remote-kind-config.yaml"
@@ -194,11 +254,62 @@ create_kind_cluster() {
     "$ROOT/e2e/remote-kind-config.yaml" >"$cfg"
   log "creating kind cluster ${KIND_NAME}"
   kind create cluster --config "$cfg" --wait 120s
+  # Ownership proof lives IN the cluster, so a later create or teardown can
+  # tell this cluster from a same-named one somebody else made.
+  rk apply -f - <<EOF ||
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${OWNER_MARKER}
+  namespace: kube-system
+  labels:
+    ${FIXTURE_LABEL_KEY}: ${FIXTURE_LABEL_VALUE}
+data:
+  createdBy: scripts/test-remote-capabilities.sh
+EOF
+    die "created kind cluster ${KIND_NAME} but could not write its ownership marker; teardown will not delete it. Delete it with: kind delete cluster --name ${KIND_NAME}"
+}
+
+# Refuses to apply over any fixed-name object that exists without the fixture
+# label. kubectl apply would otherwise adopt it and stamp the label on it, and
+# the label-selected teardown would then delete it — for the namespace, with
+# everything inside it. Only objects this fixture created may be re-applied.
+preflight_fixture_names() {
+  conflicts=""
+  while read -r ns ref; do
+    [ -n "$ref" ] || continue
+    if [ "$ns" = "-" ]; then
+      v="$(fixture_label_of "$ref")" || die "could not check ${ref} on ${CONTEXT}"
+    else
+      v="$(fixture_label_of -n "$ns" "$ref")" || die "could not check ${ns}/${ref} on ${CONTEXT}"
+    fi
+    case "$v" in
+      NOTFOUND | "$FIXTURE_LABEL_VALUE") ;;
+      *) conflicts="${conflicts} ${ns}/${ref}" ;;
+    esac
+  done <<EOF
+- customresourcedefinition/widgets.k8scenter.test
+- namespace/${FIXTURE_NS}
+${FIXTURE_NS} serviceaccount/${PROBE_SA}
+- clusterrole/k8scenter-remote-fixture-impersonator
+- clusterrolebinding/k8scenter-remote-fixture-impersonator
+- clusterrole/k8scenter-remote-fixture-reader
+- clusterrolebinding/k8scenter-remote-fixture-reader
+${FIXTURE_NS} role/k8scenter-remote-fixture-widgets
+${FIXTURE_NS} rolebinding/k8scenter-remote-fixture-widgets
+EOF
+  [ -z "$conflicts" ] ||
+    die "these objects already exist on ${CONTEXT} without the ${FIXTURE_SELECTOR} label, so this fixture did not create them:${conflicts} (- = cluster-scoped). Refusing to adopt them, because teardown would then delete them. Remove or rename them, or use a different cluster."
 }
 
 apply_fixture_objects() {
   user="$1"
-  log "applying fixture objects to ${CONTEXT} for impersonated user '${user}'"
+  groups_json="$2"
+  preflight_fixture_names
+  log "applying fixture objects to ${CONTEXT} for impersonated user '${user}', groups ${groups_json}"
+  # groups_json is a JSON array of strings, which is also a valid YAML flow
+  # sequence. It is never empty (system:authenticated is always in it): an
+  # empty resourceNames would grant impersonation of EVERY group.
   rk apply -f - <<EOF
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -249,9 +360,15 @@ metadata:
   labels:
     ${FIXTURE_LABEL_KEY}: ${FIXTURE_LABEL_VALUE}
 rules:
+  # Unrestricted: ProbeImpersonateRights asks about users with no resourceName.
   - apiGroups: [""]
-    resources: ["users", "groups"]
+    resources: ["users"]
     verbs: ["impersonate"]
+  # Only the groups k8sCenter sends for the admin, plus system:authenticated.
+  - apiGroups: [""]
+    resources: ["groups"]
+    verbs: ["impersonate"]
+    resourceNames: ${groups_json}
   # The connection test counts nodes with the ServiceAccount's own identity.
   - apiGroups: [""]
     resources: ["nodes"]
@@ -344,10 +461,27 @@ check_public_host() {
   esac
 }
 
+# write_private_file SRC DEST — DEST ends up mode 600 on every run. cp would
+# keep an existing DEST's mode (e.g. 0644), so write a same-directory temp
+# file (mktemp creates it 0600), chmod it, and rename it over DEST.
+write_private_file() {
+  dest_dir="$(dirname "$2")"
+  tmp="$(mktemp "${dest_dir}/.k8scenter-remote-registration.XXXXXX")" ||
+    die "could not create a temp file in ${dest_dir}"
+  if cat "$1" >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$2"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  die "could not write ${2}"
+}
+
 register_cluster() {
   api_url="$1"
   log "minting a token for ${FIXTURE_NS}/${PROBE_SA}"
-  token="$(rk -n "$FIXTURE_NS" create token "$PROBE_SA" --duration=24h)"
+  # Straight to an owner-only file: the token never passes through argv.
+  token_file="$TMP_DIR/probe-token"
+  rk -n "$FIXTURE_NS" create token "$PROBE_SA" --duration=24h >"$token_file"
+  [ -s "$token_file" ] || die "minting the probe token returned nothing"
   ca_file="$TMP_DIR/ca.crt"
   rk config view --raw --minify --flatten \
     -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' |
@@ -360,13 +494,14 @@ register_cluster() {
     --arg name "$CLUSTER_NAME" \
     --arg url "$api_url" \
     --rawfile ca "$ca_file" \
-    --arg token "$token" \
+    --rawfile token "$token_file" \
     '{name: $name, displayName: "E2E remote fixture", apiServerUrl: $url,
-      caCert: $ca, token: $token, allowInsecureTLS: false}' >"$req"
+      caCert: $ca, token: ($token | rtrimstr("\n")), allowInsecureTLS: false}' >"$req"
+  rm -f "$token_file"
 
   if [ -n "${KUBECENTER_REMOTE_REGISTRATION_FILE:-}" ]; then
-    (umask 077 && cp "$req" "$KUBECENTER_REMOTE_REGISTRATION_FILE")
-    log "registration body written to ${KUBECENTER_REMOTE_REGISTRATION_FILE} (contains a token)"
+    write_private_file "$req" "$KUBECENTER_REMOTE_REGISTRATION_FILE"
+    log "registration body written to ${KUBECENTER_REMOTE_REGISTRATION_FILE} (mode 600; contains a token)"
   fi
 
   log "registering ${api_url} with k8sCenter at ${KUBECENTER_URL}"
@@ -400,14 +535,23 @@ create() {
   me="$(api GET /api/v1/auth/me)" || die "could not read the admin's identity"
   user="$(printf '%s' "$me" | jq -r '.data.user.kubernetesUsername // empty')"
   [ -n "$user" ] || die "the admin account has no Kubernetes username to bind"
+  # k8sCenter impersonates exactly these groups on every remote request
+  # (ClusterRouter.buildRemoteConfig). system:authenticated is always added,
+  # so the list is never empty — empty resourceNames would mean ALL groups.
+  groups_json="$(printf '%s' "$me" |
+    jq -c '((.data.user.kubernetesGroups // []) + ["system:authenticated"]) | unique')"
+  case "$groups_json" in
+    *'"system:masters"'*)
+      die "the admin's Kubernetes groups include system:masters; the fixture will not let its probe token impersonate cluster-admin. Use an admin without that group." ;;
+  esac
 
-  apply_fixture_objects "$user"
+  apply_fixture_objects "$user" "$groups_json"
   register_cluster "$api_url"
 }
 
 case "${1:-}" in
   --teardown) teardown ;;
   "") create ;;
-  -h | --help) sed -n '2,62p' "$0" ;;
+  -h | --help) sed -n '2,/^$/p' "$0" ;;
   *) die "unknown argument: $1 (use --teardown or --help)" ;;
 esac

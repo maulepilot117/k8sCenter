@@ -23,7 +23,8 @@ import { getAuthHeaders } from "../helpers.ts";
  *                                       only the re-registration case needs it
  *
  * Serial, and the eviction case runs last: it deletes the registration, so the
- * original id is invalid for anything after it.
+ * original id is invalid for anything after it, and it deregisters its own
+ * replacement, so no fixture registration remains once the suite ends.
  */
 
 const REMOTE = process.env.K8SCENTER_REMOTE_CLUSTER_ID;
@@ -69,7 +70,32 @@ async function selectCluster(page: Page, clusterId: string): Promise<void> {
   }, clusterId);
 }
 
-/** True when the LOCAL cluster serves the Widget kind at all. */
+/**
+ * Fails loudly unless kubectl can reach the LOCAL cluster. Without it, every
+ * kubectl failure (binary missing, wrong context, API unreachable) would read
+ * as "the local cluster does not serve the kind" and pass vacuously.
+ */
+function assertLocalKubectlReachable(): void {
+  try {
+    execFileSync(
+      "kubectl",
+      ["--context", LOCAL_CONTEXT, "get", "--raw", "/version"],
+      { stdio: "pipe" },
+    );
+  } catch (err) {
+    const stderr = (err as { stderr?: Buffer }).stderr?.toString().trim();
+    throw new Error(
+      `kubectl cannot reach the local cluster (context "${LOCAL_CONTEXT}"; ` +
+        `set K8SCENTER_LOCAL_KUBE_CONTEXT): ${stderr || (err as Error).message}`,
+    );
+  }
+}
+
+/**
+ * True when the LOCAL cluster serves the Widget kind at all. False ONLY when
+ * kubectl says the resource type does not exist; any other failure is
+ * rethrown so it cannot masquerade as the answer.
+ */
 function localHasWidgetKind(): boolean {
   try {
     execFileSync(
@@ -78,8 +104,12 @@ function localHasWidgetKind(): boolean {
       { stdio: "pipe" },
     );
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    const stderr = (err as { stderr?: Buffer }).stderr?.toString() ?? "";
+    if (/the server doesn't have a resource type/i.test(stderr)) {
+      return false;
+    }
+    throw err;
   }
 }
 
@@ -114,7 +144,13 @@ test.describe.serial("Remote cluster capabilities", () => {
       expect(byId.get(id)?.reasonCode, id).toBe("unsupported_platform");
     }
     // Supported since U9a/U9b/U10 -- never reported as unsupported_platform.
-    for (const id of ["yaml.validate", "yaml.apply", "dashboard.summary"]) {
+    for (const id of [
+      "yaml.validate",
+      "yaml.apply",
+      "yaml.diff",
+      "yaml.export",
+      "dashboard.summary",
+    ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
     }
@@ -144,12 +180,21 @@ test.describe.serial("Remote cluster capabilities", () => {
 
     // The same document against the local cluster does not resolve: the kind
     // exists only on the remote, which is what proves which schema was used.
+    // HandleValidate reports an unmappable kind as a 200 carrying a
+    // per-document RESTMapping failure (yaml/differ.go diffOne), not as an
+    // HTTP error -- so an auth or transport failure cannot satisfy this.
     const local = await page.request.post("/api/v1/yaml/validate", {
       headers: await headersFor(page, "local", "text/yaml"),
       data: yaml,
     });
-    const localBody = await local.json();
-    expect(localBody.data?.valid === true).toBe(false);
+    expect(local.status()).toBe(200);
+    const localPreview = (await local.json()).data;
+    expect(localPreview.valid).toBe(false);
+    expect(localPreview.documents).toHaveLength(1);
+    expect(localPreview.documents[0].valid).toBe(false);
+    expect(localPreview.documents[0].errors[0].message).toMatch(
+      /^unknown resource type k8scenter\.test\/v1, Kind=Widget: /,
+    );
   });
 
   test("switching clusters after a preview keeps apply pinned to the reviewed target", async ({
@@ -191,14 +236,23 @@ test.describe.serial("Remote cluster capabilities", () => {
   test("a remote-only object is never created on the local cluster", async ({
     page,
   }) => {
+    // The target-scoped export resolves the kind through the header
+    // cluster's discovery (yaml/handler.go resolveGVR), which matches the
+    // plural resource name -- "widgets", not the Kind or a group-qualified
+    // name. /resources/{kind} would not do: it serves built-in kinds only,
+    // from the LOCAL informer cache.
     const res = await page.request.get(
-      `/api/v1/resources/widgets.k8scenter.test/${FIXTURE_NS}/e2e-pinned-widget`,
+      `/api/v1/yaml/export/widgets/${FIXTURE_NS}/e2e-pinned-widget`,
       { headers: await headersFor(page, REMOTE!) },
     );
     // Present on the remote (created by the previous case)...
     expect(res.status()).toBe(200);
+    const exported = (await res.json()).data as string;
+    expect(exported).toMatch(/^kind: Widget$/m);
+    expect(exported).toMatch(/^\s+name: e2e-pinned-widget$/m);
     // ...and the local cluster does not even serve the kind. Asserted on the
     // local cluster's side of the wire, not on an error string.
+    assertLocalKubectlReachable();
     await expect.poll(() => localHasWidgetKind(), { timeout: 10_000 }).toBe(
       false,
     );
@@ -251,8 +305,16 @@ test.describe.serial("Remote cluster capabilities", () => {
       "data-widget-state",
       "coverage-unavailable",
     );
-    // No gauge ring at all: an empty ring would read as a score of zero.
-    await expect(health.locator("svg circle")).toHaveCount(0);
+    await expect(
+      health.getByTestId("widget-coverage-unavailable"),
+    ).toBeVisible();
+    // No gauge ring at all: an empty ring would read as a score of zero. The
+    // coverage card's own glyph is an <svg><circle>, so match what only the
+    // Gauge draws -- its progress arc carries stroke-dashoffset -- and check
+    // the widget body (whose unscored placeholder stands in for the gauge)
+    // is not rendered either.
+    await expect(health.locator("circle[stroke-dashoffset]")).toHaveCount(0);
+    await expect(health.getByTestId("health-unscored")).toHaveCount(0);
   });
 
   test("switching clusters clears the previous cluster's dashboard numbers", async ({
@@ -310,19 +372,30 @@ test.describe.serial("Remote cluster capabilities", () => {
     });
     expect(created.status()).toBe(201);
     const newId = (await created.json()).data.id as string;
-    expect(newId).not.toBe(REMOTE);
     test.info().annotations.push({
       type: "K8SCENTER_REMOTE_CLUSTER_ID",
       description: newId,
     });
 
-    // The remote-only kind resolves under the new registration...
-    const fresh = await validateOn(newId);
-    expect(fresh.status()).toBe(200);
-    expect((await fresh.json()).data.valid).toBe(true);
-    // ...and the old id no longer names a cluster: nothing cached under it
-    // answers.
-    const stale = await validateOn(REMOTE!);
-    expect(stale.ok()).toBe(false);
+    // The replacement is deregistered whatever the assertions do, so after
+    // this case no fixture registration remains: the original was deleted
+    // above and the replacement is deleted in the finally below.
+    try {
+      expect(newId).not.toBe(REMOTE);
+
+      // The remote-only kind resolves under the new registration...
+      const fresh = await validateOn(newId);
+      expect(fresh.status()).toBe(200);
+      expect((await fresh.json()).data.valid).toBe(true);
+      // ...and the old id no longer names a cluster: nothing cached under it
+      // answers.
+      const stale = await validateOn(REMOTE!);
+      expect(stale.ok()).toBe(false);
+    } finally {
+      const cleanup = await page.request.delete(`/api/v1/clusters/${newId}`, {
+        headers: await getAuthHeaders(page),
+      });
+      expect(cleanup.ok(), `deregister replacement ${newId}`).toBe(true);
+    }
   });
 });
