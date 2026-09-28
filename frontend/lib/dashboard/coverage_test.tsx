@@ -442,10 +442,15 @@ describe("unobserved usage (local, no Prometheus)", () => {
     expect(withheldReason(s, "memory")).toContain("Prometheus");
   });
 
-  test("a missing cpu or memory block is withheld, not zero", () => {
+  test("a missing cpu or memory block is withheld as no capacity, not zero", () => {
+    // utilizationFrom omits the block when nodes report no allocatable
+    // capacity; that is not a Prometheus problem and must not say it is.
     const s = localSummary({ cpu: null, memory: null });
-    expect(withheldReason(s, "cpu")).not.toBeNull();
-    expect(withheldReason(s, "memory")).not.toBeNull();
+    for (const section of ["cpu", "memory"] as const) {
+      const reason = withheldReason(s, section);
+      expect(reason).toContain("allocatable");
+      expect(reason).not.toContain("Prometheus");
+    }
   });
 
   test("a real zero percentage is data and is shown", () => {

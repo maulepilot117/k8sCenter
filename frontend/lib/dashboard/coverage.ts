@@ -173,22 +173,33 @@ export function coverageMessage(
 }
 
 /**
- * Whether the cpu or memory block carries an observed usage percentage.
+ * Why the cpu or memory block carries no observed usage, or null when it does.
  *
- * The local path has no coverage block, so it signals "no usage was read"
- * (no Prometheus, a failed or timed-out query) in the payload itself:
- * `utilizationFrom` in `dashboard.go` writes `{percentage: 0, used: "N/A"}`,
- * or omits the block when there is no allocatable capacity. Either is an
- * absent reading, not 0%. Mirrors mobile's `Utilization.unavailable`, which
- * also keeps a real zero (`used` is a quantity) renderable.
+ * The local path has no coverage block, so `utilizationFrom` in `dashboard.go`
+ * says it in the payload itself, two ways that mean different things:
+ *
+ * - `{percentage: 0, used: "N/A"}`: capacity is known but no usage was read
+ *   (no Prometheus, or a failed or timed-out query).
+ * - no block at all: the nodes report no allocatable capacity, so there is
+ *   nothing to take a percentage of.
+ *
+ * Neither is 0%. Mirrors mobile's `Utilization.unavailable`, which also keeps
+ * a real zero (`used` is then a quantity) renderable.
  */
-function usageObserved(
+function unobservedUsageReason(
   summary: CoveredSummary | null | undefined,
   section: "cpu" | "memory",
-): boolean {
+): string | null {
   const u = summary?.[section];
-  if (!u) return false;
-  return !(u.percentage === 0 && u.used.trim().toUpperCase() === "N/A");
+  if (!u)
+    return "No allocatable capacity is reported for this cluster's nodes.";
+  const sentinel =
+    u.percentage === 0 &&
+    typeof u.used === "string" &&
+    u.used.trim().toUpperCase() === "N/A";
+  return sentinel
+    ? "No usage metrics: Prometheus is not configured or did not answer."
+    : null;
 }
 
 /**
@@ -206,11 +217,8 @@ export function withheldReason(
 ): string | null {
   const cov = coverageFor(summary, section);
   if (!isRenderable(sectionTone(cov))) return coverageMessage(cov);
-  if (
-    (section === "cpu" || section === "memory") &&
-    !usageObserved(summary, section)
-  ) {
-    return "No usage metrics: Prometheus is not configured or did not answer.";
+  if (section === "cpu" || section === "memory") {
+    return unobservedUsageReason(summary, section);
   }
   return null;
 }
