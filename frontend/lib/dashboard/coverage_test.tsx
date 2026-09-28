@@ -404,7 +404,12 @@ describe("tones (R3)", () => {
 
 describe("drift guard", () => {
   test("every summary-backed widget declares the section it headlines", () => {
+    // `bun test` shares one module registry across files, so the registry
+    // also holds whatever other test files registered -- every one of them
+    // named `fixture-*` -- and which of those are present depends on file
+    // order. The guard is about the shipped catalog only.
     const summaryWidgets = allWidgets()
+      .filter((d) => !d.id.startsWith("fixture-"))
       .filter((d) => sourcesOf(d).includes("dashboard-summary"))
       .map((d) => d.id)
       .sort();
