@@ -17,7 +17,6 @@ import (
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/pkg/api"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 var validClusterName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -184,14 +183,15 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	// time check. Pre-conditions above (caCert non-empty OR allowInsecureTLS
 	// admin-approved) mean ApplyClusterTLS will never return an error here,
 	// but plumbing it through keeps the single source of truth.
-	testCfg := &rest.Config{
-		Host:        req.APIServerURL,
-		BearerToken: req.Token,
-		Timeout:     10 * time.Second,
-	}
+	// NewRemoteRESTConfig attaches the strict dialer, so the connection-test
+	// re-checks the resolved address on every dial rather than trusting the
+	// ValidateRemoteURL result above (R-4).
+	var caData []byte
 	if len(req.CACert) > 0 {
-		testCfg.TLSClientConfig = rest.TLSClientConfig{CAData: []byte(req.CACert)}
+		caData = []byte(req.CACert)
 	}
+	testCfg := k8s.NewRemoteRESTConfig(req.APIServerURL, req.Token, caData)
+	testCfg.Timeout = 10 * time.Second
 	if err := k8s.ApplyClusterTLS(testCfg, req.Name, []byte(req.CACert), req.AllowInsecureTLS, s.Logger); err != nil {
 		// Should be unreachable given the pre-conditions above; surface
 		// it as a 400 anyway so any future relaxation of those pre-

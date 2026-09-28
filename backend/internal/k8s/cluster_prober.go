@@ -10,7 +10,6 @@ import (
 	authzv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -182,16 +181,13 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 	// TLS verification on every CA-less remote — even those the router would
 	// refuse to build a client for at request time — and reported them as
 	// "connected", masking the misconfiguration. F#5 audit 2026-05-22.
-	cfg := &rest.Config{
-		Host:        cluster.APIServerURL,
-		BearerToken: string(token),
-		Timeout:     10 * time.Second,
-		QPS:         10,
-		Burst:       20,
-		TLSClientConfig: rest.TLSClientConfig{
-			CAData: caData,
-		},
-	}
+	// NewRemoteRESTConfig attaches the strict dialer, so the probe re-checks
+	// the resolved address on every dial instead of trusting the
+	// ValidateRemoteURL result above (R-4).
+	cfg := NewRemoteRESTConfig(cluster.APIServerURL, string(token), caData)
+	cfg.Timeout = 10 * time.Second
+	cfg.QPS = 10
+	cfg.Burst = 20
 	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, p.logger); err != nil {
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, StatusError.String(), "TLS verification required (no CA, AllowInsecureTLS=false)", "", 0)
 		p.emitStatusChange(ctx, clusterID, oldStatus, StatusError.String())

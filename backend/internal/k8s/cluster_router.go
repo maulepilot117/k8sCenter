@@ -732,36 +732,46 @@ func (cr *ClusterRouter) buildRemoteConfig(ctx context.Context, clusterID, usern
 		}
 	}
 
-	cfg := &rest.Config{
-		Host:        cluster.APIServerURL,
-		BearerToken: string(token),
-		TLSClientConfig: rest.TLSClientConfig{
-			CAData: caData,
-		},
-		Impersonate: rest.ImpersonationConfig{
-			UserName: username,
-			Groups:   groups,
-		},
-		QPS:   50,
-		Burst: 100,
-		// P2-6 part 2: defend against DNS rebinding and unintended
-		// server-controlled redirects by re-resolving the cluster host
-		// on every dial and rejecting any candidate IP in the strict
-		// block-list (including RFC1918 — a remote cluster API server
-		// that resolves to a private address either was never legitimate
-		// or has been rebound mid-session, and either case warrants
-		// fail-closed). rest.Config.Dial is invoked by client-go's
-		// underlying http transport for each new TCP connection, so
-		// this protects every API call routed through the returned
-		// config — not just the first dial after validation.
-		Dial: StrictDialContext,
+	cfg := NewRemoteRESTConfig(cluster.APIServerURL, string(token), caData)
+	cfg.Impersonate = rest.ImpersonationConfig{
+		UserName: username,
+		Groups:   groups,
 	}
+	cfg.QPS = 50
+	cfg.Burst = 100
 
 	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, cr.logger); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// NewRemoteRESTConfig returns the base rest.Config for reaching a registered
+// remote cluster's API server with its stored bearer token. It is the one
+// place the strict SSRF dialer is attached: ValidateRemoteURL checks the host
+// once, and StrictDialContext re-resolves and re-checks it on every TCP dial,
+// which closes the validate→dial DNS-rebinding window. The router, the prober
+// and the registration connection-test all start from this constructor so
+// none of them can drop the dialer on its own (R-4: the prober and the
+// connection-test used to build their configs inline without it). Callers add
+// their own timeout, rate limits and impersonation, then run ApplyClusterTLS.
+func NewRemoteRESTConfig(host, token string, caData []byte) *rest.Config {
+	return &rest.Config{
+		Host:        host,
+		BearerToken: token,
+		TLSClientConfig: rest.TLSClientConfig{
+			CAData: caData,
+		},
+		// P2-6 part 2: re-resolve the host on every dial and reject any
+		// candidate IP in the strict block-list, RFC1918 included. A remote
+		// API server that resolves to a private address was either never
+		// legitimate or has been rebound since validation; both fail closed.
+		// client-go's transport calls rest.Config.Dial for each new TCP
+		// connection, so this covers every request made with the config,
+		// not just the first dial after validation.
+		Dial: StrictDialContext,
+	}
 }
 
 // ApplyClusterTLS is the exported alias for applyClusterTLS, so external
