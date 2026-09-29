@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
 // GVR constants for Velero CRDs
@@ -40,6 +42,10 @@ type VeleroStatus struct {
 	BSLCount    int       `json:"bslCount"`
 	VSLCount    int       `json:"vslCount"`
 	LastChecked time.Time `json:"lastChecked"`
+	// Reason explains a remote cluster's Detected false: discovery_missing
+	// when Velero is not installed there, or why it could not be told
+	// (unreachable, discovery_unavailable, ...). Absent on the local cluster.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Backup is the API response for a Velero backup.
@@ -122,6 +128,9 @@ type VolumeSnapshotLocation struct {
 type LocationsResponse struct {
 	BackupStorageLocations  []BackupStorageLocation  `json:"backupStorageLocations"`
 	VolumeSnapshotLocations []VolumeSnapshotLocation `json:"volumeSnapshotLocations"`
+	// Coverage names a location list a remote cluster could not provide;
+	// the other one is still served. Never set on the local cluster.
+	Coverage []k8s.SourceCoverage `json:"coverage,omitempty"`
 }
 
 // IsProgressPhase reports whether phase is one Velero reports while a
