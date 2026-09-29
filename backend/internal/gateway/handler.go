@@ -299,14 +299,14 @@ func (h *Handler) listSources(ctx context.Context, dyn dynamic.Interface, source
 	defer cancel()
 
 	lists := make([]*unstructured.UnstructuredList, len(sources))
-	runs := make([]func() error, len(sources))
+	runs := make([]k8s.NamedList, len(sources))
 	for i, src := range sources {
-		runs[i] = func() (err error) {
+		runs[i] = k8s.NamedList{Label: "gateway list " + src.gvr.Resource, Run: func() (err error) {
 			lists[i], err = dyn.Resource(src.gvr).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 			return err
-		}
+		}}
 	}
-	errs := k8s.RunLists(h.Logger, "gateway list", runs)
+	errs := k8s.RunLists(h.Logger, runs)
 
 	data := &cachedData{
 		gatewayClasses: []GatewayClassSummary{},

@@ -78,18 +78,26 @@ func CoverageOf(failed map[string]error, sources ...string) []SourceCoverage {
 	return out
 }
 
+// NamedList is one list RunLists runs. Label names it in a recovered-panic
+// log (package-prefixed, e.g. "gitops list kustomizations"), so an operator
+// can tell which source a malformed remote object came from.
+type NamedList struct {
+	Label string
+	Run   func() error
+}
+
 // RunLists runs every list concurrently, each under panic recovery, waits for
 // all of them and returns their errors in the same order. One list failing
 // never cancels another. A list whose goroutine panicked reports
 // ErrListPanicked. Bound the lists' duration through the context they close
 // over.
-func RunLists(logger *slog.Logger, label string, lists []func() error) []error {
+func RunLists(logger *slog.Logger, lists []NamedList) []error {
 	errs := make([]error, len(lists))
 	var g errgroup.Group
 	for i, list := range lists {
 		errs[i] = ErrListPanicked // overwritten unless the list panics
-		recoverutil.Go(&g, logger, label, func() error {
-			errs[i] = list()
+		recoverutil.Go(&g, logger, list.Label, func() error {
+			errs[i] = list.Run()
 			return nil
 		})
 	}

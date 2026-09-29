@@ -251,11 +251,11 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 
 	listCtx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
-	runs := make([]func() error, len(sources))
+	runs := make([]k8s.NamedList, len(sources))
 	for i, src := range sources {
-		runs[i] = func() error { return src.list(listCtx, dyn) }
+		runs[i] = k8s.NamedList{Label: "gitops list " + src.gvr.Resource, Run: func() error { return src.list(listCtx, dyn) }}
 	}
-	errs := k8s.RunLists(h.Logger, "gitops remote list", runs)
+	errs := k8s.RunLists(h.Logger, runs)
 
 	for i, src := range sources {
 		switch err := errs[i]; {

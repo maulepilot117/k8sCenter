@@ -44,10 +44,10 @@ func TestRemoteReason(t *testing.T) {
 func TestRunLists_RunsEveryListAndIsolatesAPanic(t *testing.T) {
 	boom := errors.New("boom")
 	var ran atomic.Int32
-	errs := RunLists(nil, "test", []func() error{
-		func() error { ran.Add(1); return nil },
-		func() error { ran.Add(1); panic("bad remote object") },
-		func() error { ran.Add(1); return boom },
+	errs := RunLists(nil, []NamedList{
+		{"test ok", func() error { ran.Add(1); return nil }},
+		{"test panics", func() error { ran.Add(1); panic("bad remote object") }},
+		{"test fails", func() error { ran.Add(1); return boom }},
 	})
 	if ran.Load() != 3 {
 		t.Fatalf("ran %d lists, want 3", ran.Load())
