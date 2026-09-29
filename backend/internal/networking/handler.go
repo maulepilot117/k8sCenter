@@ -106,8 +106,7 @@ func (h *Handler) isCiliumLocal(r *http.Request) bool {
 	if info == nil || info.Name != CNICilium {
 		return false
 	}
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-	return clusterID == "" || clusterID == "local"
+	return k8s.IsLocalClusterID(middleware.ClusterIDFromContext(r.Context()))
 }
 
 // rejectNonLocal writes a 501 Not Implemented response when the request targets a
@@ -120,7 +119,7 @@ func (h *Handler) isCiliumLocal(r *http.Request) bool {
 // (review #13) that established the wire-vs-log separation.
 func (h *Handler) rejectNonLocal(w http.ResponseWriter, r *http.Request, feature string) bool {
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	if clusterID != "" && clusterID != "local" {
+	if !k8s.IsLocalClusterID(clusterID) {
 		if h.Logger != nil {
 			h.Logger.Warn("networking handler rejected on remote cluster",
 				"feature", feature,
@@ -187,6 +186,7 @@ func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// nolint:cluster-routing carve-out: Cilium config stays local-only (P2-5); remote clusters are refused above by rejectNonLocal.
 	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create impersonated client", "")
@@ -218,7 +218,7 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 	// Allowing X-Cluster-ID here would cause the audit row to record the remote
 	// cluster ID while the write always hits local — silent desync. Reject non-local
 	// AND emit an audit row so the rejected write attempt is recorded.
-	if clusterID := middleware.ClusterIDFromContext(r.Context()); clusterID != "" && clusterID != "local" {
+	if clusterID := middleware.ClusterIDFromContext(r.Context()); !k8s.IsLocalClusterID(clusterID) {
 		h.AuditLogger.Log(r.Context(), audit.Entry{
 			Timestamp:    time.Now().UTC(),
 			ClusterID:    clusterID,
@@ -266,6 +266,7 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Use impersonated client to enforce Kubernetes RBAC
+	// nolint:cluster-routing carve-out: Cilium config stays local-only (P2-5); remote clusters are refused and audited above.
 	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create impersonated client", "")

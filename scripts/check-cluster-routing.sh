@@ -11,6 +11,13 @@
 # cluster's schema; pairing it with a remote client is the bug
 # ClusterRouter.TargetFor / TargetSchemaFor exist to prevent.
 #
+# R-8 (U12) — in the packages listed in REMOTE_ROUTED_DIRS, also flag
+# .BaseDynamicClient() / .BaseClientset() / .DiscoveryClient() /
+# .RESTMapper(). Those read the LOCAL cluster through the service account
+# or the local schema; a feature package that has migrated to serve the
+# selected cluster must mark every remaining local read with a nolint
+# reason, so serving local data under a remote cluster's name is visible.
+#
 # A line is exempt when:
 #   - The line above carries `// nolint:cluster-routing` AND a free-form reason
 #   - The file path matches one of the ALLOWED_PREFIXES below (informer
@@ -83,6 +90,14 @@ ALLOWED_PREFIXES="backend/internal/k8s/cluster_router.go backend/internal/k8s/cl
 # would bury the real regressions.
 SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server"
 
+# Directories (relative to ROOT) whose feature handlers serve the cluster
+# the request selects (R-8). In these, a service-account or local-schema
+# read (.BaseDynamicClient() / .BaseClientset() / .DiscoveryClient() /
+# .RESTMapper()) is a violation unless annotated: each remaining local
+# read must say why it is local. A package joins this list in the unit that
+# migrates it. Empty until the first package migrates.
+REMOTE_ROUTED_DIRS=""
+
 # -----------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------
@@ -130,6 +145,18 @@ is_whole_line_comment() {
   return 1
 }
 
+# is_remote_routed PATH — returns 0 (true) if PATH is inside a
+# REMOTE_ROUTED_DIRS entry.
+is_remote_routed() {
+  _p="$1"
+  for _dir in $REMOTE_ROUTED_DIRS; do
+    case "$_p" in
+      "$_dir"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # classify_line REL_PATH LINE PREV_LINE — returns 0 (true) if LINE at
 # REL_PATH is an unexempt cluster-routing violation, given PREV_LINE (the
 # source line immediately above, used for the nolint check, or "" if LINE
@@ -147,12 +174,16 @@ classify_line() {
 
   _schema=0
   is_schema_routed "$_path" && _schema=1
+  _remote=0
+  is_remote_routed "$_path" && _remote=1
 
   _hit=0
   case "$_line" in
     *".ClientForUser("*|*".DynamicClientForUser("*) _hit=1 ;;
     *".RESTMapper()"*|*".DiscoveryClient()"*)
-      if [ "$_schema" -eq 1 ]; then _hit=1; fi ;;
+      if [ "$_schema" -eq 1 ] || [ "$_remote" -eq 1 ]; then _hit=1; fi ;;
+    *".BaseDynamicClient()"*|*".BaseClientset()"*)
+      if [ "$_remote" -eq 1 ]; then _hit=1; fi ;;
   esac
   [ "$_hit" -eq 1 ] || return 1
 
@@ -281,6 +312,35 @@ run_self_test() {
   expect_clean "an interface method line in a schema-routed dir must NOT be a violation (Finding #3)" \
     "backend/internal/server/x.go" "${TAB}RESTMapper() meta.RESTMapper" ""
 
+  # R-8 (U12) — REMOTE_ROUTED_DIRS. The real list starts empty and grows as
+  # packages migrate, so these cases run against a fixture list and restore
+  # the real one afterwards.
+  _saved_remote_routed="$REMOTE_ROUTED_DIRS"
+  REMOTE_ROUTED_DIRS="backend/internal/gitops"
+
+  expect_violation "BaseDynamicClient() in a remote-routed dir must be a violation" \
+    "backend/internal/gitops/x.go" "${TAB}dyn := h.K8sClient.BaseDynamicClient()" ""
+
+  expect_violation "BaseClientset() in a remote-routed dir must be a violation" \
+    "backend/internal/gitops/x.go" "${TAB}cs := d.k8sClient.BaseClientset()" ""
+
+  expect_violation "DiscoveryClient() in a remote-routed dir must be a violation" \
+    "backend/internal/gitops/discovery.go" "${TAB}disc := d.k8sClient.DiscoveryClient()" ""
+
+  expect_violation "RESTMapper() in a remote-routed dir must be a violation" \
+    "backend/internal/gitops/x.go" "${TAB}m := h.K8sClient.RESTMapper()" ""
+
+  expect_clean "BaseDynamicClient() outside REMOTE_ROUTED_DIRS must NOT be a violation" \
+    "backend/internal/velero/x.go" "${TAB}dyn := h.K8sClient.BaseDynamicClient()" ""
+
+  expect_clean "an annotated local read in a remote-routed dir must NOT be a violation" \
+    "backend/internal/gitops/x.go" "${TAB}dyn := h.K8sClient.BaseDynamicClient()" "${TAB}// nolint:cluster-routing local path: local service-account cache"
+
+  expect_clean "gitopsextra must not match the gitops remote-routed dir prefix" \
+    "backend/internal/gitopsextra/x.go" "${TAB}dyn := h.K8sClient.BaseDynamicClient()" ""
+
+  REMOTE_ROUTED_DIRS="$_saved_remote_routed"
+
   printf '[check-cluster-routing] self-test: %d/%d detector cases passed\n' "$_pass" "$_n"
 }
 
@@ -333,7 +393,8 @@ if [ "$VIOLATIONS" -eq 0 ]; then
 fi
 
 printf 'FOUND %d violation(s) — handlers calling .ClientForUser / .DynamicClientForUser\n' "$VIOLATIONS"
-printf '(or, in SCHEMA_ROUTED_DIRS, .RESTMapper / .DiscoveryClient)\n'
+printf '(or, in SCHEMA_ROUTED_DIRS, .RESTMapper / .DiscoveryClient;\n'
+printf ' or, in REMOTE_ROUTED_DIRS, any local service-account or schema read)\n'
 printf 'directly instead of routing through ClusterRouter.\n\n'
 printf 'To fix: replace h.K8sClient.ClientForUser / DynamicClientForUser with\n'
 printf '        h.ClusterRouter.ClientForCluster / DynamicClientForCluster, and\n'
