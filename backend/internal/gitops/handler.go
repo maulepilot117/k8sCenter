@@ -523,23 +523,25 @@ func (h *Handler) InvalidateCache() {
 // every identity's cached view of it (R-8 KTD7). The notification names the
 // cluster that was written.
 func (h *Handler) afterAppWrite(ctx context.Context) {
-	clusterID := middleware.ClusterIDFromContext(ctx)
-	if k8s.IsLocalClusterID(clusterID) {
-		h.invalidateCache()
-	} else {
-		h.EvictRemoteCache(clusterID)
-	}
-	h.notifySyncChanged(clusterID)
+	h.notifySyncChanged(h.invalidateFor(ctx, h.invalidateCache))
 }
 
 // afterAppSetWrite is afterAppWrite for ApplicationSets, which notify nothing.
 func (h *Handler) afterAppSetWrite(ctx context.Context) {
+	h.invalidateFor(ctx, h.invalidateAppSetCache)
+}
+
+// invalidateFor drops the request cluster's cached view: invalidateLocal for
+// the local cluster, the remote cache entries otherwise. It returns the
+// cluster id.
+func (h *Handler) invalidateFor(ctx context.Context, invalidateLocal func()) string {
 	clusterID := middleware.ClusterIDFromContext(ctx)
 	if k8s.IsLocalClusterID(clusterID) {
-		h.invalidateAppSetCache()
+		invalidateLocal()
 	} else {
 		h.EvictRemoteCache(clusterID)
 	}
+	return clusterID
 }
 
 // prepareAction extracts the common preamble for action handlers:
@@ -731,6 +733,10 @@ func (h *Handler) HandleRollback(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, map[string]string{"message": "Rollback triggered for " + name + " to revision " + req.Revision})
 }
 
+// appSetNameLabel is the label Argo CD puts on each Application an
+// ApplicationSet generates, naming that ApplicationSet.
+const appSetNameLabel = "argocd.argoproj.io/application-set-name"
+
 // fetchAppSets returns cached ApplicationSet data, refreshing if stale.
 func (h *Handler) fetchAppSets(ctx context.Context) ([]NormalizedAppSet, error) {
 	h.appSetMu.RLock()
@@ -838,24 +844,26 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	for i := range filtered {
-		as := &filtered[i]
-		labelSelector := fmt.Sprintf("argocd.argoproj.io/application-set-name=%s", as.Name)
+	// One list of every generated app, grouped by owning appset, rather than
+	// a round trip per appset (each one a remote call on a remote cluster).
+	if len(filtered) > 0 {
 		list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(r.Context(), metav1.ListOptions{
-			LabelSelector: labelSelector,
+			LabelSelector: appSetNameLabel,
 		})
 		if err != nil {
-			h.Logger.Warn("failed to list child apps for appset", "appset", as.Name, "error", err)
-			continue
+			h.Logger.Warn("failed to list child apps for appsets", "error", err)
+		} else {
+			children := map[string][]NormalizedApp{}
+			for j := range list.Items {
+				owner := list.Items[j].GetLabels()[appSetNameLabel]
+				children[owner] = append(children[owner], NormalizeArgoApp(&list.Items[j]))
+			}
+			for i := range filtered {
+				as := &filtered[i]
+				as.GeneratedAppCount = len(children[as.Name])
+				as.Summary = computeMetadata(children[as.Name])
+			}
 		}
-		as.GeneratedAppCount = len(list.Items)
-
-		// Build summary from child apps
-		childNormalized := make([]NormalizedApp, 0, len(list.Items))
-		for j := range list.Items {
-			childNormalized = append(childNormalized, NormalizeArgoApp(&list.Items[j]))
-		}
-		as.Summary = computeMetadata(childNormalized)
 	}
 
 	sort.Slice(filtered, func(i, j int) bool {
@@ -903,7 +911,7 @@ func (h *Handler) HandleGetAppSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch child applications via label selector
-	labelSelector := fmt.Sprintf("argocd.argoproj.io/application-set-name=%s", name)
+	labelSelector := fmt.Sprintf("%s=%s", appSetNameLabel, name)
 	list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(r.Context(), metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})

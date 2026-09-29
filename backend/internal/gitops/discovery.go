@@ -82,12 +82,13 @@ var toolGroupVersions = []string{
 }
 
 // toolGroups are the API groups of toolGroupVersions.
-var toolGroups = []string{
-	"argoproj.io",
-	"kustomize.toolkit.fluxcd.io",
-	"helm.toolkit.fluxcd.io",
-	"notification.toolkit.fluxcd.io",
-}
+var toolGroups = func() []string {
+	groups := make([]string, 0, len(toolGroupVersions))
+	for _, gv := range toolGroupVersions {
+		groups = append(groups, strings.SplitN(gv, "/", 2)[0])
+	}
+	return groups
+}()
 
 // statusFromLists derives which GitOps tools a cluster serves from its
 // discovery lists, local or remote: Argo CD from argoproj.io/v1alpha1
