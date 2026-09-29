@@ -202,6 +202,13 @@ func New(deps Deps) *Server {
 			controlPlaneChecker = &monitoring.ControlPlaneAdapter{Discoverer: deps.MonitoringHandler.Discoverer}
 		}
 
+		// Deregistering a cluster or replacing its credentials evicts it from
+		// ClusterRouter; the hook stops drains still running against it.
+		taskManager := resources.NewTaskManager()
+		if deps.ClusterRouter != nil {
+			deps.ClusterRouter.RegisterEvictHook(taskManager.CancelCluster)
+		}
+
 		s.ResourceHandler = &resources.Handler{
 			K8sClient:      deps.K8sClient,
 			ClusterRouter:  deps.ClusterRouter,
@@ -209,7 +216,7 @@ func New(deps Deps) *Server {
 			AccessChecker:  ac,
 			AuditLogger:    deps.AuditLogger,
 			Logger:         deps.Logger,
-			TaskManager:    resources.NewTaskManager(),
+			TaskManager:    taskManager,
 			ClusterID:      deps.Config.ClusterID,
 			Utilization:    utilProvider,
 			Trends:         trendProvider,
