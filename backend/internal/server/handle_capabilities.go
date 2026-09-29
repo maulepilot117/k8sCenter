@@ -3,19 +3,13 @@ package server
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
-	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/sync/errgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
 
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
@@ -41,56 +35,24 @@ import (
 // resolution failure is 200-with-reason-rows, not 503; A4: nil ClusterStore
 // / ClusterRouter must not panic).
 
-// ReasonCode is the closed set of machine-readable explanations for why a
-// capability row is not plain "ok". Any value outside this set is a bug —
-// TestCapabilities_ReasonCodesAreClosed pins that.
-type ReasonCode string
+// ReasonCode and its values live in package k8s, which also classifies
+// target-resolution errors, so feature handlers report remote failures
+// with the same closed set this endpoint discloses.
+type ReasonCode = k8s.ReasonCode
 
 const (
-	// ReasonOK — supported, discovered, reachable, authorized.
-	ReasonOK ReasonCode = "ok"
-	// ReasonUnsupportedPlatform — k8sCenter has not implemented this
-	// operation for this target class (local vs remote).
-	ReasonUnsupportedPlatform ReasonCode = "unsupported_platform"
-	// ReasonDiscoveryMissing — the target's discovery does not contain the
-	// required group/resource.
-	ReasonDiscoveryMissing ReasonCode = "discovery_missing"
-	// ReasonDiscoveryUnavailable — the discovery call failed; the answer is
-	// unknown, not "absent".
-	ReasonDiscoveryUnavailable ReasonCode = "discovery_unavailable"
-	// ReasonUnreachable — the last probe says disconnected/blocked/error.
-	ReasonUnreachable ReasonCode = "unreachable"
-	// ReasonStaleObservation — the last probe is older than 3x the 60s
-	// probe interval (or there has never been one); reachable is null.
-	ReasonStaleObservation ReasonCode = "stale_observation"
-	// ReasonForbidden — the SAR returned Allowed: false for this identity,
-	// on a CLUSTER-SCOPED operation, where a cluster-wide probe asks an exact
-	// question and a denial is therefore the whole answer.
-	ReasonForbidden ReasonCode = "forbidden"
-	// ReasonAuthzUnknown — the SAR could not be issued or errored. This code
-	// means "we failed to ask", nothing more; a SAR that was asked and
-	// answered "no" never lands here (see ReasonAuthzNamespaceScoped).
-	ReasonAuthzUnknown ReasonCode = "authz_unknown"
-	// ReasonAuthzNamespaceScoped — the SAR was issued successfully and
-	// returned Allowed: false, but the operation is NAMESPACED and the probe
-	// was cluster-wide, so the denial does not prove this identity lacks
-	// access; it only proves the identity does not hold the permission in
-	// EVERY namespace. authorized is nil here exactly as it is for
-	// authz_unknown — the verdict genuinely is indeterminate — and only the
-	// reason code distinguishes "the probe's shape makes this unknowable"
-	// from "we never got an answer at all". Collapsing the two (as this
-	// endpoint did before) hides from the operator that a definite answer
-	// exists and is simply not being asked for; see Capability.Authorized for
-	// the ?namespace= follow-up that would turn it into a yes/no.
-	ReasonAuthzNamespaceScoped ReasonCode = "authz_namespace_scoped"
-	// ReasonClusterUnknown — no such cluster id in the registry.
-	ReasonClusterUnknown ReasonCode = "cluster_unknown"
-	// ReasonCredentialsInvalid — decrypt / TLS-policy / impersonation-probe
-	// failure while resolving the target.
-	ReasonCredentialsInvalid ReasonCode = "credentials_invalid"
-	// ReasonDBUnavailable — no ClusterStore wired (local-only deployment)
-	// and a non-local target was asked for.
-	ReasonDBUnavailable ReasonCode = "db_unavailable"
+	ReasonOK                   = k8s.ReasonOK
+	ReasonUnsupportedPlatform  = k8s.ReasonUnsupportedPlatform
+	ReasonDiscoveryMissing     = k8s.ReasonDiscoveryMissing
+	ReasonDiscoveryUnavailable = k8s.ReasonDiscoveryUnavailable
+	ReasonUnreachable          = k8s.ReasonUnreachable
+	ReasonStaleObservation     = k8s.ReasonStaleObservation
+	ReasonForbidden            = k8s.ReasonForbidden
+	ReasonAuthzUnknown         = k8s.ReasonAuthzUnknown
+	ReasonAuthzNamespaceScoped = k8s.ReasonAuthzNamespaceScoped
+	ReasonClusterUnknown       = k8s.ReasonClusterUnknown
+	ReasonCredentialsInvalid   = k8s.ReasonCredentialsInvalid
+	ReasonDBUnavailable        = k8s.ReasonDBUnavailable
 )
 
 // validReasonCodes is the closed set every emitted ReasonCode must belong
@@ -501,131 +463,14 @@ func resolveReachability(ctx context.Context, cs clusterRecordGetter, isLocal bo
 	return reachabilityResult{reachable: &connected, observedAt: *rec.LastProbedAt}
 }
 
-// classifyTargetSchemaErr maps a TargetSchemaFor error to a target-resolution
-// reason code (step 2d / brief A3).
-//
-// Order matters, and every branch before the last one exists because it
-// names a condition credentials_invalid would otherwise lie about (review
-// finding #7 — three distinct error shapes reached the catch-all and told
-// the operator their stored credentials were bad):
-//
-//  1. pgx.ErrNoRows (propagated unwrapped through ClusterStore.Get's %w
-//     chain) — the row genuinely isn't there: cluster_unknown.
-//  2. requireClusterStore's "no cluster store" message — no registry wired:
-//     db_unavailable. Matched by substring deliberately: cluster_router.go's
-//     requireClusterStore doc comment declares that wording load-bearing and
-//     maintains a census of the six assertions on it (three in internal/k8s,
-//     three in internal/certmanager) plus this one. Replacing it with a
-//     typed sentinel would mean editing that contract and its census, which
-//     is out of this change's scope, so the match stays and the census stays
-//     accurate.
-//  3. A PostgreSQL-level failure — a server error (pgconn.PgError) or a
-//     failed connection attempt (pgconn.ConnectError) on the miss path's
-//     cluster-record read: db_unavailable. This MUST precede the network
-//     checks below, because a Postgres connect failure wraps a net.OpError
-//     and would otherwise be reported as "the cluster is unreachable" when
-//     it is the registry that is down.
-//  4. DNS / timeout / transport failures — a wrapped *net.DNSError from
-//     ValidateRemoteURLContext's fail-closed lookup, context.DeadlineExceeded
-//     or context.Canceled from the 30s bound TargetSchemaFor puts on its
-//     miss path (and remoteConfig's own), or any other net.Error: the
-//     credentials are unproven, not invalid — we never got far enough to
-//     use them. unreachable.
-//
-// Everything left is what credentials_invalid actually names: decrypt
-// failure, SSRF/TLS policy refusal, impersonation probe failure — "something
-// is wrong with how we'd connect to this cluster", not with whether we can
-// reach it or read its registry row.
-func classifyTargetSchemaErr(err error) ReasonCode {
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ReasonClusterUnknown
-	}
-	if strings.Contains(err.Error(), "no cluster store") {
-		return ReasonDBUnavailable
-	}
-
-	var pgErr *pgconn.PgError
-	var pgConnErr *pgconn.ConnectError
-	if errors.As(err, &pgErr) || errors.As(err, &pgConnErr) {
-		return ReasonDBUnavailable
-	}
-
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return ReasonUnreachable
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return ReasonUnreachable
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return ReasonUnreachable
-	}
-
-	return ReasonCredentialsInvalid
-}
-
-// fetchDiscoveryLists calls ServerGroupsAndResources once and tolerates the
-// partial-result-with-error shape exactly as resolveGVR does
-// (yaml/handler.go:548-553): only a nil list counts as "discovery
-// unavailable" — a non-nil list alongside a non-nil error (some group/version
-// failed to load) is still usable for the groups that did.
-//
-// failedGroups is the set of API groups that did NOT load, extracted from
-// client-go's *discovery.ErrGroupDiscoveryFailed. Tolerating a partial
-// result is right for every group that loaded, but for the group actually
-// being probed it is the difference between two answers this endpoint exists
-// to keep apart: gvrPresentIn finds nothing in a list the group never made
-// it into, and reporting that as a definite discovery_missing claims the CRD
-// is absent when all we know is that we failed to look (review finding #12).
-// The caller turns membership in this set into discovery_unavailable.
-func fetchDiscoveryLists(disc discovery.DiscoveryInterface) (lists []*metav1.APIResourceList, unavailable bool, failedGroups map[string]bool) {
-	_, apiResourceLists, err := disc.ServerGroupsAndResources()
-	if err != nil && apiResourceLists == nil {
-		return nil, true, nil
-	}
-	return apiResourceLists, false, failedDiscoveryGroups(err)
-}
-
-// failedDiscoveryGroups reduces a discovery error to the set of API group
-// names that failed to load. Returns nil for a nil error or any error shape
-// that isn't client-go's per-group-version failure aggregate — in which case
-// the caller has no evidence any specific group is unknown and keeps today's
-// definite verdict.
-func failedDiscoveryGroups(err error) map[string]bool {
-	if err == nil {
-		return nil
-	}
-	var groupErr *discovery.ErrGroupDiscoveryFailed
-	if !errors.As(err, &groupErr) || len(groupErr.Groups) == 0 {
-		return nil
-	}
-	groups := make(map[string]bool, len(groupErr.Groups))
-	for gv := range groupErr.Groups {
-		groups[gv.Group] = true
-	}
-	return groups
-}
-
-// gvrPresentIn reports whether group/resource appears in lists. Mirrors the
-// matching loop in resolveGVR (yaml/handler.go).
-func gvrPresentIn(lists []*metav1.APIResourceList, group, resource string) bool {
-	for _, l := range lists {
-		gv, err := schema.ParseGroupVersion(l.GroupVersion)
-		if err != nil {
-			continue
-		}
-		if gv.Group != group {
-			continue
-		}
-		for _, r := range l.APIResources {
-			if strings.EqualFold(r.Name, resource) {
-				return true
-			}
-		}
-	}
-	return false
-}
+// The target-error classifier and discovery helpers moved to package k8s
+// (target_status.go); these names keep this file and its tests unchanged.
+var (
+	classifyTargetSchemaErr = k8s.ClassifyTargetErr
+	fetchDiscoveryLists     = k8s.DiscoveryLists
+	failedDiscoveryGroups   = k8s.FailedDiscoveryGroups
+	gvrPresentIn            = k8s.GVRPresentIn
+)
 
 func boolPtr(b bool) *bool { return &b }
 
