@@ -581,7 +581,10 @@ func main() {
 		AccessChecker: accessChecker,
 		Logger:        logger,
 		AuditLogger:   auditLogger,
+		Clients:       clusterRouter,
+		Presence:      remotePresence,
 	}
+	clusterRouter.RegisterEvictHook(gitopsHandler.EvictRemoteCache)
 
 	// Wire git commit enrichment — always create cache, optionally set GitHub client
 	if dbPool != nil {

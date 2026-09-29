@@ -187,3 +187,31 @@ func TestWriteRemoteError_UnclassifiedFailureIs502WithoutText(t *testing.T) {
 	}
 	assertNoLeak(t, rr, leakyHost, "unexpected EOF")
 }
+
+func TestWriteRemoteLoadError_ClassifiesEachFailureKind(t *testing.T) {
+	forbidden := apierrors.NewForbidden(schema.GroupResource{Resource: "things"}, "", errors.New("no"))
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		reason k8s.ReasonCode
+	}{
+		{"target unreachable", k8s.TargetError{Err: transportErr()}, http.StatusBadGateway, k8s.ReasonUnreachable},
+		{"wrapped target error", fmt.Errorf("load: %w", k8s.TargetError{Err: fmt.Errorf("get cluster: %w", pgx.ErrNoRows)}), http.StatusNotFound, k8s.ReasonClusterUnknown},
+		{"discovery unavailable", fmt.Errorf("load: %w", k8s.ErrDiscoveryUnavailable), http.StatusBadGateway, k8s.ReasonDiscoveryUnavailable},
+		{"failed call", fmt.Errorf("list things: %w", forbidden), http.StatusForbidden, k8s.ReasonForbidden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			WriteRemoteLoadError(rr, tc.err, "Widget")
+			if rr.Code != tc.status {
+				t.Fatalf("status %d, want %d: %s", rr.Code, tc.status, rr.Body.String())
+			}
+			if got := decodeError(t, rr).Reason; got != string(tc.reason) {
+				t.Errorf("reason %q, want %q", got, tc.reason)
+			}
+			assertNoLeak(t, rr, leakyHost)
+		})
+	}
+}

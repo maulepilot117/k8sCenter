@@ -23,13 +23,22 @@ import (
 	"github.com/kubecenter/kubecenter/internal/gitprovider"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
-// Handler serves GitOps HTTP endpoints.
+// NotificationEmitter is the part of the notification service GitOps uses.
+type NotificationEmitter interface {
+	Emit(ctx context.Context, n notifications.Notification)
+}
+
+// Handler serves GitOps HTTP endpoints for the cluster a request selects.
+// The local cluster is read through a service-account cache and the local
+// Discoverer; a remote cluster through Clients, as the requesting identity,
+// with its lists held briefly per identity in remote.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
 	Discoverer    *GitOpsDiscoverer
@@ -37,7 +46,16 @@ type Handler struct {
 	Logger        *slog.Logger
 	AuditLogger   audit.Logger
 	CommitCache   *gitprovider.CommitCache
-	NotifService  *notifications.NotificationService
+	NotifService  NotificationEmitter
+	Clients       k8s.ClusterClients
+	Presence      *k8s.Presence
+
+	remoteOnce sync.Once
+	remote     *remotecache.Cache[*snapshot]
+
+	// baseDynOverride is a test-only seam for the local service-account
+	// client; production leaves it nil.
+	baseDynOverride dynamic.Interface
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
@@ -120,7 +138,7 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 	gen := h.cacheGen
 	h.cacheMu.RUnlock()
 
-	dynClient := h.K8sClient.BaseDynamicClient()
+	dynClient := h.baseDyn()
 	status := h.Discoverer.Status()
 
 	var allApps []NormalizedApp
@@ -225,7 +243,18 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := h.Discoverer.Status()
+	var status GitOpsStatus
+	if isLocal(r.Context()) {
+		status = h.Discoverer.Status()
+	} else {
+		// On a remote cluster a failure to read discovery is a status with a
+		// reason, not an error (R-8 KTD5).
+		var err error
+		status, _, err = h.remoteDiscovery(r.Context(), middleware.ClusterIDFromContext(r.Context()), user)
+		if err != nil {
+			status = GitOpsStatus{Detected: ToolNone, Reason: string(k8s.RemoteReason(err)), LastChecked: time.Now().UTC().Format(time.RFC3339)}
+		}
+	}
 
 	// Strip details for non-admin users
 	if !auth.IsAdmin(user) {
@@ -253,10 +282,9 @@ func (h *Handler) HandleListApplications(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	apps, err := h.fetchApps(r.Context())
+	apps, coverage, err := h.loadApps(r.Context(), user)
 	if err != nil {
-		h.Logger.Error("failed to fetch gitops applications", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch applications", "")
+		h.writeLoadError(w, r, err, "failed to fetch applications")
 		return
 	}
 
@@ -292,11 +320,13 @@ func (h *Handler) HandleListApplications(w http.ResponseWriter, r *http.Request)
 
 	// Build response with summary counts
 	httputil.WriteData(w, struct {
-		Applications []NormalizedApp `json:"applications"`
-		Summary      AppListMetadata `json:"summary"`
+		Applications []NormalizedApp      `json:"applications"`
+		Summary      AppListMetadata      `json:"summary"`
+		Coverage     []k8s.SourceCoverage `json:"coverage,omitempty"`
 	}{
 		Applications: apps,
 		Summary:      computeMetadata(apps),
+		Coverage:     coverage,
 	})
 }
 
@@ -315,11 +345,8 @@ func (h *Handler) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build impersonating dynamic client for this user
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.dynamicClient(w, r, user)
+	if !ok {
 		return
 	}
 
@@ -338,7 +365,7 @@ func (h *Handler) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		h.Logger.Error("failed to get application detail", "id", id, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get application", "")
+		writeClusterError(w, r, err, "failed to get application")
 		return
 	}
 
@@ -462,21 +489,55 @@ func (h *Handler) invalidateCache() {
 	h.cachedData = nil
 	h.cacheGen++
 	h.cacheMu.Unlock()
-	if h.NotifService != nil {
-		go recoverutil.Safe(h.Logger, "gitops notify", func() {
-			h.NotifService.Emit(context.Background(), notifications.Notification{
-				Source:   notifications.SourceGitOps,
-				Severity: notifications.SeverityInfo,
-				Title:    "GitOps sync status changed",
-				Message:  "A GitOps application sync status has changed. Check the GitOps dashboard for details.",
-			})
-		})
+}
+
+// notifySyncChanged emits the sync-status notification for clusterID ("" when
+// the change came from a local informer event).
+func (h *Handler) notifySyncChanged(clusterID string) {
+	if h.NotifService == nil {
+		return
 	}
+	go recoverutil.Safe(h.Logger, "gitops notify", func() {
+		h.NotifService.Emit(context.Background(), notifications.Notification{
+			Source:    notifications.SourceGitOps,
+			Severity:  notifications.SeverityInfo,
+			Title:     "GitOps sync status changed",
+			Message:   "A GitOps application sync status has changed. Check the GitOps dashboard for details.",
+			ClusterID: clusterID,
+		})
+	})
 }
 
 // InvalidateCache is the exported version for use by CRD event handlers.
 func (h *Handler) InvalidateCache() {
 	h.invalidateCache()
+	h.notifySyncChanged("")
+}
+
+// afterAppWrite makes the next read see an application write: the local
+// cache is dropped, or on a remote cluster, which sends no informer events,
+// every identity's cached view of it (R-8 KTD7). The notification names the
+// cluster that was written.
+func (h *Handler) afterAppWrite(ctx context.Context) {
+	h.notifySyncChanged(h.invalidateFor(ctx, h.invalidateCache))
+}
+
+// afterAppSetWrite is afterAppWrite for ApplicationSets, which notify nothing.
+func (h *Handler) afterAppSetWrite(ctx context.Context) {
+	h.invalidateFor(ctx, h.invalidateAppSetCache)
+}
+
+// invalidateFor drops the request cluster's cached view: invalidateLocal for
+// the local cluster, the remote cache entries otherwise. It returns the
+// cluster id.
+func (h *Handler) invalidateFor(ctx context.Context, invalidateLocal func()) string {
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	if k8s.IsLocalClusterID(clusterID) {
+		invalidateLocal()
+	} else {
+		h.EvictRemoteCache(clusterID)
+	}
+	return clusterID
 }
 
 // prepareAction extracts the common preamble for action handlers:
@@ -511,15 +572,7 @@ func (h *Handler) prepareAction(w http.ResponseWriter, r *http.Request) (toolPre
 		return
 	}
 
-	dynClient, err = h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		ok = false
-		return
-	}
-
-	ok = true
+	dynClient, ok = h.dynamicClient(w, r, user)
 	return
 }
 
@@ -565,18 +618,18 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		h.auditLog(r, user, audit.ActionGitOpsSync, kind, ns, name, audit.ResultFailure, err.Error())
+		h.auditLog(r, user, audit.ActionGitOpsSync, kind, ns, name, auditResult(err), err.Error())
 		// Map specific errors to appropriate HTTP status codes
-		if strings.Contains(err.Error(), "already in progress") || strings.Contains(err.Error(), "is suspended") {
+		if isOwnConflict(err, "already in progress", "is suspended") {
 			httputil.WriteError(w, http.StatusConflict, err.Error(), "")
 		} else {
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to trigger sync", "")
+			writeClusterError(w, r, err, "failed to trigger sync")
 		}
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionGitOpsSync, kind, ns, name, audit.ResultSuccess, "tool="+toolPrefix)
-	h.invalidateCache()
+	h.afterAppWrite(r.Context())
 	httputil.WriteData(w, map[string]string{"message": "Sync triggered for " + name})
 }
 
@@ -623,13 +676,13 @@ func (h *Handler) HandleSuspend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		h.auditLog(r, user, action, kind, ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update suspend state", "")
+		h.auditLog(r, user, action, kind, ns, name, auditResult(err), err.Error())
+		writeClusterError(w, r, err, "failed to update suspend state")
 		return
 	}
 
 	h.auditLog(r, user, action, kind, ns, name, audit.ResultSuccess, "tool="+toolPrefix)
-	h.invalidateCache()
+	h.afterAppWrite(r.Context())
 
 	msg := "Suspended " + name
 	if !req.Suspend {
@@ -662,19 +715,23 @@ func (h *Handler) HandleRollback(w http.ResponseWriter, r *http.Request) {
 
 	_, err := RollbackArgoApp(r.Context(), dynClient, ns, name, req.Revision, user.KubernetesUsername)
 	if err != nil {
-		h.auditLog(r, user, audit.ActionGitOpsRollback, "Application", ns, name, audit.ResultFailure, err.Error())
-		if strings.Contains(err.Error(), "auto-sync") || strings.Contains(err.Error(), "not found in history") {
+		h.auditLog(r, user, audit.ActionGitOpsRollback, "Application", ns, name, auditResult(err), err.Error())
+		if isOwnConflict(err, "auto-sync", "not found in history") {
 			httputil.WriteError(w, http.StatusConflict, err.Error(), "")
 		} else {
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to rollback", "")
+			writeClusterError(w, r, err, "failed to rollback")
 		}
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionGitOpsRollback, "Application", ns, name, audit.ResultSuccess, "revision="+req.Revision)
-	h.invalidateCache()
+	h.afterAppWrite(r.Context())
 	httputil.WriteData(w, map[string]string{"message": "Rollback triggered for " + name + " to revision " + req.Revision})
 }
+
+// appSetNameLabel is the label Argo CD puts on each Application an
+// ApplicationSet generates, naming that ApplicationSet.
+const appSetNameLabel = "argocd.argoproj.io/application-set-name"
 
 // fetchAppSets returns cached ApplicationSet data, refreshing if stale.
 func (h *Handler) fetchAppSets(ctx context.Context) ([]NormalizedAppSet, error) {
@@ -701,9 +758,7 @@ func (h *Handler) doFetchAppSets(ctx context.Context) (*cachedAppSetData, error)
 	gen := h.appSetCacheGen
 	h.appSetMu.RUnlock()
 
-	dynClient := h.K8sClient.BaseDynamicClient()
-
-	appSets, err := ListArgoAppSets(ctx, dynClient)
+	appSets, err := ListArgoAppSets(ctx, h.baseDyn())
 	if err != nil {
 		return nil, err
 	}
@@ -741,11 +796,26 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	appSets, err := h.fetchAppSets(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch applicationsets", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch applicationsets", "")
-		return
+	var appSets []NormalizedAppSet
+	if isLocal(r.Context()) {
+		var err error
+		appSets, err = h.fetchAppSets(r.Context())
+		if err != nil {
+			h.Logger.Error("failed to fetch applicationsets", "error", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch applicationsets", "")
+			return
+		}
+	} else {
+		snap, err := h.load(r.Context(), user)
+		if err != nil {
+			h.writeLoadError(w, r, err, "failed to fetch applicationsets")
+			return
+		}
+		if err := snap.failed["applicationsets"]; err != nil {
+			httputil.WriteRemoteError(w, err)
+			return
+		}
+		appSets = snap.appSets
 	}
 
 	// RBAC filter
@@ -763,30 +833,41 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fetch child apps per appset using label selector with user impersonation
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client for child apps", "error", err)
-		dynClient = h.K8sClient.BaseDynamicClient() // fallback to service account
+	// Fetch child apps per appset using label selector with user impersonation.
+	// There is no service-account fallback: counts must reflect what this
+	// user may list on this cluster.
+	dynClient, ok := h.dynamicClient(w, r, user)
+	if !ok {
+		return
 	}
-	for i := range filtered {
-		as := &filtered[i]
-		labelSelector := fmt.Sprintf("argocd.argoproj.io/application-set-name=%s", as.Name)
-		list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(r.Context(), metav1.ListOptions{
-			LabelSelector: labelSelector,
+	// One list of every generated app, grouped by owning appset, rather than
+	// a round trip per appset (each one a remote call on a remote cluster).
+	// On a remote cluster a failed child list is disclosed in coverage, so
+	// zero counts are not mistaken for ApplicationSets with no children.
+	var coverage []k8s.SourceCoverage
+	if len(filtered) > 0 {
+		listCtx, cancel := context.WithTimeout(r.Context(), listTimeout)
+		list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(listCtx, metav1.ListOptions{
+			LabelSelector: appSetNameLabel,
 		})
+		cancel()
 		if err != nil {
-			h.Logger.Warn("failed to list child apps for appset", "appset", as.Name, "error", err)
-			continue
+			h.Logger.Warn("failed to list child apps for appsets", "error", err)
+			if !isLocal(r.Context()) {
+				coverage = k8s.CoverageOf(map[string]error{"applications": err}, "applications")
+			}
+		} else {
+			children := map[string][]NormalizedApp{}
+			for j := range list.Items {
+				owner := list.Items[j].GetLabels()[appSetNameLabel]
+				children[owner] = append(children[owner], NormalizeArgoApp(&list.Items[j]))
+			}
+			for i := range filtered {
+				as := &filtered[i]
+				as.GeneratedAppCount = len(children[as.Name])
+				as.Summary = computeMetadata(children[as.Name])
+			}
 		}
-		as.GeneratedAppCount = len(list.Items)
-
-		// Build summary from child apps
-		childNormalized := make([]NormalizedApp, 0, len(list.Items))
-		for j := range list.Items {
-			childNormalized = append(childNormalized, NormalizeArgoApp(&list.Items[j]))
-		}
-		as.Summary = computeMetadata(childNormalized)
 	}
 
 	sort.Slice(filtered, func(i, j int) bool {
@@ -794,11 +875,13 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 	})
 
 	httputil.WriteData(w, struct {
-		ApplicationSets []NormalizedAppSet `json:"applicationSets"`
-		Total           int                `json:"total"`
+		ApplicationSets []NormalizedAppSet   `json:"applicationSets"`
+		Total           int                  `json:"total"`
+		Coverage        []k8s.SourceCoverage `json:"coverage,omitempty"`
 	}{
 		ApplicationSets: filtered,
 		Total:           len(filtered),
+		Coverage:        coverage,
 	})
 }
 
@@ -821,22 +904,20 @@ func (h *Handler) HandleGetAppSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.dynamicClient(w, r, user)
+	if !ok {
 		return
 	}
 
 	detail, err := GetArgoAppSetDetail(r.Context(), dynClient, namespace, name)
 	if err != nil {
 		h.Logger.Error("failed to get applicationset detail", "id", id, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to get applicationset", "")
+		writeClusterError(w, r, err, "failed to get applicationset")
 		return
 	}
 
 	// Fetch child applications via label selector
-	labelSelector := fmt.Sprintf("argocd.argoproj.io/application-set-name=%s", name)
+	labelSelector := fmt.Sprintf("%s=%s", appSetNameLabel, name)
 	list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(r.Context(), metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
@@ -869,13 +950,13 @@ func (h *Handler) HandleRefreshAppSet(w http.ResponseWriter, r *http.Request) {
 
 	err := RefreshArgoAppSet(r.Context(), dynClient, ns, name)
 	if err != nil {
-		h.auditLog(r, user, audit.ActionGitOpsSync, "ApplicationSet", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to refresh applicationset", "")
+		h.auditLog(r, user, audit.ActionGitOpsSync, "ApplicationSet", ns, name, auditResult(err), err.Error())
+		writeClusterError(w, r, err, "failed to refresh applicationset")
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionGitOpsSync, "ApplicationSet", ns, name, audit.ResultSuccess, "action=refresh")
-	h.invalidateAppSetCache()
+	h.afterAppSetWrite(r.Context())
 	httputil.WriteData(w, map[string]string{"message": "Refresh triggered for " + name})
 }
 
@@ -906,22 +987,20 @@ func (h *Handler) HandleDeleteAppSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.dynamicClient(w, r, user)
+	if !ok {
 		return
 	}
 
 	err = DeleteArgoAppSet(r.Context(), dynClient, ns, name)
 	if err != nil {
-		h.auditLog(r, user, audit.ActionDelete, "ApplicationSet", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete applicationset", "")
+		h.auditLog(r, user, audit.ActionDelete, "ApplicationSet", ns, name, auditResult(err), err.Error())
+		writeClusterError(w, r, err, "failed to delete applicationset")
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionDelete, "ApplicationSet", ns, name, audit.ResultSuccess, "")
-	h.invalidateAppSetCache()
+	h.afterAppSetWrite(r.Context())
 	httputil.WriteData(w, map[string]string{"message": "Deleted applicationset " + name})
 }
 
@@ -972,16 +1051,24 @@ func (h *Handler) HandleGetCommits(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC: validate repoURL matches at least one app visible to this user
-	apps, err := h.fetchApps(r.Context())
+	// on the same cluster the request selects.
+	apps, coverage, err := h.loadApps(r.Context(), user)
 	if err != nil {
-		h.Logger.Error("failed to fetch apps for commit RBAC check", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to validate access", "")
+		h.writeLoadError(w, r, err, "failed to validate access")
 		return
 	}
 	apps = h.filterAppsByRBAC(r.Context(), user, apps)
 
 	canonicalURL := ref.CanonicalURL()
 	if !repoVisibleToUser(apps, repoURL, canonicalURL) {
+		// A list that failed for a reason other than a refusal may hold the
+		// app that uses this repository: that is an outage, not a denial.
+		for _, c := range coverage {
+			if c.Status != k8s.CoverageStatusForbidden {
+				httputil.WriteErrorWithReason(w, http.StatusBadGateway, "could not list every application on the selected cluster", c.ReasonCode, nil)
+				return
+			}
+		}
 		httputil.WriteError(w, http.StatusForbidden, "no visible application uses this repository", "")
 		return
 	}

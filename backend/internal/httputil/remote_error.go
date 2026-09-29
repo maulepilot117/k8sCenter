@@ -98,3 +98,20 @@ func WriteRemoteError(w http.ResponseWriter, err error) {
 	slog.Warn("remote cluster call failed", "error", err)
 	WriteErrorWithReason(w, http.StatusBadGateway, "the cluster request failed", "", nil)
 }
+
+// WriteRemoteLoadError answers a failure to read a feature's state on a
+// remote cluster: a target-resolution failure (k8s.TargetError) through
+// WriteTargetError, an unreadable discovery (k8s.ErrDiscoveryUnavailable) as
+// 502 discovery_unavailable naming feature, and anything else as a failed
+// call through WriteRemoteError.
+func WriteRemoteLoadError(w http.ResponseWriter, err error, feature string) {
+	var target k8s.TargetError
+	switch {
+	case errors.As(err, &target):
+		WriteTargetError(w, target.Err)
+	case errors.Is(err, k8s.ErrDiscoveryUnavailable):
+		WriteErrorWithReason(w, http.StatusBadGateway, feature+" discovery on the selected cluster failed", string(k8s.ReasonDiscoveryUnavailable), nil)
+	default:
+		WriteRemoteError(w, err)
+	}
+}

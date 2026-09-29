@@ -11,6 +11,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 const recheckInterval = 5 * time.Minute
@@ -73,72 +74,81 @@ func (d *GitOpsDiscoverer) RunDiscoveryLoop(ctx context.Context) {
 	}
 }
 
-// Discover probes the cluster for GitOps tools and updates cached state.
+// toolGroupVersions are the API group/versions GitOps discovery reads.
+var toolGroupVersions = []string{
+	"argoproj.io/v1alpha1",
+	"kustomize.toolkit.fluxcd.io/v1",
+	"helm.toolkit.fluxcd.io/v2",
+	"notification.toolkit.fluxcd.io/v1beta3",
+}
+
+// presenceResources are the resources whose presence means a GitOps tool is
+// installed: every kind statusFromLists detects a tool by.
+var presenceResources = []schema.GroupResource{
+	ArgoApplicationGVR.GroupResource(),
+	ArgoApplicationSetGVR.GroupResource(),
+	FluxKustomizationGVR.GroupResource(),
+	FluxHelmReleaseGVR.GroupResource(),
+	{Group: "notification.toolkit.fluxcd.io", Resource: "providers"},
+}
+
+// statusFromLists derives which GitOps tools a cluster serves from its
+// discovery lists, local or remote: Argo CD from argoproj.io/v1alpha1
+// Application or ApplicationSet, Flux CD from a Kustomization, HelmRelease
+// or notification Provider at the versions this package reads. Namespace,
+// controllers and LastChecked are left to the caller.
+func statusFromLists(lists []*metav1.APIResourceList) GitOpsStatus {
+	kinds := map[string]map[string]bool{} // group/version -> kind set
+	for _, l := range lists {
+		if kinds[l.GroupVersion] == nil {
+			kinds[l.GroupVersion] = map[string]bool{}
+		}
+		for _, r := range l.APIResources {
+			kinds[l.GroupVersion][r.Kind] = true
+		}
+	}
+
+	var argoDetail, fluxDetail *ToolDetail
+	argo := kinds["argoproj.io/v1alpha1"]
+	if argo["Application"] || argo["ApplicationSet"] {
+		argoDetail = &ToolDetail{Available: true, AppSetsAvailable: argo["ApplicationSet"]}
+	}
+	notification := kinds["notification.toolkit.fluxcd.io/v1beta3"]["Provider"]
+	if kinds["kustomize.toolkit.fluxcd.io/v1"]["Kustomization"] || kinds["helm.toolkit.fluxcd.io/v2"]["HelmRelease"] || notification {
+		fluxDetail = &ToolDetail{Available: true, NotificationAvailable: notification}
+	}
+
+	detected := ToolNone
+	switch {
+	case argoDetail != nil && fluxDetail != nil:
+		detected = ToolBoth
+	case argoDetail != nil:
+		detected = ToolArgoCD
+	case fluxDetail != nil:
+		detected = ToolFluxCD
+	}
+	return GitOpsStatus{Detected: detected, ArgoCD: argoDetail, FluxCD: fluxDetail}
+}
+
+// Discover probes the local cluster for GitOps tools and updates cached
+// state. Remote clusters are probed per request by the handler.
 func (d *GitOpsDiscoverer) Discover(ctx context.Context) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	// nolint:cluster-routing local path: the discoverer only probes the local cluster; remote status comes from Handler.remoteDiscovery.
 	disco := d.k8sClient.DiscoveryClient()
 
-	var argoDetail *ToolDetail
-	var fluxDetail *ToolDetail
-
-	// Check ArgoCD: look for Application and ApplicationSet kinds in argoproj.io/v1alpha1
-	argoResources, err := disco.ServerResourcesForGroupVersion("argoproj.io/v1alpha1")
-	if err == nil && argoResources != nil {
-		for _, r := range argoResources.APIResources {
-			if r.Kind == "Application" {
-				if argoDetail == nil {
-					argoDetail = &ToolDetail{Available: true}
-				}
-			}
-			if r.Kind == "ApplicationSet" {
-				if argoDetail == nil {
-					argoDetail = &ToolDetail{Available: true}
-				}
-				argoDetail.AppSetsAvailable = true
-			}
+	var lists []*metav1.APIResourceList
+	for _, gv := range toolGroupVersions {
+		if list, err := disco.ServerResourcesForGroupVersion(gv); err == nil && list != nil {
+			lists = append(lists, list)
 		}
 	}
-
-	// Check FluxCD: look for Kustomization kind in kustomize.toolkit.fluxcd.io/v1
-	fluxKustomizeResources, err := disco.ServerResourcesForGroupVersion("kustomize.toolkit.fluxcd.io/v1")
-	if err == nil && fluxKustomizeResources != nil {
-		for _, r := range fluxKustomizeResources.APIResources {
-			if r.Kind == "Kustomization" {
-				fluxDetail = &ToolDetail{Available: true}
-				break
-			}
-		}
-	}
-
-	// Check FluxCD Helm support: look for HelmRelease kind in helm.toolkit.fluxcd.io/v2
-	fluxHelmResources, err := disco.ServerResourcesForGroupVersion("helm.toolkit.fluxcd.io/v2")
-	if err == nil && fluxHelmResources != nil {
-		for _, r := range fluxHelmResources.APIResources {
-			if r.Kind == "HelmRelease" {
-				if fluxDetail == nil {
-					fluxDetail = &ToolDetail{Available: true}
-				}
-				break
-			}
-		}
-	}
-
-	// Check FluxCD Notification support: look for Provider kind in notification.toolkit.fluxcd.io/v1beta3
-	fluxNotifResources, err := disco.ServerResourcesForGroupVersion("notification.toolkit.fluxcd.io/v1beta3")
-	if err == nil && fluxNotifResources != nil {
-		for _, r := range fluxNotifResources.APIResources {
-			if r.Kind == "Provider" {
-				if fluxDetail == nil {
-					fluxDetail = &ToolDetail{Available: true}
-				}
-				fluxDetail.NotificationAvailable = true
-				break
-			}
-		}
-	}
+	found := statusFromLists(lists)
+	argoDetail, fluxDetail := found.ArgoCD, found.FluxCD
 
 	// For ArgoCD: probe pods in the argocd namespace
 	if argoDetail != nil {
+		// nolint:cluster-routing local path: the discoverer only probes the local cluster.
 		pods, err := d.k8sClient.BaseClientset().CoreV1().Pods("argocd").List(ctx, metav1.ListOptions{Limit: 1})
 		if err == nil && len(pods.Items) > 0 {
 			argoDetail.Namespace = "argocd"
@@ -147,6 +157,7 @@ func (d *GitOpsDiscoverer) Discover(ctx context.Context) {
 
 	// For FluxCD: probe pods in the flux-system namespace, enumerate controllers
 	if fluxDetail != nil {
+		// nolint:cluster-routing local path: the discoverer only probes the local cluster.
 		cs := d.k8sClient.BaseClientset()
 		deps, err := cs.AppsV1().Deployments("flux-system").List(ctx, metav1.ListOptions{})
 		if err == nil {
@@ -163,15 +174,7 @@ func (d *GitOpsDiscoverer) Discover(ctx context.Context) {
 		}
 	}
 
-	detected := ToolNone
-	if argoDetail != nil && fluxDetail != nil {
-		detected = ToolBoth
-	} else if argoDetail != nil {
-		detected = ToolArgoCD
-	} else if fluxDetail != nil {
-		detected = ToolFluxCD
-	}
-
+	detected := found.Detected
 	status := &GitOpsStatus{
 		Detected:    detected,
 		ArgoCD:      argoDetail,

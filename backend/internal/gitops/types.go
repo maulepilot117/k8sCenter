@@ -35,10 +35,14 @@ const (
 
 // GitOpsStatus reports which GitOps tools are detected in the cluster.
 type GitOpsStatus struct {
-	Detected    Tool        `json:"detected"`
-	ArgoCD      *ToolDetail `json:"argocd,omitempty"`
-	FluxCD      *ToolDetail `json:"fluxcd,omitempty"`
-	LastChecked string      `json:"lastChecked"`
+	Detected Tool        `json:"detected"`
+	ArgoCD   *ToolDetail `json:"argocd,omitempty"`
+	FluxCD   *ToolDetail `json:"fluxcd,omitempty"`
+	// Reason says why nothing was detected on a remote cluster, from
+	// k8s.ReasonCode (discovery_missing, unreachable, ...). Empty when a tool
+	// was detected, and always empty for the local cluster.
+	Reason      string `json:"reason,omitempty"`
+	LastChecked string `json:"lastChecked"`
 }
 
 // ToolDetail describes a single GitOps tool's availability.

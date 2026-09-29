@@ -95,6 +95,17 @@ Package-prefix every label for greppability: `"certmanager list certificates"`,
 otherwise-identical call sites (e.g. local vs remote cluster: `"certmanager list
 certificates"` vs `"certmanager remote list certificates"`).
 
+### Remote multi-list fan-outs: use `k8s.RunLists`
+
+A handler that reads several lists from a remote cluster (the R-8 migrations:
+gateway, gitops, and the packages after them) does not hand-roll an errgroup.
+`k8s.RunLists` runs each list under `recoverutil.Go`, pre-seeds each result
+with `k8s.ErrListPanicked` so a panic reads as a failed list, never an empty
+one, and never lets one list cancel another. Give each `k8s.NamedList` its own
+label (`"gitops list " + resource`), so a recovered panic names the source a
+malformed remote object came from. Report failed lists with `k8s.CoverageOf`
+and answer a failed read with `httputil.WriteRemoteLoadError`.
+
 ### Sanctioned exceptions (do NOT force recoverutil here)
 
 - **Deliberately-silent per-item sibling isolation.** A `defer func(){ _ = recover() }()`
