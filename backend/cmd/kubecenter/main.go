@@ -325,6 +325,21 @@ func main() {
 	logQueryLimiter.StartCleanup(ctx)
 	logQueryLimiter.SetAuditLogger(auditLogger)
 
+	// Multi-cluster routing — always construct (nil store = local-only fallback).
+	// Built before the feature handlers below so each can route per-request
+	// calls to the selected cluster (R-8).
+	dbEncKey := cfg.Database.EncryptionKey
+	if dbEncKey == "" {
+		dbEncKey = cfg.Auth.JWTSecret
+	}
+	clusterRouter := k8s.NewClusterRouter(k8sClient, clusterStore, dbEncKey, logger)
+	clusterRouter.StartCacheSweeper(ctx)
+	// F#9 — wire the multi-cluster router into AccessChecker so SARs against
+	// non-local clusterIDs route through the right remote API server. Without
+	// this, AccessChecker would always SAR against the local cluster's RBAC
+	// even when X-Cluster-ID names a remote cluster.
+	accessChecker.SetClusterRouter(clusterRouter)
+
 	// Service Mesh integration (Istio + Linkerd) — hoisted above topology so
 	// the topology builder's mesh-overlay path has a route provider wired in.
 	meshDisc := servicemesh.NewDiscoverer(k8sClient, logger)
@@ -423,19 +438,6 @@ func main() {
 	webhookRateLimiter := middleware.NewRateLimiterWithRate(300, time.Minute)
 	webhookRateLimiter.StartCleanup(ctx)
 	webhookRateLimiter.SetAuditLogger(auditLogger)
-
-	// Multi-cluster routing — always construct (nil store = local-only fallback)
-	dbEncKey := cfg.Database.EncryptionKey
-	if dbEncKey == "" {
-		dbEncKey = cfg.Auth.JWTSecret
-	}
-	clusterRouter := k8s.NewClusterRouter(k8sClient, clusterStore, dbEncKey, logger)
-	clusterRouter.StartCacheSweeper(ctx)
-	// F#9 — wire the multi-cluster router into AccessChecker so SARs against
-	// non-local clusterIDs route through the right remote API server. Without
-	// this, AccessChecker would always SAR against the local cluster's RBAC
-	// even when X-Cluster-ID names a remote cluster.
-	accessChecker.SetClusterRouter(clusterRouter)
 
 	networkingHandler := &networking.Handler{
 		K8sClient:      k8sClient,
