@@ -95,8 +95,8 @@ SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server"
 # informer read (.BaseDynamicClient() / .BaseClientset() / .DiscoveryClient()
 # / .RESTMapper() / .Informers.) is a violation unless annotated: each remaining local
 # read must say why it is local. A package joins this list in the unit that
-# migrates it. Empty until the first package migrates.
-REMOTE_ROUTED_DIRS=""
+# migrates it.
+REMOTE_ROUTED_DIRS="backend/internal/gateway"
 
 # -----------------------------------------------------------------------
 # Helpers
