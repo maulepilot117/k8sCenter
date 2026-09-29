@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,7 +41,7 @@ func (f *fixedClock) advance(d time.Duration) {
 }
 
 func newTestCache(ttl time.Duration, maxEntries int) (*Cache[string], *fixedClock) {
-	c := New[string](ttl, maxEntries)
+	c := New[string](ttl, maxEntries, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	clock := &fixedClock{t: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)}
 	c.now = clock.now
 	return c, clock
@@ -287,8 +289,8 @@ func TestGet_PanickingFetchReturnsAnError(t *testing.T) {
 	_, err := c.Get(context.Background(), clusterA, "alice", alice, func(context.Context) (string, error) {
 		panic("malformed remote object")
 	})
-	if err == nil {
-		t.Fatal("a panicking fetch must surface as an error")
+	if !errors.Is(err, errFetchPanicked) {
+		t.Fatalf("err = %v, want errFetchPanicked", err)
 	}
 }
 

@@ -21,13 +21,15 @@ package remotecache
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 const (
@@ -45,6 +47,15 @@ type key struct {
 	identity  string // k8s.IdentityKey(username, groups)
 }
 
+// flightKey is the singleflight key for k.
+func (k key) flightKey() string {
+	return k.clusterID + "\x00" + k.identity
+}
+
+// errFetchPanicked is returned when a fetch panicked; the panic itself is
+// logged by recoverutil.
+var errFetchPanicked = errors.New("remotecache: fetch panicked")
+
 type entry[T any] struct {
 	value     T
 	expiresAt time.Time
@@ -55,6 +66,7 @@ type entry[T any] struct {
 type Cache[T any] struct {
 	ttl        time.Duration
 	maxEntries int
+	logger     *slog.Logger
 	now        func() time.Time
 
 	mu      sync.Mutex
@@ -70,8 +82,9 @@ type Cache[T any] struct {
 }
 
 // New returns a Cache with the given TTL and entry bound. Non-positive
-// values fall back to DefaultTTL and DefaultMaxEntries.
-func New[T any](ttl time.Duration, maxEntries int) *Cache[T] {
+// values fall back to DefaultTTL and DefaultMaxEntries. logger records a
+// fetch that panicked; nil means slog.Default().
+func New[T any](ttl time.Duration, maxEntries int, logger *slog.Logger) *Cache[T] {
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
@@ -81,6 +94,7 @@ func New[T any](ttl time.Duration, maxEntries int) *Cache[T] {
 	return &Cache[T]{
 		ttl:        ttl,
 		maxEntries: maxEntries,
+		logger:     logger,
 		now:        time.Now,
 		entries:    make(map[key]*entry[T]),
 		gens:       make(map[string]uint64),
@@ -113,7 +127,7 @@ func (c *Cache[T]) Get(ctx context.Context, clusterID, username string, groups [
 		}
 		defer cancel()
 
-		v, err := safeFetch(fetchCtx, fetch)
+		v, err := c.safeFetch(fetchCtx, fetch)
 		if err != nil {
 			return nil, err
 		}
@@ -129,7 +143,9 @@ func (c *Cache[T]) Get(ctx context.Context, clusterID, username string, groups [
 		if res.Err != nil {
 			return zero, res.Err
 		}
-		return res.Val.(T), nil
+		// Comma-ok: a nil value of an interface-typed T arrives as a nil any.
+		v, _ := res.Val.(T)
+		return v, nil
 	}
 }
 
@@ -152,18 +168,25 @@ func (c *Cache[T]) EvictCluster(clusterID string) {
 	c.order = kept
 }
 
-// safeFetch runs fetch, turning a panic into an error. singleflight.DoChan
+// safeFetch runs fetch, turning a panic into a logged error. singleflight
 // re-panics a panicking function on a fresh goroutine, which no recovery
 // middleware covers, so a remote object that trips a normalizer would
 // otherwise crash the process.
-func safeFetch[T any](ctx context.Context, fetch func(context.Context) (T, error)) (v T, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			var zero T
-			v, err = zero, fmt.Errorf("remotecache: fetch panicked: %v", r)
-		}
-	}()
-	return fetch(ctx)
+func (c *Cache[T]) safeFetch(ctx context.Context, fetch func(context.Context) (T, error)) (T, error) {
+	var (
+		v        T
+		err      error
+		finished bool
+	)
+	recoverutil.Safe(c.logger, "remotecache fetch", func() {
+		v, err = fetch(ctx)
+		finished = true
+	})
+	if !finished {
+		var zero T
+		return zero, errFetchPanicked
+	}
+	return v, err
 }
 
 func (c *Cache[T]) lookup(k key) (T, bool) {
