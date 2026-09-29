@@ -11,6 +11,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 const recheckInterval = 5 * time.Minute
@@ -81,14 +82,15 @@ var toolGroupVersions = []string{
 	"notification.toolkit.fluxcd.io/v1beta3",
 }
 
-// toolGroups are the API groups of toolGroupVersions.
-var toolGroups = func() []string {
-	groups := make([]string, 0, len(toolGroupVersions))
-	for _, gv := range toolGroupVersions {
-		groups = append(groups, strings.SplitN(gv, "/", 2)[0])
-	}
-	return groups
-}()
+// presenceResources are the resources whose presence means a GitOps tool is
+// installed: every kind statusFromLists detects a tool by.
+var presenceResources = []schema.GroupResource{
+	ArgoApplicationGVR.GroupResource(),
+	ArgoApplicationSetGVR.GroupResource(),
+	FluxKustomizationGVR.GroupResource(),
+	FluxHelmReleaseGVR.GroupResource(),
+	{Group: "notification.toolkit.fluxcd.io", Resource: "providers"},
+}
 
 // statusFromLists derives which GitOps tools a cluster serves from its
 // discovery lists, local or remote: Argo CD from argoproj.io/v1alpha1

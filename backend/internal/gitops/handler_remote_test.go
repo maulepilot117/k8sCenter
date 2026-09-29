@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/dynamic"
 	dynfake "k8s.io/client-go/dynamic/fake"
@@ -43,6 +44,8 @@ const remoteCluster = "remote-1"
 type fakeCluster struct {
 	disc *fakediscovery.FakeDiscovery
 	dyn  *dynfake.FakeDynamicClient
+	// discOverride, when set, is the discovery handed out instead of disc.
+	discOverride discovery.DiscoveryInterface
 }
 
 // fakeClients is a k8s.ClusterClients over one fake cluster per id. A
@@ -83,7 +86,11 @@ func (f *fakeClients) TargetSchemaFor(_ context.Context, id, _ string, _ []strin
 	if err != nil {
 		return nil, err
 	}
-	return &k8s.TargetSchema{ClusterID: id, Discovery: c.disc, Invalidate: func() {}}, nil
+	var disc discovery.DiscoveryInterface = c.disc
+	if c.discOverride != nil {
+		disc = c.discOverride
+	}
+	return &k8s.TargetSchema{ClusterID: id, Discovery: disc, Invalidate: func() {}}, nil
 }
 
 var gitopsListKinds = map[schema.GroupVersionResource]string{
@@ -546,5 +553,207 @@ func TestRemote_SyncConflictPhraseInARemoteErrorIsNotEchoed(t *testing.T) {
 	rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleSync, "/sync", map[string]string{"id": "argo:argocd:remote-app"}, "")
 	if rr.Code == http.StatusConflict || strings.Contains(rr.Body.String(), "10.20.30.40") {
 		t.Errorf("remote error echoed: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// partialDiscovery serves its lists but reports failedGroup as not loaded,
+// the shape client-go returns when one API group's discovery fails.
+type partialDiscovery struct {
+	*fakediscovery.FakeDiscovery
+	failedGroup string
+}
+
+func (d partialDiscovery) ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	groups, lists, _ := d.FakeDiscovery.ServerGroupsAndResources()
+	gv := schema.GroupVersion{Group: d.failedGroup, Version: "v1"}
+	return groups, lists, &discovery.ErrGroupDiscoveryFailed{Groups: map[schema.GroupVersion]error{gv: errors.New("unavailable")}}
+}
+
+func withPartialDiscovery(hs *harness, failedGroup string) {
+	c := hs.clients.clusters[remoteCluster]
+	c.discOverride = partialDiscovery{FakeDiscovery: c.disc, failedGroup: failedGroup}
+}
+
+type appSetList struct {
+	ApplicationSets []NormalizedAppSet   `json:"applicationSets"`
+	Coverage        []k8s.SourceCoverage `json:"coverage"`
+}
+
+// A remote with only ApplicationSets or only Flux notification Providers
+// installed is detected, the same as the local discoverer reports it.
+func TestRemote_StatusDetectsPartialInstalls(t *testing.T) {
+	appSetOnly := []*metav1.APIResourceList{apiList("argoproj.io/v1alpha1", map[string]string{"ApplicationSet": "applicationsets"})}
+	st := decode[GitOpsStatus](t, do(t, remoteCluster, http.MethodGet, newHarness(t, appSetOnly).h.HandleStatus, "/status", nil, ""))
+	if st.Detected != ToolArgoCD || st.Reason != "" {
+		t.Errorf("appset-only status = %+v, want argocd", st)
+	}
+
+	providerOnly := []*metav1.APIResourceList{apiList("notification.toolkit.fluxcd.io/v1beta3", map[string]string{"Provider": "providers"})}
+	st = decode[GitOpsStatus](t, do(t, remoteCluster, http.MethodGet, newHarness(t, providerOnly).h.HandleStatus, "/status", nil, ""))
+	if st.Detected != ToolFluxCD || st.FluxCD == nil || !st.FluxCD.NotificationAvailable {
+		t.Errorf("provider-only status = %+v, want fluxcd with notifications", st)
+	}
+}
+
+// A discovery failure in a group GitOps lists from makes the answer unknown;
+// one in the notification group does not stop the lists.
+func TestRemote_DiscoveryGroupFailures(t *testing.T) {
+	notif := newHarness(t, toolLists(true, false), argoApp("argocd", "remote-app", ""))
+	withPartialDiscovery(notif, "notification.toolkit.fluxcd.io")
+	if rr := do(t, remoteCluster, http.MethodGet, notif.h.HandleListApplications, "/applications", nil, ""); rr.Code != http.StatusOK || len(decode[appList](t, rr).Applications) != 1 {
+		t.Errorf("failed notification group broke the list: %d %s", rr.Code, rr.Body.String())
+	}
+
+	argo := newHarness(t, toolLists(true, false), argoApp("argocd", "remote-app", ""))
+	withPartialDiscovery(argo, "argoproj.io")
+	rr := do(t, remoteCluster, http.MethodGet, argo.h.HandleListApplications, "/applications", nil, "")
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), string(k8s.ReasonDiscoveryUnavailable)) {
+		t.Errorf("failed argo group: %d %s, want 502 discovery_unavailable", rr.Code, rr.Body.String())
+	}
+	st := decode[GitOpsStatus](t, do(t, remoteCluster, http.MethodGet, argo.h.HandleStatus, "/status", nil, ""))
+	if st.Reason != string(k8s.ReasonDiscoveryUnavailable) {
+		t.Errorf("status reason = %q, want discovery_unavailable", st.Reason)
+	}
+}
+
+// Every application list failing is a failed applications view, even when
+// the ApplicationSet list succeeded.
+func TestRemote_AllApplicationListsFailingIsAnError(t *testing.T) {
+	hs := newHarness(t, toolLists(true, true), obj("ApplicationSet", "argocd", "remote-set", nil, map[string]any{}))
+	for _, res := range []string{"applications", "kustomizations", "helmreleases"} {
+		hs.remoteDyn().PrependReactor("list", res, func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewInternalError(errors.New("boom"))
+		})
+	}
+	if rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListApplications, "/applications", nil, ""); rr.Code != http.StatusBadGateway {
+		t.Errorf("status %d, want 502: %s", rr.Code, rr.Body.String())
+	}
+	if rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListAppSets, "/appsets", nil, ""); rr.Code != http.StatusOK {
+		t.Errorf("appsets must still list: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A failed child-application list on a remote cluster is disclosed, so zero
+// counts do not read as ApplicationSets without children.
+func TestRemote_AppSetChildListFailureIsDisclosed(t *testing.T) {
+	hs := newHarness(t, toolLists(true, false), obj("ApplicationSet", "argocd", "remote-set", nil, map[string]any{}))
+	hs.remoteDyn().PrependReactor("list", "applications", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(ArgoApplicationGVR.GroupResource(), "", errors.New("no"))
+	})
+	rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListAppSets, "/appsets", nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	got := decode[appSetList](t, rr)
+	want := k8s.SourceCoverage{Source: "applications", Status: k8s.CoverageStatusForbidden, ReasonCode: string(k8s.ReasonForbidden)}
+	if len(got.ApplicationSets) != 1 || len(got.Coverage) != 1 || got.Coverage[0] != want {
+		t.Errorf("appsets = %+v coverage = %+v, want one set and %+v", got.ApplicationSets, got.Coverage, want)
+	}
+}
+
+// A list whose CRD disappeared after discovery was cached counts as empty,
+// not as a failed source.
+func TestRemote_GoneResourceCountsAsEmpty(t *testing.T) {
+	hs := newHarness(t, toolLists(true, true), argoApp("argocd", "remote-app", ""))
+	hs.remoteDyn().PrependReactor("list", "kustomizations", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(FluxKustomizationGVR.GroupResource(), "")
+	})
+	rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListApplications, "/applications", nil, "")
+	if got := decode[appList](t, rr); rr.Code != http.StatusOK || len(got.Applications) != 1 || got.Coverage != nil {
+		t.Errorf("list = %d %+v, want remote-app and no coverage", rr.Code, got)
+	}
+}
+
+// Every remote write patches or deletes on the remote, audits the remote
+// cluster, and evicts its cache so the next list reads the cluster again.
+func TestRemote_WritesAuditAndEvictTheRemote(t *testing.T) {
+	rollbackApp := argoApp("argocd", "remote-app", "")
+	rollbackApp.Object["status"] = map[string]any{"history": []any{map[string]any{"revision": "abc123", "id": int64(1)}}}
+	apps := func(h *Handler) http.HandlerFunc { return h.HandleListApplications }
+	sets := func(h *Handler) http.HandlerFunc { return h.HandleListAppSets }
+	tests := []struct {
+		name, verb, resource, listResource, id, body string
+		action, list                                 func(*Handler) http.HandlerFunc
+	}{
+		{"suspend flux", "patch", "kustomizations", "kustomizations", "flux-ks:flux-system:remote-ks", `{"suspend":true}`,
+			func(h *Handler) http.HandlerFunc { return h.HandleSuspend }, apps},
+		{"rollback argo", "patch", "applications", "kustomizations", "argo:argocd:remote-app", `{"revision":"abc123"}`,
+			func(h *Handler) http.HandlerFunc { return h.HandleRollback }, apps},
+		{"refresh appset", "patch", "applicationsets", "applicationsets", "argo-as:argocd:remote-set", "",
+			func(h *Handler) http.HandlerFunc { return h.HandleRefreshAppSet }, sets},
+		{"delete appset", "delete", "applicationsets", "applicationsets", "argo-as:argocd:remote-set", "",
+			func(h *Handler) http.HandlerFunc { return h.HandleDeleteAppSet }, sets},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newHarness(t, toolLists(true, true), rollbackApp.DeepCopy(),
+				obj("Kustomization", "flux-system", "remote-ks", nil, map[string]any{}),
+				obj("ApplicationSet", "argocd", "remote-set", nil, map[string]any{}))
+			if rr := do(t, remoteCluster, http.MethodGet, tc.list(hs.h), "/list", nil, ""); rr.Code != http.StatusOK {
+				t.Fatalf("list status %d: %s", rr.Code, rr.Body.String())
+			}
+			before := countVerb(hs.remoteDyn(), "list", tc.listResource)
+
+			rr := do(t, remoteCluster, http.MethodPost, tc.action(hs.h), "/action", map[string]string{"id": tc.id}, tc.body)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+			}
+			if countVerb(hs.remoteDyn(), tc.verb, tc.resource) != 1 {
+				t.Errorf("no %s of %s on the remote", tc.verb, tc.resource)
+			}
+			if e := hs.audit.last(t); e.ClusterID != remoteCluster || e.Result != audit.ResultSuccess {
+				t.Errorf("audit = %+v, want remote cluster success", e)
+			}
+			do(t, remoteCluster, http.MethodGet, tc.list(hs.h), "/list", nil, "")
+			if countVerb(hs.remoteDyn(), "list", tc.listResource) != before+1 {
+				t.Error("list after the write was served from the pre-write cache")
+			}
+			if n := hs.localActions(); n != 0 {
+				t.Errorf("local cluster recorded %d actions, want 0", n)
+			}
+		})
+	}
+}
+
+func TestRemote_ForbiddenAppSetDeleteIs403AndAuditedDenied(t *testing.T) {
+	hs := newHarness(t, toolLists(true, false), obj("ApplicationSet", "argocd", "remote-set", nil, map[string]any{}))
+	hs.remoteDyn().PrependReactor("delete", "applicationsets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(ArgoApplicationSetGVR.GroupResource(), "remote-set", errors.New("no"))
+	})
+	rr := do(t, remoteCluster, http.MethodDelete, hs.h.HandleDeleteAppSet, "/appset", map[string]string{"id": "argo-as:argocd:remote-set"}, "")
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if e := hs.audit.last(t); e.ClusterID != remoteCluster || e.Result != audit.ResultDenied {
+		t.Errorf("audit = %+v, want remote cluster denied", e)
+	}
+}
+
+// The local ApplicationSets list keeps its service-account cache and counts
+// generated applications through the user's own client.
+func TestLocal_AppSetsListCountsChildrenThroughTheUser(t *testing.T) {
+	hs := newHarness(t, toolLists(true, false))
+	local := hs.clients.clusters["local"]
+	for _, o := range []*unstructured.Unstructured{
+		obj("ApplicationSet", "argocd", "local-set", nil, map[string]any{}),
+		obj("Application", "argocd", "child-a", map[string]string{appSetNameLabel: "local-set"}, map[string]any{}),
+		obj("Application", "argocd", "child-b", map[string]string{appSetNameLabel: "local-set"}, map[string]any{}),
+	} {
+		if err := local.dyn.Tracker().Create(gvrForKind[o.GetKind()], o, o.GetNamespace()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hs.h.baseDynOverride = local.dyn
+
+	rr := do(t, "local", http.MethodGet, hs.h.HandleListAppSets, "/appsets", nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	got := decode[appSetList](t, rr)
+	if len(got.ApplicationSets) != 1 || got.ApplicationSets[0].GeneratedAppCount != 2 || got.Coverage != nil {
+		t.Errorf("appsets = %+v coverage = %+v, want local-set with two children and no coverage", got.ApplicationSets, got.Coverage)
+	}
+	if len(hs.remoteDyn().Actions()) != 0 {
+		t.Error("local request touched the remote cluster")
 	}
 }

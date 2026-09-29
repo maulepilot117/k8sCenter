@@ -842,12 +842,20 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 	}
 	// One list of every generated app, grouped by owning appset, rather than
 	// a round trip per appset (each one a remote call on a remote cluster).
+	// On a remote cluster a failed child list is disclosed in coverage, so
+	// zero counts are not mistaken for ApplicationSets with no children.
+	var coverage []k8s.SourceCoverage
 	if len(filtered) > 0 {
-		list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(r.Context(), metav1.ListOptions{
+		listCtx, cancel := context.WithTimeout(r.Context(), listTimeout)
+		list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(listCtx, metav1.ListOptions{
 			LabelSelector: appSetNameLabel,
 		})
+		cancel()
 		if err != nil {
 			h.Logger.Warn("failed to list child apps for appsets", "error", err)
+			if !isLocal(r.Context()) {
+				coverage = k8s.CoverageOf(map[string]error{"applications": err}, "applications")
+			}
 		} else {
 			children := map[string][]NormalizedApp{}
 			for j := range list.Items {
@@ -867,11 +875,13 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 	})
 
 	httputil.WriteData(w, struct {
-		ApplicationSets []NormalizedAppSet `json:"applicationSets"`
-		Total           int                `json:"total"`
+		ApplicationSets []NormalizedAppSet   `json:"applicationSets"`
+		Total           int                  `json:"total"`
+		Coverage        []k8s.SourceCoverage `json:"coverage,omitempty"`
 	}{
 		ApplicationSets: filtered,
 		Total:           len(filtered),
+		Coverage:        coverage,
 	})
 }
 

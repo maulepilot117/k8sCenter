@@ -39,6 +39,8 @@ type snapshot struct {
 	// failed holds the error each failed list returned, keyed by resource
 	// name. A list whose resource type is gone counts as empty, not failed.
 	failed map[string]error
+	// appSources are the application lists the fetch attempted.
+	appSources []string
 }
 
 func (h *Handler) remoteCache() *remotecache.Cache[*snapshot] {
@@ -141,7 +143,13 @@ func (h *Handler) loadApps(ctx context.Context, user *auth.User) ([]NormalizedAp
 	if err != nil {
 		return nil, nil, err
 	}
-	return snap.apps, k8s.CoverageOf(snap.failed, appSources...), nil
+	// Every application list failing is a failed view, not an empty one,
+	// even when the ApplicationSet list succeeded.
+	coverage := k8s.CoverageOf(snap.failed, snap.appSources...)
+	if len(snap.appSources) > 0 && len(coverage) == len(snap.appSources) {
+		return nil, nil, snap.failed[snap.appSources[0]]
+	}
+	return snap.apps, coverage, nil
 }
 
 // load returns the remote cluster's GitOps snapshot for the user.
@@ -163,10 +171,11 @@ func (h *Handler) remoteDiscovery(ctx context.Context, clusterID string, user *a
 	// schema when that lapses, so a tool installed later is seen within
 	// seconds rather than when the schema cache expires.
 	absent := true
-	for _, gvr := range []schema.GroupVersionResource{ArgoApplicationGVR, FluxKustomizationGVR, FluxHelmReleaseGVR} {
-		verdict := h.Presence.Check(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, gvr.GroupResource())
+	for _, gr := range presenceResources {
+		verdict := h.Presence.Check(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, gr)
 		if verdict.Installed == nil || *verdict.Installed {
 			absent = false
+			break
 		}
 	}
 	if absent {
@@ -181,8 +190,10 @@ func (h *Handler) remoteDiscovery(ctx context.Context, clusterID string, user *a
 	if unavailable {
 		return GitOpsStatus{}, nil, k8s.ErrDiscoveryUnavailable
 	}
-	for _, group := range toolGroups {
-		if failedGroups[group] {
+	// Only a group this package lists from makes the answer unknown; a
+	// failed notification group just leaves NotificationAvailable unset.
+	for _, gvr := range []schema.GroupVersionResource{ArgoApplicationGVR, FluxKustomizationGVR, FluxHelmReleaseGVR} {
+		if failedGroups[gvr.Group] {
 			return GitOpsStatus{}, nil, k8s.ErrDiscoveryUnavailable
 		}
 	}
@@ -238,6 +249,9 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 	for _, src := range candidates {
 		if k8s.GVRPresentIn(lists, src.gvr.Group, src.gvr.Resource) {
 			sources = append(sources, src)
+			if src.gvr != ArgoApplicationSetGVR {
+				snap.appSources = append(snap.appSources, src.gvr.Resource)
+			}
 		}
 	}
 	if len(sources) == 0 {
