@@ -45,7 +45,6 @@ func WriteTargetError(w http.ResponseWriter, err error) {
 // returned by a resolved remote client, by HTTP status.
 var remoteStatusMessages = map[int]string{
 	http.StatusBadRequest:          "the cluster rejected the request",
-	http.StatusUnauthorized:        "the cluster did not accept the impersonated identity",
 	http.StatusForbidden:           "the cluster denied this request",
 	http.StatusNotFound:            "not found on the cluster",
 	http.StatusConflict:            "the object changed on the cluster; reload and try again",
@@ -54,13 +53,28 @@ var remoteStatusMessages = map[int]string{
 }
 
 // WriteRemoteError answers a failure of a call made through an already
-// resolved remote client. A Kubernetes status error keeps its HTTP status
-// with a fixed message; a transport failure is 502 unreachable; anything
-// else is a 502 with no reason.
+// resolved remote client. A Kubernetes client-error status (400, 403, 404,
+// 409, 422, 429) keeps its HTTP status with a fixed message. Two statuses
+// are rewritten:
+//   - 401 means the cluster rejected its stored credentials. It is answered
+//     as 502 credentials_invalid, never 401: the web and mobile clients treat
+//     any 401 as their own session expiring, and would refresh and then log
+//     the user out.
+//   - A server-side status (5xx) becomes 502, so it is not confused with
+//     this server's own 503 (registry unavailable).
+//
+// A transport failure is 502 unreachable; anything else is a 502 with no
+// reason.
 func WriteRemoteError(w http.ResponseWriter, err error) {
 	var status apierrors.APIStatus
 	if errors.As(err, &status) {
 		upstream := int(status.Status().Code)
+		if upstream == http.StatusUnauthorized {
+			slog.Warn("remote cluster rejected its credentials", "error", err)
+			f := targetFailures[k8s.ReasonCredentialsInvalid]
+			WriteErrorWithReason(w, f.status, f.message, string(k8s.ReasonCredentialsInvalid), nil)
+			return
+		}
 		code := upstream
 		msg, known := remoteStatusMessages[code]
 		if !known {

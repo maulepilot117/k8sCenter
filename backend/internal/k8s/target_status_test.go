@@ -227,6 +227,64 @@ func TestPresence_RecheckSeesRemovedCRD(t *testing.T) {
 	}
 }
 
+// Another key's read must not erase an expired absence before that key's own
+// re-check, or the re-check skips the schema invalidation and a newly
+// installed CRD stays hidden until the 5-minute schema cache expires.
+func TestPresence_OtherKeysReadDoesNotEraseTheInvalidationTrigger(t *testing.T) {
+	p, f, now := newTestPresence(discoveryWith(coreList()))
+	check(t, p, argoApps) // absent, remembered
+
+	f.setDiscovery(discoveryWith(coreList(), argoList()))
+	*now = now.Add(presenceAbsentTTL + time.Second)
+	pods := schema.GroupResource{Resource: "pods"}
+	wantVerdict(t, check(t, p, pods), yes, ReasonOK) // an installed key reads first
+
+	wantVerdict(t, check(t, p, argoApps), yes, ReasonOK)
+	if n := f.invalidates.Load(); n != 1 {
+		t.Errorf("schema invalidated %d times on the expired key's re-check, want 1", n)
+	}
+}
+
+// singleflight re-panics a panicking body on a fresh goroutine; the probe
+// must turn that into an unknown verdict rather than crash or hang.
+func TestPresence_PanickingDiscoveryIsUnknown(t *testing.T) {
+	p, _, _ := newTestPresence(panickingDiscovery{discoveryWith()})
+	done := make(chan PresenceVerdict, 1)
+	go func() { done <- check(t, p, argoApps) }()
+	select {
+	case v := <-done:
+		wantVerdict(t, v, nil, ReasonDiscoveryUnavailable)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a panicking probe hung its caller")
+	}
+	if len(p.absent) != 0 {
+		t.Error("a panicking probe must not record an absence")
+	}
+}
+
+type panickingDiscovery struct{ *fakediscovery.FakeDiscovery }
+
+func (panickingDiscovery) ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	panic("malformed discovery document")
+}
+
+func TestPresence_CallerCancellationReturnsUnknownPromptly(t *testing.T) {
+	gate := make(chan struct{})
+	defer close(gate)
+	p, _, _ := newTestPresence(slowDiscovery{FakeDiscovery: discoveryWith(coreList()), gate: gate})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan PresenceVerdict, 1)
+	go func() { done <- p.Check(ctx, remoteID, "alice", []string{"team-a"}, argoApps) }()
+	cancel()
+	select {
+	case v := <-done:
+		wantVerdict(t, v, nil, ReasonUnreachable)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cancelled caller kept waiting on the probe")
+	}
+}
+
 func TestPresence_ConcurrentReprobesInvalidateOnce(t *testing.T) {
 	gate := make(chan struct{})
 	slow := slowDiscovery{FakeDiscovery: discoveryWith(coreList()), gate: gate}

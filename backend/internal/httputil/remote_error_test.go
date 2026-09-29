@@ -134,6 +134,50 @@ func TestWriteRemoteError_KubernetesStatusKeepsItsCode(t *testing.T) {
 	}
 }
 
+// A remote cluster's 401 is about its stored credentials, not the caller's
+// k8sCenter session. Forwarding it as 401 would make the web and mobile
+// clients refresh their session and, once the shared auth rate limit runs
+// out, log the user out.
+func TestWriteRemoteError_Upstream401IsNeverForwarded(t *testing.T) {
+	rr := httptest.NewRecorder()
+	WriteRemoteError(rr, apierrors.NewUnauthorized("token for "+leakyHost+" expired"))
+
+	if rr.Code == http.StatusUnauthorized {
+		t.Fatal("an upstream 401 was forwarded as 401")
+	}
+	if rr.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rr.Code)
+	}
+	if e := decodeError(t, rr); e.Reason != string(k8s.ReasonCredentialsInvalid) {
+		t.Errorf("reason = %q, want credentials_invalid", e.Reason)
+	}
+	assertNoLeak(t, rr, leakyHost, "expired")
+}
+
+// Upstream 5xx statuses become a 502 so they are never confused with this
+// server's own 503 (registry unavailable).
+func TestWriteRemoteError_UpstreamServerErrorsBecome502(t *testing.T) {
+	for _, err := range []error{
+		apierrors.NewInternalError(errors.New("etcd on " + leakyHost + " timed out")),
+		apierrors.NewServiceUnavailable("apiserver " + leakyHost + " shutting down"),
+		apierrors.NewTimeoutError("request to "+leakyHost+" timed out", 5),
+		apierrors.NewTooManyRequests("slow down", 1),
+		apierrors.NewBadRequest("bad selector"),
+	} {
+		rr := httptest.NewRecorder()
+		WriteRemoteError(rr, err)
+		status := int(err.(apierrors.APIStatus).Status().Code)
+		want := http.StatusBadGateway
+		if status == http.StatusTooManyRequests || status == http.StatusBadRequest {
+			want = status
+		}
+		if rr.Code != want {
+			t.Errorf("%T %d: status = %d, want %d", err, status, rr.Code, want)
+		}
+		assertNoLeak(t, rr, leakyHost, "etcd", "shutting down")
+	}
+}
+
 func TestWriteRemoteError_UnclassifiedFailureIs502WithoutText(t *testing.T) {
 	rr := httptest.NewRecorder()
 	WriteRemoteError(rr, errors.New("unexpected EOF reading from "+leakyHost))

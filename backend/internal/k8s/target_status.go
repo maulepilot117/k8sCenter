@@ -346,10 +346,12 @@ func (p *Presence) read(ctx context.Context, key presenceKey, username string, g
 	now := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// Drop expired absences for identities that stopped asking, so the map
-	// stays bounded by recent activity.
+	// Drop absences for keys that stopped asking, so the map stays bounded
+	// by recent activity. An expired entry is kept until the schema cache it
+	// guards has rebuilt itself (clientCacheTTL): until then it is the only
+	// signal that the key's next Check must invalidate the schema.
 	for k, expiry := range p.absent {
-		if !now.Before(expiry) {
+		if now.After(expiry.Add(clientCacheTTL)) {
 			delete(p.absent, k)
 		}
 	}
