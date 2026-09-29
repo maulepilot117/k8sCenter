@@ -171,6 +171,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 
 	// Create impersonating client for the log stream
 	rh := s.ResourceHandler
+	// nolint:cluster-routing carve-out: live log streams are local-only; remote clusters are rejected above before this point.
 	cs, err := rh.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		conn.WriteJSON(map[string]any{"type": "error", "message": "failed to create client"})

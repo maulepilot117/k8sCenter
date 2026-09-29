@@ -264,6 +264,7 @@ func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, clusterID, 
 // non-local routes through clusterRouter. F#9 security audit 2026-05-22.
 func (ac *AccessChecker) clientForCluster(ctx context.Context, clusterID, username string, groups []string) (kubernetes.Interface, error) {
 	if k8s.IsLocalClusterID(clusterID) {
+		// nolint:cluster-routing local branch of this cluster-aware helper; remote clusters take clusterRouter below.
 		return ac.clientFactory.ClientForUser(username, groups)
 	}
 	if ac.clusterRouter == nil {

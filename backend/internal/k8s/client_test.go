@@ -16,6 +16,7 @@ func TestNewFakeClientFactory(t *testing.T) {
 	fakeCS := fake.NewSimpleClientset()
 	f := NewFakeClientFactory(fakeCS)
 
+	// nolint:cluster-routing unit test of the local ClientFactory itself, not a request handler.
 	got, err := f.ClientForUser("alice", []string{"team"})
 	if err != nil {
 		t.Fatalf("ClientForUser returned error: %v", err)
