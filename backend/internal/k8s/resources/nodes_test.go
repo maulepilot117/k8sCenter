@@ -67,7 +67,6 @@ func drainObjects() []runtime.Object {
 func remoteDrainHandler(t *testing.T) (*Handler, *fake.Clientset, *fake.Clientset, *recordingAudit) {
 	t.Helper()
 	h, local := testHandler(t, drainObjects()...)
-	local.ClearActions()
 	remote := fake.NewSimpleClientset(drainObjects()...)
 	h.remoteClient = func(_ context.Context, clusterID string, _ *auth.User) (kubernetes.Interface, error) {
 		if clusterID != remoteTestClusterID {
@@ -139,6 +138,27 @@ func waitTerminal(t *testing.T, tm *TaskManager, id string) *Task {
 	return nil
 }
 
+// drainActions returns the actions on cs other than the informers' own list
+// and watch calls, which start asynchronously and say nothing about which
+// cluster a drain acted on.
+func drainActions(cs *fake.Clientset) []k8stesting.Action {
+	var out []k8stesting.Action
+	for _, a := range cs.Actions() {
+		if a.GetVerb() == "watch" || (a.GetVerb() == "list" && a.GetNamespace() == "" && !isDrainPodList(a)) {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// isDrainPodList reports whether a is the drain's pod listing, which carries
+// the spec.nodeName field selector the informers never use.
+func isDrainPodList(a k8stesting.Action) bool {
+	l, ok := a.(k8stesting.ListAction)
+	return ok && l.GetListRestrictions().Fields != nil && !l.GetListRestrictions().Fields.Empty()
+}
+
 func countEvictions(cs *fake.Clientset) int {
 	n := 0
 	for _, a := range cs.Actions() {
@@ -161,8 +181,8 @@ func TestDrain_RemoteCompletesAfterRequestEnds(t *testing.T) {
 	if got := countEvictions(remote); got != 2 {
 		t.Errorf("remote evictions = %d, want 2", got)
 	}
-	if n := len(local.Actions()); n != 0 {
-		t.Errorf("local cluster recorded %d actions, want 0: %v", n, local.Actions())
+	if acts := drainActions(local); len(acts) != 0 {
+		t.Errorf("local cluster recorded %d drain actions, want 0: %v", len(acts), acts)
 	}
 	if task.ClusterID != remoteTestClusterID {
 		t.Errorf("task cluster = %q, want %q", task.ClusterID, remoteTestClusterID)
@@ -186,8 +206,8 @@ func TestDrain_RemoteClientFailureReturns500WithoutTask(t *testing.T) {
 	if h.TaskManager.HasActiveTask("drain", remoteTestClusterID, drainNode) {
 		t.Error("a failed client resolution must not leave an active task")
 	}
-	if n := len(local.Actions()); n != 0 {
-		t.Errorf("local cluster recorded %d actions, want 0", n)
+	if acts := drainActions(local); len(acts) != 0 {
+		t.Errorf("local cluster recorded %d drain actions, want 0: %v", len(acts), acts)
 	}
 }
 
@@ -277,5 +297,56 @@ func TestTaskManager_CancelClusterLeavesOtherClustersRunning(t *testing.T) {
 	tm.UpdateStatus(remoteID, TaskStatusFailed, "failed to list pods", 20)
 	if task, _ := tm.Get(remoteID); !strings.Contains(task.Message, "cluster removed") {
 		t.Errorf("remote task message = %q, want the cluster-removed outcome kept", task.Message)
+	}
+}
+
+func TestDrain_ConcurrentRequestsForSameNodeStartOneDrain(t *testing.T) {
+	h, _, remote, _ := remoteDrainHandler(t)
+	// Slow client resolution widens the window between the duplicate check
+	// and task creation.
+	h.remoteClient = func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+		time.Sleep(50 * time.Millisecond)
+		return remote, nil
+	}
+
+	codes := make(chan int, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes <- doDrain(h, remoteTestClusterID).Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+
+	got := map[int]int{}
+	for c := range codes {
+		got[c]++
+	}
+	if got[http.StatusAccepted] != 1 || got[http.StatusConflict] != 1 {
+		t.Fatalf("status codes = %v, want exactly one 202 and one 409", got)
+	}
+}
+
+func TestDrain_ClusterRemovedDuringClientResolutionStopsDrain(t *testing.T) {
+	h, _, remote, _ := remoteDrainHandler(t)
+	h.remoteClient = func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+		// The cluster is deregistered while the client is being resolved.
+		h.TaskManager.CancelCluster(remoteTestClusterID)
+		return remote, nil
+	}
+
+	id := startDrain(t, h, remoteTestClusterID)
+	task := waitTerminal(t, h.TaskManager, id)
+
+	if task.Status != TaskStatusFailed || !strings.Contains(task.Message, "cluster removed") {
+		t.Fatalf("drain ended %s (%q), want failed with a cluster-removed message", task.Status, task.Message)
+	}
+	for _, a := range remote.Actions() {
+		if a.GetVerb() == "patch" || a.GetSubresource() == "eviction" {
+			t.Errorf("drain acted on a removed cluster: %s %s", a.GetVerb(), a.GetResource().Resource)
+		}
 	}
 }

@@ -95,7 +95,7 @@ func (h *Handler) HandleDrainNode(w http.ResponseWriter, r *http.Request) {
 			DeleteEmptyDirData: true,
 		}
 	}
-	if req.Timeout == 0 {
+	if req.Timeout <= 0 {
 		req.Timeout = defaultDrainTimeout
 	}
 
@@ -104,10 +104,20 @@ func (h *Handler) HandleDrainNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	if h.TaskManager.HasActiveTask("drain", clusterID, name) {
+	taskID, created := h.TaskManager.CreateIfNoActive("drain", clusterID, name, "", user.Username)
+	if !created {
 		writeError(w, http.StatusConflict, "drain already in progress for node "+name, "")
 		return
 	}
+
+	// The drain outlives the request: net/http cancels r.Context() as soon as
+	// the 202 is written. It keeps the request's values but not its
+	// cancellation, and stops at the drain timeout or when the TaskManager
+	// cancels it (task finished, or its cluster was evicted). The cancel is
+	// registered before client resolution so an eviction that lands while the
+	// client is being built still stops the drain.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), req.Timeout)
+	h.TaskManager.SetCancel(taskID, cancel)
 
 	// Resolve the client on the request path, while the request's cluster
 	// context is still authoritative, so a resolution failure is a 500 here
@@ -115,21 +125,14 @@ func (h *Handler) HandleDrainNode(w http.ResponseWriter, r *http.Request) {
 	cs, err := h.clientForCluster(r.Context(), clusterID, user)
 	if err != nil {
 		h.Logger.Error("drain: failed to create client", "node", name, "clusterID", clusterID, "error", err)
+		h.TaskManager.UpdateStatus(taskID, TaskStatusFailed, "failed to create client", 0)
 		writeError(w, http.StatusInternalServerError, "failed to create client", "")
 		return
 	}
 
-	taskID := h.TaskManager.Create("drain", clusterID, name, "", user.Username)
 	h.TaskManager.UpdateStatus(taskID, TaskStatusRunning, "starting drain", 0)
-
 	h.auditWrite(r, user, audit.ActionUpdate, "Node", "", name, audit.ResultSuccess)
 
-	// The drain outlives the request: net/http cancels r.Context() as soon as
-	// the 202 is written. It keeps the request's values but not its
-	// cancellation, and stops at the drain timeout or when the TaskManager
-	// cancels it (task finished, or its cluster was removed).
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), req.Timeout)
-	h.TaskManager.SetCancel(taskID, cancel)
 	go func() {
 		recoverutil.Safe(h.Logger, "resources node drain", func() {
 			h.executeDrain(ctx, taskID, name, req, cs)
@@ -162,6 +165,10 @@ func (h *Handler) clientForCluster(ctx context.Context, clusterID string, user *
 // executeDrain cordons nodeName and evicts its pods through cs, recording
 // progress on the task. It stops before the next eviction once ctx ends.
 func (h *Handler) executeDrain(ctx context.Context, taskID, nodeName string, req DrainRequest, cs kubernetes.Interface) {
+	if h.drainStopped(ctx, taskID, 0) {
+		return
+	}
+
 	// Step 1: Cordon the node
 	h.TaskManager.UpdateStatus(taskID, TaskStatusRunning, "cordoning node", 10)
 	patchData := `{"spec":{"unschedulable":true}}`
@@ -189,12 +196,7 @@ func (h *Handler) executeDrain(ctx context.Context, taskID, nodeName string, req
 
 	for i, pod := range podsToEvict {
 		progress := 30 + (70 * (i + 1) / max(total, 1))
-		if ctx.Err() != nil {
-			msg := "drain cancelled"
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				msg = "drain timed out"
-			}
-			h.TaskManager.UpdateStatus(taskID, TaskStatusFailed, msg, progress)
+		if h.drainStopped(ctx, taskID, progress) {
 			return
 		}
 		h.TaskManager.UpdateStatus(taskID, TaskStatusRunning,
@@ -215,6 +217,20 @@ func (h *Handler) executeDrain(ctx context.Context, taskID, nodeName string, req
 	h.TaskManager.UpdateStatus(taskID, TaskStatusComplete,
 		fmt.Sprintf("drain complete — %d pods evicted", total), 100,
 	)
+}
+
+// drainStopped reports whether ctx has ended, marking the task failed if so.
+// A task its cluster eviction already failed keeps that outcome.
+func (h *Handler) drainStopped(ctx context.Context, taskID string, progress int) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	msg := "drain cancelled"
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		msg = "drain timed out"
+	}
+	h.TaskManager.UpdateStatus(taskID, TaskStatusFailed, msg, progress)
+	return true
 }
 
 func filterPodsForDrain(pods []corev1.Pod, ignoreDaemonSets bool) []corev1.Pod {

@@ -45,7 +45,7 @@ type Task struct {
 }
 
 // taskClusterRemovedMessage is the terminal message of a task cancelled
-// because its cluster was deregistered or had its credentials replaced.
+// because ClusterRouter evicted its cluster.
 const taskClusterRemovedMessage = "cancelled: cluster removed while the task was running"
 
 // TaskManager tracks long-running operations.
@@ -65,9 +65,14 @@ func isActive(t *Task) bool {
 // given kind for the given name on the given cluster. Used to prevent
 // duplicate drain operations.
 func (tm *TaskManager) HasActiveTask(kind, clusterID, name string) bool {
-	clusterID = k8s.NormalizedClusterID(clusterID)
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
+	return tm.hasActiveLocked(kind, k8s.NormalizedClusterID(clusterID), name)
+}
+
+// hasActiveLocked reports whether an active task of kind exists for name on
+// the normalized clusterID. Caller holds tm.mu.
+func (tm *TaskManager) hasActiveLocked(kind, clusterID, name string) bool {
 	for _, t := range tm.tasks {
 		if t.Kind == kind && t.ClusterID == clusterID && t.Name == name && isActive(t) {
 			return true
@@ -88,13 +93,33 @@ func NewTaskManager() *TaskManager {
 func (tm *TaskManager) Create(kind, clusterID, name, namespace, user string) string {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+	return tm.createLocked(kind, k8s.NormalizedClusterID(clusterID), name, namespace, user)
+}
+
+// CreateIfNoActive registers a new task unless one of the same kind is
+// already active for name on clusterID. The check and the insert happen under
+// one lock, so two concurrent requests cannot both start the same operation.
+// It returns the new task's ID and true, or "" and false.
+func (tm *TaskManager) CreateIfNoActive(kind, clusterID, name, namespace, user string) (string, bool) {
+	clusterID = k8s.NormalizedClusterID(clusterID)
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.hasActiveLocked(kind, clusterID, name) {
+		return "", false
+	}
+	return tm.createLocked(kind, clusterID, name, namespace, user), true
+}
+
+// createLocked inserts a pending task. clusterID is already normalized.
+// Caller holds tm.mu.
+func (tm *TaskManager) createLocked(kind, clusterID, name, namespace, user string) string {
 	tm.reapCompletedLocked()
 
 	id := generateTaskID()
 	tm.tasks[id] = &Task{
 		ID:        id,
 		Kind:      kind,
-		ClusterID: k8s.NormalizedClusterID(clusterID),
+		ClusterID: clusterID,
 		Name:      name,
 		Namespace: namespace,
 		Status:    TaskStatusPending,
@@ -169,8 +194,8 @@ func (tm *TaskManager) SetCancel(id string, cancel context.CancelFunc) {
 }
 
 // CancelCluster fails every active task on clusterID and cancels its work.
-// Registered as a ClusterRouter evict hook, so deregistering a cluster or
-// replacing its credentials stops drains still running against it. It does
+// Registered as a ClusterRouter evict hook, so any EvictCluster call (today,
+// deregistering the cluster) stops drains still running against it. It does
 // not block.
 func (tm *TaskManager) CancelCluster(clusterID string) {
 	clusterID = k8s.NormalizedClusterID(clusterID)
