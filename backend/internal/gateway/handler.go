@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
@@ -42,7 +44,13 @@ var routeKindOrder = []routeKind{RouteKindGRPC, RouteKindTCP, RouteKindTLS, Rout
 // adds every route kind, for the summary that counts them all.
 var (
 	coreSources    = []string{"gatewayclasses", "gateways", "httproutes"}
-	summarySources = []string{"gatewayclasses", "gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes"}
+	summarySources = func() []string {
+		out := append([]string(nil), coreSources...)
+		for _, rk := range routeKindOrder {
+			out = append(out, string(rk))
+		}
+		return out
+	}()
 )
 
 // gatewaysGR is the resource whose presence says Gateway API is installed.
@@ -106,8 +114,13 @@ type snapshot struct {
 
 // sourceErr returns the first failure among the named sources.
 func (s *snapshot) sourceErr(sources ...string) error {
+	return firstErr(s.failed, sources...)
+}
+
+// firstErr returns the first of sources, in order, that has an error in failed.
+func firstErr(failed map[string]error, sources ...string) error {
 	for _, src := range sources {
-		if err := s.failed[src]; err != nil {
+		if err := failed[src]; err != nil {
 			return err
 		}
 	}
@@ -230,7 +243,7 @@ func (h *Handler) fetchAll(ctx context.Context) (*cachedData, error) {
 	// nolint:cluster-routing local path: fetchAll backs the local-cluster cache only; remote reads go through fetchRemote.
 	dynClient := h.K8sClient.BaseDynamicClient()
 
-	data, failed := h.listSources(ctx, dynClient, h.Discoverer.Status(ctx), nil)
+	data, failed := h.listSources(ctx, dynClient, sourcesFor(h.Discoverer.Status(ctx)), nil)
 	for _, src := range coreSources {
 		if err := failed[src]; err != nil {
 			return nil, fmt.Errorf("list %s: %w", src, err)
@@ -288,15 +301,14 @@ func sourcesFor(status GatewayAPIStatus) []source {
 	return out
 }
 
-// listSources lists every source for status concurrently and independently.
+// listSources lists every source concurrently and independently.
 // It returns what listed and, keyed by resource, what failed. When onGone is
 // set, a list whose resource type is no longer served counts as empty and is
 // reported to onGone instead of failing.
-func (h *Handler) listSources(ctx context.Context, dyn dynamic.Interface, status GatewayAPIStatus, onGone func(schema.GroupVersionResource)) (*cachedData, map[string]error) {
+func (h *Handler) listSources(ctx context.Context, dyn dynamic.Interface, sources []source, onGone func(schema.GroupVersionResource)) (*cachedData, map[string]error) {
 	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
 
-	sources := sourcesFor(status)
 	lists := make([]*unstructured.UnstructuredList, len(sources))
 	errs := make([]error, len(sources))
 	var g errgroup.Group
@@ -334,8 +346,7 @@ func (h *Handler) listSources(ctx context.Context, dyn dynamic.Interface, status
 // service-account cache for the local cluster, or a per-identity read of a
 // remote one.
 func (h *Handler) load(ctx context.Context, user *auth.User) (*snapshot, error) {
-	clusterID := middleware.ClusterIDFromContext(ctx)
-	if k8s.IsLocalClusterID(clusterID) {
+	if isLocal(ctx) {
 		status := h.Discoverer.Status(ctx)
 		if !status.Available {
 			return &snapshot{status: status}, nil
@@ -346,6 +357,7 @@ func (h *Handler) load(ctx context.Context, user *auth.User) (*snapshot, error) 
 		}
 		return &snapshot{status: status, data: data}, nil
 	}
+	clusterID := middleware.ClusterIDFromContext(ctx)
 	return h.remote.Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*snapshot, error) {
 		return h.fetchRemote(ctx, clusterID, user)
 	})
@@ -367,13 +379,14 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 		return nil, targetError{err}
 	}
 
-	data, failed := h.listSources(ctx, dyn, status, func(gvr schema.GroupVersionResource) {
+	sources := sourcesFor(status)
+	data, failed := h.listSources(ctx, dyn, sources, func(gvr schema.GroupVersionResource) {
 		// The CRD went away after discovery was cached: re-read it so the
 		// next fetch stops asking for it.
 		h.Presence.Recheck(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, gvr.GroupResource())
 	})
-	if len(failed) == len(sourcesFor(status)) {
-		return nil, (&snapshot{failed: failed}).sourceErr(summarySources...)
+	if len(failed) == len(sources) {
+		return nil, firstErr(failed, summarySources...)
 	}
 	return &snapshot{status: status, data: data, failed: failed}, nil
 }
@@ -409,11 +422,10 @@ func (h *Handler) remoteStatus(ctx context.Context, clusterID string, user *auth
 
 // clusterStatus returns the Gateway API status of the request's cluster.
 func (h *Handler) clusterStatus(ctx context.Context, user *auth.User) (GatewayAPIStatus, error) {
-	clusterID := middleware.ClusterIDFromContext(ctx)
-	if k8s.IsLocalClusterID(clusterID) {
+	if isLocal(ctx) {
 		return h.Discoverer.Status(ctx), nil
 	}
-	return h.remoteStatus(ctx, clusterID, user)
+	return h.remoteStatus(ctx, middleware.ClusterIDFromContext(ctx), user)
 }
 
 // writeLoadError answers a failure to read the cluster's Gateway API state.
@@ -715,19 +727,11 @@ func (h *Handler) HandleGetGateway(w http.ResponseWriter, r *http.Request) {
 // the Gateway API specifies.
 func matchesParentRef(refs []ParentRef, routeNs, gwName, gwNamespace string) bool {
 	for _, ref := range refs {
-		if ref.Name == gwName && namespaceOr(ref.Namespace, routeNs) == gwNamespace {
+		if ref.Name == gwName && cmp.Or(ref.Namespace, routeNs) == gwNamespace {
 			return true
 		}
 	}
 	return false
-}
-
-// namespaceOr returns ns, or def when ns is unset.
-func namespaceOr(ns, def string) string {
-	if ns == "" {
-		return def
-	}
-	return ns
 }
 
 // HandleListHTTPRoutes returns all HTTPRoute resources filtered by RBAC.
@@ -890,9 +894,23 @@ const maxResolveConcurrency = 10
 // specifies. Best effort: bounded by a 2s timeout and maxResolveConcurrency,
 // and a lookup that fails leaves its ref unresolved.
 func (h *Handler) resolveRelationships(ctx context.Context, user *auth.User, dynClient dynamic.Interface, routeNs string, parentRefs []ParentRef, backendRefs ...[]BackendRef) {
-	cs, csErr := h.Clients.ClientForCluster(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups)
-	if csErr != nil {
-		h.Logger.Debug("backend service resolution skipped", "error", csErr)
+	// Resolve a typed client only when there is a Service to look up.
+	var serviceRefs []*BackendRef
+	for _, refs := range backendRefs {
+		for i := range refs {
+			if refs[i].Kind == "Service" || refs[i].Kind == "" {
+				serviceRefs = append(serviceRefs, &refs[i])
+			}
+		}
+	}
+	var cs kubernetes.Interface
+	if len(serviceRefs) > 0 {
+		var err error
+		cs, err = h.Clients.ClientForCluster(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups)
+		if err != nil {
+			h.Logger.Debug("backend service resolution skipped", "error", err)
+			serviceRefs = nil
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -915,28 +933,20 @@ func (h *Handler) resolveRelationships(ctx context.Context, user *auth.User, dyn
 	for i := range parentRefs {
 		ref := &parentRefs[i]
 		run("gateway resolve-parent-gateway", func() {
-			gw, err := dynClient.Resource(GatewayGVR).Namespace(namespaceOr(ref.Namespace, routeNs)).Get(ctx, ref.Name, metav1.GetOptions{})
+			gw, err := dynClient.Resource(GatewayGVR).Namespace(cmp.Or(ref.Namespace, routeNs)).Get(ctx, ref.Name, metav1.GetOptions{})
 			if err == nil {
 				ref.GatewayConditions = extractConditions(gw.Object, "status", "conditions")
 			}
 		})
 	}
 
-	if csErr == nil {
-		for _, refs := range backendRefs {
-			for i := range refs {
-				ref := &refs[i]
-				if ref.Kind != "Service" && ref.Kind != "" {
-					continue
-				}
-				run("gateway resolve-backend-service", func() {
-					_, err := cs.CoreV1().Services(namespaceOr(ref.Namespace, routeNs)).Get(ctx, ref.Name, metav1.GetOptions{})
-					if err == nil {
-						ref.Resolved = true
-					}
-				})
+	for _, ref := range serviceRefs {
+		run("gateway resolve-backend-service", func() {
+			_, err := cs.CoreV1().Services(cmp.Or(ref.Namespace, routeNs)).Get(ctx, ref.Name, metav1.GetOptions{})
+			if err == nil {
+				ref.Resolved = true
 			}
-		}
+		})
 	}
 
 	wg.Wait()

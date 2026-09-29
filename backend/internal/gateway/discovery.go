@@ -68,6 +68,9 @@ func (d *Discoverer) Probe(ctx context.Context) GatewayAPIStatus {
 		list, err := disco.ServerResourcesForGroupVersion(APIGroup + "/" + version)
 		if err != nil || list == nil {
 			d.logger.Debug("gateway API group version not served", "version", version, "error", err)
+			if version == "v1" {
+				break // without v1 Gateway API is not available; skip v1alpha2
+			}
 			continue
 		}
 		lists = append(lists, list)
@@ -132,8 +135,8 @@ func statusFromLists(lists []*metav1.APIResourceList) GatewayAPIStatus {
 	add := func(kind, version string) {
 		resource := kindToResource[kind]
 		status.InstalledKinds = append(status.InstalledKinds, resource)
-		if rk := routeKind(resource); routeKindToKind[resource] != "" {
-			status.routeGVRs[rk] = schema.GroupVersionResource{Group: APIGroup, Version: version, Resource: resource}
+		if _, isRoute := routeKindToKind[resource]; isRoute {
+			status.routeGVRs[routeKind(resource)] = schema.GroupVersionResource{Group: APIGroup, Version: version, Resource: resource}
 		}
 	}
 	for _, kind := range []string{"GatewayClass", "Gateway", "HTTPRoute", "GRPCRoute"} {

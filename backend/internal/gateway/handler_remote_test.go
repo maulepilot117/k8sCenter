@@ -151,10 +151,11 @@ func newFakeCluster(t *testing.T, lists []*metav1.APIResourceList, objs ...*unst
 	}
 }
 
-// remoteHandler builds a Handler whose remote cluster serves remoteObjs and
-// whose local cluster (reachable only through the same ClusterClients)
-// serves a different, same-named-looking set. K8sClient and the local
-// Discoverer are nil, so any local read on the remote path panics.
+// remoteHandler builds a Handler whose remote cluster serves remoteObjs.
+// The local cluster, reachable only through the same ClusterClients, is
+// seeded with its own Gateway so a local read on the remote path shows up
+// in its recorded actions. K8sClient and the local Discoverer are nil, so a
+// service-account or local-discovery read on the remote path panics.
 func remoteHandler(t *testing.T, remoteLists []*metav1.APIResourceList, remoteObjs ...*unstructured.Unstructured) (*Handler, *fakeClients) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
