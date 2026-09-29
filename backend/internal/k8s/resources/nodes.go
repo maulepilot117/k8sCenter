@@ -134,8 +134,9 @@ func (h *Handler) HandleDrainNode(w http.ResponseWriter, r *http.Request) {
 		recoverutil.Safe(h.Logger, "resources node drain", func() {
 			h.executeDrain(ctx, taskID, name, req, cs)
 		})
-		// Outside the recovered closure: a drain that panicked never reached
-		// a terminal status. UpdateStatus is a no-op for a finished task.
+		// Safety net, outside the recovered closure: any exit that left the
+		// task non-terminal (a panic) is marked failed. UpdateStatus is a
+		// no-op for a task that already finished.
 		h.TaskManager.UpdateStatus(taskID, TaskStatusFailed, "drain stopped unexpectedly", 0)
 	}()
 
@@ -148,8 +149,9 @@ func (h *Handler) HandleDrainNode(w http.ResponseWriter, r *http.Request) {
 }
 
 // clientForCluster resolves the impersonating clientset for the cluster the
-// request targets. The remote branch goes through remoteClientFor so the
-// remote path is testable against a fake cluster.
+// request targets. Both branches end in ClusterRouter.ClientForCluster; the
+// split only keeps the remoteClient test override (see remoteClientFor) off
+// the local path.
 func (h *Handler) clientForCluster(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error) {
 	if k8s.IsLocalClusterID(clusterID) {
 		return h.ClusterRouter.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)

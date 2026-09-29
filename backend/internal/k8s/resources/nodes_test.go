@@ -2,6 +2,7 @@ package resources
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,23 +93,32 @@ func drainRequest(clusterID string) (*http.Request, context.CancelFunc) {
 	return req.WithContext(ctx), cancel
 }
 
-// startDrain fires HandleDrainNode, cancels the request context the way the
-// server does after the handler returns, and returns the task id.
-func startDrain(t *testing.T, h *Handler, clusterID string) string {
-	t.Helper()
+// doDrain fires HandleDrainNode for clusterID and then cancels the request
+// context, the way the server does once the handler returns.
+func doDrain(h *Handler, clusterID string) *httptest.ResponseRecorder {
 	req, cancel := drainRequest(clusterID)
 	rr := httptest.NewRecorder()
 	h.HandleDrainNode(rr, req)
 	cancel()
+	return rr
+}
+
+// startDrain starts a drain that must be accepted and returns its task id.
+func startDrain(t *testing.T, h *Handler, clusterID string) string {
+	t.Helper()
+	rr := doDrain(h, clusterID)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
 	}
-	body := rr.Body.String()
-	i := strings.Index(body, "task-")
-	if i < 0 {
-		t.Fatalf("no task id in response: %s", body)
+	var resp struct {
+		Data struct {
+			TaskID string `json:"taskID"`
+		} `json:"data"`
 	}
-	return body[i : i+len("task-")+32]
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil || resp.Data.TaskID == "" {
+		t.Fatalf("no task id in response (%v): %s", err, rr.Body.String())
+	}
+	return resp.Data.TaskID
 }
 
 // waitTerminal polls until the task is complete or failed.
@@ -169,11 +179,7 @@ func TestDrain_RemoteClientFailureReturns500WithoutTask(t *testing.T) {
 		return nil, context.DeadlineExceeded
 	}
 
-	req, cancel := drainRequest(remoteTestClusterID)
-	defer cancel()
-	rr := httptest.NewRecorder()
-	h.HandleDrainNode(rr, req)
-
+	rr := doDrain(h, remoteTestClusterID)
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -219,11 +225,7 @@ func TestDrain_SameNodeNameOnDifferentClustersDoNotCollide(t *testing.T) {
 
 	startDrain(t, h, remoteTestClusterID)
 
-	req, cancel := drainRequest(remoteTestClusterID)
-	defer cancel()
-	rr := httptest.NewRecorder()
-	h.HandleDrainNode(rr, req)
-	if rr.Code != http.StatusConflict {
+	if rr := doDrain(h, remoteTestClusterID); rr.Code != http.StatusConflict {
 		t.Errorf("second drain of the same node on the same cluster: got %d, want 409", rr.Code)
 	}
 }
