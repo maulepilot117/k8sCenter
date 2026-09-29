@@ -45,15 +45,6 @@ type GitOpsStatus struct {
 	LastChecked string `json:"lastChecked"`
 }
 
-// SourceCoverage names one list a remote cluster could not provide. A
-// multi-source response stays a partial 200 and discloses the gap here
-// rather than failing whole or undercounting silently (R-8 KTD8).
-type SourceCoverage struct {
-	Source     string `json:"source"` // resource name, e.g. "kustomizations"
-	Status     string `json:"status"` // "forbidden" | "unavailable"
-	ReasonCode string `json:"reasonCode"`
-}
-
 // ToolDetail describes a single GitOps tool's availability.
 type ToolDetail struct {
 	Available             bool     `json:"available"`

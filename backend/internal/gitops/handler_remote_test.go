@@ -268,9 +268,9 @@ func decode[T any](t *testing.T, rr *httptest.ResponseRecorder) T {
 }
 
 type appList struct {
-	Applications []NormalizedApp  `json:"applications"`
-	Summary      AppListMetadata  `json:"summary"`
-	Coverage     []SourceCoverage `json:"coverage"`
+	Applications []NormalizedApp      `json:"applications"`
+	Summary      AppListMetadata      `json:"summary"`
+	Coverage     []k8s.SourceCoverage `json:"coverage"`
 }
 
 func appNames(apps []NormalizedApp) []string {
@@ -398,7 +398,7 @@ func TestRemote_ForbiddenFluxListGivesPartialListWithCoverage(t *testing.T) {
 	if names := appNames(got.Applications); len(names) != 1 || names[0] != "remote-app" {
 		t.Errorf("apps = %v, want only remote-app", names)
 	}
-	want := []SourceCoverage{{Source: "kustomizations", Status: "forbidden", ReasonCode: string(k8s.ReasonForbidden)}}
+	want := []k8s.SourceCoverage{{Source: "kustomizations", Status: "forbidden", ReasonCode: string(k8s.ReasonForbidden)}}
 	if len(got.Coverage) != 1 || got.Coverage[0] != want[0] {
 		t.Errorf("coverage = %+v, want %+v", got.Coverage, want)
 	}
