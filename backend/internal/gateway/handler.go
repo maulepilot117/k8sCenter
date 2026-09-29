@@ -41,15 +41,13 @@ type Handler struct {
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cache      *cachedData
-	cacheGen   uint64
 }
 
 type cachedData struct {
 	gatewayClasses []GatewayClassSummary
 	gateways       []GatewaySummary
 	httpRoutes     []HTTPRouteSummary
-	routes         []RouteSummary    // ALL non-HTTP routes (GRPC, TCP, TLS, UDP), differentiated by Kind
-	summary        GatewayAPISummary // pre-computed unfiltered summary
+	routes         []RouteSummary // ALL non-HTTP routes (GRPC, TCP, TLS, UDP), differentiated by Kind
 	fetchedAt      time.Time
 }
 
@@ -66,14 +64,6 @@ func NewHandler(
 		AccessChecker: accessChecker,
 		Logger:        logger,
 	}
-}
-
-// InvalidateCache clears the cached data.
-func (h *Handler) InvalidateCache() {
-	h.cacheMu.Lock()
-	h.cacheGen++
-	h.cache = nil
-	h.cacheMu.Unlock()
 }
 
 // getImpersonatingClient creates a dynamic client impersonating the user and handles errors.
@@ -129,11 +119,10 @@ func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 		h.cacheMu.RUnlock()
 		return data, nil
 	}
-	gen := h.cacheGen
 	h.cacheMu.RUnlock()
 
 	result, err, _ := h.fetchGroup.Do("all", func() (any, error) {
-		return h.fetchAll(ctx, gen)
+		return h.fetchAll(ctx)
 	})
 	if err != nil {
 		return nil, err
@@ -141,7 +130,7 @@ func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 	return result.(*cachedData), nil
 }
 
-func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error) {
+func (h *Handler) fetchAll(ctx context.Context) (*cachedData, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -233,22 +222,16 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 
 	_ = g2.Wait()
 
-	// Pre-compute unfiltered summary to avoid O(n) iteration on every summary request.
-	sum := computeSummary(gatewayClasses, gateways, httpRoutes, routes)
-
 	data := &cachedData{
 		gatewayClasses: gatewayClasses,
 		gateways:       gateways,
 		httpRoutes:     httpRoutes,
 		routes:         routes,
-		summary:        sum,
 		fetchedAt:      time.Now(),
 	}
 
 	h.cacheMu.Lock()
-	if h.cacheGen == gen {
-		h.cache = data
-	}
+	h.cache = data
 	h.cacheMu.Unlock()
 
 	return data, nil
