@@ -324,7 +324,7 @@ func TestRemote_ForbiddenKindFailsOnlyItsOwnEndpoint(t *testing.T) {
 	if sum.Gateways.Total != 1 {
 		t.Errorf("summary gateways = %+v, want the listed gateway counted", sum.Gateways)
 	}
-	want := []SourceCoverage{{Source: "httproutes", Status: "forbidden", ReasonCode: string(k8s.ReasonForbidden)}}
+	want := []k8s.SourceCoverage{{Source: "httproutes", Status: "forbidden", ReasonCode: string(k8s.ReasonForbidden)}}
 	if !reflect.DeepEqual(sum.Coverage, want) {
 		t.Errorf("summary coverage = %+v, want %+v", sum.Coverage, want)
 	}

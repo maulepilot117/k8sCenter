@@ -3,7 +3,6 @@ package gateway
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,9 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -60,22 +57,6 @@ var gatewaysGR = schema.GroupResource{Group: APIGroup, Resource: "gateways"}
 // listTimeout bounds one fetch of every Gateway API list.
 const listTimeout = 10 * time.Second
 
-// errDiscoveryUnavailable means a remote cluster's discovery could not be
-// read, so whether Gateway API is installed there is unknown.
-var errDiscoveryUnavailable = errors.New("gateway: discovery on the selected cluster is unavailable")
-
-// errListPanicked stands in for the result of a list whose goroutine
-// panicked; recoverutil logs the panic itself.
-var errListPanicked = errors.New("gateway: list panicked")
-
-// targetError is a failure to resolve a client or schema for the selected
-// cluster, answered by httputil.WriteTargetError rather than as a failure of
-// a call the cluster received.
-type targetError struct{ err error }
-
-func (e targetError) Error() string { return e.err.Error() }
-func (e targetError) Unwrap() error { return e.err }
-
 // Handler serves Gateway API HTTP endpoints for the cluster a request
 // selects. The local cluster is read through a service-account cache and
 // the local Discoverer; a remote cluster through Clients, as the requesting
@@ -120,27 +101,6 @@ type snapshot struct {
 // sourceErr returns the first failure among the named sources.
 func (s *snapshot) sourceErr(sources ...string) error {
 	return firstErr(s.failed, sources...)
-}
-
-// coverageOf describes each of sources, in order, that has an error in
-// failed. It carries a reason code only, never the error text.
-func coverageOf(failed map[string]error, sources ...string) []SourceCoverage {
-	var out []SourceCoverage
-	for _, src := range sources {
-		err := failed[src]
-		if err == nil {
-			continue
-		}
-		c := SourceCoverage{Source: src, Status: "unavailable", ReasonCode: string(k8s.ReasonUnreachable)}
-		switch {
-		case apierrors.IsForbidden(err):
-			c.Status, c.ReasonCode = "forbidden", string(k8s.ReasonForbidden)
-		case apierrors.IsUnauthorized(err):
-			c.ReasonCode = string(k8s.ReasonCredentialsInvalid)
-		}
-		out = append(out, c)
-	}
-	return out
 }
 
 // firstErr returns the first of sources, in order, that has an error in failed.
@@ -339,16 +299,14 @@ func (h *Handler) listSources(ctx context.Context, dyn dynamic.Interface, source
 	defer cancel()
 
 	lists := make([]*unstructured.UnstructuredList, len(sources))
-	errs := make([]error, len(sources))
-	var g errgroup.Group
+	runs := make([]func() error, len(sources))
 	for i, src := range sources {
-		errs[i] = errListPanicked // overwritten unless the list panics
-		recoverutil.Go(&g, h.Logger, "gateway list "+src.gvr.Resource, func() error {
-			lists[i], errs[i] = dyn.Resource(src.gvr).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
-			return nil
-		})
+		runs[i] = func() (err error) {
+			lists[i], err = dyn.Resource(src.gvr).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+			return err
+		}
 	}
-	_ = g.Wait() // every list records its own outcome in errs
+	errs := k8s.RunLists(h.Logger, "gateway list", runs)
 
 	data := &cachedData{
 		gatewayClasses: []GatewayClassSummary{},
@@ -405,7 +363,7 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 	}
 	dyn, err := h.Clients.DynamicClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
-		return nil, targetError{err}
+		return nil, k8s.TargetError{Err: err}
 	}
 
 	sources := sourcesFor(status)
@@ -435,11 +393,11 @@ func (h *Handler) remoteStatus(ctx context.Context, clusterID string, user *auth
 
 	target, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
-		return GatewayAPIStatus{}, targetError{err}
+		return GatewayAPIStatus{}, k8s.TargetError{Err: err}
 	}
 	lists, unavailable, failedGroups := k8s.DiscoveryLists(target.Discovery)
 	if unavailable || failedGroups[APIGroup] {
-		return GatewayAPIStatus{}, errDiscoveryUnavailable
+		return GatewayAPIStatus{}, k8s.ErrDiscoveryUnavailable
 	}
 	status := statusFromLists(lists)
 	status.LastChecked = now
@@ -459,18 +417,12 @@ func (h *Handler) clusterStatus(ctx context.Context, user *auth.User) (GatewayAP
 
 // writeLoadError answers a failure to read the cluster's Gateway API state.
 func (h *Handler) writeLoadError(w http.ResponseWriter, r *http.Request, err error, what string) {
-	var target targetError
-	switch {
-	case isLocal(r.Context()):
+	if isLocal(r.Context()) {
 		h.Logger.Error("failed to fetch "+what, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch "+what, "")
-	case errors.As(err, &target):
-		httputil.WriteTargetError(w, target.err)
-	case errors.Is(err, errDiscoveryUnavailable):
-		httputil.WriteErrorWithReason(w, http.StatusBadGateway, "Gateway API discovery on the selected cluster failed", string(k8s.ReasonDiscoveryUnavailable), nil)
-	default:
-		httputil.WriteRemoteError(w, err)
+		return
 	}
+	httputil.WriteRemoteLoadError(w, err, "Gateway API")
 }
 
 // loadFor loads the snapshot for a list endpoint that reads sources. It
@@ -500,12 +452,7 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 	status, err := h.clusterStatus(r.Context(), user)
 	if err != nil {
-		reason := k8s.ReasonDiscoveryUnavailable
-		var target targetError
-		if errors.As(err, &target) {
-			reason = k8s.ClassifyTargetErr(target.err)
-		}
-		status = GatewayAPIStatus{Reason: string(reason), LastChecked: time.Now().UTC()}
+		status = GatewayAPIStatus{Reason: string(k8s.RemoteReason(err)), LastChecked: time.Now().UTC()}
 	}
 	httputil.WriteData(w, status)
 }
@@ -543,7 +490,7 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		filterByRBAC(ctx, h, user, "httproutes", data.httpRoutes),
 		filterByRBAC(ctx, h, user, "httproutes", data.routes),
 	)
-	summary.Coverage = coverageOf(snap.failed, summarySources...)
+	summary.Coverage = k8s.CoverageOf(snap.failed, summarySources...)
 
 	httputil.WriteData(w, summary)
 }
@@ -719,7 +666,7 @@ func (h *Handler) HandleGetGateway(w http.ResponseWriter, r *http.Request) {
 	if snap, err := h.load(r.Context(), user); err == nil && snap.data != nil {
 		var attached []RouteSummary
 		routeSources := append([]string{"httproutes"}, summarySources[len(coreSources):]...)
-		detail.Coverage = coverageOf(snap.failed, routeSources...)
+		detail.Coverage = k8s.CoverageOf(snap.failed, routeSources...)
 
 		// Check HTTPRoutes
 		for _, hr := range snap.data.httpRoutes {
