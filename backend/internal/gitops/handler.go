@@ -624,7 +624,7 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.auditLog(r, user, audit.ActionGitOpsSync, kind, ns, name, auditResult(err), err.Error())
 		// Map specific errors to appropriate HTTP status codes
-		if strings.Contains(err.Error(), "already in progress") || strings.Contains(err.Error(), "is suspended") {
+		if isOwnConflict(err, "already in progress", "is suspended") {
 			httputil.WriteError(w, http.StatusConflict, err.Error(), "")
 		} else {
 			writeClusterError(w, r, err, "failed to trigger sync")
@@ -720,7 +720,7 @@ func (h *Handler) HandleRollback(w http.ResponseWriter, r *http.Request) {
 	_, err := RollbackArgoApp(r.Context(), dynClient, ns, name, req.Revision, user.KubernetesUsername)
 	if err != nil {
 		h.auditLog(r, user, audit.ActionGitOpsRollback, "Application", ns, name, auditResult(err), err.Error())
-		if strings.Contains(err.Error(), "auto-sync") || strings.Contains(err.Error(), "not found in history") {
+		if isOwnConflict(err, "auto-sync", "not found in history") {
 			httputil.WriteError(w, http.StatusConflict, err.Error(), "")
 		} else {
 			writeClusterError(w, r, err, "failed to rollback")
@@ -1046,7 +1046,7 @@ func (h *Handler) HandleGetCommits(w http.ResponseWriter, r *http.Request) {
 
 	// RBAC: validate repoURL matches at least one app visible to this user
 	// on the same cluster the request selects.
-	apps, _, err := h.loadApps(r.Context(), user)
+	apps, coverage, err := h.loadApps(r.Context(), user)
 	if err != nil {
 		h.writeLoadError(w, r, err, "failed to validate access")
 		return
@@ -1055,6 +1055,14 @@ func (h *Handler) HandleGetCommits(w http.ResponseWriter, r *http.Request) {
 
 	canonicalURL := ref.CanonicalURL()
 	if !repoVisibleToUser(apps, repoURL, canonicalURL) {
+		// A list that failed for a reason other than a refusal may hold the
+		// app that uses this repository: that is an outage, not a denial.
+		for _, c := range coverage {
+			if c.Status != "forbidden" {
+				httputil.WriteErrorWithReason(w, http.StatusBadGateway, "could not list every application on the selected cluster", c.ReasonCode, nil)
+				return
+			}
+		}
 		httputil.WriteError(w, http.StatusForbidden, "no visible application uses this repository", "")
 		return
 	}
@@ -1169,6 +1177,23 @@ func writeClusterError(w http.ResponseWriter, r *http.Request, err error, localM
 		return
 	}
 	httputil.WriteRemoteError(w, err)
+}
+
+// isOwnConflict reports whether err is one of this package's own conflict
+// checks (sync already running, app suspended, ...), identified by phrase.
+// An error the cluster returned never is, even when its text happens to
+// contain the phrase: echoing it would leak the cluster's error text.
+func isOwnConflict(err error, phrases ...string) bool {
+	var status apierrors.APIStatus
+	if errors.As(err, &status) {
+		return false
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(err.Error(), phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // auditResult records a refusal by the cluster as denied rather than failed.

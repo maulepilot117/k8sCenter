@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -323,7 +324,11 @@ func TestRemote_SyncPatchesRemoteAppAuditsAndNotifiesRemote(t *testing.T) {
 	if e := hs.audit.last(t); e.ClusterID != remoteCluster || e.Result != audit.ResultSuccess {
 		t.Errorf("audit = %+v, want remote cluster success", e)
 	}
-	<-hs.notes.done
+	select {
+	case <-hs.notes.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no notification emitted after the sync")
+	}
 	hs.notes.mu.Lock()
 	if note := hs.notes.sent[len(hs.notes.sent)-1]; note.ClusterID != remoteCluster {
 		t.Errorf("notification cluster = %q, want %q", note.ClusterID, remoteCluster)
@@ -493,5 +498,53 @@ func TestLocal_ListAndSyncStayOnTheLocalCluster(t *testing.T) {
 	}
 	if len(hs.remoteDyn().Actions()) != 0 {
 		t.Error("local requests touched the remote cluster")
+	}
+}
+
+// A commit lookup over a partial remote snapshot cannot tell whether the
+// repository belongs to an app it failed to list: that is an outage, not a
+// refusal. A list the user is forbidden from still reads as a refusal.
+func TestRemote_CommitsOverAPartialSnapshotAreAnOutageNotARefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		listErr  error
+		wantCode int
+	}{
+		{"argo list failing", apierrors.NewInternalError(errors.New("boom")), http.StatusBadGateway},
+		{"argo list forbidden", apierrors.NewForbidden(ArgoApplicationGVR.GroupResource(), "", errors.New("no")), http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newHarness(t, toolLists(true, true),
+				argoApp("argocd", "remote-app", "https://github.com/acme/remote"),
+				obj("Kustomization", "flux-system", "remote-ks", nil, nil))
+			hs.remoteDyn().PrependReactor("list", "applications", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, tc.listErr
+			})
+			gh, err := gitprovider.NewGitHubClient("test-token", "", hs.h.Logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hs.h.CommitCache = gitprovider.NewCommitCache(nil, gh, hs.h.Logger)
+
+			rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleGetCommits,
+				"/commits?repoURL=https://github.com/acme/remote&shas=abcdef1", nil, "")
+			if rr.Code != tc.wantCode {
+				t.Errorf("status %d, want %d: %s", rr.Code, tc.wantCode, rr.Body.String())
+			}
+		})
+	}
+}
+
+// A remote refusal whose text happens to contain one of the conflict
+// phrases must not be echoed back as a 409.
+func TestRemote_SyncConflictPhraseInARemoteErrorIsNotEchoed(t *testing.T) {
+	hs := newHarness(t, toolLists(true, false), argoApp("argocd", "remote-app", ""))
+	hs.remoteDyn().PrependReactor("patch", "applications", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New("webhook at 10.20.30.40: sync already in progress"))
+	})
+
+	rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleSync, "/sync", map[string]string{"id": "argo:argocd:remote-app"}, "")
+	if rr.Code == http.StatusConflict || strings.Contains(rr.Body.String(), "10.20.30.40") {
+		t.Errorf("remote error echoed: %d %s", rr.Code, rr.Body.String())
 	}
 }
