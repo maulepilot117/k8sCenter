@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -38,7 +39,7 @@ const (
 	// DefaultMaxEntries bounds the cache so a burst of distinct
 	// (cluster, identity) pairs cannot grow it without limit.
 	DefaultMaxEntries = 128
-	// fetchCap bounds a shared fetch whose first caller set no deadline.
+	// fetchCap bounds every shared fetch, whoever started it.
 	fetchCap = 30 * time.Second
 )
 
@@ -47,9 +48,9 @@ type key struct {
 	identity  string // k8s.IdentityKey(username, groups)
 }
 
-// flightKey is the singleflight key for k.
-func (k key) flightKey() string {
-	return k.clusterID + "\x00" + k.identity
+// flightKey is the singleflight key for k at cluster generation gen.
+func (k key) flightKey(gen uint64) string {
+	return k.clusterID + "\x00" + strconv.FormatUint(gen, 10) + "\x00" + k.identity
 }
 
 // errFetchPanicked is returned when a fetch panicked; the panic itself is
@@ -104,27 +105,28 @@ func New[T any](ttl time.Duration, maxEntries int, logger *slog.Logger) *Cache[T
 // Get returns the cached value for (clusterID, username, groups), or runs
 // fetch to produce it. Concurrent misses on the same key share one fetch.
 // fetch receives a context that keeps ctx's values but not its
-// cancellation, bounded by ctx's deadline or, failing that, 30 seconds.
-// Get itself returns early with ctx.Err() if ctx ends while waiting.
+// cancellation or deadline, bounded instead by a fixed 30 seconds. Get
+// itself returns early with ctx.Err() when ctx ends while waiting; the fetch
+// carries on for the other callers and may still fill the cache.
 func (c *Cache[T]) Get(ctx context.Context, clusterID, username string, groups []string, fetch func(context.Context) (T, error)) (T, error) {
 	k := key{clusterID: k8s.NormalizedClusterID(clusterID), identity: k8s.IdentityKey(username, groups)}
 	if v, ok := c.lookup(k); ok {
 		return v, nil
 	}
 
-	ch := c.sf.DoChan(k.clusterID+"\x00"+k.identity, func() (any, error) {
+	// The generation is part of the flight key, so a Get after an eviction
+	// starts its own fetch instead of joining one that may have read the
+	// pre-eviction state.
+	gen := c.generation(k.clusterID)
+	ch := c.sf.DoChan(k.flightKey(gen), func() (any, error) {
 		if v, ok := c.lookup(k); ok {
 			return v, nil
 		}
-		gen := c.generation(k.clusterID)
 
-		fetchCtx := context.WithoutCancel(ctx)
-		var cancel context.CancelFunc
-		if deadline, ok := ctx.Deadline(); ok {
-			fetchCtx, cancel = context.WithDeadline(fetchCtx, deadline)
-		} else {
-			fetchCtx, cancel = context.WithTimeout(fetchCtx, fetchCap)
-		}
+		// Bounded by the fixed cap, not the first caller's deadline: every
+		// caller that joins this flight waits on its own ctx (below), so a
+		// short-deadline first caller cannot fail the others.
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchCap)
 		defer cancel()
 
 		v, err := c.safeFetch(fetchCtx, fetch)

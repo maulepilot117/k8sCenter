@@ -74,6 +74,23 @@ func TestGet_IdentitiesOnOneClusterAreIsolated(t *testing.T) {
 	}
 }
 
+// Impersonation grants differ by group membership for one user, and two
+// users can share groups, so each half of the identity must key the cache.
+func TestGet_UsernameAndGroupsEachKeyTheCache(t *testing.T) {
+	c, _ := newTestCache(time.Minute, 0)
+	mustGet(t, c, clusterA, "alice", []string{"team-a"}, value("alice/team-a"))
+
+	if got := mustGet(t, c, clusterA, "alice", []string{"team-b"}, value("alice/team-b")); got != "alice/team-b" {
+		t.Errorf("same user, other groups got %q", got)
+	}
+	if got := mustGet(t, c, clusterA, "carol", []string{"team-a"}, value("carol/team-a")); got != "carol/team-a" {
+		t.Errorf("other user, same groups got %q", got)
+	}
+	if got := mustGet(t, c, clusterA, "alice", []string{"team-a"}, value("refetched")); got != "alice/team-a" {
+		t.Errorf("original identity got %q, want its cached view", got)
+	}
+}
+
 func TestGet_ErrorIsNotCachedOrSharedAcrossIdentities(t *testing.T) {
 	c, _ := newTestCache(time.Minute, 0)
 	forbidden := errors.New("forbidden")
@@ -143,7 +160,8 @@ func TestGet_BlockedFetchOnOneClusterDoesNotDelayAnother(t *testing.T) {
 
 	done := make(chan string, 1)
 	go func() {
-		done <- mustGet(t, c, clusterB, "alice", alice, value("b"))
+		v, _ := c.Get(context.Background(), clusterB, "alice", alice, value("b"))
+		done <- v
 	}()
 	select {
 	case v := <-done:
@@ -155,7 +173,7 @@ func TestGet_BlockedFetchOnOneClusterDoesNotDelayAnother(t *testing.T) {
 	}
 }
 
-func TestGet_FetchSurvivesCallerCancellationButHonoursItsDeadline(t *testing.T) {
+func TestGet_FetchSurvivesCallerCancellation(t *testing.T) {
 	c, _ := newTestCache(time.Minute, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -174,15 +192,54 @@ func TestGet_FetchSurvivesCallerCancellationButHonoursItsDeadline(t *testing.T) 
 	if err := <-fetchErr; err != nil {
 		t.Errorf("fetch context ended with the caller: %v", err)
 	}
+}
 
-	deadlineCtx, cancelDeadline := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancelDeadline()
-	_, err := c.Get(deadlineCtx, clusterB, "alice", alice, func(fctx context.Context) (string, error) {
-		<-fctx.Done()
-		return "", fctx.Err()
-	})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want the caller's deadline to bound the fetch", err)
+// The shared fetch is bounded by the fixed cap, not by whichever caller
+// started it: a short-deadline first caller must not fail waiters that
+// joined its flight with more time to spare.
+func TestGet_FetchIsBoundedByTheCapNotTheFirstCallersDeadline(t *testing.T) {
+	c, _ := newTestCache(time.Minute, 0)
+	fetchDeadline := make(chan time.Time, 1)
+	release := make(chan struct{})
+	fetch := func(fctx context.Context) (string, error) {
+		d, ok := fctx.Deadline()
+		if !ok {
+			t.Error("fetch context has no deadline; the cap must bound it")
+		}
+		fetchDeadline <- d
+		<-release
+		if err := fctx.Err(); err != nil {
+			return "", err
+		}
+		return "shared", nil
+	}
+
+	short, cancelShort := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancelShort()
+	shortErr := make(chan error, 1)
+	go func() {
+		_, err := c.Get(short, clusterA, "alice", alice, fetch)
+		shortErr <- err
+	}()
+	d := <-fetchDeadline
+	if until := time.Until(d); until < fetchCap-5*time.Second {
+		t.Errorf("fetch deadline is %v away, want about the %v cap", until, fetchCap)
+	}
+
+	patient := make(chan string, 1)
+	go func() {
+		v, err := c.Get(context.Background(), clusterA, "alice", alice, fetch)
+		if err != nil {
+			v = "error: " + err.Error()
+		}
+		patient <- v
+	}()
+	if err := <-shortErr; !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("short caller err = %v, want its own deadline", err)
+	}
+	close(release)
+	if got := <-patient; got != "shared" {
+		t.Errorf("patient waiter got %q, want the shared fetch's result", got)
 	}
 }
 
@@ -253,6 +310,41 @@ func TestEvictCluster_DuringFetchDiscardsItsResult(t *testing.T) {
 	}
 }
 
+// A read issued after an eviction must not join a fetch that started before
+// it: that fetch may have read the pre-write state.
+func TestEvictCluster_LaterGetDoesNotJoinPreEvictionFetch(t *testing.T) {
+	c, _ := newTestCache(time.Minute, 0)
+	inFetch := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_, _ = c.Get(context.Background(), clusterA, "alice", alice, func(context.Context) (string, error) {
+			close(inFetch)
+			<-release
+			return "read before the write", nil
+		})
+	}()
+	<-inFetch
+	c.EvictCluster(clusterA)
+
+	got := make(chan string, 1)
+	go func() {
+		v, err := c.Get(context.Background(), clusterA, "alice", alice, value("after the write"))
+		if err != nil {
+			v = "error: " + err.Error()
+		}
+		got <- v
+	}()
+	select {
+	case v := <-got:
+		if v != "after the write" {
+			t.Errorf("post-eviction Get got %q, want its own fetch", v)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("post-eviction Get waited on the pre-eviction fetch")
+	}
+	close(release)
+}
+
 func TestGet_RefetchesAfterTTL(t *testing.T) {
 	c, clock := newTestCache(30*time.Second, 0)
 	mustGet(t, c, clusterA, "alice", alice, value("first"))
@@ -291,6 +383,9 @@ func TestGet_PanickingFetchReturnsAnError(t *testing.T) {
 	})
 	if !errors.Is(err, errFetchPanicked) {
 		t.Fatalf("err = %v, want errFetchPanicked", err)
+	}
+	if got := mustGet(t, c, clusterA, "alice", alice, value("recovered")); got != "recovered" {
+		t.Errorf("after a panic got %q, want a fresh fetch", got)
 	}
 }
 
