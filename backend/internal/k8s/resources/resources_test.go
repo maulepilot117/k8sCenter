@@ -420,7 +420,7 @@ func TestTaskManager(t *testing.T) {
 
 	tm := NewTaskManager()
 
-	id := tm.Create("drain", "worker-1", "", "admin")
+	id := tm.Create("drain", "local", "worker-1", "", "admin")
 	if id == "" {
 		t.Fatal("expected non-empty task ID")
 	}
@@ -639,17 +639,17 @@ func TestValidateK8sName(t *testing.T) {
 
 func TestHasActiveTask(t *testing.T) {
 	tm := NewTaskManager()
-	id := tm.Create("drain", "worker-1", "", "admin")
+	id := tm.Create("drain", "local", "worker-1", "", "admin")
 
-	if !tm.HasActiveTask("drain", "worker-1") {
+	if !tm.HasActiveTask("drain", "local", "worker-1") {
 		t.Error("expected active task for drain/worker-1")
 	}
-	if tm.HasActiveTask("drain", "worker-2") {
+	if tm.HasActiveTask("drain", "local", "worker-2") {
 		t.Error("did not expect active task for drain/worker-2")
 	}
 
 	tm.UpdateStatus(id, TaskStatusComplete, "done", 100)
-	if tm.HasActiveTask("drain", "worker-1") {
+	if tm.HasActiveTask("drain", "local", "worker-1") {
 		t.Error("completed task should not count as active")
 	}
 }
