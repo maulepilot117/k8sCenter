@@ -60,7 +60,8 @@ var remoteStatusMessages = map[int]string{
 func WriteRemoteError(w http.ResponseWriter, err error) {
 	var status apierrors.APIStatus
 	if errors.As(err, &status) {
-		code := int(status.Status().Code)
+		upstream := int(status.Status().Code)
+		code := upstream
 		msg, known := remoteStatusMessages[code]
 		if !known {
 			code, msg = http.StatusBadGateway, "the cluster returned an error"
@@ -69,7 +70,7 @@ func WriteRemoteError(w http.ResponseWriter, err error) {
 		if code == http.StatusForbidden {
 			reason = string(k8s.ReasonForbidden)
 		}
-		slog.Warn("remote cluster call failed", "status", status.Status().Code, "error", err)
+		slog.Warn("remote cluster call failed", "status", upstream, "error", err)
 		WriteErrorWithReason(w, code, msg, reason, nil)
 		return
 	}

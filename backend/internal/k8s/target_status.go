@@ -8,6 +8,7 @@ package k8s
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -15,11 +16,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/sync/singleflight"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
+
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 // ReasonCode is the closed set of machine-readable explanations for why a
@@ -233,6 +237,21 @@ type Presence struct {
 
 	mu     sync.Mutex
 	absent map[presenceKey]time.Time // definite-absence verdicts and their expiry
+
+	// sf coalesces concurrent probes of one key, so an absence verdict
+	// expiring under load triggers one schema invalidation and one
+	// discovery read, not one per waiting request.
+	sf singleflight.Group
+}
+
+func newPresenceKey(clusterID, username string, groups []string, resource schema.GroupResource) presenceKey {
+	return presenceKey{clusterID: NormalizedClusterID(clusterID), identity: IdentityKey(username, groups), resource: resource}
+}
+
+// flightKey identifies a probe for singleflight. A probe that invalidates
+// the schema never joins one that does not, so Recheck always re-reads.
+func (k presenceKey) flightKey(invalidate bool) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%t", k.clusterID, k.identity, k.resource, invalidate)
 }
 
 // NewPresence returns a Presence that reads discovery through clients.
@@ -249,7 +268,7 @@ func NewPresence(clients ClusterClients) *Presence {
 // passes the cluster's cached schema is invalidated and discovery read
 // again. Unknown verdicts are never remembered.
 func (p *Presence) Check(ctx context.Context, clusterID, username string, groups []string, resource schema.GroupResource) PresenceVerdict {
-	key := presenceKey{clusterID: NormalizedClusterID(clusterID), identity: IdentityKey(username, groups), resource: resource}
+	key := newPresenceKey(clusterID, username, groups, resource)
 
 	p.mu.Lock()
 	expiry, remembered := p.absent[key]
@@ -265,8 +284,7 @@ func (p *Presence) Check(ctx context.Context, clusterID, username string, groups
 // the last check called installed fails with IsResourceGone: the CRD may
 // have been removed since the schema was cached.
 func (p *Presence) Recheck(ctx context.Context, clusterID, username string, groups []string, resource schema.GroupResource) PresenceVerdict {
-	key := presenceKey{clusterID: NormalizedClusterID(clusterID), identity: IdentityKey(username, groups), resource: resource}
-	return p.probe(ctx, key, username, groups, true)
+	return p.probe(ctx, newPresenceKey(clusterID, username, groups, resource), username, groups, true)
 }
 
 // EvictCluster forgets every verdict for clusterID. Register it as a
@@ -282,7 +300,29 @@ func (p *Presence) EvictCluster(clusterID string) {
 	}
 }
 
+// probe reads the cluster's discovery for key, first invalidating the cached
+// schema when invalidate is set (an expired absence, or a Recheck).
+// Concurrent probes of the same key share one read; a caller whose ctx ends
+// while waiting gets an unknown verdict.
 func (p *Presence) probe(ctx context.Context, key presenceKey, username string, groups []string, invalidate bool) PresenceVerdict {
+	ch := p.sf.DoChan(key.flightKey(invalidate), func() (any, error) {
+		verdict := PresenceVerdict{Reason: ReasonDiscoveryUnavailable}
+		// singleflight re-panics on a fresh goroutine; recover here so
+		// malformed discovery from a remote cluster degrades to "unknown".
+		recoverutil.Safe(nil, "k8s presence probe", func() {
+			verdict = p.read(ctx, key, username, groups, invalidate)
+		})
+		return verdict, nil
+	})
+	select {
+	case <-ctx.Done():
+		return PresenceVerdict{Reason: ReasonUnreachable}
+	case res := <-ch:
+		return res.Val.(PresenceVerdict)
+	}
+}
+
+func (p *Presence) read(ctx context.Context, key presenceKey, username string, groups []string, invalidate bool) PresenceVerdict {
 	target, err := p.clients.TargetSchemaFor(ctx, key.clusterID, username, groups)
 	if err != nil {
 		return PresenceVerdict{Reason: ClassifyTargetErr(err)}
@@ -303,10 +343,18 @@ func (p *Presence) probe(ctx context.Context, key presenceKey, username string, 
 		verdict = absentVerdict()
 	}
 
+	now := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if verdict.Installed != nil && !*verdict.Installed {
-		p.absent[key] = p.now().Add(presenceAbsentTTL)
+	// Drop expired absences for identities that stopped asking, so the map
+	// stays bounded by recent activity.
+	for k, expiry := range p.absent {
+		if !now.Before(expiry) {
+			delete(p.absent, k)
+		}
+	}
+	if verdict.Reason == ReasonDiscoveryMissing {
+		p.absent[key] = now.Add(presenceAbsentTTL)
 	} else {
 		delete(p.absent, key)
 	}

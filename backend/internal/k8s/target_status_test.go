@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -224,6 +225,42 @@ func TestPresence_RecheckSeesRemovedCRD(t *testing.T) {
 	if n := f.invalidates.Load(); n != 1 {
 		t.Errorf("schema invalidated %d times, want 1", n)
 	}
+}
+
+func TestPresence_ConcurrentReprobesInvalidateOnce(t *testing.T) {
+	gate := make(chan struct{})
+	slow := slowDiscovery{FakeDiscovery: discoveryWith(coreList()), gate: gate}
+	p, f, now := newTestPresence(discoveryWith(coreList()))
+	check(t, p, argoApps) // remembered absent
+	f.setDiscovery(slow)
+	*now = now.Add(presenceAbsentTTL + time.Second)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.Check(context.Background(), remoteID, "alice", []string{"team-a"}, argoApps)
+		}()
+	}
+	time.Sleep(50 * time.Millisecond) // let every caller join the flight
+	close(gate)
+	wg.Wait()
+
+	if n := f.invalidates.Load(); n != 1 {
+		t.Errorf("schema invalidated %d times by 8 concurrent re-probes, want 1", n)
+	}
+}
+
+// slowDiscovery blocks its list read until gate closes.
+type slowDiscovery struct {
+	*fakediscovery.FakeDiscovery
+	gate chan struct{}
+}
+
+func (d slowDiscovery) ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	<-d.gate
+	return d.FakeDiscovery.ServerGroupsAndResources()
 }
 
 func TestPresence_AbsentVerdictIsPerIdentity(t *testing.T) {
