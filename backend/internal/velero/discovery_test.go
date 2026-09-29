@@ -4,44 +4,29 @@ import (
 	"testing"
 )
 
-func TestPhaseHelpers(t *testing.T) {
+func TestIsProgressPhase(t *testing.T) {
 	tests := []struct {
-		phase      string
-		isFailed   bool
-		isWarning  bool
-		isSuccess  bool
-		isProgress bool
+		phase string
+		want  bool
 	}{
-		{"Failed", true, false, false, false},
-		{"FailedValidation", true, false, false, false},
-		{"PartiallyFailed", false, true, false, false},
-		{"Completed", false, false, true, false},
-		{"Available", false, false, true, false},
-		{"Enabled", false, false, true, false},
-		{"InProgress", false, false, false, true},
-		{"New", false, false, false, true},
-		{"WaitingForPluginOperations", false, false, false, true},
-		{"Finalizing", false, false, false, true},
-		{"Queued", false, false, false, true},
-		{"ReadyToStart", false, false, false, true},
-		{"Unknown", false, false, false, false},
+		{"New", true},
+		{"InProgress", true},
+		{"WaitingForPluginOperations", true},
+		{"WaitingForPluginOperationsPartiallyFailed", true},
+		{"Finalizing", true},
+		{"FinalizingPartiallyFailed", true},
+		{"Queued", true},
+		{"ReadyToStart", true},
+		{"Completed", false},
+		{"PartiallyFailed", false},
+		{"Failed", false},
+		{"FailedValidation", false},
+		{"", false},
 	}
-
 	for _, tt := range tests {
-		t.Run(tt.phase, func(t *testing.T) {
-			if got := IsFailedPhase(tt.phase); got != tt.isFailed {
-				t.Errorf("IsFailedPhase(%q) = %v, want %v", tt.phase, got, tt.isFailed)
-			}
-			if got := IsWarningPhase(tt.phase); got != tt.isWarning {
-				t.Errorf("IsWarningPhase(%q) = %v, want %v", tt.phase, got, tt.isWarning)
-			}
-			if got := IsSuccessPhase(tt.phase); got != tt.isSuccess {
-				t.Errorf("IsSuccessPhase(%q) = %v, want %v", tt.phase, got, tt.isSuccess)
-			}
-			if got := IsProgressPhase(tt.phase); got != tt.isProgress {
-				t.Errorf("IsProgressPhase(%q) = %v, want %v", tt.phase, got, tt.isProgress)
-			}
-		})
+		if got := IsProgressPhase(tt.phase); got != tt.want {
+			t.Errorf("IsProgressPhase(%q) = %v, want %v", tt.phase, got, tt.want)
+		}
 	}
 }
 

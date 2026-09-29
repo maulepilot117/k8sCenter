@@ -138,8 +138,3 @@ func (d *Discoverer) Probe(ctx context.Context) VeleroStatus {
 
 	return status
 }
-
-// IsAvailable returns true if Velero was detected.
-func (d *Discoverer) IsAvailable(ctx context.Context) bool {
-	return d.Status(ctx).Detected
-}

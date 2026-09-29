@@ -124,32 +124,8 @@ type LocationsResponse struct {
 	VolumeSnapshotLocations []VolumeSnapshotLocation `json:"volumeSnapshotLocations"`
 }
 
-// Phase helper functions for UI badge coloring
-
-// IsFailedPhase returns true for failed phases.
-func IsFailedPhase(phase string) bool {
-	switch phase {
-	case "Failed", "FailedValidation":
-		return true
-	}
-	return false
-}
-
-// IsWarningPhase returns true for partial failure phases.
-func IsWarningPhase(phase string) bool {
-	return phase == "PartiallyFailed"
-}
-
-// IsSuccessPhase returns true for success phases.
-func IsSuccessPhase(phase string) bool {
-	switch phase {
-	case "Completed", "Available", "Enabled":
-		return true
-	}
-	return false
-}
-
-// IsProgressPhase returns true for in-progress phases.
+// IsProgressPhase reports whether phase is one Velero reports while a
+// backup or restore is still running.
 func IsProgressPhase(phase string) bool {
 	switch phase {
 	case "InProgress", "New", "WaitingForPluginOperations", "Finalizing",
