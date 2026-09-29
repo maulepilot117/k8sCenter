@@ -13,8 +13,8 @@
 #
 # R-8 (U12) — in the packages listed in REMOTE_ROUTED_DIRS, also flag
 # .BaseDynamicClient() / .BaseClientset() / .DiscoveryClient() /
-# .RESTMapper(). Those read the LOCAL cluster through the service account
-# or the local schema; a feature package that has migrated to serve the
+# .RESTMapper() and informer-cache reads (.Informers.). Those read the LOCAL
+# cluster through the service account, the local schema or local informers; a feature package that has migrated to serve the
 # selected cluster must mark every remaining local read with a nolint
 # reason, so serving local data under a remote cluster's name is visible.
 #
@@ -91,9 +91,9 @@ ALLOWED_PREFIXES="backend/internal/k8s/cluster_router.go backend/internal/k8s/cl
 SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server"
 
 # Directories (relative to ROOT) whose feature handlers serve the cluster
-# the request selects (R-8). In these, a service-account or local-schema
-# read (.BaseDynamicClient() / .BaseClientset() / .DiscoveryClient() /
-# .RESTMapper()) is a violation unless annotated: each remaining local
+# the request selects (R-8). In these, a service-account, local-schema or
+# informer read (.BaseDynamicClient() / .BaseClientset() / .DiscoveryClient()
+# / .RESTMapper() / .Informers.) is a violation unless annotated: each remaining local
 # read must say why it is local. A package joins this list in the unit that
 # migrates it. Empty until the first package migrates.
 REMOTE_ROUTED_DIRS=""
@@ -182,7 +182,7 @@ classify_line() {
     *".ClientForUser("*|*".DynamicClientForUser("*) _hit=1 ;;
     *".RESTMapper()"*|*".DiscoveryClient()"*)
       if [ "$_schema" -eq 1 ] || [ "$_remote" -eq 1 ]; then _hit=1; fi ;;
-    *".BaseDynamicClient()"*|*".BaseClientset()"*)
+    *".BaseDynamicClient()"*|*".BaseClientset()"*|*".Informers."*)
       if [ "$_remote" -eq 1 ]; then _hit=1; fi ;;
   esac
   [ "$_hit" -eq 1 ] || return 1
@@ -339,12 +339,49 @@ run_self_test() {
   expect_clean "gitopsextra must not match the gitops remote-routed dir prefix" \
     "backend/internal/gitopsextra/x.go" "${TAB}dyn := h.K8sClient.BaseDynamicClient()" ""
 
+  REMOTE_ROUTED_DIRS="backend/internal/storage"
+  expect_violation "an informer-cache read in a remote-routed dir must be a violation" \
+    "backend/internal/storage/x.go" "${TAB}drivers, err := h.Informers.CSIDrivers().List(labels.Everything())" ""
+
+  expect_clean "an informer-cache read outside REMOTE_ROUTED_DIRS must NOT be a violation" \
+    "backend/internal/velero/x.go" "${TAB}pods, err := h.Informers.Pods().List(sel)" ""
+
   REMOTE_ROUTED_DIRS="$_saved_remote_routed"
 
   printf '[check-cluster-routing] self-test: %d/%d detector cases passed\n' "$_pass" "$_n"
 }
 
 run_self_test
+
+# check_routed_dirs — every SCHEMA_ROUTED_DIRS / REMOTE_ROUTED_DIRS entry
+# must be an existing directory with no trailing slash that sits at or under
+# a HANDLER_DIRS entry. A typo'd entry would otherwise match no file and
+# silently guard nothing. Exits 1 in every gate mode.
+check_routed_dirs() {
+  for _entry in $SCHEMA_ROUTED_DIRS $REMOTE_ROUTED_DIRS; do
+    case "$_entry" in
+      */)
+        printf '[check-cluster-routing] routed-dir entry %s must not end in /\n' "$_entry" >&2
+        exit 1 ;;
+    esac
+    if [ ! -d "$ROOT/$_entry" ]; then
+      printf '[check-cluster-routing] routed-dir entry %s is not a directory\n' "$_entry" >&2
+      exit 1
+    fi
+    _scanned=0
+    for _h in $HANDLER_DIRS; do
+      case "$_entry" in
+        "$_h"|"$_h"/*) _scanned=1 ;;
+      esac
+    done
+    if [ "$_scanned" -eq 0 ]; then
+      printf '[check-cluster-routing] routed-dir entry %s is not under any HANDLER_DIRS entry, so it is never scanned\n' "$_entry" >&2
+      exit 1
+    fi
+  done
+}
+
+check_routed_dirs
 
 # -----------------------------------------------------------------------
 # Main scan — collect all violations into a temp file to avoid subshell
