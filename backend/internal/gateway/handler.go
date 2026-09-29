@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -92,6 +93,10 @@ type Handler struct {
 	cache      *cachedData
 
 	remote *remotecache.Cache[*snapshot]
+
+	// baseDynOverride is a test-only seam for the local service-account
+	// client; production leaves it nil.
+	baseDynOverride dynamic.Interface
 }
 
 type cachedData struct {
@@ -115,6 +120,27 @@ type snapshot struct {
 // sourceErr returns the first failure among the named sources.
 func (s *snapshot) sourceErr(sources ...string) error {
 	return firstErr(s.failed, sources...)
+}
+
+// coverageOf describes each of sources, in order, that has an error in
+// failed. It carries a reason code only, never the error text.
+func coverageOf(failed map[string]error, sources ...string) []SourceCoverage {
+	var out []SourceCoverage
+	for _, src := range sources {
+		err := failed[src]
+		if err == nil {
+			continue
+		}
+		c := SourceCoverage{Source: src, Status: "unavailable", ReasonCode: string(k8s.ReasonUnreachable)}
+		switch {
+		case apierrors.IsForbidden(err):
+			c.Status, c.ReasonCode = "forbidden", string(k8s.ReasonForbidden)
+		case apierrors.IsUnauthorized(err):
+			c.ReasonCode = string(k8s.ReasonCredentialsInvalid)
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // firstErr returns the first of sources, in order, that has an error in failed.
@@ -240,8 +266,11 @@ func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 // fetchAll fills the local service-account cache. A failed core list fails
 // the fetch; a failed route list is dropped.
 func (h *Handler) fetchAll(ctx context.Context) (*cachedData, error) {
-	// nolint:cluster-routing local path: fetchAll backs the local-cluster cache only; remote reads go through fetchRemote.
-	dynClient := h.K8sClient.BaseDynamicClient()
+	dynClient := h.baseDynOverride
+	if dynClient == nil {
+		// nolint:cluster-routing local path: fetchAll backs the local-cluster cache only; remote reads go through fetchRemote.
+		dynClient = h.K8sClient.BaseDynamicClient()
+	}
 
 	data, failed := h.listSources(ctx, dynClient, sourcesFor(h.Discoverer.Status(ctx)), nil)
 	for _, src := range coreSources {
@@ -482,15 +511,15 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleSummary returns aggregated counts and health per Gateway API kind.
-// It spans every source, so on a remote cluster any failed list fails it
-// rather than undercounting.
+// It spans every source, so on a remote cluster a failed list is disclosed in
+// Coverage rather than failing the summary or silently undercounting.
 func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
 
-	snap, ok := h.loadFor(w, r, user, "gateway data", summarySources...)
+	snap, ok := h.loadFor(w, r, user, "gateway data")
 	if !ok {
 		return
 	}
@@ -514,6 +543,7 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		filterByRBAC(ctx, h, user, "httproutes", data.httpRoutes),
 		filterByRBAC(ctx, h, user, "httproutes", data.routes),
 	)
+	summary.Coverage = coverageOf(snap.failed, summarySources...)
 
 	httputil.WriteData(w, summary)
 }
@@ -685,9 +715,11 @@ func (h *Handler) HandleGetGateway(w http.ResponseWriter, r *http.Request) {
 	detail := normalizeGatewayDetail(obj)
 
 	// Resolve attached routes from the cluster's lists, best effort: a
-	// route kind that failed to list contributes none.
+	// route kind that failed to list contributes none and is named in Coverage.
 	if snap, err := h.load(r.Context(), user); err == nil && snap.data != nil {
 		var attached []RouteSummary
+		routeSources := append([]string{"httproutes"}, summarySources[len(coreSources):]...)
+		detail.Coverage = coverageOf(snap.failed, routeSources...)
 
 		// Check HTTPRoutes
 		for _, hr := range snap.data.httpRoutes {

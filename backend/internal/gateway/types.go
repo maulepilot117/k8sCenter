@@ -92,6 +92,18 @@ type GatewayAPISummary struct {
 	TCPRoutes      KindSummary `json:"tcpRoutes"`
 	TLSRoutes      KindSummary `json:"tlsRoutes"`
 	UDPRoutes      KindSummary `json:"udpRoutes"`
+	// Coverage names each list a remote cluster could not provide, so the
+	// counts above are known to omit it. Always empty for the local cluster.
+	Coverage []SourceCoverage `json:"coverage,omitempty"`
+}
+
+// SourceCoverage names one list a remote cluster could not provide. A
+// multi-source response stays a partial 200 and discloses the gap here rather
+// than failing whole or undercounting silently (KTD8).
+type SourceCoverage struct {
+	Source     string `json:"source"` // resource name, e.g. "tcproutes"
+	Status     string `json:"status"` // "forbidden" | "unavailable"
+	ReasonCode string `json:"reasonCode"`
 }
 
 // KindSummary provides health-categorized counts for a single resource kind.
@@ -175,6 +187,9 @@ type GatewaySummary struct {
 type GatewayDetail struct {
 	GatewaySummary
 	AttachedRoutes []RouteSummary `json:"attachedRoutes"`
+	// Coverage names each route list that failed on a remote cluster, so
+	// AttachedRoutes is known to omit routes of that kind.
+	Coverage []SourceCoverage `json:"coverage,omitempty"`
 }
 
 // HTTPRouteSummary is the API representation of an HTTPRoute resource.

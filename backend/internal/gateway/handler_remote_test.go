@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/dynamic"
 	dynfake "k8s.io/client-go/dynamic/fake"
@@ -42,6 +44,8 @@ type fakeCluster struct {
 	disc  *fakediscovery.FakeDiscovery
 	dyn   *dynfake.FakeDynamicClient
 	typed *kfake.Clientset
+	// discOverride, when set, is the discovery handed out instead of disc.
+	discOverride discovery.DiscoveryInterface
 }
 
 // fakeClients is a k8s.ClusterClients over one fake cluster per id. A
@@ -85,7 +89,11 @@ func (f *fakeClients) TargetSchemaFor(_ context.Context, id, _ string, _ []strin
 	if err != nil {
 		return nil, err
 	}
-	return &k8s.TargetSchema{ClusterID: id, Discovery: c.disc, Invalidate: func() {}}, nil
+	var disc discovery.DiscoveryInterface = c.disc
+	if c.discOverride != nil {
+		disc = c.discOverride
+	}
+	return &k8s.TargetSchema{ClusterID: id, Discovery: disc, Invalidate: func() {}}, nil
 }
 
 var listKinds = map[schema.GroupVersionResource]string{
@@ -175,6 +183,12 @@ func localActions(c *fakeClients) int {
 
 func call(t *testing.T, h http.HandlerFunc, path string, params map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
+	return callOn(t, remoteCluster, h, path, params)
+}
+
+// callOn is call against the cluster with the given id.
+func callOn(t *testing.T, clusterID string, h http.HandlerFunc, path string, params map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rctx := chi.NewRouteContext()
 	for k, v := range params {
@@ -182,7 +196,7 @@ func call(t *testing.T, h http.HandlerFunc, path string, params map[string]strin
 	}
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
 	ctx = auth.ContextWithUser(ctx, &auth.User{Username: "admin", KubernetesUsername: "admin", KubernetesGroups: []string{"system:masters"}})
-	ctx = middleware.WithClusterID(ctx, remoteCluster)
+	ctx = middleware.WithClusterID(ctx, clusterID)
 	rr := httptest.NewRecorder()
 	h(rr, req.WithContext(ctx))
 	return rr
@@ -285,8 +299,8 @@ func TestRemote_UnreachableReturns502WithoutTouchingLocal(t *testing.T) {
 }
 
 // One source failing on the remote fails only its own endpoint; the other
-// kinds still list, and the summary, which spans every source, reports the
-// failure instead of silently undercounting.
+// kinds still list, and the summary, which spans every source, stays a
+// partial 200 that names the failed source instead of undercounting silently.
 func TestRemote_ForbiddenKindFailsOnlyItsOwnEndpoint(t *testing.T) {
 	h, clients := remoteHandler(t, v1Lists(""),
 		gwObj("gateway.networking.k8s.io/v1", "Gateway", "edge", "remote-gw", nil),
@@ -302,8 +316,17 @@ func TestRemote_ForbiddenKindFailsOnlyItsOwnEndpoint(t *testing.T) {
 	if rr.Code != http.StatusOK || len(decode[[]GatewaySummary](t, rr)) != 1 {
 		t.Errorf("gateways still list: status %d %s", rr.Code, rr.Body.String())
 	}
-	if rr := call(t, h.HandleSummary, "/summary", nil); rr.Code == http.StatusOK {
-		t.Errorf("summary must not silently undercount a failed source: %s", rr.Body.String())
+	rr = call(t, h.HandleSummary, "/summary", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("summary status %d, want a partial 200: %s", rr.Code, rr.Body.String())
+	}
+	sum := decode[GatewayAPISummary](t, rr)
+	if sum.Gateways.Total != 1 {
+		t.Errorf("summary gateways = %+v, want the listed gateway counted", sum.Gateways)
+	}
+	want := []SourceCoverage{{Source: "httproutes", Status: "forbidden", ReasonCode: string(k8s.ReasonForbidden)}}
+	if !reflect.DeepEqual(sum.Coverage, want) {
+		t.Errorf("summary coverage = %+v, want %+v", sum.Coverage, want)
 	}
 }
 
@@ -342,6 +365,60 @@ func TestRemote_GetRouteUsesTheRemotesVersion(t *testing.T) {
 	rr := call(t, h.HandleGetRoute, "/routes/tlsroutes/edge/tls", map[string]string{"kind": "tlsroutes", "namespace": "edge", "name": "tls"})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// failingDiscovery is a discovery whose full listing fails outright, as an
+// unreachable API server's does.
+type failingDiscovery struct{ *fakediscovery.FakeDiscovery }
+
+func (failingDiscovery) ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	return nil, nil, errors.New("discovery down")
+}
+
+func TestRemote_DiscoveryFailureIs502AndAStatusReason(t *testing.T) {
+	h, clients := remoteHandler(t, v1Lists(""))
+	c := clients.clusters[remoteCluster]
+	c.discOverride = failingDiscovery{c.disc}
+
+	rr := call(t, h.HandleListGateways, "/gateways", nil)
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), string(k8s.ReasonDiscoveryUnavailable)) {
+		t.Errorf("gateways = %d %s, want 502 discovery_unavailable", rr.Code, rr.Body.String())
+	}
+	st := decode[GatewayAPIStatus](t, call(t, h.HandleStatus, "/status", nil))
+	if st.Available || st.Reason != string(k8s.ReasonDiscoveryUnavailable) {
+		t.Errorf("status = %+v, want not available with discovery_unavailable", st)
+	}
+}
+
+// With every list failing there is nothing to disclose coverage against, so
+// the endpoint fails rather than answering an empty 200.
+func TestRemote_EveryListFailingIsAnError(t *testing.T) {
+	h, clients := remoteHandler(t, v1Lists(""))
+	clients.clusters[remoteCluster].dyn.PrependReactor("list", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New("boom"))
+	})
+
+	if rr := call(t, h.HandleListGateways, "/gateways", nil); rr.Code == http.StatusOK {
+		t.Errorf("gateways status %d, want an error: %s", rr.Code, rr.Body.String())
+	}
+	if rr := call(t, h.HandleSummary, "/summary", nil); rr.Code == http.StatusOK {
+		t.Errorf("summary status %d, want an error: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A collection-level NotFound means the resource type is gone, which is an
+// empty list rather than a failed one.
+func TestRemote_GoneCollectionCountsAsEmpty(t *testing.T) {
+	lists := append(v1Lists(""), resourceList(APIGroup+"/v1alpha2", map[string]string{"TCPRoute": "tcproutes"}))
+	h, clients := remoteHandler(t, lists)
+	clients.clusters[remoteCluster].dyn.PrependReactor("list", "tcproutes", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(TCPRouteGVR.GroupResource(), "")
+	})
+
+	rr := call(t, h.HandleListRoutes, "/routes?kind=tcproutes", nil)
+	if rr.Code != http.StatusOK || len(decode[[]RouteSummary](t, rr)) != 0 {
+		t.Errorf("routes = %d %s, want 200 with none", rr.Code, rr.Body.String())
 	}
 }
 

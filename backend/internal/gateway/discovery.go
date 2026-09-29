@@ -9,6 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
 )
@@ -22,6 +23,10 @@ type Discoverer struct {
 
 	mu     sync.RWMutex
 	status GatewayAPIStatus
+
+	// discoOverride is a test-only seam; production leaves it nil and probes
+	// through the ClientFactory.
+	discoOverride func() discovery.DiscoveryInterface
 }
 
 // NewDiscoverer creates a new Gateway API discoverer.
@@ -49,19 +54,13 @@ func (d *Discoverer) Status(ctx context.Context) GatewayAPIStatus {
 	return d.Probe(ctx)
 }
 
-// IsAvailable returns true if Gateway API CRDs were detected.
-func (d *Discoverer) IsAvailable(ctx context.Context) bool {
-	return d.Status(ctx).Available
-}
-
 // Probe checks if gateway.networking.k8s.io CRDs exist on the local cluster
 // and updates cached state.
 func (d *Discoverer) Probe(ctx context.Context) GatewayAPIStatus {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// nolint:cluster-routing local path: the Discoverer only ever probes the local cluster; remote status comes from Handler.remoteStatus.
-	disco := d.k8sClient.DiscoveryClient()
+	disco := d.discovery()
 
 	var lists []*metav1.APIResourceList
 	for _, version := range []string{"v1", "v1alpha2"} {
@@ -85,6 +84,14 @@ func (d *Discoverer) Probe(ctx context.Context) GatewayAPIStatus {
 		"kinds", status.InstalledKinds,
 	)
 	return status
+}
+
+func (d *Discoverer) discovery() discovery.DiscoveryInterface {
+	if d.discoOverride != nil {
+		return d.discoOverride()
+	}
+	// nolint:cluster-routing local path: the Discoverer only ever probes the local cluster; remote status comes from Handler.remoteStatus.
+	return d.k8sClient.DiscoveryClient()
 }
 
 // kindToResource maps Gateway API kinds to the lowercase plural resource
