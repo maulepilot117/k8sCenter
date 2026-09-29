@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,11 +14,14 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -31,16 +35,55 @@ var routeKindToKind = map[string]string{
 	"udproutes":  "UDPRoute",
 }
 
-// Handler serves Gateway API HTTP endpoints.
+// routeKindOrder fixes the order non-HTTP route kinds are listed in.
+var routeKindOrder = []routeKind{RouteKindGRPC, RouteKindTCP, RouteKindTLS, RouteKindUDP}
+
+// coreSources are the lists every Gateway API view needs; summarySources
+// adds every route kind, for the summary that counts them all.
+var (
+	coreSources    = []string{"gatewayclasses", "gateways", "httproutes"}
+	summarySources = []string{"gatewayclasses", "gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes"}
+)
+
+// gatewaysGR is the resource whose presence says Gateway API is installed.
+var gatewaysGR = schema.GroupResource{Group: APIGroup, Resource: "gateways"}
+
+// listTimeout bounds one fetch of every Gateway API list.
+const listTimeout = 10 * time.Second
+
+// errDiscoveryUnavailable means a remote cluster's discovery could not be
+// read, so whether Gateway API is installed there is unknown.
+var errDiscoveryUnavailable = errors.New("gateway: discovery on the selected cluster is unavailable")
+
+// errListPanicked stands in for the result of a list whose goroutine
+// panicked; recoverutil logs the panic itself.
+var errListPanicked = errors.New("gateway: list panicked")
+
+// targetError is a failure to resolve a client or schema for the selected
+// cluster, answered by httputil.WriteTargetError rather than as a failure of
+// a call the cluster received.
+type targetError struct{ err error }
+
+func (e targetError) Error() string { return e.err.Error() }
+func (e targetError) Unwrap() error { return e.err }
+
+// Handler serves Gateway API HTTP endpoints for the cluster a request
+// selects. The local cluster is read through a service-account cache and
+// the local Discoverer; a remote cluster through Clients, as the requesting
+// identity, with its lists held briefly per identity in remote.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
+	Clients       k8s.ClusterClients
+	Presence      *k8s.Presence
 	Logger        *slog.Logger
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cache      *cachedData
+
+	remote *remotecache.Cache[*snapshot]
 }
 
 type cachedData struct {
@@ -51,30 +94,81 @@ type cachedData struct {
 	fetchedAt      time.Time
 }
 
+// snapshot is one cluster's Gateway API state as a request sees it.
+type snapshot struct {
+	status GatewayAPIStatus
+	data   *cachedData // nil when Gateway API is not available
+	// failed holds the error each failed list returned on a remote cluster,
+	// keyed by resource name. It is always empty for the local cluster,
+	// where a failed core list fails the whole fetch.
+	failed map[string]error
+}
+
+// sourceErr returns the first failure among the named sources.
+func (s *snapshot) sourceErr(sources ...string) error {
+	for _, src := range sources {
+		if err := s.failed[src]; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // NewHandler creates a new Gateway API handler.
 func NewHandler(
 	k8sClient *k8s.ClientFactory,
 	discoverer *Discoverer,
 	accessChecker *resources.AccessChecker,
+	clients k8s.ClusterClients,
+	presence *k8s.Presence,
 	logger *slog.Logger,
 ) *Handler {
 	return &Handler{
 		K8sClient:     k8sClient,
 		Discoverer:    discoverer,
 		AccessChecker: accessChecker,
+		Clients:       clients,
+		Presence:      presence,
 		Logger:        logger,
+		remote:        remotecache.New[*snapshot](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, logger),
 	}
 }
 
-// getImpersonatingClient creates a dynamic client impersonating the user and handles errors.
-func (h *Handler) getImpersonatingClient(w http.ResponseWriter, user *auth.User) (dynamic.Interface, bool) {
-	client, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+// EvictRemoteCache drops every identity's cached view of clusterID.
+// Registered as a ClusterRouter evict hook.
+func (h *Handler) EvictRemoteCache(clusterID string) {
+	h.remote.EvictCluster(clusterID)
+}
+
+func isLocal(ctx context.Context) bool {
+	return k8s.IsLocalClusterID(middleware.ClusterIDFromContext(ctx))
+}
+
+// dynamicClient returns a dynamic client impersonating the user on the
+// request's cluster, writing the error response when it cannot.
+func (h *Handler) dynamicClient(w http.ResponseWriter, r *http.Request, user *auth.User) (dynamic.Interface, bool) {
+	client, err := h.Clients.DynamicClientForCluster(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		if isLocal(r.Context()) {
+			h.Logger.Error("failed to create impersonating client", "error", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		} else {
+			httputil.WriteTargetError(w, err)
+		}
 		return nil, false
 	}
 	return client, true
+}
+
+// writeGetError answers a failed detail Get. The local cluster keeps its
+// historical 404; a remote cluster's error is classified without leaking
+// its text.
+func writeGetError(w http.ResponseWriter, r *http.Request, err error, notFound string) {
+	if isLocal(r.Context()) {
+		httputil.WriteError(w, http.StatusNotFound, notFound, "")
+		return
+	}
+	httputil.WriteRemoteError(w, err)
 }
 
 // canAccess checks if the user can access a Gateway API resource. clusterID
@@ -130,104 +224,20 @@ func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 	return result.(*cachedData), nil
 }
 
+// fetchAll fills the local service-account cache. A failed core list fails
+// the fetch; a failed route list is dropped.
 func (h *Handler) fetchAll(ctx context.Context) (*cachedData, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
+	// nolint:cluster-routing local path: fetchAll backs the local-cluster cache only; remote reads go through fetchRemote.
 	dynClient := h.K8sClient.BaseDynamicClient()
 
-	var (
-		gatewayClasses []GatewayClassSummary
-		gateways       []GatewaySummary
-		httpRoutes     []HTTPRouteSummary
-	)
-
-	g, gctx := errgroup.WithContext(ctx)
-
-	recoverutil.Go(g, h.Logger, "gateway fetch-gateway-classes", func() error {
-		list, err := dynClient.Resource(GatewayClassGVR).List(gctx, metav1.ListOptions{ResourceVersion: "0"})
-		if err != nil {
-			return fmt.Errorf("list gatewayclasses: %w", err)
+	data, failed := h.listSources(ctx, dynClient, h.Discoverer.Status(ctx), nil)
+	for _, src := range coreSources {
+		if err := failed[src]; err != nil {
+			return nil, fmt.Errorf("list %s: %w", src, err)
 		}
-		gatewayClasses = make([]GatewayClassSummary, 0, len(list.Items))
-		for i := range list.Items {
-			gatewayClasses = append(gatewayClasses, normalizeGatewayClass(&list.Items[i]))
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "gateway fetch-gateways", func() error {
-		list, err := dynClient.Resource(GatewayGVR).Namespace("").List(gctx, metav1.ListOptions{ResourceVersion: "0"})
-		if err != nil {
-			return fmt.Errorf("list gateways: %w", err)
-		}
-		gateways = make([]GatewaySummary, 0, len(list.Items))
-		for i := range list.Items {
-			gateways = append(gateways, normalizeGateway(&list.Items[i]))
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "gateway fetch-httproutes", func() error {
-		list, err := dynClient.Resource(HTTPRouteGVR).Namespace("").List(gctx, metav1.ListOptions{ResourceVersion: "0"})
-		if err != nil {
-			return fmt.Errorf("list httproutes: %w", err)
-		}
-		httpRoutes = make([]HTTPRouteSummary, 0, len(list.Items))
-		for i := range list.Items {
-			httpRoutes = append(httpRoutes, normalizeHTTPRoute(&list.Items[i]))
-		}
-		return nil
-	})
-
-	if err := g.Wait(); err != nil {
-		return nil, err
 	}
-
-	// Fetch non-HTTP routes based on which kinds are installed.
-	status := h.Discoverer.Status(ctx)
-	installedSet := make(map[string]bool, len(status.InstalledKinds))
-	for _, k := range status.InstalledKinds {
-		installedSet[k] = true
-	}
-
-	var routes []RouteSummary
-	var routesMu sync.Mutex
-
-	g2, gctx2 := errgroup.WithContext(ctx)
-
-	for rk, gvr := range routeKindGVR {
-		if !installedSet[string(rk)] {
-			continue
-		}
-		kindName := routeKindToKind[string(rk)]
-		capturedGVR := gvr
-		capturedKind := kindName
-		recoverutil.Go(g2, h.Logger, "gateway fetch-route-"+capturedKind, func() error {
-			list, err := dynClient.Resource(capturedGVR).Namespace("").List(gctx2, metav1.ListOptions{})
-			if err != nil {
-				h.Logger.Debug("failed to list routes", "kind", capturedKind, "error", err)
-				return nil // skip unavailable kinds gracefully
-			}
-			items := make([]RouteSummary, 0, len(list.Items))
-			for i := range list.Items {
-				items = append(items, normalizeRoute(&list.Items[i], capturedKind))
-			}
-			routesMu.Lock()
-			routes = append(routes, items...)
-			routesMu.Unlock()
-			return nil
-		})
-	}
-
-	_ = g2.Wait()
-
-	data := &cachedData{
-		gatewayClasses: gatewayClasses,
-		gateways:       gateways,
-		httpRoutes:     httpRoutes,
-		routes:         routes,
-		fetchedAt:      time.Now(),
+	for src, err := range failed {
+		h.Logger.Debug("failed to list routes", "resource", src, "error", err)
 	}
 
 	h.cacheMu.Lock()
@@ -237,35 +247,246 @@ func (h *Handler) fetchAll(ctx context.Context) (*cachedData, error) {
 	return data, nil
 }
 
-// HandleStatus returns the Gateway API detection status.
+// source is one list a snapshot is built from.
+type source struct {
+	gvr schema.GroupVersionResource
+	add func(d *cachedData, list *unstructured.UnstructuredList)
+}
+
+// sourcesFor returns the lists to fetch for a cluster with status: the core
+// kinds, then each installed route kind at the version the cluster serves.
+func sourcesFor(status GatewayAPIStatus) []source {
+	out := []source{
+		{GatewayClassGVR, func(d *cachedData, list *unstructured.UnstructuredList) {
+			for i := range list.Items {
+				d.gatewayClasses = append(d.gatewayClasses, normalizeGatewayClass(&list.Items[i]))
+			}
+		}},
+		{GatewayGVR, func(d *cachedData, list *unstructured.UnstructuredList) {
+			for i := range list.Items {
+				d.gateways = append(d.gateways, normalizeGateway(&list.Items[i]))
+			}
+		}},
+		{HTTPRouteGVR, func(d *cachedData, list *unstructured.UnstructuredList) {
+			for i := range list.Items {
+				d.httpRoutes = append(d.httpRoutes, normalizeHTTPRoute(&list.Items[i]))
+			}
+		}},
+	}
+	for _, rk := range routeKindOrder {
+		gvr, ok := status.routeGVRs[rk]
+		if !ok {
+			continue
+		}
+		kind := routeKindToKind[string(rk)]
+		out = append(out, source{gvr, func(d *cachedData, list *unstructured.UnstructuredList) {
+			for i := range list.Items {
+				d.routes = append(d.routes, normalizeRoute(&list.Items[i], kind))
+			}
+		}})
+	}
+	return out
+}
+
+// listSources lists every source for status concurrently and independently.
+// It returns what listed and, keyed by resource, what failed. When onGone is
+// set, a list whose resource type is no longer served counts as empty and is
+// reported to onGone instead of failing.
+func (h *Handler) listSources(ctx context.Context, dyn dynamic.Interface, status GatewayAPIStatus, onGone func(schema.GroupVersionResource)) (*cachedData, map[string]error) {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
+
+	sources := sourcesFor(status)
+	lists := make([]*unstructured.UnstructuredList, len(sources))
+	errs := make([]error, len(sources))
+	var g errgroup.Group
+	for i, src := range sources {
+		errs[i] = errListPanicked // overwritten unless the list panics
+		recoverutil.Go(&g, h.Logger, "gateway list "+src.gvr.Resource, func() error {
+			lists[i], errs[i] = dyn.Resource(src.gvr).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+			return nil
+		})
+	}
+	_ = g.Wait() // every list records its own outcome in errs
+
+	data := &cachedData{
+		gatewayClasses: []GatewayClassSummary{},
+		gateways:       []GatewaySummary{},
+		httpRoutes:     []HTTPRouteSummary{},
+		routes:         []RouteSummary{},
+		fetchedAt:      time.Now(),
+	}
+	failed := map[string]error{}
+	for i, src := range sources {
+		switch err := errs[i]; {
+		case err == nil:
+			src.add(data, lists[i])
+		case onGone != nil && k8s.IsResourceGone(err):
+			onGone(src.gvr)
+		default:
+			failed[src.gvr.Resource] = err
+		}
+	}
+	return data, failed
+}
+
+// load returns the Gateway API snapshot for the request's cluster: the
+// service-account cache for the local cluster, or a per-identity read of a
+// remote one.
+func (h *Handler) load(ctx context.Context, user *auth.User) (*snapshot, error) {
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	if k8s.IsLocalClusterID(clusterID) {
+		status := h.Discoverer.Status(ctx)
+		if !status.Available {
+			return &snapshot{status: status}, nil
+		}
+		data, err := h.getCached(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &snapshot{status: status, data: data}, nil
+	}
+	return h.remote.Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*snapshot, error) {
+		return h.fetchRemote(ctx, clusterID, user)
+	})
+}
+
+// fetchRemote reads a remote cluster's Gateway API state as the user. Each
+// list succeeds or fails on its own; only when every list fails is the
+// fetch itself an error.
+func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.User) (*snapshot, error) {
+	status, err := h.remoteStatus(ctx, clusterID, user)
+	if err != nil {
+		return nil, err
+	}
+	if !status.Available {
+		return &snapshot{status: status}, nil
+	}
+	dyn, err := h.Clients.DynamicClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		return nil, targetError{err}
+	}
+
+	data, failed := h.listSources(ctx, dyn, status, func(gvr schema.GroupVersionResource) {
+		// The CRD went away after discovery was cached: re-read it so the
+		// next fetch stops asking for it.
+		h.Presence.Recheck(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, gvr.GroupResource())
+	})
+	if len(failed) == len(sourcesFor(status)) {
+		return nil, (&snapshot{failed: failed}).sourceErr(summarySources...)
+	}
+	return &snapshot{status: status, data: data, failed: failed}, nil
+}
+
+// remoteStatus reads Gateway API status from a remote cluster's discovery,
+// as the user sees it. A definite absence is a status with Reason
+// discovery_missing, not an error.
+func (h *Handler) remoteStatus(ctx context.Context, clusterID string, user *auth.User) (GatewayAPIStatus, error) {
+	now := time.Now().UTC()
+	// Presence remembers an absence briefly and invalidates the cached
+	// schema when that lapses, so a CRD installed later is seen within
+	// seconds rather than when the schema cache expires.
+	verdict := h.Presence.Check(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, gatewaysGR)
+	if verdict.Installed != nil && !*verdict.Installed {
+		return GatewayAPIStatus{Reason: string(k8s.ReasonDiscoveryMissing), LastChecked: now}, nil
+	}
+
+	target, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		return GatewayAPIStatus{}, targetError{err}
+	}
+	lists, unavailable, failedGroups := k8s.DiscoveryLists(target.Discovery)
+	if unavailable || failedGroups[APIGroup] {
+		return GatewayAPIStatus{}, errDiscoveryUnavailable
+	}
+	status := statusFromLists(lists)
+	status.LastChecked = now
+	if !status.Available {
+		status.Reason = string(k8s.ReasonDiscoveryMissing)
+	}
+	return status, nil
+}
+
+// clusterStatus returns the Gateway API status of the request's cluster.
+func (h *Handler) clusterStatus(ctx context.Context, user *auth.User) (GatewayAPIStatus, error) {
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	if k8s.IsLocalClusterID(clusterID) {
+		return h.Discoverer.Status(ctx), nil
+	}
+	return h.remoteStatus(ctx, clusterID, user)
+}
+
+// writeLoadError answers a failure to read the cluster's Gateway API state.
+func (h *Handler) writeLoadError(w http.ResponseWriter, r *http.Request, err error, what string) {
+	var target targetError
+	switch {
+	case isLocal(r.Context()):
+		h.Logger.Error("failed to fetch "+what, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch "+what, "")
+	case errors.As(err, &target):
+		httputil.WriteTargetError(w, target.err)
+	case errors.Is(err, errDiscoveryUnavailable):
+		httputil.WriteErrorWithReason(w, http.StatusBadGateway, "Gateway API discovery on the selected cluster failed", string(k8s.ReasonDiscoveryUnavailable), nil)
+	default:
+		httputil.WriteRemoteError(w, err)
+	}
+}
+
+// loadFor loads the snapshot for a list endpoint that reads sources. It
+// writes the error response and returns false when the cluster could not
+// be read or, on a remote cluster, when one of sources failed. A snapshot
+// with nil data means Gateway API is not available there.
+func (h *Handler) loadFor(w http.ResponseWriter, r *http.Request, user *auth.User, what string, sources ...string) (*snapshot, bool) {
+	snap, err := h.load(r.Context(), user)
+	if err != nil {
+		h.writeLoadError(w, r, err, what)
+		return nil, false
+	}
+	if err := snap.sourceErr(sources...); err != nil {
+		httputil.WriteRemoteError(w, err)
+		return nil, false
+	}
+	return snap, true
+}
+
+// HandleStatus returns the Gateway API detection status. On a remote
+// cluster a failure to read it is a status with a reason, not an error.
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
-	_, ok := httputil.RequireUser(w, r)
+	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
 
-	status := h.Discoverer.Status(r.Context())
+	status, err := h.clusterStatus(r.Context(), user)
+	if err != nil {
+		reason := k8s.ReasonDiscoveryUnavailable
+		var target targetError
+		if errors.As(err, &target) {
+			reason = k8s.ClassifyTargetErr(target.err)
+		}
+		status = GatewayAPIStatus{Reason: string(reason), LastChecked: time.Now().UTC()}
+	}
 	httputil.WriteData(w, status)
 }
 
 // HandleSummary returns aggregated counts and health per Gateway API kind.
+// It spans every source, so on a remote cluster any failed list fails it
+// rather than undercounting.
 func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
+	snap, ok := h.loadFor(w, r, user, "gateway data", summarySources...)
+	if !ok {
+		return
+	}
+	if snap.data == nil {
 		httputil.WriteData(w, GatewayAPISummary{})
 		return
 	}
-
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch gateway data", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch gateway data", "")
-		return
-	}
+	data := snap.data
 
 	// RBAC-filter before counting so users only see counts for resources they can access.
 	ctx := r.Context()
@@ -355,25 +576,22 @@ func (h *Handler) HandleListGatewayClasses(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteData(w, []GatewayClassSummary{})
-		return
-	}
-
 	// Cluster-scoped RBAC check
 	if !h.canAccess(r.Context(), user, "list", "gatewayclasses", "") {
 		httputil.WriteData(w, []GatewayClassSummary{})
 		return
 	}
 
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch gateway classes", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch gateway classes", "")
+	snap, ok := h.loadFor(w, r, user, "gateway classes", "gatewayclasses")
+	if !ok {
+		return
+	}
+	if snap.data == nil {
+		httputil.WriteData(w, []GatewayClassSummary{})
 		return
 	}
 
-	httputil.WriteData(w, data.gatewayClasses)
+	httputil.WriteData(w, snap.data.gatewayClasses)
 }
 
 // HandleGetGatewayClass returns a single GatewayClass by name.
@@ -390,7 +608,7 @@ func (h *Handler) HandleGetGatewayClass(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	dynClient, ok := h.getImpersonatingClient(w, user)
+	dynClient, ok := h.dynamicClient(w, r, user)
 	if !ok {
 		return
 	}
@@ -398,7 +616,7 @@ func (h *Handler) HandleGetGatewayClass(w http.ResponseWriter, r *http.Request) 
 	obj, err := dynClient.Resource(GatewayClassGVR).Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		h.Logger.Error("failed to get gatewayclass", "name", name, "error", err)
-		httputil.WriteError(w, http.StatusNotFound, "gateway class not found", "")
+		writeGetError(w, r, err, "gateway class not found")
 		return
 	}
 
@@ -412,19 +630,16 @@ func (h *Handler) HandleListGateways(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
+	snap, ok := h.loadFor(w, r, user, "gateways", "gateways")
+	if !ok {
+		return
+	}
+	if snap.data == nil {
 		httputil.WriteData(w, []GatewaySummary{})
 		return
 	}
 
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch gateways", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch gateways", "")
-		return
-	}
-
-	filtered := filterByRBAC(r.Context(), h, user, "gateways", data.gateways)
+	filtered := filterByRBAC(r.Context(), h, user, "gateways", snap.data.gateways)
 	httputil.WriteData(w, filtered)
 }
 
@@ -443,7 +658,7 @@ func (h *Handler) HandleGetGateway(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.getImpersonatingClient(w, user)
+	dynClient, ok := h.dynamicClient(w, r, user)
 	if !ok {
 		return
 	}
@@ -451,20 +666,20 @@ func (h *Handler) HandleGetGateway(w http.ResponseWriter, r *http.Request) {
 	obj, err := dynClient.Resource(GatewayGVR).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		h.Logger.Error("failed to get gateway", "namespace", ns, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusNotFound, "gateway not found", "")
+		writeGetError(w, r, err, "gateway not found")
 		return
 	}
 
 	detail := normalizeGatewayDetail(obj)
 
-	// Resolve attached routes from cache.
-	cached, err := h.getCached(r.Context())
-	if err == nil {
+	// Resolve attached routes from the cluster's lists, best effort: a
+	// route kind that failed to list contributes none.
+	if snap, err := h.load(r.Context(), user); err == nil && snap.data != nil {
 		var attached []RouteSummary
 
 		// Check HTTPRoutes
-		for _, hr := range cached.httpRoutes {
-			if matchesParentRef(hr.ParentRefs, name, ns) {
+		for _, hr := range snap.data.httpRoutes {
+			if matchesParentRef(hr.ParentRefs, hr.Namespace, name, ns) {
 				attached = append(attached, RouteSummary{
 					Kind:       "HTTPRoute",
 					Name:       hr.Name,
@@ -478,8 +693,8 @@ func (h *Handler) HandleGetGateway(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Check non-HTTP routes
-		for _, rt := range cached.routes {
-			if matchesParentRef(rt.ParentRefs, name, ns) {
+		for _, rt := range snap.data.routes {
+			if matchesParentRef(rt.ParentRefs, rt.Namespace, name, ns) {
 				attached = append(attached, rt)
 			}
 		}
@@ -495,14 +710,24 @@ func (h *Handler) HandleGetGateway(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, detail)
 }
 
-// matchesParentRef checks if any parentRef in the list references the given gateway name and namespace.
-func matchesParentRef(refs []ParentRef, gwName, gwNamespace string) bool {
+// matchesParentRef checks if any parentRef of a route in routeNs references
+// the given gateway. An unset parentRef namespace means the route's own, as
+// the Gateway API specifies.
+func matchesParentRef(refs []ParentRef, routeNs, gwName, gwNamespace string) bool {
 	for _, ref := range refs {
-		if ref.Name == gwName && ref.Namespace == gwNamespace {
+		if ref.Name == gwName && namespaceOr(ref.Namespace, routeNs) == gwNamespace {
 			return true
 		}
 	}
 	return false
+}
+
+// namespaceOr returns ns, or def when ns is unset.
+func namespaceOr(ns, def string) string {
+	if ns == "" {
+		return def
+	}
+	return ns
 }
 
 // HandleListHTTPRoutes returns all HTTPRoute resources filtered by RBAC.
@@ -512,19 +737,16 @@ func (h *Handler) HandleListHTTPRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
+	snap, ok := h.loadFor(w, r, user, "http routes", "httproutes")
+	if !ok {
+		return
+	}
+	if snap.data == nil {
 		httputil.WriteData(w, []HTTPRouteSummary{})
 		return
 	}
 
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch http routes", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch http routes", "")
-		return
-	}
-
-	filtered := filterByRBAC(r.Context(), h, user, "httproutes", data.httpRoutes)
+	filtered := filterByRBAC(r.Context(), h, user, "httproutes", snap.data.httpRoutes)
 	httputil.WriteData(w, filtered)
 }
 
@@ -543,7 +765,7 @@ func (h *Handler) HandleGetHTTPRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.getImpersonatingClient(w, user)
+	dynClient, ok := h.dynamicClient(w, r, user)
 	if !ok {
 		return
 	}
@@ -551,13 +773,17 @@ func (h *Handler) HandleGetHTTPRoute(w http.ResponseWriter, r *http.Request) {
 	obj, err := dynClient.Resource(HTTPRouteGVR).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		h.Logger.Error("failed to get httproute", "namespace", ns, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusNotFound, "http route not found", "")
+		writeGetError(w, r, err, "http route not found")
 		return
 	}
 
 	detail := normalizeHTTPRouteDetail(obj)
 
-	h.resolveRouteRelationships(r.Context(), user, dynClient, detail.ParentRefs, detail.Rules)
+	backendRefs := make([][]BackendRef, 0, len(detail.Rules))
+	for ri := range detail.Rules {
+		backendRefs = append(backendRefs, detail.Rules[ri].BackendRefs)
+	}
+	h.resolveRelationships(r.Context(), user, dynClient, ns, detail.ParentRefs, backendRefs...)
 
 	httputil.WriteData(w, detail)
 }
@@ -569,34 +795,31 @@ func (h *Handler) HandleListRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kind := r.URL.Query().Get("kind")
-	kindName, valid := routeKindToKind[strings.ToLower(kind)]
+	kind := strings.ToLower(r.URL.Query().Get("kind"))
+	kindName, valid := routeKindToKind[kind]
 	if !valid {
 		httputil.WriteError(w, http.StatusBadRequest, "missing or invalid kind parameter", "must be one of: grpcroutes, tcproutes, tlsroutes, udproutes")
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
+	snap, ok := h.loadFor(w, r, user, "routes", kind)
+	if !ok {
+		return
+	}
+	if snap.data == nil {
 		httputil.WriteData(w, []RouteSummary{})
 		return
 	}
 
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch routes", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch routes", "")
-		return
-	}
-
 	// Filter by kind
-	kindFiltered := make([]RouteSummary, 0, len(data.routes))
-	for _, rt := range data.routes {
+	kindFiltered := make([]RouteSummary, 0, len(snap.data.routes))
+	for _, rt := range snap.data.routes {
 		if rt.Kind == kindName {
 			kindFiltered = append(kindFiltered, rt)
 		}
 	}
 
-	filtered := filterByRBAC(r.Context(), h, user, strings.ToLower(kind), kindFiltered)
+	filtered := filterByRBAC(r.Context(), h, user, kind, kindFiltered)
 	httputil.WriteData(w, filtered)
 }
 
@@ -612,8 +835,7 @@ func (h *Handler) HandleGetRoute(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	rk := routeKind(strings.ToLower(kindParam))
-	gvr, valid := routeKindGVR[rk]
-	if !valid {
+	if _, valid := routeKindGVR[rk]; !valid {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid route kind", "must be one of: grpcroutes, tcproutes, tlsroutes, udproutes")
 		return
 	}
@@ -623,164 +845,99 @@ func (h *Handler) HandleGetRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.getImpersonatingClient(w, user)
+	// Get the route at the version the cluster serves it.
+	status, err := h.clusterStatus(r.Context(), user)
+	if err != nil {
+		h.writeLoadError(w, r, err, "route")
+		return
+	}
+
+	dynClient, ok := h.dynamicClient(w, r, user)
 	if !ok {
 		return
 	}
 
-	obj, err := dynClient.Resource(gvr).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
+	obj, err := dynClient.Resource(status.routeGVR(rk)).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		h.Logger.Error("failed to get route", "kind", kindParam, "namespace", ns, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusNotFound, "route not found", "")
+		writeGetError(w, r, err, "route not found")
 		return
 	}
 
 	if rk == RouteKindGRPC {
 		detail := normalizeGRPCRouteDetail(obj)
-		// Resolve parent gateways
-		h.resolveParentGateways(r.Context(), dynClient, detail.ParentRefs)
-		// Resolve backend services from rules
+		backendRefs := make([][]BackendRef, 0, len(detail.Rules))
 		for ri := range detail.Rules {
-			h.resolveBackendServices(r.Context(), user, ns, detail.Rules[ri].BackendRefs)
+			backendRefs = append(backendRefs, detail.Rules[ri].BackendRefs)
 		}
+		h.resolveRelationships(r.Context(), user, dynClient, ns, detail.ParentRefs, backendRefs...)
 		httputil.WriteData(w, detail)
 		return
 	}
 
 	kindName := routeKindToKind[string(rk)]
 	detail := normalizeSimpleRouteDetail(obj, kindName)
-	// Resolve parent gateways and backend services
-	h.resolveParentGateways(r.Context(), dynClient, detail.ParentRefs)
-	h.resolveBackendServices(r.Context(), user, ns, detail.BackendRefs)
+	h.resolveRelationships(r.Context(), user, dynClient, ns, detail.ParentRefs, detail.BackendRefs)
 	httputil.WriteData(w, detail)
 }
 
 // maxResolveConcurrency caps goroutine fan-out for relationship resolution.
 const maxResolveConcurrency = 10
 
-// resolveRouteRelationships resolves parent gateway conditions and backend service existence
-// for HTTPRoute detail views. Uses a WaitGroup with a 2s timeout and bounded concurrency.
-func (h *Handler) resolveRouteRelationships(ctx context.Context, user *auth.User, dynClient dynamic.Interface, parentRefs []ParentRef, rules []HTTPRouteRule) {
+// resolveRelationships fills in parent gateway conditions and backend
+// Service existence for a route in routeNs, on the request's cluster. Unset
+// parent and backend namespaces mean the route's own, as the Gateway API
+// specifies. Best effort: bounded by a 2s timeout and maxResolveConcurrency,
+// and a lookup that fails leaves its ref unresolved.
+func (h *Handler) resolveRelationships(ctx context.Context, user *auth.User, dynClient dynamic.Interface, routeNs string, parentRefs []ParentRef, backendRefs ...[]BackendRef) {
+	cs, csErr := h.Clients.ClientForCluster(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups)
+	if csErr != nil {
+		h.Logger.Debug("backend service resolution skipped", "error", csErr)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	// Hoist typed client creation outside goroutine loop.
-	cs, csErr := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-
 	sem := make(chan struct{}, maxResolveConcurrency)
 	var wg sync.WaitGroup
-
-	// Resolve parent gateways
-	for i := range parentRefs {
+	run := func(label string, fn func()) {
 		wg.Add(1)
-		go func(idx int) {
+		go func() {
 			defer wg.Done()
-			recoverutil.Safe(h.Logger, "gateway resolve-parent-ref", func() {
+			recoverutil.Safe(h.Logger, label, func() {
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				ref := &parentRefs[idx]
-				gwObj, err := dynClient.Resource(GatewayGVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-				if err != nil {
-					return
-				}
-				ref.GatewayConditions = extractConditions(gwObj.Object, "status", "conditions")
+				fn()
 			})
-		}(i)
+		}()
 	}
 
-	// Resolve backend services
+	for i := range parentRefs {
+		ref := &parentRefs[i]
+		run("gateway resolve-parent-gateway", func() {
+			gw, err := dynClient.Resource(GatewayGVR).Namespace(namespaceOr(ref.Namespace, routeNs)).Get(ctx, ref.Name, metav1.GetOptions{})
+			if err == nil {
+				ref.GatewayConditions = extractConditions(gw.Object, "status", "conditions")
+			}
+		})
+	}
+
 	if csErr == nil {
-		for ri := range rules {
-			for bi := range rules[ri].BackendRefs {
-				wg.Add(1)
-				go func(ruleIdx, backendIdx int) {
-					defer wg.Done()
-					recoverutil.Safe(h.Logger, "gateway resolve-backend-ref", func() {
-						sem <- struct{}{}
-						defer func() { <-sem }()
-						ref := &rules[ruleIdx].BackendRefs[backendIdx]
-						if ref.Kind != "Service" && ref.Kind != "" {
-							return
-						}
-						svcNs := ref.Namespace
-						if svcNs == "" {
-							if len(parentRefs) > 0 {
-								svcNs = parentRefs[0].Namespace
-							}
-						}
-						_, err := cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
-						if err == nil {
-							ref.Resolved = true
-						}
-					})
-				}(ri, bi)
+		for _, refs := range backendRefs {
+			for i := range refs {
+				ref := &refs[i]
+				if ref.Kind != "Service" && ref.Kind != "" {
+					continue
+				}
+				run("gateway resolve-backend-service", func() {
+					_, err := cs.CoreV1().Services(namespaceOr(ref.Namespace, routeNs)).Get(ctx, ref.Name, metav1.GetOptions{})
+					if err == nil {
+						ref.Resolved = true
+					}
+				})
 			}
 		}
 	}
 
-	wg.Wait()
-}
-
-// resolveParentGateways resolves gateway conditions for parent refs.
-func (h *Handler) resolveParentGateways(ctx context.Context, dynClient dynamic.Interface, parentRefs []ParentRef) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	sem := make(chan struct{}, maxResolveConcurrency)
-	var wg sync.WaitGroup
-	for i := range parentRefs {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			recoverutil.Safe(h.Logger, "gateway resolve-parent-gateway", func() {
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				ref := &parentRefs[idx]
-				gwObj, err := dynClient.Resource(GatewayGVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-				if err != nil {
-					return
-				}
-				ref.GatewayConditions = extractConditions(gwObj.Object, "status", "conditions")
-			})
-		}(i)
-	}
-	wg.Wait()
-}
-
-// resolveBackendServices checks existence of backend service refs.
-func (h *Handler) resolveBackendServices(ctx context.Context, user *auth.User, routeNs string, refs []BackendRef) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	// Hoist typed client creation outside goroutine loop.
-	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		return
-	}
-
-	sem := make(chan struct{}, maxResolveConcurrency)
-	var wg sync.WaitGroup
-	for i := range refs {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			recoverutil.Safe(h.Logger, "gateway resolve-backend-service", func() {
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				ref := &refs[idx]
-				if ref.Kind != "Service" && ref.Kind != "" {
-					return
-				}
-				svcNs := ref.Namespace
-				if svcNs == "" {
-					svcNs = routeNs
-				}
-				_, svcErr := cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
-				if svcErr == nil {
-					ref.Resolved = true
-				}
-			})
-		}(i)
-	}
 	wg.Wait()
 }

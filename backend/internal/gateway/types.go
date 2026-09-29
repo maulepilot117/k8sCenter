@@ -49,7 +49,8 @@ const (
 	RouteKindUDP  routeKind = "udproutes"
 )
 
-// routeKindGVR maps each routeKind to its GroupVersionResource.
+// routeKindGVR maps each routeKind to its default GroupVersionResource, used
+// when discovery has not said which version a cluster serves.
 var routeKindGVR = map[routeKind]schema.GroupVersionResource{
 	RouteKindGRPC: GRPCRouteGVR,
 	RouteKindTCP:  TCPRouteGVR,
@@ -59,10 +60,27 @@ var routeKindGVR = map[routeKind]schema.GroupVersionResource{
 
 // GatewayAPIStatus is returned by GET /gateway/status.
 type GatewayAPIStatus struct {
-	Available      bool      `json:"available"`
-	Version        string    `json:"version,omitempty"`
-	InstalledKinds []string  `json:"installedKinds,omitempty"`
-	LastChecked    time.Time `json:"lastChecked"`
+	Available      bool     `json:"available"`
+	Version        string   `json:"version,omitempty"`
+	InstalledKinds []string `json:"installedKinds,omitempty"`
+	// Reason says why a remote cluster's Gateway API is not available, from
+	// k8s.ReasonCode (discovery_missing, unreachable, ...). Empty when
+	// available, and always empty for the local cluster.
+	Reason      string    `json:"reason,omitempty"`
+	LastChecked time.Time `json:"lastChecked"`
+
+	// routeGVRs holds each installed non-HTTP route kind at the version the
+	// cluster serves it. Read-only once built; copies share it.
+	routeGVRs map[routeKind]schema.GroupVersionResource
+}
+
+// routeGVR returns the resource to use for rk: the version the cluster
+// serves when discovery found it, otherwise the default.
+func (s GatewayAPIStatus) routeGVR(rk routeKind) schema.GroupVersionResource {
+	if gvr, ok := s.routeGVRs[rk]; ok {
+		return gvr
+	}
+	return routeKindGVR[rk]
 }
 
 // GatewayAPISummary aggregates counts across all Gateway API resource kinds.
@@ -122,7 +140,7 @@ type RouteSummary struct {
 // GatewayClassSummary is the API representation of a GatewayClass resource.
 type GatewayClassSummary struct {
 	Name           string      `json:"name"`
-	ControllerName string     `json:"controllerName"`
+	ControllerName string      `json:"controllerName"`
 	Description    string      `json:"description,omitempty"`
 	Conditions     []Condition `json:"conditions,omitempty"`
 	Age            time.Time   `json:"age"`
@@ -244,6 +262,6 @@ type namespacedResource interface {
 	getNamespace() string
 }
 
-func (g GatewaySummary) getNamespace() string  { return g.Namespace }
+func (g GatewaySummary) getNamespace() string   { return g.Namespace }
 func (h HTTPRouteSummary) getNamespace() string { return h.Namespace }
 func (r RouteSummary) getNamespace() string     { return r.Namespace }

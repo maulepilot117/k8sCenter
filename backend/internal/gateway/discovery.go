@@ -7,6 +7,9 @@ import (
 	"sync"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
@@ -51,92 +54,103 @@ func (d *Discoverer) IsAvailable(ctx context.Context) bool {
 	return d.Status(ctx).Available
 }
 
-// Probe checks if gateway.networking.k8s.io CRDs exist and updates cached state.
+// Probe checks if gateway.networking.k8s.io CRDs exist on the local cluster
+// and updates cached state.
 func (d *Discoverer) Probe(ctx context.Context) GatewayAPIStatus {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	status := GatewayAPIStatus{
-		LastChecked: time.Now().UTC(),
-	}
-
+	// nolint:cluster-routing local path: the Discoverer only ever probes the local cluster; remote status comes from Handler.remoteStatus.
 	disco := d.k8sClient.DiscoveryClient()
 
-	// Check for Gateway API v1 CRDs.
-	v1Resources, err := disco.ServerResourcesForGroupVersion("gateway.networking.k8s.io/v1")
-	if err != nil || v1Resources == nil {
-		d.logger.Debug("gateway API CRDs not found", "error", err)
-		d.status = status
-		return status
-	}
-
-	// Build a set of available Kind names, skipping sub-resources (contain "/").
-	v1Kinds := make(map[string]bool)
-	for _, r := range v1Resources.APIResources {
-		if strings.Contains(r.Name, "/") {
+	var lists []*metav1.APIResourceList
+	for _, version := range []string{"v1", "v1alpha2"} {
+		list, err := disco.ServerResourcesForGroupVersion(APIGroup + "/" + version)
+		if err != nil || list == nil {
+			d.logger.Debug("gateway API group version not served", "version", version, "error", err)
 			continue
 		}
-		v1Kinds[r.Kind] = true
+		lists = append(lists, list)
 	}
 
-	// Require both Gateway and GatewayClass as minimum for availability.
-	if !v1Kinds["Gateway"] || !v1Kinds["GatewayClass"] {
-		d.logger.Debug("gateway API missing required kinds (Gateway, GatewayClass)")
-		d.status = status
-		return status
-	}
-
-	status.Available = true
-	status.Version = "v1"
-
-	// Collect installed kinds as lowercase plural resource names (matching frontend GatewayResourceKind).
-	kindToResource := map[string]string{
-		"GatewayClass": "gatewayclasses",
-		"Gateway":      "gateways",
-		"HTTPRoute":    "httproutes",
-		"GRPCRoute":    "grpcroutes",
-		"TCPRoute":     "tcproutes",
-		"TLSRoute":     "tlsroutes",
-		"UDPRoute":     "udproutes",
-	}
-	for _, kind := range []string{"GatewayClass", "Gateway", "HTTPRoute", "GRPCRoute"} {
-		if v1Kinds[kind] {
-			status.InstalledKinds = append(status.InstalledKinds, kindToResource[kind])
-		}
-	}
-
-	// Check if TLSRoute is already at v1 (some clusters promote it early).
-	hasTLSRoute := false
-	if v1Kinds["TLSRoute"] {
-		status.InstalledKinds = append(status.InstalledKinds, kindToResource["TLSRoute"])
-		hasTLSRoute = true
-	}
-
-	// Probe v1alpha2 for experimental route kinds.
-	v1a2Resources, err := disco.ServerResourcesForGroupVersion("gateway.networking.k8s.io/v1alpha2")
-	if err == nil && v1a2Resources != nil {
-		for _, r := range v1a2Resources.APIResources {
-			if strings.Contains(r.Name, "/") {
-				continue
-			}
-			switch r.Kind {
-			case "TCPRoute", "UDPRoute":
-				status.InstalledKinds = append(status.InstalledKinds, kindToResource[r.Kind])
-			case "TLSRoute":
-				// Only add if not already found in v1.
-				if !hasTLSRoute {
-					status.InstalledKinds = append(status.InstalledKinds, kindToResource[r.Kind])
-				}
-			}
-		}
-	}
-
+	status := statusFromLists(lists)
+	status.LastChecked = time.Now().UTC()
 	d.status = status
 	d.logger.Info("gateway API discovery completed",
 		"available", status.Available,
 		"version", status.Version,
 		"kinds", status.InstalledKinds,
 	)
+	return status
+}
 
+// kindToResource maps Gateway API kinds to the lowercase plural resource
+// names InstalledKinds reports (matching frontend GatewayResourceKind).
+var kindToResource = map[string]string{
+	"GatewayClass": "gatewayclasses",
+	"Gateway":      "gateways",
+	"HTTPRoute":    "httproutes",
+	"GRPCRoute":    "grpcroutes",
+	"TCPRoute":     "tcproutes",
+	"TLSRoute":     "tlsroutes",
+	"UDPRoute":     "udproutes",
+}
+
+// statusFromLists derives the Gateway API status from a cluster's discovery
+// lists, local or remote. Gateway API is available when v1 serves both
+// Gateway and GatewayClass. Each non-HTTP route kind is recorded at the
+// version the cluster serves it: TLSRoute at v1 when promoted there,
+// otherwise v1alpha2. LastChecked is left to the caller.
+func statusFromLists(lists []*metav1.APIResourceList) GatewayAPIStatus {
+	kinds := map[string]map[string]bool{} // version -> kind set
+	for _, l := range lists {
+		gv, err := schema.ParseGroupVersion(l.GroupVersion)
+		if err != nil || gv.Group != APIGroup {
+			continue
+		}
+		if kinds[gv.Version] == nil {
+			kinds[gv.Version] = map[string]bool{}
+		}
+		for _, r := range l.APIResources {
+			// Skip sub-resources (contain "/").
+			if !strings.Contains(r.Name, "/") {
+				kinds[gv.Version][r.Kind] = true
+			}
+		}
+	}
+
+	v1, v1alpha2 := kinds["v1"], kinds["v1alpha2"]
+	if !v1["Gateway"] || !v1["GatewayClass"] {
+		return GatewayAPIStatus{}
+	}
+
+	status := GatewayAPIStatus{
+		Available: true,
+		Version:   "v1",
+		routeGVRs: map[routeKind]schema.GroupVersionResource{},
+	}
+	add := func(kind, version string) {
+		resource := kindToResource[kind]
+		status.InstalledKinds = append(status.InstalledKinds, resource)
+		if rk := routeKind(resource); routeKindToKind[resource] != "" {
+			status.routeGVRs[rk] = schema.GroupVersionResource{Group: APIGroup, Version: version, Resource: resource}
+		}
+	}
+	for _, kind := range []string{"GatewayClass", "Gateway", "HTTPRoute", "GRPCRoute"} {
+		if v1[kind] {
+			add(kind, "v1")
+		}
+	}
+	switch {
+	case v1["TLSRoute"]:
+		add("TLSRoute", "v1")
+	case v1alpha2["TLSRoute"]:
+		add("TLSRoute", "v1alpha2")
+	}
+	for _, kind := range []string{"TCPRoute", "UDPRoute"} {
+		if v1alpha2[kind] {
+			add(kind, "v1alpha2")
+		}
+	}
 	return status
 }

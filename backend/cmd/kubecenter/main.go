@@ -339,6 +339,10 @@ func main() {
 	// this, AccessChecker would always SAR against the local cluster's RBAC
 	// even when X-Cluster-ID names a remote cluster.
 	accessChecker.SetClusterRouter(clusterRouter)
+	// Shared "is this API installed on the selected cluster?" answers for the
+	// feature handlers that read remote clusters (R-8).
+	remotePresence := k8s.NewPresence(clusterRouter)
+	clusterRouter.RegisterEvictHook(remotePresence.EvictCluster)
 
 	// Service Mesh integration (Istio + Linkerd) — hoisted above topology so
 	// the topology builder's mesh-overlay path has a route provider wired in.
@@ -879,7 +883,8 @@ func main() {
 
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
-	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, logger)
+	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, clusterRouter, remotePresence, logger)
+	clusterRouter.RegisterEvictHook(gwHandler.EvictRemoteCache)
 
 	// Personal preferences (saved views + resource pins).
 	//
