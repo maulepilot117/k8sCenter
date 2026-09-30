@@ -803,7 +803,8 @@ func main() {
 		esoHistoryStore = appstore.NewESOHistoryStore(dbPool)
 	}
 	esoDisc := externalsecrets.NewDiscoverer(k8sClient, logger)
-	esoHandler := externalsecrets.NewHandler(k8sClient, clusterRouter, esoDisc, accessChecker, auditLogger, notifService, logger)
+	esoHandler := externalsecrets.NewHandler(k8sClient, clusterRouter, remotePresence, esoDisc, accessChecker, auditLogger, notifService, logger)
+	clusterRouter.RegisterEvictHook(esoHandler.EvictRemoteCache)
 	topoBuilder.SetESOChainProvider(esoHandler)
 	// Phase F Unit 16 — per-store rate + cost panels query Prometheus
 	// through the shared monitoring discoverer. Optional: handler degrades

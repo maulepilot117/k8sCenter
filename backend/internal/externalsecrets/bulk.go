@@ -70,9 +70,15 @@ var errBulkScopeChanged = errors.New("scope_changed")
 // HandleResolveStoreScope handles
 //
 //	GET /externalsecrets/stores/{namespace}/{name}/refresh-scope
+//
+// The preview counts the cached local inventory, so like the refresh it
+// previews it is local-cluster only (rejectNonLocalClusterWrite).
 func (h *Handler) HandleResolveStoreScope(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
+		return
+	}
+	if !rejectNonLocalClusterWrite(w, r) {
 		return
 	}
 	if !h.Discoverer.IsAvailable(r.Context()) {
@@ -92,9 +98,15 @@ func (h *Handler) HandleResolveStoreScope(w http.ResponseWriter, r *http.Request
 // HandleResolveClusterStoreScope handles
 //
 //	GET /externalsecrets/clusterstores/{name}/refresh-scope
+//
+// The preview counts the cached local inventory, so like the refresh it
+// previews it is local-cluster only (rejectNonLocalClusterWrite).
 func (h *Handler) HandleResolveClusterStoreScope(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
+		return
+	}
+	if !rejectNonLocalClusterWrite(w, r) {
 		return
 	}
 	if !h.Discoverer.IsAvailable(r.Context()) {
@@ -114,9 +126,15 @@ func (h *Handler) HandleResolveClusterStoreScope(w http.ResponseWriter, r *http.
 // HandleResolveNamespaceScope handles
 //
 //	GET /externalsecrets/refresh-namespace/{namespace}/refresh-scope
+//
+// The preview counts the cached local inventory, so like the refresh it
+// previews it is local-cluster only (rejectNonLocalClusterWrite).
 func (h *Handler) HandleResolveNamespaceScope(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
+		return
+	}
+	if !rejectNonLocalClusterWrite(w, r) {
 		return
 	}
 	if !h.Discoverer.IsAvailable(r.Context()) {
@@ -388,16 +406,16 @@ func (h *Handler) handleBulkRefresh(
 	}
 
 	if err := h.BulkWorker.Enqueue(BulkJobMessage{
-		JobID:      job.ID,
-		ClusterID:  clusterID,
-		Action:     action,
-		ScopeTarget:   scopeTarget,
-		Targets:    scope.Targets,
-		Username:   user.KubernetesUsername,
-		Groups:     user.KubernetesGroups,
-		ActorName:  user.Username,
-		SourceIP:   r.RemoteAddr,
-		EnqueuedAt: time.Now().UTC(),
+		JobID:       job.ID,
+		ClusterID:   clusterID,
+		Action:      action,
+		ScopeTarget: scopeTarget,
+		Targets:     scope.Targets,
+		Username:    user.KubernetesUsername,
+		Groups:      user.KubernetesGroups,
+		ActorName:   user.Username,
+		SourceIP:    r.RemoteAddr,
+		EnqueuedAt:  time.Now().UTC(),
 	}); err != nil {
 		h.Logger.Error("enqueue bulk job", "error", err)
 		// The row is in the DB but the worker won't pick it up. Mark it
@@ -412,7 +430,7 @@ func (h *Handler) handleBulkRefresh(
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"data": map[string]any{
-			"jobId":      job.ID.String(),
+			"jobId":       job.ID.String(),
 			"targetCount": len(scope.Targets),
 		},
 	})
@@ -526,12 +544,12 @@ func (h *Handler) auditBulkJob(ctx context.Context, msg BulkJobMessage, job *sto
 	}
 
 	detail := map[string]any{
-		"jobId":           job.ID.String(),
-		"action":          string(job.Action),
-		"scope":           job.ScopeTarget,
-		"requestedBy":     job.RequestedBy,
-		"requestedCount":  len(job.TargetUIDs),
-		"succeededCount":  len(job.Succeeded),
+		"jobId":          job.ID.String(),
+		"action":         string(job.Action),
+		"scope":          job.ScopeTarget,
+		"requestedBy":    job.RequestedBy,
+		"requestedCount": len(job.TargetUIDs),
+		"succeededCount": len(job.Succeeded),
 	}
 	// Cluster-scoped actions inherently span tenants. Per-UID enumeration in
 	// the Detail JSON would expose every namespace's ES UIDs to admins

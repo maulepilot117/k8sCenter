@@ -59,16 +59,16 @@ type BulkWorkerEnqueuer interface {
 // is captured at request time so the worker can impersonate later (the worker
 // runs in the background, after the request returns).
 type BulkJobMessage struct {
-	JobID      uuid.UUID
-	ClusterID  string
-	Action     store.BulkRefreshAction
-	ScopeTarget   string
-	Targets    []BulkScopeTarget
-	Username   string
-	Groups     []string
-	ActorName  string // user.Username for audit/log
-	SourceIP   string
-	EnqueuedAt time.Time
+	JobID       uuid.UUID
+	ClusterID   string
+	Action      store.BulkRefreshAction
+	ScopeTarget string
+	Targets     []BulkScopeTarget
+	Username    string
+	Groups      []string
+	ActorName   string // user.Username for audit/log
+	SourceIP    string
+	EnqueuedAt  time.Time
 }
 
 // BulkWorker processes bulk-refresh jobs serially out of a buffered channel.
@@ -106,6 +106,7 @@ func NewBulkWorker(
 		if k8sClient == nil {
 			return nil, errors.New("no k8s client configured")
 		}
+		// nolint:cluster-routing carve-out: R12 — bulk refresh is local-only; handleBulkRefresh refuses a remote cluster before a job is enqueued.
 		return k8sClient.DynamicClientForUser(username, groups)
 	}
 	return w

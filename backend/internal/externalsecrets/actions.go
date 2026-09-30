@@ -18,6 +18,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -135,11 +136,14 @@ var errUIDDrifted = errors.New("uid_drifted")
 // X-Cluster-ID would silently desync the audit row (records the header
 // value) from the actual mutation (always hits local). See todo #339.
 //
+// The bulk-refresh scope previews (bulk.go) use it too: they count the local
+// inventory the refresh would act on, so they are local-only with it.
+//
 // Returns false (and writes a 501 response) when the caller must abort.
 // Returns true when execution may proceed.
 func rejectNonLocalClusterWrite(w http.ResponseWriter, r *http.Request) bool {
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	if clusterID != "" && clusterID != "local" {
+	if !k8s.IsLocalClusterID(clusterID) {
 		httputil.WriteError(w, http.StatusNotImplemented,
 			"ESO write actions are local-cluster only in v1",
 			"X-Cluster-ID="+clusterID+" is not supported for force-sync or bulk refresh")
