@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/dynamic"
 	dynfake "k8s.io/client-go/dynamic/fake"
@@ -57,6 +58,8 @@ type fakeCluster struct {
 	disc  *fakediscovery.FakeDiscovery
 	dyn   *dynfake.FakeDynamicClient
 	typed *kfake.Clientset
+	// discOverride, when set, is the discovery handed out instead of disc.
+	discOverride discovery.DiscoveryInterface
 }
 
 // fakeClients is a k8s.ClusterClients over one fake cluster per id. A target
@@ -100,7 +103,11 @@ func (f *fakeClients) TargetSchemaFor(_ context.Context, id, _ string, _ []strin
 	if err != nil {
 		return nil, err
 	}
-	return &k8s.TargetSchema{ClusterID: id, Discovery: c.disc, Invalidate: func() {}}, nil
+	var disc discovery.DiscoveryInterface = c.disc
+	if c.discOverride != nil {
+		disc = c.discOverride
+	}
+	return &k8s.TargetSchema{ClusterID: id, Discovery: disc, Invalidate: func() {}}, nil
 }
 
 // meshLists is the discovery of a cluster serving the named meshes at the
@@ -711,5 +718,59 @@ func TestRemote_MTLSDeniedListsNothing(t *testing.T) {
 	}
 	if n := len(remote.dyn.Actions()); n != 0 {
 		t.Errorf("remote recorded %d mesh list actions, want 0", n)
+	}
+}
+
+// brokenDiscovery lists the served resources but reports the listed groups
+// as failed, or fails outright when lists is nil: an aggregated APIService
+// that is down, or an API server that cannot serve discovery at all.
+type brokenDiscovery struct {
+	*fakediscovery.FakeDiscovery
+	lists  []*metav1.APIResourceList
+	failed []schema.GroupVersion
+}
+
+func (d brokenDiscovery) ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	if d.lists == nil {
+		return nil, nil, errors.New("the server is currently unable to handle the request")
+	}
+	groups := map[schema.GroupVersion]error{}
+	for _, gv := range d.failed {
+		groups[gv] = errors.New("the server is currently unable to handle the request")
+	}
+	return nil, d.lists, &discovery.ErrGroupDiscoveryFailed{Groups: groups}
+}
+
+// A remote whose discovery cannot be read, wholly or for one mesh group,
+// is unknown, never "no mesh": status says why and lists fail with 502.
+func TestRemote_DiscoveryFailureIsUnknownNotAbsent(t *testing.T) {
+	tests := []struct {
+		name string
+		disc func(*fakediscovery.FakeDiscovery) discovery.DiscoveryInterface
+	}{
+		{"whole discovery fails", func(fd *fakediscovery.FakeDiscovery) discovery.DiscoveryInterface {
+			return brokenDiscovery{FakeDiscovery: fd}
+		}},
+		{"linkerd group fails", func(fd *fakediscovery.FakeDiscovery) discovery.DiscoveryInterface {
+			return brokenDiscovery{FakeDiscovery: fd, lists: meshLists(MeshIstio),
+				failed: []schema.GroupVersion{LinkerdServerGVR.GroupVersion()}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			remote := newFakeCluster(t, meshLists(MeshIstio), nil)
+			remote.discOverride = tt.disc(remote.disc)
+			f := newRemoteFixture(t, remote)
+
+			status := decode[MeshStatusResponse](t, call(t, f.h.HandleStatus, "/mesh/status", nil)).Status
+			if status.Detected != MeshNone || status.Reason != string(k8s.ReasonDiscoveryUnavailable) {
+				t.Errorf("status = %+v, want detected none with reason discovery_unavailable", status)
+			}
+			rr := call(t, f.h.HandleListRoutes, "/mesh/routing", nil)
+			if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), string(k8s.ReasonDiscoveryUnavailable)) {
+				t.Errorf("routing: status %d, want 502 discovery_unavailable: %s", rr.Code, rr.Body.String())
+			}
+			f.assertNoLocalOrProm(t)
+		})
 	}
 }
