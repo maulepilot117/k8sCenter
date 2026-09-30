@@ -425,7 +425,7 @@ func main() {
 		go alertNotifier.Run(ctx)
 	}
 
-	alertRules := alerting.NewRulesManager(k8sClient, logger)
+	alertRules := alerting.NewRulesManager(clusterRouter, remotePresence, logger)
 
 	alertHandler := &alerting.Handler{
 		Store:        alertStore,
