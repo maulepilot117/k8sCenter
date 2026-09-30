@@ -123,12 +123,23 @@ func (h *Handler) snapshotsInstalled(w http.ResponseWriter, r *http.Request, use
 	}
 	// The verdict carries only a reason; resolve the target again for the
 	// error the response is built from.
+	loadErr := k8s.ErrDiscoveryUnavailable
 	if _, err := h.Clients.TargetSchemaFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups); err != nil {
-		httputil.WriteTargetError(w, err)
-		return false, "", false
+		loadErr = k8s.TargetError{Err: err}
 	}
-	httputil.WriteRemoteLoadError(w, k8s.ErrDiscoveryUnavailable, "VolumeSnapshot")
+	httputil.WriteRemoteLoadError(w, loadErr, "VolumeSnapshot")
 	return false, "", false
+}
+
+// requireSnapshotsInstalled is snapshotsInstalled for an endpoint that acts
+// on one snapshot: it answers 404 when the CRDs are not installed. It
+// reports whether the request may proceed.
+func (h *Handler) requireSnapshotsInstalled(w http.ResponseWriter, r *http.Request, user *auth.User) bool {
+	installed, _, ok := h.snapshotsInstalled(w, r, user)
+	if ok && !installed {
+		httputil.WriteError(w, http.StatusNotFound, "VolumeSnapshot CRDs are not installed on this cluster", "")
+	}
+	return ok && installed
 }
 
 // writeSnapshotsUnavailable answers a snapshot list on a cluster without the
@@ -496,10 +507,7 @@ func (h *Handler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if installed, _, ok := h.snapshotsInstalled(w, r, user); !ok {
-		return
-	} else if !installed {
-		httputil.WriteError(w, http.StatusNotFound, "VolumeSnapshot CRDs are not installed on this cluster", "")
+	if !h.requireSnapshotsInstalled(w, r, user) {
 		return
 	}
 
@@ -576,10 +584,7 @@ func (h *Handler) HandleGetSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if installed, _, ok := h.snapshotsInstalled(w, r, user); !ok {
-		return
-	} else if !installed {
-		httputil.WriteError(w, http.StatusNotFound, "VolumeSnapshot CRDs are not installed on this cluster", "")
+	if !h.requireSnapshotsInstalled(w, r, user) {
 		return
 	}
 
@@ -616,10 +621,7 @@ func (h *Handler) HandleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if installed, _, ok := h.snapshotsInstalled(w, r, user); !ok {
-		return
-	} else if !installed {
-		httputil.WriteError(w, http.StatusNotFound, "VolumeSnapshot CRDs are not installed on this cluster", "")
+	if !h.requireSnapshotsInstalled(w, r, user) {
 		return
 	}
 
@@ -662,8 +664,11 @@ func (h *Handler) HandleListSnapshotClasses(w http.ResponseWriter, r *http.Reque
 	if isLocal(r.Context()) {
 		// nolint:cluster-routing local path: snapshot classes are cluster-scoped metadata read through the service account on the local cluster; a remote cluster is read as the user.
 		dynClient = h.K8sClient.BaseDynamicClient()
-	} else if dynClient, ok = h.dynamicClient(w, r, user); !ok {
-		return
+	} else {
+		dynClient, ok = h.dynamicClient(w, r, user)
+		if !ok {
+			return
+		}
 	}
 	list, err := dynClient.Resource(volumeSnapshotClassGVR).List(r.Context(), metav1.ListOptions{})
 	if err != nil {
