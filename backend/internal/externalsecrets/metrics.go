@@ -300,7 +300,7 @@ func scalarFromVector(v model.Value) *float64 {
 // result. Mirrors handleGetStore's read path so we share the same RBAC and
 // error-mapping behaviour.
 func (h *Handler) fetchStoreImpersonated(ctx context.Context, user *auth.User, gvr schema.GroupVersionResource, ns, name, scope string) (SecretStore, error) {
-	dynClient, err := h.dynForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, err := h.dynForRequest(ctx, user)
 	if err != nil {
 		return SecretStore{}, err
 	}

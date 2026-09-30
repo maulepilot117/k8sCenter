@@ -173,7 +173,7 @@ func (h *Handler) HandleGetExternalSecretHistory(w http.ResponseWriter, r *http.
 		return
 	}
 
-	dynClient, err := h.dynForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, err := h.dynForRequest(ctx, user)
 	if err != nil {
 		h.Logger.Error("create impersonating dynamic client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")

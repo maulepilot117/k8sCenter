@@ -763,7 +763,7 @@ func (h *Handler) HandleGetExternalSecret(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	dynClient, err := h.dynForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, err := h.dynForRequest(r.Context(), user)
 	if err != nil {
 		h.Logger.Error("create impersonating dynamic client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
@@ -834,7 +834,7 @@ func (h *Handler) HandleGetClusterExternalSecret(w http.ResponseWriter, r *http.
 		return
 	}
 
-	dynClient, err := h.dynForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, err := h.dynForRequest(r.Context(), user)
 	if err != nil {
 		h.Logger.Error("create impersonating dynamic client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
@@ -895,7 +895,7 @@ func (h *Handler) handleGetStore(w http.ResponseWriter, r *http.Request, scope s
 		return
 	}
 
-	dynClient, err := h.dynForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, err := h.dynForRequest(r.Context(), user)
 	if err != nil {
 		h.Logger.Error("create impersonating dynamic client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
@@ -940,7 +940,7 @@ func (h *Handler) HandleGetPushSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.dynForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, err := h.dynForRequest(r.Context(), user)
 	if err != nil {
 		h.Logger.Error("create impersonating dynamic client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
@@ -998,7 +998,7 @@ func (h *Handler) resolveDriftStatus(ctx context.Context, user *auth.User, es *E
 	if es.TargetSecretName == "" {
 		return DriftUnknown, DriftReasonNoTargetName
 	}
-	cs, err := h.clientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	cs, err := h.clientForRequest(ctx, user)
 	if err != nil {
 		h.Logger.Warn("create impersonating typed client for drift check", "error", err)
 		return DriftUnknown, DriftReasonClientError
