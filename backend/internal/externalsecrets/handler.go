@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
@@ -20,10 +21,10 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/notifications"
-	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -40,11 +41,13 @@ const (
 	fetchTimeout = 10 * time.Second
 )
 
-// Handler serves ESO observatory HTTP endpoints. Phase A surface is read-only
-// (status + 5 list + 5 detail endpoints in U3). Write actions and the bulk
-// refresh job model land in Phase E.
+// Handler serves ESO observatory HTTP endpoints for the cluster a request
+// selects. The local cluster is read through a service-account cache and the
+// local Discoverer; a remote cluster through Clients, as the requesting
+// identity, with its lists held briefly per identity in remote (remote.go).
+// Write actions and bulk refresh are local-only.
 //
-// Concurrency model:
+// Local concurrency model:
 //   - One in-flight fetchAll at a time per Handler (singleflight).
 //   - One cache snapshot, replaced atomically when fetch completes.
 //   - cacheGen guards against torn writes from concurrent invalidations.
@@ -53,6 +56,7 @@ type Handler struct {
 	// Clients resolves the per-user clients for the cluster a request
 	// targets. Production passes the ClusterRouter.
 	Clients       k8s.ClusterClients
+	Presence      *k8s.Presence
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
 	AuditLogger   audit.Logger
@@ -77,6 +81,8 @@ type Handler struct {
 	// ClusterID is the configured id this process polls (cfg.ClusterID).
 	// History rows are stamped with it; the read path pins it.
 	ClusterID string
+
+	remote *remotecache.Cache[*snapshot]
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
@@ -124,6 +130,7 @@ func (h *Handler) dynClient() dynamic.Interface {
 	if h.dynOverride != nil {
 		return h.dynOverride
 	}
+	// nolint:cluster-routing local path: the service-account cache serves the local cluster only; remote reads go through fetchRemote.
 	return h.K8sClient.BaseDynamicClient()
 }
 
@@ -169,6 +176,7 @@ type cachedData struct {
 func NewHandler(
 	k8sClient *k8s.ClientFactory,
 	clients k8s.ClusterClients,
+	presence *k8s.Presence,
 	discoverer *Discoverer,
 	accessChecker *resources.AccessChecker,
 	auditLogger audit.Logger,
@@ -181,21 +189,20 @@ func NewHandler(
 	return &Handler{
 		K8sClient:     k8sClient,
 		Clients:       clients,
+		Presence:      presence,
 		Discoverer:    discoverer,
 		AccessChecker: accessChecker,
 		AuditLogger:   auditLogger,
 		NotifService:  notifService,
 		Logger:        logger,
+		remote:        remotecache.New[*snapshot](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, logger),
 	}
 }
 
-// InvalidateCache forces the next read to re-fetch from the API server.
-// Bumps cacheGen so an in-flight fetch from before invalidation cannot
-// overwrite a fresh cache populated after.
-//
-// Phase A has no write actions, so this method is dormant until Phase E /
-// Phase D wire the first cache-invalidating call sites. Exported now so the
-// future wiring lands as a small additive change.
+// InvalidateCache forces the next local read to re-fetch from the API
+// server. Bumps cacheGen so an in-flight fetch from before invalidation
+// cannot overwrite a fresh cache populated after. Called after the local-only
+// bulk refresh writes.
 func (h *Handler) InvalidateCache() {
 	h.cacheMu.Lock()
 	h.cacheGen++
@@ -339,208 +346,46 @@ func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 
 // fetchAll concurrently lists all five ESO CRDs from the service-account
 // dynamic client and normalizes them. Per-CRD failures are isolated: a failed
-// CRD's slice stays nil, the error is recorded in cachedData.errors, and the
-// previous cache's last-known-good slice is preserved on the rebuild. One
-// failed CRD does not erase the other four from the response.
+// CRD's error is recorded in cachedData.errors and the previous cache's
+// last-known-good slice is kept for it. One failed CRD does not erase the
+// other four from the response.
 //
-// ListOptions{ResourceVersion: "0"} serves all 5 lists from the API server's
-// watch cache rather than going to etcd — same data freshness, lower etcd
-// cost, no semantic change.
-//
-// errgroup is used for context-cancellation hygiene; fail-fast semantics are
-// suppressed by always returning nil from each g.Go body. After g.Wait the
-// parent ctx is re-checked so a cancelled / timed-out fetch produces an
-// error rather than a half-empty cache.
+// A list that panics is recovered by RunLists and recorded as failed like
+// any other. After the lists finish the parent ctx is re-checked so a
+// cancelled / timed-out fetch produces an error rather than a half-empty
+// cache.
 func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	dynClient := h.dynClient()
-
-	listOpts := metav1.ListOptions{ResourceVersion: "0"}
-
-	var (
-		externalSecrets        []ExternalSecret
-		clusterExternalSecrets []ClusterExternalSecret
-		stores                 []SecretStore
-		clusterStores          []SecretStore
-		pushSecrets            []PushSecret
-	)
-
-	var (
-		errMu  sync.Mutex
-		errMap map[string]string
-	)
-	recordErr := func(crd string, err error) {
-		errMu.Lock()
-		defer errMu.Unlock()
-		if errMap == nil {
-			errMap = map[string]string{}
-		}
-		errMap[crd] = err.Error()
-	}
-
-	g, gctx := errgroup.WithContext(ctx)
-
-	recoverutil.Go(g, h.Logger, "externalsecrets list externalsecrets", func() error {
-		list, err := dynClient.Resource(ExternalSecretGVR).Namespace("").List(gctx, listOpts)
-		if err != nil {
-			h.Logger.Warn("list externalsecrets failed", "error", err)
-			recordErr("externalsecrets", err)
-			return nil
-		}
-		externalSecrets = make([]ExternalSecret, 0, len(list.Items))
-		for i := range list.Items {
-			externalSecrets = append(externalSecrets, normalizeExternalSecret(&list.Items[i]))
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "externalsecrets list clusterexternalsecrets", func() error {
-		list, err := dynClient.Resource(ClusterExternalSecretGVR).Namespace("").List(gctx, listOpts)
-		if err != nil {
-			h.Logger.Warn("list clusterexternalsecrets failed", "error", err)
-			recordErr("clusterexternalsecrets", err)
-			return nil
-		}
-		clusterExternalSecrets = make([]ClusterExternalSecret, 0, len(list.Items))
-		for i := range list.Items {
-			clusterExternalSecrets = append(clusterExternalSecrets, normalizeClusterExternalSecret(&list.Items[i]))
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "externalsecrets list secretstores", func() error {
-		list, err := dynClient.Resource(SecretStoreGVR).Namespace("").List(gctx, listOpts)
-		if err != nil {
-			h.Logger.Warn("list secretstores failed", "error", err)
-			recordErr("secretstores", err)
-			return nil
-		}
-		stores = make([]SecretStore, 0, len(list.Items))
-		for i := range list.Items {
-			stores = append(stores, normalizeSecretStore(&list.Items[i], "Namespaced"))
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "externalsecrets list clustersecretstores", func() error {
-		list, err := dynClient.Resource(ClusterSecretStoreGVR).Namespace("").List(gctx, listOpts)
-		if err != nil {
-			h.Logger.Warn("list clustersecretstores failed", "error", err)
-			recordErr("clustersecretstores", err)
-			return nil
-		}
-		clusterStores = make([]SecretStore, 0, len(list.Items))
-		for i := range list.Items {
-			clusterStores = append(clusterStores, normalizeSecretStore(&list.Items[i], "Cluster"))
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "externalsecrets list pushsecrets", func() error {
-		list, err := dynClient.Resource(PushSecretGVR).Namespace("").List(gctx, listOpts)
-		if err != nil {
-			h.Logger.Warn("list pushsecrets failed", "error", err)
-			recordErr("pushsecrets", err)
-			return nil
-		}
-		pushSecrets = make([]PushSecret, 0, len(list.Items))
-		for i := range list.Items {
-			pushSecrets = append(pushSecrets, normalizePushSecret(&list.Items[i]))
-		}
-		return nil
-	})
-
-	// Per-CRD goroutines return nil on API errors (they call recordErr instead);
-	// they only return non-nil when recoverutil.Go recovers a panic. On panic,
-	// errgroup cancels gctx so the surviving workers call recordErr for their
-	// context-cancelled errors — but the panicking worker never calls recordErr,
-	// leaving its CRD slice nil without an errMap entry. Treat nil slices as
-	// fetch failures so the stale-cache preservation block below can restore
-	// last-known-good for the panicking CRD instead of caching an empty slice.
-	if werr := g.Wait(); werr != nil {
-		h.Logger.Warn("externalsecrets fetchAll worker error", "error", werr)
-		if externalSecrets == nil {
-			recordErr("externalsecrets", werr)
-		}
-		if clusterExternalSecrets == nil {
-			recordErr("clusterexternalsecrets", werr)
-		}
-		if stores == nil {
-			recordErr("secretstores", werr)
-		}
-		if clusterStores == nil {
-			recordErr("clustersecretstores", werr)
-		}
-		if pushSecrets == nil {
-			recordErr("pushsecrets", werr)
-		}
-	}
+	data := &cachedData{}
+	sources := data.sources()
+	errs := k8s.RunLists(h.Logger, namedLists(ctx, h.dynClient(), sources))
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	// Preserve last-known-good for any CRD that failed: read the prior cache
-	// snapshot and keep its slice for failed CRDs. If no prior snapshot
-	// exists (cold cache), nil stays nil — the handler treats nil as the
-	// signal to fall through to the per-CRD overlay path on next read.
+	// Preserve last-known-good for any CRD that failed. If no prior snapshot
+	// exists (cold cache), the failed CRD's slice defaults to empty below.
 	h.cacheMu.RLock()
 	prior := h.cache
 	h.cacheMu.RUnlock()
-	if prior != nil && errMap != nil {
-		if _, failed := errMap["externalsecrets"]; failed && externalSecrets == nil {
-			externalSecrets = prior.externalSecrets
+	for i, src := range sources {
+		err := errs[i]
+		if err == nil {
+			continue
 		}
-		if _, failed := errMap["clusterexternalsecrets"]; failed && clusterExternalSecrets == nil {
-			clusterExternalSecrets = prior.clusterExternalSecrets
+		h.Logger.Warn("list "+src.gvr.Resource+" failed", "error", err)
+		if data.errors == nil {
+			data.errors = map[string]string{}
 		}
-		if _, failed := errMap["secretstores"]; failed && stores == nil {
-			stores = prior.stores
-		}
-		if _, failed := errMap["clustersecretstores"]; failed && clusterStores == nil {
-			clusterStores = prior.clusterStores
-		}
-		if _, failed := errMap["pushsecrets"]; failed && pushSecrets == nil {
-			pushSecrets = prior.pushSecrets
+		data.errors[src.gvr.Resource] = err.Error()
+		if prior != nil {
+			src.keep(prior)
 		}
 	}
 
-	// Default any still-nil slice to an empty slice so handlers never write
-	// JSON null for a CRD that had no last-known-good. Empty slice is the
-	// frontend-safe shape.
-	if externalSecrets == nil {
-		externalSecrets = []ExternalSecret{}
-	}
-	if clusterExternalSecrets == nil {
-		clusterExternalSecrets = []ClusterExternalSecret{}
-	}
-	if stores == nil {
-		stores = []SecretStore{}
-	}
-	if clusterStores == nil {
-		clusterStores = []SecretStore{}
-	}
-	if pushSecrets == nil {
-		pushSecrets = []PushSecret{}
-	}
-
-	// Resolve annotation-driven thresholds (Phase D). ApplyThresholds runs
-	// the ES > Store > ClusterStore > default chain per ES, writes resolved
-	// values + per-key sources back onto each ES, and re-derives Status so
-	// the stale overlay can fire. Idempotent across cache hits since the
-	// resolver re-reads the same pointer fields each time.
-	ApplyThresholds(externalSecrets, stores, clusterStores, h.Logger)
-
-	data := &cachedData{
-		externalSecrets:        externalSecrets,
-		clusterExternalSecrets: clusterExternalSecrets,
-		stores:                 stores,
-		clusterStores:          clusterStores,
-		pushSecrets:            pushSecrets,
-		errors:                 errMap,
-		fetchedAt:              time.Now(),
-	}
+	data.finish(h.Logger)
 
 	h.cacheMu.Lock()
 	if h.cacheGen == gen {
@@ -549,6 +394,119 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 	h.cacheMu.Unlock()
 
 	return data, nil
+}
+
+// esoGVRs are the five ESO kinds this package lists, in response order.
+var esoGVRs = []schema.GroupVersionResource{
+	ExternalSecretGVR, ClusterExternalSecretGVR, SecretStoreGVR, ClusterSecretStoreGVR, PushSecretGVR,
+}
+
+// source is one cluster-wide ESO list: how to fill its field of a
+// cachedData, and how to carry that field over from an earlier snapshot.
+type source struct {
+	gvr  schema.GroupVersionResource
+	list func(context.Context, dynamic.Interface) error
+	keep func(prior *cachedData)
+}
+
+// sources are the lists that fill d, one per esoGVRs entry. Each writes its
+// own field of d, so they run concurrently without a lock.
+func (d *cachedData) sources() []source {
+	return []source{
+		{
+			ExternalSecretGVR,
+			func(ctx context.Context, dyn dynamic.Interface) error {
+				return listInto(ctx, dyn, ExternalSecretGVR, normalizeExternalSecret, &d.externalSecrets)
+			},
+			func(p *cachedData) { d.externalSecrets = p.externalSecrets },
+		},
+		{
+			ClusterExternalSecretGVR,
+			func(ctx context.Context, dyn dynamic.Interface) error {
+				return listInto(ctx, dyn, ClusterExternalSecretGVR, normalizeClusterExternalSecret, &d.clusterExternalSecrets)
+			},
+			func(p *cachedData) { d.clusterExternalSecrets = p.clusterExternalSecrets },
+		},
+		{
+			SecretStoreGVR,
+			func(ctx context.Context, dyn dynamic.Interface) error {
+				return listInto(ctx, dyn, SecretStoreGVR, func(u *unstructured.Unstructured) SecretStore {
+					return normalizeSecretStore(u, "Namespaced")
+				}, &d.stores)
+			},
+			func(p *cachedData) { d.stores = p.stores },
+		},
+		{
+			ClusterSecretStoreGVR,
+			func(ctx context.Context, dyn dynamic.Interface) error {
+				return listInto(ctx, dyn, ClusterSecretStoreGVR, func(u *unstructured.Unstructured) SecretStore {
+					return normalizeSecretStore(u, "Cluster")
+				}, &d.clusterStores)
+			},
+			func(p *cachedData) { d.clusterStores = p.clusterStores },
+		},
+		{
+			PushSecretGVR,
+			func(ctx context.Context, dyn dynamic.Interface) error {
+				return listInto(ctx, dyn, PushSecretGVR, normalizePushSecret, &d.pushSecrets)
+			},
+			func(p *cachedData) { d.pushSecrets = p.pushSecrets },
+		},
+	}
+}
+
+// finish completes a freshly listed snapshot: every slice left nil becomes
+// empty, so handlers never write JSON null for a CRD, then the annotation
+// thresholds are resolved and the fetch time stamped.
+func (d *cachedData) finish(logger *slog.Logger) {
+	if d.externalSecrets == nil {
+		d.externalSecrets = []ExternalSecret{}
+	}
+	if d.clusterExternalSecrets == nil {
+		d.clusterExternalSecrets = []ClusterExternalSecret{}
+	}
+	if d.stores == nil {
+		d.stores = []SecretStore{}
+	}
+	if d.clusterStores == nil {
+		d.clusterStores = []SecretStore{}
+	}
+	if d.pushSecrets == nil {
+		d.pushSecrets = []PushSecret{}
+	}
+
+	// Resolve annotation-driven thresholds (Phase D). ApplyThresholds runs
+	// the ES > Store > ClusterStore > default chain per ES, writes resolved
+	// values + per-key sources back onto each ES, and re-derives Status so
+	// the stale overlay can fire.
+	ApplyThresholds(d.externalSecrets, d.stores, d.clusterStores, logger)
+	d.fetchedAt = time.Now()
+}
+
+// namedLists runs each of sources against dyn under ctx.
+func namedLists(ctx context.Context, dyn dynamic.Interface, sources []source) []k8s.NamedList {
+	lists := make([]k8s.NamedList, len(sources))
+	for i, src := range sources {
+		lists[i] = k8s.NamedList{Label: "externalsecrets list " + src.gvr.Resource, Run: func() error { return src.list(ctx, dyn) }}
+	}
+	return lists
+}
+
+// listInto lists gvr across every namespace and stores the normalized items
+// in dst, leaving dst untouched on error. ResourceVersion "0" serves the list
+// from the API server's watch cache rather than etcd: same freshness, lower
+// etcd cost.
+func listInto[T any](ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, normalize func(*unstructured.Unstructured) T, dst *[]T) error {
+	list, err := dyn.Resource(gvr).Namespace("").List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	if err != nil {
+		return err
+	}
+	items := make([]T, 0, len(list.Items))
+	for i := range list.Items {
+		items = append(items, normalize(&list.Items[i]))
+	}
+	*dst = items
+	return nil
 }
 
 // CachedExternalSecrets returns the cached ExternalSecret list. Used by the
@@ -562,10 +520,16 @@ func (h *Handler) CachedExternalSecrets(ctx context.Context) ([]ExternalSecret, 
 	return data.externalSecrets, nil
 }
 
-// HandleStatus returns the ESO discovery status. Cheap — reads the
-// discoverer's cached status (re-probe is bounded by staleDuration).
+// HandleStatus returns the ESO discovery status for the request's cluster.
+// Cheap on local — reads the discoverer's cached status (re-probe is bounded
+// by staleDuration).
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	if !isLocal(r.Context()) {
+		httputil.WriteData(w, h.remoteStatus(r.Context(), user))
 		return
 	}
 	httputil.WriteData(w, h.Discoverer.Status(r.Context()))
@@ -579,15 +543,12 @@ func (h *Handler) HandleListExternalSecrets(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteData(w, []ExternalSecret{})
+	data, ok := h.loadList(w, r, user, ExternalSecretGVR, "external secrets")
+	if !ok {
 		return
 	}
-
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch external secrets", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch external secrets", "")
+	if data == nil {
+		httputil.WriteData(w, []ExternalSecret{})
 		return
 	}
 
@@ -615,6 +576,10 @@ func (h *Handler) HandleListExternalSecrets(w http.ResponseWriter, r *http.Reque
 	// count (which checks `it.status === 'Drifted'`) works without
 	// frontend changes — but the live-vs-cached distinction is
 	// preserved by keeping DriftStatus empty on the list path.
+	//
+	// The poller observes the local cluster only, so a remote row's hint is
+	// always Unknown: never absent, which would read as "not drifted" (R14).
+	remote := !isLocal(r.Context())
 	out := make([]ExternalSecret, len(filtered))
 	for i, es := range filtered {
 		// Clear any DriftStatus the cached normalize step may have set
@@ -622,6 +587,11 @@ func (h *Handler) HandleListExternalSecrets(w http.ResponseWriter, r *http.Reque
 		// On the list path, DriftStatus is always absent on the wire.
 		es.DriftStatus = ""
 		es.DriftUnknownReason = ""
+		if remote {
+			es.LastObservedDriftStatus = DriftUnknown
+			out[i] = es
+			continue
+		}
 		drift := h.observedDriftFor(es.UID)
 		if drift != "" {
 			es.LastObservedDriftStatus = drift
@@ -645,20 +615,14 @@ func (h *Handler) HandleListClusterExternalSecrets(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteData(w, []ClusterExternalSecret{})
+	// Load before the RBAC check: on a remote cluster a failed check would
+	// otherwise answer an unreachable cluster with an empty 200.
+	data, ok := h.loadList(w, r, user, ClusterExternalSecretGVR, "cluster external secrets")
+	if !ok {
 		return
 	}
-
-	if !h.canAccess(r.Context(), user, "list", "clusterexternalsecrets", "") {
+	if data == nil || !h.canAccess(r.Context(), user, "list", "clusterexternalsecrets", "") {
 		httputil.WriteData(w, []ClusterExternalSecret{})
-		return
-	}
-
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch cluster external secrets", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch cluster external secrets", "")
 		return
 	}
 	httputil.WriteData(w, data.clusterExternalSecrets)
@@ -671,15 +635,12 @@ func (h *Handler) HandleListStores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteData(w, []SecretStore{})
+	data, ok := h.loadList(w, r, user, SecretStoreGVR, "secret stores")
+	if !ok {
 		return
 	}
-
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch secret stores", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch secret stores", "")
+	if data == nil {
+		httputil.WriteData(w, []SecretStore{})
 		return
 	}
 
@@ -713,8 +674,7 @@ func (h *Handler) HandleGetExternalSecret(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "ESO not detected", "")
+	if !h.requireInstalled(w, r, user) {
 		return
 	}
 
@@ -726,36 +686,25 @@ func (h *Handler) HandleGetExternalSecret(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	dynClient, err := h.dynForRequest(r.Context(), user)
-	if err != nil {
-		h.Logger.Error("create impersonating dynamic client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.requestDyn(w, r, user)
+	if !ok {
 		return
 	}
 
 	obj, err := dynClient.Resource(ExternalSecretGVR).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
-		if apierrors.IsForbidden(err) {
-			httputil.WriteError(w, http.StatusForbidden, "access denied", "")
-			return
-		}
-		if apierrors.IsNotFound(err) {
-			httputil.WriteError(w, http.StatusNotFound, "external secret not found", "")
-			return
-		}
-		h.Logger.Error("get externalsecret", "namespace", ns, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch external secret", "")
+		h.writeGetError(w, r, err, "external secret", ns, name)
 		return
 	}
 
 	es := normalizeExternalSecret(obj)
 	// Resolve annotation thresholds before drift / status. Detail endpoint
-	// pulls store snapshots from the cached fetchAll so the inheritance
-	// chain still works on a single-ES path. ApplyThresholds with a
+	// pulls store snapshots from the request cluster's cached lists so the
+	// inheritance chain still works on a single-ES path. ApplyThresholds with a
 	// one-element slice is the simplest way to keep the resolver as the
 	// single source of truth (L3.1 in the plan).
 	ess := []ExternalSecret{es}
-	stores, clusterStores := h.cachedStoresForResolver()
+	stores, clusterStores := h.storesForResolver(r.Context(), user)
 	ApplyThresholds(ess, stores, clusterStores, h.Logger)
 	es = ess[0]
 
@@ -785,8 +734,7 @@ func (h *Handler) HandleGetClusterExternalSecret(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "ESO not detected", "")
+	if !h.requireInstalled(w, r, user) {
 		return
 	}
 
@@ -797,25 +745,14 @@ func (h *Handler) HandleGetClusterExternalSecret(w http.ResponseWriter, r *http.
 		return
 	}
 
-	dynClient, err := h.dynForRequest(r.Context(), user)
-	if err != nil {
-		h.Logger.Error("create impersonating dynamic client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.requestDyn(w, r, user)
+	if !ok {
 		return
 	}
 
 	obj, err := dynClient.Resource(ClusterExternalSecretGVR).Namespace("").Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
-		if apierrors.IsForbidden(err) {
-			httputil.WriteError(w, http.StatusForbidden, "access denied", "")
-			return
-		}
-		if apierrors.IsNotFound(err) {
-			httputil.WriteError(w, http.StatusNotFound, "cluster external secret not found", "")
-			return
-		}
-		h.Logger.Error("get clusterexternalsecret", "name", name, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch cluster external secret", "")
+		h.writeGetError(w, r, err, "cluster external secret", "", name)
 		return
 	}
 
@@ -838,8 +775,7 @@ func (h *Handler) handleGetStore(w http.ResponseWriter, r *http.Request, scope s
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "ESO not detected", "")
+	if !h.requireInstalled(w, r, user) {
 		return
 	}
 
@@ -858,25 +794,14 @@ func (h *Handler) handleGetStore(w http.ResponseWriter, r *http.Request, scope s
 		return
 	}
 
-	dynClient, err := h.dynForRequest(r.Context(), user)
-	if err != nil {
-		h.Logger.Error("create impersonating dynamic client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.requestDyn(w, r, user)
+	if !ok {
 		return
 	}
 
 	obj, err := dynClient.Resource(gvr).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
-		if apierrors.IsForbidden(err) {
-			httputil.WriteError(w, http.StatusForbidden, "access denied", "")
-			return
-		}
-		if apierrors.IsNotFound(err) {
-			httputil.WriteError(w, http.StatusNotFound, "store not found", "")
-			return
-		}
-		h.Logger.Error("get store", "scope", scope, "namespace", ns, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch store", "")
+		h.writeGetError(w, r, err, "store", ns, name)
 		return
 	}
 
@@ -890,8 +815,7 @@ func (h *Handler) HandleGetPushSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "ESO not detected", "")
+	if !h.requireInstalled(w, r, user) {
 		return
 	}
 
@@ -903,25 +827,14 @@ func (h *Handler) HandleGetPushSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.dynForRequest(r.Context(), user)
-	if err != nil {
-		h.Logger.Error("create impersonating dynamic client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.requestDyn(w, r, user)
+	if !ok {
 		return
 	}
 
 	obj, err := dynClient.Resource(PushSecretGVR).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
-		if apierrors.IsForbidden(err) {
-			httputil.WriteError(w, http.StatusForbidden, "access denied", "")
-			return
-		}
-		if apierrors.IsNotFound(err) {
-			httputil.WriteError(w, http.StatusNotFound, "push secret not found", "")
-			return
-		}
-		h.Logger.Error("get pushsecret", "namespace", ns, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch push secret", "")
+		h.writeGetError(w, r, err, "push secret", ns, name)
 		return
 	}
 
@@ -1012,20 +925,13 @@ func (h *Handler) HandleListClusterStores(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteData(w, []SecretStore{})
+	// Load before the RBAC check, as HandleListClusterExternalSecrets does.
+	data, ok := h.loadList(w, r, user, ClusterSecretStoreGVR, "cluster secret stores")
+	if !ok {
 		return
 	}
-
-	if !h.canAccess(r.Context(), user, "list", "clustersecretstores", "") {
+	if data == nil || !h.canAccess(r.Context(), user, "list", "clustersecretstores", "") {
 		httputil.WriteData(w, []SecretStore{})
-		return
-	}
-
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch cluster secret stores", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch cluster secret stores", "")
 		return
 	}
 	httputil.WriteData(w, data.clusterStores)
@@ -1040,15 +946,12 @@ func (h *Handler) HandleListPushSecrets(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteData(w, []PushSecret{})
+	data, ok := h.loadList(w, r, user, PushSecretGVR, "push secrets")
+	if !ok {
 		return
 	}
-
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch push secrets", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch push secrets", "")
+	if data == nil {
+		httputil.WriteData(w, []PushSecret{})
 		return
 	}
 

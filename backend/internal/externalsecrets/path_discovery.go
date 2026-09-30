@@ -36,8 +36,9 @@ type pathDiscoveryResponse struct {
 }
 
 // HandleListPaths discovers candidate remote-key paths for a SecretStore in
-// Phase G's ExternalSecret wizard. Kubernetes-provider stores list Secrets in
-// the configured source namespace via the impersonating client; the typeahead
+// Phase G's ExternalSecret wizard, on the cluster the request selects.
+// Kubernetes-provider stores list Secrets in the configured source namespace
+// via the impersonating client; the typeahead
 // shows that namespace's Secret names, prefix-filtered. All other providers
 // return `{supported: false}` — k8sCenter never holds source-store
 // credentials, so authenticating against Vault/AWS/GCP/Azure to enumerate
@@ -54,8 +55,7 @@ func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "ESO not detected", "")
+	if !h.requireInstalled(w, r, user) {
 		return
 	}
 
@@ -69,24 +69,14 @@ func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.dynForRequest(r.Context(), user)
-	if err != nil {
-		h.Logger.Error("create impersonating dynamic client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.requestDyn(w, r, user)
+	if !ok {
 		return
 	}
 
 	obj, err := dynClient.Resource(SecretStoreGVR).Namespace(storeNS).Get(r.Context(), storeName, metav1.GetOptions{})
 	if err != nil {
-		switch {
-		case apierrors.IsForbidden(err):
-			httputil.WriteError(w, http.StatusForbidden, "access denied", "")
-		case apierrors.IsNotFound(err):
-			httputil.WriteError(w, http.StatusNotFound, "store not found", "")
-		default:
-			h.Logger.Error("get store for path discovery", "namespace", storeNS, "name", storeName, "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch store", "")
-		}
+		h.writeGetError(w, r, err, "store", storeNS, storeName)
 		return
 	}
 
@@ -131,8 +121,7 @@ func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 	// RBAC again — defense in depth against an AccessChecker stale read.
 	kubeClient, err := h.clientForRequest(r.Context(), user)
 	if err != nil {
-		h.Logger.Error("create impersonating typed client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		h.writeClientError(w, r, err, "create impersonating typed client")
 		return
 	}
 
@@ -150,6 +139,10 @@ func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 		}
 		h.Logger.Error("list secrets for path discovery",
 			"sourceNamespace", sourceNS, "store", storeName, "error", err)
+		if !isLocal(r.Context()) {
+			httputil.WriteRemoteError(w, err)
+			return
+		}
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to list paths", "")
 		return
 	}
