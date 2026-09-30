@@ -228,7 +228,7 @@ func (h *Handler) HandleGetEvidenceEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	dynClient, err := h.dynForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, err := h.dynForRequest(ctx, user)
 	if err != nil {
 		h.Logger.Error("create impersonating dynamic client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
@@ -261,7 +261,7 @@ func (h *Handler) HandleGetEvidenceEvents(w http.ResponseWriter, r *http.Request
 		level = projectionFull
 	}
 
-	kube, err := h.clientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	kube, err := h.clientForRequest(ctx, user)
 	if err != nil {
 		h.Logger.Error("create impersonating client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")

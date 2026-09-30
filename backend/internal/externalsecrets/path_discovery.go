@@ -69,7 +69,7 @@ func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.dynForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, err := h.dynForRequest(r.Context(), user)
 	if err != nil {
 		h.Logger.Error("create impersonating dynamic client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
@@ -129,7 +129,7 @@ func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 
 	// List Secrets via the impersonating typed client. The API server enforces
 	// RBAC again — defense in depth against an AccessChecker stale read.
-	kubeClient, err := h.clientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	kubeClient, err := h.clientForRequest(r.Context(), user)
 	if err != nil {
 		h.Logger.Error("create impersonating typed client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
