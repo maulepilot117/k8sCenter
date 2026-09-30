@@ -199,18 +199,6 @@ func (h *Handler) InvalidateReceivers() {
 	h.receiverCache.mu.Unlock()
 }
 
-// InvalidateAll clears all three caches.
-func (h *Handler) InvalidateAll() {
-	h.InvalidateProviders()
-	h.InvalidateAlerts()
-	h.InvalidateReceivers()
-}
-
-// InvalidateCache is kept for backward compatibility with CRD event handlers.
-func (h *Handler) InvalidateCache() {
-	h.InvalidateAll()
-}
-
 // ---------- RBAC filtering ----------
 
 // namespacedItem is implemented by normalized types that carry a Namespace field.
