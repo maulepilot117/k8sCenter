@@ -18,6 +18,8 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // promQuerier is the minimum subset of *monitoring.PrometheusClient this
@@ -31,6 +33,11 @@ type promQuerier interface {
 // endpoints. RatePerMin and Last24h are pointers so the frontend can
 // distinguish "metric is genuinely zero" from "Prometheus is offline" —
 // callers MUST NOT fabricate a zero on degradation per R25.
+// remoteMetricsUnavailable is the in-band error for a store on a remote
+// cluster. The rate is computed from this process's ESO cache and Prometheus,
+// which only describe the local cluster (R-8 R14).
+const remoteMetricsUnavailable = "rate metrics unavailable on remote clusters"
+
 type metricsResponse struct {
 	RatePerMin *float64      `json:"ratePerMin"`         // last-5m sum(rate(...)) projected to per-minute
 	Last24h    *float64      `json:"last24h"`            // sum_over_time over the last 24h, requests
@@ -59,6 +66,14 @@ func (h *Handler) HandleGetClusterStoreMetrics(w http.ResponseWriter, r *http.Re
 func (h *Handler) handleGetStoreMetrics(w http.ResponseWriter, r *http.Request, scope string) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
+		return
+	}
+
+	// Dependents come from the local ESO cache and the rate from the local
+	// Prometheus, so a remote store is answered unavailable, never with
+	// local-cluster numbers, and before any client is resolved.
+	if !k8s.IsLocalClusterID(middleware.ClusterIDFromContext(r.Context())) {
+		httputil.WriteData(w, metricsResponse{Error: remoteMetricsUnavailable})
 		return
 	}
 
