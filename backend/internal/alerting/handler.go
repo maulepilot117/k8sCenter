@@ -250,8 +250,8 @@ func (h *Handler) HandleListRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := h.Rules.List(r.Context(), user.KubernetesUsername, user.KubernetesGroups, namespace)
 	if errors.Is(err, ErrNotInstalled) {
 		metadata := map[string]any{"total": 0, "available": false}
-		if !isLocal(r.Context()) {
-			metadata["reason"] = string(k8s.ReasonDiscoveryMissing)
+		if reason := notInstalledReason(r.Context()); reason != "" {
+			metadata["reason"] = reason
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{"data": []RuleSummary{}, "metadata": metadata})
 		return
@@ -310,14 +310,15 @@ func (h *Handler) HandleCreateRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	name := getName(body.Content)
 	result, err := h.Rules.Create(r.Context(), user.KubernetesUsername, user.KubernetesGroups, body.Namespace, body.Content)
 	if err != nil {
-		h.auditRuleFailure(r, user, audit.ActionAlertRuleCreate, body.Namespace, getName(body.Content), err)
+		h.auditRuleFailure(r, user, audit.ActionAlertRuleCreate, body.Namespace, name, err)
 		writeRuleError(w, r, err, "create alert rule")
 		return
 	}
 
-	h.auditRule(r, user, audit.ActionAlertRuleCreate, body.Namespace, getName(body.Content), audit.ResultSuccess, "")
+	h.auditRule(r, user, audit.ActionAlertRuleCreate, body.Namespace, name, audit.ResultSuccess, "")
 	httputil.WriteJSON(w, http.StatusCreated, map[string]any{"data": result})
 }
 
@@ -378,7 +379,7 @@ func (h *Handler) auditRule(r *http.Request, user *auth.User, action audit.Actio
 		User:              user.Username,
 		SourceIP:          r.RemoteAddr,
 		Action:            action,
-		ResourceKind:      "PrometheusRule",
+		ResourceKind:      prometheusRuleKind,
 		ResourceNamespace: namespace,
 		ResourceName:      name,
 		Result:            result,
@@ -578,6 +579,15 @@ func isLocal(ctx context.Context) bool {
 	return k8s.IsLocalClusterID(middleware.ClusterIDFromContext(ctx))
 }
 
+// notInstalledReason is the reason a missing CRD reports: discovery_missing
+// on a remote cluster, none on the local cluster (R-8 KTD5).
+func notInstalledReason(ctx context.Context) string {
+	if isLocal(ctx) {
+		return ""
+	}
+	return string(k8s.ReasonDiscoveryMissing)
+}
+
 // writeRuleError answers a failed PrometheusRule call. The package's own
 // refusals keep their meaning on every cluster; the local cluster keeps its
 // historical Kubernetes error mapping, and a remote cluster's error is
@@ -585,11 +595,7 @@ func isLocal(ctx context.Context) bool {
 func writeRuleError(w http.ResponseWriter, r *http.Request, err error, action string) {
 	switch {
 	case errors.Is(err, ErrNotInstalled):
-		reason := ""
-		if !isLocal(r.Context()) {
-			reason = string(k8s.ReasonDiscoveryMissing)
-		}
-		httputil.WriteErrorWithReason(w, http.StatusNotFound, ErrNotInstalled.Error(), reason, nil)
+		httputil.WriteErrorWithReason(w, http.StatusNotFound, ErrNotInstalled.Error(), notInstalledReason(r.Context()), nil)
 	case errors.Is(err, errNotManaged):
 		httputil.WriteError(w, http.StatusForbidden, errNotManaged.Error(), "")
 	case errors.Is(err, errInvalidRule):
@@ -597,7 +603,7 @@ func writeRuleError(w http.ResponseWriter, r *http.Request, err error, action st
 	case isLocal(r.Context()):
 		writeK8sError(w, err, action)
 	default:
-		httputil.WriteRemoteLoadError(w, err, "PrometheusRule")
+		httputil.WriteRemoteLoadError(w, err, prometheusRuleKind)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -26,6 +27,8 @@ var prometheusRuleGVR = schema.GroupVersionResource{
 	Resource: "prometheusrules",
 }
 
+const prometheusRuleKind = "PrometheusRule"
+
 const managedByLabel = "app.kubernetes.io/managed-by"
 const managedByValue = "kubecenter"
 
@@ -37,6 +40,7 @@ var k8sNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`)
 const (
 	localRecheckInstalled = 5 * time.Minute
 	localRecheckAbsent    = 30 * time.Second
+	localProbeTimeout     = 10 * time.Second
 )
 
 var (
@@ -62,6 +66,7 @@ type RulesManager struct {
 	localMu        sync.Mutex
 	localInstalled bool
 	localCheckedAt time.Time
+	localSF        singleflight.Group
 }
 
 // NewRulesManager creates a new rules manager.
@@ -105,43 +110,59 @@ func (rm *RulesManager) requireInstalled(ctx context.Context, username string, g
 
 // localAvailable reports whether the local cluster serves the CRD. The
 // answer is reused for a while, never forever: a CRD removed after startup
-// stops being reported as installed.
+// stops being reported as installed. The local discovery client is not
+// cached, so concurrent rechecks share one read and no request waits on
+// the lock while it runs.
 func (rm *RulesManager) localAvailable(ctx context.Context, username string, groups []string) bool {
 	rm.localMu.Lock()
-	defer rm.localMu.Unlock()
-
-	now := rm.now()
 	ttl := localRecheckAbsent
 	if rm.localInstalled {
 		ttl = localRecheckInstalled
 	}
-	if !rm.localCheckedAt.IsZero() && now.Sub(rm.localCheckedAt) < ttl {
-		return rm.localInstalled
+	if !rm.localCheckedAt.IsZero() && rm.now().Sub(rm.localCheckedAt) < ttl {
+		installed := rm.localInstalled
+		rm.localMu.Unlock()
+		return installed
 	}
+	rm.localMu.Unlock()
 
-	installed := false
+	v, _, _ := rm.localSF.Do("local", func() (any, error) {
+		// Detached from the first caller so its cancellation does not
+		// decide the answer every waiter gets.
+		probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), localProbeTimeout)
+		defer cancel()
+		installed := rm.probeLocal(probeCtx, username, groups)
+
+		rm.localMu.Lock()
+		defer rm.localMu.Unlock()
+		if installed != rm.localInstalled {
+			rm.logger.Info("PrometheusRule CRD availability changed", "available", installed)
+		}
+		rm.localInstalled = installed
+		rm.localCheckedAt = rm.now()
+		return installed, nil
+	})
+	return v.(bool)
+}
+
+// probeLocal reads the local cluster's discovery for the CRD. Any failure
+// to read it counts as not installed, as it always has on the local path.
+func (rm *RulesManager) probeLocal(ctx context.Context, username string, groups []string) bool {
 	target, err := rm.clients.TargetSchemaFor(ctx, k8s.LocalClusterID, username, groups)
 	if err == nil {
 		var resources *metav1.APIResourceList
 		resources, err = target.Discovery.ServerResourcesForGroupVersion(prometheusRuleGVR.GroupVersion().String())
 		if err == nil {
 			for _, r := range resources.APIResources {
-				if r.Kind == "PrometheusRule" {
-					installed = true
-					break
+				if r.Kind == prometheusRuleKind {
+					return true
 				}
 			}
+			return false
 		}
 	}
-	if err != nil {
-		rm.logger.Debug("PrometheusRule CRD not available", "error", err)
-	}
-	if installed != rm.localInstalled {
-		rm.logger.Info("PrometheusRule CRD availability changed", "available", installed)
-	}
-	rm.localInstalled = installed
-	rm.localCheckedAt = now
-	return installed
+	rm.logger.Debug("PrometheusRule CRD not available", "error", err)
+	return false
 }
 
 // client returns a dynamic client impersonating the user on the request's
@@ -256,7 +277,7 @@ func (rm *RulesManager) Create(ctx context.Context, username string, groups []st
 	obj.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "monitoring.coreos.com",
 		Version: "v1",
-		Kind:    "PrometheusRule",
+		Kind:    prometheusRuleKind,
 	})
 
 	// Validate name
@@ -295,7 +316,7 @@ func (rm *RulesManager) Update(ctx context.Context, username string, groups []st
 	obj.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "monitoring.coreos.com",
 		Version: "v1",
-		Kind:    "PrometheusRule",
+		Kind:    prometheusRuleKind,
 	})
 	obj.SetName(name)
 	obj.SetNamespace(namespace)
