@@ -298,7 +298,15 @@ GitHub Flow. See `CONTRIBUTING.md` for the complete workflow.
 - CI + E2E must pass before merge
 - On merge to main: images built, tagged, pushed to GHCR (public), GitHub Release created
 
-**After every push:** Watch CI (`gh run list --limit 1` / `gh run view`), review any failures, and fix before moving on. Do not assume CI passes — verify it.
+**After every push:** Watch CI, review any failures, and fix before moving on. Do not assume CI passes — verify it.
+
+**How to watch CI (use this, not the `ce-babysit-pr` watcher's merge-ready wake):** `main` requires an approving review, so every open PR sits at `mergeStateStatus: BLOCKED` / `reviewDecision: REVIEW_REQUIRED` even with all checks green. The `pr-snapshot watch` detector only wakes on failures, comments or a `CLEAN` merge state, so on this repo it never reports green CI. Watch the checks directly instead:
+
+- Run `gh pr checks <N> --watch --fail-fast --interval 30` as a **background** command (`run_in_background`), and act on the completion notification. It exits when every check has finished: exit 0 means all passed (skipped checks count as passing), exit 1 means at least one failed. `--fail-fast` exits on the first failure.
+- On exit 0, report the green run. The PR is ready for the human reviewer, and the watch is done: do not wait for `CLEAN`.
+- On exit 1, run `gh pr checks <N>` to list the failed checks, read the logs with `gh run view <run-id> --log-failed`, then fix, push and start a new watch.
+- A one-shot status read is `gh pr checks <N>`. Without `--watch`, exit 8 means checks are still pending.
+- `ce-babysit-pr` is still the right tool for review comments. For CI status, use the command above.
 
 **Before any merge:** Run `/ce:review` first. No exceptions. Smoke test against homelab when backend/frontend changes are in scope.
 
