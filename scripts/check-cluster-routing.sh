@@ -96,7 +96,7 @@ SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server"
 # / .RESTMapper() / .Informers.) is a violation unless annotated: each remaining local
 # read must say why it is local. A package joins this list in the unit that
 # migrates it.
-REMOTE_ROUTED_DIRS="backend/internal/gateway backend/internal/gitops backend/internal/velero backend/internal/storage backend/internal/notification"
+REMOTE_ROUTED_DIRS="backend/internal/gateway backend/internal/gitops backend/internal/velero backend/internal/storage backend/internal/notification backend/internal/alerting"
 
 # -----------------------------------------------------------------------
 # Helpers

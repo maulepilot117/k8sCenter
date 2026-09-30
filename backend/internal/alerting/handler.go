@@ -1,8 +1,10 @@
 package alerting
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,9 +16,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
@@ -229,7 +234,10 @@ func (h *Handler) HandleListHistory(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, result)
 }
 
-// HandleListRules lists PrometheusRule CRDs.
+// HandleListRules lists PrometheusRule CRDs on the selected cluster. A
+// cluster without the CRD answers an empty list with metadata
+// available:false (and, on a remote cluster, reason discovery_missing), so
+// "not installed" is distinguishable from "no rules".
 // GET /api/v1/alerts/rules
 func (h *Handler) HandleListRules(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
@@ -240,8 +248,16 @@ func (h *Handler) HandleListRules(w http.ResponseWriter, r *http.Request) {
 	namespace := r.URL.Query().Get("namespace")
 
 	rules, err := h.Rules.List(r.Context(), user.KubernetesUsername, user.KubernetesGroups, namespace)
+	if errors.Is(err, ErrNotInstalled) {
+		metadata := map[string]any{"total": 0, "available": false}
+		if !isLocal(r.Context()) {
+			metadata["reason"] = string(k8s.ReasonDiscoveryMissing)
+		}
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"data": []RuleSummary{}, "metadata": metadata})
+		return
+	}
 	if err != nil {
-		writeK8sError(w, err, "list alert rules")
+		writeRuleError(w, r, err, "list alert rules")
 		return
 	}
 
@@ -261,7 +277,7 @@ func (h *Handler) HandleGetRule(w http.ResponseWriter, r *http.Request) {
 
 	rule, err := h.Rules.Get(r.Context(), user.KubernetesUsername, user.KubernetesGroups, namespace, name)
 	if err != nil {
-		writeK8sError(w, err, "get alert rule")
+		writeRuleError(w, r, err, "get alert rule")
 		return
 	}
 
@@ -296,22 +312,12 @@ func (h *Handler) HandleCreateRule(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.Rules.Create(r.Context(), user.KubernetesUsername, user.KubernetesGroups, body.Namespace, body.Content)
 	if err != nil {
-		writeK8sError(w, err, "create alert rule")
+		h.auditRuleFailure(r, user, audit.ActionAlertRuleCreate, body.Namespace, getName(body.Content), err)
+		writeRuleError(w, r, err, "create alert rule")
 		return
 	}
 
-	h.AuditLogger.Log(r.Context(), audit.Entry{
-		Timestamp:         time.Now().UTC(),
-		ClusterID:         h.ClusterID,
-		User:              user.Username,
-		SourceIP:          r.RemoteAddr,
-		Action:            audit.ActionAlertRuleCreate,
-		ResourceKind:      "PrometheusRule",
-		ResourceNamespace: body.Namespace,
-		ResourceName:      getName(body.Content),
-		Result:            audit.ResultSuccess,
-	})
-
+	h.auditRule(r, user, audit.ActionAlertRuleCreate, body.Namespace, getName(body.Content), audit.ResultSuccess, "")
 	httputil.WriteJSON(w, http.StatusCreated, map[string]any{"data": result})
 }
 
@@ -334,22 +340,12 @@ func (h *Handler) HandleUpdateRule(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.Rules.Update(r.Context(), user.KubernetesUsername, user.KubernetesGroups, namespace, name, content)
 	if err != nil {
-		writeK8sError(w, err, "update alert rule")
+		h.auditRuleFailure(r, user, audit.ActionAlertRuleUpdate, namespace, name, err)
+		writeRuleError(w, r, err, "update alert rule")
 		return
 	}
 
-	h.AuditLogger.Log(r.Context(), audit.Entry{
-		Timestamp:         time.Now().UTC(),
-		ClusterID:         h.ClusterID,
-		User:              user.Username,
-		SourceIP:          r.RemoteAddr,
-		Action:            audit.ActionAlertRuleUpdate,
-		ResourceKind:      "PrometheusRule",
-		ResourceNamespace: namespace,
-		ResourceName:      name,
-		Result:            audit.ResultSuccess,
-	})
-
+	h.auditRule(r, user, audit.ActionAlertRuleUpdate, namespace, name, audit.ResultSuccess, "")
 	httputil.WriteData(w, result)
 }
 
@@ -365,27 +361,47 @@ func (h *Handler) HandleDeleteRule(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	if err := h.Rules.Delete(r.Context(), user.KubernetesUsername, user.KubernetesGroups, namespace, name); err != nil {
-		if strings.Contains(err.Error(), "not managed by KubeCenter") {
-			httputil.WriteError(w, http.StatusForbidden, err.Error(), "")
-			return
-		}
-		writeK8sError(w, err, "delete alert rule")
+		h.auditRuleFailure(r, user, audit.ActionAlertRuleDelete, namespace, name, err)
+		writeRuleError(w, r, err, "delete alert rule")
 		return
 	}
 
+	h.auditRule(r, user, audit.ActionAlertRuleDelete, namespace, name, audit.ResultSuccess, "")
+	httputil.WriteData(w, map[string]string{"status": "deleted"})
+}
+
+// auditRule records a PrometheusRule write against the request's cluster.
+func (h *Handler) auditRule(r *http.Request, user *auth.User, action audit.Action, namespace, name string, result audit.Result, detail string) {
 	h.AuditLogger.Log(r.Context(), audit.Entry{
 		Timestamp:         time.Now().UTC(),
-		ClusterID:         h.ClusterID,
+		ClusterID:         middleware.ClusterIDFromContext(r.Context()),
 		User:              user.Username,
 		SourceIP:          r.RemoteAddr,
-		Action:            audit.ActionAlertRuleDelete,
+		Action:            action,
 		ResourceKind:      "PrometheusRule",
 		ResourceNamespace: namespace,
 		ResourceName:      name,
-		Result:            audit.ResultSuccess,
+		Result:            result,
+		Detail:            detail,
 	})
+}
 
-	httputil.WriteData(w, map[string]string{"status": "deleted"})
+// auditRuleFailure records a rule write the cluster refused (denied) or
+// that failed. A remote cluster's error text is kept out of the row: it can
+// name the cluster's address.
+func (h *Handler) auditRuleFailure(r *http.Request, user *auth.User, action audit.Action, namespace, name string, err error) {
+	if errors.Is(err, errInvalidRule) {
+		return // rejected before anything was sent to a cluster
+	}
+	result := audit.ResultFailure
+	if apierrors.IsForbidden(err) || errors.Is(err, errNotManaged) {
+		result = audit.ResultDenied
+	}
+	detail := ""
+	if isLocal(r.Context()) {
+		detail = err.Error()
+	}
+	h.auditRule(r, user, action, namespace, name, result, detail)
 }
 
 // HandleGetSettings returns the alerting configuration (SMTP password masked).
@@ -558,7 +574,35 @@ func getName(content map[string]interface{}) string {
 	return ""
 }
 
-// writeK8sError maps a Kubernetes API error to the appropriate HTTP status code.
+func isLocal(ctx context.Context) bool {
+	return k8s.IsLocalClusterID(middleware.ClusterIDFromContext(ctx))
+}
+
+// writeRuleError answers a failed PrometheusRule call. The package's own
+// refusals keep their meaning on every cluster; the local cluster keeps its
+// historical Kubernetes error mapping, and a remote cluster's error is
+// classified without leaking its text (R-8 KTD4).
+func writeRuleError(w http.ResponseWriter, r *http.Request, err error, action string) {
+	switch {
+	case errors.Is(err, ErrNotInstalled):
+		reason := ""
+		if !isLocal(r.Context()) {
+			reason = string(k8s.ReasonDiscoveryMissing)
+		}
+		httputil.WriteErrorWithReason(w, http.StatusNotFound, ErrNotInstalled.Error(), reason, nil)
+	case errors.Is(err, errNotManaged):
+		httputil.WriteError(w, http.StatusForbidden, errNotManaged.Error(), "")
+	case errors.Is(err, errInvalidRule):
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
+	case isLocal(r.Context()):
+		writeK8sError(w, err, action)
+	default:
+		httputil.WriteRemoteLoadError(w, err, "PrometheusRule")
+	}
+}
+
+// writeK8sError maps a local Kubernetes API error to the appropriate HTTP
+// status code.
 func writeK8sError(w http.ResponseWriter, err error, action string) {
 	switch {
 	case apierrors.IsNotFound(err):
