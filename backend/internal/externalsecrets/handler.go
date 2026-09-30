@@ -165,7 +165,7 @@ func (h *Handler) dynForRequest(ctx context.Context, user *auth.User) (dynamic.I
 	if h.dynForUserOverride != nil {
 		return h.dynForUserOverride(user.KubernetesUsername, user.KubernetesGroups)
 	}
-	return h.Clients.DynamicClientForCluster(ctx, h.requestClusterID(ctx), user.KubernetesUsername, user.KubernetesGroups)
+	return h.Clients.DynamicClientForCluster(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups)
 }
 
 // clientForRequest is dynForRequest for the typed client. Tests inject
@@ -174,19 +174,7 @@ func (h *Handler) clientForRequest(ctx context.Context, user *auth.User) (kubern
 	if h.clientForUserOverride != nil {
 		return h.clientForUserOverride(user.KubernetesUsername, user.KubernetesGroups)
 	}
-	return h.Clients.ClientForCluster(ctx, h.requestClusterID(ctx), user.KubernetesUsername, user.KubernetesGroups)
-}
-
-// requestClusterID is the cluster a request targets. The evidence and history
-// endpoints accept this process's own configured id (h.ClusterID) as local,
-// because the poller stamps rows with it; ClusterRouter knows that id only as
-// "local", so it is mapped here rather than looked up as a registered cluster.
-func (h *Handler) requestClusterID(ctx context.Context) string {
-	clusterID := middleware.ClusterIDFromContext(ctx)
-	if clusterID == h.historyClusterID() {
-		return k8s.LocalClusterID
-	}
-	return clusterID
+	return h.Clients.ClientForCluster(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups)
 }
 
 // cachedData is the per-Handler snapshot. Built once per cacheTTL via

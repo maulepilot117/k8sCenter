@@ -45,26 +45,21 @@ func (c *recordingClients) TargetSchemaFor(context.Context, string, string, []st
 
 var seamUser = &auth.User{KubernetesUsername: "alice", KubernetesGroups: []string{"devs"}}
 
-// The per-user clients resolve on the cluster the request names. This
-// process's own configured id resolves as local, because ClusterRouter knows
-// that cluster only as "local".
+// The per-user clients resolve on the cluster the request names.
 func TestRequestClients_ResolveRequestCluster(t *testing.T) {
 	cases := []struct {
 		name       string
-		selfID     string
 		ctxCluster string // "" leaves the context without a cluster id
 		want       string
 	}{
-		{"no cluster in context", "", "", k8s.LocalClusterID},
-		{"local", "", k8s.LocalClusterID, k8s.LocalClusterID},
-		{"remote", "", "remote-1", "remote-1"},
-		{"configured self id", "homelab", "homelab", k8s.LocalClusterID},
-		{"remote with a configured self id", "homelab", "remote-1", "remote-1"},
+		{"no cluster in context", "", k8s.LocalClusterID},
+		{"local", k8s.LocalClusterID, k8s.LocalClusterID},
+		{"remote", "remote-1", "remote-1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clients := &recordingClients{}
-			h := &Handler{Clients: clients, ClusterID: tc.selfID}
+			h := &Handler{Clients: clients}
 			ctx := context.Background()
 			if tc.ctxCluster != "" {
 				ctx = middleware.WithClusterID(ctx, tc.ctxCluster)
