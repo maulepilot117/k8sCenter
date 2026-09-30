@@ -714,7 +714,8 @@ func main() {
 
 	// Velero backup/restore handler
 	veleroDiscoverer := velero.NewDiscoverer(k8sClient, logger)
-	veleroHandler := velero.NewHandler(k8sClient, veleroDiscoverer, accessChecker, auditLogger, nil, logger)
+	veleroHandler := velero.NewHandler(k8sClient, veleroDiscoverer, accessChecker, auditLogger, nil, clusterRouter, remotePresence, logger)
+	clusterRouter.RegisterEvictHook(veleroHandler.EvictRemoteCache)
 
 	// Notification center — aggregates events from all subsystems
 	var notifService *notifications.NotificationService

@@ -58,6 +58,7 @@ func (d *Discoverer) Probe(ctx context.Context) VeleroStatus {
 	defer d.mu.Unlock()
 
 	now := time.Now().UTC()
+	// nolint:cluster-routing local path: the Discoverer only probes the local cluster; remote presence comes from Handler.remoteInstalled.
 	disco := d.k8sClient.DiscoveryClient()
 
 	status := VeleroStatus{
@@ -90,6 +91,7 @@ func (d *Discoverer) Probe(ctx context.Context) VeleroStatus {
 	status.Detected = true
 
 	// Probe the velero namespace for deployment and version
+	// nolint:cluster-routing local path: the Discoverer only probes the local cluster.
 	cs := d.k8sClient.BaseClientset()
 	deps, err := cs.AppsV1().Deployments(veleroNamespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "component=velero",
@@ -115,6 +117,7 @@ func (d *Discoverer) Probe(ctx context.Context) VeleroStatus {
 	}
 
 	// Count BSLs
+	// nolint:cluster-routing local path: the Discoverer only probes the local cluster; remote location counts come from Handler.remoteStatus.
 	dynClient := d.k8sClient.BaseDynamicClient()
 	bslList, err := dynClient.Resource(BackupStorageLocationGVR).Namespace(veleroNamespace).List(ctx, metav1.ListOptions{})
 	if err == nil {
@@ -137,9 +140,4 @@ func (d *Discoverer) Probe(ctx context.Context) VeleroStatus {
 	)
 
 	return status
-}
-
-// IsAvailable returns true if Velero was detected.
-func (d *Discoverer) IsAvailable(ctx context.Context) bool {
-	return d.Status(ctx).Detected
 }

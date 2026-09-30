@@ -39,6 +39,7 @@ const (
 	ActionVeleroScheduleUpdate  Action = "velero_schedule_update"
 	ActionVeleroScheduleDelete  Action = "velero_schedule_delete"
 	ActionVeleroScheduleTrigger Action = "velero_schedule_trigger"
+	ActionVeleroBackupLogs      Action = "velero_backup_logs"
 
 	// Cert-manager actions
 	ActionCertRenew   Action = "cert_renew"
