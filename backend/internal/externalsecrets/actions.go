@@ -199,7 +199,7 @@ func (h *Handler) HandleForceSyncExternalSecret(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	dynClient, err := h.dynForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, err := h.dynForRequest(r.Context(), user)
 	if err != nil {
 		h.Logger.Error("create impersonating dynamic client", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")

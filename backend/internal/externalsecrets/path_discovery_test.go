@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 
@@ -49,12 +48,7 @@ func pathDiscoveryHandler(esObjs []runtime.Object, secrets ...runtime.Object) *H
 		Discoverer:    detectedDiscoverer(),
 		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
 		Logger:        slog.Default(),
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
-		clientForUserOverride: func(string, []string) (kubernetes.Interface, error) {
-			return typedFake, nil
-		},
+		Clients:       &stubClients{dyn: dynFake, kube: typedFake},
 	}
 }
 

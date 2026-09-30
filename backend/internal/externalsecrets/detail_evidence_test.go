@@ -26,9 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
-	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
-	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 
@@ -93,12 +91,7 @@ func newEvidenceFixture(disco []*metav1.APIResourceList, objs []runtime.Object, 
 		AccessChecker: ac,
 		Logger:        slog.Default(),
 		ClusterID:     "local",
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
-		clientForUserOverride: func(string, []string) (kubernetes.Interface, error) {
-			return kube, nil
-		},
+		Clients:       &stubClients{dyn: dynFake, kube: kube},
 	}
 	return &evidenceFixture{h: h, kube: kube, discoCalls: calls}
 }
@@ -838,26 +831,22 @@ func TestEvidenceEvents_ContextCancelled(t *testing.T) {
 // TestHistory_InternalErrors_Return500WithoutQuerying in history_handler_test.go.
 func TestEvidenceEvents_InternalErrors_Return500WithoutListingEvents(t *testing.T) {
 	cases := map[string]func(f *evidenceFixture){
-		"dynForUser fails": func(f *evidenceFixture) {
-			f.h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) {
-				return nil, errors.New("no rest config")
-			}
+		"dynamic client fails": func(f *evidenceFixture) {
+			stubOf(f.h).dynErr = errors.New("no rest config")
 		},
 		"live get fails": func(f *evidenceFixture) {
 			dyn := evidenceDynClient(allKindsAtV1(), esoObject("v1", "ExternalSecret", "apps", "db-creds", "uid-1"))
 			dyn.PrependReactor("get", "externalsecrets", func(clienttesting.Action) (bool, runtime.Object, error) {
 				return true, nil, errors.New("etcd timeout")
 			})
-			f.h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) { return dyn, nil }
+			stubOf(f.h).dyn = dyn
 		},
 		"object has no uid": func(f *evidenceFixture) {
 			dyn := evidenceDynClient(allKindsAtV1(), esoObject("v1", "ExternalSecret", "apps", "db-creds", ""))
-			f.h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) { return dyn, nil }
+			stubOf(f.h).dyn = dyn
 		},
-		"clientForUser fails": func(f *evidenceFixture) {
-			f.h.clientForUserOverride = func(string, []string) (kubernetes.Interface, error) {
-				return nil, errors.New("impersonation denied")
-			}
+		"typed client fails": func(f *evidenceFixture) {
+			stubOf(f.h).kubeErr = errors.New("impersonation denied")
 		},
 	}
 	for name, breakIt := range cases {

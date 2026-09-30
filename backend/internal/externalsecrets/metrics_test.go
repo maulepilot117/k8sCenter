@@ -17,10 +17,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // fakeProm is a promQuerier whose Query method returns a scripted result.
@@ -65,13 +65,11 @@ func vec(samples ...float64) model.Vector {
 func metricsHandler(objects []runtime.Object, prom promQuerier, accessChecker *resources.AccessChecker) *Handler {
 	dynFake := newEsoFakeDynClient(objects...)
 	return &Handler{
-		Discoverer:    detectedDiscoverer(),
-		AccessChecker: accessChecker,
-		Logger:        slog.Default(),
-		dynOverride:   dynFake, // service-account cache reads
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
+		Discoverer:          detectedDiscoverer(),
+		AccessChecker:       accessChecker,
+		Logger:              slog.Default(),
+		dynOverride:         dynFake, // service-account cache reads
+		Clients:             &stubClients{dyn: dynFake},
 		promQuerierOverride: prom,
 	}
 }
@@ -237,6 +235,49 @@ func TestHandleGetStoreMetrics_PrometheusOffline_ReturnsErrorEnvelope(t *testing
 	}
 	if got.RatePerMin != nil || got.Last24h != nil {
 		t.Errorf("expected nil rate fields on degradation, got %+v", got)
+	}
+}
+
+// The rate is computed from this process's own ESO cache and Prometheus, so
+// a remote store must not be answered with local-cluster data (R-8 R14). The
+// remote answer is the in-band unavailable envelope both clients already
+// render, and neither a client nor Prometheus is touched.
+func TestHandleGetStoreMetrics_RemoteCluster_ReportsUnavailable(t *testing.T) {
+	for _, scope := range []string{"Namespaced", "Cluster"} {
+		t.Run(scope, func(t *testing.T) {
+			store := makeStore("apps", "vault", "uid-vault")
+			es := makeESForStore("apps", "db-creds", "uid-es", "vault", "SecretStore")
+			prom := &fakeProm{scripts: []promScript{{value: vec(2.5)}, {value: vec(1_500_000)}}}
+			h := metricsHandler([]runtime.Object{store, es}, prom, resources.NewAlwaysAllowAccessChecker())
+
+			w := httptest.NewRecorder()
+			r := withUser(httptest.NewRequest(http.MethodGet, "/", nil), &auth.User{KubernetesUsername: "u"})
+			r = r.WithContext(middleware.WithClusterID(r.Context(), "remote-1"))
+			if scope == "Namespaced" {
+				r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
+				h.HandleGetStoreMetrics(w, r)
+			} else {
+				r = urlWithChiParams(r, map[string]string{"name": "vault"})
+				h.HandleGetClusterStoreMetrics(w, r)
+			}
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d; want 200 (unavailable is in-band); body = %s", w.Code, w.Body.String())
+			}
+			got := decodeMetrics(t, w)
+			if got.Error != remoteMetricsUnavailable {
+				t.Errorf("error = %q; want %q", got.Error, remoteMetricsUnavailable)
+			}
+			if got.RatePerMin != nil || got.Last24h != nil || got.Cost != nil {
+				t.Errorf("remote answer carries data: %+v", got)
+			}
+			if prom.calls != 0 {
+				t.Errorf("prom called %d times; want 0", prom.calls)
+			}
+			if c := stubOf(h); len(c.dynFor) != 0 || len(c.typedFor) != 0 {
+				t.Errorf("clients resolved for %v / %v; want none", c.dynFor, c.typedFor)
+			}
+		})
 	}
 }
 
