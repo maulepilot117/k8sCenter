@@ -95,6 +95,10 @@ type MeshStatus struct {
 	Istio       *MeshInfo `json:"istio,omitempty"`
 	Linkerd     *MeshInfo `json:"linkerd,omitempty"`
 	LastChecked time.Time `json:"lastChecked"`
+	// Reason says why nothing was detected on a remote cluster, from
+	// k8s.ReasonCode (discovery_missing, unreachable, ...). Empty when a
+	// mesh was detected, and always empty for the local cluster.
+	Reason string `json:"reason,omitempty"`
 }
 
 // RouteDestination identifies one backend a TrafficRoute forwards to.

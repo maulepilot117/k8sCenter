@@ -26,6 +26,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
@@ -34,15 +35,19 @@ import (
 
 const meshCacheTTL = 30 * time.Second
 
-// Handler serves service-mesh HTTP endpoints.
+// Handler serves service-mesh HTTP endpoints for the cluster a request
+// selects. v1 is read-only.
 //
-// The struct mirrors gitops.Handler and policy.Handler: service-account
-// clients populate a shared cache, then per-user RBAC filtering runs on
-// every request. Writes are deferred to a later phase; v1 is read-only.
+// The local cluster is read through a service-account cache and the local
+// Discoverer, then filtered per user by RBAC, mirroring gitops.Handler and
+// policy.Handler. A remote cluster is read through Clients as the requesting
+// identity, with its lists held briefly per identity in remote (remote.go).
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
+	Clients       k8s.ClusterClients
+	Presence      *k8s.Presence
 	Logger        *slog.Logger
 
 	// MonitoringDisc is optional; when set, Phase-B endpoints use it to
@@ -56,12 +61,16 @@ type Handler struct {
 	cache      *cachedMeshData
 	cacheGen   uint64 // incremented on invalidation; prevents stale writes
 
+	remoteOnce sync.Once
+	remote     *remotecache.Cache[*snapshot]
+
 	// dynOverride, when non-nil, replaces K8sClient.BaseDynamicClient() for
 	// cache-population reads. Exposed only to tests in this package.
 	dynOverride dynamic.Interface
 
 	// clientsetOverride is the typed-clientset test seam mirroring
-	// dynOverride; used by HandleMTLSPosture when listing pods in tests.
+	// dynOverride; used by HandleMTLSPosture when listing local pods in
+	// tests. It never applies to a remote cluster.
 	clientsetOverride kubernetes.Interface
 
 	// promClientOverride lets tests inject a PrometheusClient without
@@ -353,14 +362,18 @@ type MeshStatusResponse struct {
 
 // HandleStatus returns detected mesh installations. Non-admin users see a
 // stripped view without control-plane namespace details, matching the
-// gitops/policy precedent.
+// gitops/policy precedent. On a remote cluster a failure to read discovery
+// is a status with a reason, not an error (R-8 KTD5).
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
 
-	status := h.Discoverer.Status(r.Context())
+	status, err := h.clusterStatus(r.Context(), user)
+	if err != nil {
+		status = MeshStatus{Detected: MeshNone, Reason: string(k8s.RemoteReason(err)), LastChecked: time.Now().UTC()}
+	}
 
 	if !auth.IsAdmin(user) {
 		if status.Istio != nil {
@@ -381,16 +394,19 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 // routingResponse is the envelope for GET /mesh/routing. When no mesh is
 // installed, `Status.Detected == MeshNone` and `Routes` is an empty slice —
 // never nil — so the frontend can treat this as a normal empty-state.
+// Coverage names each list a remote cluster could not provide (R-8 KTD8).
 type routingResponse struct {
-	Status MeshStatus        `json:"status"`
-	Routes []TrafficRoute    `json:"routes"`
-	Errors map[string]string `json:"errors,omitempty"`
+	Status   MeshStatus           `json:"status"`
+	Routes   []TrafficRoute       `json:"routes"`
+	Errors   map[string]string    `json:"errors,omitempty"`
+	Coverage []k8s.SourceCoverage `json:"coverage,omitempty"`
 }
 
 type policiesResponse struct {
-	Status   MeshStatus        `json:"status"`
-	Policies []MeshedPolicy    `json:"policies"`
-	Errors   map[string]string `json:"errors,omitempty"`
+	Status   MeshStatus           `json:"status"`
+	Policies []MeshedPolicy       `json:"policies"`
+	Errors   map[string]string    `json:"errors,omitempty"`
+	Coverage []k8s.SourceCoverage `json:"coverage,omitempty"`
 }
 
 // HandleListRoutes returns RBAC-filtered traffic routes across both meshes.
@@ -401,12 +417,9 @@ func (h *Handler) HandleListRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := h.Discoverer.Status(r.Context())
-
-	data, err := h.fetchData(r.Context())
+	data, err := h.load(r.Context(), user)
 	if err != nil {
-		h.Logger.Error("failed to fetch mesh data", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch mesh data", "")
+		h.writeLoadError(w, r, err)
 		return
 	}
 
@@ -437,9 +450,10 @@ func (h *Handler) HandleListRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteData(w, routingResponse{
-		Status: status,
-		Routes: routes,
-		Errors: data.errors,
+		Status:   data.status,
+		Routes:   routes,
+		Errors:   data.errors,
+		Coverage: data.coverage,
 	})
 }
 
@@ -450,12 +464,9 @@ func (h *Handler) HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := h.Discoverer.Status(r.Context())
-
-	data, err := h.fetchData(r.Context())
+	data, err := h.load(r.Context(), user)
 	if err != nil {
-		h.Logger.Error("failed to fetch mesh data", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch mesh data", "")
+		h.writeLoadError(w, r, err)
 		return
 	}
 
@@ -486,9 +497,10 @@ func (h *Handler) HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteData(w, policiesResponse{
-		Status:   status,
+		Status:   data.status,
 		Policies: policies,
 		Errors:   data.errors,
+		Coverage: data.coverage,
 	})
 }
 
@@ -519,21 +531,23 @@ func (h *Handler) HandleGetRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, derr := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dynClient, derr := h.Clients.DynamicClientForCluster(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups)
 	if derr != nil {
-		h.Logger.Error("failed to create impersonating client", "error", derr)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		if isLocal(r.Context()) {
+			h.Logger.Error("failed to create impersonating client", "error", derr)
+			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		} else {
+			httputil.WriteTargetError(w, derr)
+		}
 		return
 	}
 
 	obj, gerr := dynClient.Resource(entry.GVR).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
 	if gerr != nil {
-		if apierrors.IsNotFound(gerr) {
-			httputil.WriteError(w, http.StatusNotFound, "mesh resource not found", "")
-			return
+		if !apierrors.IsNotFound(gerr) {
+			h.Logger.Error("failed to get mesh resource", "mesh", mesh, "kind", kind, "namespace", ns, "name", name, "error", gerr)
 		}
-		h.Logger.Error("failed to get mesh resource", "mesh", mesh, "kind", kind, "namespace", ns, "name", name, "error", gerr)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch mesh resource", "")
+		h.writeGetError(w, r, gerr)
 		return
 	}
 
@@ -557,24 +571,6 @@ func normalizeRouteByMesh(mesh MeshType, kind string, obj *unstructured.Unstruct
 		Namespace: obj.GetNamespace(),
 		Raw:       obj.Object,
 	}
-}
-
-// userClient returns an impersonating Kubernetes clientset scoped to the
-// authenticated user. All request-time read paths in this handler MUST
-// go through this helper — using BaseClientset() (the service account's
-// own credentials) would violate the impersonation rule in CLAUDE.md
-// and mis-attribute the call in the Kubernetes audit log.
-//
-// The clientsetOverride test seam is preserved for unit tests; fake
-// clientsets stand in for a real impersonating client in table tests.
-func (h *Handler) userClient(user *auth.User) (kubernetes.Interface, error) {
-	if h.clientsetOverride != nil {
-		return h.clientsetOverride, nil
-	}
-	if h.K8sClient == nil {
-		return nil, errors.New("no kubernetes client configured")
-	}
-	return h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 }
 
 // promClient returns the Prometheus client if monitoring is configured.
@@ -606,13 +602,32 @@ func (h *Handler) promClient() *monitoring.PrometheusClient {
 // details in the log; the handler continues with whatever data it has
 // rather than failing the request. System errors (RBAC check failed,
 // impersonation failed) are 5xx; RBAC denial is 403.
+//
+// On a remote cluster the pods and policies come from that cluster, a
+// failure to read its mesh state fails the request (R-8 KTD5), and the
+// metric cross-check is reported unavailable without querying Prometheus,
+// which only knows the local cluster (R14).
 func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
 
-	status := h.Discoverer.Status(r.Context())
+	local := isLocal(r.Context())
+	var (
+		status MeshStatus
+		data   *snapshot // loaded below for the local cluster, after the RBAC check
+	)
+	if local {
+		status = h.Discoverer.Status(r.Context())
+	} else {
+		snap, err := h.load(r.Context(), user)
+		if err != nil {
+			h.writeLoadError(w, r, err)
+			return
+		}
+		data, status = snap, snap.status
+	}
 	resp := MTLSPostureResponse{Status: status, Workloads: []WorkloadMTLS{}}
 
 	if status.Detected == MeshNone {
@@ -637,10 +652,14 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs, cerr := h.userClient(user)
+	cs, cerr := h.userClient(r.Context(), user)
 	if cerr != nil {
-		h.Logger.Error("mTLS posture: impersonating client unavailable", "user", user.KubernetesUsername, "error", cerr)
-		httputil.WriteError(w, http.StatusInternalServerError, "kubernetes client unavailable", "")
+		if local {
+			h.Logger.Error("mTLS posture: impersonating client unavailable", "user", user.KubernetesUsername, "error", cerr)
+			httputil.WriteError(w, http.StatusInternalServerError, "kubernetes client unavailable", "")
+		} else {
+			httputil.WriteTargetError(w, cerr)
+		}
 		return
 	}
 
@@ -662,12 +681,16 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if local {
+		snap, derr := h.load(r.Context(), user)
+		if derr != nil {
+			h.Logger.Error("failed to fetch mesh policies for mTLS posture", "user", user.KubernetesUsername, "error", derr)
+			errs["policies"] = "failed to fetch mesh policies"
+		}
+		data = snap
+	}
 	var peerAuths []peerAuthRef
-	data, derr := h.fetchData(r.Context())
-	if derr != nil {
-		h.Logger.Error("failed to fetch mesh policies for mTLS posture", "user", user.KubernetesUsername, "error", derr)
-		errs["policies"] = "failed to fetch mesh policies"
-	} else {
+	if data != nil {
 		peerAuths = peerAuthsFromPolicies(data.policies)
 	}
 
@@ -719,7 +742,11 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	//     applyMTLSMetricOverrides already filters by Mesh != MeshIstio,
 	//     so the call would be wasted on a Linkerd-only cluster.
 	istioPresent := status.Detected == MeshIstio || status.Detected == MeshBoth
-	if pc := h.promClient(); pc != nil && len(workloads) > 0 && istioPresent {
+	if !local {
+		if istioPresent {
+			errs["prometheus-cross-check"] = crossCheckUnavailableRemote
+		}
+	} else if pc := h.promClient(); pc != nil && len(workloads) > 0 && istioPresent {
 		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
 		if perr != nil {
 			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "user", user.KubernetesUsername, "namespace", namespace, "error", perr)
@@ -772,13 +799,22 @@ type GoldenSignalsResponse struct {
 // 500 (system fault), RBAC denial is a 403, invalid param is a 400 with
 // a user-safe message. Internal render errors are logged in full but
 // never echoed to the response body.
+//
+// On a remote cluster the mesh is validated against that cluster and the
+// signals are unavailable with reason unsupported_platform: they come from
+// the local Prometheus, which knows nothing of a remote cluster's traffic
+// (R14), so Prometheus is never queried.
 func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
 
-	status := h.Discoverer.Status(r.Context())
+	status, err := h.clusterStatus(r.Context(), user)
+	if err != nil {
+		h.writeLoadError(w, r, err)
+		return
+	}
 	namespace := r.URL.Query().Get("namespace")
 	service := r.URL.Query().Get("service")
 	meshParam := r.URL.Query().Get("mesh")
@@ -806,6 +842,14 @@ func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 	}
 	if !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to view metrics for this namespace", "")
+		return
+	}
+
+	if !isLocal(r.Context()) {
+		httputil.WriteData(w, GoldenSignalsResponse{Status: status, Signals: GoldenSignals{
+			Mesh: mesh, Namespace: namespace, Service: service,
+			Reason: string(k8s.ReasonUnsupportedPlatform),
+		}})
 		return
 	}
 
