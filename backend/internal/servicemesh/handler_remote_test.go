@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -603,5 +605,80 @@ func TestRemote_CacheIsEvictedPerCluster(t *testing.T) {
 	f.h.EvictRemoteCache(remoteCluster)
 	if got := decode[routingBody](t, call(t, f.h.HandleListRoutes, "/mesh/routing", nil)).Routes; len(got) != 2 {
 		t.Errorf("routes = %+v, want both after eviction", got)
+	}
+}
+
+func controlPlaneObjects() []runtime.Object {
+	return []runtime.Object{
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "istiod", Namespace: istioSystemNS, Labels: map[string]string{"app": "istiod"}},
+			Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "discovery", Image: "docker.io/istio/pilot:1.25.1"}},
+			}}},
+		},
+		&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "ztunnel", Namespace: istioSystemNS, Labels: map[string]string{"app": "ztunnel"}}},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "linkerd-identity", Namespace: linkerdControlNS,
+				Labels: map[string]string{"linkerd.io/control-plane-component": "identity", "linkerd.io/control-plane-version": "edge-25.4.1"}},
+		},
+	}
+}
+
+// The remote's control plane fills in version, namespace and mode the way
+// the local Discoverer does, read as the user on the remote.
+func TestRemote_StatusReportsTheRemoteControlPlane(t *testing.T) {
+	f := newRemoteFixture(t, newFakeCluster(t, meshLists(MeshIstio, MeshLinkerd), nil, controlPlaneObjects()...))
+
+	rr := call(t, f.h.HandleStatus, "/mesh/status", nil)
+	got := decode[MeshStatusResponse](t, rr).Status
+	wantIstio := MeshInfo{Installed: true, Namespace: istioSystemNS, Version: "1.25.1", Mode: MeshModeAmbient}
+	wantLinkerd := MeshInfo{Installed: true, Namespace: linkerdControlNS, Version: "edge-25.4.1"}
+	if got.Istio == nil || *got.Istio != wantIstio || got.Linkerd == nil || *got.Linkerd != wantLinkerd {
+		t.Errorf("status = istio %+v linkerd %+v, want %+v and %+v", got.Istio, got.Linkerd, wantIstio, wantLinkerd)
+	}
+
+	// The routing list's status names the same control plane.
+	body := decode[routingBody](t, call(t, f.h.HandleListRoutes, "/mesh/routing", nil))
+	if body.Status.Istio == nil || *body.Status.Istio != wantIstio {
+		t.Errorf("routing status istio = %+v, want %+v", body.Status.Istio, wantIstio)
+	}
+	f.assertNoLocalOrProm(t)
+}
+
+// A control plane the user cannot read leaves the defaults rather than
+// failing the status.
+func TestRemote_UnreadableControlPlaneKeepsDefaults(t *testing.T) {
+	remote := newFakeCluster(t, meshLists(MeshIstio), nil, controlPlaneObjects()...)
+	remote.typed.PrependReactor("list", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "", errors.New("denied"))
+	})
+	f := newRemoteFixture(t, remote)
+
+	got := decode[MeshStatusResponse](t, call(t, f.h.HandleStatus, "/mesh/status", nil)).Status
+	want := MeshInfo{Installed: true, Version: versionUnknown, Mode: MeshModeSidecar}
+	if got.Istio == nil || *got.Istio != want {
+		t.Errorf("istio = %+v, want the defaults %+v", got.Istio, want)
+	}
+}
+
+// Remote status is cached per identity, so a status poll does not re-list
+// the control plane each time, and eviction drops it.
+func TestRemote_StatusIsCachedUntilEvicted(t *testing.T) {
+	remote := newFakeCluster(t, meshLists(MeshIstio), nil, controlPlaneObjects()...)
+	f := newRemoteFixture(t, remote)
+
+	call(t, f.h.HandleStatus, "/mesh/status", nil)
+	first := len(remote.typed.Actions())
+	if first == 0 {
+		t.Fatal("status did not read the remote control plane")
+	}
+	call(t, f.h.HandleStatus, "/mesh/status", nil)
+	if n := len(remote.typed.Actions()); n != first {
+		t.Errorf("second status made %d more control-plane reads, want 0", n-first)
+	}
+	f.h.EvictRemoteCache(remoteCluster)
+	call(t, f.h.HandleStatus, "/mesh/status", nil)
+	if n := len(remote.typed.Actions()); n == first {
+		t.Error("status after eviction did not re-read the control plane")
 	}
 }

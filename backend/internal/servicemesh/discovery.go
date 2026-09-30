@@ -54,7 +54,9 @@ func NewDiscoverer(k8sClient *k8s.ClientFactory, logger *slog.Logger) *Discovere
 		status: MeshStatus{LastChecked: time.Now().UTC()},
 	}
 	if k8sClient != nil {
+		// nolint:cluster-routing local path: the Discoverer only ever probes the local cluster; remote status comes from Handler.remoteDiscovery.
 		d.cs = k8sClient.BaseClientset()
+		// nolint:cluster-routing local path: the Discoverer only ever probes the local cluster; remote status comes from Handler.remoteDiscovery.
 		d.disco = k8sClient.DiscoveryClient()
 	}
 	return d
@@ -185,12 +187,18 @@ func (d *Discoverer) probeIstio(ctx context.Context) (*MeshInfo, error) {
 	if !present {
 		return nil, nil
 	}
+	return istioControlPlane(ctx, d.cs), nil
+}
 
-	// CRDs imply install; default to Version=unknown and fill in from the
-	// istiod deployment when it is reachable.
+// istioControlPlane describes an installed Istio from its control plane.
+// CRDs imply install, so it defaults to Version=unknown in sidecar mode and
+// fills in from the istiod deployment and the ztunnel DaemonSet when cs can
+// read them; a failed read keeps the default. The local Discoverer passes
+// its service-account client, a remote read the user's impersonating one.
+func istioControlPlane(ctx context.Context, cs kubernetes.Interface) *MeshInfo {
 	info := &MeshInfo{Installed: true, Version: versionUnknown, Mode: MeshModeSidecar}
 
-	deps, err := d.cs.AppsV1().Deployments(istioSystemNS).List(ctx, metav1.ListOptions{
+	deps, err := cs.AppsV1().Deployments(istioSystemNS).List(ctx, metav1.ListOptions{
 		LabelSelector: istioDeployLabel,
 	})
 	if err == nil && len(deps.Items) > 0 {
@@ -201,14 +209,14 @@ func (d *Discoverer) probeIstio(ctx context.Context) (*MeshInfo, error) {
 	}
 
 	// Ambient mode heuristic: ztunnel DaemonSet in istio-system.
-	ds, err := d.cs.AppsV1().DaemonSets(istioSystemNS).List(ctx, metav1.ListOptions{
+	ds, err := cs.AppsV1().DaemonSets(istioSystemNS).List(ctx, metav1.ListOptions{
 		LabelSelector: "app=ztunnel",
 	})
 	if err == nil && len(ds.Items) > 0 {
 		info.Mode = MeshModeAmbient
 	}
 
-	return info, nil
+	return info
 }
 
 func (d *Discoverer) probeLinkerd(ctx context.Context) (*MeshInfo, error) {
@@ -219,10 +227,15 @@ func (d *Discoverer) probeLinkerd(ctx context.Context) (*MeshInfo, error) {
 	if !present {
 		return nil, nil
 	}
+	return linkerdControlPlane(ctx, d.cs), nil
+}
 
+// linkerdControlPlane describes an installed Linkerd from its identity
+// deployment, as istioControlPlane does for Istio.
+func linkerdControlPlane(ctx context.Context, cs kubernetes.Interface) *MeshInfo {
 	info := &MeshInfo{Installed: true, Version: versionUnknown}
 
-	deps, err := d.cs.AppsV1().Deployments(linkerdControlNS).List(ctx, metav1.ListOptions{
+	deps, err := cs.AppsV1().Deployments(linkerdControlNS).List(ctx, metav1.ListOptions{
 		LabelSelector: linkerdDeployLbl,
 	})
 	if err == nil && len(deps.Items) > 0 {
@@ -232,7 +245,7 @@ func (d *Discoverer) probeLinkerd(ctx context.Context) (*MeshInfo, error) {
 		}
 	}
 
-	return info, nil
+	return info
 }
 
 // hasGroupVersionKind returns whether the cluster's discovery layer reports

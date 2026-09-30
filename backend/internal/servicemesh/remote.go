@@ -84,17 +84,28 @@ type snapshot struct {
 	coverage []k8s.SourceCoverage
 }
 
-func (h *Handler) remoteCache() *remotecache.Cache[*snapshot] {
+func (h *Handler) initRemoteCaches() {
 	h.remoteOnce.Do(func() {
 		h.remote = remotecache.New[*snapshot](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
+		h.remoteStatus = remotecache.New[MeshStatus](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
 	})
+}
+
+func (h *Handler) remoteCache() *remotecache.Cache[*snapshot] {
+	h.initRemoteCaches()
 	return h.remote
+}
+
+func (h *Handler) remoteStatusCache() *remotecache.Cache[MeshStatus] {
+	h.initRemoteCaches()
+	return h.remoteStatus
 }
 
 // EvictRemoteCache drops every identity's cached view of clusterID.
 // Registered as a ClusterRouter evict hook.
 func (h *Handler) EvictRemoteCache(clusterID string) {
 	h.remoteCache().EvictCluster(clusterID)
+	h.remoteStatusCache().EvictCluster(clusterID)
 }
 
 func isLocal(ctx context.Context) bool {
@@ -125,12 +136,17 @@ func (h *Handler) writeLoadError(w http.ResponseWriter, r *http.Request, err err
 
 // clusterStatus returns the mesh status of the request's cluster. A remote
 // failure is an error; HandleStatus turns it into a status with a reason.
+// A remote status is cached per identity like the lists, so a page polling
+// it does not re-read the remote's discovery and control plane each time.
 func (h *Handler) clusterStatus(ctx context.Context, user *auth.User) (MeshStatus, error) {
 	if isLocal(ctx) {
 		return h.Discoverer.Status(ctx), nil
 	}
-	status, _, err := h.remoteDiscovery(ctx, middleware.ClusterIDFromContext(ctx), user)
-	return status, err
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	return h.remoteStatusCache().Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (MeshStatus, error) {
+		status, _, err := h.remoteDiscovery(ctx, clusterID, user)
+		return status, err
+	})
 }
 
 // load returns the request cluster's mesh snapshot: the service-account
@@ -187,19 +203,26 @@ func (h *Handler) remoteDiscovery(ctx context.Context, clusterID string, user *a
 		}
 	}
 
-	status := MeshStatus{LastChecked: now}
 	// Detection mirrors the local Discoverer: a mesh is installed when the
 	// version this package lists its anchor kind at is served.
-	if servesGVR(lists, IstioVirtualServiceGVR) {
-		status.Istio = &MeshInfo{Installed: true, Version: versionUnknown, Mode: MeshModeSidecar}
-	}
-	if servesGVR(lists, LinkerdServerGVR) {
-		status.Linkerd = &MeshInfo{Installed: true, Version: versionUnknown}
-	}
-	status.Detected = detectionFrom(status.Istio, status.Linkerd)
-	if status.Detected == MeshNone {
+	istio, linkerd := servesGVR(lists, IstioVirtualServiceGVR), servesGVR(lists, LinkerdServerGVR)
+	if !istio && !linkerd {
 		return missing, lists, nil
 	}
+	status := MeshStatus{LastChecked: now}
+	// The control plane is read as the user; one they cannot read leaves
+	// the version and mode at their defaults, as it does locally.
+	cs, err := h.Clients.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		return MeshStatus{}, nil, k8s.TargetError{Err: err}
+	}
+	if istio {
+		status.Istio = istioControlPlane(ctx, cs)
+	}
+	if linkerd {
+		status.Linkerd = linkerdControlPlane(ctx, cs)
+	}
+	status.Detected = detectionFrom(status.Istio, status.Linkerd)
 	return status, lists, nil
 }
 

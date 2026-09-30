@@ -61,8 +61,9 @@ type Handler struct {
 	cache      *cachedMeshData
 	cacheGen   uint64 // incremented on invalidation; prevents stale writes
 
-	remoteOnce sync.Once
-	remote     *remotecache.Cache[*snapshot]
+	remoteOnce   sync.Once
+	remote       *remotecache.Cache[*snapshot]
+	remoteStatus *remotecache.Cache[MeshStatus] // status alone, for the status and golden-signals routes
 
 	// dynOverride, when non-nil, replaces K8sClient.BaseDynamicClient() for
 	// cache-population reads. Exposed only to tests in this package.
@@ -307,6 +308,7 @@ func (h *Handler) dynClient() dynamic.Interface {
 	if h.K8sClient == nil {
 		return nil
 	}
+	// nolint:cluster-routing local path: dynClient backs the local-cluster cache and the local-only topology overlay; remote reads go through fetchRemote.
 	return h.K8sClient.BaseDynamicClient()
 }
 
