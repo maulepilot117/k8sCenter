@@ -100,7 +100,7 @@ func (h *Handler) invalidate(ctx context.Context, gvr schema.GroupVersionResourc
 // treating it as one.
 func (h *Handler) allowed(w http.ResponseWriter, r *http.Request, user *auth.User, verb, resource, namespace, denyMsg string) bool {
 	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()),
-		user.KubernetesUsername, user.KubernetesGroups, verb, FluxProviderGVR.Group, resource, namespace)
+		user.KubernetesUsername, user.KubernetesGroups, verb, FluxNotificationGroup, resource, namespace)
 	switch {
 	case err != nil && !isLocal(r.Context()):
 		writeAccessCheckError(w, err)
@@ -190,7 +190,7 @@ func (h *Handler) writeLoadError(w http.ResponseWriter, r *http.Request, err err
 
 // loadItems returns the request cluster's items of gvr: the local
 // service-account cache, or a per-identity read of a remote cluster.
-func loadItems[T any](h *Handler, ctx context.Context, user *auth.User, gvr schema.GroupVersionResource, local func() ([]T, error), pick func(*snapshot) []T) ([]T, error) {
+func loadItems[T any](ctx context.Context, h *Handler, user *auth.User, gvr schema.GroupVersionResource, local func() ([]T, error), pick func(*snapshot) []T) ([]T, error) {
 	if isLocal(ctx) {
 		return local()
 	}
@@ -255,7 +255,7 @@ func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth
 		return nil, k8s.TargetError{Err: err}
 	}
 	lists, unavailable, failedGroups := k8s.DiscoveryLists(target.Discovery)
-	if unavailable || failedGroups[FluxProviderGVR.Group] {
+	if unavailable || failedGroups[FluxNotificationGroup] {
 		return nil, k8s.ErrDiscoveryUnavailable
 	}
 	if !servedAt(lists, FluxProviderGVR) && !servedAt(lists, FluxAlertGVR) {
@@ -330,48 +330,69 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 // tell is a status with a reason, not an error (R-8 KTD5); a list that could
 // not be read or RBAC-filtered is disclosed in Coverage (KTD8).
 func (h *Handler) remoteStatus(ctx context.Context, user *auth.User) NotificationStatus {
-	served, err := h.remoteServed(ctx, middleware.ClusterIDFromContext(ctx), user)
-	switch {
-	case err != nil:
-		return NotificationStatus{Reason: string(k8s.RemoteReason(err))}
-	case len(served) == 0:
+	failed := map[string]error{}
+	snap, err := h.load(ctx, user)
+	if err != nil {
+		// Every list failing does not by itself mean the API's presence is
+		// unknown: ask discovery directly for the reason, if there is one.
+		served, servedErr := h.remoteServed(ctx, middleware.ClusterIDFromContext(ctx), user)
+		switch {
+		case servedErr != nil:
+			return NotificationStatus{Reason: string(k8s.RemoteReason(servedErr))}
+		case len(served) == 0:
+			return NotificationStatus{Reason: string(k8s.ReasonDiscoveryMissing)}
+		}
+		for res := range served {
+			failed[res] = err
+		}
+		return NotificationStatus{Available: true, Coverage: coverageOf(failed)}
+	}
+	if len(snap.served) == 0 {
 		return NotificationStatus{Reason: string(k8s.ReasonDiscoveryMissing)}
 	}
 
 	status := NotificationStatus{Available: true}
-	failed := map[string]error{}
-	snap, err := h.load(ctx, user)
-	if err != nil {
-		for res := range served {
-			failed[res] = err
-		}
-	} else {
-		for res, ferr := range snap.failed {
-			failed[res] = ferr
-		}
-		count := func(resource string, n int, err error) int {
-			if err != nil {
-				failed[resource] = err
-			}
-			return n
-		}
-		if failed["providers"] == nil {
-			items, err := filterByRBAC(ctx, h.AccessChecker, user, snap.providers, "providers")
-			status.ProviderCount = count("providers", len(items), err)
-		}
-		if failed["alerts"] == nil {
-			items, err := filterByRBAC(ctx, h.AccessChecker, user, snap.alerts, "alerts")
-			status.AlertCount = count("alerts", len(items), err)
-		}
-		if failed["receivers"] == nil {
-			items, err := filterByRBAC(ctx, h.AccessChecker, user, snap.receivers, "receivers")
-			status.ReceiverCount = count("receivers", len(items), err)
-		}
+	for res, ferr := range snap.failed {
+		failed[res] = ferr
 	}
+	counts := []struct {
+		resource string
+		dst      *int
+		count    func() (int, error)
+	}{
+		{FluxProviderGVR.Resource, &status.ProviderCount, func() (int, error) {
+			items, err := filterByRBAC(ctx, h.AccessChecker, user, snap.providers, FluxProviderGVR.Resource)
+			return len(items), err
+		}},
+		{FluxAlertGVR.Resource, &status.AlertCount, func() (int, error) {
+			items, err := filterByRBAC(ctx, h.AccessChecker, user, snap.alerts, FluxAlertGVR.Resource)
+			return len(items), err
+		}},
+		{FluxReceiverGVR.Resource, &status.ReceiverCount, func() (int, error) {
+			items, err := filterByRBAC(ctx, h.AccessChecker, user, snap.receivers, FluxReceiverGVR.Resource)
+			return len(items), err
+		}},
+	}
+	for _, c := range counts {
+		if failed[c.resource] != nil {
+			continue
+		}
+		n, err := c.count()
+		if err != nil {
+			failed[c.resource] = err
+			continue
+		}
+		*c.dst = n
+	}
+	status.Coverage = coverageOf(failed)
+	return status
+}
+
+// coverageOf describes each notification list in failed, in list order.
+func coverageOf(failed map[string]error) []k8s.SourceCoverage {
 	sources := make([]string, len(notificationGVRs))
 	for i, gvr := range notificationGVRs {
 		sources[i] = gvr.Resource
 	}
-	status.Coverage = k8s.CoverageOf(failed, sources...)
-	return status
+	return k8s.CoverageOf(failed, sources...)
 }

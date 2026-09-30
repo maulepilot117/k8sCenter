@@ -604,3 +604,18 @@ func TestLocal_AccessCheckErrorIsADenial(t *testing.T) {
 		t.Errorf("local cluster recorded %d actions, want 0", n)
 	}
 }
+
+func TestRemote_EveryListFailingIsAvailableWithFullCoverage(t *testing.T) {
+	hs := newHarness(t, FluxProviderGVR.Version, fluxObj("Provider", "remote-provider"))
+	hs.remoteDyn().PrependReactor("list", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(FluxProviderGVR.GroupResource(), "", errors.New("denied"))
+	})
+
+	st := decode[NotificationStatus](t, do(t, remoteCluster, http.MethodGet, hs.h.HandleStatus, nil, ""))
+	if !st.Available || st.Reason != "" || len(st.Coverage) != 3 {
+		t.Errorf("status = %+v, want available with a coverage entry per list", st)
+	}
+	if rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListProviders, nil, ""); rr.Code != http.StatusForbidden {
+		t.Errorf("providers list status %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+}

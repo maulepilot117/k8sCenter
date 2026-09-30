@@ -8,22 +8,25 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
+// FluxNotificationGroup is the API group of every Flux notification resource.
+const FluxNotificationGroup = "notification.toolkit.fluxcd.io"
+
 var (
 	// FluxProviderGVR is the GVR for Flux Notification Provider resources.
 	FluxProviderGVR = schema.GroupVersionResource{
-		Group:    "notification.toolkit.fluxcd.io",
+		Group:    FluxNotificationGroup,
 		Version:  "v1beta3",
 		Resource: "providers",
 	}
 	// FluxAlertGVR is the GVR for Flux Notification Alert resources.
 	FluxAlertGVR = schema.GroupVersionResource{
-		Group:    "notification.toolkit.fluxcd.io",
+		Group:    FluxNotificationGroup,
 		Version:  "v1beta3",
 		Resource: "alerts",
 	}
 	// FluxReceiverGVR is the GVR for Flux Notification Receiver resources.
 	FluxReceiverGVR = schema.GroupVersionResource{
-		Group:    "notification.toolkit.fluxcd.io",
+		Group:    FluxNotificationGroup,
 		Version:  "v1",
 		Resource: "receivers",
 	}

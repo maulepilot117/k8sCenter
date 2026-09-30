@@ -228,14 +228,14 @@ func (r NormalizedReceiver) getNamespace() string { return r.Namespace }
 // an empty list; the local cluster keeps treating it as a denial.
 func filterByRBAC[T namespacedItem](ctx context.Context, checker *resources.AccessChecker, user *auth.User, items []T, resource string) ([]T, error) {
 	clusterID := middleware.ClusterIDFromContext(ctx)
-	local := k8s.IsLocalClusterID(clusterID)
+	local := isLocal(ctx)
 	access := make(map[string]bool)
 	var filtered []T
 	for _, item := range items {
 		ns := item.getNamespace()
 		allowed, checked := access[ns]
 		if !checked {
-			can, err := checker.CanAccessGroupResource(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", FluxProviderGVR.Group, resource, ns)
+			can, err := checker.CanAccessGroupResource(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", FluxNotificationGroup, resource, ns)
 			if err != nil && !local {
 				return nil, err
 			}
@@ -349,17 +349,14 @@ func serveList[T namespacedItem](h *Handler, w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	all, err := loadItems(h, r.Context(), user, gvr, local, pick)
+	items, err := loadItems(r.Context(), h, user, gvr, local, pick)
 	if err != nil {
 		h.writeLoadError(w, r, err, gvr.Resource)
 		return
 	}
-	items, err := filterByRBAC(r.Context(), h.AccessChecker, user, all, gvr.Resource)
-	if err != nil {
-		writeAccessCheckError(w, err)
-		return
-	}
 
+	// Narrow to the namespace first: on a remote cluster each namespace
+	// checked below costs an access review against that cluster.
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
 		var filtered []T
 		for _, item := range items {
@@ -368,6 +365,12 @@ func serveList[T namespacedItem](h *Handler, w http.ResponseWriter, r *http.Requ
 			}
 		}
 		items = filtered
+	}
+
+	items, err = filterByRBAC(r.Context(), h.AccessChecker, user, items, gvr.Resource)
+	if err != nil {
+		writeAccessCheckError(w, err)
+		return
 	}
 
 	httputil.WriteData(w, map[string]any{
