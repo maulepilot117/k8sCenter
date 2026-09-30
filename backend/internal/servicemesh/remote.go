@@ -50,7 +50,9 @@ type meshSource struct {
 
 // meshSources lists every mesh CRD in a fixed order, so coverage and errors
 // come out in a stable order.
-func meshSources() []meshSource {
+var meshSources = buildMeshSources()
+
+func buildMeshSources() []meshSource {
 	var out []meshSource
 	for _, c := range istioRouteCRDs {
 		out = append(out, meshSource{mesh: MeshIstio, key: "istio/" + c.Kind, gvr: c.GVR,
@@ -84,28 +86,30 @@ type snapshot struct {
 	coverage []k8s.SourceCoverage
 }
 
-func (h *Handler) initRemoteCaches() {
+// discovered is what a remote cluster's discovery and control plane say
+// about its meshes, as one identity sees them. The status route and the
+// list snapshot share it, so a page reading both reads the remote once.
+type discovered struct {
+	status MeshStatus
+	lists  []*metav1.APIResourceList // nil when no mesh is installed
+}
+
+// remoteCaches returns the per-(cluster, identity) caches of remote
+// snapshots and remote discovery, building them on first use.
+func (h *Handler) remoteCaches() (*remotecache.Cache[*snapshot], *remotecache.Cache[*discovered]) {
 	h.remoteOnce.Do(func() {
 		h.remote = remotecache.New[*snapshot](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
-		h.remoteStatus = remotecache.New[MeshStatus](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
+		h.remoteDiscovered = remotecache.New[*discovered](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
 	})
-}
-
-func (h *Handler) remoteCache() *remotecache.Cache[*snapshot] {
-	h.initRemoteCaches()
-	return h.remote
-}
-
-func (h *Handler) remoteStatusCache() *remotecache.Cache[MeshStatus] {
-	h.initRemoteCaches()
-	return h.remoteStatus
+	return h.remote, h.remoteDiscovered
 }
 
 // EvictRemoteCache drops every identity's cached view of clusterID.
 // Registered as a ClusterRouter evict hook.
 func (h *Handler) EvictRemoteCache(clusterID string) {
-	h.remoteCache().EvictCluster(clusterID)
-	h.remoteStatusCache().EvictCluster(clusterID)
+	snapshots, discoveries := h.remoteCaches()
+	snapshots.EvictCluster(clusterID)
+	discoveries.EvictCluster(clusterID)
 }
 
 func isLocal(ctx context.Context) bool {
@@ -124,6 +128,17 @@ func (h *Handler) userClient(ctx context.Context, user *auth.User) (kubernetes.I
 	return h.Clients.ClientForCluster(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups)
 }
 
+// writeClientError answers a failure to resolve a client for the request's
+// cluster. The local cluster keeps its historical 500 with localMsg.
+func (h *Handler) writeClientError(w http.ResponseWriter, r *http.Request, err error, localMsg string) {
+	if isLocal(r.Context()) {
+		h.Logger.Error("failed to create impersonating client", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, localMsg, "")
+		return
+	}
+	httputil.WriteTargetError(w, err)
+}
+
 // writeLoadError answers a failure to read the cluster's mesh state.
 func (h *Handler) writeLoadError(w http.ResponseWriter, r *http.Request, err error) {
 	if isLocal(r.Context()) {
@@ -136,16 +151,28 @@ func (h *Handler) writeLoadError(w http.ResponseWriter, r *http.Request, err err
 
 // clusterStatus returns the mesh status of the request's cluster. A remote
 // failure is an error; HandleStatus turns it into a status with a reason.
-// A remote status is cached per identity like the lists, so a page polling
-// it does not re-read the remote's discovery and control plane each time.
 func (h *Handler) clusterStatus(ctx context.Context, user *auth.User) (MeshStatus, error) {
 	if isLocal(ctx) {
 		return h.Discoverer.Status(ctx), nil
 	}
-	clusterID := middleware.ClusterIDFromContext(ctx)
-	return h.remoteStatusCache().Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (MeshStatus, error) {
-		status, _, err := h.remoteDiscovery(ctx, clusterID, user)
-		return status, err
+	d, err := h.discover(ctx, middleware.ClusterIDFromContext(ctx), user)
+	if err != nil {
+		return MeshStatus{}, err
+	}
+	return d.status, nil
+}
+
+// discover returns the remote cluster's discovery for the user, cached per
+// identity like the lists, so a page polling the status does not re-read
+// the remote's discovery and control plane each time.
+func (h *Handler) discover(ctx context.Context, clusterID string, user *auth.User) (*discovered, error) {
+	_, discoveries := h.remoteCaches()
+	return discoveries.Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*discovered, error) {
+		status, lists, err := h.remoteDiscovery(ctx, clusterID, user)
+		if err != nil {
+			return nil, err
+		}
+		return &discovered{status: status, lists: lists}, nil
 	})
 }
 
@@ -162,7 +189,8 @@ func (h *Handler) load(ctx context.Context, user *auth.User) (*snapshot, error) 
 		return &snapshot{status: status, routes: data.routes, policies: data.policies, errors: data.errors}, nil
 	}
 	clusterID := middleware.ClusterIDFromContext(ctx)
-	return h.remoteCache().Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*snapshot, error) {
+	snapshots, _ := h.remoteCaches()
+	return snapshots.Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*snapshot, error) {
 		return h.fetchRemote(ctx, clusterID, user)
 	})
 }
@@ -248,16 +276,17 @@ func servesGVR(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource)
 // user. Each list succeeds or fails on its own; only when every list fails
 // is the fetch itself an error.
 func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.User) (*snapshot, error) {
-	status, lists, err := h.remoteDiscovery(ctx, clusterID, user)
+	d, err := h.discover(ctx, clusterID, user)
 	if err != nil {
 		return nil, err
 	}
+	status := d.status
 	snap := &snapshot{status: status, routes: []TrafficRoute{}, policies: []MeshedPolicy{}, errors: map[string]string{}}
 
 	var sources []meshSource
-	for _, src := range meshSources() {
+	for _, src := range meshSources {
 		installed := (src.mesh == MeshIstio && status.Istio != nil) || (src.mesh == MeshLinkerd && status.Linkerd != nil)
-		if installed && servesGVR(lists, src.gvr) {
+		if installed && servesGVR(d.lists, src.gvr) {
 			sources = append(sources, src)
 		}
 	}

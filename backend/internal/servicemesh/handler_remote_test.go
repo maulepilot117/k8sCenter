@@ -682,3 +682,34 @@ func TestRemote_StatusIsCachedUntilEvicted(t *testing.T) {
 		t.Error("status after eviction did not re-read the control plane")
 	}
 }
+
+// The status route and the list snapshot share one read of the remote's
+// discovery and control plane.
+func TestRemote_StatusAndListsShareOneControlPlaneRead(t *testing.T) {
+	remote := newFakeCluster(t, meshLists(MeshIstio), nil, controlPlaneObjects()...)
+	f := newRemoteFixture(t, remote)
+
+	call(t, f.h.HandleStatus, "/mesh/status", nil)
+	afterStatus := len(remote.typed.Actions())
+	call(t, f.h.HandleListRoutes, "/mesh/routing", nil)
+	call(t, f.h.HandleListPolicies, "/mesh/policies", nil)
+	if n := len(remote.typed.Actions()); n != afterStatus {
+		t.Errorf("lists made %d more control-plane reads, want 0", n-afterStatus)
+	}
+}
+
+// A remote mTLS request the user may not make is refused before any mesh
+// list reaches the remote.
+func TestRemote_MTLSDeniedListsNothing(t *testing.T) {
+	remote := newFakeCluster(t, meshLists(MeshIstio), nil)
+	f := newRemoteFixture(t, remote)
+	f.h.AccessChecker = resources.NewAlwaysDenyAccessChecker()
+
+	rr := call(t, f.h.HandleMTLSPosture, "/mesh/mtls", nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if n := len(remote.dyn.Actions()); n != 0 {
+		t.Errorf("remote recorded %d mesh list actions, want 0", n)
+	}
+}

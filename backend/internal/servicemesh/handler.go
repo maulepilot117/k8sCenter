@@ -61,9 +61,9 @@ type Handler struct {
 	cache      *cachedMeshData
 	cacheGen   uint64 // incremented on invalidation; prevents stale writes
 
-	remoteOnce   sync.Once
-	remote       *remotecache.Cache[*snapshot]
-	remoteStatus *remotecache.Cache[MeshStatus] // status alone, for the status and golden-signals routes
+	remoteOnce       sync.Once
+	remote           *remotecache.Cache[*snapshot]
+	remoteDiscovered *remotecache.Cache[*discovered]
 
 	// dynOverride, when non-nil, replaces K8sClient.BaseDynamicClient() for
 	// cache-population reads. Exposed only to tests in this package.
@@ -535,12 +535,7 @@ func (h *Handler) HandleGetRoute(w http.ResponseWriter, r *http.Request) {
 
 	dynClient, derr := h.Clients.DynamicClientForCluster(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups)
 	if derr != nil {
-		if isLocal(r.Context()) {
-			h.Logger.Error("failed to create impersonating client", "error", derr)
-			httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		} else {
-			httputil.WriteTargetError(w, derr)
-		}
+		h.writeClientError(w, r, derr, "internal error")
 		return
 	}
 
@@ -616,19 +611,10 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	local := isLocal(r.Context())
-	var (
-		status MeshStatus
-		data   *snapshot // loaded below for the local cluster, after the RBAC check
-	)
-	if local {
-		status = h.Discoverer.Status(r.Context())
-	} else {
-		snap, err := h.load(r.Context(), user)
-		if err != nil {
-			h.writeLoadError(w, r, err)
-			return
-		}
-		data, status = snap, snap.status
+	status, err := h.clusterStatus(r.Context(), user)
+	if err != nil {
+		h.writeLoadError(w, r, err)
+		return
 	}
 	resp := MTLSPostureResponse{Status: status, Workloads: []WorkloadMTLS{}}
 
@@ -656,12 +642,7 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 
 	cs, cerr := h.userClient(r.Context(), user)
 	if cerr != nil {
-		if local {
-			h.Logger.Error("mTLS posture: impersonating client unavailable", "user", user.KubernetesUsername, "error", cerr)
-			httputil.WriteError(w, http.StatusInternalServerError, "kubernetes client unavailable", "")
-		} else {
-			httputil.WriteTargetError(w, cerr)
-		}
+		h.writeClientError(w, r, cerr, "kubernetes client unavailable")
 		return
 	}
 
@@ -683,13 +664,16 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if local {
-		snap, derr := h.load(r.Context(), user)
-		if derr != nil {
-			h.Logger.Error("failed to fetch mesh policies for mTLS posture", "user", user.KubernetesUsername, "error", derr)
-			errs["policies"] = "failed to fetch mesh policies"
+	// Locally a policy-fetch failure degrades to a partial answer; on a
+	// remote cluster it fails the request like any other remote read.
+	data, derr := h.load(r.Context(), user)
+	if derr != nil {
+		if !local {
+			h.writeLoadError(w, r, derr)
+			return
 		}
-		data = snap
+		h.Logger.Error("failed to fetch mesh policies for mTLS posture", "user", user.KubernetesUsername, "error", derr)
+		errs["policies"] = "failed to fetch mesh policies"
 	}
 	var peerAuths []peerAuthRef
 	if data != nil {
@@ -744,11 +728,10 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	//     applyMTLSMetricOverrides already filters by Mesh != MeshIstio,
 	//     so the call would be wasted on a Linkerd-only cluster.
 	istioPresent := status.Detected == MeshIstio || status.Detected == MeshBoth
-	if !local {
-		if istioPresent {
-			errs["prometheus-cross-check"] = crossCheckUnavailableRemote
-		}
-	} else if pc := h.promClient(); pc != nil && len(workloads) > 0 && istioPresent {
+	if !local && istioPresent {
+		errs["prometheus-cross-check"] = crossCheckUnavailableRemote
+	}
+	if pc := h.promClient(); local && pc != nil && len(workloads) > 0 && istioPresent {
 		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
 		if perr != nil {
 			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "user", user.KubernetesUsername, "namespace", namespace, "error", perr)
@@ -812,17 +795,18 @@ func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, err := h.clusterStatus(r.Context(), user)
-	if err != nil {
-		h.writeLoadError(w, r, err)
-		return
-	}
 	namespace := r.URL.Query().Get("namespace")
 	service := r.URL.Query().Get("service")
 	meshParam := r.URL.Query().Get("mesh")
 
 	if namespace == "" || service == "" {
 		httputil.WriteError(w, http.StatusBadRequest, "namespace and service are required", "")
+		return
+	}
+
+	status, err := h.clusterStatus(r.Context(), user)
+	if err != nil {
+		h.writeLoadError(w, r, err)
 		return
 	}
 
