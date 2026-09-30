@@ -25,6 +25,10 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
+// snapshotsNotInstalledMsg answers a single-snapshot request on a cluster
+// without the VolumeSnapshot CRDs.
+const snapshotsNotInstalledMsg = "VolumeSnapshot CRDs are not installed on this cluster"
+
 // snapshotCRDCheckTTL is how long to cache the VolumeSnapshot CRD existence check.
 const snapshotCRDCheckTTL = 5 * time.Minute
 
@@ -137,9 +141,22 @@ func (h *Handler) snapshotsInstalled(w http.ResponseWriter, r *http.Request, use
 func (h *Handler) requireSnapshotsInstalled(w http.ResponseWriter, r *http.Request, user *auth.User) bool {
 	installed, _, ok := h.snapshotsInstalled(w, r, user)
 	if ok && !installed {
-		httputil.WriteError(w, http.StatusNotFound, "VolumeSnapshot CRDs are not installed on this cluster", "")
+		httputil.WriteError(w, http.StatusNotFound, snapshotsNotInstalledMsg, "")
 	}
 	return ok && installed
+}
+
+// resourceRemoved reports whether err from a call on a remote cluster means
+// gvr's CRD was removed after discovery was cached. It then re-reads that
+// cluster's discovery, so later presence checks see the removal too, and
+// reports true only when the re-read confirms the resource is gone (R-8
+// KTD3). The local cluster keeps its own discovery check and never matches.
+func (h *Handler) resourceRemoved(r *http.Request, user *auth.User, err error, gvr schema.GroupVersionResource) bool {
+	if isLocal(r.Context()) || !k8s.IsResourceGone(err) {
+		return false
+	}
+	verdict := h.Presence.Recheck(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, gvr.GroupResource())
+	return verdict.Installed != nil && !*verdict.Installed
 }
 
 // writeSnapshotsUnavailable answers a snapshot list on a cluster without the
@@ -267,6 +284,10 @@ func (h *Handler) HandleListSnapshots(w http.ResponseWriter, r *http.Request) {
 
 	list, err := res.List(r.Context(), metav1.ListOptions{})
 	if err != nil {
+		if h.resourceRemoved(r, user, err, volumeSnapshotGVR) {
+			writeSnapshotsUnavailable(w, string(k8s.ReasonDiscoveryMissing))
+			return
+		}
 		h.Logger.Error("failed to list volume snapshots", "error", err, "namespace", ns)
 		writeClusterError(w, r, err, http.StatusBadGateway, "failed to list volume snapshots")
 		return
@@ -559,6 +580,10 @@ func (h *Handler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 	created, err := dynClient.Resource(volumeSnapshotGVR).Namespace(ns).Create(r.Context(), obj, metav1.CreateOptions{})
 	if err != nil {
 		h.auditWrite(r, user.Username, audit.ActionCreate, "VolumeSnapshot", ns, req.Name, auditResult(err))
+		if h.resourceRemoved(r, user, err, volumeSnapshotGVR) {
+			httputil.WriteError(w, http.StatusNotFound, snapshotsNotInstalledMsg, "")
+			return
+		}
 		h.Logger.Error("failed to create volume snapshot", "error", err, "name", req.Name, "namespace", ns)
 		writeClusterError(w, r, err, http.StatusBadGateway, "failed to create volume snapshot")
 		return
@@ -632,6 +657,10 @@ func (h *Handler) HandleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 
 	if err := dynClient.Resource(volumeSnapshotGVR).Namespace(ns).Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
 		h.auditWrite(r, user.Username, audit.ActionDelete, "VolumeSnapshot", ns, name, auditResult(err))
+		if h.resourceRemoved(r, user, err, volumeSnapshotGVR) {
+			httputil.WriteError(w, http.StatusNotFound, snapshotsNotInstalledMsg, "")
+			return
+		}
 		h.Logger.Error("failed to delete volume snapshot", "error", err, "name", name, "namespace", ns)
 		writeClusterError(w, r, err, http.StatusBadGateway, "failed to delete volume snapshot")
 		return
@@ -672,6 +701,10 @@ func (h *Handler) HandleListSnapshotClasses(w http.ResponseWriter, r *http.Reque
 	}
 	list, err := dynClient.Resource(volumeSnapshotClassGVR).List(r.Context(), metav1.ListOptions{})
 	if err != nil {
+		if h.resourceRemoved(r, user, err, volumeSnapshotClassGVR) {
+			writeSnapshotsUnavailable(w, string(k8s.ReasonDiscoveryMissing))
+			return
+		}
 		h.Logger.Error("failed to list volume snapshot classes", "error", err)
 		writeClusterError(w, r, err, http.StatusBadGateway, "failed to list volume snapshot classes")
 		return

@@ -411,3 +411,43 @@ func TestLocal_CreateSnapshotAuditsTheRequestCluster(t *testing.T) {
 		t.Errorf("audit cluster = %q, want %q", e.ClusterID, localCluster)
 	}
 }
+
+// crdGone answers a collection-level NotFound, as an API server does once a
+// CRD is removed. Discovery is flipped to "not installed" at the same time,
+// so a presence re-check sees the removal the cached verdict missed.
+func crdGone(c *fakeCluster, gvr schema.GroupVersionResource, verbs ...string) {
+	for _, verb := range verbs {
+		c.dyn.PrependReactor(verb, gvr.Resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+			c.disc.Resources = discoveryLists(false)
+			return true, nil, apierrors.NewNotFound(gvr.GroupResource(), "")
+		})
+	}
+}
+
+func TestRemote_CRDRemovedAfterDiscoveryReportsNotInstalled(t *testing.T) {
+	for name, tc := range map[string]struct {
+		h   func(*Handler) http.HandlerFunc
+		gvr schema.GroupVersionResource
+	}{
+		"snapshots": {func(h *Handler) http.HandlerFunc { return h.HandleListSnapshots }, volumeSnapshotGVR},
+		"classes":   {func(h *Handler) http.HandlerFunc { return h.HandleListSnapshotClasses }, volumeSnapshotClassGVR},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newHarness(t, true)
+			crdGone(hs.clients.clusters[remoteCluster], tc.gvr, "list")
+
+			rr := do(t, remoteCluster, http.MethodGet, tc.h(hs.h), nil, "")
+			got := decodeList[map[string]any](t, rr)
+			if rr.Code != http.StatusOK || got.Metadata.Available || got.Metadata.Reason != string(k8s.ReasonDiscoveryMissing) {
+				t.Errorf("status %d body %s, want 200 unavailable with discovery_missing", rr.Code, rr.Body.String())
+			}
+		})
+	}
+
+	hs := newHarness(t, true)
+	crdGone(hs.clients.clusters[remoteCluster], volumeSnapshotGVR, "create")
+	rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateSnapshot, map[string]string{"namespace": "apps"}, `{"name":"s","sourcePVC":"data"}`)
+	if rr.Code != http.StatusNotFound || !strings.Contains(rr.Body.String(), "not installed") {
+		t.Errorf("create after removal: status %d body %s, want 404 not installed", rr.Code, rr.Body.String())
+	}
+}
