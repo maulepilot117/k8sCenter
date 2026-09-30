@@ -44,6 +44,8 @@ const remoteHost = "10.20.30.40"
 type fakeCluster struct {
 	disc *fakediscovery.FakeDiscovery
 	dyn  *dynfake.FakeDynamicClient
+	// invalidate, when set, stands in for dropping a cached remote schema.
+	invalidate func()
 }
 
 // fakeClients is a k8s.ClusterClients over one fake cluster per id. A
@@ -52,6 +54,9 @@ type fakeCluster struct {
 type fakeClients struct {
 	clusters  map[string]*fakeCluster
 	targetErr error
+
+	mu         sync.Mutex
+	identities []string // "<cluster>/<username>" per dynamic-client resolution
 }
 
 func (f *fakeClients) cluster(id string) (*fakeCluster, error) {
@@ -72,7 +77,10 @@ func (f *fakeClients) ClientForCluster(_ context.Context, id, _ string, _ []stri
 	return kfake.NewSimpleClientset(), nil
 }
 
-func (f *fakeClients) DynamicClientForCluster(_ context.Context, id, _ string, _ []string) (dynamic.Interface, error) {
+func (f *fakeClients) DynamicClientForCluster(_ context.Context, id, username string, _ []string) (dynamic.Interface, error) {
+	f.mu.Lock()
+	f.identities = append(f.identities, k8s.NormalizedClusterID(id)+"/"+username)
+	f.mu.Unlock()
 	c, err := f.cluster(id)
 	if err != nil {
 		return nil, err
@@ -86,7 +94,11 @@ func (f *fakeClients) TargetSchemaFor(_ context.Context, id, _ string, _ []strin
 		return nil, err
 	}
 	var disc discovery.DiscoveryInterface = c.disc
-	return &k8s.TargetSchema{ClusterID: id, IsLocal: k8s.IsLocalClusterID(id), Discovery: disc, Invalidate: func() {}}, nil
+	invalidate := c.invalidate
+	if invalidate == nil {
+		invalidate = func() {}
+	}
+	return &k8s.TargetSchema{ClusterID: id, IsLocal: k8s.IsLocalClusterID(id), Discovery: disc, Invalidate: invalidate}, nil
 }
 
 func ruleLists(installed bool) []*metav1.APIResourceList {
@@ -293,6 +305,13 @@ func TestRemoteRules_WritesReachTheRemoteAndAuditIt(t *testing.T) {
 	if n := countVerb(rh.dyn(remoteCluster), "create"); n != 1 {
 		t.Errorf("remote creates = %d, want 1", n)
 	}
+	rh.clients.mu.Lock()
+	for _, id := range rh.clients.identities {
+		if id != remoteCluster+"/admin" {
+			t.Errorf("dynamic client resolved as %q, want the requesting user on the remote", id)
+		}
+	}
+	rh.clients.mu.Unlock()
 	if n := countVerb(rh.dyn(remoteCluster), "delete"); n != 1 {
 		t.Errorf("remote deletes = %d, want 1", n)
 	}
@@ -437,6 +456,9 @@ func TestRules_DeleteRefusesUnmanagedRule(t *testing.T) {
 	if n := countVerb(rh.dyn(remoteCluster), "delete"); n != 0 {
 		t.Errorf("remote deletes = %d, want 0", n)
 	}
+	if e := rh.audit.last(t); e.ClusterID != remoteCluster || e.Result != audit.ResultDenied {
+		t.Errorf("audit = %+v, want remote denied", e)
+	}
 }
 
 func TestRules_InvalidRuleNameIsABadRequest(t *testing.T) {
@@ -450,6 +472,9 @@ func TestRules_InvalidRuleNameIsABadRequest(t *testing.T) {
 	}
 	if n := countVerb(rh.dyn(remoteCluster), "create") + countVerb(rh.dyn("local"), "create"); n != 0 {
 		t.Errorf("creates = %d, want 0", n)
+	}
+	if len(rh.audit.entries) != 0 {
+		t.Errorf("audit rows = %+v, want none for a rule refused before any cluster call", rh.audit.entries)
 	}
 }
 
@@ -488,5 +513,95 @@ func TestAlertFeeds_IgnoreTheSelectedCluster(t *testing.T) {
 	}
 	if n := len(rh.dyn(remoteCluster).Actions()); n != 0 {
 		t.Errorf("remote cluster recorded %d actions, want 0", n)
+	}
+}
+
+func TestLocalRules_InstalledAfterStartupIsSeenAfterTheAbsentWindow(t *testing.T) {
+	rh := newRulesHarness(t, true, false)
+	now := time.Now()
+	rh.h.Rules.now = func() time.Time { return now }
+	list := func() ruleListBody {
+		t.Helper()
+		return decodeList(t, doRule(t, "local", http.MethodGet, rh.h.HandleListRules, nil, ""))
+	}
+
+	if b := list(); b.Metadata.Available == nil || *b.Metadata.Available {
+		t.Fatalf("local list = %+v, want not available", b)
+	}
+	rh.clients.clusters["local"].disc.Resources = ruleLists(true)
+
+	now = now.Add(localRecheckAbsent - time.Second)
+	if b := list(); b.Metadata.Available == nil || *b.Metadata.Available {
+		t.Errorf("inside the absent window: %+v, want the cached absence", b)
+	}
+	now = now.Add(2 * time.Second)
+	if b := list(); len(b.Data) != 1 || b.Data[0].Name != "local-rule" {
+		t.Errorf("after the absent window: %+v, want local-rule", b)
+	}
+}
+
+func TestLocalRules_TransientDiscoveryErrorKeepsTheInstalledVerdict(t *testing.T) {
+	rh := newRulesHarness(t, true, true)
+	now := time.Now()
+	rh.h.Rules.now = func() time.Time { return now }
+
+	if b := decodeList(t, doRule(t, "local", http.MethodGet, rh.h.HandleListRules, nil, "")); len(b.Data) != 1 {
+		t.Fatalf("local rules = %+v, want one", b.Data)
+	}
+	rh.clients.clusters["local"].disc.PrependReactor("*", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("etcdserver: request timed out")
+	})
+	now = now.Add(localRecheckInstalled + time.Second)
+	if b := decodeList(t, doRule(t, "local", http.MethodGet, rh.h.HandleListRules, nil, "")); len(b.Data) != 1 {
+		t.Errorf("after a failed recheck: %+v, want the rule still listed", b)
+	}
+}
+
+func TestRemoteRules_CRDRemovedAfterDiscoveryWasCachedAnswersNotInstalled(t *testing.T) {
+	rh := newRulesHarness(t, true, true, rule("remote-rule", true))
+	if b := decodeList(t, doRule(t, remoteCluster, http.MethodGet, rh.h.HandleListRules, nil, "")); len(b.Data) != 1 {
+		t.Fatalf("remote rules = %+v, want one", b.Data)
+	}
+	// The CRD goes away: calls get a collection NotFound, while the cached
+	// schema keeps listing it until it is invalidated.
+	gone := func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(prometheusRuleGVR.GroupResource(), "")
+	}
+	rh.dyn(remoteCluster).PrependReactor("list", "prometheusrules", gone)
+	rh.dyn(remoteCluster).PrependReactor("create", "prometheusrules", gone)
+	remote := rh.clients.clusters[remoteCluster]
+	remote.invalidate = func() { remote.disc.Resources = ruleLists(false) }
+
+	rr := doRule(t, remoteCluster, http.MethodPost, rh.h.HandleCreateRule, nil, createBody)
+	if rr.Code != http.StatusNotFound || errReason(t, rr) != string(k8s.ReasonDiscoveryMissing) {
+		t.Errorf("create: status %d, body %s, want 404 discovery_missing", rr.Code, rr.Body.String())
+	}
+	b := decodeList(t, doRule(t, remoteCluster, http.MethodGet, rh.h.HandleListRules, nil, ""))
+	if b.Metadata.Available == nil || *b.Metadata.Available || b.Metadata.Reason != string(k8s.ReasonDiscoveryMissing) {
+		t.Errorf("list: %+v, want available:false with discovery_missing", b)
+	}
+}
+
+func TestRemoteRules_ObjectNotFoundIsNotMistakenForARemovedCRD(t *testing.T) {
+	rh := newRulesHarness(t, true, true)
+
+	rr := doRule(t, remoteCluster, http.MethodGet, rh.h.HandleGetRule, ruleParams, "")
+	if rr.Code != http.StatusNotFound || errReason(t, rr) == string(k8s.ReasonDiscoveryMissing) {
+		t.Errorf("status %d, body %s, want a plain 404 for a missing rule", rr.Code, rr.Body.String())
+	}
+}
+
+func TestLocalRules_FailedWriteAuditKeepsTheErrorDetail(t *testing.T) {
+	rh := newRulesHarness(t, true, true)
+	rh.dyn("local").PrependReactor("create", "prometheusrules", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(prometheusRuleGVR.GroupResource(), "new-rule", errors.New("denied"))
+	})
+
+	rr := doRule(t, "local", http.MethodPost, rh.h.HandleCreateRule, nil, createBody)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("status %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if e := rh.audit.last(t); e.ClusterID != "local" || e.Result != audit.ResultDenied || e.Detail == "" {
+		t.Errorf("audit = %+v, want local denied with the error detail", e)
 	}
 }

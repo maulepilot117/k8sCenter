@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -65,7 +66,7 @@ type RulesManager struct {
 
 	localMu        sync.Mutex
 	localInstalled bool
-	localCheckedAt time.Time
+	localNextCheck time.Time
 	localSF        singleflight.Group
 }
 
@@ -110,16 +111,14 @@ func (rm *RulesManager) requireInstalled(ctx context.Context, username string, g
 
 // localAvailable reports whether the local cluster serves the CRD. The
 // answer is reused for a while, never forever: a CRD removed after startup
-// stops being reported as installed. The local discovery client is not
-// cached, so concurrent rechecks share one read and no request waits on
-// the lock while it runs.
+// stops being reported as installed. A failed discovery read keeps the
+// previous answer and is retried soon, so a transient API-server hiccup does
+// not hide an installed CRD. The local discovery client is not cached, so
+// concurrent rechecks share one read and no request waits on the lock while
+// it runs.
 func (rm *RulesManager) localAvailable(ctx context.Context, username string, groups []string) bool {
 	rm.localMu.Lock()
-	ttl := localRecheckAbsent
-	if rm.localInstalled {
-		ttl = localRecheckInstalled
-	}
-	if !rm.localCheckedAt.IsZero() && rm.now().Sub(rm.localCheckedAt) < ttl {
+	if !rm.localNextCheck.IsZero() && rm.now().Before(rm.localNextCheck) {
 		installed := rm.localInstalled
 		rm.localMu.Unlock()
 		return installed
@@ -131,38 +130,51 @@ func (rm *RulesManager) localAvailable(ctx context.Context, username string, gro
 		// decide the answer every waiter gets.
 		probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), localProbeTimeout)
 		defer cancel()
-		installed := rm.probeLocal(probeCtx, username, groups)
+		installed, err := rm.probeLocal(probeCtx, username, groups)
 
 		rm.localMu.Lock()
 		defer rm.localMu.Unlock()
+		now := rm.now()
+		if err != nil {
+			rm.logger.Debug("reading PrometheusRule CRD discovery failed", "error", err)
+			rm.localNextCheck = now.Add(localRecheckAbsent)
+			return rm.localInstalled, nil
+		}
 		if installed != rm.localInstalled {
 			rm.logger.Info("PrometheusRule CRD availability changed", "available", installed)
 		}
 		rm.localInstalled = installed
-		rm.localCheckedAt = rm.now()
+		ttl := localRecheckAbsent
+		if installed {
+			ttl = localRecheckInstalled
+		}
+		rm.localNextCheck = now.Add(ttl)
 		return installed, nil
 	})
 	return v.(bool)
 }
 
-// probeLocal reads the local cluster's discovery for the CRD. Any failure
-// to read it counts as not installed, as it always has on the local path.
-func (rm *RulesManager) probeLocal(ctx context.Context, username string, groups []string) bool {
+// probeLocal reads the local cluster's discovery for the CRD. A group
+// version the server does not serve is a definite absence; any other
+// failure is an error, because it says nothing about the CRD.
+func (rm *RulesManager) probeLocal(ctx context.Context, username string, groups []string) (bool, error) {
 	target, err := rm.clients.TargetSchemaFor(ctx, k8s.LocalClusterID, username, groups)
-	if err == nil {
-		var resources *metav1.APIResourceList
-		resources, err = target.Discovery.ServerResourcesForGroupVersion(prometheusRuleGVR.GroupVersion().String())
-		if err == nil {
-			for _, r := range resources.APIResources {
-				if r.Kind == prometheusRuleKind {
-					return true
-				}
-			}
-			return false
+	if err != nil {
+		return false, err
+	}
+	resources, err := target.Discovery.ServerResourcesForGroupVersion(prometheusRuleGVR.GroupVersion().String())
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, r := range resources.APIResources {
+		if r.Kind == prometheusRuleKind {
+			return true, nil
 		}
 	}
-	rm.logger.Debug("PrometheusRule CRD not available", "error", err)
-	return false
+	return false, nil
 }
 
 // client returns a dynamic client impersonating the user on the request's
@@ -178,16 +190,18 @@ func (rm *RulesManager) client(ctx context.Context, username string, groups []st
 	return dynClient, nil
 }
 
-// removed reports whether err from a remote call means the CRD went away
-// after discovery was cached, re-reading that cluster's discovery so later
-// checks see the removal too.
-func (rm *RulesManager) removed(ctx context.Context, username string, groups []string, err error) bool {
+// callErr wraps err from a call to the cluster. On a remote cluster, an
+// error meaning the CRD went away after discovery was cached re-reads that
+// cluster's discovery, so this and later calls answer "not installed".
+func (rm *RulesManager) callErr(ctx context.Context, username string, groups []string, err error, what string) error {
 	clusterID := middleware.ClusterIDFromContext(ctx)
-	if k8s.IsLocalClusterID(clusterID) || !k8s.IsResourceGone(err) {
-		return false
+	if !k8s.IsLocalClusterID(clusterID) && k8s.IsResourceGone(err) {
+		verdict := rm.presence.Recheck(ctx, clusterID, username, groups, prometheusRuleGVR.GroupResource())
+		if verdict.Installed != nil && !*verdict.Installed {
+			return ErrNotInstalled
+		}
 	}
-	verdict := rm.presence.Recheck(ctx, clusterID, username, groups, prometheusRuleGVR.GroupResource())
-	return verdict.Installed != nil && !*verdict.Installed
+	return fmt.Errorf("%s: %w", what, err)
 }
 
 // RuleSummary is a lightweight view of a PrometheusRule for listing.
@@ -218,10 +232,7 @@ func (rm *RulesManager) List(ctx context.Context, username string, groups []stri
 		list, err = dynClient.Resource(prometheusRuleGVR).List(ctx, listOpts)
 	}
 	if err != nil {
-		if rm.removed(ctx, username, groups, err) {
-			return nil, ErrNotInstalled
-		}
-		return nil, fmt.Errorf("listing PrometheusRules: %w", err)
+		return nil, rm.callErr(ctx, username, groups, err, "listing PrometheusRules")
 	}
 
 	summaries := make([]RuleSummary, 0, len(list.Items))
@@ -263,7 +274,7 @@ func (rm *RulesManager) Get(ctx context.Context, username string, groups []strin
 
 	obj, err := dynClient.Resource(prometheusRuleGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("getting PrometheusRule: %w", err)
+		return nil, rm.callErr(ctx, username, groups, err, "getting PrometheusRule")
 	}
 
 	return obj.Object, nil
@@ -304,7 +315,7 @@ func (rm *RulesManager) Create(ctx context.Context, username string, groups []st
 
 	created, err := dynClient.Resource(prometheusRuleGVR).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("creating PrometheusRule: %w", err)
+		return nil, rm.callErr(ctx, username, groups, err, "creating PrometheusRule")
 	}
 
 	return created.Object, nil
@@ -344,7 +355,7 @@ func (rm *RulesManager) Update(ctx context.Context, username string, groups []st
 		metav1.PatchOptions{FieldManager: "kubecenter"},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("updating PrometheusRule: %w", err)
+		return nil, rm.callErr(ctx, username, groups, err, "updating PrometheusRule")
 	}
 
 	return result.Object, nil
@@ -360,7 +371,7 @@ func (rm *RulesManager) Delete(ctx context.Context, username string, groups []st
 	// Verify managed-by label before deletion
 	obj, err := dynClient.Resource(prometheusRuleGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("getting PrometheusRule for deletion check: %w", err)
+		return rm.callErr(ctx, username, groups, err, "getting PrometheusRule for deletion check")
 	}
 
 	labels := obj.GetLabels()
@@ -372,9 +383,13 @@ func (rm *RulesManager) Delete(ctx context.Context, username string, groups []st
 	// if the resource was modified between the GET and DELETE, the API server
 	// will reject the delete with a Conflict error.
 	rv := obj.GetResourceVersion()
-	return dynClient.Resource(prometheusRuleGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{
+	err = dynClient.Resource(prometheusRuleGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{
 		Preconditions: &metav1.Preconditions{
 			ResourceVersion: &rv,
 		},
 	})
+	if err != nil {
+		return rm.callErr(ctx, username, groups, err, "deleting PrometheusRule")
+	}
+	return nil
 }
