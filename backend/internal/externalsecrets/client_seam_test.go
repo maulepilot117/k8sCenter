@@ -3,44 +3,58 @@ package externalsecrets
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
-	dynfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
-	kfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
-// recordingClients is a k8s.ClusterClients that records the cluster id each
-// resolution asked for. A non-nil err makes every resolution fail.
-type recordingClients struct {
+// stubClients is a k8s.ClusterClients that serves the same clients for every
+// cluster and records the cluster id each resolution asked for. A non-nil
+// dynErr or kubeErr fails that resolution. Handler tests wire it as
+// Handler.Clients so every per-user read goes through the request seam.
+type stubClients struct {
+	dyn     dynamic.Interface
+	kube    kubernetes.Interface
+	dynErr  error
+	kubeErr error
+
+	mu               sync.Mutex
 	dynFor, typedFor []string
-	err              error
 }
 
-func (c *recordingClients) ClientForCluster(_ context.Context, id, _ string, _ []string) (kubernetes.Interface, error) {
+func (c *stubClients) ClientForCluster(_ context.Context, id, _ string, _ []string) (kubernetes.Interface, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.typedFor = append(c.typedFor, id)
-	if c.err != nil {
-		return nil, c.err
+	if c.kubeErr != nil {
+		return nil, c.kubeErr
 	}
-	return kfake.NewSimpleClientset(), nil
+	return c.kube, nil
 }
 
-func (c *recordingClients) DynamicClientForCluster(_ context.Context, id, _ string, _ []string) (dynamic.Interface, error) {
+func (c *stubClients) DynamicClientForCluster(_ context.Context, id, _ string, _ []string) (dynamic.Interface, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.dynFor = append(c.dynFor, id)
-	if c.err != nil {
-		return nil, c.err
+	if c.dynErr != nil {
+		return nil, c.dynErr
 	}
-	return dynfake.NewSimpleDynamicClient(runtime.NewScheme()), nil
+	return c.dyn, nil
 }
 
-func (c *recordingClients) TargetSchemaFor(context.Context, string, string, []string) (*k8s.TargetSchema, error) {
+func (c *stubClients) TargetSchemaFor(context.Context, string, string, []string) (*k8s.TargetSchema, error) {
 	return nil, errors.New("not used")
+}
+
+// stubOf returns the stubClients a test handler was built with.
+func stubOf(h *Handler) *stubClients {
+	return h.Clients.(*stubClients)
 }
 
 var seamUser = &auth.User{KubernetesUsername: "alice", KubernetesGroups: []string{"devs"}}
@@ -58,7 +72,7 @@ func TestRequestClients_ResolveRequestCluster(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			clients := &recordingClients{}
+			clients := &stubClients{}
 			h := &Handler{Clients: clients}
 			ctx := context.Background()
 			if tc.ctxCluster != "" {
@@ -85,7 +99,7 @@ func TestRequestClients_ResolveRequestCluster(t *testing.T) {
 // cluster's client.
 func TestRequestClients_ResolutionErrorIsReturned(t *testing.T) {
 	wantErr := errors.New("cluster unreachable")
-	h := &Handler{Clients: &recordingClients{err: wantErr}}
+	h := &Handler{Clients: &stubClients{dynErr: wantErr, kubeErr: wantErr}}
 	ctx := middleware.WithClusterID(context.Background(), "remote-1")
 
 	if c, err := h.dynForRequest(ctx, seamUser); !errors.Is(err, wantErr) || c != nil {

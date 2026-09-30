@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
@@ -65,13 +64,11 @@ func vec(samples ...float64) model.Vector {
 func metricsHandler(objects []runtime.Object, prom promQuerier, accessChecker *resources.AccessChecker) *Handler {
 	dynFake := newEsoFakeDynClient(objects...)
 	return &Handler{
-		Discoverer:    detectedDiscoverer(),
-		AccessChecker: accessChecker,
-		Logger:        slog.Default(),
-		dynOverride:   dynFake, // service-account cache reads
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
+		Discoverer:          detectedDiscoverer(),
+		AccessChecker:       accessChecker,
+		Logger:              slog.Default(),
+		dynOverride:         dynFake, // service-account cache reads
+		Clients:             &stubClients{dyn: dynFake},
 		promQuerierOverride: prom,
 	}
 }

@@ -616,12 +616,7 @@ func detailHandler(esObjs []runtime.Object, fakeKubeSecret *corev1.Secret, acces
 		Discoverer:    detectedDiscoverer(),
 		AccessChecker: accessChecker,
 		Logger:        slog.Default(),
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
-		clientForUserOverride: func(string, []string) (kubernetes.Interface, error) {
-			return typedFake, nil
-		},
+		Clients:       &stubClients{dyn: dynFake, kube: typedFake},
 	}
 }
 
@@ -879,12 +874,7 @@ func TestHandleGetExternalSecret_DriftRBACForbiddenOnSecret(t *testing.T) {
 		Discoverer:    detectedDiscoverer(),
 		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
 		Logger:        slog.Default(),
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
-		clientForUserOverride: func(string, []string) (kubernetes.Interface, error) {
-			return typedFake, nil
-		},
+		Clients:       &stubClients{dyn: dynFake, kube: typedFake},
 	}
 
 	w := httptest.NewRecorder()
@@ -1131,18 +1121,16 @@ func TestHandleGetPushSecret_RBACDenied(t *testing.T) {
 	}
 }
 
-// --- F23: dynForUser error branch on detail endpoints --------------------
+// --- F23: per-user dynamic client error branch on detail endpoints --------
 
-func TestHandleGetExternalSecret_DynForUserError(t *testing.T) {
+func TestHandleGetExternalSecret_DynClientError(t *testing.T) {
 	h := &Handler{
 		Discoverer:    detectedDiscoverer(),
 		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
 		Logger:        slog.Default(),
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return nil, errors.New("impersonation client init failed")
-		},
-		clientForUserOverride: func(string, []string) (kubernetes.Interface, error) {
-			return kubefake.NewClientset(), nil
+		Clients: &stubClients{
+			dynErr: errors.New("impersonation client init failed"),
+			kube:   kubefake.NewClientset(),
 		},
 	}
 
