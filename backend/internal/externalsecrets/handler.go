@@ -49,7 +49,10 @@ const (
 //   - One cache snapshot, replaced atomically when fetch completes.
 //   - cacheGen guards against torn writes from concurrent invalidations.
 type Handler struct {
-	K8sClient     *k8s.ClientFactory
+	K8sClient *k8s.ClientFactory
+	// Clients resolves the per-user clients for the cluster a request
+	// targets. Production passes the ClusterRouter.
+	Clients       k8s.ClusterClients
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
 	AuditLogger   audit.Logger
@@ -110,11 +113,11 @@ type Handler struct {
 	// service-account list calls.
 	dynOverride dynamic.Interface
 
-	// dynForUserOverride, when non-nil, replaces K8sClient.DynamicClientForUser
+	// dynForUserOverride, when non-nil, replaces the per-user dynamic client
 	// for impersonated CRD fetches in detail endpoints.
 	dynForUserOverride func(username string, groups []string) (dynamic.Interface, error)
 
-	// clientForUserOverride, when non-nil, replaces K8sClient.ClientForUser
+	// clientForUserOverride, when non-nil, replaces the per-user typed client
 	// for impersonated typed client lookups (synced-Secret RV check).
 	clientForUserOverride func(username string, groups []string) (kubernetes.Interface, error)
 
@@ -155,6 +158,37 @@ func (h *Handler) clientForUser(username string, groups []string) (kubernetes.In
 	return h.K8sClient.ClientForUser(username, groups)
 }
 
+// dynForRequest returns a dynamic client impersonating the user on the
+// cluster the request targets. A remote failure is an error, never a local
+// fallback. Tests inject dynForUserOverride.
+func (h *Handler) dynForRequest(ctx context.Context, user *auth.User) (dynamic.Interface, error) {
+	if h.dynForUserOverride != nil {
+		return h.dynForUserOverride(user.KubernetesUsername, user.KubernetesGroups)
+	}
+	return h.Clients.DynamicClientForCluster(ctx, h.requestClusterID(ctx), user.KubernetesUsername, user.KubernetesGroups)
+}
+
+// clientForRequest is dynForRequest for the typed client. Tests inject
+// clientForUserOverride.
+func (h *Handler) clientForRequest(ctx context.Context, user *auth.User) (kubernetes.Interface, error) {
+	if h.clientForUserOverride != nil {
+		return h.clientForUserOverride(user.KubernetesUsername, user.KubernetesGroups)
+	}
+	return h.Clients.ClientForCluster(ctx, h.requestClusterID(ctx), user.KubernetesUsername, user.KubernetesGroups)
+}
+
+// requestClusterID is the cluster a request targets. The evidence and history
+// endpoints accept this process's own configured id (h.ClusterID) as local,
+// because the poller stamps rows with it; ClusterRouter knows that id only as
+// "local", so it is mapped here rather than looked up as a registered cluster.
+func (h *Handler) requestClusterID(ctx context.Context) string {
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	if clusterID == h.historyClusterID() {
+		return k8s.LocalClusterID
+	}
+	return clusterID
+}
+
 // cachedData is the per-Handler snapshot. Built once per cacheTTL via
 // fetchAll. Each slice carries the service-account view; per-user RBAC
 // filtering happens at read time so the cache is shared across users.
@@ -183,6 +217,7 @@ type cachedData struct {
 // the first time the handler logs.
 func NewHandler(
 	k8sClient *k8s.ClientFactory,
+	clients k8s.ClusterClients,
 	discoverer *Discoverer,
 	accessChecker *resources.AccessChecker,
 	auditLogger audit.Logger,
@@ -194,6 +229,7 @@ func NewHandler(
 	}
 	return &Handler{
 		K8sClient:     k8sClient,
+		Clients:       clients,
 		Discoverer:    discoverer,
 		AccessChecker: accessChecker,
 		AuditLogger:   auditLogger,
