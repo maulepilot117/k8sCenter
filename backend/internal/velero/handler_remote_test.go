@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -474,6 +475,9 @@ func TestRemote_BackupLogsCreateDownloadRequestOnRemote(t *testing.T) {
 	if n := countVerb(hs.remoteDyn(), "create", "downloadrequests"); n != 1 {
 		t.Errorf("created %d download requests on the remote, want 1", n)
 	}
+	if e := hs.audit.last(t); e.Action != audit.ActionVeleroBackupLogs || e.ClusterID != remoteCluster || e.Result != audit.ResultSuccess {
+		t.Errorf("audit = %+v, want remote backup-logs success", e)
+	}
 	if n := hs.localActions(); n != 0 {
 		t.Errorf("local cluster recorded %d actions, want 0", n)
 	}
@@ -487,9 +491,15 @@ func TestRemote_BackupLogsStopPollingWhenRequestEnds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	doCtx(t, ctx, remoteCluster, http.MethodGet, hs.h.HandleGetBackupLogs, backupParams, "")
+	rr := doCtx(t, ctx, remoteCluster, http.MethodGet, hs.h.HandleGetBackupLogs, backupParams, "")
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("handler polled for %v after the request ended", elapsed)
+	}
+	if rr.Code == http.StatusOK {
+		t.Errorf("status 200 for a request that ended before the logs were ready: %s", rr.Body.String())
+	}
+	if n := countVerb(hs.remoteDyn(), "create", "downloadrequests"); n != 1 {
+		t.Errorf("created %d download requests on the remote, want 1", n)
 	}
 }
 
@@ -541,8 +551,15 @@ func TestRemote_WriteFailuresDoNotLeakRemoteErrorText(t *testing.T) {
 			t.Errorf("%s: body leaks the remote error: %s", name, body)
 		}
 	}
-	if e := hs.audit.last(t); e.ClusterID != remoteCluster || e.Result != audit.ResultFailure {
-		t.Errorf("audit = %+v, want remote cluster failure", e)
+	hs.audit.mu.Lock()
+	defer hs.audit.mu.Unlock()
+	if len(hs.audit.entries) != 6 {
+		t.Fatalf("audited %d writes, want all 6: %+v", len(hs.audit.entries), hs.audit.entries)
+	}
+	for _, e := range hs.audit.entries {
+		if e.ClusterID != remoteCluster || e.Result != audit.ResultFailure {
+			t.Errorf("audit = %+v, want remote cluster failure", e)
+		}
 	}
 }
 
@@ -597,5 +614,112 @@ func TestRemote_FailedBackupListIsAnErrorNotAnEmptyList(t *testing.T) {
 	// The other lists still serve.
 	if rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListSchedules, nil, ""); rr.Code != http.StatusOK {
 		t.Errorf("schedules status %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRemote_FailedAccessCheckIsTheClusterErrorNotEmptyOrForbidden(t *testing.T) {
+	hs := newHarness(t, true, backup("remote-backup"))
+	hs.h.AccessChecker = resources.NewErroringAccessChecker(fmt.Errorf("creating client for access check: %w", unreachable()))
+
+	for name, rr := range map[string]*httptest.ResponseRecorder{
+		"list backups":   do(t, remoteCluster, http.MethodGet, hs.h.HandleListBackups, nil, ""),
+		"list restores":  do(t, remoteCluster, http.MethodGet, hs.h.HandleListRestores, nil, ""),
+		"list schedules": do(t, remoteCluster, http.MethodGet, hs.h.HandleListSchedules, nil, ""),
+		"list locations": do(t, remoteCluster, http.MethodGet, hs.h.HandleListLocations, nil, ""),
+		"detail":         do(t, remoteCluster, http.MethodGet, hs.h.HandleGetBackup, backupParams, ""),
+		"create":         do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateBackup, nil, `{"name":"b1"}`),
+		"delete":         do(t, remoteCluster, http.MethodDelete, hs.h.HandleDeleteBackup, backupParams, ""),
+	} {
+		body := rr.Body.String()
+		if rr.Code != http.StatusBadGateway || !strings.Contains(body, `"reason":"unreachable"`) {
+			t.Errorf("%s: status %d body %s, want 502 unreachable", name, rr.Code, body)
+		}
+		if strings.Contains(body, remoteHost) {
+			t.Errorf("%s: body leaks the remote address: %s", name, body)
+		}
+	}
+	if n := countVerb(hs.remoteDyn(), "create", "backups") + countVerb(hs.remoteDyn(), "create", "deletebackuprequests"); n != 0 {
+		t.Errorf("wrote %d objects on the remote after a failed access check, want 0", n)
+	}
+
+	// A SAR the cluster answered with an error status is that status, not a denial.
+	hs.h.AccessChecker = resources.NewErroringAccessChecker(apierrors.NewUnauthorized("expired"))
+	rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListBackups, nil, "")
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), `"reason":"credentials_invalid"`) {
+		t.Errorf("unauthorized SAR: status %d body %s, want 502 credentials_invalid", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRemote_DeniedAccessCheckIsEmptyListAnd403(t *testing.T) {
+	hs := newHarness(t, true, backup("remote-backup"))
+	hs.h.AccessChecker = resources.NewAlwaysDenyAccessChecker()
+
+	rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListBackups, nil, "")
+	if rr.Code != http.StatusOK || len(decode[[]Backup](t, rr)) != 0 {
+		t.Errorf("denied list: status %d body %s, want 200 []", rr.Code, rr.Body.String())
+	}
+	if rr := do(t, remoteCluster, http.MethodDelete, hs.h.HandleDeleteBackup, backupParams, ""); rr.Code != http.StatusForbidden {
+		t.Errorf("denied delete: status %d, want 403", rr.Code)
+	}
+}
+
+func TestRemote_CacheIsPerIdentity(t *testing.T) {
+	hs := newHarness(t, true, backup("remote-backup"))
+	asUser := func(name string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/velero/backups", nil)
+		ctx := auth.ContextWithUser(req.Context(), &auth.User{Username: name, KubernetesUsername: name, KubernetesGroups: []string{"ops"}})
+		ctx = middleware.WithClusterID(ctx, remoteCluster)
+		rr := httptest.NewRecorder()
+		hs.h.HandleListBackups(rr, req.WithContext(ctx))
+		return rr
+	}
+
+	asUser("alice")
+	asUser("alice")
+	if n := countVerb(hs.remoteDyn(), "list", "backups"); n != 1 {
+		t.Errorf("one identity listed the remote %d times, want 1 (cache hit)", n)
+	}
+
+	// bob's list fails; he must get his own failure, not alice's cached view.
+	hs.remoteDyn().PrependReactor("list", "backups", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(BackupGVR.GroupResource(), "", errors.New("no"))
+	})
+	if rr := asUser("bob"); rr.Code != http.StatusForbidden {
+		t.Errorf("bob: status %d body %s, want his own 403", rr.Code, rr.Body.String())
+	}
+	if rr := asUser("alice"); rr.Code != http.StatusOK || len(decode[[]Backup](t, rr)) != 1 {
+		t.Errorf("alice: status %d body %s, want her cached backup", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRemote_UpdateScheduleAndCreateRestoreActOnRemote(t *testing.T) {
+	hs := newHarness(t, true,
+		obj("Schedule", "nightly", map[string]any{"schedule": "0 1 * * *"}, nil),
+		backup("remote-backup"),
+		obj("Backup", "running-backup", nil, map[string]any{"phase": "InProgress"}))
+	scheduleParams := map[string]string{"namespace": veleroNamespace, "name": "nightly"}
+
+	rr := do(t, remoteCluster, http.MethodPut, hs.h.HandleUpdateSchedule, scheduleParams, `{"paused":true}`)
+	if rr.Code != http.StatusOK || !decode[Schedule](t, rr).Paused {
+		t.Fatalf("update: status %d body %s, want the paused schedule", rr.Code, rr.Body.String())
+	}
+	if n := countVerb(hs.remoteDyn(), "update", "schedules"); n != 1 {
+		t.Errorf("updated %d schedules on the remote, want 1", n)
+	}
+
+	rr = do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateRestore, nil, `{"name":"r1","backupName":"running-backup"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("restore of an unfinished backup: status %d, want 400", rr.Code)
+	}
+	rr = do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateRestore, nil, `{"name":"r1","backupName":"remote-backup"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore: status %d body %s", rr.Code, rr.Body.String())
+	}
+	if rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListRestores, nil, ""); len(decode[[]Restore](t, rr)) != 1 {
+		t.Errorf("restores after create = %s, want the new restore (cache evicted)", rr.Body.String())
+	}
+	if n := hs.localActions(); n != 0 {
+		t.Errorf("local cluster recorded %d actions, want 0", n)
 	}
 }

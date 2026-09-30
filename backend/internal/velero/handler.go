@@ -60,6 +60,10 @@ type Handler struct {
 
 	remote *remotecache.Cache[*snapshot]
 
+	// baseDynOverride is a test-only seam for the local service-account
+	// client; production leaves it nil.
+	baseDynOverride dynamic.Interface
+
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cachedData *cachedVeleroData
@@ -131,13 +135,26 @@ func validateDNSLabel(s string) bool {
 	return len(s) > 0 && len(s) <= 63 && dnsLabelRegex.MatchString(s)
 }
 
-// canAccess checks if the user can access a Velero resource. clusterID is
-// derived from ctx so the SAR runs against the right cluster (F#9).
-func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource, namespace string) bool {
-	clusterID := middleware.ClusterIDFromContext(ctx)
+// accessResult is the outcome of an RBAC pre-check.
+type accessResult int
+
+const (
+	accessAllowed accessResult = iota
+	accessDenied
+	// accessFailed means the check could not be made and the error response
+	// has already been written.
+	accessFailed
+)
+
+// checkAccess asks whether the user may verb a Velero resource on the
+// request's cluster; the SAR runs against that cluster (F#9). On a remote
+// cluster a check that could not be made is answered with the classified
+// error, so an unreachable cluster never looks empty or forbidden (R-8 R6,
+// R7). On the local cluster it counts as a denial, as it always has.
+func (h *Handler) checkAccess(w http.ResponseWriter, r *http.Request, user *auth.User, verb, resource, namespace string) accessResult {
 	can, err := h.AccessChecker.CanAccessGroupResource(
-		ctx,
-		clusterID,
+		r.Context(),
+		middleware.ClusterIDFromContext(r.Context()),
 		user.KubernetesUsername,
 		user.KubernetesGroups,
 		verb,
@@ -145,7 +162,26 @@ func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource
 		resource,
 		namespace,
 	)
-	return err == nil && can
+	switch {
+	case err != nil && !isLocal(r.Context()):
+		writeAccessCheckError(w, err)
+		return accessFailed
+	case err != nil || !can:
+		return accessDenied
+	}
+	return accessAllowed
+}
+
+// allowed is checkAccess for an endpoint that answers a denial with 403. It
+// reports whether the request may proceed.
+func (h *Handler) allowed(w http.ResponseWriter, r *http.Request, user *auth.User, verb, resource, namespace string) bool {
+	switch h.checkAccess(w, r, user, verb, resource, namespace) {
+	case accessAllowed:
+		return true
+	case accessDenied:
+		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	}
+	return false
 }
 
 // auditLog writes an audit entry for a Velero action.
@@ -188,7 +224,10 @@ func (h *Handler) HandleListBackups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC filter
-	if !h.canAccess(r.Context(), user, "list", "backups", "") {
+	switch h.checkAccess(w, r, user, "list", "backups", "") {
+	case accessFailed:
+		return
+	case accessDenied:
 		httputil.WriteData(w, []Backup{})
 		return
 	}
@@ -228,8 +267,7 @@ func (h *Handler) HandleGetBackup(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	if !h.canAccess(r.Context(), user, "get", "backups", namespace) {
-		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	if !h.allowed(w, r, user, "get", "backups", namespace) {
 		return
 	}
 
@@ -284,8 +322,7 @@ func (h *Handler) HandleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC pre-check
-	if !h.canAccess(r.Context(), user, "create", "backups", input.Namespace) {
-		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	if !h.allowed(w, r, user, "create", "backups", input.Namespace) {
 		return
 	}
 
@@ -352,8 +389,7 @@ func (h *Handler) HandleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	// RBAC pre-check
-	if !h.canAccess(r.Context(), user, "delete", "backups", namespace) {
-		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	if !h.allowed(w, r, user, "delete", "backups", namespace) {
 		return
 	}
 
@@ -417,8 +453,7 @@ func (h *Handler) HandleGetBackupLogs(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	if !h.canAccess(r.Context(), user, "get", "backups", namespace) {
-		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	if !h.allowed(w, r, user, "get", "backups", namespace) {
 		return
 	}
 
@@ -427,15 +462,19 @@ func (h *Handler) HandleGetBackupLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The request creates a DownloadRequest on the cluster, so it is audited
+	// like any other write.
 	url, err := h.requestBackupLogs(r.Context(), dynClient, namespace, name)
 	if errors.Is(err, errLogsTimeout) {
+		h.auditLog(r, user, audit.ActionVeleroBackupLogs, "Backup", namespace, name, audit.ResultFailure)
 		httputil.WriteError(w, http.StatusGatewayTimeout, errLogsTimeout.Error(), "")
 		return
 	}
 	if err != nil {
-		h.writeClusterError(w, r, err, "failed to get backup logs")
+		h.failWrite(w, r, user, err, "failed to get backup logs", audit.ActionVeleroBackupLogs, "Backup", namespace, name)
 		return
 	}
+	h.auditLog(r, user, audit.ActionVeleroBackupLogs, "Backup", namespace, name, audit.ResultSuccess)
 
 	httputil.WriteData(w, map[string]string{"url": url})
 }
@@ -448,7 +487,10 @@ func (h *Handler) HandleListRestores(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC filter
-	if !h.canAccess(r.Context(), user, "list", "restores", "") {
+	switch h.checkAccess(w, r, user, "list", "restores", "") {
+	case accessFailed:
+		return
+	case accessDenied:
 		httputil.WriteData(w, []Restore{})
 		return
 	}
@@ -487,8 +529,7 @@ func (h *Handler) HandleGetRestore(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	if !h.canAccess(r.Context(), user, "get", "restores", namespace) {
-		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	if !h.allowed(w, r, user, "get", "restores", namespace) {
 		return
 	}
 
@@ -554,8 +595,7 @@ func (h *Handler) HandleCreateRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC pre-check
-	if !h.canAccess(r.Context(), user, "create", "restores", input.Namespace) {
-		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	if !h.allowed(w, r, user, "create", "restores", input.Namespace) {
 		return
 	}
 
@@ -637,7 +677,10 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC filter
-	if !h.canAccess(r.Context(), user, "list", "schedules", "") {
+	switch h.checkAccess(w, r, user, "list", "schedules", "") {
+	case accessFailed:
+		return
+	case accessDenied:
 		httputil.WriteData(w, []Schedule{})
 		return
 	}
@@ -670,8 +713,7 @@ func (h *Handler) HandleGetSchedule(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	if !h.canAccess(r.Context(), user, "get", "schedules", namespace) {
-		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	if !h.allowed(w, r, user, "get", "schedules", namespace) {
 		return
 	}
 
@@ -737,8 +779,7 @@ func (h *Handler) HandleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC pre-check
-	if !h.canAccess(r.Context(), user, "create", "schedules", input.Namespace) {
-		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	if !h.allowed(w, r, user, "create", "schedules", input.Namespace) {
 		return
 	}
 
@@ -987,10 +1028,16 @@ func (h *Handler) HandleListLocations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC filter
-	if !h.canAccess(r.Context(), user, "list", "backupstoragelocations", "") {
+	switch h.checkAccess(w, r, user, "list", "backupstoragelocations", "") {
+	case accessFailed:
+		return
+	case accessDenied:
 		locations.BackupStorageLocations = []BackupStorageLocation{}
 	}
-	if !h.canAccess(r.Context(), user, "list", "volumesnapshotlocations", "") {
+	switch h.checkAccess(w, r, user, "list", "volumesnapshotlocations", "") {
+	case accessFailed:
+		return
+	case accessDenied:
 		locations.VolumeSnapshotLocations = []VolumeSnapshotLocation{}
 	}
 

@@ -6,6 +6,7 @@ package velero
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -44,6 +45,9 @@ func isLocal(ctx context.Context) bool {
 
 // baseDyn is the local service-account dynamic client.
 func (h *Handler) baseDyn() dynamic.Interface {
+	if h.baseDynOverride != nil {
+		return h.baseDynOverride
+	}
 	// nolint:cluster-routing local path: the service-account cache serves the local cluster only; remote reads go through fetchRemote.
 	return h.K8sClient.BaseDynamicClient()
 }
@@ -81,6 +85,19 @@ func (h *Handler) writeClusterError(w http.ResponseWriter, r *http.Request, err 
 func (h *Handler) failWrite(w http.ResponseWriter, r *http.Request, user *auth.User, err error, msg string, action audit.Action, kind, ns, name string) {
 	h.auditLog(r, user, action, kind, ns, name, auditResult(err))
 	h.writeClusterError(w, r, err, msg)
+}
+
+// writeAccessCheckError answers a remote RBAC pre-check that could not be
+// made: a SAR the cluster answered with an error status through
+// WriteRemoteError, and a failure to reach or resolve the cluster through
+// WriteTargetError.
+func writeAccessCheckError(w http.ResponseWriter, err error) {
+	var status apierrors.APIStatus
+	if errors.As(err, &status) {
+		httputil.WriteRemoteError(w, err)
+		return
+	}
+	httputil.WriteTargetError(w, err)
 }
 
 // writeGetError answers a failed read of one named object. Every local
