@@ -619,3 +619,59 @@ func TestRemote_EveryListFailingIsAvailableWithFullCoverage(t *testing.T) {
 		t.Errorf("providers list status %d, want 403: %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestRemote_PartiallyServedClusterGatesEachResource(t *testing.T) {
+	hs := newHarness(t, FluxProviderGVR.Version)
+	// Alerts at v1beta3, Providers only at v1beta2: the API is installed,
+	// but a Provider write must not be sent.
+	hs.clients.clusters[remoteCluster].disc.Resources = []*metav1.APIResourceList{
+		{GroupVersion: FluxNotificationGroup + "/v1beta2", APIResources: []metav1.APIResource{{Name: "providers", Kind: "Provider", Namespaced: true}}},
+		{GroupVersion: FluxAlertGVR.GroupVersion().String(), APIResources: []metav1.APIResource{{Name: "alerts", Kind: "Alert", Namespaced: true}}},
+	}
+
+	rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateProvider, nil, providerBody)
+	if rr.Code != http.StatusNotFound || decodeError(t, rr).Error.Reason != string(k8s.ReasonDiscoveryMissing) {
+		t.Errorf("provider create: status %d, body %s, want 404 discovery_missing", rr.Code, rr.Body.String())
+	}
+	if n := countVerb(hs.remoteDyn(), "create", "providers"); n != 0 {
+		t.Errorf("remote provider creates = %d, want 0", n)
+	}
+
+	rr = do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateAlert, nil,
+		`{"name":"new-alert","namespace":"flux-system","providerRef":"p","eventSources":[{"kind":"Kustomization","name":"*"}]}`)
+	if rr.Code != http.StatusOK {
+		t.Errorf("alert create status %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	st := decode[NotificationStatus](t, do(t, remoteCluster, http.MethodGet, hs.h.HandleStatus, nil, ""))
+	if !st.Available || st.AlertCount != 1 || len(st.Coverage) != 0 {
+		t.Errorf("status = %+v, want available with the new alert and no coverage", st)
+	}
+}
+
+func TestRemote_ListOfARemovedCRDIsEmptyNotFailed(t *testing.T) {
+	hs := newHarness(t, FluxProviderGVR.Version, fluxObj("Provider", "remote-provider"))
+	hs.remoteDyn().PrependReactor("list", "receivers", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(FluxReceiverGVR.GroupResource(), "")
+	})
+
+	rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListReceivers, nil, "")
+	if rr.Code != http.StatusOK {
+		t.Errorf("receivers list status %d, want 200 empty: %s", rr.Code, rr.Body.String())
+	}
+	st := decode[NotificationStatus](t, do(t, remoteCluster, http.MethodGet, hs.h.HandleStatus, nil, ""))
+	if !st.Available || st.ProviderCount != 1 || len(st.Coverage) != 0 {
+		t.Errorf("status = %+v, want available with one provider and no coverage", st)
+	}
+}
+
+func TestRemote_StatusDisclosesFailedAccessChecks(t *testing.T) {
+	hs := newHarness(t, FluxProviderGVR.Version, fluxObj("Provider", "remote-provider"))
+	hs.h.AccessChecker = resources.NewErroringAccessChecker(unreachable())
+
+	rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleStatus, nil, "")
+	st := decode[NotificationStatus](t, rr)
+	if !st.Available || st.ProviderCount != 0 || len(st.Coverage) != 1 || st.Coverage[0].Source != "providers" {
+		t.Errorf("status = %+v, want available with a providers coverage entry", st)
+	}
+	assertNoLeak(t, rr)
+}
