@@ -393,7 +393,8 @@ func main() {
 		Informers:   informerMgr,
 		AuditLogger: auditLogger,
 		Logger:      logger,
-		ClusterID:   cfg.ClusterID,
+		Clients:     clusterRouter,
+		Presence:    remotePresence,
 	}
 
 	// Connect to Hubble Relay if detected
