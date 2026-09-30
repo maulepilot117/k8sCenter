@@ -4,6 +4,8 @@ import (
 	"regexp"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
 var (
@@ -132,4 +134,11 @@ type NotificationStatus struct {
 	ProviderCount int  `json:"providerCount"`
 	AlertCount    int  `json:"alertCount"`
 	ReceiverCount int  `json:"receiverCount"`
+	// Reason is set on a remote cluster when Available is false: why the
+	// notification API is not usable there (discovery_missing, unreachable,
+	// ...). Absent on the local cluster.
+	Reason string `json:"reason,omitempty"`
+	// Coverage names each remote list that could not be read, so a count of
+	// zero is not mistaken for none.
+	Coverage []k8s.SourceCoverage `json:"coverage,omitempty"`
 }
