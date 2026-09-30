@@ -246,16 +246,23 @@ func assertCapabilities(t *testing.T, body CapabilitiesResponse, ids []string, w
 //
 // yaml.validate/diff/export shipped remote in U9a (#493), yaml.apply in U9b
 // (#494), and dashboard.summary in U10 (#495, via the ?coverage=1 opt-in).
-// The other six still carry a remote guard (400/501 or a WebSocket refusal)
-// and must keep reporting unsupported_platform. TestCapabilityOperations_
+// R-8 (docs/plans/2026-09-29-0908-fix-r8-remote-cluster-routing-plan.md)
+// routed node drain (U1) and the CRD-backed feature packages (U4–U10, U17)
+// through ClusterRouter. The unsupported rows still carry a remote guard
+// (400/501, a WebSocket refusal, or an "unavailable on remote" body) and must
+// keep reporting unsupported_platform. TestCapabilityOperations_
 // RemoteSupportPinned asserts the table matches these sets exactly; every
 // other remote test reads them rather than hard-coding its own copy.
 var (
 	wantRemoteSupported = []string{
 		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply", "dashboard.summary",
+		"node.drain", "gitops.applications", "velero.backups", "storage.snapshots",
+		"flux.notifications", "alert.rules", "gateway.read", "mesh.routing",
+		"mesh.mtls", "eso.read",
 	}
 	wantRemoteUnsupported = []string{
 		"resources.counts", "pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
+		"cni.config", "mesh.golden_signals", "eso.history", "eso.metrics",
 	}
 )
 
@@ -851,13 +858,13 @@ func TestClassifyTargetSchemaErr(t *testing.T) {
 // carries two expectations, not one.
 //
 // The want* fields are the verdict for an op that IS platform-supported on
-// the scenario's class. An op that is not (the six rows still in
+// the scenario's class. An op that is not (the rows in
 // wantRemoteUnsupported, on the remote scenarios) must report
 // unsupported_platform whatever the scenario claims — that is the static
 // top-priority rule. The remote scenarios therefore split the real table
-// both ways in one pass: the five remote-supported rows must carry the
+// both ways in one pass: the remote-supported rows must carry the
 // scenario's real verdict (unreachable is never unsupported — D3), and the
-// six unsupported rows must not. The loop counts both kinds so neither half
+// unsupported rows must not. The loop counts both kinds so neither half
 // can silently go vacuous if the table drifts.
 func TestCapabilities_ReasonCodesAreClosed(t *testing.T) {
 	now := time.Now()
@@ -1236,27 +1243,33 @@ func TestCapabilities_NamespacedDenialIsUnknownNotForbidden(t *testing.T) {
 
 	// Every namespaced row — the yaml.* configmaps rows, the pods rows, the
 	// pods/exec + pods/log subresource rows (finding #10's wildcard shape)
-	// and externalsecrets — reports unknown, not a denial.
-	for _, op := range []string{
-		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply",
-		"resources.counts", "pod.exec", "logs.stream", "logs.search",
-		"flows.stream", "eso.write",
-	} {
-		cap := findCapability(t, body, op)
+	// and each feature's CRD — reports unknown, not a denial. The two nodes
+	// rows are cluster-scoped, so their denial is real. The scope of every
+	// row is pinned by TestCapabilityOperations_ScopePinned, which is what
+	// lets this loop read it from the table.
+	var namespacedRows, clusterRows int
+	for _, op := range capabilityOperations {
+		cap := findCapability(t, body, op.ID)
+		if op.ClusterScoped {
+			clusterRows++
+			if cap.Authorized == nil || *cap.Authorized {
+				t.Errorf("%s Authorized = %v; want false — %s is cluster-scoped, so this denial is real", op.ID, cap.Authorized, op.AuthResource)
+			}
+			if cap.ReasonCode != ReasonForbidden {
+				t.Errorf("%s ReasonCode = %q; want %q", op.ID, cap.ReasonCode, ReasonForbidden)
+			}
+			continue
+		}
+		namespacedRows++
 		if cap.Authorized != nil {
-			t.Errorf("%s Authorized = %v; want null — a cluster-wide denial on a namespaced resource is not proof this identity cannot act", op, *cap.Authorized)
+			t.Errorf("%s Authorized = %v; want null — a cluster-wide denial on a namespaced resource is not proof this identity cannot act", op.ID, *cap.Authorized)
 		}
 		if cap.ReasonCode != ReasonAuthzNamespaceScoped {
-			t.Errorf("%s ReasonCode = %q; want %q — authz_unknown is reserved for a SAR that could not be evaluated, and this one was", op, cap.ReasonCode, ReasonAuthzNamespaceScoped)
+			t.Errorf("%s ReasonCode = %q; want %q — authz_unknown is reserved for a SAR that could not be evaluated, and this one was", op.ID, cap.ReasonCode, ReasonAuthzNamespaceScoped)
 		}
 	}
-
-	nodes := findCapability(t, body, "dashboard.summary")
-	if nodes.Authorized == nil || *nodes.Authorized {
-		t.Fatalf("dashboard.summary Authorized = %v; want false — nodes is cluster-scoped, so this denial is real", nodes.Authorized)
-	}
-	if nodes.ReasonCode != ReasonForbidden {
-		t.Errorf("dashboard.summary ReasonCode = %q; want %q", nodes.ReasonCode, ReasonForbidden)
+	if namespacedRows == 0 || clusterRows == 0 {
+		t.Fatalf("checked %d namespaced and %d cluster-scoped rows; want both kinds so neither half is vacuous", namespacedRows, clusterRows)
 	}
 
 	// Pin what was actually asked: every probe carried the empty
@@ -1321,10 +1334,13 @@ func TestAuthorizedFromClusterWideSAR(t *testing.T) {
 // visible. TestCapabilityOperations_RemoteSupportPinned is its counterpart
 // for the remote-supported dimension.
 func TestCapabilityOperations_ScopePinned(t *testing.T) {
-	// nodes is the only cluster-scoped resource probed today. configmaps,
-	// pods, pods/exec, pods/log and externalsecrets are all namespaced.
+	// nodes is the only cluster-scoped resource probed today, by the
+	// dashboard summary and node drain. Every other AuthResource in the
+	// table (configmaps, pods and their subresources, and each feature's
+	// CRD) is namespaced.
 	wantClusterScoped := map[string]bool{
 		"dashboard.summary": true,
+		"node.drain":        true,
 	}
 
 	seen := map[string]bool{}
@@ -1433,7 +1449,7 @@ func (g *countingClusterRecordGetter) count() int {
 // gate from both sides. With a table that supports nothing on the remote
 // class, every row is unsupported_platform no matter what the target looks
 // like, so the handler must not read the registry. With the production
-// table (five remote-supported rows) it must: reachability is read and the
+// table (which has remote-supported rows) it must: reachability is read and the
 // supported rows carry a real verdict.
 func TestCapabilities_NoSupportedRowSkipsTargetResolution(t *testing.T) {
 	fresh := time.Now().Add(-30 * time.Second)
@@ -1656,12 +1672,16 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 			}
 
 			// Every other remote-supported row with yaml.validate's shape
-			// (plain, namespaced configmaps probe, no discovery probe) must
-			// share its verdict. Derived from wantRemoteSupported so a row
-			// added there is covered here too.
+			// (namespaced, no discovery probe) must share its verdict.
+			// Derived from wantRemoteSupported and each row's production
+			// shape, so a row added there is covered here too. A
+			// cluster-scoped row (node.drain) reads the same denial as a
+			// definite forbidden instead; TestCapabilities_
+			// NamespacedDenialIsUnknownNotForbidden pins that split.
 			var otherPlain []string
 			for _, id := range wantRemoteSupported {
-				if id != "yaml.validate" && id != "dashboard.summary" {
+				op := productionOp(t, id)
+				if id != "yaml.validate" && op.Probe == nil && !op.ClusterScoped {
 					otherPlain = append(otherPlain, id)
 				}
 			}

@@ -185,7 +185,7 @@ type capabilityOp struct {
 // capabilityOperations is the package-level operation table (implementation
 // step 1). Each "yes" row's comment names what makes remote support real, and
 // each "no" row's comment cites the exact guard file:line it mirrors,
-// re-verified against the tree at 5e567e01, so a reviewer can diff the claim
+// re-verified against the tree at 887174c6, so a reviewer can diff the claim
 // against the code instead of trusting prose. TestCapabilityOperations_
 // RemoteSupportPinned pins the exact remote-supported set, so flipping a row
 // without updating that test (and this comment) fails loudly.
@@ -358,14 +358,158 @@ var capabilityOperations = []capabilityOp{
 		// Phase E ESO writes don't route through ClusterRouter — the
 		// dynamic client always points at the local ClientFactory — so
 		// honoring X-Cluster-ID would desync the audit row from the actual
-		// mutation. externalsecrets/actions.go:140 (rejectNonLocalClusterWrite,
-		// 501; called from actions.go:178 and bulk.go:290). Probed against
+		// mutation. R-8 keeps this carve-out (R12) while ESO reads went
+		// remote (eso.read below). externalsecrets/actions.go:144
+		// (rejectNonLocalClusterWrite, 501; called from actions.go:182 and
+		// bulk.go:81/109/137/308, which also refuse the bulk-refresh scope
+		// previews). Probed against
 		// external-secrets.io/externalsecrets (A2) since ESO is an optional
 		// CRD-based operator that may not be installed even locally.
 		ID: "eso.write", Label: "External Secrets write actions",
 		LocalSupported: true, RemoteSupported: false,
 		Probe:    &gvrProbe{Group: "external-secrets.io", Resource: "externalsecrets"},
 		AuthVerb: "patch", AuthGroup: "external-secrets.io", AuthResource: "externalsecrets",
+	},
+
+	// R-8 rows (docs/plans/2026-09-29-0908-fix-r8-remote-cluster-routing-plan.md
+	// U13). Each package below resolves every per-user call through
+	// ClusterRouter for the request's X-Cluster-ID, reads remote lists
+	// through a per-identity remotecache snapshot, and is listed in
+	// scripts/check-cluster-routing.sh REMOTE_ROUTED_DIRS, so the lint flags
+	// any new local-schema or service-account read in it. None carries a
+	// Probe: each feature's own status route reports whether its CRDs are
+	// installed on the target (KTD5), and A2 keeps discoveryPresent to the
+	// two rows above. The representative AuthResource is the feature's
+	// primary list; the handlers still check each resource they touch.
+	{
+		// Remote since U1 (#510): the drain resolves its clientset for the
+		// request's cluster before the 202 and runs detached from the request
+		// on that client (k8s/resources/nodes.go HandleDrainNode ->
+		// clientForCluster). AuthVerb "update" nodes mirrors the handler's
+		// own checkAccess. Cluster-scoped: nodes are not namespaced, so a
+		// cluster-wide denial is a real one.
+		ID: "node.drain", Label: "Node drain",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "update", AuthGroup: "", AuthResource: "nodes",
+		ClusterScoped: true,
+	},
+	{
+		// Remote since U5 (#515): Argo CD and Flux lists, detail, sync,
+		// suspend and rollback run on the selected cluster (gitops/remote.go).
+		// A remote list whose Argo or Flux read failed names that source in
+		// its coverage field. Argo CD Applications stand in for both tools.
+		ID: "gitops.applications", Label: "GitOps applications and sync",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "argoproj.io", AuthResource: "applications",
+	},
+	{
+		// Remote since U6 (#516): backups, restores, schedules, locations and
+		// their actions run on the selected cluster (velero/remote.go),
+		// including the delete-backup in-progress-restore check, which fails
+		// closed when the remote restore list cannot be read.
+		ID: "velero.backups", Label: "Velero backups and restores",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "velero.io", AuthResource: "backups",
+	},
+	{
+		// Remote since U7 (#517): VolumeSnapshot list, detail, create and
+		// delete run on the selected cluster (storage/handler.go).
+		ID: "storage.snapshots", Label: "Volume snapshots",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "snapshot.storage.k8s.io", AuthResource: "volumesnapshots",
+	},
+	{
+		// Remote since U8 (#518): Flux notification Providers, Alerts and
+		// Receivers are read and written on the selected cluster
+		// (notification/remote.go). Only v1beta3 bodies are built, so a
+		// remote that serves only v1beta2 reports not installed.
+		ID: "flux.notifications", Label: "Flux notifications",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "notification.toolkit.fluxcd.io", AuthResource: "providers",
+	},
+	{
+		// Remote since U9 (#519): PrometheusRule object CRUD on the selected
+		// cluster (alerting/rules.go). This is the rule objects only (KTD13):
+		// whether they fire depends on the target running
+		// prometheus-operator, and the active and history alert feeds stay on
+		// the local Alertmanager.
+		ID: "alert.rules", Label: "Alert rules",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "monitoring.coreos.com", AuthResource: "prometheusrules",
+	},
+	{
+		// Remote since U4 (#514): GatewayClasses, Gateways and every route
+		// kind are read from the selected cluster (gateway/handler.go).
+		// Gateway API has no write actions in k8sCenter.
+		ID: "gateway.read", Label: "Gateway API views",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "gateway.networking.k8s.io", AuthResource: "gateways",
+	},
+	{
+		// Remote since U10 (#520): Istio and Linkerd routing lists and route
+		// detail come from the selected cluster (servicemesh/remote.go), with
+		// mesh presence detected per cluster. The topology mesh overlay stays
+		// local. Istio VirtualServices stand in for both meshes.
+		ID: "mesh.routing", Label: "Service mesh routing",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "networking.istio.io", AuthResource: "virtualservices",
+	},
+	{
+		// Remote since U10 (#520), in part: posture is derived from the
+		// selected cluster's pods and policies, but the Prometheus metric
+		// cross-check is skipped and reported unavailable
+		// (servicemesh/handler.go HandleMTLSPosture,
+		// crossCheckUnavailableRemote). The README marks it Partial.
+		// AuthResource pods: posture is computed per pod.
+		ID: "mesh.mtls", Label: "Service mesh mTLS posture",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// Remote since U17 (#523): ExternalSecret, ClusterExternalSecret,
+		// store and PushSecret lists and detail, and path discovery, read the
+		// selected cluster (externalsecrets/remote.go). The drift column is
+		// "unknown" on remote: the drift hint comes from the local poller.
+		ID: "eso.read", Label: "External Secrets views",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "external-secrets.io", AuthResource: "externalsecrets",
+	},
+	{
+		// Cilium config is tied to the local installation, so reads and
+		// updates are refused on remote (R13, the P2-5 decision).
+		// networking/handler.go:171 and :234 (rejectNonLocal, 501). The
+		// config lives in the cilium-config ConfigMap.
+		ID: "cni.config", Label: "Cilium CNI configuration",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
+	},
+	{
+		// Golden signals come from the local Prometheus, which knows nothing
+		// of a remote cluster's traffic (R14). servicemesh/handler.go:834
+		// (HandleGoldenSignals answers with reason unsupported_platform and
+		// queries nothing). AuthVerb "list" pods mirrors the handler's own
+		// namespace check.
+		ID: "mesh.golden_signals", Label: "Service mesh golden signals",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// Sync history and evidence events are recorded by the local poller
+		// for the local cluster only (R14).
+		// externalsecrets/history_handler.go:157 (501
+		// remote_history_unsupported) and detail_evidence.go:173 (501
+		// remote_events_unsupported).
+		ID: "eso.history", Label: "External Secrets sync history",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "get", AuthGroup: "external-secrets.io", AuthResource: "externalsecrets",
+	},
+	{
+		// Store metrics join the local ESO cache with the local Prometheus
+		// (R14). externalsecrets/metrics.go:75 (answers "rate metrics
+		// unavailable on remote clusters" before any client is resolved).
+		ID: "eso.metrics", Label: "External Secrets store metrics",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "get", AuthGroup: "external-secrets.io", AuthResource: "secretstores",
 	},
 }
 

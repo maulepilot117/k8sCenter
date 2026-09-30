@@ -24,8 +24,14 @@ const readmeCapabilityHeading = "## Remote cluster support"
 // capacity, but omits CPU/memory usage, alert counts and the health score
 // because there is no remote metrics (Prometheus) binding yet. Those fields
 // render as unavailable, so "Yes" would overstate it.
+//
+// mesh.mtls: remote posture is derived from the target's pods and policies
+// only. The Prometheus metric cross-check the local path applies to Istio
+// workloads is skipped and reported unavailable, because the only
+// Prometheus binding is the local one (R-8 R14).
 var readmeRemotePartialAllowed = map[string]bool{
 	"dashboard.summary": true,
+	"mesh.mtls":         true,
 }
 
 // readmeGuardFileRe matches a Go source path such as

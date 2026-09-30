@@ -64,8 +64,31 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Log search | Yes | No | `server/handle_ws_logs_search.go` (WebSocket close) |
 | Network flow stream | Yes | No | `server/handle_ws_flows.go` (WebSocket close) |
 | External Secrets write actions | Yes | No | `externalsecrets/actions.go` (501) |
+| Node drain | Yes | Yes | Runs to completion on the selected cluster after the 202, and is cancelled if that cluster is removed |
+| GitOps applications and sync | Yes | Yes | Argo CD and Flux lists, detail, sync, suspend and rollback |
+| Velero backups and restores | Yes | Yes | Backups, restores, schedules, locations and their actions. Backup logs are a download link issued by the remote cluster's object storage, so your browser must be able to reach that storage |
+| Volume snapshots | Yes | Yes | List, detail, create and delete |
+| Flux notifications | Yes | Yes | Providers, Alerts and Receivers. A remote that serves only the `v1beta2` API shows as not installed |
+| Alert rules | Yes | Yes | PrometheusRule objects only. Whether they fire depends on the remote running prometheus-operator; the active and history alert feeds are always the local Alertmanager's |
+| Gateway API views | Yes | Yes | GatewayClasses, Gateways and routes (read-only on every cluster) |
+| Service mesh routing | Yes | Yes | Istio and Linkerd routes, with mesh presence detected on the remote |
+| Service mesh mTLS posture | Yes | Partial | Derived from the remote's pods and policies. The Prometheus metric cross-check is reported unavailable |
+| External Secrets views | Yes | Yes | Lists, detail and path discovery. Drift shows as unknown on remote, never as in sync |
+| Cilium CNI configuration | Yes | No | `networking/handler.go` (501) |
+| Service mesh golden signals | Yes | No | `servicemesh/handler.go` (reported unavailable: the signals come from the local Prometheus) |
+| External Secrets sync history | Yes | No | `externalsecrets/history_handler.go` and `externalsecrets/detail_evidence.go` (501: recorded for the local cluster only) |
+| External Secrets store metrics | Yes | No | `externalsecrets/metrics.go` (reported unavailable: the rate comes from the local Prometheus) |
 
 Dashboard trends (the sparklines) are local-only as well; the cards render without them.
+
+Remote pages get no live updates: the WebSocket feed carries the local cluster's informer events only. Refresh the page to see changes on a remote cluster.
+
+**Known gaps.** These features do not yet answer for a remote cluster and are not in the table because they have no capability row. Treat what they show under a remote selection as local, or as unavailable:
+
+- Policy (Kyverno and Gatekeeper) lists read the local cluster, filtered by the remote cluster's RBAC.
+- cert-manager lists on a remote cluster are shown only when cert-manager is detected on the local cluster.
+- Topology is built from the local cluster's informers.
+- The storage driver and StorageClass lists read local informers. The snapshot classes and drivers the snapshot flow uses are read from the remote.
 
 "Unsupported" is reported only for the rows above marked "No". A remote cluster that is down, or an account without RBAC for an operation, shows as blocked right now or unknown, never as something k8sCenter cannot do.
 
