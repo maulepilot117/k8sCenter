@@ -374,6 +374,62 @@ func TestRemote_OneFailedListDoesNotHideTheOthers(t *testing.T) {
 	}
 }
 
+// Every list failing is a failed read, never an empty list (R1): the remote
+// answers 502 without its host, nothing falls back to the local cluster, and
+// the failure is not cached, so the next request reads the cluster again.
+func TestRemote_EveryListFailingIsAnError(t *testing.T) {
+	remote := newRemoteFake("v1", remoteInventory())
+	failing := true
+	remote.dyn.PrependReactor("list", "*", func(clienttesting.Action) (bool, runtime.Object, error) {
+		if failing {
+			return true, nil, unreachableErr()
+		}
+		return false, nil, nil
+	})
+	rh := newRemoteHarness(remote)
+
+	for name, handler := range map[string]http.HandlerFunc{
+		"ES list":    rh.h.HandleListExternalSecrets,
+		"store list": rh.h.HandleListStores,
+	} {
+		rr := doRemote(t, handler, nil, "")
+		if rr.Code != http.StatusBadGateway || decodeErrorReason(t, rr) != string(k8s.ReasonUnreachable) {
+			t.Errorf("%s = %d %s, want 502 unreachable", name, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), remoteHost) {
+			t.Errorf("%s response leaks the remote host: %s", name, rr.Body.String())
+		}
+	}
+	if n := rh.localActions(); n != 0 {
+		t.Errorf("local cluster recorded %d actions, want 0", n)
+	}
+
+	failing = false
+	rr := doRemote(t, rh.h.HandleListExternalSecrets, nil, "")
+	if rr.Code != http.StatusOK || len(decodeData[[]ExternalSecret](t, rr)) != 1 {
+		t.Errorf("list after recovery = %d %s, want 200 with the remote ES (a total failure must not be cached)", rr.Code, rr.Body.String())
+	}
+}
+
+// A kind whose CRD went away after discovery was cached reads as empty, not
+// as a failure, and the other kinds still serve.
+func TestRemote_GoneKindIsEmptyNotFailed(t *testing.T) {
+	remote := newRemoteFake("v1", remoteInventory())
+	remote.dyn.PrependReactor("list", "pushsecrets", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(PushSecretGVR.GroupResource(), "")
+	})
+	rh := newRemoteHarness(remote)
+
+	rr := doRemote(t, rh.h.HandleListPushSecrets, nil, "")
+	if rr.Code != http.StatusOK || len(decodeData[[]PushSecret](t, rr)) != 0 {
+		t.Errorf("push secret list = %d %s, want 200 []", rr.Code, rr.Body.String())
+	}
+	rr = doRemote(t, rh.h.HandleListExternalSecrets, nil, "")
+	if rr.Code != http.StatusOK || len(decodeData[[]ExternalSecret](t, rr)) != 1 {
+		t.Errorf("ES list = %d %s, want 200 with the remote ES", rr.Code, rr.Body.String())
+	}
+}
+
 func TestRemote_PathDiscoveryReadsRemoteStoreAndSecrets(t *testing.T) {
 	remote := newRemoteFake("v1",
 		[]runtime.Object{makeKubernetesProviderStore("apps", "k8s-store", "src")},

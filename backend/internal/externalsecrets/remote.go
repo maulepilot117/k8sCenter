@@ -12,7 +12,6 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
@@ -176,28 +175,12 @@ func (h *Handler) storesForResolver(ctx context.Context, user *auth.User) (store
 	return snap.data.stores, snap.data.clusterStores
 }
 
-// servedV1 reports whether lists serve gvr at exactly its version.
-func servedV1(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource) bool {
-	want := gvr.GroupVersion().String()
-	for _, l := range lists {
-		if l.GroupVersion != want {
-			continue
-		}
-		for _, res := range l.APIResources {
-			if res.Name == gvr.Resource {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // remoteServed reads which ESO resources a remote cluster serves at v1, as
-// the user sees it, keyed by resource name. ESO counts as installed only when ExternalSecret is
-// served at v1, the version this package reads, matching the local
-// Discoverer; a cluster serving only an older version is not installed. A
-// nil map means not installed. When that cannot be told, the error says
-// why.
+// the user sees it, keyed by resource name. ESO counts as installed only
+// when ExternalSecret is served at v1, the version this package reads,
+// matching the local Discoverer; a cluster serving only an older version is
+// not installed. A nil map means not installed. When that cannot be told,
+// the error says why.
 func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth.User) (map[string]bool, error) {
 	// Presence remembers an absence briefly and invalidates the cached
 	// schema when that lapses, so ESO installed later is seen within
@@ -215,13 +198,6 @@ func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth
 	if verdict.Installed == nil || unavailable || failedGroups[GroupName] {
 		return nil, k8s.ErrDiscoveryUnavailable
 	}
-	if !servedV1(lists, ExternalSecretGVR) {
-		// The group is served at another version. Presence does not track
-		// versions, so drop the cached schema here: an upgrade to v1 is then
-		// seen by the next fetch rather than when the schema expires.
-		target.Invalidate()
-		return nil, nil
-	}
 	served := map[string]bool{}
 	for _, l := range lists {
 		if l.GroupVersion == ExternalSecretGVR.GroupVersion().String() {
@@ -229,6 +205,13 @@ func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth
 				served[res.Name] = true
 			}
 		}
+	}
+	if !served[ExternalSecretGVR.Resource] {
+		// The group is served at another version. Presence does not track
+		// versions, so drop the cached schema here: an upgrade to v1 is then
+		// seen by the next fetch rather than when the schema expires.
+		target.Invalidate()
+		return nil, nil
 	}
 	return served, nil
 }
