@@ -85,12 +85,6 @@ func (d *Discoverer) Status(ctx context.Context) MeshStatus {
 	return d.Probe(ctx)
 }
 
-// IsInstalled returns true if either mesh was detected.
-func (d *Discoverer) IsInstalled(ctx context.Context) bool {
-	s := d.Status(ctx)
-	return s.Istio != nil || s.Linkerd != nil
-}
-
 // SetOnChange registers a callback invoked when Probe detects a change
 // in mesh detection state. Use this from main() to invalidate downstream
 // caches (e.g., the handler's 30s route cache, the topology overlay) so
