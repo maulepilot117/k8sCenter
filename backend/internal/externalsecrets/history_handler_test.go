@@ -18,7 +18,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
@@ -107,9 +106,7 @@ func historyHandler(esObjs []runtime.Object, reader *fakeHistoryReader, ac *reso
 		AccessChecker: ac,
 		Logger:        slog.Default(),
 		ClusterID:     "local",
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
+		Clients:       &stubClients{dyn: dynFake},
 	}
 	if reader != nil {
 		h.HistoryStore = reader
@@ -614,20 +611,18 @@ func TestHistory_ESNotFound_Returns404(t *testing.T) {
 func TestHistory_InternalErrors_Return500WithoutQuerying(t *testing.T) {
 	cases := map[string]func(h *Handler){
 		"impersonating client fails": func(h *Handler) {
-			h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) {
-				return nil, errors.New("no rest config")
-			}
+			stubOf(h).dynErr = errors.New("no rest config")
 		},
 		"live get fails": func(h *Handler) {
 			dyn := newEsoFakeDynClient(makeES("apps", "db-creds", "uid-1"))
 			dyn.PrependReactor("get", "externalsecrets", func(clienttesting.Action) (bool, runtime.Object, error) {
 				return true, nil, errors.New("etcd timeout")
 			})
-			h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) { return dyn, nil }
+			stubOf(h).dyn = dyn
 		},
 		"object has no uid": func(h *Handler) {
 			dyn := newEsoFakeDynClient(makeES("apps", "db-creds", ""))
-			h.dynForUserOverride = func(string, []string) (dynamic.Interface, error) { return dyn, nil }
+			stubOf(h).dyn = dyn
 		},
 	}
 	for name, breakIt := range cases {

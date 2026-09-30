@@ -96,30 +96,19 @@ type Handler struct {
 	// vanished from the inventory.
 	observedDrift sync.Map // map[string]DriftStatus
 
-	// dynOverride / dynForUserOverride / clientForUserOverride are test-only
-	// seams. Production wiring leaves them nil — the real handler delegates
-	// to K8sClient. They live as struct fields rather than constructor
-	// parameters so handler-level tests don't have to build a fake
-	// ClientFactory from scratch (the factory holds a *rest.Config that
-	// FakeDynamicClient can't substitute for cleanly). The cert-manager
-	// precedent has no handler tests at all, so it doesn't have these
-	// seams; the comparison isn't apples-to-apples. Keeping the seams is a
-	// deliberate architectural choice: the small surface in this struct
-	// buys us the ability to test RBAC behaviour, drift resolution, and
-	// the cache layer as a unit, which catches real bugs the cert-manager
-	// package can only surface in integration tests.
+	// dynOverride and promQuerierOverride are test-only seams (per-user
+	// clients come from Clients, which tests stub). Production wiring leaves
+	// them nil and the handler delegates to K8sClient and MonitoringDisc.
+	// They live as struct fields rather than constructor parameters so
+	// handler-level tests don't have to build a fake ClientFactory from
+	// scratch (the factory holds a *rest.Config that FakeDynamicClient can't
+	// substitute for cleanly). The small surface buys unit tests of RBAC
+	// behaviour, drift resolution and the cache layer, which catch real bugs
+	// the cert-manager package can only surface in integration tests.
 
 	// dynOverride, when non-nil, replaces K8sClient.BaseDynamicClient() for
 	// service-account list calls.
 	dynOverride dynamic.Interface
-
-	// dynForUserOverride, when non-nil, replaces the per-user dynamic client
-	// for impersonated CRD fetches in detail endpoints.
-	dynForUserOverride func(username string, groups []string) (dynamic.Interface, error)
-
-	// clientForUserOverride, when non-nil, replaces the per-user typed client
-	// for impersonated typed client lookups (synced-Secret RV check).
-	clientForUserOverride func(username string, groups []string) (kubernetes.Interface, error)
 
 	// promQuerierOverride, when non-nil, replaces the live Prometheus
 	// client returned by MonitoringDisc for the metrics endpoints. Tests
@@ -138,42 +127,16 @@ func (h *Handler) dynClient() dynamic.Interface {
 	return h.K8sClient.BaseDynamicClient()
 }
 
-// dynForUser returns an impersonating dynamic client for the requesting user.
-// Tests inject dynForUserOverride; production delegates to the K8sClient
-// factory so RBAC is enforced by the API server itself.
-func (h *Handler) dynForUser(username string, groups []string) (dynamic.Interface, error) {
-	if h.dynForUserOverride != nil {
-		return h.dynForUserOverride(username, groups)
-	}
-	return h.K8sClient.DynamicClientForUser(username, groups)
-}
-
-// clientForUser returns an impersonating typed client for the requesting
-// user. Used by detail endpoints to look up the synced Secret's live
-// resourceVersion for drift detection.
-func (h *Handler) clientForUser(username string, groups []string) (kubernetes.Interface, error) {
-	if h.clientForUserOverride != nil {
-		return h.clientForUserOverride(username, groups)
-	}
-	return h.K8sClient.ClientForUser(username, groups)
-}
-
 // dynForRequest returns a dynamic client impersonating the user on the
-// cluster the request targets. A remote failure is an error, never a local
-// fallback. Tests inject dynForUserOverride.
+// cluster the request targets, so that cluster's API server enforces RBAC.
+// A remote failure is an error, never a local fallback.
 func (h *Handler) dynForRequest(ctx context.Context, user *auth.User) (dynamic.Interface, error) {
-	if h.dynForUserOverride != nil {
-		return h.dynForUserOverride(user.KubernetesUsername, user.KubernetesGroups)
-	}
 	return h.Clients.DynamicClientForCluster(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups)
 }
 
-// clientForRequest is dynForRequest for the typed client. Tests inject
-// clientForUserOverride.
+// clientForRequest is dynForRequest for the typed client, used by detail
+// endpoints to read the synced Secret's live resourceVersion for drift.
 func (h *Handler) clientForRequest(ctx context.Context, user *auth.User) (kubernetes.Interface, error) {
-	if h.clientForUserOverride != nil {
-		return h.clientForUserOverride(user.KubernetesUsername, user.KubernetesGroups)
-	}
 	return h.Clients.ClientForCluster(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups)
 }
 

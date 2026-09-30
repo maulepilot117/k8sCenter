@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -58,9 +57,7 @@ func newForceSyncHandler(esObjs []runtime.Object, accessChecker *resources.Acces
 		AccessChecker: accessChecker,
 		AuditLogger:   rec,
 		Logger:        slog.Default(),
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
+		Clients:       &stubClients{dyn: dynFake},
 	}, rec
 }
 
@@ -93,7 +90,7 @@ func TestForceSync_HappyPath(t *testing.T) {
 		t.Fatalf("status = %d; body = %s", w.Code, w.Body.String())
 	}
 
-	dyn, _ := h.dynForUser("u", nil)
+	dyn := stubOf(h).dyn
 	got, err := dyn.Resource(ExternalSecretGVR).Namespace(ns).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get post-patch: %v", err)
@@ -137,7 +134,7 @@ func TestForceSync_PreservesOperatorAnnotations(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 
-	dyn, _ := h.dynForUser("u", nil)
+	dyn := stubOf(h).dyn
 	got, err := dyn.Resource(ExternalSecretGVR).Namespace(ns).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get post-patch: %v", err)
@@ -297,9 +294,7 @@ func TestForceSync_PatchForbiddenAtAPI(t *testing.T) {
 		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
 		AuditLogger:   rec,
 		Logger:        slog.Default(),
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
+		Clients:       &stubClients{dyn: dynFake},
 	}
 
 	w := httptest.NewRecorder()
@@ -475,7 +470,7 @@ func TestForceSync_RejectsNonLocalCluster(t *testing.T) {
 		t.Errorf("audit entries = %d; want 0 (guard fires before audit)", len(rec.entries))
 	}
 	// Confirm no patch landed on the local object.
-	dyn, _ := h.dynForUser("u", nil)
+	dyn := stubOf(h).dyn
 	got, err := dyn.Resource(ExternalSecretGVR).Namespace(ns).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -603,9 +598,7 @@ func TestForceSync_RetryBaselineComesFromFinalAttempt(t *testing.T) {
 		Discoverer:    detectedDiscoverer(),
 		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
 		Logger:        slog.Default(),
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
+		Clients:       &stubClients{dyn: dynFake},
 	}
 	body := decodeAccepted(t, postForceSync(t, h, ns, name))
 
@@ -725,9 +718,7 @@ func TestForceSync_BaselineCapturedBeforePatch(t *testing.T) {
 		Discoverer:    detectedDiscoverer(),
 		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
 		Logger:        slog.Default(),
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
+		Clients:       &stubClients{dyn: dynFake},
 	}
 	body := decodeAccepted(t, postForceSync(t, h, ns, name))
 

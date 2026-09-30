@@ -266,9 +266,7 @@ func newBulkHandler(esObjs []runtime.Object, accessChecker *resources.AccessChec
 		BulkJobStore:  jobStore,
 		BulkWorker:    worker,
 		dynOverride:   dynFake,
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
+		Clients:       &stubClients{dyn: dynFake},
 	}
 	return h, jobStore, worker, rec
 }
@@ -527,9 +525,7 @@ func TestBulkWorker_MixedOutcomes(t *testing.T) {
 	h := &Handler{
 		Logger:      slog.Default(),
 		AuditLogger: rec,
-		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
-			return dynFake, nil
-		},
+		Clients:     &stubClients{dyn: dynFake},
 	}
 
 	// processJob calls w.k8s.DynamicClientForUser, which is nil in this
@@ -538,10 +534,10 @@ func TestBulkWorker_MixedOutcomes(t *testing.T) {
 	// ClientFactory.
 
 	msg := BulkJobMessage{
-		JobID:     jobID,
-		ClusterID: "local",
-		Action:    store.BulkRefreshActionStore,
-		ScopeTarget:  "apps/vault",
+		JobID:       jobID,
+		ClusterID:   "local",
+		Action:      store.BulkRefreshActionStore,
+		ScopeTarget: "apps/vault",
 		Targets: []BulkScopeTarget{
 			{Namespace: "apps", Name: "ok1", UID: "uid-ok1"},
 			{Namespace: "apps", Name: "ok2", UID: "uid-ok2"},
@@ -552,7 +548,7 @@ func TestBulkWorker_MixedOutcomes(t *testing.T) {
 		ActorName: "alice",
 	}
 	// Drive the per-target loop directly to avoid w.k8s dependency.
-	dynClient, _ := h.dynForUser(msg.Username, msg.Groups)
+	dynClient := stubOf(h).dyn
 	for _, target := range msg.Targets {
 		_, err := h.patchForceSync(context.Background(), dynClient, target.Namespace, target.Name)
 		switch {
@@ -638,8 +634,8 @@ func TestBulkRefresh_AuditDetailShape(t *testing.T) {
 	h.auditBulkJob(context.Background(), msg, final)
 	last := rec.last()
 	var detail struct {
-		JobID          string `json:"jobId"`
-		SucceededCount int    `json:"succeededCount"`
+		JobID          string                     `json:"jobId"`
+		SucceededCount int                        `json:"succeededCount"`
 		Failed         []store.BulkRefreshOutcome `json:"failed"`
 		Skipped        []store.BulkRefreshOutcome `json:"skipped"`
 	}
@@ -793,12 +789,12 @@ func TestBulkWorker_RefusesNonLocalClusterMessage(t *testing.T) {
 	worker := &BulkWorker{store: jobStore, k8s: nil, handler: h, logger: slog.Default()}
 
 	worker.processJob(context.Background(), BulkJobMessage{
-		JobID:     id,
-		ClusterID: "prod-cluster",
-		Action:    store.BulkRefreshActionStore,
-		ScopeTarget:  "apps/vault",
-		Targets:   []BulkScopeTarget{{Namespace: "apps", Name: "es1", UID: "uid-1"}},
-		Username:  "u",
+		JobID:       id,
+		ClusterID:   "prod-cluster",
+		Action:      store.BulkRefreshActionStore,
+		ScopeTarget: "apps/vault",
+		Targets:     []BulkScopeTarget{{Namespace: "apps", Name: "es1", UID: "uid-1"}},
+		Username:    "u",
 	})
 
 	final, err := jobStore.Get(context.Background(), id)
@@ -951,12 +947,12 @@ func TestBulkWorker_OptimisticLockOutcome(t *testing.T) {
 	}
 
 	worker.processJob(context.Background(), BulkJobMessage{
-		JobID:     id,
-		ClusterID: "local",
-		Action:    store.BulkRefreshActionStore,
-		ScopeTarget:  "apps/vault",
-		Targets:   []BulkScopeTarget{{Namespace: "apps", Name: "es1", UID: "uid-1"}},
-		Username:  "u",
+		JobID:       id,
+		ClusterID:   "local",
+		Action:      store.BulkRefreshActionStore,
+		ScopeTarget: "apps/vault",
+		Targets:     []BulkScopeTarget{{Namespace: "apps", Name: "es1", UID: "uid-1"}},
+		Username:    "u",
 	})
 
 	final, _ := jobStore.Get(context.Background(), id)
@@ -987,12 +983,12 @@ func TestBulkWorker_PanicCompletesJobWithMarker(t *testing.T) {
 	}
 
 	worker.jobs <- BulkJobMessage{
-		JobID:     id,
-		ClusterID: "local",
-		Action:    store.BulkRefreshActionStore,
-		ScopeTarget:  "apps/vault",
-		Targets:   []BulkScopeTarget{{Namespace: "apps", Name: "es1", UID: "uid-1"}},
-		Username:  "u",
+		JobID:       id,
+		ClusterID:   "local",
+		Action:      store.BulkRefreshActionStore,
+		ScopeTarget: "apps/vault",
+		Targets:     []BulkScopeTarget{{Namespace: "apps", Name: "es1", UID: "uid-1"}},
+		Username:    "u",
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
