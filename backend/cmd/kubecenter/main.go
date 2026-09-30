@@ -351,9 +351,12 @@ func main() {
 		K8sClient:      k8sClient,
 		Discoverer:     meshDisc,
 		AccessChecker:  accessChecker,
+		Clients:        clusterRouter,
+		Presence:       remotePresence,
 		Logger:         logger,
 		MonitoringDisc: monDiscoverer,
 	}
+	clusterRouter.RegisterEvictHook(meshHandler.EvictRemoteCache)
 	// On a mesh-detection transition (install / uninstall), drop the
 	// 30s route cache so the next overlay/list request returns the new
 	// shape without waiting out the TTL. Mirrors the gitops/policy
