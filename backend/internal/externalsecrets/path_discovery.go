@@ -38,11 +38,10 @@ type pathDiscoveryResponse struct {
 // HandleListPaths discovers candidate remote-key paths for a SecretStore in
 // Phase G's ExternalSecret wizard, on the cluster the request selects.
 // Kubernetes-provider stores list Secrets in the configured source namespace
-// via the impersonating client; the typeahead
-// shows that namespace's Secret names, prefix-filtered. All other providers
-// return `{supported: false}` — k8sCenter never holds source-store
-// credentials, so authenticating against Vault/AWS/GCP/Azure to enumerate
-// paths is out of scope.
+// via the impersonating client; the typeahead shows that namespace's Secret
+// names, prefix-filtered. All other providers return `{supported: false}` —
+// k8sCenter never holds source-store credentials, so authenticating against
+// Vault/AWS/GCP/Azure to enumerate paths is out of scope.
 //
 //	GET /externalsecrets/stores/{namespace}/{name}/paths?prefix=<>
 //

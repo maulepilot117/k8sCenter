@@ -136,6 +136,9 @@ var errUIDDrifted = errors.New("uid_drifted")
 // X-Cluster-ID would silently desync the audit row (records the header
 // value) from the actual mutation (always hits local). See todo #339.
 //
+// The bulk-refresh scope previews (bulk.go) use it too: they count the local
+// inventory the refresh would act on, so they are local-only with it.
+//
 // Returns false (and writes a 501 response) when the caller must abort.
 // Returns true when execution may proceed.
 func rejectNonLocalClusterWrite(w http.ResponseWriter, r *http.Request) bool {

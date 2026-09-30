@@ -396,11 +396,6 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 	return data, nil
 }
 
-// esoGVRs are the five ESO kinds this package lists, in response order.
-var esoGVRs = []schema.GroupVersionResource{
-	ExternalSecretGVR, ClusterExternalSecretGVR, SecretStoreGVR, ClusterSecretStoreGVR, PushSecretGVR,
-}
-
 // source is one cluster-wide ESO list: how to fill its field of a
 // cachedData, and how to carry that field over from an earlier snapshot.
 type source struct {
@@ -409,8 +404,8 @@ type source struct {
 	keep func(prior *cachedData)
 }
 
-// sources are the lists that fill d, one per esoGVRs entry. Each writes its
-// own field of d, so they run concurrently without a lock.
+// sources are the lists that fill d, one per ESO kind. Each writes its own
+// field of d, so they run concurrently without a lock.
 func (d *cachedData) sources() []source {
 	return []source{
 		{
@@ -579,7 +574,7 @@ func (h *Handler) HandleListExternalSecrets(w http.ResponseWriter, r *http.Reque
 	//
 	// The poller observes the local cluster only, so a remote row's hint is
 	// always Unknown: never absent, which would read as "not drifted" (R14).
-	remote := !isLocal(r.Context())
+	isRemote := !isLocal(r.Context())
 	out := make([]ExternalSecret, len(filtered))
 	for i, es := range filtered {
 		// Clear any DriftStatus the cached normalize step may have set
@@ -587,7 +582,7 @@ func (h *Handler) HandleListExternalSecrets(w http.ResponseWriter, r *http.Reque
 		// On the list path, DriftStatus is always absent on the wire.
 		es.DriftStatus = ""
 		es.DriftUnknownReason = ""
-		if remote {
+		if isRemote {
 			es.LastObservedDriftStatus = DriftUnknown
 			out[i] = es
 			continue

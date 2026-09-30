@@ -193,7 +193,7 @@ func servedV1(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource) 
 }
 
 // remoteServed reads which ESO resources a remote cluster serves at v1, as
-// the user sees it. ESO counts as installed only when ExternalSecret is
+// the user sees it, keyed by resource name. ESO counts as installed only when ExternalSecret is
 // served at v1, the version this package reads, matching the local
 // Discoverer; a cluster serving only an older version is not installed. A
 // nil map means not installed. When that cannot be told, the error says
@@ -222,10 +222,12 @@ func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth
 		target.Invalidate()
 		return nil, nil
 	}
-	served := make(map[string]bool, len(esoGVRs))
-	for _, gvr := range esoGVRs {
-		if servedV1(lists, gvr) {
-			served[gvr.Resource] = true
+	served := map[string]bool{}
+	for _, l := range lists {
+		if l.GroupVersion == ExternalSecretGVR.GroupVersion().String() {
+			for _, res := range l.APIResources {
+				served[res.Name] = true
+			}
 		}
 	}
 	return served, nil
