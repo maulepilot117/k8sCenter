@@ -425,3 +425,23 @@ func TestRemote_ForceSyncStillRefused(t *testing.T) {
 		t.Errorf("clusters recorded %d actions, want 0", n)
 	}
 }
+
+// The bulk-refresh scope previews belong to a write that stays refused on a
+// remote cluster (R12). They answer 501 like the write itself instead of
+// counting the local cluster's ExternalSecrets under the remote's name.
+func TestRemote_BulkRefreshScopeRefused(t *testing.T) {
+	rh := newRemoteHarness(newRemoteFake("v1", remoteInventory()))
+	for name, handler := range map[string]http.HandlerFunc{
+		"store":         rh.h.HandleResolveStoreScope,
+		"cluster store": rh.h.HandleResolveClusterStoreScope,
+		"namespace":     rh.h.HandleResolveNamespaceScope,
+	} {
+		rr := doRemote(t, handler, map[string]string{"namespace": "apps", "name": "vault"}, "")
+		if rr.Code != http.StatusNotImplemented {
+			t.Errorf("%s scope = %d %s, want 501", name, rr.Code, rr.Body.String())
+		}
+	}
+	if n := len(rh.remote().dyn.Actions()) + rh.localActions(); n != 0 {
+		t.Errorf("clusters recorded %d actions, want 0", n)
+	}
+}

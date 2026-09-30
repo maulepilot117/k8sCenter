@@ -18,6 +18,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -139,7 +140,7 @@ var errUIDDrifted = errors.New("uid_drifted")
 // Returns true when execution may proceed.
 func rejectNonLocalClusterWrite(w http.ResponseWriter, r *http.Request) bool {
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	if clusterID != "" && clusterID != "local" {
+	if !k8s.IsLocalClusterID(clusterID) {
 		httputil.WriteError(w, http.StatusNotImplemented,
 			"ESO write actions are local-cluster only in v1",
 			"X-Cluster-ID="+clusterID+" is not supported for force-sync or bulk refresh")
