@@ -113,6 +113,11 @@ type ESOStatus struct {
 	Namespace   string    `json:"namespace,omitempty"`
 	Version     string    `json:"version,omitempty"`
 	LastChecked time.Time `json:"lastChecked"`
+	// Reason explains a remote cluster's negative or unknown answer, from
+	// k8s.ReasonCode: discovery_missing when ESO is not installed there,
+	// unreachable or discovery_unavailable when that could not be told.
+	// Absent on the local cluster (R-8 KTD5).
+	Reason string `json:"reason,omitempty"`
 }
 
 // StoreRef identifies the SecretStore or ClusterSecretStore that an

@@ -278,10 +278,19 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 }
 
 // remoteStatus answers the status route for a remote cluster. A failure to
-// tell is a status, not an error (R-8 KTD5): it reports not detected. The
-// ESO controller's namespace and version come from a local Deployment
-// lookup and are not reported for a remote cluster.
+// tell is a status with a reason, not an error (R-8 KTD5). The ESO
+// controller's namespace and version come from a local Deployment lookup
+// and are not reported for a remote cluster.
 func (h *Handler) remoteStatus(ctx context.Context, user *auth.User) ESOStatus {
+	status := ESOStatus{LastChecked: time.Now().UTC()}
 	served, err := h.remoteServed(ctx, middleware.ClusterIDFromContext(ctx), user)
-	return ESOStatus{Detected: err == nil && served != nil, LastChecked: time.Now().UTC()}
+	switch {
+	case err != nil:
+		status.Reason = string(k8s.RemoteReason(err))
+	case served == nil:
+		status.Reason = string(k8s.ReasonDiscoveryMissing)
+	default:
+		status.Detected = true
+	}
+	return status
 }

@@ -32,7 +32,7 @@ func TestExportedTypeShapeStability(t *testing.T) {
 		name string
 		want string
 	}{
-		{ESOStatus{}, "ESOStatus", "7fb5df5cb8e9ada236f3ae25bed45554ac8e83e4d8e951a230941022be4c0ed5"},
+		{ESOStatus{}, "ESOStatus", "e0a8ab0aae59fac691644361212726f19abb637795a69a1a14c3994145b1bbd3"},
 		{StoreRef{}, "StoreRef", "15c933f766a870488523aa0d28de892afe8570ddf6327b016ca5da9eb421bb35"},
 		{ExternalSecret{}, "ExternalSecret", "b1599525a4afdefdb453c2d8b04aa762316ef3265f2a947f82fcee5be1b4443d"},
 		{ClusterExternalSecret{}, "ClusterExternalSecret", "40ae7c0a5334702fc888b7a6e86f2018d6d670b8ab9b07a67004ca682e51caf5"},

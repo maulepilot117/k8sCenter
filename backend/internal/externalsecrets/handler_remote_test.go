@@ -310,8 +310,8 @@ func TestRemote_NotInstalled(t *testing.T) {
 			if rr.Code != http.StatusOK || len(decodeData[[]ExternalSecret](t, rr)) != 0 {
 				t.Errorf("list = %d %s, want 200 []", rr.Code, rr.Body.String())
 			}
-			if st := decodeData[ESOStatus](t, doRemote(t, rh.h.HandleStatus, nil, "")); st.Detected {
-				t.Errorf("status = %+v, want not detected", st)
+			if st := decodeData[ESOStatus](t, doRemote(t, rh.h.HandleStatus, nil, "")); st.Detected || st.Reason != string(k8s.ReasonDiscoveryMissing) {
+				t.Errorf("status = %+v, want not detected with discovery_missing", st)
 			}
 			rr = doRemote(t, rh.h.HandleGetStore, map[string]string{"namespace": "apps", "name": "vault"}, "")
 			if rr.Code != http.StatusServiceUnavailable || decodeErrorReason(t, rr) != string(k8s.ReasonDiscoveryMissing) {
@@ -326,8 +326,8 @@ func TestRemote_NotInstalled(t *testing.T) {
 
 func TestRemote_InstalledStatus(t *testing.T) {
 	rh := newRemoteHarness(newRemoteFake("v1", nil))
-	if st := decodeData[ESOStatus](t, doRemote(t, rh.h.HandleStatus, nil, "")); !st.Detected {
-		t.Errorf("status = %+v, want detected", st)
+	if st := decodeData[ESOStatus](t, doRemote(t, rh.h.HandleStatus, nil, "")); !st.Detected || st.Reason != "" {
+		t.Errorf("status = %+v, want detected with no reason", st)
 	}
 }
 
@@ -349,8 +349,8 @@ func TestRemote_UnreachableNeverLeaksOrFallsBack(t *testing.T) {
 			t.Errorf("%s response leaks the remote host: %s", name, rr.Body.String())
 		}
 	}
-	if st := decodeData[ESOStatus](t, doRemote(t, rh.h.HandleStatus, nil, "")); st.Detected {
-		t.Errorf("status = %+v, want not detected", st)
+	if st := decodeData[ESOStatus](t, doRemote(t, rh.h.HandleStatus, nil, "")); st.Detected || st.Reason != string(k8s.ReasonUnreachable) {
+		t.Errorf("status = %+v, want not detected with unreachable", st)
 	}
 	if n := rh.localActions(); n != 0 {
 		t.Errorf("local cluster recorded %d actions, want 0", n)

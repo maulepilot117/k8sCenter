@@ -46,6 +46,10 @@ export interface ESOStatus {
   namespace?: string;
   version?: string;
   lastChecked: string;
+  /** Why a remote cluster reports not detected (a capability reason code:
+   *  discovery_missing, unreachable, discovery_unavailable, ...). Absent on
+   *  the local cluster. */
+  reason?: string;
 }
 
 export interface StoreRef {
