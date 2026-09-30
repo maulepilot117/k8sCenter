@@ -12,11 +12,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/sync/singleflight"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
@@ -32,6 +35,15 @@ type Handler struct {
 	AccessChecker *resources.AccessChecker
 	Logger        *slog.Logger
 	AuditLogger   audit.Logger
+	Clients       k8s.ClusterClients
+	Presence      *k8s.Presence
+
+	remoteOnce sync.Once
+	remote     *remotecache.Cache[*snapshot]
+
+	// baseDynOverride is a test-only seam for the local service-account
+	// client; production leaves it nil.
+	baseDynOverride dynamic.Interface
 
 	providerCache resourceCache[NormalizedProvider]
 	alertCache    resourceCache[NormalizedAlert]
@@ -79,7 +91,7 @@ func (h *Handler) doFetchProviders() ([]NormalizedProvider, error) {
 	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	items, err := ListProviders(fetchCtx, h.K8sClient.BaseDynamicClient())
+	items, err := ListProviders(fetchCtx, h.baseDyn())
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +132,7 @@ func (h *Handler) doFetchAlerts() ([]NormalizedAlert, error) {
 	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	items, err := ListAlerts(fetchCtx, h.K8sClient.BaseDynamicClient())
+	items, err := ListAlerts(fetchCtx, h.baseDyn())
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +173,7 @@ func (h *Handler) doFetchReceivers() ([]NormalizedReceiver, error) {
 	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	items, err := ListReceivers(fetchCtx, h.K8sClient.BaseDynamicClient())
+	items, err := ListReceivers(fetchCtx, h.baseDyn())
 	if err != nil {
 		return nil, err
 	}
@@ -199,18 +211,6 @@ func (h *Handler) InvalidateReceivers() {
 	h.receiverCache.mu.Unlock()
 }
 
-// InvalidateAll clears all three caches.
-func (h *Handler) InvalidateAll() {
-	h.InvalidateProviders()
-	h.InvalidateAlerts()
-	h.InvalidateReceivers()
-}
-
-// InvalidateCache is kept for backward compatibility with CRD event handlers.
-func (h *Handler) InvalidateCache() {
-	h.InvalidateAll()
-}
-
 // ---------- RBAC filtering ----------
 
 // namespacedItem is implemented by normalized types that carry a Namespace field.
@@ -222,24 +222,31 @@ func (p NormalizedProvider) getNamespace() string { return p.Namespace }
 func (a NormalizedAlert) getNamespace() string    { return a.Namespace }
 func (r NormalizedReceiver) getNamespace() string { return r.Namespace }
 
-// filterByRBAC returns only items the user has permission to list in the given resource.
-func filterByRBAC[T namespacedItem](ctx context.Context, checker *resources.AccessChecker, user *auth.User, items []T, resource string) []T {
-	type accessKey struct{ namespace string }
-	access := make(map[accessKey]bool)
+// filterByRBAC returns only items the user has permission to list in the
+// given resource. On a remote cluster a check that could not be made is an
+// error rather than a denial, so an unreachable cluster is not reported as
+// an empty list; the local cluster keeps treating it as a denial.
+func filterByRBAC[T namespacedItem](ctx context.Context, checker *resources.AccessChecker, user *auth.User, items []T, resource string) ([]T, error) {
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	local := isLocal(ctx)
+	access := make(map[string]bool)
 	var filtered []T
 	for _, item := range items {
-		key := accessKey{item.getNamespace()}
-		allowed, checked := access[key]
+		ns := item.getNamespace()
+		allowed, checked := access[ns]
 		if !checked {
-			can, err := checker.CanAccessGroupResource(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups, "list", "notification.toolkit.fluxcd.io", resource, item.getNamespace())
+			can, err := checker.CanAccessGroupResource(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", FluxNotificationGroup, resource, ns)
+			if err != nil && !local {
+				return nil, err
+			}
 			allowed = err == nil && can
-			access[key] = allowed
+			access[ns] = allowed
 		}
 		if allowed {
 			filtered = append(filtered, item)
 		}
 	}
-	return filtered
+	return filtered, nil
 }
 
 // ---------- audit helper ----------
@@ -296,6 +303,10 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !isLocal(r.Context()) {
+		httputil.WriteData(w, h.remoteStatus(r.Context(), user))
+		return
+	}
 
 	// Fetch all three independently — partial success is acceptable.
 	providers, provErr := h.fetchProviders()
@@ -308,56 +319,146 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	ns := NotificationStatus{
 		Available: available,
 	}
+	// The local cluster treats a failed RBAC check as a denial, so
+	// filterByRBAC returns no error here.
 	if available {
 		if provErr == nil {
-			ns.ProviderCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, providers, "providers"))
+			items, _ := filterByRBAC(r.Context(), h.AccessChecker, user, providers, "providers")
+			ns.ProviderCount = len(items)
 		}
 		if alertErr == nil {
-			ns.AlertCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, alerts, "alerts"))
+			items, _ := filterByRBAC(r.Context(), h.AccessChecker, user, alerts, "alerts")
+			ns.AlertCount = len(items)
 		}
 		if recErr == nil {
-			ns.ReceiverCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, receivers, "receivers"))
+			items, _ := filterByRBAC(r.Context(), h.AccessChecker, user, receivers, "receivers")
+			ns.ReceiverCount = len(items)
 		}
 	}
 
 	httputil.WriteData(w, ns)
 }
 
-// ---------- providers ----------
+// ---------- shared route bodies ----------
 
-// HandleListProviders returns all Flux notification providers, RBAC-filtered.
-func (h *Handler) HandleListProviders(w http.ResponseWriter, r *http.Request) {
+// serveList answers a list route for gvr on the request's cluster,
+// RBAC-filtered and narrowed to ?namespace= when given.
+func serveList[T namespacedItem](h *Handler, w http.ResponseWriter, r *http.Request, gvr schema.GroupVersionResource, local func() ([]T, error), pick func(*snapshot) []T) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
 
-	allProviders, err := h.fetchProviders()
+	items, err := loadItems(r.Context(), h, user, gvr, local, pick)
 	if err != nil {
-		h.Logger.Error("failed to fetch notification providers", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch providers", "")
+		h.writeLoadError(w, r, err, gvr.Resource)
 		return
 	}
 
-	providers := filterByRBAC(r.Context(), h.AccessChecker, user, allProviders, "providers")
-
+	// Narrow to the namespace first: on a remote cluster each namespace
+	// checked below costs an access review against that cluster.
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
-		var filtered []NormalizedProvider
-		for _, p := range providers {
-			if p.Namespace == ns {
-				filtered = append(filtered, p)
+		var filtered []T
+		for _, item := range items {
+			if item.getNamespace() == ns {
+				filtered = append(filtered, item)
 			}
 		}
-		providers = filtered
+		items = filtered
 	}
 
-	httputil.WriteData(w, struct {
-		Providers []NormalizedProvider `json:"providers"`
-		Total     int                  `json:"total"`
-	}{
-		Providers: providers,
-		Total:     len(providers),
+	items, err = filterByRBAC(r.Context(), h.AccessChecker, user, items, gvr.Resource)
+	if err != nil {
+		writeAccessCheckError(w, err)
+		return
+	}
+
+	httputil.WriteData(w, map[string]any{
+		gvr.Resource: items,
+		"total":      len(items),
 	})
+}
+
+// serveDelete answers a delete route for one object of gvr, deleted by del.
+func (h *Handler) serveDelete(w http.ResponseWriter, r *http.Request, gvr schema.GroupVersionResource, kind, noun string,
+	del func(ctx context.Context, dyn dynamic.Interface, ns, name string) error) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	ns := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	if !h.allowed(w, r, user, "delete", gvr.Resource, ns, "you do not have permission to delete this "+noun) {
+		return
+	}
+
+	dynClient, ok := h.writeClient(w, r, user, gvr)
+	if !ok {
+		return
+	}
+
+	if err := del(r.Context(), dynClient, ns, name); err != nil {
+		h.failWrite(w, r, user, err, audit.ActionDelete, "delete", kind, ns, name, gvr)
+		return
+	}
+
+	h.auditLog(r, user, audit.ActionDelete, kind, ns, name, audit.ResultSuccess, "")
+	h.invalidate(r.Context(), gvr)
+	httputil.WriteData(w, map[string]string{"message": "Deleted " + noun + " " + name})
+}
+
+// serveSuspend answers a suspend or resume route for one object of gvr,
+// patched by suspend.
+func (h *Handler) serveSuspend(w http.ResponseWriter, r *http.Request, gvr schema.GroupVersionResource, kind, noun string,
+	suspend func(ctx context.Context, dyn dynamic.Interface, ns, name string, suspend bool) error) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	ns := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	if !h.allowed(w, r, user, "patch", gvr.Resource, ns, "you do not have permission to modify this "+noun) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var req struct {
+		Suspend bool `json:"suspend"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+
+	dynClient, ok := h.writeClient(w, r, user, gvr)
+	if !ok {
+		return
+	}
+
+	if err := suspend(r.Context(), dynClient, ns, name, req.Suspend); err != nil {
+		h.failWrite(w, r, user, err, ActionNotificationSuspend, "patch", kind, ns, name, gvr)
+		return
+	}
+
+	h.auditLog(r, user, ActionNotificationSuspend, kind, ns, name, audit.ResultSuccess, fmt.Sprintf("suspend=%v", req.Suspend))
+	h.invalidate(r.Context(), gvr)
+
+	msg := "Suspended " + noun + " " + name
+	if !req.Suspend {
+		msg = "Resumed " + noun + " " + name
+	}
+	httputil.WriteData(w, map[string]string{"message": msg})
+}
+
+// ---------- providers ----------
+
+// HandleListProviders returns all Flux notification providers, RBAC-filtered.
+func (h *Handler) HandleListProviders(w http.ResponseWriter, r *http.Request) {
+	serveList(h, w, r, FluxProviderGVR, h.fetchProviders, func(s *snapshot) []NormalizedProvider { return s.providers })
 }
 
 // HandleCreateProvider creates a new Flux notification Provider.
@@ -379,28 +480,23 @@ func (h *Handler) HandleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "providers", input.Namespace)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to create providers in this namespace", "")
+	if !h.allowed(w, r, user, "create", "providers", input.Namespace, "you do not have permission to create providers in this namespace") {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.writeClient(w, r, user, FluxProviderGVR)
+	if !ok {
 		return
 	}
 
 	provider, err := CreateProvider(r.Context(), dynClient, input.Namespace, input)
 	if err != nil {
-		h.auditLog(r, user, audit.ActionCreate, "Provider", input.Namespace, input.Name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "create", "Provider", input.Namespace, input.Name)
+		h.failWrite(w, r, user, err, audit.ActionCreate, "create", "Provider", input.Namespace, input.Name, FluxProviderGVR)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionCreate, "Provider", input.Namespace, input.Name, audit.ResultSuccess, "")
-	h.InvalidateProviders()
+	h.invalidate(r.Context(), FluxProviderGVR)
 	httputil.WriteData(w, provider)
 }
 
@@ -414,9 +510,7 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "update", "notification.toolkit.fluxcd.io", "providers", ns)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to update this provider", "")
+	if !h.allowed(w, r, user, "update", "providers", ns, "you do not have permission to update this provider") {
 		return
 	}
 
@@ -434,142 +528,37 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.writeClient(w, r, user, FluxProviderGVR)
+	if !ok {
 		return
 	}
 
 	provider, err := UpdateProvider(r.Context(), dynClient, ns, name, input)
 	if err != nil {
-		h.auditLog(r, user, audit.ActionUpdate, "Provider", ns, name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "update", "Provider", ns, name)
+		h.failWrite(w, r, user, err, audit.ActionUpdate, "update", "Provider", ns, name, FluxProviderGVR)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionUpdate, "Provider", ns, name, audit.ResultSuccess, "")
-	h.InvalidateProviders()
+	h.invalidate(r.Context(), FluxProviderGVR)
 	httputil.WriteData(w, provider)
 }
 
 // HandleDeleteProvider deletes a Flux notification Provider.
 func (h *Handler) HandleDeleteProvider(w http.ResponseWriter, r *http.Request) {
-	user, ok := httputil.RequireUser(w, r)
-	if !ok {
-		return
-	}
-
-	ns := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
-
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "delete", "notification.toolkit.fluxcd.io", "providers", ns)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to delete this provider", "")
-		return
-	}
-
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-
-	if err := DeleteProvider(r.Context(), dynClient, ns, name); err != nil {
-		h.auditLog(r, user, audit.ActionDelete, "Provider", ns, name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "delete", "Provider", ns, name)
-		return
-	}
-
-	h.auditLog(r, user, audit.ActionDelete, "Provider", ns, name, audit.ResultSuccess, "")
-	h.InvalidateProviders()
-	httputil.WriteData(w, map[string]string{"message": "Deleted provider " + name})
+	h.serveDelete(w, r, FluxProviderGVR, "Provider", "provider", DeleteProvider)
 }
 
 // HandleSuspendProvider suspends or resumes a Flux notification Provider.
 func (h *Handler) HandleSuspendProvider(w http.ResponseWriter, r *http.Request) {
-	user, ok := httputil.RequireUser(w, r)
-	if !ok {
-		return
-	}
-
-	ns := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
-
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "providers", ns)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to modify this provider", "")
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, 1024)
-	var req struct {
-		Suspend bool `json:"suspend"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-
-	if err := SuspendProvider(r.Context(), dynClient, ns, name, req.Suspend); err != nil {
-		h.auditLog(r, user, ActionNotificationSuspend, "Provider", ns, name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "patch", "Provider", ns, name)
-		return
-	}
-
-	h.auditLog(r, user, ActionNotificationSuspend, "Provider", ns, name, audit.ResultSuccess, fmt.Sprintf("suspend=%v", req.Suspend))
-	h.InvalidateProviders()
-
-	msg := "Suspended provider " + name
-	if !req.Suspend {
-		msg = "Resumed provider " + name
-	}
-	httputil.WriteData(w, map[string]string{"message": msg})
+	h.serveSuspend(w, r, FluxProviderGVR, "Provider", "provider", SuspendProvider)
 }
 
 // ---------- alerts ----------
 
 // HandleListAlerts returns all Flux notification alerts, RBAC-filtered.
 func (h *Handler) HandleListAlerts(w http.ResponseWriter, r *http.Request) {
-	user, ok := httputil.RequireUser(w, r)
-	if !ok {
-		return
-	}
-
-	allAlerts, err := h.fetchAlerts()
-	if err != nil {
-		h.Logger.Error("failed to fetch notification alerts", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch alerts", "")
-		return
-	}
-
-	alerts := filterByRBAC(r.Context(), h.AccessChecker, user, allAlerts, "alerts")
-
-	if ns := r.URL.Query().Get("namespace"); ns != "" {
-		var filtered []NormalizedAlert
-		for _, a := range alerts {
-			if a.Namespace == ns {
-				filtered = append(filtered, a)
-			}
-		}
-		alerts = filtered
-	}
-
-	httputil.WriteData(w, struct {
-		Alerts []NormalizedAlert `json:"alerts"`
-		Total  int               `json:"total"`
-	}{
-		Alerts: alerts,
-		Total:  len(alerts),
-	})
+	serveList(h, w, r, FluxAlertGVR, h.fetchAlerts, func(s *snapshot) []NormalizedAlert { return s.alerts })
 }
 
 // HandleCreateAlert creates a new Flux notification Alert.
@@ -591,28 +580,23 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "alerts", input.Namespace)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to create alerts in this namespace", "")
+	if !h.allowed(w, r, user, "create", "alerts", input.Namespace, "you do not have permission to create alerts in this namespace") {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.writeClient(w, r, user, FluxAlertGVR)
+	if !ok {
 		return
 	}
 
 	alert, err := CreateAlert(r.Context(), dynClient, input.Namespace, input)
 	if err != nil {
-		h.auditLog(r, user, audit.ActionCreate, "Alert", input.Namespace, input.Name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "create", "Alert", input.Namespace, input.Name)
+		h.failWrite(w, r, user, err, audit.ActionCreate, "create", "Alert", input.Namespace, input.Name, FluxAlertGVR)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionCreate, "Alert", input.Namespace, input.Name, audit.ResultSuccess, "")
-	h.InvalidateAlerts()
+	h.invalidate(r.Context(), FluxAlertGVR)
 	httputil.WriteData(w, alert)
 }
 
@@ -626,9 +610,7 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "update", "notification.toolkit.fluxcd.io", "alerts", ns)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to update this alert", "")
+	if !h.allowed(w, r, user, "update", "alerts", ns, "you do not have permission to update this alert") {
 		return
 	}
 
@@ -646,142 +628,37 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.writeClient(w, r, user, FluxAlertGVR)
+	if !ok {
 		return
 	}
 
 	alert, err := UpdateAlert(r.Context(), dynClient, ns, name, input)
 	if err != nil {
-		h.auditLog(r, user, audit.ActionUpdate, "Alert", ns, name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "update", "Alert", ns, name)
+		h.failWrite(w, r, user, err, audit.ActionUpdate, "update", "Alert", ns, name, FluxAlertGVR)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionUpdate, "Alert", ns, name, audit.ResultSuccess, "")
-	h.InvalidateAlerts()
+	h.invalidate(r.Context(), FluxAlertGVR)
 	httputil.WriteData(w, alert)
 }
 
 // HandleDeleteAlert deletes a Flux notification Alert.
 func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
-	user, ok := httputil.RequireUser(w, r)
-	if !ok {
-		return
-	}
-
-	ns := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
-
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "delete", "notification.toolkit.fluxcd.io", "alerts", ns)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to delete this alert", "")
-		return
-	}
-
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-
-	if err := DeleteAlert(r.Context(), dynClient, ns, name); err != nil {
-		h.auditLog(r, user, audit.ActionDelete, "Alert", ns, name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "delete", "Alert", ns, name)
-		return
-	}
-
-	h.auditLog(r, user, audit.ActionDelete, "Alert", ns, name, audit.ResultSuccess, "")
-	h.InvalidateAlerts()
-	httputil.WriteData(w, map[string]string{"message": "Deleted alert " + name})
+	h.serveDelete(w, r, FluxAlertGVR, "Alert", "alert", DeleteAlert)
 }
 
 // HandleSuspendAlert suspends or resumes a Flux notification Alert.
 func (h *Handler) HandleSuspendAlert(w http.ResponseWriter, r *http.Request) {
-	user, ok := httputil.RequireUser(w, r)
-	if !ok {
-		return
-	}
-
-	ns := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
-
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "alerts", ns)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to modify this alert", "")
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, 1024)
-	var req struct {
-		Suspend bool `json:"suspend"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-
-	if err := SuspendAlert(r.Context(), dynClient, ns, name, req.Suspend); err != nil {
-		h.auditLog(r, user, ActionNotificationSuspend, "Alert", ns, name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "patch", "Alert", ns, name)
-		return
-	}
-
-	h.auditLog(r, user, ActionNotificationSuspend, "Alert", ns, name, audit.ResultSuccess, fmt.Sprintf("suspend=%v", req.Suspend))
-	h.InvalidateAlerts()
-
-	msg := "Suspended alert " + name
-	if !req.Suspend {
-		msg = "Resumed alert " + name
-	}
-	httputil.WriteData(w, map[string]string{"message": msg})
+	h.serveSuspend(w, r, FluxAlertGVR, "Alert", "alert", SuspendAlert)
 }
 
 // ---------- receivers ----------
 
 // HandleListReceivers returns all Flux notification receivers, RBAC-filtered.
 func (h *Handler) HandleListReceivers(w http.ResponseWriter, r *http.Request) {
-	user, ok := httputil.RequireUser(w, r)
-	if !ok {
-		return
-	}
-
-	allReceivers, err := h.fetchReceivers()
-	if err != nil {
-		h.Logger.Error("failed to fetch notification receivers", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch receivers", "")
-		return
-	}
-
-	receivers := filterByRBAC(r.Context(), h.AccessChecker, user, allReceivers, "receivers")
-
-	if ns := r.URL.Query().Get("namespace"); ns != "" {
-		var filtered []NormalizedReceiver
-		for _, rv := range receivers {
-			if rv.Namespace == ns {
-				filtered = append(filtered, rv)
-			}
-		}
-		receivers = filtered
-	}
-
-	httputil.WriteData(w, struct {
-		Receivers []NormalizedReceiver `json:"receivers"`
-		Total     int                  `json:"total"`
-	}{
-		Receivers: receivers,
-		Total:     len(receivers),
-	})
+	serveList(h, w, r, FluxReceiverGVR, h.fetchReceivers, func(s *snapshot) []NormalizedReceiver { return s.receivers })
 }
 
 // HandleCreateReceiver creates a new Flux notification Receiver.
@@ -803,28 +680,23 @@ func (h *Handler) HandleCreateReceiver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "receivers", input.Namespace)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to create receivers in this namespace", "")
+	if !h.allowed(w, r, user, "create", "receivers", input.Namespace, "you do not have permission to create receivers in this namespace") {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.writeClient(w, r, user, FluxReceiverGVR)
+	if !ok {
 		return
 	}
 
 	receiver, err := CreateReceiver(r.Context(), dynClient, input.Namespace, input)
 	if err != nil {
-		h.auditLog(r, user, audit.ActionCreate, "Receiver", input.Namespace, input.Name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "create", "Receiver", input.Namespace, input.Name)
+		h.failWrite(w, r, user, err, audit.ActionCreate, "create", "Receiver", input.Namespace, input.Name, FluxReceiverGVR)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionCreate, "Receiver", input.Namespace, input.Name, audit.ResultSuccess, "")
-	h.InvalidateReceivers()
+	h.invalidate(r.Context(), FluxReceiverGVR)
 	httputil.WriteData(w, receiver)
 }
 
@@ -838,9 +710,7 @@ func (h *Handler) HandleUpdateReceiver(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "update", "notification.toolkit.fluxcd.io", "receivers", ns)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to update this receiver", "")
+	if !h.allowed(w, r, user, "update", "receivers", ns, "you do not have permission to update this receiver") {
 		return
 	}
 
@@ -858,103 +728,28 @@ func (h *Handler) HandleUpdateReceiver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	dynClient, ok := h.writeClient(w, r, user, FluxReceiverGVR)
+	if !ok {
 		return
 	}
 
 	receiver, err := UpdateReceiver(r.Context(), dynClient, ns, name, input)
 	if err != nil {
-		h.auditLog(r, user, audit.ActionUpdate, "Receiver", ns, name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "update", "Receiver", ns, name)
+		h.failWrite(w, r, user, err, audit.ActionUpdate, "update", "Receiver", ns, name, FluxReceiverGVR)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionUpdate, "Receiver", ns, name, audit.ResultSuccess, "")
-	h.InvalidateReceivers()
+	h.invalidate(r.Context(), FluxReceiverGVR)
 	httputil.WriteData(w, receiver)
 }
 
 // HandleDeleteReceiver deletes a Flux notification Receiver.
 func (h *Handler) HandleDeleteReceiver(w http.ResponseWriter, r *http.Request) {
-	user, ok := httputil.RequireUser(w, r)
-	if !ok {
-		return
-	}
-
-	ns := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
-
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "delete", "notification.toolkit.fluxcd.io", "receivers", ns)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to delete this receiver", "")
-		return
-	}
-
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-
-	if err := DeleteReceiver(r.Context(), dynClient, ns, name); err != nil {
-		h.auditLog(r, user, audit.ActionDelete, "Receiver", ns, name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "delete", "Receiver", ns, name)
-		return
-	}
-
-	h.auditLog(r, user, audit.ActionDelete, "Receiver", ns, name, audit.ResultSuccess, "")
-	h.InvalidateReceivers()
-	httputil.WriteData(w, map[string]string{"message": "Deleted receiver " + name})
+	h.serveDelete(w, r, FluxReceiverGVR, "Receiver", "receiver", DeleteReceiver)
 }
 
 // HandleSuspendReceiver suspends or resumes a Flux notification Receiver.
 func (h *Handler) HandleSuspendReceiver(w http.ResponseWriter, r *http.Request) {
-	user, ok := httputil.RequireUser(w, r)
-	if !ok {
-		return
-	}
-
-	ns := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
-
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "receivers", ns)
-	if err != nil || !can {
-		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to modify this receiver", "")
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, 1024)
-	var req struct {
-		Suspend bool `json:"suspend"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return
-	}
-
-	if err := SuspendReceiver(r.Context(), dynClient, ns, name, req.Suspend); err != nil {
-		h.auditLog(r, user, ActionNotificationSuspend, "Receiver", ns, name, audit.ResultFailure, err.Error())
-		h.writeK8sError(w, err, "patch", "Receiver", ns, name)
-		return
-	}
-
-	h.auditLog(r, user, ActionNotificationSuspend, "Receiver", ns, name, audit.ResultSuccess, fmt.Sprintf("suspend=%v", req.Suspend))
-	h.InvalidateReceivers()
-
-	msg := "Suspended receiver " + name
-	if !req.Suspend {
-		msg = "Resumed receiver " + name
-	}
-	httputil.WriteData(w, map[string]string{"message": msg})
+	h.serveSuspend(w, r, FluxReceiverGVR, "Receiver", "receiver", SuspendReceiver)
 }

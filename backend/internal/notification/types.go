@@ -4,24 +4,29 @@ import (
 	"regexp"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/kubecenter/kubecenter/internal/k8s"
 )
+
+// FluxNotificationGroup is the API group of every Flux notification resource.
+const FluxNotificationGroup = "notification.toolkit.fluxcd.io"
 
 var (
 	// FluxProviderGVR is the GVR for Flux Notification Provider resources.
 	FluxProviderGVR = schema.GroupVersionResource{
-		Group:    "notification.toolkit.fluxcd.io",
+		Group:    FluxNotificationGroup,
 		Version:  "v1beta3",
 		Resource: "providers",
 	}
 	// FluxAlertGVR is the GVR for Flux Notification Alert resources.
 	FluxAlertGVR = schema.GroupVersionResource{
-		Group:    "notification.toolkit.fluxcd.io",
+		Group:    FluxNotificationGroup,
 		Version:  "v1beta3",
 		Resource: "alerts",
 	}
 	// FluxReceiverGVR is the GVR for Flux Notification Receiver resources.
 	FluxReceiverGVR = schema.GroupVersionResource{
-		Group:    "notification.toolkit.fluxcd.io",
+		Group:    FluxNotificationGroup,
 		Version:  "v1",
 		Resource: "receivers",
 	}
@@ -132,4 +137,11 @@ type NotificationStatus struct {
 	ProviderCount int  `json:"providerCount"`
 	AlertCount    int  `json:"alertCount"`
 	ReceiverCount int  `json:"receiverCount"`
+	// Reason is set on a remote cluster when Available is false: why the
+	// notification API is not usable there (discovery_missing, unreachable,
+	// ...). Absent on the local cluster.
+	Reason string `json:"reason,omitempty"`
+	// Coverage names each remote list that could not be read, so a count of
+	// zero is not mistaken for none.
+	Coverage []k8s.SourceCoverage `json:"coverage,omitempty"`
 }

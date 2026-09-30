@@ -610,7 +610,10 @@ func main() {
 		AccessChecker: accessChecker,
 		Logger:        logger,
 		AuditLogger:   auditLogger,
+		Clients:       clusterRouter,
+		Presence:      remotePresence,
 	}
+	clusterRouter.RegisterEvictHook(fluxNotifHandler.EvictRemoteCache)
 
 	// Wire GitOps CRD watches — when tools are discovered, start dynamic informers
 	// and register kinds for WebSocket subscriptions. Events invalidate the REST cache.
