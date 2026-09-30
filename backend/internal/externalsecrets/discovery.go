@@ -141,6 +141,7 @@ func (d *Discoverer) discovery() discovery.DiscoveryInterface {
 	if d.discoOverride != nil {
 		return d.discoOverride()
 	}
+	// nolint:cluster-routing local path: the Discoverer answers for the local cluster only; a remote cluster's presence comes from remoteServed.
 	return d.k8sClient.DiscoveryClient()
 }
 
@@ -148,6 +149,7 @@ func (d *Discoverer) deploymentLister() func(ctx context.Context, opts metav1.Li
 	if d.depListOverride != nil {
 		return d.depListOverride
 	}
+	// nolint:cluster-routing local path: the controller version lookup runs for the local Discoverer only; remote status reports no version.
 	cs := d.k8sClient.BaseClientset()
 	return func(ctx context.Context, opts metav1.ListOptions) (*appsv1.DeploymentList, error) {
 		return cs.AppsV1().Deployments("").List(ctx, opts)

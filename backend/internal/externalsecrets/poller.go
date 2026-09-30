@@ -574,6 +574,7 @@ func (p *Poller) fetchExternalSecrets(ctx context.Context) ([]ExternalSecret, er
 	// Fallback: direct list with in-process resolution. Errors degrade
 	// gracefully — a failed store list still produces ESes via the
 	// resolver default path.
+	// nolint:cluster-routing carve-out: R14 — the poller observes the local cluster only; remote lists report drift Unknown.
 	dyn := p.k8s.BaseDynamicClient()
 	esList, err := dyn.Resource(ExternalSecretGVR).Namespace("").List(ctx, metav1.ListOptions{})
 	if err != nil {

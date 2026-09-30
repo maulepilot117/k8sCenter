@@ -340,6 +340,7 @@ func (p *Poller) resolveDiffKeys(ctx context.Context, es ExternalSecret, outcome
 		return nil, nil, nil
 	}
 
+	// nolint:cluster-routing carve-out: R14 — the poller persists sync history for the local cluster only; remote history is refused (history_handler.go).
 	cs := p.k8s.BaseClientset()
 	if cs == nil {
 		return nil, nil, nil
