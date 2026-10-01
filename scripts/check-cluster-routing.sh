@@ -193,7 +193,16 @@ has_selector() {
       case "$_sl" in
         .*) continue ;; # field access through an embedded field
       esac
-      [ "${_spre##*[!A-Za-z0-9_]}" = "$_spkg" ] && continue # a type reference
+      # A type reference is the package name standing alone. A qualifier that
+      # is itself a selector (`h.meta.RESTMapper()`) is a field, not the
+      # package, so that occurrence is still a call through a value.
+      _sq="${_spre##*[!A-Za-z0-9_]}"
+      if [ "$_sq" = "$_spkg" ]; then
+        case "${_spre%"$_sq"}" in
+          *.) ;;
+          *) continue ;;
+        esac
+      fi
     fi
     return 0
   done
@@ -213,6 +222,14 @@ classify_line() {
   _prev="$3"
 
   is_allowed_path "$_path" && return 1
+
+  # Almost no line names a watched selector; skip the per-name has_selector
+  # loops for those. Every name has_selector checks below must appear here.
+  case "$_line" in
+    *ClientForUser* | *RESTMapper* | *DiscoveryClient* | *BaseDynamicClient* | \
+      *BaseClientset* | *Informers*) ;;
+    *) return 1 ;;
+  esac
 
   _schema=0
   is_schema_routed "$_path" && _schema=1
@@ -382,6 +399,9 @@ run_self_test() {
 
   expect_clean "a field access through an embedded meta.RESTMapper must NOT be a violation" \
     "backend/internal/yaml/x.go" "${TAB}mapping, err := m.RESTMapper.RESTMapping(gk, versions...)" ""
+
+  expect_violation "a RESTMapper call through a field named meta must be a violation" \
+    "backend/internal/yaml/x.go" "${TAB}m := h.meta.RESTMapper()" ""
 
   expect_violation "a type reference must not hide a real call on the same line" \
     "backend/internal/yaml/x.go" "${TAB}var m meta.RESTMapper = h.K8sClient.RESTMapper()" ""
