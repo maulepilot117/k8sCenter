@@ -1564,3 +1564,43 @@ test("startRefresh: a negative discovery verdict is re-asked, slowly", async () 
   stop();
   expect(calls).toBeGreaterThan(1);
 });
+
+test("gateway-status keeps a remote reason beside the normalised flag", async () => {
+  // Gateway reports presence as `available` and the fetcher normalises it to
+  // `detected`. Under a remote selection the route also names why the API is
+  // not available (R-8 KTD5), and that reason is what tells "could not reach
+  // the cluster" from "not installed", so the normalisation must keep it.
+  const bodies: unknown[] = [
+    { available: false, reason: "unreachable" },
+    { available: false, reason: "discovery_missing" },
+    { available: true },
+  ];
+  const realFetch = globalThis.fetch;
+  let next = 0;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ data: bodies[next++] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )) as unknown as typeof globalThis.fetch;
+  const fetchGateway = () =>
+    DASHBOARD_FETCHERS["gateway-status"](
+      new AbortController().signal,
+      "1h",
+      {},
+    );
+  try {
+    expect(await fetchGateway()).toEqual({
+      detected: false,
+      reason: "unreachable",
+    });
+    expect(await fetchGateway()).toEqual({
+      detected: false,
+      reason: "discovery_missing",
+    });
+    expect(await fetchGateway()).toEqual({ detected: true });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

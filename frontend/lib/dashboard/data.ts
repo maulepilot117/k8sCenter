@@ -1320,11 +1320,19 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // carry: a build that cannot parse this route saying "not installed" is a
   // visible bug someone fixes, where one rendering an empty green gateway card
   // on a cluster with no Gateway API is a bug nobody sees (R1).
+  //
+  // The remote `reason` rides along (R-8 KTD5): it is what tells a remote
+  // that could not be asked from one without Gateway API, and dropping it
+  // would render the first as "not installed". `presenceUnknown` reads it.
   "gateway-status": async (signal) => {
-    const body = await read("/v1/gateway/status", signal);
-    return {
-      detected: (body as { available?: unknown } | null)?.available === true,
-    };
+    const body = (await read("/v1/gateway/status", signal)) as {
+      available?: unknown;
+      reason?: unknown;
+    } | null;
+    const detected = body?.available === true;
+    return typeof body?.reason === "string"
+      ? { detected, reason: body.reason }
+      : { detected };
   },
   // The tenth, and the only family status that is not a CRD check. Hubble is a
   // Cilium feature flag plus a discovered Relay Service, and
