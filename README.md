@@ -69,7 +69,7 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Velero backups and restores | Yes | Yes | Backups, restores, schedules, locations and their actions. Backup logs are a download link issued by the remote cluster's object storage, so your browser must be able to reach that storage |
 | Volume snapshots | Yes | Yes | List, detail, create and delete |
 | Flux notifications | Yes | Yes | Providers, Alerts and Receivers. A remote that serves only the `v1beta2` API shows as not installed |
-| Alert rules | Yes | Yes | PrometheusRule objects only. Whether they fire depends on the remote running prometheus-operator; the active and history alert feeds are always the local Alertmanager's |
+| Alert rules | Yes | Yes | PrometheusRule objects only. Whether they fire depends on the remote running prometheus-operator; the active and history alert feeds are always the local Alertmanager's, and the Alerts page says so under a remote selection |
 | Gateway API views | Yes | Yes | GatewayClasses, Gateways and routes (read-only on every cluster) |
 | Service mesh routing | Yes | Yes | Istio and Linkerd routes, with mesh presence detected on the remote |
 | Service mesh mTLS posture | Yes | Partial | Derived from the remote's pods and policies. The Prometheus metric cross-check is reported unavailable |
@@ -88,7 +88,7 @@ Remote pages get no live updates: the WebSocket feed carries the local cluster's
 - Policy (Kyverno and Gatekeeper) lists read the local cluster, filtered by the remote cluster's RBAC.
 - cert-manager lists on a remote cluster are shown only when cert-manager is detected on the local cluster.
 - Topology is built from the local cluster's informers.
-- The storage driver and StorageClass lists read local informers. The snapshot classes and drivers the snapshot flow uses are read from the remote.
+- The storage driver and StorageClass lists read local informers. The VolumeSnapshotClasses the snapshot flow uses are read from the remote.
 
 "Unsupported" is reported only for the rows above marked "No". A remote cluster that is down, or an account without RBAC for an operation, shows as blocked right now or unknown, never as something k8sCenter cannot do.
 
