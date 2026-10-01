@@ -5,6 +5,8 @@ date: 2026-09-29
 artifact_contract: ce-unified-plan/v1
 product_contract_source: ce-plan-bootstrap
 execution: code
+status: completed
+completed: 2026-10-01
 ---
 
 # R-8 Remote Cluster Routing - Plan
@@ -91,12 +93,12 @@ The lint cannot see most of this. It matches only `.ClientForUser(` and `.Dynami
 
 #### Deferred to Follow-Up Work
 
-- **Policy (Kyverno/Gatekeeper) remote support.** Its lists serve local data filtered by remote RBAC. The lint cannot see this, because it uses service-account reads only. U2's foundation makes this a small follow-up. The README names it as a known gap (U13).
-- **cert-manager per-cluster discovery.** Its remote lists are gated on local detection. Same follow-up shape as policy.
-- **Topology on remote.** It is informer-local and serves local data under the remote name. Needs a refusal or a remote builder.
-- **Storage drivers and StorageClasses lists on remote** (`HandleListDrivers`, `HandleListClasses` read local informers). Snapshot classes and drivers used by the snapshot flow are in scope (U7).
-- **Flux notification `v1beta2` on remote.** The package builds `v1beta3` bodies only, so a remote serving only `v1beta2` reports not installed until a follow-up adds version-specific bodies.
-- **Mobile typed errors** for the new reason codes. The backend contract lands here; mobile renders them as generic errors until the follow-up.
+- **Policy (Kyverno/Gatekeeper) remote support.** Its lists serve local data filtered by remote RBAC. The lint cannot see this, because it uses service-account reads only. U2's foundation makes this a small follow-up. The README names it as a known gap (U13). Filed as #530.
+- **cert-manager per-cluster discovery.** Its remote lists are gated on local detection. Same follow-up shape as policy. Filed as #531.
+- **Topology on remote.** It is informer-local and serves local data under the remote name. Needs a refusal or a remote builder. Filed as #532.
+- **Storage drivers and StorageClasses lists on remote** (`HandleListDrivers`, `HandleListClasses` read local informers). Snapshot classes and drivers used by the snapshot flow are in scope (U7). Filed as #533.
+- **Flux notification `v1beta2` on remote.** The package builds `v1beta3` bodies only, so a remote serving only `v1beta2` reports not installed until a follow-up adds version-specific bodies. Filed as #534.
+- **Mobile typed errors** for the new reason codes. The backend contract lands here; mobile renders them as generic errors until the follow-up. Filed as #535.
 
 ---
 
@@ -558,6 +560,21 @@ The lint passing is necessary but not sufficient. The remote-proof tests are wha
 - The capability table, README and frontend id list agree (parity tests green).
 - No abandoned-attempt code, temporary seams or debug logging remain in the diff.
 - `docs/plans/2026-09-10-release-c-remote-workflow-impl.md` open item 3 (R-8) can be marked done. The deferred items in Scope Boundaries are filed as follow-ups.
+
+### Delivery record
+
+**Status:** ✅ Done — every unit merged, 2026-10-01. Release C open item 3 is marked done, and the deferred items are filed as #530–#535.
+
+| Unit | PR | Unit | PR | Unit | PR |
+|---|---|---|---|---|---|
+| U1 | #510 | U7 | #517 | U13 | #525 |
+| U2 | #511 | U8 | #518 | U14 | #526 |
+| U3 | #512 | U9 | #519 | U15 | #529 |
+| U4 | #514 | U10 | #520 | U16 | #522 |
+| U5 | #515 | U11 | #521 | U17 | #523 |
+| U6 | #516 | U12 | #513 | U18 | #528 |
+
+Beyond the plan, #529 also widened the lint to flag method values and method expressions (`mk := h.K8sClient.ClientForUser`), not only calls. The two-cluster e2e spec has not yet run against a live remote; that run waits on the Release C Q2 acceptance environment.
 
 ---
 

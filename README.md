@@ -85,10 +85,10 @@ Remote pages get no live updates: the WebSocket feed carries the local cluster's
 
 **Known gaps.** These features do not yet answer for a remote cluster and are not in the table because they have no capability row. Treat what they show under a remote selection as local, or as unavailable:
 
-- Policy (Kyverno and Gatekeeper) lists read the local cluster, filtered by the remote cluster's RBAC.
-- cert-manager lists on a remote cluster are shown only when cert-manager is detected on the local cluster.
-- Topology is built from the local cluster's informers.
-- The storage driver and StorageClass lists read local informers. The VolumeSnapshotClasses the snapshot flow uses are read from the remote.
+- Policy (Kyverno and Gatekeeper) lists read the local cluster, filtered by the remote cluster's RBAC ([#530](https://github.com/maulepilot117/k8sCenter/issues/530)).
+- cert-manager lists on a remote cluster are shown only when cert-manager is detected on the local cluster ([#531](https://github.com/maulepilot117/k8sCenter/issues/531)).
+- Topology is built from the local cluster's informers ([#532](https://github.com/maulepilot117/k8sCenter/issues/532)).
+- The storage driver and StorageClass lists read local informers ([#533](https://github.com/maulepilot117/k8sCenter/issues/533)). The VolumeSnapshotClasses the snapshot flow uses are read from the remote.
 
 "Unsupported" is reported only for the rows above marked "No". A remote cluster that is down, or an account without RBAC for an operation, shows as blocked right now or unknown, never as something k8sCenter cannot do.
 

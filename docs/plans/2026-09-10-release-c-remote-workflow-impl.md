@@ -1732,4 +1732,8 @@ pin per target plus a campaign-level identity, which is a different contract.
 2. **R-9** — should non-admin operators be able to *read* a remote cluster? Today they cannot.
 3. **R-8** — flip `CHECK_CLUSTER_ROUTING_GATE` to `fail` in CI? Recommended immediately after U9b,
    as its own PR.
+   **Status:** ✅ Done — delivered by the R-8 plan
+   (`docs/plans/2026-09-29-0908-fix-r8-remote-cluster-routing-plan.md`) in #510–#529 (#524 and
+   #527 are unrelated). Every routed feature now serves the selected cluster, and since #529 a
+   routing violation fails CI. Deferred follow-ups are tracked as #530–#535.
 4. **R-4** — schedule the `ProbeOne` `StrictDialContext` fix as a security PR.
