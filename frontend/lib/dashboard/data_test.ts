@@ -1604,3 +1604,75 @@ test("gateway-status keeps a remote reason beside the normalised flag", async ()
     globalThis.fetch = realFetch;
   }
 });
+
+test("startRefresh: a remote could-not-tell verdict is re-asked every cycle", async () => {
+  // R-8 KTD5: a remote that could not be asked answers with the negative
+  // value plus a reason. That is a claim about right now, not about what is
+  // installed, so it is not left on the slow negative cadence: the card
+  // saying "could not reach" would otherwise outlive the outage by minutes.
+  const INTERVAL = 20;
+  let calls = 0;
+  const cache = createSourceCache({
+    "gitops-status": () => {
+      calls++;
+      return Promise.resolve({ detected: "", reason: "unreachable" });
+    },
+  });
+  cache.ensure(["gitops-status"], "1h");
+  await cache.settled();
+  expect(calls).toBe(1);
+
+  const stop = cache.startRefresh(INTERVAL);
+  // Well short of the negative recheck cadence, and still re-asked.
+  await sleep(INTERVAL * 3 + 10);
+  stop();
+  expect(calls).toBeGreaterThan(1);
+});
+
+test("snapshots-status turns a remote could-not-tell error into a verdict", async () => {
+  // The snapshot route has no status body of its own: a remote it cannot
+  // ask answers 502 with a reason. Normalised into the family shape, the
+  // widget reads it as unreachable like every other family; any other
+  // failure still throws.
+  const replies: Array<[number, unknown]> = [
+    [
+      502,
+      {
+        error: {
+          code: 502,
+          message: "the selected cluster could not be reached",
+          reason: "unreachable",
+        },
+      },
+    ],
+    [500, { error: { code: 500, message: "boom" } }],
+    [200, { data: [], metadata: { total: 0, available: true } }],
+  ];
+  const realFetch = globalThis.fetch;
+  let next = 0;
+  globalThis.fetch = (() => {
+    const [status, body] = replies[next++];
+    return Promise.resolve(
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  }) as unknown as typeof globalThis.fetch;
+  const fetchSnapshots = () =>
+    DASHBOARD_FETCHERS["snapshots-status"](
+      new AbortController().signal,
+      "1h",
+      {},
+    );
+  try {
+    expect(await fetchSnapshots()).toEqual({
+      detected: false,
+      reason: "unreachable",
+    });
+    await expect(fetchSnapshots()).rejects.toBeInstanceOf(ApiError);
+    expect(await fetchSnapshots()).toEqual({ detected: true });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

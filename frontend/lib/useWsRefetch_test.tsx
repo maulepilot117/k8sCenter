@@ -139,3 +139,36 @@ test("a remote selection opens no socket and subscribes to nothing", async () =>
   await settle();
   expect(probe.calls()).toBe(0);
 });
+
+test("a remote selection still subscribes to the cluster-agnostic notification feed", async () => {
+  // In-app notifications are not cluster data: the feed lists every
+  // cluster's notifications and the hub broadcasts their events whatever
+  // cluster is selected, so the gate must not silence them.
+  switchCluster("remote-1", "gen-1");
+  let calls = 0;
+  function Feed() {
+    useWsRefetch(
+      () => {
+        calls++;
+        return Promise.resolve();
+      },
+      [["notif-feed", "notifications", ""]],
+      DEBOUNCE_MS,
+    );
+    return null;
+  }
+  setAccessToken("test-token");
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  act(() => render(<Feed />, host as HTMLElement));
+
+  expect(FakeSocket.instances).toHaveLength(1);
+  const socket = FakeSocket.instances[0];
+  socket.accept();
+  expect(socket.sent).toContainEqual(
+    expect.objectContaining({ type: "subscribe", id: "notif-feed" }),
+  );
+  socket.deliver("notif-feed");
+  await settle();
+  expect(calls).toBe(1);
+});
