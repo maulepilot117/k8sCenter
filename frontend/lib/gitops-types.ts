@@ -88,7 +88,9 @@ export interface AppListResponse {
 }
 
 /** Display names for the application lists `coverage` can name. */
-export const GITOPS_SOURCE_LABELS: Readonly<Record<string, string>> = {
+export const GITOPS_SOURCE_LABELS: Readonly<
+  Record<"applications" | "kustomizations" | "helmreleases", string>
+> = {
   applications: "Argo CD Applications",
   kustomizations: "Flux Kustomizations",
   helmreleases: "Flux HelmReleases",

@@ -26,8 +26,8 @@ export function SourceCoverageNotice({
           <div key={c.source} role="status">
             <Alert variant="warning">
               {c.status === "forbidden"
-                ? `You are not allowed to list ${name} on this cluster, so they are missing below.`
-                : `Could not load ${name} from this cluster, so they are missing below.`}
+                ? `You are not allowed to list ${name} on this cluster, so this page omits them.`
+                : `Could not load ${name} from this cluster, so this page omits them.`}
             </Alert>
           </div>
         );
