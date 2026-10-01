@@ -13,7 +13,7 @@ import type { SourceState } from "./data.ts";
 import { placeNewWidget } from "./placement.ts";
 import type { FamilyStatusKey, LayoutItem, WidgetDef } from "./types.ts";
 import { DASHBOARD_MAX_ITEMS } from "./types.ts";
-import { featurePresent } from "./widget-state.ts";
+import { featurePresent, presenceUnknown } from "./widget-state.ts";
 
 /** The layout already holds `DASHBOARD_MAX_ITEMS`, the most a saved layout can
  * carry -- the server refuses a layout past it with `limit_reached`. */
@@ -76,6 +76,9 @@ function availabilityReason(
   // account may not ask.
   if (status.errorKind === "permission") return NOT_PERMITTED;
   if (status.data === null) return null;
+  // A remote cluster that could not be asked (R-8 KTD5) is no more evidence
+  // of absence than a failed request, so it blocks nothing either.
+  if (presenceUnknown(status.data)) return null;
   return featurePresent(status.data) ? null : NOT_INSTALLED;
 }
 

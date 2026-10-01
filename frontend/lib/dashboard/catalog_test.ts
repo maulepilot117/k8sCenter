@@ -256,6 +256,21 @@ describe("disabledReasonFor -- family availability", () => {
     ).toBeNull();
   });
 
+  test("a remote status that could not tell blocks nothing", () => {
+    // R-8 KTD5: an unreachable remote answers with its family's negative
+    // value plus a reason. That is no more evidence of absence than a 500,
+    // and the widget's own unreachable state covers it once it is added.
+    const unknown: SourceState = {
+      ...status(false),
+      data: { detected: false, reason: "unreachable" },
+    };
+    expect(
+      disabledReasonFor(certWidget(), [], DASHBOARD_COLUMNS, {
+        "certificates-status": unknown,
+      }),
+    ).toBeNull();
+  });
+
   test("a status that failed for some other reason blocks nothing", () => {
     // A transient 500 on a discovery route is not evidence the feature is
     // missing, and the widget's own error state covers it once it is added.
