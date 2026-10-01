@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import GlassCard from "@/components/ui/GlassCard.tsx";
@@ -7,6 +8,7 @@ import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { apiGet } from "@/lib/api.ts";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
+import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const severityTone: Record<string, Tone> = {
@@ -100,6 +102,16 @@ export default function AlertsPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* /alerts and /alerts/history always read the local Alertmanager,
+          whatever cluster is selected (R-8 KTD13). Say so, or a quiet local
+          feed reads as a quiet remote cluster. */}
+      {selectedCluster.value !== LOCAL_CLUSTER_ID && (
+        <Alert variant="info">
+          These alerts come from the local cluster's Alertmanager, not the
+          selected remote cluster. Alert rules on the remote are managed on the
+          Alert Rules page.
+        </Alert>
+      )}
       {/* Glass chrome: tab nav + refresh action */}
       <GlassCard padding={0}>
         <div

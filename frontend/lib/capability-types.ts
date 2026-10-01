@@ -65,6 +65,20 @@ export const CAPABILITY_OPERATION_IDS = [
   "logs.search",
   "flows.stream",
   "eso.write",
+  "node.drain",
+  "gitops.applications",
+  "velero.backups",
+  "storage.snapshots",
+  "flux.notifications",
+  "alert.rules",
+  "gateway.read",
+  "mesh.routing",
+  "mesh.mtls",
+  "eso.read",
+  "cni.config",
+  "mesh.golden_signals",
+  "eso.history",
+  "eso.metrics",
 ] as const;
 
 export type CapabilityOperationId = (typeof CAPABILITY_OPERATION_IDS)[number];
