@@ -2,11 +2,11 @@ import type { Signal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
+import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import type { EventSourceRef } from "@/lib/notification-types.ts";
 import { PAGE_SIZE } from "@/lib/notification-types.ts";
-import { wsStatus } from "@/lib/ws.ts";
 
 // ---------------------------------------------------------------------------
 // NotificationPageHeader
@@ -36,12 +36,7 @@ export function NotificationPageHeader({
       <div class="flex items-center justify-between mb-1">
         <div class="flex items-center gap-2">
           <h1 class="text-2xl font-bold text-text-primary">{kind}s</h1>
-          {wsStatus.value === "connected" && (
-            <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
-              <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
-              Live
-            </span>
-          )}
+          <LiveBadge />
         </div>
         <div class="flex items-center gap-2">
           {!loading && (
