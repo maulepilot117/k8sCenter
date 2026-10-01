@@ -14,7 +14,7 @@ import {
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { pickMode } from "@/lib/dashboard/display-mode.ts";
 import type { WidgetDef } from "@/lib/dashboard/types.ts";
-// Which of the five outcomes this box shows is a pure decision with unit
+// Which of the seven outcomes this box shows is a pure decision with unit
 // tests, because this repo has no component test harness (D-10). Do not move
 // it back inline.
 import { resolveWidgetState } from "@/lib/dashboard/widget-state.ts";
@@ -137,7 +137,7 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
     };
   }, []);
 
-  // One rule, five outcomes -- resolveWidgetState owns the order and the
+  // One rule, seven outcomes -- resolveWidgetState owns the order and the
   // argument for it. In short: stale data outranks an error, so a transient
   // 500 leaves a working widget on screen with an inline notice rather than an
   // error page; a source the widget declared optional never gates it; a
@@ -279,6 +279,25 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
               <path d="M3 3l18 18" />
               <path d="M21 8v8a2 2 0 0 1-1 1.73l-7 4a2 2 0 0 1-2 0l-4.4-2.53" />
               <path d="M4 16.5A2 2 0 0 1 3 15V8a2 2 0 0 1 1-1.73l7-4a2 2 0 0 1 2 0l5.5 3.14" />
+            </>
+          }
+        />
+      ) : resolved.state === "unreachable" ? (
+        // A remote cluster that could not be asked whether it runs the
+        // feature (R-8 KTD5). Its own heading and glyph rather than the
+        // not-installed card: that card would send an operator looking for
+        // a missing operator on a cluster that may well run it. No retry
+        // button -- the refresh loop re-asks the family status by itself.
+        <StateCard
+          testId="widget-unreachable"
+          heading="Could not reach this cluster"
+          detail={`Whether the selected cluster runs what ${def.title} reads could not be checked.`}
+          icon={
+            // A broken link: the thing may be there, the way to it is not.
+            <>
+              <path d="M9 17H7A5 5 0 0 1 7 7h2" />
+              <path d="M15 7h2a5 5 0 0 1 4 8" />
+              <path d="M3 3l18 18" />
             </>
           }
         />

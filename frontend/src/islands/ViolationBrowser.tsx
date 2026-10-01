@@ -1,6 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
+import { RemoteRefreshHint } from "@/components/ui/LiveBadge.tsx";
 import {
   ActionBadge,
   EngineBadge,
@@ -173,16 +174,19 @@ export default function ViolationBrowser() {
             resources.
           </p>
         </div>
-        {!loading.value && (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={handleRefresh}
-            disabled={refreshing.value}
-          >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
-          </Button>
-        )}
+        <div class="flex items-center gap-2">
+          <RemoteRefreshHint />
+          {!loading.value && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={handleRefresh}
+              disabled={refreshing.value}
+            >
+              {refreshing.value ? "Refreshing..." : "Refresh"}
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Filters */}

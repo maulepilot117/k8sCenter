@@ -8,6 +8,7 @@ import {
   SyncStatusBadge,
   ToolBadge,
 } from "@/components/ui/GitOpsBadges.tsx";
+import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
 import ResourceTable, { type Column } from "@/components/ui/ResourceTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -22,7 +23,6 @@ import type {
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
-import { wsStatus } from "@/src/lib/ws.ts";
 
 const PAGE_SIZE = 100;
 
@@ -145,12 +145,7 @@ export default function GitOpsApplications() {
       <div class="flex items-center justify-between mb-1">
         <div class="flex items-center gap-2">
           <h1 class="text-2xl font-bold text-text-primary">Applications</h1>
-          {wsStatus.value === "connected" && (
-            <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
-              <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
-              Live
-            </span>
-          )}
+          <LiveBadge />
         </div>
         {!loading.value && (
           <Button

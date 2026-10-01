@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { SYNC_COLORS } from "@/components/ui/GitOpsBadges.tsx";
+import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
 import ResourceTable, { type Column } from "@/components/ui/ResourceTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -11,7 +12,6 @@ import type { AppListMetadata, NormalizedAppSet } from "@/lib/gitops-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { wsStatus } from "@/src/lib/ws.ts";
 
 interface AppSetListResponse {
   applicationSets: NormalizedAppSet[];
@@ -143,12 +143,7 @@ export default function GitOpsAppSets() {
           >
             ApplicationSets
           </h1>
-          {wsStatus.value === "connected" && (
-            <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
-              <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
-              Live
-            </span>
-          )}
+          <LiveBadge />
         </div>
         <div class="flex items-center gap-2">
           {!loading.value && (

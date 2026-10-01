@@ -4,12 +4,13 @@ import { sourceKeyFor } from "./params.ts";
 import type { DataSourceKey, FamilyStatusKey } from "./types.ts";
 import {
   featurePresent,
+  presenceUnknown,
   resolveWidgetState,
   sourcesOf,
   type WidgetSourceDecl,
 } from "./widget-state.ts";
 
-// Which of the five outcomes a widget box shows. WidgetHost is a component and
+// Which of the seven outcomes a widget box shows. WidgetHost is a component and
 // therefore untestable in this repo (D-10), so the decision it makes lives
 // here: it is the difference between an operator reading "cert-manager is not
 // installed" and reading an empty, healthy-looking card about certificates
@@ -328,6 +329,36 @@ describe("resolveWidgetState -- a source the deployment does not serve", () => {
   });
 });
 
+describe("presenceUnknown", () => {
+  // A remote status keeps its family's negative value when it cannot tell
+  // whether the feature is installed, and names why in `reason` (R-8 KTD5).
+  // Only the "could not tell" reasons count; discovery_missing is a real
+  // "not installed", and the local cluster sends no reason at all.
+  test("a negative verdict whose reason says the cluster could not be asked", () => {
+    for (const reason of [
+      "unreachable",
+      "discovery_unavailable",
+      "credentials_invalid",
+      "cluster_unknown",
+      "db_unavailable",
+    ]) {
+      expect(presenceUnknown({ detected: false, reason })).toBe(true);
+      expect(presenceUnknown({ detected: "", reason })).toBe(true);
+    }
+  });
+
+  test("not installed, the local cluster and a present feature are known", () => {
+    expect(
+      presenceUnknown({ detected: false, reason: "discovery_missing" }),
+    ).toBe(false);
+    expect(presenceUnknown({ detected: false })).toBe(false);
+    expect(presenceUnknown({ detected: true, reason: "unreachable" })).toBe(
+      false,
+    );
+    expect(presenceUnknown(null)).toBe(false);
+  });
+});
+
 describe("resolveWidgetState -- availability", () => {
   test("a family that reports its feature absent is unavailable", () => {
     const r = resolveWidgetState(
@@ -335,6 +366,28 @@ describe("resolveWidgetState -- availability", () => {
       lookup({
         "dashboard-summary": ok(),
         "certificates-status": ok({ detected: false }),
+      }),
+    );
+    expect(r.state).toBe("unavailable");
+  });
+
+  test("a remote family that could not be asked is unreachable, not unavailable", () => {
+    const r = resolveWidgetState(
+      decl({ familyStatus: "gitops-status" }),
+      lookup({
+        "dashboard-summary": ok(),
+        "gitops-status": ok({ detected: "", reason: "unreachable" }),
+      }),
+    );
+    expect(r.state).toBe("unreachable");
+  });
+
+  test("a remote family reporting discovery_missing is unavailable", () => {
+    const r = resolveWidgetState(
+      decl({ familyStatus: "velero-status" }),
+      lookup({
+        "dashboard-summary": ok(),
+        "velero-status": ok({ detected: false, reason: "discovery_missing" }),
       }),
     );
     expect(r.state).toBe("unavailable");

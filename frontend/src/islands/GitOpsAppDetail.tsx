@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/GitOpsBadges.tsx";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
+import { RemoteRefreshHint } from "@/components/ui/LiveBadge.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { api, apiGet, apiPost } from "@/lib/api.ts";
 import type {
@@ -316,6 +317,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
         </Button>
       )}
 
+      <RemoteRefreshHint />
       <Button
         type="button"
         variant="ghost"

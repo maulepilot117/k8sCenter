@@ -29,7 +29,7 @@ import {
 } from "./types.ts";
 // Safe despite the apparent cycle: widget-state's only import from this
 // file is `import type`, which is erased, so there is no runtime edge back.
-import { featurePresent } from "./widget-state.ts";
+import { featurePresent, presenceUnknown } from "./widget-state.ts";
 import type { ResourceListPage } from "./wire-types.ts";
 
 /**
@@ -636,6 +636,12 @@ export function createSourceCache(
       // family, and leaves the expensive case -- the affirmative answer --
       // exactly as settled as it was.
       if (featurePresent(data)) return false;
+      // Except a remote cluster that could not be asked (R-8 KTD5): that is
+      // a claim about right now, not about what is installed, and on the
+      // slow cadence its "could not reach" card would outlive the outage by
+      // minutes. It costs a request per cycle per family, and only while a
+      // selected remote is down.
+      if (presenceUnknown(data)) return true;
       if (tick % NEGATIVE_RECHECK_TICKS !== 0) return false;
     }
     return true;
@@ -1302,11 +1308,27 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // installed" is a visible bug someone fixes, where one rendering an empty
   // green snapshot card on a cluster with no CSI snapshotter is a bug nobody
   // sees (R1).
+  //
+  // A remote it could not ask answers 502 with a reason rather than with
+  // `available: false` (R-8 KTD5), so that reason is turned into the same
+  // negative-with-reason verdict the other families send, and the widget
+  // reads it as unreachable rather than as a failed read. Any other failure
+  // still throws.
   "snapshots-status": async (signal) => {
-    const res = await api<unknown>("/v1/storage/snapshot-classes", {
-      method: "GET",
-      signal,
-    });
+    let res: Awaited<ReturnType<typeof api<unknown>>>;
+    try {
+      res = await api<unknown>("/v1/storage/snapshot-classes", {
+        method: "GET",
+        signal,
+      });
+    } catch (err) {
+      const verdict = {
+        detected: false,
+        reason: err instanceof ApiError ? err.reason : undefined,
+      };
+      if (presenceUnknown(verdict)) return verdict;
+      throw err;
+    }
     const available = (res.metadata as { available?: unknown } | undefined)
       ?.available;
     return { detected: available === true };
@@ -1320,11 +1342,19 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // carry: a build that cannot parse this route saying "not installed" is a
   // visible bug someone fixes, where one rendering an empty green gateway card
   // on a cluster with no Gateway API is a bug nobody sees (R1).
+  //
+  // The remote `reason` rides along (R-8 KTD5): it is what tells a remote
+  // that could not be asked from one without Gateway API, and dropping it
+  // would render the first as "not installed". `presenceUnknown` reads it.
   "gateway-status": async (signal) => {
-    const body = await read("/v1/gateway/status", signal);
-    return {
-      detected: (body as { available?: unknown } | null)?.available === true,
-    };
+    const body = (await read("/v1/gateway/status", signal)) as {
+      available?: unknown;
+      reason?: unknown;
+    } | null;
+    const detected = body?.available === true;
+    return typeof body?.reason === "string"
+      ? { detected, reason: body.reason }
+      : { detected };
   },
   // The tenth, and the only family status that is not a CRD check. Hubble is a
   // Cilium feature flag plus a discovered Relay Service, and

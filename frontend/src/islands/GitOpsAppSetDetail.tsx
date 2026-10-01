@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/GitOpsBadges.tsx";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
+import { RemoteRefreshHint } from "@/components/ui/LiveBadge.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiDelete, apiGet, apiPost } from "@/lib/api.ts";
 import type {
@@ -223,6 +224,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
       >
         <span style={{ color: "var(--error)" }}>Delete</span>
       </Button>
+      <RemoteRefreshHint control="Reload" />
       <Button
         type="button"
         variant="ghost"

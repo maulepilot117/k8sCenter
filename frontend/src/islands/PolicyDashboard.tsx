@@ -1,6 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
+import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
 import {
   BlockingBadge,
   EngineBadge,
@@ -13,7 +14,6 @@ import { apiGet } from "@/lib/api.ts";
 import type { EngineStatus, NormalizedPolicy } from "@/lib/policy-types.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { wsStatus } from "@/src/lib/ws.ts";
 
 const PAGE_SIZE = 100;
 
@@ -148,12 +148,7 @@ export default function PolicyDashboard() {
             flexShrink: 0,
           }}
         >
-          {wsStatus.value === "connected" && (
-            <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
-              <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
-              Live
-            </span>
-          )}
+          <LiveBadge />
           {!loading.value && (
             <>
               {!noEngine && (

@@ -1,5 +1,5 @@
 /**
- * Which of five outcomes a widget box shows, and why.
+ * Which of seven outcomes a widget box shows, and why.
  *
  * `WidgetHost` used to decide this inline across three booleans. Two more
  * outcomes -- "the cluster does not run this feature" and "this account may
@@ -17,7 +17,7 @@ import { sourceKeyFor } from "./params.ts";
 import type { DataSourceKey, WidgetDef } from "./types.ts";
 
 /**
- * The five outcomes, and what each one claims:
+ * The seven outcomes, and what each one claims:
  *
  * - `loading` -- nothing is known yet.
  * - `permission` -- this account may not read what the widget needs. Standing,
@@ -31,6 +31,11 @@ import type { DataSourceKey, WidgetDef } from "./types.ts";
  *   futile to retry like `unavailable`, but unlike either it shows the
  *   backend's own message, because that message is the only thing that tells
  *   the reader what to change.
+ * - `unreachable` -- a remote cluster was selected and whether it runs the
+ *   feature could not be told: the cluster could not be reached, its
+ *   credentials failed, or its discovery could not be read (R-8 KTD5).
+ *   Saying "not installed" here would send an operator looking for a missing
+ *   operator on a cluster that may well run it.
  * - `ready` -- the widget renders, and says whatever its own data says,
  *   including "nothing to report".
  */
@@ -39,6 +44,7 @@ export type WidgetState =
   | "permission"
   | "error"
   | "unavailable"
+  | "unreachable"
   | "unsupported"
   | "ready";
 
@@ -109,6 +115,38 @@ export function featurePresent(data: unknown): boolean {
 }
 
 /**
+ * The reasons a remote family status gives when it could not tell whether its
+ * feature is installed (R-8 KTD5), from the backend's closed `ReasonCode` set.
+ * `discovery_missing` is absent on purpose: that one is a real "not
+ * installed".
+ */
+const PRESENCE_UNKNOWN_REASONS: ReadonlySet<string> = new Set([
+  "unreachable",
+  "discovery_unavailable",
+  "credentials_invalid",
+  "cluster_unknown",
+  "db_unavailable",
+]);
+
+/**
+ * Whether a family status payload is a remote cluster's "could not tell"
+ * rather than a verdict.
+ *
+ * On a remote cluster a status route keeps its family's existing negative
+ * value (`detected: false` or `""`) when it cannot answer, and names why in
+ * `reason`. The local cluster never sends a reason, so this is false there
+ * and every local payload reads exactly as before. A payload that reports
+ * the feature present is a verdict whatever else it carries.
+ */
+export function presenceUnknown(data: unknown): boolean {
+  if (featurePresent(data) || data === null || typeof data !== "object") {
+    return false;
+  }
+  const reason = (data as { reason?: unknown }).reason;
+  return typeof reason === "string" && PRESENCE_UNKNOWN_REASONS.has(reason);
+}
+
+/**
  * Resolves one widget's outcome from the state of the sources it declared.
  *
  * The order, and why it is this one:
@@ -120,11 +158,12 @@ export function featurePresent(data: unknown): boolean {
  *    with an error card. That is the view an operator needs most while a
  *    cluster is degrading, and it is the behavior that shipped.
  *    1a. A declared family that reports its feature absent stops here:
- *        `unavailable`, and `render` is never called. The widget therefore
- *        never learns it is unavailable and never has to decide whether its
- *        own empty list means "nothing to report" or "no operator installed"
- *        -- which it cannot decide, because the backend returns 200 with an
- *        empty array either way (KTD1).
+ *        `unavailable` (or `unreachable` when a remote cluster could not be
+ *        asked, see `presenceUnknown`), and `render` is never called. The
+ *        widget therefore never learns it is unavailable and never has to
+ *        decide whether its own empty list means "nothing to report" or "no
+ *        operator installed" -- which it cannot decide, because the backend
+ *        returns 200 with an empty array either way (KTD1).
  * 2. **A required source is one this deployment does not serve** -- a route
  *    that answered 503 because the deployment has no database, or one that is
  *    not registered at all without one. `ABSENT_STATUSES` in types.ts names
@@ -192,7 +231,12 @@ export function resolveWidgetState(
   if (def.familyStatus !== undefined) {
     const family = stateOf(sourceKeyFor(def.familyStatus, params));
     if (family.data !== null && !featurePresent(family.data)) {
-      return { state: "unavailable", blocking: null, stale: null };
+      // A remote cluster that could not be asked is not one that lacks the
+      // feature: same gate, different claim.
+      const state = presenceUnknown(family.data)
+        ? "unreachable"
+        : "unavailable";
+      return { state, blocking: null, stale: null };
     }
   }
 

@@ -1,9 +1,11 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api.ts";
+import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface RuleSummary {
@@ -252,6 +254,17 @@ export default function AlertRulesPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* The rules listed here are the remote cluster's PrometheusRules, but
+          the firing and history feeds always read the local Alertmanager
+          (R-8 KTD13). Say so, or a quiet local feed reads as remote rules
+          that are not firing. */}
+      {selectedCluster.value !== LOCAL_CLUSTER_ID && (
+        <Alert variant="info">
+          These are the selected remote cluster's alert rules. Whether they fire
+          depends on that cluster running prometheus-operator; the firing alerts
+          on the Alerts page come from the local cluster's Alertmanager.
+        </Alert>
+      )}
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <Button onClick={handleNew}>Create Rule</Button>
       </div>
