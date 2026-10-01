@@ -90,11 +90,14 @@ jobs:
 
       - name: Check cluster-routing discipline
         # P2-5: fail any handler that calls .ClientForUser / .DynamicClientForUser
-        # directly instead of routing through ClusterRouter.
-        # warn mode during Phase 2 soak — flip to "fail" in a follow-up PR.
+        # directly instead of routing through ClusterRouter. R-8 (U15) made
+        # this a failing gate once every package in REMOTE_ROUTED_DIRS was
+        # migrated: a new unannotated call, or a local-schema / service-account
+        # read inside a routed package, now fails CI. A legitimately local site
+        # carries `// nolint:cluster-routing <reason>` on the line above.
         working-directory: ${{ github.workspace }}
         env:
-          CHECK_CLUSTER_ROUTING_GATE: warn  # flip to "fail" after Phase 2 rewrites land
+          CHECK_CLUSTER_ROUTING_GATE: fail
         run: bash scripts/check-cluster-routing.sh
 
       - name: Vet

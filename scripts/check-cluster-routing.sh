@@ -30,10 +30,10 @@
 #
 # There is deliberately no separate func-declaration exemption: a genuine
 # declaration of ClientForUser/RESTMapper/DiscoveryClient (a method
-# definition or an interface method line) never contains the dot-prefixed
-# call form the detector matches on (`.RESTMapper()`, `.DiscoveryClient()`,
-# `.ClientForUser(`, `.DynamicClientForUser(`), so it is already clean
-# without any extra rule. A dedicated exemption used to live here and also
+# definition or an interface method line) never puts a dot before the method
+# name, and the detector matches only the dot-prefixed selector
+# (`.ClientForUser`, `.RESTMapper`, ...; see has_selector), so it is already
+# clean without any extra rule. A dedicated exemption used to live here and also
 # matched a gofmt-legal one-line method body or an inline func literal that
 # makes a real dot-prefixed call on the same line as a `func ` token —
 # hiding real violations (Finding #3).
@@ -42,12 +42,12 @@
 # directly against a fixed set of known-good/known-bad cases (the same
 # function scan_file uses on real files) and exits non-zero if any case
 # doesn't match, REGARDLESS of CHECK_CLUSTER_ROUTING_GATE. This catches
-# matcher regressions even though CI only runs the scan itself in warn mode.
+# matcher regressions, which would otherwise pass as "no violations".
 #
 # Usage:
 #   bash scripts/check-cluster-routing.sh
-#     -- warn mode when CHECK_CLUSTER_ROUTING_GATE=warn (default bootstrap);
-#        prints all violations but exits 0.
+#     -- warn mode (the default when CHECK_CLUSTER_ROUTING_GATE is unset);
+#        prints all violations but exits 0. CI runs fail mode (R-8 U15).
 #   CHECK_CLUSTER_ROUTING_GATE=fail bash scripts/check-cluster-routing.sh
 #     -- strict mode; exits non-zero when any unexempt violation is found.
 #
@@ -157,6 +157,57 @@ is_remote_routed() {
   return 1
 }
 
+# has_selector LINE NAME — returns 0 (true) if LINE contains the selector
+# `.NAME` as a whole identifier: followed by a non-identifier character or
+# the end of the line. That matches a call (`.ClientForUser(`), a method
+# value (`f := h.K8sClient.ClientForUser`, then `f(u, g)`) and a method
+# expression (`(*k8s.ClientFactory).ClientForUser`) alike, but not a longer
+# name that merely starts with NAME (`.ClientForUserCached`). Matching only
+# the call form let a method value reach the local client unflagged.
+#
+# TYPE_PKG, when given, marks NAME as also being a type that package exports
+# (RESTMapper is meta.RESTMapper, DiscoveryClient is discovery.DiscoveryClient).
+# For those, an occurrence is skipped when it is qualified by TYPE_PKG (a type
+# reference: `func ... RESTMapper() meta.RESTMapper {`) or followed by `.` (a
+# field access through an embedded meta.RESTMapper, as in yaml's
+# refreshingMapper: `m.RESTMapper.RESTMapping(...)`). A method value cannot
+# be followed by `.`. Each occurrence on the line is judged on its own, so a
+# type reference does not hide a real call elsewhere on the same line. A
+# receiver variable that shadows the package name (`meta := h.K8sClient`) is
+# not detected; that is the accepted cost of a text-level matcher.
+has_selector() {
+  _sl="$1"
+  _sn="$2"
+  _spkg="${3:-}"
+  while :; do
+    case "$_sl" in
+      *".$_sn"*) ;;
+      *) return 1 ;;
+    esac
+    _spre="${_sl%%".$_sn"*}"
+    _sl="${_sl#*".$_sn"}"
+    case "$_sl" in
+      [A-Za-z0-9_]*) continue ;; # a longer identifier, e.g. .ClientForUserCached
+    esac
+    if [ -n "$_spkg" ]; then
+      case "$_sl" in
+        .*) continue ;; # field access through an embedded field
+      esac
+      # A type reference is the package name standing alone. A qualifier that
+      # is itself a selector (`h.meta.RESTMapper()`) is a field, not the
+      # package, so that occurrence is still a call through a value.
+      _sq="${_spre##*[!A-Za-z0-9_]}"
+      if [ "$_sq" = "$_spkg" ]; then
+        case "${_spre%"$_sq"}" in
+          *.) ;;
+          *) continue ;;
+        esac
+      fi
+    fi
+    return 0
+  done
+}
+
 # classify_line REL_PATH LINE PREV_LINE — returns 0 (true) if LINE at
 # REL_PATH is an unexempt cluster-routing violation, given PREV_LINE (the
 # source line immediately above, used for the nolint check, or "" if LINE
@@ -172,19 +223,33 @@ classify_line() {
 
   is_allowed_path "$_path" && return 1
 
+  # Almost no line names a watched selector; skip the per-name has_selector
+  # loops for those. Every name has_selector checks below must appear here.
+  case "$_line" in
+    *ClientForUser* | *RESTMapper* | *DiscoveryClient* | *BaseDynamicClient* | \
+      *BaseClientset* | *Informers*) ;;
+    *) return 1 ;;
+  esac
+
   _schema=0
   is_schema_routed "$_path" && _schema=1
   _remote=0
   is_remote_routed "$_path" && _remote=1
 
   _hit=0
-  case "$_line" in
-    *".ClientForUser("*|*".DynamicClientForUser("*) _hit=1 ;;
-    *".RESTMapper()"*|*".DiscoveryClient()"*)
-      if [ "$_schema" -eq 1 ] || [ "$_remote" -eq 1 ]; then _hit=1; fi ;;
-    *".BaseDynamicClient()"*|*".BaseClientset()"*|*".Informers."*)
-      if [ "$_remote" -eq 1 ]; then _hit=1; fi ;;
-  esac
+  if has_selector "$_line" ClientForUser || has_selector "$_line" DynamicClientForUser; then
+    _hit=1
+  elif [ "$_schema" -eq 1 ] || [ "$_remote" -eq 1 ]; then
+    if has_selector "$_line" RESTMapper meta || has_selector "$_line" DiscoveryClient discovery; then
+      _hit=1
+    fi
+  fi
+  if [ "$_hit" -eq 0 ] && [ "$_remote" -eq 1 ]; then
+    if has_selector "$_line" BaseDynamicClient || has_selector "$_line" BaseClientset ||
+      has_selector "$_line" Informers; then
+      _hit=1
+    fi
+  fi
   [ "$_hit" -eq 1 ] || return 1
 
   # No func-declaration exemption: see the header comment.
@@ -221,8 +286,8 @@ scan_file() {
 # -----------------------------------------------------------------------
 # Self-test (Finding #3) — runs automatically before every scan, in every
 # gate mode. Exercises classify_line directly against known-good/known-bad
-# cases so a detector regression fails the run even though CI only invokes
-# the scan itself in warn mode.
+# cases so a detector regression fails the run instead of reading as a
+# clean scan.
 # -----------------------------------------------------------------------
 
 # expect_violation LABEL PATH LINE PREV — asserts classify_line treats LINE
@@ -302,8 +367,8 @@ run_self_test() {
     "backend/internal/yaml/x.go" "${TAB}defer func() { _ = h.K8sClient.RESTMapper() }()" ""
 
   # Finding #3 — a genuine method declaration in a schema-routed dir stays
-  # clean without any dedicated func-declaration exemption, because it never
-  # contains the dot-prefixed call form.
+  # clean without any dedicated func-declaration exemption: its only dotted
+  # RESTMapper is the meta.RESTMapper return type, which has_selector skips.
   expect_clean "a genuine method declaration in a schema-routed dir must NOT be a violation (Finding #3)" \
     "backend/internal/server/x.go" "func (f *ClientFactory) RESTMapper() meta.RESTMapper {" ""
 
@@ -311,6 +376,38 @@ run_self_test() {
   # for the same reason.
   expect_clean "an interface method line in a schema-routed dir must NOT be a violation (Finding #3)" \
     "backend/internal/server/x.go" "${TAB}RESTMapper() meta.RESTMapper" ""
+
+  # Method values and method expressions reach the local client without a
+  # call on the same line, so the selector itself is the violation.
+  expect_violation "a ClientForUser method value must be a violation" \
+    "backend/internal/certmanager/x.go" "${TAB}makeClient := h.K8sClient.ClientForUser" ""
+
+  expect_violation "a DynamicClientForUser method value passed as an argument must be a violation" \
+    "backend/internal/certmanager/x.go" "${TAB}w := newWorker(h.K8sClient.DynamicClientForUser, log)" ""
+
+  expect_violation "a ClientForUser method expression must be a violation" \
+    "backend/internal/certmanager/x.go" "${TAB}fn := (*k8s.ClientFactory).ClientForUser" ""
+
+  expect_clean "a longer identifier that starts with ClientForUser must NOT be a violation" \
+    "backend/internal/certmanager/x.go" "${TAB}cs, err := h.cache.ClientForUserCached(u, g)" ""
+
+  expect_violation "a RESTMapper method value in a schema-routed dir must be a violation" \
+    "backend/internal/yaml/x.go" "${TAB}mapperFor := h.K8sClient.RESTMapper" ""
+
+  expect_clean "a meta.RESTMapper type reference must NOT be a violation" \
+    "backend/internal/yaml/x.go" "${TAB}var m meta.RESTMapper" ""
+
+  expect_clean "a field access through an embedded meta.RESTMapper must NOT be a violation" \
+    "backend/internal/yaml/x.go" "${TAB}mapping, err := m.RESTMapper.RESTMapping(gk, versions...)" ""
+
+  expect_violation "a RESTMapper call through a field named meta must be a violation" \
+    "backend/internal/yaml/x.go" "${TAB}m := h.meta.RESTMapper()" ""
+
+  expect_violation "a type reference must not hide a real call on the same line" \
+    "backend/internal/yaml/x.go" "${TAB}var m meta.RESTMapper = h.K8sClient.RESTMapper()" ""
+
+  expect_clean "a discovery.DiscoveryClient type reference must NOT be a violation" \
+    "backend/internal/server/x.go" "${TAB}var dc *discovery.DiscoveryClient" ""
 
   # R-8 (U12) — REMOTE_ROUTED_DIRS. The real list starts empty and grows as
   # packages migrate, so these cases run against a fixture list and restore
@@ -342,6 +439,12 @@ run_self_test() {
   REMOTE_ROUTED_DIRS="backend/internal/storage"
   expect_violation "an informer-cache read in a remote-routed dir must be a violation" \
     "backend/internal/storage/x.go" "${TAB}drivers, err := h.Informers.CSIDrivers().List(labels.Everything())" ""
+
+  expect_violation "an aliased informer factory in a remote-routed dir must be a violation" \
+    "backend/internal/storage/x.go" "${TAB}inf := h.Informers" ""
+
+  expect_violation "a BaseClientset method value in a remote-routed dir must be a violation" \
+    "backend/internal/storage/x.go" "${TAB}base := h.K8sClient.BaseClientset" ""
 
   expect_clean "an informer-cache read outside REMOTE_ROUTED_DIRS must NOT be a violation" \
     "backend/internal/velero/x.go" "${TAB}pods, err := h.Informers.Pods().List(sel)" ""
@@ -441,8 +544,8 @@ printf 'To suppress a legitimate call site, add a comment on the line above:\n'
 printf '    // nolint:cluster-routing <reason>\n\n'
 
 if [ "$GATE" = "warn" ]; then
-  printf '[warn mode] CHECK_CLUSTER_ROUTING_GATE=warn — exiting 0 (bootstrap phase).\n'
-  printf 'Flip to CHECK_CLUSTER_ROUTING_GATE=fail once Phase 2 rewrites land.\n\n'
+  printf '[warn mode] CHECK_CLUSTER_ROUTING_GATE=%s — exiting 0.\n' "$GATE"
+  printf 'CI runs CHECK_CLUSTER_ROUTING_GATE=fail, where these violations fail the build.\n\n'
   exit 0
 fi
 

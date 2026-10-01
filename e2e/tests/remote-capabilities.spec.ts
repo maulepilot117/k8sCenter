@@ -7,7 +7,8 @@ import { getAuthHeaders, seedClusterTarget } from "../helpers.ts";
 /**
  * Release C's two-cluster evidence (U12): AE2 (a preview and apply stay pinned
  * to the cluster they were reviewed against) and AE3 (a remote dashboard shows
- * what it observed and never a manufactured number).
+ * what it observed and never a manufactured number). R-8 (U15) adds the
+ * routed-feature and carve-out capability rows and a node drain call.
  *
  * The single home for Release C's e2e coverage. It needs a registered remote
  * cluster, which scripts/test-remote-capabilities.sh builds: a second cluster
@@ -183,6 +184,32 @@ test.describe.serial("Remote cluster capabilities", () => {
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
+    }
+    // R-8: the features routed to the selected cluster are declared supported,
+    // and the carve-outs that stay local are declared unsupported (U13).
+    for (const id of [
+      "node.drain",
+      "gitops.applications",
+      "velero.backups",
+      "storage.snapshots",
+      "flux.notifications",
+      "alert.rules",
+      "gateway.read",
+      "mesh.routing",
+      "mesh.mtls",
+      "eso.read",
+    ]) {
+      expect(byId.get(id)?.platformSupported, id).toBe(true);
+      expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
+    }
+    for (const id of [
+      "cni.config",
+      "mesh.golden_signals",
+      "eso.history",
+      "eso.metrics",
+    ]) {
+      expect(byId.get(id)?.platformSupported, id).toBe(false);
+      expect(byId.get(id)?.reasonCode, id).toBe("unsupported_platform");
     }
 
     // And the YAML page, opened on the remote cluster, says so before the
@@ -375,6 +402,39 @@ test.describe.serial("Remote cluster capabilities", () => {
     await expect(
       page.locator('[data-widget-id="cpu-tile"]'),
     ).toHaveAttribute("data-widget-state", "coverage-unavailable");
+  });
+
+  test("a drain on the remote is authorized by the remote cluster's RBAC", async ({
+    page,
+  }) => {
+    // A per-run name no real node carries, so no call here can cordon or evict
+    // anything: the drain's first cluster write is the cordon PATCH, which
+    // returns NotFound. That holds even on a remote supplied via
+    // KUBECENTER_REMOTE_CONTEXT whose existing bindings grant more than the
+    // fixture's read-only role.
+    const node = `e2e-no-such-node-${Date.now().toString(36)}`;
+    const drain = async (clusterId: string) =>
+      page.request.post(`/api/v1/resources/nodes/${node}/drain`, {
+        headers: await headersFor(page, clusterId),
+        data: {},
+      });
+
+    // The fixture identity on the remote may read nodes but not update them,
+    // and the drain's access check runs on the target cluster before any task
+    // starts, so the remote refuses it. The detail names the RBAC verb, so a
+    // 403 from anything other than that access check does not pass.
+    const denied = await drain(REMOTE!);
+    expect(denied.status()).toBe(403);
+    expect((await denied.json()).error.detail).toContain(
+      "lacks 'update' on 'nodes'",
+    );
+
+    // The same request on local, where the admin is cluster-admin, passes that
+    // check and starts a task (which then fails on the missing node). The
+    // difference is what shows the 403 came from the remote, not local.
+    const local = await drain("local");
+    expect(local.status()).toBe(202);
+    expect((await local.json()).data.taskID).toBeTruthy();
   });
 
   // Must stay last: see the header.
