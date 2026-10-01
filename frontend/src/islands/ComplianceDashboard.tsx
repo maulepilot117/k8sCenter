@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
+import { RemoteRefreshHint } from "@/components/ui/LiveBadge.tsx";
 import {
   EngineBadge,
   SEVERITY_COLORS,
@@ -210,16 +211,19 @@ export default function ComplianceDashboard() {
               : "Weighted cluster-wide compliance based on policy pass/fail rates."}
           </p>
         </div>
-        {!loading.value && (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={handleRefresh}
-            disabled={refreshing.value}
-          >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
-          </Button>
-        )}
+        <div class="flex items-center gap-2">
+          <RemoteRefreshHint />
+          {!loading.value && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={handleRefresh}
+              disabled={refreshing.value}
+            >
+              {refreshing.value ? "Refreshing..." : "Refresh"}
+            </Button>
+          )}
+        </div>
       </div>
 
       {loading.value && (
