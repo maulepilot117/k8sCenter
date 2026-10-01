@@ -1,5 +1,7 @@
 /** Gateway API types matching backend/internal/gateway/types.go */
 
+import type { SourceCoverage } from "@/lib/k8s-types.ts";
+
 export type GatewayResourceKind =
   | "gatewayclasses"
   | "gateways"
@@ -8,6 +10,19 @@ export type GatewayResourceKind =
   | "tcproutes"
   | "tlsroutes"
   | "udproutes";
+
+/** Display names by resource name, also used to name a failed source. */
+export const GATEWAY_KIND_LABELS: Readonly<
+  Record<GatewayResourceKind, string>
+> = {
+  gatewayclasses: "Gateway Classes",
+  gateways: "Gateways",
+  httproutes: "HTTP Routes",
+  grpcroutes: "gRPC Routes",
+  tcproutes: "TCP Routes",
+  tlsroutes: "TLS Routes",
+  udproutes: "UDP Routes",
+};
 
 export interface GatewayAPIStatus {
   available: boolean;
@@ -24,6 +39,9 @@ export interface GatewayAPISummary {
   tcpRoutes: KindSummary;
   tlsRoutes: KindSummary;
   udpRoutes: KindSummary;
+  /** Each list a remote cluster could not provide, so the counts above
+   * omit it. Absent on local. */
+  coverage?: SourceCoverage[];
 }
 
 export interface KindSummary {
@@ -103,6 +121,9 @@ export interface GatewaySummary {
 
 export interface GatewayDetail extends GatewaySummary {
   attachedRoutes: RouteSummary[];
+  /** Each route list a remote cluster could not provide, so
+   * `attachedRoutes` omits routes of that kind. Absent on local. */
+  coverage?: SourceCoverage[];
 }
 
 export interface HTTPRouteSummary {

@@ -4,6 +4,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
+import { GATEWAY_KIND_LABELS } from "@/lib/gateway-types.ts";
 import { GITOPS_SOURCE_LABELS } from "@/lib/gitops-types.ts";
 import type { SourceCoverage } from "@/lib/k8s-types.ts";
 
@@ -28,15 +29,15 @@ afterEach(() => {
   }
 });
 
-function mount(coverage: SourceCoverage[] | undefined): HTMLElement {
+function mount(
+  coverage: SourceCoverage[] | undefined,
+  labels: Readonly<Record<string, string>> = GITOPS_SOURCE_LABELS,
+): HTMLElement {
   host = document.createElement("div");
   document.body.appendChild(host);
   act(() =>
     render(
-      <SourceCoverageNotice
-        coverage={coverage}
-        labels={GITOPS_SOURCE_LABELS}
-      />,
+      <SourceCoverageNotice coverage={coverage} labels={labels} />,
       host as HTMLElement,
     ),
   );
@@ -73,6 +74,22 @@ test("each failed source gets its own notice", () => {
   expect(root.querySelectorAll('[role="status"]')).toHaveLength(2);
   expect(root.textContent).toContain("Flux Kustomizations");
   expect(root.textContent).toContain("Flux HelmReleases");
+});
+
+test("a failed Gateway API route kind is named by its display name", () => {
+  const root = mount(
+    [
+      {
+        source: "grpcroutes",
+        status: "unavailable",
+        reasonCode: "unreachable",
+      },
+    ],
+    GATEWAY_KIND_LABELS,
+  );
+  expect(root.textContent).toContain(
+    "Could not load gRPC Routes from this cluster",
+  );
 });
 
 test("a list the cluster refused is named as refused, not as unreachable", () => {
