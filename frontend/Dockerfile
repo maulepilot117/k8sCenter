@@ -80,11 +80,17 @@ RUN set -eux; \
 # Per package:
 #   1. Install unpinned, so a Debian patch roll cannot break the build.
 #   2. 7-day cooldown gate -- abort if the installed version was uploaded less
-#      than 7 days ago, matching the global application-layer cooldown.
-#      Debian's signed security pocket is technically exempt, but 7 days of
-#      community catch-time is cheap defense in depth. Source: the upload date
-#      in changelog.Debian.gz, which Debian Policy mandates on every binary
-#      .deb (--no-install-recommends does not skip it).
+#      than 7 days ago, matching the global application-layer cooldown, UNLESS
+#      apt serves that exact version from Debian's signed `<release>-security`
+#      suite. The cooldown policy exempts signed distro security errata: they
+#      are the supply-chain defense, and holding them back seven days held
+#      every release build back with them (2026-10-01: the libssl3t64
+#      3.5.7-1~deb13u3 OpenSSL security update blocked all frontend images).
+#      apt has verified the suite's Release signature by the time
+#      `apt-cache madison` lists it. A young package from any other suite
+#      still fails the build. Source of the upload date: changelog.Debian.gz,
+#      which Debian Policy mandates on every binary .deb
+#      (--no-install-recommends does not skip it).
 #   3. Compare installed against the base's recorded version with
 #      dpkg --compare-versions, which understands epochs and ~-suffixes that a
 #      string comparison would get wrong.
@@ -114,7 +120,6 @@ RUN set -e && \
     apt-get install -y --no-install-recommends \
       libssl3t64 \
       libc6 && \
-    rm -rf /var/lib/apt/lists/* && \
     mkdir -p /patch/usr/lib && \
     for pkg in libssl3t64 libc6; do \
       INSTALLED_VER=$(dpkg-query -W -f='${Version}' "$pkg") && \
@@ -126,13 +131,19 @@ RUN set -e && \
       UPLOAD_TS=$(date -d "$UPLOAD_DATE" +%s) && \
       [ -n "$UPLOAD_TS" ] || { echo "ERROR: 'date -d' failed on '$UPLOAD_DATE'" >&2; exit 1; } && \
       AGE_DAYS=$(( ($(date +%s) - UPLOAD_TS) / 86400 )) && \
-      if [ "$AGE_DAYS" -lt 7 ]; then \
-          echo "ERROR: $pkg $INSTALLED_VER uploaded $AGE_DAYS days ago (< 7-day supply-chain cooldown)." >&2; \
+      FROM_SECURITY=$(apt-cache madison "$pkg" | \
+          awk -F'|' -v v="$INSTALLED_VER" '{gsub(/ /,"",$2)} $2==v && $3 ~ /[a-z]+-security\// {print "yes"; exit}') && \
+      if [ "$AGE_DAYS" -lt 7 ] && [ "$FROM_SECURITY" != "yes" ]; then \
+          echo "ERROR: $pkg $INSTALLED_VER uploaded $AGE_DAYS days ago (< 7-day supply-chain cooldown) and is not served from a Debian -security suite." >&2; \
           echo "  Wait until $(date -d "@$((UPLOAD_TS + 7*86400))" -Iseconds) before rebuilding," >&2; \
           echo "  or temporarily pin $pkg to the previous release." >&2; \
           exit 1; \
       fi && \
-      echo "$pkg $INSTALLED_VER uploaded $AGE_DAYS days ago — passes 7-day cooldown" && \
+      if [ "$AGE_DAYS" -lt 7 ]; then \
+          echo "$pkg $INSTALLED_VER uploaded $AGE_DAYS days ago — exempt from the 7-day cooldown as signed Debian security errata"; \
+      else \
+          echo "$pkg $INSTALLED_VER uploaded $AGE_DAYS days ago — passes 7-day cooldown"; \
+      fi && \
       BASE_VER=$(grep '^Version:' "/tmp/$pkg-orig" | awk '{print $2}') && \
       [ -n "$BASE_VER" ] || { echo "ERROR: failed to extract $pkg Version from /tmp/$pkg-orig" >&2; exit 1; } && \
       if dpkg --compare-versions "$INSTALLED_VER" gt "$BASE_VER"; then \
@@ -145,7 +156,8 @@ RUN set -e && \
         echo "NOTE: distroless base ships $pkg $BASE_VER, Debian offers $INSTALLED_VER — overlay is a no-op for $pkg"; \
         cp "/tmp/$pkg-orig" "/patch/$pkg-status"; \
       fi; \
-    done
+    done && \
+    rm -rf /var/lib/apt/lists/*
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3: production runtime
