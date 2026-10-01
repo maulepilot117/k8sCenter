@@ -11,14 +11,16 @@ import {
 import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
 import ResourceTable, { type Column } from "@/components/ui/ResourceTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
+import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { apiGet } from "@/lib/api.ts";
-import type {
-  AppListResponse,
-  GitOpsStatus,
-  HealthStatus,
-  NormalizedApp,
+import {
+  type AppListResponse,
+  GITOPS_SOURCE_LABELS,
+  type GitOpsStatus,
+  type HealthStatus,
+  type NormalizedApp,
 } from "@/lib/gitops-types.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -52,6 +54,7 @@ export default function GitOpsApplications() {
   const status = useSignal<GitOpsStatus | null>(null);
   const applications = useSignal<NormalizedApp[]>([]);
   const summary = useSignal<AppListResponse["summary"] | null>(null);
+  const coverage = useSignal<AppListResponse["coverage"]>(undefined);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
   const search = useSignal("");
@@ -72,6 +75,7 @@ export default function GitOpsApplications() {
         ? appsRes.data.applications
         : [];
       summary.value = appsRes.data.summary ?? null;
+      coverage.value = appsRes.data.coverage;
       error.value = null;
     } catch {
       error.value = "Failed to load GitOps data";
@@ -162,6 +166,15 @@ export default function GitOpsApplications() {
         {filtered.length} of {applications.value.length} applications &mdash;
         Argo CD &amp; Flux.
       </p>
+
+      {/* A remote list that could not load one source still lists the
+          rest; name the missing source so it is not read as empty. */}
+      {!loading.value && !error.value && (
+        <SourceCoverageNotice
+          coverage={coverage.value}
+          labels={GITOPS_SOURCE_LABELS}
+        />
+      )}
 
       {/* Summary counts */}
       {summary.value && !noEngine && !loading.value && (

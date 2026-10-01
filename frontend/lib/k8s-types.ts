@@ -9,6 +9,23 @@ export interface APIResponse<T> {
   };
 }
 
+/**
+ * One list a remote cluster could not provide, exactly as the backend writes
+ * it (`k8s.SourceCoverage`, R-8 KTD8). Multi-source remote lists carry these
+ * in an optional `coverage` field; it is always absent on the local cluster.
+ *
+ * `status` is a plain string on purpose: a newer backend can send a status
+ * this build has never seen, and anything other than `forbidden` reads as a
+ * failed list.
+ */
+export interface SourceCoverage {
+  /** The list's resource name, e.g. "kustomizations". */
+  source: string;
+  /** "forbidden" when the cluster refused the list, else "unavailable". */
+  status: string;
+  reasonCode: string;
+}
+
 /** RBAC summary from /auth/me — maps resource kinds to allowed verbs. */
 export interface RBACSummary {
   clusterScoped: Record<string, string[]>;
