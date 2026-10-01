@@ -407,18 +407,27 @@ test.describe.serial("Remote cluster capabilities", () => {
   test("a drain on the remote is authorized by the remote cluster's RBAC", async ({
     page,
   }) => {
-    // A node that exists on neither cluster, so no call here can cordon or
-    // evict anything, even on a remote supplied via KUBECENTER_REMOTE_CONTEXT.
+    // A per-run name no real node carries, so no call here can cordon or evict
+    // anything: the drain's first cluster write is the cordon PATCH, which
+    // returns NotFound. That holds even on a remote supplied via
+    // KUBECENTER_REMOTE_CONTEXT whose existing bindings grant more than the
+    // fixture's read-only role.
+    const node = `e2e-no-such-node-${Date.now().toString(36)}`;
     const drain = async (clusterId: string) =>
-      page.request.post("/api/v1/resources/nodes/e2e-no-such-node/drain", {
+      page.request.post(`/api/v1/resources/nodes/${node}/drain`, {
         headers: await headersFor(page, clusterId),
         data: {},
       });
 
     // The fixture identity on the remote may read nodes but not update them,
     // and the drain's access check runs on the target cluster before any task
-    // starts, so the remote refuses it.
-    expect((await drain(REMOTE!)).status()).toBe(403);
+    // starts, so the remote refuses it. The detail names the RBAC verb, so a
+    // 403 from anything other than that access check does not pass.
+    const denied = await drain(REMOTE!);
+    expect(denied.status()).toBe(403);
+    expect((await denied.json()).error.detail).toContain(
+      "lacks 'update' on 'nodes'",
+    );
 
     // The same request on local, where the admin is cluster-admin, passes that
     // check and starts a task (which then fails on the missing node). The
