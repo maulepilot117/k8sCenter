@@ -1,3 +1,5 @@
+import type { SourceCoverage } from "@/lib/k8s-types.ts";
+
 /** Tool identifies which GitOps tool manages a resource. */
 export type Tool = "" | "argocd" | "fluxcd" | "both";
 
@@ -81,7 +83,18 @@ export interface AppListMetadata {
 export interface AppListResponse {
   applications: NormalizedApp[];
   summary: AppListMetadata;
+  /** Each list a remote cluster could not provide. Absent on local. */
+  coverage?: SourceCoverage[];
 }
+
+/** Display names for the application lists `coverage` can name. */
+export const GITOPS_SOURCE_LABELS: Readonly<
+  Record<"applications" | "kustomizations" | "helmreleases", string>
+> = {
+  applications: "Argo CD Applications",
+  kustomizations: "Flux Kustomizations",
+  helmreleases: "Flux HelmReleases",
+};
 
 export interface NormalizedAppSet {
   id: string;

@@ -2,9 +2,13 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import ConditionsTable from "@/components/gateway/ConditionsTable.tsx";
 import { ProtocolBadge } from "@/components/ui/GatewayBadges.tsx";
+import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
-import type { GatewayDetail } from "@/lib/gateway-types.ts";
+import {
+  GATEWAY_KIND_LABELS,
+  type GatewayDetail,
+} from "@/lib/gateway-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface Props {
@@ -182,6 +186,13 @@ export default function GatewayDetailIsland({ namespace, name }: Props) {
           </div>
         </div>
       )}
+
+      {/* A remote route kind that could not be listed is missing from the
+          attached routes below; name it, even when none are attached. */}
+      <SourceCoverageNotice
+        coverage={gw.coverage}
+        labels={GATEWAY_KIND_LABELS}
+      />
 
       {/* Attached Routes */}
       {gw.attachedRoutes && gw.attachedRoutes.length > 0 && (

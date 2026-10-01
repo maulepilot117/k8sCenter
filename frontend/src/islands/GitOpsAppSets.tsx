@@ -5,10 +5,16 @@ import { SYNC_COLORS } from "@/components/ui/GitOpsBadges.tsx";
 import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
 import ResourceTable, { type Column } from "@/components/ui/ResourceTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
+import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { apiGet } from "@/lib/api.ts";
-import type { AppListMetadata, NormalizedAppSet } from "@/lib/gitops-types.ts";
+import {
+  type AppListMetadata,
+  GITOPS_SOURCE_LABELS,
+  type NormalizedAppSet,
+} from "@/lib/gitops-types.ts";
+import type { SourceCoverage } from "@/lib/k8s-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -16,6 +22,8 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 interface AppSetListResponse {
   applicationSets: NormalizedAppSet[];
   summary: AppListMetadata;
+  /** Each list a remote cluster could not provide. Absent on local. */
+  coverage?: SourceCoverage[];
 }
 
 const PAGE_SIZE = 100;
@@ -72,6 +80,7 @@ const RT_COLUMNS: Column[] = [
 export default function GitOpsAppSets() {
   const appSets = useSignal<NormalizedAppSet[]>([]);
   const summary = useSignal<AppListMetadata | null>(null);
+  const coverage = useSignal<SourceCoverage[] | undefined>(undefined);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
   const search = useSignal("");
@@ -87,6 +96,7 @@ export default function GitOpsAppSets() {
         ? res.data.applicationSets
         : [];
       summary.value = res.data.summary ?? null;
+      coverage.value = res.data.coverage;
       error.value = null;
     } catch {
       error.value = "Failed to load ApplicationSets";
@@ -165,6 +175,16 @@ export default function GitOpsAppSets() {
       <p class="text-sm text-text-muted mb-6">
         Argo CD ApplicationSet generators and their managed applications.
       </p>
+
+      {/* A remote cluster that could not list the child applications still
+          lists the ApplicationSets; name the missing list so their app
+          counts are not read as zero. */}
+      {!loading.value && !error.value && (
+        <SourceCoverageNotice
+          coverage={coverage.value}
+          labels={GITOPS_SOURCE_LABELS}
+        />
+      )}
 
       <div class="mb-4 flex flex-wrap items-center gap-4">
         <div class="flex-1 max-w-xs">

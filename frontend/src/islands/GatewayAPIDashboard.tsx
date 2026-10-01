@@ -1,34 +1,29 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
+import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { apiGet } from "@/lib/api.ts";
-import type {
-  GatewayAPIStatus,
-  GatewayAPISummary,
-  GatewayClassSummary,
-  GatewayListData,
-  GatewayResourceKind,
-  GatewaySummary,
-  HTTPRouteSummary,
-  KindSummary,
-  RouteSummary,
+import {
+  GATEWAY_KIND_LABELS,
+  type GatewayAPIStatus,
+  type GatewayAPISummary,
+  type GatewayClassSummary,
+  type GatewayListData,
+  type GatewayResourceKind,
+  type GatewaySummary,
+  type HTTPRouteSummary,
+  type KindSummary,
+  type RouteSummary,
 } from "@/lib/gateway-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
 
-const KIND_LABELS: Record<GatewayResourceKind, string> = {
-  gatewayclasses: "Gateway Classes",
-  gateways: "Gateways",
-  httproutes: "HTTP Routes",
-  grpcroutes: "gRPC Routes",
-  tcproutes: "TCP Routes",
-  tlsroutes: "TLS Routes",
-  udproutes: "UDP Routes",
-};
-
-const SUMMARY_KEYS: Record<GatewayResourceKind, keyof GatewayAPISummary> = {
+const SUMMARY_KEYS: Record<
+  GatewayResourceKind,
+  Exclude<keyof GatewayAPISummary, "coverage">
+> = {
   gatewayclasses: "gatewayClasses",
   gateways: "gateways",
   httproutes: "httpRoutes",
@@ -102,10 +97,12 @@ export default function GatewayAPIDashboard() {
   const activeKind = useSignal<GatewayResourceKind | null>(null);
   const listData = useSignal<GatewayListData | null>(null);
   const listLoading = useSignal(false);
+  const listError = useSignal("");
   const search = useSignal("");
 
   async function fetchList(kind: GatewayResourceKind) {
     listLoading.value = true;
+    listError.value = "";
     try {
       let endpoint: string;
       switch (kind) {
@@ -131,7 +128,10 @@ export default function GatewayAPIDashboard() {
       // biome-ignore lint/suspicious/noExplicitAny: ported verbatim from Fresh
       listData.value = { kind, items } as any;
     } catch {
-      listData.value = { kind, items: [] } as GatewayListData;
+      // An empty list here would read as "none exist"; a remote cluster
+      // that could not list this kind must say so instead (R-8 R8).
+      listData.value = null;
+      listError.value = `Failed to load ${GATEWAY_KIND_LABELS[kind]}`;
     }
     listLoading.value = false;
   }
@@ -141,20 +141,6 @@ export default function GatewayAPIDashboard() {
     search.value = "";
     fetchList(kind);
   }
-
-  // URL state sync
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    if (activeKind.value) {
-      const url = new URL(globalThis.location.href);
-      url.searchParams.set("kind", activeKind.value);
-      globalThis.history.replaceState(null, "", url.toString());
-    } else {
-      const url = new URL(globalThis.location.href);
-      url.searchParams.delete("kind");
-      globalThis.history.replaceState(null, "", url.toString());
-    }
-  }, [activeKind.value]);
 
   // Initial load
   useEffect(() => {
@@ -173,7 +159,7 @@ export default function GatewayAPIDashboard() {
         if (
           kindParam &&
           status.value?.available &&
-          Object.keys(KIND_LABELS).includes(kindParam)
+          Object.keys(GATEWAY_KIND_LABELS).includes(kindParam)
         ) {
           activeKind.value = kindParam;
           fetchList(kindParam);
@@ -185,6 +171,22 @@ export default function GatewayAPIDashboard() {
         loading.value = false;
       });
   }, []);
+
+  // URL state sync. Declared after the initial load on purpose: effects run
+  // in order, and this one clears `?kind=` while no kind is active, so it
+  // must run after the initial load has read the deep-linked kind.
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    if (activeKind.value) {
+      const url = new URL(globalThis.location.href);
+      url.searchParams.set("kind", activeKind.value);
+      globalThis.history.replaceState(null, "", url.toString());
+    } else {
+      const url = new URL(globalThis.location.href);
+      url.searchParams.delete("kind");
+      globalThis.history.replaceState(null, "", url.toString());
+    }
+  }, [activeKind.value]);
 
   if (!IS_BROWSER) return null;
 
@@ -236,6 +238,7 @@ export default function GatewayAPIDashboard() {
           onClick={() => {
             activeKind.value = null;
             listData.value = null;
+            listError.value = "";
             search.value = "";
           }}
           style={{
@@ -282,7 +285,7 @@ export default function GatewayAPIDashboard() {
             margin: "0 0 16px 0",
           }}
         >
-          {KIND_LABELS[activeKind.value]}
+          {GATEWAY_KIND_LABELS[activeKind.value]}
         </h2>
 
         <div
@@ -336,6 +339,18 @@ export default function GatewayAPIDashboard() {
           </div>
         )}
 
+        {!listLoading.value && listError.value && (
+          <p
+            style={{
+              fontSize: "14px",
+              color: "var(--error)",
+              padding: "16px 0",
+            }}
+          >
+            {listError.value}
+          </p>
+        )}
+
         {!listLoading.value &&
           listData.value &&
           renderTable(
@@ -350,7 +365,7 @@ export default function GatewayAPIDashboard() {
 
   // Overview mode
   const installedKinds = (status.value.installedKinds ?? []) as string[];
-  const allKinds = Object.keys(KIND_LABELS) as GatewayResourceKind[];
+  const allKinds = Object.keys(GATEWAY_KIND_LABELS) as GatewayResourceKind[];
   const visibleKinds = allKinds.filter((k) => installedKinds.includes(k));
 
   if (visibleKinds.length === 0) {
@@ -374,77 +389,85 @@ export default function GatewayAPIDashboard() {
   }
 
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-        gap: "16px",
-      }}
-    >
-      {visibleKinds.map((kind) => {
-        const kindSummary: KindSummary = summary.value
-          ? summary.value[SUMMARY_KEYS[kind]]
-          : { total: 0, healthy: 0, degraded: 0 };
-        return (
-          <button
-            type="button"
-            key={kind}
-            onClick={() => handleCardClick(kind)}
-            style={{
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              width: "100%",
-              padding: 0,
-            }}
-          >
-            <WidgetShell
-              title={KIND_LABELS[kind]}
-              style={{ textAlign: "left" }}
+    <>
+      {/* A remote summary that could not list a kind still counts the
+          rest; name the missing kind so its count is not read as zero. */}
+      <SourceCoverageNotice
+        coverage={summary.value?.coverage}
+        labels={GATEWAY_KIND_LABELS}
+      />
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+          gap: "16px",
+        }}
+      >
+        {visibleKinds.map((kind) => {
+          const kindSummary: KindSummary = summary.value
+            ? summary.value[SUMMARY_KEYS[kind]]
+            : { total: 0, healthy: 0, degraded: 0 };
+          return (
+            <button
+              type="button"
+              key={kind}
+              onClick={() => handleCardClick(kind)}
+              style={{
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                width: "100%",
+                padding: 0,
+              }}
             >
-              <div
-                style={{
-                  fontSize: "24px",
-                  fontWeight: 700,
-                  color: "var(--text-primary)",
-                  fontVariantNumeric: "tabular-nums",
-                  lineHeight: 1.2,
-                }}
+              <WidgetShell
+                title={GATEWAY_KIND_LABELS[kind]}
+                style={{ textAlign: "left" }}
               >
-                {kindSummary.total}
-              </div>
-              <div
-                style={{
-                  marginTop: "6px",
-                  fontSize: "12px",
-                  display: "flex",
-                  gap: "8px",
-                  flexWrap: "wrap",
-                }}
-              >
-                {kindSummary.healthy > 0 && (
-                  <span style={{ color: "var(--success)" }}>
-                    {kindSummary.healthy} healthy
-                  </span>
-                )}
-                {kindSummary.degraded > 0 && (
-                  <span style={{ color: "var(--error)" }}>
-                    {kindSummary.degraded} degraded
-                  </span>
-                )}
-                {kindSummary.healthy === 0 &&
-                  kindSummary.degraded === 0 &&
-                  kindSummary.total > 0 && (
-                    <span style={{ color: "var(--text-muted)" }}>
-                      {kindSummary.total} total
+                <div
+                  style={{
+                    fontSize: "24px",
+                    fontWeight: 700,
+                    color: "var(--text-primary)",
+                    fontVariantNumeric: "tabular-nums",
+                    lineHeight: 1.2,
+                  }}
+                >
+                  {kindSummary.total}
+                </div>
+                <div
+                  style={{
+                    marginTop: "6px",
+                    fontSize: "12px",
+                    display: "flex",
+                    gap: "8px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  {kindSummary.healthy > 0 && (
+                    <span style={{ color: "var(--success)" }}>
+                      {kindSummary.healthy} healthy
                     </span>
                   )}
-              </div>
-            </WidgetShell>
-          </button>
-        );
-      })}
-    </div>
+                  {kindSummary.degraded > 0 && (
+                    <span style={{ color: "var(--error)" }}>
+                      {kindSummary.degraded} degraded
+                    </span>
+                  )}
+                  {kindSummary.healthy === 0 &&
+                    kindSummary.degraded === 0 &&
+                    kindSummary.total > 0 && (
+                      <span style={{ color: "var(--text-muted)" }}>
+                        {kindSummary.total} total
+                      </span>
+                    )}
+                </div>
+              </WidgetShell>
+            </button>
+          );
+        })}
+      </div>
+    </>
   );
 }
 
@@ -837,7 +860,7 @@ function renderRoutesTable(kind: GatewayResourceKind, items: RouteSummary[]) {
   if (items.length === 0) {
     return (
       <EmptyTable
-        message={`No ${KIND_LABELS[kind]?.toLowerCase() ?? "routes"} found.`}
+        message={`No ${GATEWAY_KIND_LABELS[kind]?.toLowerCase() ?? "routes"} found.`}
       />
     );
   }
