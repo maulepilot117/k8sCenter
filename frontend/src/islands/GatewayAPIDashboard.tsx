@@ -97,10 +97,12 @@ export default function GatewayAPIDashboard() {
   const activeKind = useSignal<GatewayResourceKind | null>(null);
   const listData = useSignal<GatewayListData | null>(null);
   const listLoading = useSignal(false);
+  const listError = useSignal("");
   const search = useSignal("");
 
   async function fetchList(kind: GatewayResourceKind) {
     listLoading.value = true;
+    listError.value = "";
     try {
       let endpoint: string;
       switch (kind) {
@@ -126,7 +128,10 @@ export default function GatewayAPIDashboard() {
       // biome-ignore lint/suspicious/noExplicitAny: ported verbatim from Fresh
       listData.value = { kind, items } as any;
     } catch {
-      listData.value = { kind, items: [] } as GatewayListData;
+      // An empty list here would read as "none exist"; a remote cluster
+      // that could not list this kind must say so instead (R-8 R8).
+      listData.value = null;
+      listError.value = `Failed to load ${GATEWAY_KIND_LABELS[kind]}`;
     }
     listLoading.value = false;
   }
@@ -136,20 +141,6 @@ export default function GatewayAPIDashboard() {
     search.value = "";
     fetchList(kind);
   }
-
-  // URL state sync
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    if (activeKind.value) {
-      const url = new URL(globalThis.location.href);
-      url.searchParams.set("kind", activeKind.value);
-      globalThis.history.replaceState(null, "", url.toString());
-    } else {
-      const url = new URL(globalThis.location.href);
-      url.searchParams.delete("kind");
-      globalThis.history.replaceState(null, "", url.toString());
-    }
-  }, [activeKind.value]);
 
   // Initial load
   useEffect(() => {
@@ -180,6 +171,22 @@ export default function GatewayAPIDashboard() {
         loading.value = false;
       });
   }, []);
+
+  // URL state sync. Declared after the initial load on purpose: effects run
+  // in order, and this one clears `?kind=` while no kind is active, so it
+  // must run after the initial load has read the deep-linked kind.
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    if (activeKind.value) {
+      const url = new URL(globalThis.location.href);
+      url.searchParams.set("kind", activeKind.value);
+      globalThis.history.replaceState(null, "", url.toString());
+    } else {
+      const url = new URL(globalThis.location.href);
+      url.searchParams.delete("kind");
+      globalThis.history.replaceState(null, "", url.toString());
+    }
+  }, [activeKind.value]);
 
   if (!IS_BROWSER) return null;
 
@@ -231,6 +238,7 @@ export default function GatewayAPIDashboard() {
           onClick={() => {
             activeKind.value = null;
             listData.value = null;
+            listError.value = "";
             search.value = "";
           }}
           style={{
@@ -329,6 +337,18 @@ export default function GatewayAPIDashboard() {
           >
             <Spinner />
           </div>
+        )}
+
+        {!listLoading.value && listError.value && (
+          <p
+            style={{
+              fontSize: "14px",
+              color: "var(--error)",
+              padding: "16px 0",
+            }}
+          >
+            {listError.value}
+          </p>
         )}
 
         {!listLoading.value &&
