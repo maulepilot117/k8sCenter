@@ -399,6 +399,7 @@ func main() {
 		Clients:     clusterRouter,
 		Presence:    remotePresence,
 	}
+	clusterRouter.RegisterEvictHook(storageHandler.EvictRemoteCache)
 
 	// Connect to Hubble Relay if detected
 	var hubbleClient *networking.HubbleClient

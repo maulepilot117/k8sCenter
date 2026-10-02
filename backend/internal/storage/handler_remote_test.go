@@ -42,9 +42,10 @@ const (
 	remoteHost = "10.20.30.40"
 )
 
-// fakeCluster is one fake cluster: its discovery and dynamic client.
+// fakeCluster is one fake cluster: its discovery, typed and dynamic client.
 type fakeCluster struct {
 	disc *fakediscovery.FakeDiscovery
+	kube *kfake.Clientset
 	dyn  *dynfake.FakeDynamicClient
 }
 
@@ -67,10 +68,11 @@ func (f *fakeClients) cluster(id string) (*fakeCluster, error) {
 }
 
 func (f *fakeClients) ClientForCluster(_ context.Context, id, _ string, _ []string) (kubernetes.Interface, error) {
-	if _, err := f.cluster(id); err != nil {
+	c, err := f.cluster(id)
+	if err != nil {
 		return nil, err
 	}
-	return kfake.NewSimpleClientset(), nil
+	return c.kube, nil
 }
 
 func (f *fakeClients) DynamicClientForCluster(_ context.Context, id, _ string, _ []string) (dynamic.Interface, error) {
@@ -138,7 +140,7 @@ func newFakeCluster(t *testing.T, installed bool, objs ...*unstructured.Unstruct
 			t.Fatalf("seed %s: %v", o.GetName(), err)
 		}
 	}
-	return &fakeCluster{disc: &fakediscovery.FakeDiscovery{Fake: &k8stesting.Fake{Resources: discoveryLists(installed)}}, dyn: dyn}
+	return &fakeCluster{disc: &fakediscovery.FakeDiscovery{Fake: &k8stesting.Fake{Resources: discoveryLists(installed)}}, kube: kfake.NewSimpleClientset(), dyn: dyn}
 }
 
 type recordingAudit struct {
@@ -190,7 +192,10 @@ func newHarness(t *testing.T, remoteInstalled bool, remoteObjs ...*unstructured.
 	return hs
 }
 
-func (hs *harness) localActions() int { return len(hs.clients.clusters[localCluster].dyn.Actions()) }
+func (hs *harness) localActions() int {
+	local := hs.clients.clusters[localCluster]
+	return len(local.dyn.Actions()) + len(local.kube.Actions())
+}
 
 func (hs *harness) dyn(id string) *dynfake.FakeDynamicClient { return hs.clients.clusters[id].dyn }
 
@@ -204,7 +209,15 @@ func countVerb(dyn *dynfake.FakeDynamicClient, verb, resource string) int {
 	return n
 }
 
+// adminUser is the identity do sends.
+var adminUser = &auth.User{Username: "admin", KubernetesUsername: "admin", KubernetesGroups: []string{"system:masters"}, Roles: []string{"admin"}}
+
 func do(t *testing.T, clusterID, method string, h http.HandlerFunc, params map[string]string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doAs(t, adminUser, clusterID, method, h, params, body)
+}
+
+func doAs(t *testing.T, user *auth.User, clusterID, method string, h http.HandlerFunc, params map[string]string, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, "/storage", strings.NewReader(body))
 	rctx := chi.NewRouteContext()
@@ -212,7 +225,7 @@ func do(t *testing.T, clusterID, method string, h http.HandlerFunc, params map[s
 		rctx.URLParams.Add(k, v)
 	}
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
-	ctx = auth.ContextWithUser(ctx, &auth.User{Username: "admin", KubernetesUsername: "admin", KubernetesGroups: []string{"system:masters"}, Roles: []string{"admin"}})
+	ctx = auth.ContextWithUser(ctx, user)
 	ctx = middleware.WithClusterID(ctx, clusterID)
 	rr := httptest.NewRecorder()
 	h(rr, req.WithContext(ctx))

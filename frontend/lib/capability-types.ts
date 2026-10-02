@@ -69,6 +69,7 @@ export const CAPABILITY_OPERATION_IDS = [
   "gitops.applications",
   "velero.backups",
   "storage.snapshots",
+  "storage.classes",
   "flux.notifications",
   "alert.rules",
   "gateway.read",

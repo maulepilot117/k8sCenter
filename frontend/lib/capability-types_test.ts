@@ -99,6 +99,7 @@ test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistenc
     "node.drain",
     "pod.exec",
     "resources.counts",
+    "storage.classes",
     "storage.snapshots",
     "topology.graph",
     "velero.backups",
