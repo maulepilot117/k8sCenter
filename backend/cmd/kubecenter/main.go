@@ -490,11 +490,12 @@ func main() {
 		policyHandler = &policy.Handler{
 			K8sClient:     k8sClient,
 			Discoverer:    policyDiscoverer,
-			ClusterRouter: clusterRouter,
-			CRDDiscovery:  crdDiscovery,
 			AccessChecker: accessChecker,
 			Logger:        logger,
+			Clients:       clusterRouter,
+			Presence:      remotePresence,
 		}
+		clusterRouter.RegisterEvictHook(policyHandler.EvictRemoteCache)
 
 		// Wire Policy CRD watches — Kyverno policies and reports, Gatekeeper constraint templates
 		policyDiscoverer.SetOnChange(func(kyvernoAvailable, gatekeeperAvailable bool) {

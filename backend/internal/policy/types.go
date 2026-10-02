@@ -27,6 +27,11 @@ type EngineStatus struct {
 	Kyverno     *EngineDetail `json:"kyverno,omitempty"`
 	Gatekeeper  *EngineDetail `json:"gatekeeper,omitempty"`
 	LastChecked string        `json:"lastChecked"`
+	// Reason says why no engine was detected on a remote cluster, from
+	// k8s.ReasonCode: discovery_missing when neither engine is installed
+	// there, or unreachable, credentials_invalid, discovery_unavailable ...
+	// when it could not be told (R-8 KTD5). Empty on the local cluster.
+	Reason string `json:"reason,omitempty"`
 }
 
 // EngineDetail describes a single policy engine's availability.

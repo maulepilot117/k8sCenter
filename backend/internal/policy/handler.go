@@ -15,6 +15,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
@@ -22,21 +23,31 @@ import (
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
-// Handler serves policy HTTP endpoints.
+// Handler serves policy HTTP endpoints for the cluster each request selects.
+// The local cluster is read through the service-account cache below; a
+// remote cluster is read as the requesting identity through Clients and
+// cached per (cluster, identity) in remote.go (R-8).
 type Handler struct {
 	K8sClient       *k8s.ClientFactory
 	Discoverer      *PolicyDiscoverer
-	ClusterRouter   *k8s.ClusterRouter
-	CRDDiscovery    *k8s.CRDDiscovery
 	AccessChecker   *resources.AccessChecker
 	ComplianceStore *store.ComplianceStore
 	NotifService    *notifications.NotificationService
 	Logger          *slog.Logger
+	// Clients resolves per-user clients and schema for a remote cluster.
+	Clients k8s.ClusterClients
+	// Presence answers whether an engine's API is served on a remote
+	// cluster, as the requesting identity sees its discovery.
+	Presence *k8s.Presence
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cachedData *cachedPolicyData
 	cacheGen   uint64 // incremented on invalidation; prevents stale writes
+
+	remoteOnce       sync.Once
+	remote           *remotecache.Cache[*remoteData]
+	remoteDiscovered *remotecache.Cache[*discovered]
 }
 
 type cachedPolicyData struct {
@@ -106,14 +117,16 @@ func (h *Handler) InvalidateCache() {
 	}
 }
 
-// doFetch queries both engines based on discovery status and merges results.
-// It uses the service account's dynamic client for full cluster visibility.
+// doFetch queries both engines of the local cluster based on discovery status
+// and merges results. It uses the service account's dynamic client for full
+// cluster visibility.
 func (h *Handler) doFetch(ctx context.Context) (*cachedPolicyData, error) {
 	// Capture current generation to detect concurrent invalidations.
 	h.cacheMu.RLock()
 	gen := h.cacheGen
 	h.cacheMu.RUnlock()
 
+	// nolint:cluster-routing local path: dynClient backs the local-cluster cache and the local compliance recorder; remote reads go through fetchRemote as the user.
 	dynClient := h.K8sClient.BaseDynamicClient()
 
 	status := h.Discoverer.Status()
@@ -206,7 +219,9 @@ func (h *Handler) FetchUnfiltered(ctx context.Context) ([]NormalizedPolicy, []No
 	return h.fetchPoliciesAndViolations(ctx)
 }
 
-// HandleStatus returns the policy engine discovery status.
+// HandleStatus returns the policy engine discovery status of the request's
+// cluster. A remote cluster whose engines cannot be told keeps the negative
+// detected value and names why in reason (R-8 KTD5).
 // GET /api/v1/policies/status
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
@@ -214,7 +229,14 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := h.Discoverer.Status()
+	status, err := h.clusterStatus(r.Context(), user)
+	if err != nil {
+		status = EngineStatus{
+			Detected:    EngineNone,
+			Reason:      string(k8s.RemoteReason(err)),
+			LastChecked: time.Now().UTC().Format(time.RFC3339),
+		}
+	}
 
 	// Strip namespace details for non-admin users
 	if !auth.IsAdmin(user) {
@@ -241,10 +263,9 @@ func (h *Handler) HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policies, violations, err := h.fetchPoliciesAndViolations(r.Context())
+	policies, violations, err := h.load(r.Context(), user)
 	if err != nil {
-		h.Logger.Error("failed to fetch policies", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch policies", "")
+		h.writeLoadError(w, r, err, "failed to fetch policies")
 		return
 	}
 
@@ -284,10 +305,9 @@ func (h *Handler) HandleListViolations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, violations, err := h.fetchPoliciesAndViolations(r.Context())
+	_, violations, err := h.load(r.Context(), user)
 	if err != nil {
-		h.Logger.Error("failed to fetch violations", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch violations", "")
+		h.writeLoadError(w, r, err, "failed to fetch violations")
 		return
 	}
 
@@ -320,10 +340,9 @@ func (h *Handler) HandleCompliance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policies, violations, err := h.fetchPoliciesAndViolations(r.Context())
+	policies, violations, err := h.load(r.Context(), user)
 	if err != nil {
-		h.Logger.Error("failed to fetch policy data", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to compute compliance", "")
+		h.writeLoadError(w, r, err, "failed to compute compliance")
 		return
 	}
 
@@ -348,9 +367,19 @@ func (h *Handler) HandleCompliance(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleComplianceHistory returns historical compliance score snapshots.
+// Snapshots are taken by the ComplianceRecorder of the local cluster only,
+// so a remote selection is refused rather than answered with the local
+// cluster's trend (R-8 R14, #530).
 // GET /api/v1/policies/compliance/history?days=30
 func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request) {
 	if _, ok := httputil.RequireUser(w, r); !ok {
+		return
+	}
+
+	if !isLocal(r.Context()) {
+		httputil.WriteErrorWithReason(w, http.StatusNotImplemented,
+			"compliance history is recorded for the local cluster only",
+			"remote_history_unsupported", nil)
 		return
 	}
 
@@ -372,9 +401,7 @@ func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request
 		days = 90
 	}
 
-	clusterID := "local" // v1: local cluster only
-
-	snapshots, err := h.ComplianceStore.QueryHistory(r.Context(), clusterID, days)
+	snapshots, err := h.ComplianceStore.QueryHistory(r.Context(), k8s.LocalClusterID, days)
 	if err != nil {
 		h.Logger.Error("failed to query compliance history", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to query compliance history", "")
