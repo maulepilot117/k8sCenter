@@ -13,7 +13,13 @@
  * rather than a review checklist line.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,13 +35,13 @@ const TEST_FILE = /\.(spec|test)\.[cm]?[jt]sx?$/;
 
 /**
  * Directories that hold tooling output or dependencies, never authored specs.
- * `playwright` holds the saved auth state.
+ * Kept to generated trees: anything an author could save a spec into (the
+ * auth-state directory `playwright/` included) is still searched.
  */
 const SKIP_DIRS = new Set([
   "node_modules",
   "playwright-report",
   "test-results",
-  "playwright",
   "blob-report",
 ]);
 
@@ -43,7 +49,11 @@ export interface E2eSpecCheck {
   ok: boolean;
   /** Absolute testDir resolved from the config, or null if unreadable. */
   testDir: string | null;
-  /** Spec files outside testDir, relative to the e2e directory. */
+  /**
+   * Spec files Playwright will not collect, relative to the e2e directory:
+   * those outside testDir, and symlinked specs or directories anywhere
+   * (Playwright's collector does not follow symlinks), suffixed " (symlink)".
+   */
   offenders: string[];
   /** Number of spec files found inside testDir. */
   specsInTestDir: number;
@@ -61,21 +71,45 @@ export interface E2eSpecCheck {
  * `projects`.
  */
 export function readTestDir(configSource: string): string | null {
-  const projectsAt = configSource.search(/\bprojects\s*:/);
-  const head =
-    projectsAt === -1 ? configSource : configSource.slice(0, projectsAt);
+  // Drop comments first, so a commented-out key or a comment mentioning
+  // `projects:` cannot decide the answer. Only whole-line `//` comments are
+  // stripped: a trailing `//` may sit inside a string such as a URL.
+  const code = configSource
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const projectsAt = code.search(/\bprojects\s*:/);
+  const head = projectsAt === -1 ? code : code.slice(0, projectsAt);
   const match = head.match(/\btestDir\s*:\s*["'`]([^"'`]+)["'`]/);
   return match ? match[1] : null;
 }
 
-function walk(dir: string, out: string[]): void {
+interface Walked {
+  /** Real (non-symlink) spec files. */
+  specs: string[];
+  /** Symlinks to a spec file or to a directory. */
+  symlinks: string[];
+}
+
+function walk(dir: string, out: Walked): void {
   for (const entry of readdirSync(dir)) {
     if (SKIP_DIRS.has(entry)) continue;
     const full = join(dir, entry);
-    if (statSync(full).isDirectory()) {
+    const info = lstatSync(full);
+    if (info.isSymbolicLink()) {
+      // Not followed: Playwright's collector skips symlinks, so whatever
+      // they point at never runs. A dangling link cannot be stat'ed; count
+      // it like a directory link, which is never collected either.
+      let isDir = true;
+      try {
+        isDir = statSync(full).isDirectory();
+      } catch {
+        // dangling link
+      }
+      if (isDir || TEST_FILE.test(entry)) out.symlinks.push(full);
+    } else if (info.isDirectory()) {
       walk(full, out);
     } else if (TEST_FILE.test(entry)) {
-      out.push(full);
+      out.specs.push(full);
     }
   }
 }
@@ -105,17 +139,21 @@ export function checkE2eSpecs(e2eDir: string = DEFAULT_E2E_DIR): E2eSpecCheck {
   }
   const testDir = resolve(e2eDir, declared);
 
-  const specs: string[] = [];
-  walk(e2eDir, specs);
+  const walked: Walked = { specs: [], symlinks: [] };
+  walk(e2eDir, walked);
 
+  const display = (p: string) => relative(e2eDir, p).split(sep).join("/");
   const offenders: string[] = [];
   let specsInTestDir = 0;
-  for (const spec of specs) {
+  for (const spec of walked.specs) {
     if (spec.startsWith(testDir + sep)) {
       specsInTestDir++;
     } else {
-      offenders.push(relative(e2eDir, spec).split(sep).join("/"));
+      offenders.push(display(spec));
     }
+  }
+  for (const link of walked.symlinks) {
+    offenders.push(`${display(link)} (symlink)`);
   }
   offenders.sort();
 
@@ -141,13 +179,14 @@ function main(): void {
 
   if (result.offenders.length > 0) {
     console.error(
-      `E2E spec guard: these spec files are outside Playwright's testDir (${result.testDir}):`,
+      `E2E spec guard: Playwright will not collect these (testDir is ${result.testDir}):`,
     );
     for (const f of result.offenders) console.error(`  e2e/${f}`);
     console.error(
       "Playwright never collects them, so they never run and nothing fails. " +
-        "Move them under e2e/tests/ and import from ../fixtures/base.ts and " +
-        "../helpers.ts like the other specs.",
+        "Move them under e2e/tests/ as real files (Playwright does not follow " +
+        "symlinks) and import from ../fixtures/base.ts and ../helpers.ts like " +
+        "the other specs.",
     );
     process.exit(1);
   }

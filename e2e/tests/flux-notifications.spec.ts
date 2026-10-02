@@ -1,6 +1,5 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
-import { getAuthHeaders } from "../helpers.ts";
 
 /**
  * Flux notification-controller UI: Providers, Alerts and Receivers.
@@ -36,22 +35,29 @@ const TABS = [
 
 const BANNER = "Flux notification-controller not detected";
 
-/** Whether the backend reports the notification-controller available. */
-async function controllerAvailable(page: Page): Promise<boolean> {
-  const res = await page.request.get("/api/v1/gitops/notifications/status", {
-    headers: await getAuthHeaders(page),
-  });
-  expect(res.ok(), `notification status: ${res.status()}`).toBe(true);
-  return (await res.json()).data?.available === true;
-}
-
-/** Open a tab and wait for its island to finish loading. */
-async function openTab(page: Page, tab: string) {
+/**
+ * Open a tab, wait for its island to finish loading, and return whether the
+ * backend reported the notification-controller available.
+ *
+ * The answer comes from the page's own status request rather than a second
+ * one: every /gitops route shares the wizard/YAML rate-limit bucket with the
+ * rest of the suite, and an extra probe per test is what tipped it into 429s
+ * (docs/solutions/yaml-rate-limiter-e2e-flake.md).
+ */
+async function openTab(page: Page, tab: string): Promise<boolean> {
+  const status = page.waitForResponse(
+    (r) =>
+      new URL(r.url()).pathname === "/api/v1/gitops/notifications/status" &&
+      r.request().method() === "GET",
+  );
   await page.goto(`/gitops/notifications?tab=${tab}`);
+  const res = await status;
+  expect(res.ok(), `notification status: ${res.status()}`).toBe(true);
   // The header's Refresh button renders only once the first fetch settles.
   await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible({
     timeout: 15_000,
   });
+  return (await res.json()).data?.available === true;
 }
 
 function tabHeading(page: Page, name: string) {
@@ -120,16 +126,12 @@ test.describe("Flux notifications", () => {
 
   // ── Per-tab chrome ──────────────────────────────────────────────
 
-  test("shows each tab's description", async ({ page }) => {
+  test("shows each tab's description and an enabled Refresh button", async ({
+    page,
+  }) => {
     for (const { tab, description } of TABS) {
       await openTab(page, tab);
       await expect(page.getByText(description)).toBeVisible();
-    }
-  });
-
-  test("shows an enabled Refresh button on each tab", async ({ page }) => {
-    for (const { tab } of TABS) {
-      await openTab(page, tab);
       await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
     }
   });
@@ -139,14 +141,12 @@ test.describe("Flux notifications", () => {
   test("shows the not-detected banner and disables Create when the controller is absent", async ({
     page,
   }) => {
-    await page.goto("/gitops/notifications");
-    test.skip(
-      await controllerAvailable(page),
-      "Flux notification-controller is installed on this cluster",
-    );
-
     for (const { tab, kind } of TABS) {
-      await openTab(page, tab);
+      const available = await openTab(page, tab);
+      test.skip(
+        available,
+        "Flux notification-controller is installed on this cluster",
+      );
       await expect(page.getByText(BANNER)).toBeVisible();
       await expect(
         page.getByRole("button", { name: `Create ${kind}`, exact: true }),
@@ -162,17 +162,17 @@ test.describe("Flux notifications", () => {
   // ── Controller present ──────────────────────────────────────────
 
   test.describe("with the controller installed", () => {
-    test.beforeEach(async ({ page }) => {
-      await page.goto("/gitops/notifications");
+    // Each test opens its tab first and skips on the status that load
+    // reported, so detection costs no extra request.
+    const requireController = (available: boolean) =>
       test.skip(
-        !(await controllerAvailable(page)),
+        !available,
         "Flux notification-controller is not installed on this cluster",
       );
-    });
 
     for (const { tab, kind } of TABS) {
       test(`lists ${tab} or shows the empty state`, async ({ page }) => {
-        await openTab(page, tab);
+        requireController(await openTab(page, tab));
         const table = page.getByRole("table");
         const empty = page.getByText(
           `No notification ${kind.toLowerCase()}s configured.`,
@@ -183,7 +183,7 @@ test.describe("Flux notifications", () => {
     }
 
     test("opens and cancels the create provider form", async ({ page }) => {
-      await openTab(page, "providers");
+      requireController(await openTab(page, "providers"));
       await page
         .getByRole("button", { name: "Create Provider", exact: true })
         .first()
@@ -207,7 +207,7 @@ test.describe("Flux notifications", () => {
     });
 
     test("opens and cancels the create alert form", async ({ page }) => {
-      await openTab(page, "alerts");
+      requireController(await openTab(page, "alerts"));
       await page
         .getByRole("button", { name: "Create Alert", exact: true })
         .first()
@@ -230,7 +230,7 @@ test.describe("Flux notifications", () => {
     });
 
     test("opens and cancels the create receiver form", async ({ page }) => {
-      await openTab(page, "receivers");
+      requireController(await openTab(page, "receivers"));
       await page
         .getByRole("button", { name: "Create Receiver", exact: true })
         .first()

@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { checkE2eSpecs, readTestDir } from "./check-e2e-specs-in-testdir.ts";
@@ -113,6 +119,55 @@ test("dependency and report directories are not searched", () => {
   );
 });
 
+test("the auth-state directory is searched like any other", () => {
+  withFixture(
+    {
+      "playwright.config.ts": CONFIG,
+      "tests/a.spec.ts": "",
+      "playwright/.auth/admin.json": "{}",
+      "playwright/misplaced.spec.ts": "",
+    },
+    (dir) => {
+      expect(checkE2eSpecs(dir).offenders).toEqual([
+        "playwright/misplaced.spec.ts",
+      ]);
+    },
+  );
+});
+
+test("symlinked specs and directories are offenders, not followed", () => {
+  const outside = fixture({ "linked.spec.ts": "" });
+  try {
+    withFixture(
+      { "playwright.config.ts": CONFIG, "tests/a.spec.ts": "" },
+      (dir) => {
+        try {
+          symlinkSync(outside, join(dir, "tests", "shared"), "dir");
+          symlinkSync(
+            join(outside, "linked.spec.ts"),
+            join(dir, "tests", "linked.spec.ts"),
+            "file",
+          );
+        } catch {
+          // Creating symlinks needs a privilege some Windows hosts lack;
+          // CI (Linux) always runs this case.
+          return;
+        }
+        const result = checkE2eSpecs(dir);
+        expect(result.offenders).toEqual([
+          "tests/linked.spec.ts (symlink)",
+          "tests/shared (symlink)",
+        ]);
+        // Followed, the linked directory's spec would have counted as inside.
+        expect(result.specsInTestDir).toBe(1);
+        expect(result.ok).toBe(false);
+      },
+    );
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test("a sibling directory sharing testDir's prefix is not inside it", () => {
   withFixture(
     {
@@ -161,4 +216,15 @@ test("readTestDir takes the top-level key, not a project's", () => {
   expect(
     readTestDir(`export default { projects: [{ testDir: "./fixtures" }] };`),
   ).toBeNull();
+});
+
+test("readTestDir ignores comments", () => {
+  const config = `export default defineConfig({
+  // testDir: "./old",
+  /* the projects: list below is ordered */
+  baseURL: "http://localhost:8000",
+  testDir: "./tests",
+  projects: [{ testDir: "./fixtures" }],
+});`;
+  expect(readTestDir(config)).toBe("./tests");
 });

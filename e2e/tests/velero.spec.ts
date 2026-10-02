@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
-import { getAuthHeaders } from "../helpers.ts";
+
 
 /**
  * Velero backup & restore UI.
@@ -13,20 +13,29 @@ import { getAuthHeaders } from "../helpers.ts";
  * reason when the status route reports it absent.
  */
 
-/** Whether the backend reports Velero installed on the local cluster. */
-async function veleroDetected(page: Page): Promise<boolean> {
-  const res = await page.request.get("/api/v1/velero/status", {
-    headers: await getAuthHeaders(page),
-  });
-  expect(res.ok(), `velero status: ${res.status()}`).toBe(true);
-  return (await res.json()).data?.detected === true;
-}
-
 /** The dashboard's create/refresh buttons render once its fetch settles. */
 async function waitForDashboard(page: Page) {
   await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible({
     timeout: 15_000,
   });
+}
+
+/**
+ * Open the backups page, wait for it to load, and return whether the backend
+ * reported Velero installed -- read from the page's own status request, so
+ * detection adds no request of its own.
+ */
+async function openBackups(page: Page): Promise<boolean> {
+  const status = page.waitForResponse(
+    (r) =>
+      new URL(r.url()).pathname === "/api/v1/velero/status" &&
+      r.request().method() === "GET",
+  );
+  await page.goto("/backup/backups");
+  const res = await status;
+  expect(res.ok(), `velero status: ${res.status()}`).toBe(true);
+  await waitForDashboard(page);
+  return (await res.json()).data?.detected === true;
 }
 
 test.describe("Velero backup section", () => {
@@ -88,10 +97,11 @@ test.describe("Velero backup section", () => {
   test("shows the not-detected state when Velero is absent", async ({
     page,
   }) => {
-    await page.goto("/backup/backups");
-    test.skip(await veleroDetected(page), "Velero is installed on this cluster");
+    test.skip(
+      await openBackups(page),
+      "Velero is installed on this cluster",
+    );
 
-    await waitForDashboard(page);
     await expect(page.getByText("Velero Not Detected")).toBeVisible();
     await expect(
       page.getByRole("link", { name: /View Velero Installation Docs/ }),
@@ -101,13 +111,11 @@ test.describe("Velero backup section", () => {
   });
 
   test("lists backups when Velero is installed", async ({ page }) => {
-    await page.goto("/backup/backups");
     test.skip(
-      !(await veleroDetected(page)),
+      !(await openBackups(page)),
       "Velero is not installed on this cluster",
     );
 
-    await waitForDashboard(page);
     await expect(page.getByPlaceholder("Search…")).toBeVisible();
     await expect(page.getByText("Velero Not Detected")).toBeHidden();
   });
