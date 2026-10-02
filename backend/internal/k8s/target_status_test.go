@@ -363,3 +363,26 @@ func TestIsResourceGone(t *testing.T) {
 		}
 	}
 }
+
+// ServesGVR answers for one exact version: a resource served only at another
+// version, or under another group, is not served.
+func TestServesGVR(t *testing.T) {
+	lists := []*metav1.APIResourceList{
+		{GroupVersion: "example.io/v1beta1", APIResources: []metav1.APIResource{{Name: "widgets"}}},
+		{GroupVersion: "other.io/v1", APIResources: []metav1.APIResource{{Name: "gadgets"}}},
+	}
+	cases := []struct {
+		gvr  schema.GroupVersionResource
+		want bool
+	}{
+		{schema.GroupVersionResource{Group: "example.io", Version: "v1beta1", Resource: "widgets"}, true},
+		{schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}, false},
+		{schema.GroupVersionResource{Group: "example.io", Version: "v1beta1", Resource: "gadgets"}, false},
+		{schema.GroupVersionResource{Group: "other.io", Version: "v1", Resource: "gadgets"}, true},
+	}
+	for _, c := range cases {
+		if got := ServesGVR(lists, c.gvr); got != c.want {
+			t.Errorf("ServesGVR(%v) = %v, want %v", c.gvr, got, c.want)
+		}
+	}
+}

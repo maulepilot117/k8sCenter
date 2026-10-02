@@ -11,6 +11,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 const recheckInterval = 5 * time.Minute
@@ -85,9 +86,12 @@ func (d *PolicyDiscoverer) RunDiscoveryLoop(ctx context.Context) {
 	}
 }
 
-// Discover probes the cluster for policy engines and updates cached state.
+// Discover probes the local cluster for policy engines and updates cached
+// state. A remote cluster's engines are read per request, as the requesting
+// identity, by Handler.remoteDiscovery.
 func (d *PolicyDiscoverer) Discover(ctx context.Context) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	// nolint:cluster-routing local path: the Discoverer only ever probes the local cluster; remote status comes from Handler.remoteDiscovery.
 	disco := d.k8sClient.DiscoveryClient()
 
 	var kyvernoDetail *EngineDetail
@@ -116,18 +120,16 @@ func (d *PolicyDiscoverer) Discover(ctx context.Context) {
 		}
 	}
 
-	// Discover Kyverno namespace from webhook configs
-	if kyvernoDetail != nil {
-		ns, webhooks := d.detectWebhooks(ctx, "kyverno")
-		kyvernoDetail.Namespace = ns
-		kyvernoDetail.Webhooks = webhooks
-	}
-
-	// Discover Gatekeeper namespace from webhook configs
-	if gatekeeperDetail != nil {
-		ns, webhooks := d.detectWebhooks(ctx, "gatekeeper")
-		gatekeeperDetail.Namespace = ns
-		gatekeeperDetail.Webhooks = webhooks
+	// Discover each engine's namespace from its webhook configs.
+	if kyvernoDetail != nil || gatekeeperDetail != nil {
+		// nolint:cluster-routing local path: the Discoverer only ever probes the local cluster; remote webhooks are read as the user by Handler.remoteDiscovery.
+		cs := d.k8sClient.BaseClientset()
+		if kyvernoDetail != nil {
+			kyvernoDetail.Namespace, kyvernoDetail.Webhooks = detectWebhooks(ctx, cs, "kyverno")
+		}
+		if gatekeeperDetail != nil {
+			gatekeeperDetail.Namespace, gatekeeperDetail.Webhooks = detectWebhooks(ctx, cs, "gatekeeper")
+		}
 	}
 
 	// For Gatekeeper: filter constraint CRDs from CRDDiscovery
@@ -140,14 +142,7 @@ func (d *PolicyDiscoverer) Discover(ctx context.Context) {
 		}
 	}
 
-	detected := EngineNone
-	if kyvernoDetail != nil && gatekeeperDetail != nil {
-		detected = EngineBoth
-	} else if kyvernoDetail != nil {
-		detected = EngineKyverno
-	} else if gatekeeperDetail != nil {
-		detected = EngineGatekeeper
-	}
+	detected := detectedFrom(kyvernoDetail, gatekeeperDetail)
 
 	status := &EngineStatus{
 		Detected:    detected,
@@ -182,10 +177,25 @@ func (d *PolicyDiscoverer) Discover(ctx context.Context) {
 	}
 }
 
+// detectedFrom names the engines that are installed, given each engine's
+// detail (nil when it is not installed).
+func detectedFrom(kyverno, gatekeeper *EngineDetail) Engine {
+	switch {
+	case kyverno != nil && gatekeeper != nil:
+		return EngineBoth
+	case kyverno != nil:
+		return EngineKyverno
+	case gatekeeper != nil:
+		return EngineGatekeeper
+	}
+	return EngineNone
+}
+
 // detectWebhooks counts validating/mutating webhooks containing the engine name
-// and returns the first namespace found in webhook service references.
-func (d *PolicyDiscoverer) detectWebhooks(ctx context.Context, engineName string) (string, int) {
-	cs := d.k8sClient.BaseClientset()
+// and returns the first namespace found in webhook service references. A
+// webhook list cs cannot read contributes nothing, so an identity without
+// access sees an empty namespace and a zero count rather than an error.
+func detectWebhooks(ctx context.Context, cs kubernetes.Interface, engineName string) (string, int) {
 	var namespace string
 	webhookCount := 0
 

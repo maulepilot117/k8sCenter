@@ -233,7 +233,7 @@ func (h *Handler) remoteDiscovery(ctx context.Context, clusterID string, user *a
 
 	// Detection mirrors the local Discoverer: a mesh is installed when the
 	// version this package lists its anchor kind at is served.
-	istio, linkerd := servesGVR(lists, IstioVirtualServiceGVR), servesGVR(lists, LinkerdServerGVR)
+	istio, linkerd := k8s.ServesGVR(lists, IstioVirtualServiceGVR), k8s.ServesGVR(lists, LinkerdServerGVR)
 	if !istio && !linkerd {
 		return missing, lists, nil
 	}
@@ -254,24 +254,6 @@ func (h *Handler) remoteDiscovery(ctx context.Context, clusterID string, user *a
 	return status, lists, nil
 }
 
-// servesGVR reports whether lists serve resource at exactly gvr's version.
-// The package lists every CRD at a fixed version, so a cluster serving only
-// another version cannot be read and counts as not serving it.
-func servesGVR(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource) bool {
-	gv := gvr.GroupVersion().String()
-	for _, l := range lists {
-		if l.GroupVersion != gv {
-			continue
-		}
-		for _, r := range l.APIResources {
-			if r.Name == gvr.Resource {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // fetchRemote reads a remote cluster's mesh routes and policies as the
 // user. Each list succeeds or fails on its own; only when every list fails
 // is the fetch itself an error.
@@ -286,7 +268,7 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 	var sources []meshSource
 	for _, src := range meshSources {
 		installed := (src.mesh == MeshIstio && status.Istio != nil) || (src.mesh == MeshLinkerd && status.Linkerd != nil)
-		if installed && servesGVR(d.lists, src.gvr) {
+		if installed && k8s.ServesGVR(d.lists, src.gvr) {
 			sources = append(sources, src)
 		}
 	}

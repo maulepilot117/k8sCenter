@@ -14,6 +14,7 @@ import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/remote_failure_state.dart';
 
 /// Wraps a per-cluster policy surface body in the standard discovery-status
 /// gate. The outer ConsumerWidget watches `policyStatusProvider(clusterId)`,
@@ -60,7 +61,16 @@ class PolicyStatusGate extends ConsumerWidget {
             onRetry: () => ref.invalidate(policyStatusProvider(clusterId)),
           );
         }
-        if (!status.detected) return FeatureUnavailableState.policy();
+        // A remote cluster that could not be asked answers detected:false
+        // with a reason (R-8 KTD5, #530); only discovery_missing, or no
+        // reason at all, is the not-installed card.
+        if (!status.detected) {
+          return FeatureAbsentState(
+            reason: status.reason,
+            notInstalled: FeatureUnavailableState.policy(),
+            onRetry: () => ref.invalidate(policyStatusProvider(clusterId)),
+          );
+        }
         return builder(clusterId, status);
       },
     );

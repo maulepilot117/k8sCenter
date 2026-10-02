@@ -93,6 +93,7 @@ class PolicyDiscoveryStatus {
     this.gatekeeperWebhooks = 0,
     this.lastChecked = '',
     this.serviceUnavailable = false,
+    this.reason,
   });
 
   /// True when at least one engine is detected. Drives
@@ -124,6 +125,12 @@ class PolicyDiscoveryStatus {
   /// this flag.
   final bool serviceUnavailable;
 
+  /// R-8 reason sent only on a remote cluster where no engine was
+  /// detected: `discovery_missing` (really not installed) or a
+  /// could-not-tell code such as `unreachable` (#530). Null on the local
+  /// cluster. `PolicyStatusGate` renders it through [FeatureAbsentState].
+  final String? reason;
+
   factory PolicyDiscoveryStatus.fromJson(Map<String, dynamic> json) {
     String? s(Object? v) => v is String && v.isNotEmpty ? v : null;
     int i(Object? v) => v is num ? v.toInt() : 0;
@@ -141,6 +148,7 @@ class PolicyDiscoveryStatus {
       kyvernoWebhooks: i(kyvernoBlock?['webhooks']),
       gatekeeperWebhooks: i(gkBlock?['webhooks']),
       lastChecked: json['lastChecked'] as String? ?? '',
+      reason: s(json['reason']),
     );
   }
 

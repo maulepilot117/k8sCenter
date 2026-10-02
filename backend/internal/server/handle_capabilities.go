@@ -498,6 +498,16 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "cert-manager.io", AuthResource: "certificates",
 	},
 	{
+		// Remote since #530: Kyverno and Gatekeeper policies, violations and
+		// the compliance score are read from the selected cluster as the user
+		// (policy/remote.go), with engine presence detected per cluster. A
+		// remote list that fails fails the view rather than undercounting
+		// violations. Kyverno Policies stand in for both engines.
+		ID: "policy.read", Label: "Policy views and compliance",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "kyverno.io", AuthResource: "policies",
+	},
+	{
 		// Cilium config is tied to the local installation, so reads and
 		// updates are refused on remote (R13, the P2-5 decision).
 		// networking/handler.go:171 and :234 (rejectNonLocal, 501). The
@@ -554,6 +564,15 @@ var capabilityOperations = []capabilityOp{
 		ID: "diagnostics.read", Label: "Resource diagnostics and blast radius",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// Compliance snapshots are taken by the local ComplianceRecorder of
+		// the local cluster only (R14). policy/handler.go
+		// HandleComplianceHistory (501 remote_history_unsupported, before
+		// the store is read).
+		ID: "policy.compliance_history", Label: "Policy compliance history",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "list", AuthGroup: "kyverno.io", AuthResource: "policies",
 	},
 }
 

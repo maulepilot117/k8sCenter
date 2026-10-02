@@ -248,7 +248,9 @@ func assertCapabilities(t *testing.T, body CapabilitiesResponse, ids []string, w
 // (#494), and dashboard.summary in U10 (#495, via the ?coverage=1 opt-in).
 // R-8 (docs/plans/2026-09-29-0908-fix-r8-remote-cluster-routing-plan.md)
 // routed node drain (U1) and the CRD-backed feature packages (U4–U10, U17)
-// through ClusterRouter; cert-manager followed in #531. The unsupported rows still carry a remote guard
+// through ClusterRouter; cert-manager followed in #531 and the policy views
+// in #530, whose compliance history stays local. The unsupported rows still
+// carry a remote guard
 // (400/501, a WebSocket refusal, or an "unavailable on remote" body) and must
 // keep reporting unsupported_platform. TestCapabilityOperations_
 // RemoteSupportPinned asserts the table matches these sets exactly; every
@@ -258,12 +260,12 @@ var (
 		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply", "dashboard.summary",
 		"node.drain", "gitops.applications", "velero.backups", "storage.snapshots",
 		"storage.classes", "flux.notifications", "alert.rules", "gateway.read", "mesh.routing",
-		"mesh.mtls", "eso.read", "certmanager.certificates",
+		"mesh.mtls", "eso.read", "certmanager.certificates", "policy.read",
 	}
 	wantRemoteUnsupported = []string{
 		"resources.counts", "pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
 		"cni.config", "mesh.golden_signals", "eso.history", "eso.metrics",
-		"topology.graph", "diagnostics.read",
+		"topology.graph", "diagnostics.read", "policy.compliance_history",
 	}
 )
 

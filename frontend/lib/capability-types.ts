@@ -77,12 +77,14 @@ export const CAPABILITY_OPERATION_IDS = [
   "mesh.mtls",
   "eso.read",
   "certmanager.certificates",
+  "policy.read",
   "cni.config",
   "mesh.golden_signals",
   "eso.history",
   "eso.metrics",
   "topology.graph",
   "diagnostics.read",
+  "policy.compliance_history",
 ] as const;
 
 export type CapabilityOperationId = (typeof CAPABILITY_OPERATION_IDS)[number];
