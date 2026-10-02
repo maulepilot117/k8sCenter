@@ -192,10 +192,14 @@ export default function VeleroBackupWizard({ onClose }: Props) {
         <div class="space-y-6">
           {/* Name */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-backup-name"
+            >
               Backup Name
             </label>
             <input
+              id="velero-backup-name"
               type="text"
               value={form.value.name}
               onInput={(e) =>
@@ -211,7 +215,10 @@ export default function VeleroBackupWizard({ onClose }: Props) {
 
           {/* Included Namespaces */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-backup-namespaces"
+            >
               Include Namespaces
             </label>
             <p class="text-xs text-text-muted mb-2">
@@ -219,6 +226,7 @@ export default function VeleroBackupWizard({ onClose }: Props) {
               select multiple.
             </p>
             <select
+              id="velero-backup-namespaces"
               multiple
               onChange={(e) => {
                 const select = e.target as HTMLSelectElement;
@@ -243,10 +251,14 @@ export default function VeleroBackupWizard({ onClose }: Props) {
 
           {/* Storage Location */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-backup-storage-location"
+            >
               Storage Location
             </label>
             <select
+              id="velero-backup-storage-location"
               value={form.value.storageLocation}
               onChange={(e) =>
                 updateField(
@@ -267,10 +279,14 @@ export default function VeleroBackupWizard({ onClose }: Props) {
 
           {/* TTL */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-backup-ttl"
+            >
               Retention (TTL)
             </label>
             <select
+              id="velero-backup-ttl"
               value={form.value.ttl}
               onChange={(e) =>
                 updateField("ttl", (e.target as HTMLSelectElement).value)

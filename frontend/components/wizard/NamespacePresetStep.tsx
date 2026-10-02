@@ -33,6 +33,7 @@ export function NamespacePresetStep({
     >
       <div>
         <label
+          for="ns-limits-namespace"
           style={{
             display: "block",
             fontSize: "12.5px",
@@ -44,6 +45,7 @@ export function NamespacePresetStep({
           Namespace <span style={{ color: "var(--error)" }}>*</span>
         </label>
         <select
+          id="ns-limits-namespace"
           value={form.namespace}
           onChange={(e) =>
             onUpdateField("namespace", (e.target as HTMLSelectElement).value)
@@ -136,6 +138,7 @@ export function NamespacePresetStep({
 
       <div>
         <label
+          for="ns-limits-quota-name"
           style={{
             display: "block",
             fontSize: "12.5px",
@@ -147,6 +150,7 @@ export function NamespacePresetStep({
           ResourceQuota Name <span style={{ color: "var(--error)" }}>*</span>
         </label>
         <input
+          id="ns-limits-quota-name"
           type="text"
           value={form.quotaName}
           onInput={(e) =>
@@ -170,6 +174,7 @@ export function NamespacePresetStep({
 
       <div>
         <label
+          for="ns-limits-limitrange-name"
           style={{
             display: "block",
             fontSize: "12.5px",
@@ -181,6 +186,7 @@ export function NamespacePresetStep({
           LimitRange Name <span style={{ color: "var(--error)" }}>*</span>
         </label>
         <input
+          id="ns-limits-limitrange-name"
           type="text"
           value={form.limitRangeName}
           onInput={(e) =>
