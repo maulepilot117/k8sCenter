@@ -756,18 +756,7 @@ func main() {
 		// Wire NotifService into event producers
 		if clusterProber != nil {
 			clusterProber.SetStatusChangeFunc(func(ctx context.Context, clusterID, oldStatus, newStatus string) {
-				sev := notifications.SeverityInfo
-				title := "Cluster " + clusterID + " is now " + newStatus
-				if newStatus != "connected" {
-					sev = notifications.SeverityCritical
-					title = "Cluster " + clusterID + " is " + newStatus
-				}
-				notifService.Emit(ctx, notifications.Notification{
-					Source:   notifications.SourceCluster,
-					Severity: sev,
-					Title:    title,
-					Message:  "Status changed from " + oldStatus + " to " + newStatus,
-				})
+				notifService.Emit(ctx, notifications.ClusterStatusNotification(clusterID, oldStatus, newStatus))
 			})
 		}
 		alertHandler.NotifService = notifService

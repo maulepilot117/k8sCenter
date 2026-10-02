@@ -163,7 +163,15 @@ func (p *Poller) emit(ctx context.Context, rec emitRecord) {
 	if p.notifService == nil {
 		return
 	}
+	p.notifService.Emit(ctx, expiryNotification(rec))
+}
 
+// expiryNotification builds the notification for one threshold crossing.
+// ResourceUID carries the certificate UID, which is part of the
+// notification dedup identity: a certificate reissued under the same name
+// is a different certificate. ClusterID stays empty because the poller
+// reads the local cluster only, and empty is the local identity.
+func expiryNotification(rec emitRecord) notifications.Notification {
 	var sev notifications.Severity
 	var kind string
 
@@ -181,15 +189,21 @@ func (p *Poller) emit(ctx context.Context, rec emitRecord) {
 
 	c := rec.Certificate
 	var title, msg string
-	if rec.Threshold == thresholdExpired {
+	switch {
+	case rec.Threshold == thresholdExpired:
 		title = "Certificate expired (critical)"
 		msg = "A certificate has already expired"
-	} else {
+	case c.DaysRemaining != nil:
 		title = fmt.Sprintf("Certificate expiring (%s)", rec.Severity)
 		msg = fmt.Sprintf("A certificate expires in %d day(s)", *c.DaysRemaining)
+	default:
+		// check() never records a crossing without DaysRemaining; this
+		// keeps the builder total rather than trusting that invariant.
+		title = fmt.Sprintf("Certificate expiring (%s)", rec.Severity)
+		msg = "A certificate is approaching expiry"
 	}
 
-	p.notifService.Emit(ctx, notifications.Notification{
+	return notifications.Notification{
 		Source:       notifications.SourceCertManager,
 		Severity:     sev,
 		Title:        title,
@@ -197,8 +211,9 @@ func (p *Poller) emit(ctx context.Context, rec emitRecord) {
 		ResourceKind: kind,
 		ResourceNS:   c.Namespace,
 		ResourceName: c.Name,
+		ResourceUID:  c.UID,
 		CreatedAt:    time.Now().UTC(),
-	})
+	}
 }
 
 // Start runs the poller loop. It fires immediately, then on a 60-second ticker.

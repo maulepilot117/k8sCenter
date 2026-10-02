@@ -6,16 +6,16 @@ import "time"
 type Source string
 
 const (
-	SourceAlert      Source = "alert"
-	SourcePolicy     Source = "policy"
-	SourceGitOps     Source = "gitops"
-	SourceDiagnostic Source = "diagnostic"
-	SourceScan       Source = "scan"
-	SourceCluster    Source = "cluster"
-	SourceAudit      Source = "audit"
-	SourceLimits     Source = "limits"
-	SourceVelero      Source = "velero"
-	SourceCertManager Source = "certmanager"
+	SourceAlert           Source = "alert"
+	SourcePolicy          Source = "policy"
+	SourceGitOps          Source = "gitops"
+	SourceDiagnostic      Source = "diagnostic"
+	SourceScan            Source = "scan"
+	SourceCluster         Source = "cluster"
+	SourceAudit           Source = "audit"
+	SourceLimits          Source = "limits"
+	SourceVelero          Source = "velero"
+	SourceCertManager     Source = "certmanager"
 	SourceExternalSecrets Source = "external_secrets"
 )
 
@@ -83,22 +83,53 @@ type MobilePushDevice struct {
 // the in-app feed. Used by ESO events (R28 cross-tenant scope), opt-in for
 // other sources.
 type Notification struct {
-	ID           string    `json:"id"`
-	Source       Source    `json:"source"`
-	Severity     Severity  `json:"severity"`
-	Title        string    `json:"title"`
-	Message      string    `json:"message"`
-	ResourceKind string    `json:"resourceKind,omitempty"`
-	ResourceNS   string    `json:"resourceNamespace,omitempty"`
-	ResourceName string    `json:"resourceName,omitempty"`
-	ClusterID    string    `json:"clusterId,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
-	Read         bool      `json:"read,omitempty"`
+	ID           string   `json:"id"`
+	Source       Source   `json:"source"`
+	Severity     Severity `json:"severity"`
+	Title        string   `json:"title"`
+	Message      string   `json:"message"`
+	ResourceKind string   `json:"resourceKind,omitempty"`
+	ResourceNS   string   `json:"resourceNamespace,omitempty"`
+	ResourceName string   `json:"resourceName,omitempty"`
+	// ResourceUID is the Kubernetes UID of the resource (or the source's
+	// equivalent stable identity, e.g. an Alertmanager fingerprint). Empty
+	// when the source has none. Part of the dedup identity: a resource
+	// deleted and recreated under the same name is a new resource, and its
+	// first failure must not be suppressed as a repeat of its predecessor's.
+	ResourceUID string `json:"resourceUid,omitempty"`
+	// ClusterID names the cluster the event belongs to. Empty means the
+	// local cluster, exactly as for X-Cluster-ID (k8s.IsLocalClusterID):
+	// local-only sources may leave it unset, and rows written before the
+	// field took part in dedup carry ''. Part of the dedup identity, so a
+	// same-named resource failing on two clusters yields two notifications.
+	ClusterID string    `json:"clusterId,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	Read      bool      `json:"read,omitempty"`
 
 	// SuppressResourceFields strips ResourceNS/ResourceName from external
 	// dispatch payloads (Slack, webhook). Not persisted to the feed —
 	// in-app readers always see the resource fields, RBAC-filtered.
 	SuppressResourceFields bool `json:"-"`
+}
+
+// ClusterStatusNotification builds the notification for a remote cluster's
+// connectivity change, as reported by the cluster prober. ClusterID names
+// the probed cluster: two clusters changing state within the dedup window
+// are two events, and the feed can attribute each to its cluster.
+func ClusterStatusNotification(clusterID, oldStatus, newStatus string) Notification {
+	sev := SeverityInfo
+	title := "Cluster " + clusterID + " is now " + newStatus
+	if newStatus != "connected" {
+		sev = SeverityCritical
+		title = "Cluster " + clusterID + " is " + newStatus
+	}
+	return Notification{
+		Source:    SourceCluster,
+		Severity:  sev,
+		Title:     title,
+		Message:   "Status changed from " + oldStatus + " to " + newStatus,
+		ClusterID: clusterID,
+	}
 }
 
 // Channel is an external dispatch target (Slack, email, webhook).

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
@@ -32,11 +33,11 @@ func NewStore(pool *pgxpool.Pool, masterSecret string) *Store {
 func (s *Store) InsertNotification(ctx context.Context, n Notification) (string, error) {
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO nc_notifications (source, severity, title, message, resource_kind, resource_ns, resource_name, cluster_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO nc_notifications (source, severity, title, message, resource_kind, resource_ns, resource_name, resource_uid, cluster_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id`,
 		n.Source, n.Severity, n.Title, n.Message,
-		n.ResourceKind, n.ResourceNS, n.ResourceName, n.ClusterID,
+		n.ResourceKind, n.ResourceNS, n.ResourceName, n.ResourceUID, n.ClusterID,
 	).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("insert notification: %w", err)
@@ -44,18 +45,50 @@ func (s *Store) InsertNotification(ctx context.Context, n Notification) (string,
 	return id, nil
 }
 
-// DedupExists checks whether a matching notification was created within the dedup window.
-// Uses database time (now()) to avoid clock drift between app server and PostgreSQL.
-func (s *Store) DedupExists(ctx context.Context, n Notification, window time.Duration) (bool, error) {
-	var exists bool
-	err := s.pool.QueryRow(ctx, `
+// dedupExistsQuery is the dedup lookup. The identity is (source, kind,
+// namespace, name, title, cluster, UID) inside the window.
+//
+// Cluster: a stored empty cluster_id is the local cluster (the column default, and what
+// local-only sources and every pre-000021 row carry), so it is folded to the
+// local id ($8) before comparing against the caller's id, which
+// dedupClusterID has already folded the same way. Empty and "local"
+// therefore match each other and never match a remote cluster id.
+//
+// UID: compared exactly. A legacy row has an empty resource_uid and so does not
+// suppress a UID-bearing notification for the same resource; at worst one
+// duplicate lands in the first window after upgrade, which is the service's
+// stated preference ("better to duplicate than to drop").
+//
+// The leading equality columns and the created_at range are served by
+// idx_nc_notif_dedup; cluster and UID are residual filters over the handful
+// of rows that share the rest of the key inside the window.
+const dedupExistsQuery = `
 		SELECT EXISTS(
 			SELECT 1 FROM nc_notifications
 			WHERE source = $1 AND resource_kind = $2 AND resource_ns = $3
 			  AND resource_name = $4 AND title = $5
-			  AND created_at > now() - $6::interval
-		)`,
+			  AND resource_uid = $6
+			  AND (CASE WHEN cluster_id = '' THEN $8::text ELSE cluster_id END) = $7::text
+			  AND created_at > now() - $9::interval
+		)`
+
+// dedupClusterID folds the empty cluster id onto the local id so that the
+// empty string and "local" are one cluster for dedup. Any other id is opaque and returned
+// unchanged: trimming or case-folding could merge two registrations.
+func dedupClusterID(clusterID string) string {
+	if k8s.IsLocalClusterID(clusterID) {
+		return k8s.LocalClusterID
+	}
+	return clusterID
+}
+
+// DedupExists checks whether a matching notification was created within the dedup window.
+// Uses database time (now()) to avoid clock drift between app server and PostgreSQL.
+func (s *Store) DedupExists(ctx context.Context, n Notification, window time.Duration) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, dedupExistsQuery,
 		n.Source, n.ResourceKind, n.ResourceNS, n.ResourceName, n.Title,
+		n.ResourceUID, dedupClusterID(n.ClusterID), k8s.LocalClusterID,
 		fmt.Sprintf("%d seconds", int(window.Seconds())),
 	).Scan(&exists)
 	if err != nil {
@@ -119,7 +152,7 @@ func (s *Store) ListNotifications(ctx context.Context, opts ListOpts) ([]Notific
 
 	listQuery := fmt.Sprintf(`
 		SELECT n.id, n.source, n.severity, n.title, n.message,
-		       n.resource_kind, n.resource_ns, n.resource_name, n.cluster_id, n.created_at,
+		       n.resource_kind, n.resource_ns, n.resource_name, n.resource_uid, n.cluster_id, n.created_at,
 		       (nr.notification_id IS NOT NULL) AS read
 		FROM nc_notifications n
 		LEFT JOIN nc_reads nr ON nr.notification_id = n.id AND nr.user_id = $1
@@ -140,7 +173,7 @@ func (s *Store) ListNotifications(ctx context.Context, opts ListOpts) ([]Notific
 		var n Notification
 		if err := rows.Scan(
 			&n.ID, &n.Source, &n.Severity, &n.Title, &n.Message,
-			&n.ResourceKind, &n.ResourceNS, &n.ResourceName, &n.ClusterID, &n.CreatedAt,
+			&n.ResourceKind, &n.ResourceNS, &n.ResourceName, &n.ResourceUID, &n.ClusterID, &n.CreatedAt,
 			&n.Read,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan notification: %w", err)
@@ -235,7 +268,7 @@ func (s *Store) RecentBySource(ctx context.Context, source Source, clusterID str
 	query := `
 		SELECT DISTINCT ON (resource_kind, resource_ns, resource_name)
 		       id, source, severity, title, message,
-		       resource_kind, resource_ns, resource_name, cluster_id, created_at
+		       resource_kind, resource_ns, resource_name, resource_uid, cluster_id, created_at
 		FROM nc_notifications
 		WHERE source = $1
 		  AND created_at >= $2
@@ -259,7 +292,7 @@ func (s *Store) RecentBySource(ctx context.Context, source Source, clusterID str
 		var n Notification
 		if err := rows.Scan(
 			&n.ID, &n.Source, &n.Severity, &n.Title, &n.Message,
-			&n.ResourceKind, &n.ResourceNS, &n.ResourceName, &n.ClusterID, &n.CreatedAt,
+			&n.ResourceKind, &n.ResourceNS, &n.ResourceName, &n.ResourceUID, &n.ClusterID, &n.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan recent notification: %w", err)
 		}
@@ -273,7 +306,7 @@ func (s *Store) RecentBySource(ctx context.Context, source Source, clusterID str
 func (s *Store) NotificationsSince(ctx context.Context, since time.Time, namespaces []string, sourceFilter []string, severityFilter []string) ([]Notification, error) {
 	query := `
 		SELECT id, source, severity, title, message,
-		       resource_kind, resource_ns, resource_name, cluster_id, created_at
+		       resource_kind, resource_ns, resource_name, resource_uid, cluster_id, created_at
 		FROM nc_notifications
 		WHERE created_at > $1`
 	args := []any{since}
@@ -306,7 +339,7 @@ func (s *Store) NotificationsSince(ctx context.Context, since time.Time, namespa
 		var n Notification
 		if err := rows.Scan(
 			&n.ID, &n.Source, &n.Severity, &n.Title, &n.Message,
-			&n.ResourceKind, &n.ResourceNS, &n.ResourceName, &n.ClusterID, &n.CreatedAt,
+			&n.ResourceKind, &n.ResourceNS, &n.ResourceName, &n.ResourceUID, &n.ClusterID, &n.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan notification: %w", err)
 		}

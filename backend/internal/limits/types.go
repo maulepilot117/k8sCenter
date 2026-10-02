@@ -77,8 +77,11 @@ type LimitRangeItem struct {
 
 // QuotaThresholdEvent is dispatched to Notification Center.
 type QuotaThresholdEvent struct {
-	Namespace   string          `json:"namespace"`
-	QuotaName   string          `json:"quotaName"`
+	Namespace string `json:"namespace"`
+	QuotaName string `json:"quotaName"`
+	// QuotaUID feeds the notification dedup identity, so a quota deleted
+	// and recreated under the same name is not suppressed as a repeat.
+	QuotaUID    string          `json:"quotaUid,omitempty"`
 	Resource    string          `json:"resource"`
 	Status      ThresholdStatus `json:"status"`
 	UsedPercent float64         `json:"usedPercent"`

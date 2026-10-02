@@ -277,3 +277,35 @@ Locking:
   writes to eso_sync_history for their duration: seconds at the table's
   stated steady state of about 2M rows. The single-replica poller is the only
   writer, and an insert blocked past its tick is re-observed on the next one.
+
+------------------------------------------------------------------------
+000021_add_nc_notification_resource_uid (pre-existing defect #2, 2026-10-02)
+------------------------------------------------------------------------
+
+Adds nc_notifications.resource_uid (TEXT NOT NULL DEFAULT ''). The
+notification dedup lookup now keys on cluster and UID as well as source,
+kind, namespace, name and title, so a same-named resource failing on two
+clusters, or a resource deleted and recreated under a new UID, produces its
+own notification instead of being suppressed for 15 minutes.
+
+Operator action required:
+  None. The column is additive with a constant default (catalog-only on
+  PostgreSQL 11+, no table rewrite), and nothing is backfilled.
+
+Behaviour across the upgrade:
+  - Rows written before the upgrade carry cluster_id '' and resource_uid ''.
+    An empty cluster id has always meant the local cluster, and the dedup
+    query folds '' onto 'local', so those rows keep suppressing local
+    repeats and never suppress a remote cluster's events.
+  - The UID compares exactly. A pre-upgrade row (resource_uid '') does not
+    suppress a post-upgrade notification that carries a UID for the same
+    resource, so the first 15-minute window after the upgrade can produce one
+    repeat per still-failing resource. This is deliberate: the service
+    prefers a duplicate to a dropped notification.
+  - The feed API gains an optional resourceUid field. It is additive and
+    omitted when empty; existing web and mobile clients ignore it.
+
+Rollback:
+  The down migration drops the column and cannot fail on existing data; the
+  only loss is the recorded UIDs. Roll the binary back first or together:
+  the new binary's INSERT names resource_uid and fails once it is gone.

@@ -28,6 +28,9 @@ export interface AppNotification {
   resourceKind?: string;
   resourceNamespace?: string;
   resourceName?: string;
+  /** Kubernetes UID (or source-native id, e.g. an Alertmanager fingerprint). Absent when the source has none. */
+  resourceUid?: string;
+  /** Absent means the local cluster. */
   clusterId?: string;
   createdAt: string;
   /** Absent means unread (Go omitempty omits false). Treat undefined as false. */

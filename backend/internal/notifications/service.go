@@ -152,7 +152,8 @@ func (s *NotificationService) Emit(ctx context.Context, n Notification) {
 		return
 	}
 
-	// Dedup: suppress if same (source, kind, ns, name, title) within 15 min
+	// Dedup: suppress if same (source, kind, ns, name, title, cluster, UID)
+	// within 15 min. See dedupExistsQuery for how '' and "local" fold.
 	exists, err := s.store.DedupExists(ctx, n, dedupWindow)
 	if err != nil {
 		s.logger.Error("dedup check failed", "error", err)
@@ -566,6 +567,7 @@ func sanitizeForEmailDigest(ns []Notification) {
 			ns[i].ResourceKind = ""
 			ns[i].ResourceNS = ""
 			ns[i].ResourceName = ""
+			ns[i].ResourceUID = ""
 		}
 	}
 }

@@ -30,7 +30,7 @@ type Checker struct {
 	logger   *slog.Logger
 
 	mu        sync.Mutex
-	lastState map[string]ThresholdStatus // key: "namespace:quotaName:resource"
+	lastState map[string]ThresholdStatus // key: stateKey(namespace, quotaName, quotaUID, resource)
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -106,7 +106,7 @@ func (c *Checker) check(ctx context.Context) {
 		utilization := c.handler.computeUtilization(quota)
 
 		for resName, util := range utilization {
-			key := stateKey(quota.Namespace, quota.Name, resName)
+			key := stateKey(quota.Namespace, quota.Name, string(quota.UID), resName)
 			currentKeys[key] = struct{}{}
 			currentStatus := computeStatus(util.Percentage, warn, critical)
 
@@ -114,6 +114,7 @@ func (c *Checker) check(ctx context.Context) {
 			c.dispatchIfChanged(ctx, key, currentStatus, QuotaThresholdEvent{
 				Namespace:   quota.Namespace,
 				QuotaName:   quota.Name,
+				QuotaUID:    string(quota.UID),
 				Resource:    resName,
 				Status:      currentStatus,
 				UsedPercent: util.Percentage,
@@ -166,6 +167,8 @@ func (c *Checker) dispatchIfChanged(ctx context.Context, key string, current Thr
 	message := fmt.Sprintf("Resource %s is at %.1f%% utilization (threshold: %.0f%%). Used: %s, Hard: %s",
 		event.Resource, event.UsedPercent, event.Threshold, event.Used, event.Hard)
 
+	// ClusterID stays empty: the checker reads the local informer cache
+	// only, and empty is the local cluster's notification identity.
 	c.notifier.Emit(ctx, notifications.Notification{
 		Source:       notifications.SourceLimits,
 		Severity:     severity,
@@ -174,6 +177,7 @@ func (c *Checker) dispatchIfChanged(ctx context.Context, key string, current Thr
 		ResourceKind: "ResourceQuota",
 		ResourceNS:   event.Namespace,
 		ResourceName: event.QuotaName,
+		ResourceUID:  event.QuotaUID,
 	})
 
 	c.logger.Info("quota threshold notification dispatched",
@@ -187,8 +191,13 @@ func (c *Checker) dispatchIfChanged(ctx context.Context, key string, current Thr
 
 // stateKey builds composite key using null byte delimiter to avoid collisions.
 // Null bytes cannot appear in Kubernetes resource names, making keys unambiguous.
-func stateKey(namespace, quotaName, resource string) string {
-	return namespace + "\x00" + quotaName + "\x00" + resource
+//
+// The quota UID is part of the key so a quota deleted and recreated under the
+// same name within one check interval starts with no transition history: it
+// reaches Emit with its new UID instead of being gated out here as a repeat of
+// the old quota's status (see QuotaThresholdEvent.QuotaUID).
+func stateKey(namespace, quotaName, quotaUID, resource string) string {
+	return namespace + "\x00" + quotaName + "\x00" + quotaUID + "\x00" + resource
 }
 
 // thresholdForStatus returns the threshold value that was crossed.
