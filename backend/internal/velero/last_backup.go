@@ -39,31 +39,26 @@ func scheduleLabelValue(name string) string {
 	return name[:maxLabelValue-labelHashLen] + hex.EncodeToString(sum[:])[:labelHashLen]
 }
 
-// startTime is the backup's start time, zero when unset.
-func startTime(b *Backup) time.Time {
-	if b.StartTime == nil {
-		return time.Time{}
-	}
-	return *b.StartTime
-}
-
-// runTime orders a schedule's runs: the backup's creation time, or its start
-// time when the creation time is unset.
+// runTime orders a schedule's runs: the backup's start time, or its creation
+// time when Velero has not started it yet. The start time leads because
+// Velero's backup-sync controller recreates backups from the storage
+// location, giving an old run a new creationTimestamp but its original
+// startTimestamp.
 func runTime(b *Backup) time.Time {
-	if !b.created.IsZero() {
-		return b.created
+	if b.StartTime != nil {
+		return *b.StartTime
 	}
-	return startTime(b)
+	return b.created
 }
 
-// newerRun reports whether a ran after b: by run time, then start time, then
-// name, since Velero names a schedule's runs <schedule>-<timestamp>.
+// newerRun reports whether a ran after b: by run time, then creation time,
+// then name, since Velero names a schedule's runs <schedule>-<timestamp>.
 func newerRun(a, b *Backup) bool {
 	if ta, tb := runTime(a), runTime(b); !ta.Equal(tb) {
 		return ta.After(tb)
 	}
-	if sa, sb := startTime(a), startTime(b); !sa.Equal(sb) {
-		return sa.After(sb)
+	if !a.created.Equal(b.created) {
+		return a.created.After(b.created)
 	}
 	return a.Name > b.Name
 }
@@ -98,12 +93,41 @@ func withLastBackups(schedules []Schedule, backups []Backup) []Schedule {
 	return out
 }
 
-// canListBackups reports whether the user may list backups on the request's
-// cluster. A check that cannot be made counts as no: it only decides whether
-// a schedule shows its last-backup phase, never whether it is served.
-func (h *Handler) canListBackups(r *http.Request, user *auth.User) bool {
-	can, err := h.canAccess(r, user, "list", BackupGVR.Resource, "")
+// canListBackups reports whether the user may list backups in namespace on
+// the request's cluster; "" asks cluster-wide. A check that cannot be made
+// counts as no: it only decides whether a schedule shows its last-backup
+// phase, never whether it is served.
+func (h *Handler) canListBackups(r *http.Request, user *auth.User, namespace string) bool {
+	can, err := h.canAccess(r, user, "list", BackupGVR.Resource, namespace)
 	return err == nil && can
+}
+
+// listableBackups keeps the schedule runs among backups that the user may
+// list: all of them with cluster-wide access, otherwise those in namespaces
+// the user may list backups in. The schedule detail reads its runs with a
+// namespaced list as the user, so this gives the list the same answer
+// (one check per namespace). backups is not modified: it may be the shared
+// cache.
+func (h *Handler) listableBackups(r *http.Request, user *auth.User, backups []Backup) []Backup {
+	if h.canListBackups(r, user, "") {
+		return backups
+	}
+	allowed := make(map[string]bool)
+	var out []Backup
+	for _, b := range backups {
+		if b.ScheduleName == "" {
+			continue
+		}
+		can, seen := allowed[b.Namespace]
+		if !seen {
+			can = h.canListBackups(r, user, b.Namespace)
+			allowed[b.Namespace] = can
+		}
+		if can {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // withLastBackup sets one schedule's last-backup phase from a live list of

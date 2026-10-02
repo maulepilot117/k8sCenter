@@ -13,12 +13,17 @@ const SCHEDULES_COLUMNS: Column[] = [
   { key: "name", label: "Name", width: "2fr" },
   { key: "status", label: "Status", width: "120px" },
   { key: "schedule", label: "Cron", width: "120px" },
+  { key: "newestRun", label: "Newest Run", width: "150px" },
   { key: "lastBackup", label: "Last Backup", width: "100px", align: "right" },
   { key: "nextRun", label: "Next Run", width: "100px", align: "right" },
   { key: "actions", label: "", width: "80px" },
 ];
 
-/** Names the phase of a schedule's newest backup, when it has one. */
+/**
+ * Names the phase of a schedule's newest backup, when it has one. That
+ * backup may be a manual trigger, so it is shown apart from "Last Backup",
+ * which is Velero's status.lastBackup and only moves on cron runs.
+ */
 function newestBackupLabel(s: Schedule): string | undefined {
   return s.lastBackupPhase ? `Newest backup: ${s.lastBackupPhase}` : undefined;
 }
@@ -90,7 +95,7 @@ export function SchedulesResourceTable({
           {s.schedule}
         </span>
       ),
-      lastBackup: (
+      newestRun: (
         <span
           title={newestBackupLabel(s)}
           style={{
@@ -99,15 +104,27 @@ export function SchedulesResourceTable({
             gap: "6px",
             fontSize: "13px",
             color: "var(--text-muted)",
+          }}
+        >
+          {s.lastBackupPhase ? (
+            <>
+              <StatusDot status={outcomeTone(s.lastBackupOutcome)} size={6} />
+              <span class="sr-only">Newest backup:</span>
+              {s.lastBackupPhase}
+            </>
+          ) : (
+            "—"
+          )}
+        </span>
+      ),
+      lastBackup: (
+        <span
+          style={{
+            fontSize: "13px",
+            color: "var(--text-muted)",
             fontVariantNumeric: "tabular-nums",
           }}
         >
-          {s.lastBackupPhase && (
-            <>
-              <StatusDot status={outcomeTone(s.lastBackupOutcome)} size={6} />
-              <span class="sr-only">{newestBackupLabel(s)},</span>
-            </>
-          )}
           {s.lastBackup ? age(s.lastBackup) : "Never"}
         </span>
       ),

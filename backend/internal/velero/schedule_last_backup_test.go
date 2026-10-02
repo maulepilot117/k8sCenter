@@ -3,6 +3,7 @@ package velero
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 )
 
@@ -123,7 +125,7 @@ func TestWithLastBackups(t *testing.T) {
 	}
 }
 
-func TestWithLastBackupsFallsBackToStartTime(t *testing.T) {
+func TestWithLastBackupsOrdersByStartTime(t *testing.T) {
 	var zero time.Time
 	backups := []Backup{
 		{Name: "b-old", Namespace: veleroNamespace, ScheduleName: "s", Phase: "Completed", StartTime: ptr(at("2026-09-01T00:00:00Z"))},
@@ -135,15 +137,61 @@ func TestWithLastBackupsFallsBackToStartTime(t *testing.T) {
 		t.Errorf("phase = %q, want Failed from the backup that started last", got[0].LastBackupPhase)
 	}
 
-	// Equal creation times break on the start time.
+	// Equal start times break on the creation time.
 	same := at("2026-09-01T00:00:00Z")
 	backups = []Backup{
-		{Name: "x", Namespace: veleroNamespace, ScheduleName: "s", Phase: "InProgress", created: same, StartTime: ptr(at("2026-09-01T00:05:00Z"))},
-		{Name: "y", Namespace: veleroNamespace, ScheduleName: "s", Phase: "Completed", created: same, StartTime: ptr(at("2026-09-01T00:01:00Z"))},
+		{Name: "x", Namespace: veleroNamespace, ScheduleName: "s", Phase: "InProgress", created: at("2026-09-01T00:05:00Z"), StartTime: ptr(same)},
+		{Name: "y", Namespace: veleroNamespace, ScheduleName: "s", Phase: "Completed", created: at("2026-09-01T00:01:00Z"), StartTime: ptr(same)},
 	}
 	got = withLastBackups([]Schedule{{Name: "s", Namespace: veleroNamespace}}, backups)
 	if got[0].LastBackupPhase != "InProgress" {
-		t.Errorf("tie: phase = %q, want InProgress from the later start", got[0].LastBackupPhase)
+		t.Errorf("tie: phase = %q, want InProgress from the later creation", got[0].LastBackupPhase)
+	}
+}
+
+func TestWithLastBackupsIgnoresSyncedCreationTime(t *testing.T) {
+	// Velero's backup-sync controller recreates backups from the storage
+	// location, so an old run can carry a newer creationTimestamp than the
+	// latest run. Its startTimestamp is the original one, and wins.
+	backups := []Backup{
+		{Name: "s-old", Namespace: veleroNamespace, ScheduleName: "s", Phase: "Failed",
+			created: at("2026-09-10T00:00:00Z"), StartTime: ptr(at("2026-09-01T01:00:00Z"))},
+		{Name: "s-latest", Namespace: veleroNamespace, ScheduleName: "s", Phase: "Completed",
+			created: at("2026-09-05T01:00:00Z"), StartTime: ptr(at("2026-09-05T01:00:00Z"))},
+	}
+	got := withLastBackups([]Schedule{{Name: "s", Namespace: veleroNamespace}}, backups)
+	if got[0].LastBackupPhase != "Completed" {
+		t.Errorf("phase = %q, want Completed from the run that started last, not the one synced last", got[0].LastBackupPhase)
+	}
+}
+
+func TestWithLastBackupsCountsANotYetStartedRun(t *testing.T) {
+	// A run Velero has not started has no startTimestamp; its creation time
+	// still places it after every earlier run.
+	backups := []Backup{
+		{Name: "s-done", Namespace: veleroNamespace, ScheduleName: "s", Phase: "Completed",
+			created: at("2026-09-01T01:00:00Z"), StartTime: ptr(at("2026-09-01T01:00:01Z"))},
+		{Name: "s-queued", Namespace: veleroNamespace, ScheduleName: "s", Phase: "New",
+			created: at("2026-09-02T01:00:00Z")},
+	}
+	got := withLastBackups([]Schedule{{Name: "s", Namespace: veleroNamespace}}, backups)
+	if got[0].LastBackupPhase != "New" || got[0].LastBackupOutcome != BackupOutcomeInProgress {
+		t.Errorf("phase %q outcome %q, want New inProgress from the queued run", got[0].LastBackupPhase, got[0].LastBackupOutcome)
+	}
+}
+
+func TestWithLastBackupsBreaksFullTieOnName(t *testing.T) {
+	// Equal creation and start times: Velero names a schedule's runs
+	// <schedule>-<timestamp>, so the higher name is the later run, in
+	// whichever order the list returns them.
+	same := at("2026-09-01T00:00:00Z")
+	older := Backup{Name: "s-20260901000000", Namespace: veleroNamespace, ScheduleName: "s", Phase: "Completed", created: same, StartTime: ptr(same)}
+	newer := Backup{Name: "s-20260901000001", Namespace: veleroNamespace, ScheduleName: "s", Phase: "Failed", created: same, StartTime: ptr(same)}
+	for _, backups := range [][]Backup{{older, newer}, {newer, older}} {
+		got := withLastBackups([]Schedule{{Name: "s", Namespace: veleroNamespace}}, backups)
+		if got[0].LastBackupPhase != "Failed" {
+			t.Errorf("order %s,%s: phase = %q, want Failed from the higher name", backups[0].Name, backups[1].Name, got[0].LastBackupPhase)
+		}
 	}
 }
 
@@ -270,6 +318,46 @@ func TestListSchedulesWithoutBackupAccessOmitsLastBackupPhase(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestListSchedulesWithNamespacedBackupAccessCarriesLastBackupPhase(t *testing.T) {
+	// The detail reads a schedule's runs with a namespaced list as the user,
+	// so a user who may list backups only in the schedules' namespace sees
+	// the phase on the list too.
+	for _, cluster := range []string{localCluster, remoteCluster} {
+		t.Run(cluster, func(t *testing.T) {
+			var hs *harness
+			if cluster == localCluster {
+				hs = newLocalHarness(t, lastBackupFixture()...)
+			} else {
+				hs = newHarness(t, true, lastBackupFixture()...)
+			}
+			hs.h.AccessChecker = resources.NewPredicateAccessChecker(func(_, _, resource, namespace string) bool {
+				return resource != "backups" || namespace == veleroNamespace
+			})
+			rr := do(t, cluster, http.MethodGet, hs.h.HandleListSchedules, nil, "")
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+			}
+			assertLastBackups(t, decode[[]Schedule](t, rr))
+		})
+	}
+}
+
+func TestCanListBackupsTreatsFailedCheckAsNo(t *testing.T) {
+	hs := newLocalHarness(t)
+	hs.h.AccessChecker = resources.NewErroringAccessChecker(errors.New("SAR failed"))
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	user := &auth.User{KubernetesUsername: "alice"}
+	for _, ns := range []string{"", veleroNamespace} {
+		if hs.h.canListBackups(r, user, ns) {
+			t.Errorf("canListBackups(%q) = true on a failed check, want false", ns)
+		}
+	}
+	backups := []Backup{scheduledBackup("nightly-1", "nightly", "Completed", at("2026-09-01T01:00:00Z"))}
+	if got := hs.h.listableBackups(r, user, backups); len(got) != 0 {
+		t.Errorf("listableBackups kept %d backups on a failed check, want none", len(got))
 	}
 }
 

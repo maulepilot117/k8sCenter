@@ -703,8 +703,8 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 	// The last-backup phase needs the backup list, read and permitted for
 	// this user; without it the schedules are still served, phases empty.
 	var backups []Backup
-	if failed[BackupGVR.Resource] == nil && h.canListBackups(r, user) {
-		backups = data.backups
+	if failed[BackupGVR.Resource] == nil {
+		backups = h.listableBackups(r, user, data.backups)
 	}
 	// withLastBackups returns a copy, so sorting leaves the shared cache alone.
 	schedules := withLastBackups(data.schedules, backups)
