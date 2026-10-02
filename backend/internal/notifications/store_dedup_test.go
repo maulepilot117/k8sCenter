@@ -16,12 +16,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -48,9 +52,17 @@ func testDatabaseRequired(lookup func(string) (string, bool)) bool {
 	}
 }
 
+var (
+	// migrateOnce runs the migration pass at most once per test binary, as
+	// backend/internal/store's harness does; each test then gets its own
+	// small pool so a poisoned connection cannot affect a sibling.
+	migrateOnce sync.Once
+	migrateErr  error
+)
+
 // testNotifStore returns a Store over the migrated test database, or skips
 // the calling test when none is configured. Migrations run through
-// store.New, the production entry point.
+// store.New, the production entry point, once per process.
 func testNotifStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -62,15 +74,34 @@ func testNotifStore(t *testing.T) *Store {
 		t.Skipf("%s is not set; skipping PostgreSQL-backed notification test", testDatabaseURLEnv)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	db, err := store.New(ctx, connString, 0, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatalf("connecting to %s: %v", testDatabaseURLEnv, err)
+	migrateOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		db, err := store.New(ctx, connString, 0, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			migrateErr = fmt.Errorf("connecting to %s and applying migrations: %w "+
+				"(if the test database was migrated by a branch with later migrations, drop and recreate it)",
+				testDatabaseURLEnv, err)
+			return
+		}
+		db.Close()
+	})
+	if migrateErr != nil {
+		t.Fatalf("test database unavailable: %v", migrateErr)
 	}
-	t.Cleanup(db.Close)
-	return NewStore(db.Pool, "")
+
+	config, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", testDatabaseURLEnv, err)
+	}
+	config.MaxConns = 4
+	config.MinConns = 0
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatalf("creating test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return NewStore(pool, "")
 }
 
 // uniqueName returns a resource name no other test (or rerun) writes, so the
@@ -145,9 +176,22 @@ func TestDedupClusterID(t *testing.T) {
 // below prove the behaviour; this one keeps the guarantee visible when no
 // database is available.
 func TestDedupQuery_KeysOnClusterAndUID(t *testing.T) {
-	for _, want := range []string{"resource_uid = $", "cluster_id"} {
-		if !strings.Contains(dedupExistsQuery, want) {
-			t.Errorf("dedupExistsQuery does not contain %q:\n%s", want, dedupExistsQuery)
+	// Whitespace-normalised so a reflow of the statement does not fail the
+	// test, while dropping or loosening either predicate still does.
+	query := strings.Join(strings.Fields(dedupExistsQuery), " ")
+	_, where, ok := strings.Cut(query, " WHERE ")
+	if !ok {
+		t.Fatalf("dedupExistsQuery has no WHERE clause:\n%s", dedupExistsQuery)
+	}
+	for _, want := range []string{
+		// UID compared exactly against the caller's UID ($6).
+		"AND resource_uid = $6 AND",
+		// Cluster compared with the empty id folded onto the local id ($8)
+		// against the caller's already-folded id ($7).
+		"AND (CASE WHEN cluster_id = '' THEN $8::text ELSE cluster_id END) = $7::text AND",
+	} {
+		if !strings.Contains(where, want) {
+			t.Errorf("dedupExistsQuery WHERE clause does not contain %q:\n%s", want, dedupExistsQuery)
 		}
 	}
 }
@@ -347,4 +391,69 @@ func TestInsertAndList_RoundTripResourceUID(t *testing.T) {
 		return
 	}
 	t.Fatalf("inserted notification %s not returned by ListNotifications", id)
+}
+
+// The two other readers of resource_uid select it next to cluster_id. Both
+// columns are text, so a SELECT/Scan misalignment would swap the values
+// rather than fail; the fixtures use distinct, recognisable values for each
+// field so a swap is caught.
+
+func TestRecentBySource_RoundTripResourceUIDAndCluster(t *testing.T) {
+	s := testNotifStore(t)
+
+	n := baseNotification(t)
+	n.ClusterID = "cluster-rt-" + uniqueName(t)
+	n.ResourceUID = "uid-recent"
+	since := time.Now().Add(-time.Minute)
+	id := mustInsert(t, s, n)
+
+	got, err := s.RecentBySource(t.Context(), SourceDiagnostic, n.ClusterID, since)
+	if err != nil {
+		t.Fatalf("RecentBySource: %v", err)
+	}
+	for _, r := range got {
+		if r.ID != id {
+			continue
+		}
+		if r.ResourceUID != "uid-recent" || r.ClusterID != n.ClusterID {
+			t.Fatalf("RecentBySource lost the identity: uid=%q cluster=%q", r.ResourceUID, r.ClusterID)
+		}
+		if r.ResourceName != n.ResourceName || r.ResourceNS != "team-a" || r.ResourceKind != "Pod" || r.Title != n.Title {
+			t.Fatalf("RecentBySource scanned columns out of order: %+v", r)
+		}
+		return
+	}
+	t.Fatalf("inserted notification %s not returned by RecentBySource", id)
+}
+
+func TestNotificationsSince_RoundTripResourceUIDAndCluster(t *testing.T) {
+	s := testNotifStore(t)
+
+	n := baseNotification(t)
+	// A namespace no other test writes keeps the LIMIT 500 window to this
+	// test's rows plus resource-less rows of the filtered source.
+	n.ResourceNS = uniqueName(t)
+	n.ClusterID = "cluster-since"
+	n.ResourceUID = "uid-since"
+	since := time.Now().Add(-time.Minute)
+	id := mustInsert(t, s, n)
+
+	got, err := s.NotificationsSince(t.Context(), since, []string{n.ResourceNS},
+		[]string{string(SourceDiagnostic)}, []string{string(SeverityWarning)})
+	if err != nil {
+		t.Fatalf("NotificationsSince: %v", err)
+	}
+	for _, r := range got {
+		if r.ID != id {
+			continue
+		}
+		if r.ResourceUID != "uid-since" || r.ClusterID != "cluster-since" {
+			t.Fatalf("NotificationsSince lost the identity: uid=%q cluster=%q", r.ResourceUID, r.ClusterID)
+		}
+		if r.ResourceName != n.ResourceName || r.ResourceNS != n.ResourceNS || r.ResourceKind != "Pod" || r.Title != n.Title {
+			t.Fatalf("NotificationsSince scanned columns out of order: %+v", r)
+		}
+		return
+	}
+	t.Fatalf("inserted notification %s not returned by NotificationsSince", id)
 }

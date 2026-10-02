@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/kubecenter/kubecenter/internal/notifications"
 )
@@ -145,11 +146,64 @@ func TestDispatchIfChanged(t *testing.T) {
 }
 
 func TestStateKeyFormat(t *testing.T) {
-	key := stateKey("my-namespace", "my-quota", "cpu")
+	key := stateKey("my-namespace", "my-quota", "uid-1", "cpu")
 	// Uses null byte delimiter to avoid collisions with names containing colons
-	expected := "my-namespace\x00my-quota\x00cpu"
+	expected := "my-namespace\x00my-quota\x00uid-1\x00cpu"
 	if key != expected {
 		t.Errorf("stateKey = %q, want %q", key, expected)
+	}
+	// A recreated quota (same name, new UID) must not share transition state.
+	if stateKey("my-namespace", "my-quota", "uid-2", "cpu") == key {
+		t.Error("stateKey must differ when only the quota UID differs")
+	}
+}
+
+// A quota deleted and recreated under the same name within one check
+// interval, landing in the same threshold status, is a new quota: the
+// in-memory transition gate must not suppress it before it reaches Emit with
+// its new UID (the notification dedup identity).
+func TestCheckerRecreatedQuotaDispatchesAgain(t *testing.T) {
+	newQuota := func(uid string) *corev1.ResourceQuota {
+		return &corev1.ResourceQuota{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "quota1",
+				Namespace: "ns1",
+				UID:       types.UID(uid),
+			},
+			Status: corev1.ResourceQuotaStatus{
+				Hard: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4")},
+				Used: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3.5")}, // 87.5% - warning
+			},
+		}
+	}
+
+	informers := newTestInformerSource([]*corev1.ResourceQuota{newQuota("uid-old")}, nil)
+	h := NewHandler(informers, &mockAccessChecker{alwaysAllow: true}, slog.Default())
+	notifier := &mockNotifier{}
+	checker := NewChecker(h, notifier, time.Hour, slog.Default())
+
+	checker.check(context.Background())
+	if notifier.count() != 1 {
+		t.Fatalf("expected 1 notification for the original quota, got %d", notifier.count())
+	}
+
+	// Delete + recreate between two checks: same name, same status, new UID.
+	informers.quotaLister.quotas = []*corev1.ResourceQuota{newQuota("uid-new")}
+	checker.check(context.Background())
+
+	if notifier.count() != 2 {
+		t.Fatalf("expected the recreated quota to dispatch again (2 total), got %d", notifier.count())
+	}
+	if got := notifier.get(1).ResourceUID; got != "uid-new" {
+		t.Errorf("expected recreated quota's ResourceUID uid-new, got %q", got)
+	}
+
+	// The old quota's state entry is pruned, so state does not grow per UID.
+	checker.mu.Lock()
+	n := len(checker.lastState)
+	checker.mu.Unlock()
+	if n != 1 {
+		t.Errorf("expected 1 lastState entry after prune, got %d", n)
 	}
 }
 
