@@ -15,7 +15,6 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
-	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -51,11 +50,10 @@ type Handler struct {
 	snapshotAvail     bool
 	snapshotCheckedAt time.Time
 
-	// Remote CSI driver and StorageClass lists, per (cluster, identity);
-	// created on first use by remoteCaches.
-	remoteOnce        sync.Once
-	remoteDriverCache *remotecache.Cache[*remoteDrivers]
-	remoteClassCache  *remotecache.Cache[[]*storagev1.StorageClass]
+	// Remote CSI driver, StorageClass and snapshot-driver lists, per
+	// (cluster, identity); created on first use by caches.
+	remoteOnce sync.Once
+	remote     *remoteCaches
 }
 
 func isLocal(ctx context.Context) bool {
@@ -218,7 +216,8 @@ func (h *Handler) HandleListDrivers(w http.ResponseWriter, r *http.Request) {
 			snapshotDrivers = h.getSnapshotDrivers(r)
 		}
 	} else {
-		remote, err := h.loadRemoteDrivers(r.Context(), user)
+		var err error
+		drivers, err = h.loadRemoteDrivers(r.Context(), user)
 		if err != nil {
 			httputil.WriteRemoteLoadError(w, err, "Storage")
 			return
@@ -230,7 +229,7 @@ func (h *Handler) HandleListDrivers(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteRemoteLoadError(w, err, "Storage")
 			return
 		}
-		drivers, snapshotDrivers = remote.drivers, remote.snapshotDrivers
+		snapshotDrivers = h.remoteSnapshotDrivers(r.Context(), user)
 	}
 
 	result := make([]DriverInfo, 0, len(drivers))

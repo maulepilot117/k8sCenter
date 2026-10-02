@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic"
 	kfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -178,34 +179,44 @@ func TestRemote_StorageListsReturnTheClusterError(t *testing.T) {
 }
 
 func TestRemote_StorageListsAreCachedPerClusterAndIdentity(t *testing.T) {
-	hs := newStorageHarness(t, true)
-	remote := hs.clients.clusters[remoteCluster].kube
+	for name, tc := range map[string]struct {
+		h        func(*Handler) http.HandlerFunc
+		resource string
+	}{
+		"classes": {func(h *Handler) http.HandlerFunc { return h.HandleListClasses }, "storageclasses"},
+		"drivers": {func(h *Handler) http.HandlerFunc { return h.HandleListDrivers }, "csidrivers"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newStorageHarness(t, true)
+			remote := hs.clients.clusters[remoteCluster].kube
+			read := func(user *auth.User) {
+				t.Helper()
+				if rr := doAs(t, user, remoteCluster, http.MethodGet, tc.h(hs.h), nil, ""); rr.Code != http.StatusOK {
+					t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+				}
+			}
+			assertLists := func(want int, why string) {
+				t.Helper()
+				if n := countKubeVerb(remote, "list", tc.resource); n != want {
+					t.Errorf("%s: %s listed %d times in total, want %d", why, tc.resource, n, want)
+				}
+			}
 
-	for range 2 {
-		if rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListClasses, nil, ""); rr.Code != http.StatusOK {
-			t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
-		}
-	}
-	if n := countKubeVerb(remote, "list", "storageclasses"); n != 1 {
-		t.Errorf("two reads by one identity listed StorageClasses %d times, want 1", n)
-	}
+			read(adminUser)
+			read(adminUser)
+			assertLists(1, "two reads by one identity")
 
-	// Another identity never shares the first one's view.
-	other := &auth.User{Username: "ops", KubernetesUsername: "ops", KubernetesGroups: []string{"ops"}, Roles: []string{"admin"}}
-	if rr := doAs(t, other, remoteCluster, http.MethodGet, hs.h.HandleListClasses, nil, ""); rr.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
-	}
-	if n := countKubeVerb(remote, "list", "storageclasses"); n != 2 {
-		t.Errorf("a second identity listed StorageClasses %d times in total, want 2", n)
-	}
+			// Another identity never shares the first one's view, even with
+			// the same username: groups are part of the identity.
+			sameNameOtherGroups := &auth.User{Username: "admin", KubernetesUsername: "admin", KubernetesGroups: []string{"viewers"}, Roles: []string{"admin"}}
+			read(sameNameOtherGroups)
+			assertLists(2, "same username, different groups")
 
-	// Evicting the cluster (a removal or re-registration) drops every view.
-	hs.h.EvictRemoteCache(remoteCluster)
-	if rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListClasses, nil, ""); rr.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
-	}
-	if n := countKubeVerb(remote, "list", "storageclasses"); n != 3 {
-		t.Errorf("after eviction StorageClasses were listed %d times in total, want 3", n)
+			// Evicting the cluster (a removal or re-registration) drops every view.
+			hs.h.EvictRemoteCache(remoteCluster)
+			read(adminUser)
+			assertLists(3, "after eviction")
+		})
 	}
 }
 
@@ -270,5 +281,82 @@ func TestLocal_StorageListsReadTheLocalInformers(t *testing.T) {
 	}
 	if n := len(hs.clients.clusters[remoteCluster].kube.Actions()); n != 0 {
 		t.Errorf("remote cluster recorded %d actions on a local request, want 0", n)
+	}
+}
+
+// failSnapshotClassList makes the remote's VolumeSnapshotClass list fail with
+// err until the returned func is called.
+func failSnapshotClassList(hs *harness, err error) (restore func()) {
+	failing := true
+	hs.dyn(remoteCluster).PrependReactor("list", "volumesnapshotclasses", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if failing {
+			return true, nil, err
+		}
+		return false, nil, nil
+	})
+	return func() { failing = false }
+}
+
+func driverSnapshotSupport(t *testing.T, hs *harness) bool {
+	t.Helper()
+	rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListDrivers, nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("drivers: status %d body %s, want 200", rr.Code, rr.Body.String())
+	}
+	got := decodeList[DriverInfo](t, rr)
+	if len(got.Data) != 1 {
+		t.Fatalf("drivers = %+v, want remote.csi", got.Data)
+	}
+	return got.Data[0].Capabilities.Snapshot
+}
+
+func TestRemote_SnapshotClassFailureDegradesWithoutBeingCached(t *testing.T) {
+	hs := newStorageHarness(t, true, snapshotClass("remote-class", "remote.csi"))
+	restore := failSnapshotClassList(hs, unreachable())
+
+	// The driver list still answers; the snapshot capability is unknown, so
+	// it is reported unsupported for this response only.
+	if driverSnapshotSupport(t, hs) {
+		t.Error("snapshot support reported although the snapshot classes could not be read")
+	}
+
+	// The failure was not cached: once the remote recovers, the next request
+	// sees the snapshot class without waiting for a cache TTL.
+	restore()
+	if !driverSnapshotSupport(t, hs) {
+		t.Error("snapshot support still hidden after the remote recovered")
+	}
+}
+
+func TestRemote_SnapshotClientFailureDegradesTheDriverList(t *testing.T) {
+	hs := newStorageHarness(t, true, snapshotClass("remote-class", "remote.csi"))
+	// Discovery and the typed client resolve, the dynamic client does not.
+	hs.h.Clients = dynamicFails{hs.clients}
+
+	if driverSnapshotSupport(t, hs) {
+		t.Error("snapshot support reported although no dynamic client could be built")
+	}
+}
+
+// dynamicFails is a ClusterClients whose dynamic client never resolves.
+type dynamicFails struct{ *fakeClients }
+
+func (dynamicFails) DynamicClientForCluster(context.Context, string, string, []string) (dynamic.Interface, error) {
+	return nil, unreachable()
+}
+
+func TestRemote_SnapshotClassCRDRemovedAfterDiscoveryIsRechecked(t *testing.T) {
+	hs := newStorageHarness(t, true, snapshotClass("remote-class", "remote.csi"))
+	crdGone(hs.clients.clusters[remoteCluster], volumeSnapshotClassGVR, "list")
+
+	if driverSnapshotSupport(t, hs) {
+		t.Error("snapshot support reported after the snapshot CRDs were removed")
+	}
+	// The re-read confirmed the removal, so the next request does not list
+	// the gone resource again.
+	before := countVerb(hs.dyn(remoteCluster), "list", "volumesnapshotclasses")
+	driverSnapshotSupport(t, hs)
+	if after := countVerb(hs.dyn(remoteCluster), "list", "volumesnapshotclasses"); after != before {
+		t.Errorf("listed the removed snapshot classes again (%d -> %d)", before, after)
 	}
 }
