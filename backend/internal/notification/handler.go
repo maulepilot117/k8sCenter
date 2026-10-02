@@ -350,7 +350,14 @@ func serveList[T namespacedItem](h *Handler, w http.ResponseWriter, r *http.Requ
 	}
 
 	items, err := loadItems(r.Context(), h, user, gvr, local, pick)
-	if err != nil {
+	switch {
+	case err == nil:
+	case isLocal(r.Context()) && k8s.IsResourceGone(err):
+		// The notification-controller is not installed: an empty list, as
+		// on a remote cluster (fetchRemote). The status route is what says
+		// "not available"; failing here as well hid that from the UI.
+		items = nil
+	default:
 		h.writeLoadError(w, r, err, gvr.Resource)
 		return
 	}

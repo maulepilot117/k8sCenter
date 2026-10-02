@@ -886,6 +886,56 @@ func TestLocal_CreateActsOnLocalAndKeepsMessages(t *testing.T) {
 	}
 }
 
+// A local cluster without the notification-controller answers each list
+// with an empty 200 and the status route with available=false, the same as a
+// remote cluster does. A 500 here left the web UI showing a load error instead
+// of its "notification-controller not detected" banner.
+func TestLocal_NotInstalledListsAreEmptyAndStatusUnavailable(t *testing.T) {
+	hs := newHarness(t, FluxProviderGVR.Version)
+	localDyn := hs.clients.clusters["local"].dyn
+	localDyn.PrependReactor("list", "*", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(a.GetResource().GroupResource(), "")
+	})
+	hs.h.baseDynOverride = localDyn
+
+	lists := map[string]http.HandlerFunc{
+		"providers": hs.h.HandleListProviders,
+		"alerts":    hs.h.HandleListAlerts,
+		"receivers": hs.h.HandleListReceivers,
+	}
+	for resource, handler := range lists {
+		rr := do(t, "local", http.MethodGet, handler, nil, "")
+		if rr.Code != http.StatusOK {
+			t.Errorf("%s list status %d, want 200 empty: %s", resource, rr.Code, rr.Body.String())
+			continue
+		}
+		body := decode[map[string]any](t, rr)
+		if total, _ := body["total"].(float64); total != 0 {
+			t.Errorf("%s list total = %v, want 0", resource, body["total"])
+		}
+	}
+
+	st := decode[NotificationStatus](t, do(t, "local", http.MethodGet, hs.h.HandleStatus, nil, ""))
+	if st.Available {
+		t.Errorf("status = %+v, want unavailable", st)
+	}
+}
+
+// A list failure other than a missing resource type is still an error on the
+// local cluster: only "not installed" reads as empty.
+func TestLocal_ListFailureOtherThanNotInstalledIsAnError(t *testing.T) {
+	hs := newHarness(t, FluxProviderGVR.Version)
+	localDyn := hs.clients.clusters["local"].dyn
+	localDyn.PrependReactor("list", "providers", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New("etcd unavailable"))
+	})
+	hs.h.baseDynOverride = localDyn
+
+	if rr := do(t, "local", http.MethodGet, hs.h.HandleListProviders, nil, ""); rr.Code != http.StatusInternalServerError {
+		t.Errorf("providers list status %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestLocal_AccessCheckErrorIsADenial(t *testing.T) {
 	hs := newHarness(t, FluxProviderGVR.Version)
 	hs.h.AccessChecker = resources.NewErroringAccessChecker(errors.New("sar failed"))
