@@ -99,6 +99,8 @@ test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistenc
     "mesh.routing",
     "node.drain",
     "pod.exec",
+    "policy.compliance_history",
+    "policy.read",
     "resources.counts",
     "storage.classes",
     "storage.snapshots",

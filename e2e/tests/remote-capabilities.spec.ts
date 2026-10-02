@@ -186,7 +186,8 @@ test.describe.serial("Remote cluster capabilities", () => {
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
     }
     // R-8: the features routed to the selected cluster are declared supported,
-    // and the carve-outs that stay local are declared unsupported (U13).
+    // and the carve-outs that stay local are declared unsupported (U13; the
+    // policy rows since #530).
     for (const id of [
       "node.drain",
       "gitops.applications",
@@ -200,6 +201,7 @@ test.describe.serial("Remote cluster capabilities", () => {
       "mesh.mtls",
       "eso.read",
       "certmanager.certificates",
+      "policy.read",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
@@ -211,6 +213,7 @@ test.describe.serial("Remote cluster capabilities", () => {
       "eso.metrics",
       "topology.graph",
       "diagnostics.read",
+      "policy.compliance_history",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(false);
       expect(byId.get(id)?.reasonCode, id).toBe("unsupported_platform");

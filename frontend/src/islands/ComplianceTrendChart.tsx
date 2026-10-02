@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useCallback, useEffect } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
-import { apiGet } from "@/lib/api.ts";
+import { ApiError, apiGet } from "@/lib/api.ts";
 import { scoreColor } from "@/lib/score-color.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
@@ -260,10 +260,26 @@ function TrendChart({
   );
 }
 
+/**
+ * Whether err is the history route refusing a remote cluster. Snapshots are
+ * recorded for the local cluster only, so under a remote selection the route
+ * answers 501 `remote_history_unsupported` rather than the local trend
+ * (#530). That is a standing fact about the selection, not a failed read, so
+ * it is worded as one and offers no retry.
+ */
+function isRemoteHistoryUnsupported(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 501 &&
+    err.reason === "remote_history_unsupported"
+  );
+}
+
 export default function ComplianceTrendChart() {
   const points = useSignal<FilledPoint[]>([]);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
+  const unsupported = useSignal(false);
   const range = useSignal<TimeRange>(30);
   const hoverIdx = useSignal<number | null>(null);
 
@@ -271,14 +287,19 @@ export default function ComplianceTrendChart() {
     if (!IS_BROWSER) return;
     loading.value = true;
     error.value = null;
+    unsupported.value = false;
     try {
       const res = await apiGet<TrendPoint[]>(
         `/v1/policies/compliance/history?days=${days}`,
       );
       const raw = Array.isArray(res.data) ? res.data : [];
       points.value = fillDateGaps(raw);
-    } catch {
-      error.value = "Failed to load compliance trend data";
+    } catch (err) {
+      if (isRemoteHistoryUnsupported(err)) {
+        unsupported.value = true;
+      } else {
+        error.value = "Failed to load compliance trend data";
+      }
       points.value = [];
     } finally {
       loading.value = false;
@@ -342,11 +363,24 @@ export default function ComplianceTrendChart() {
         </div>
       )}
 
-      {!loading.value && !error.value && realPoints.length === 0 && (
-        <p class="text-sm text-text-muted py-12 text-center">
-          Compliance trend data will appear after the first snapshot.
+      {!loading.value && unsupported.value && (
+        <p
+          data-testid="compliance-trend-remote-unsupported"
+          class="text-sm text-text-muted py-12 text-center"
+        >
+          Compliance history is recorded for the local cluster only. Select the
+          local cluster to see the trend.
         </p>
       )}
+
+      {!loading.value &&
+        !error.value &&
+        !unsupported.value &&
+        realPoints.length === 0 && (
+          <p class="text-sm text-text-muted py-12 text-center">
+            Compliance trend data will appear after the first snapshot.
+          </p>
+        )}
 
       {!loading.value && !error.value && realPoints.length > 0 && (
         <>
