@@ -685,8 +685,12 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, ok := h.loadList(w, r, user, ScheduleGVR, "schedules")
-	if !ok {
+	data, failed, err := h.load(r.Context(), user)
+	if err == nil && data != nil {
+		err = failed[ScheduleGVR.Resource]
+	}
+	if err != nil {
+		h.writeLoadError(w, r, err, "schedules")
 		return
 	}
 	if data == nil {
@@ -694,8 +698,15 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sort a copy by name: the cached slice is shared.
-	schedules := slices.Clone(data.schedules)
+	// Copy before sorting: the cached slice is shared. The last-backup phase
+	// needs the backup list, read and permitted for this user; without it the
+	// schedules are still served.
+	var schedules []Schedule
+	if failed[BackupGVR.Resource] == nil && h.canListBackups(r, user) {
+		schedules = withLastBackups(data.schedules, data.backups)
+	} else {
+		schedules = slices.Clone(data.schedules)
+	}
 	sort.Slice(schedules, func(i, j int) bool {
 		return schedules[i].Name < schedules[j].Name
 	})
@@ -728,6 +739,7 @@ func (h *Handler) HandleGetSchedule(w http.ResponseWriter, r *http.Request) {
 		h.writeGetError(w, r, err, "schedule not found")
 		return
 	}
+	h.withLastBackup(r.Context(), dynClient, schedule)
 
 	httputil.WriteData(w, schedule)
 }
@@ -973,7 +985,7 @@ func (h *Handler) HandleTriggerSchedule(w http.ResponseWriter, r *http.Request) 
 				"name":      backupName,
 				"namespace": namespace,
 				"labels": map[string]any{
-					"velero.io/schedule-name": name,
+					scheduleNameLabel: scheduleLabelValue(name),
 				},
 			},
 			"spec": template,
@@ -1247,6 +1259,7 @@ func parseBackup(obj *unstructured.Unstructured) Backup {
 		Name:      obj.GetName(),
 		Namespace: obj.GetNamespace(),
 		Labels:    obj.GetLabels(),
+		created:   obj.GetCreationTimestamp().Time,
 	}
 
 	// Spec fields
@@ -1272,7 +1285,7 @@ func parseBackup(obj *unstructured.Unstructured) Backup {
 
 	// Schedule name from label
 	if labels := obj.GetLabels(); labels != nil {
-		backup.ScheduleName = labels["velero.io/schedule-name"]
+		backup.ScheduleName = labels[scheduleNameLabel]
 	}
 
 	return backup

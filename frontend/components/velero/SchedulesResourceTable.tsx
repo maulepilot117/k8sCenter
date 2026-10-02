@@ -5,7 +5,7 @@ import ResourceTable, {
   type Row,
 } from "@/components/ui/ResourceTable.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
-import { phaseTone } from "@/components/velero/velero-utils.ts";
+import { outcomeTone, phaseTone } from "@/components/velero/velero-utils.ts";
 import { age } from "@/lib/format.ts";
 import type { Schedule } from "@/lib/velero-types.ts";
 
@@ -87,12 +87,26 @@ export function SchedulesResourceTable({
       ),
       lastBackup: (
         <span
+          title={
+            s.lastBackupPhase
+              ? `Newest backup: ${s.lastBackupPhase}`
+              : undefined
+          }
           style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "6px",
             fontSize: "13px",
             color: "var(--text-muted)",
             fontVariantNumeric: "tabular-nums",
           }}
         >
+          {s.lastBackupPhase && (
+            <>
+              <StatusDot status={outcomeTone(s.lastBackupOutcome)} size={6} />
+              <span class="sr-only">Newest backup {s.lastBackupPhase},</span>
+            </>
+          )}
           {s.lastBackup ? age(s.lastBackup) : "Never"}
         </span>
       ),

@@ -68,6 +68,10 @@ type Backup struct {
 	ScheduleName       string            `json:"scheduleName,omitempty"`
 	SnapshotVolumes    bool              `json:"snapshotVolumes"`
 	Labels             map[string]string `json:"labels,omitempty"`
+
+	// created is the object's creationTimestamp, which orders a schedule's
+	// runs. Not serialized.
+	created time.Time
 }
 
 // Restore is the API response for a Velero restore.
@@ -100,8 +104,13 @@ type Schedule struct {
 	IncludedNamespaces []string   `json:"includedNamespaces"`
 	TTL                string     `json:"ttl"`
 	StorageLocation    string     `json:"storageLocation"`
-	LastBackupPhase    string     `json:"lastBackupPhase,omitempty"`
-	ValidationErrors   []string   `json:"validationErrors,omitempty"`
+	// LastBackupPhase is the phase of the schedule's newest Backup and
+	// LastBackupOutcome what that phase means. Both are empty when the
+	// schedule has no backup or the user cannot list backups. LastBackup
+	// stays Velero's own status.lastBackup.
+	LastBackupPhase   string        `json:"lastBackupPhase,omitempty"`
+	LastBackupOutcome BackupOutcome `json:"lastBackupOutcome,omitempty"`
+	ValidationErrors  []string      `json:"validationErrors,omitempty"`
 }
 
 // BackupStorageLocation is the API response for a BSL.
@@ -143,4 +152,34 @@ func IsProgressPhase(phase string) bool {
 		return true
 	}
 	return false
+}
+
+// BackupOutcome is what a Backup's phase says about how it went.
+type BackupOutcome string
+
+const (
+	BackupOutcomeSucceeded  BackupOutcome = "succeeded"
+	BackupOutcomeFailed     BackupOutcome = "failed"
+	BackupOutcomeInProgress BackupOutcome = "inProgress"
+	// BackupOutcomeUnknown is a phase that is not a backup outcome: Deleting,
+	// a phase this version does not know, or a phase of another kind.
+	BackupOutcomeUnknown BackupOutcome = "unknown"
+)
+
+// BackupOutcomeOf classifies a Backup phase. Only Backup phases count:
+// BackupStorageLocation and Schedule phases such as Available and Enabled
+// are unknown, not successes. A partial failure is a failure, and the empty
+// phase of a backup Velero has not picked up yet is in progress.
+func BackupOutcomeOf(phase string) BackupOutcome {
+	switch phase {
+	case "Completed":
+		return BackupOutcomeSucceeded
+	case "PartiallyFailed", "Failed", "FailedValidation":
+		return BackupOutcomeFailed
+	case "", "New", "Queued", "ReadyToStart", "InProgress",
+		"WaitingForPluginOperations", "WaitingForPluginOperationsPartiallyFailed",
+		"Finalizing", "FinalizingPartiallyFailed":
+		return BackupOutcomeInProgress
+	}
+	return BackupOutcomeUnknown
 }

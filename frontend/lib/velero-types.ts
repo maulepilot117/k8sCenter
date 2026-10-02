@@ -47,6 +47,12 @@ export interface Restore {
   failureReason?: string;
 }
 
+/**
+ * How a backup went, classified by the backend from Backup phases only
+ * (`velero.BackupOutcomeOf`). A partial failure is "failed".
+ */
+export type BackupOutcome = "succeeded" | "failed" | "inProgress" | "unknown";
+
 /** Schedule represents a Velero backup schedule. */
 export interface Schedule {
   name: string;
@@ -58,7 +64,10 @@ export interface Schedule {
   storageLocation?: string;
   ttl?: string;
   lastBackup?: string;
+  /** Phase of the schedule's newest Backup; absent when it has none. */
   lastBackupPhase?: string;
+  /** The backend's classification of lastBackupPhase. */
+  lastBackupOutcome?: BackupOutcome;
   nextRunTime?: string;
   validationErrors?: string[];
 }

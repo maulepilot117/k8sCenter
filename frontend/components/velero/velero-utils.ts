@@ -1,5 +1,19 @@
 import type { StatusValue } from "@/components/ui/StatusDot.tsx";
-import { getPhaseCategory } from "@/lib/velero-types.ts";
+import { type BackupOutcome, getPhaseCategory } from "@/lib/velero-types.ts";
+
+/** Map a backend backup outcome → canonical StatusDot status. */
+export function outcomeTone(outcome: BackupOutcome | undefined): StatusValue {
+  switch (outcome) {
+    case "succeeded":
+      return "success";
+    case "failed":
+      return "error";
+    case "inProgress":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
 
 /** Map Velero phase string → canonical StatusDot status. */
 export function phaseTone(phase: string): StatusValue {
