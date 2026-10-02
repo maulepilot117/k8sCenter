@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -52,6 +53,8 @@ type fakeCluster struct {
 type fakeClients struct {
 	clusters  map[string]*fakeCluster
 	targetErr error
+	// invalidates counts cached-schema invalidations.
+	invalidates atomic.Int32
 }
 
 func (f *fakeClients) cluster(id string) (*fakeCluster, error) {
@@ -86,11 +89,8 @@ func (f *fakeClients) TargetSchemaFor(_ context.Context, id, _ string, _ []strin
 		return nil, err
 	}
 	var disc discovery.DiscoveryInterface = c.disc
-	return &k8s.TargetSchema{ClusterID: id, Discovery: disc, Invalidate: func() {}}, nil
+	return &k8s.TargetSchema{ClusterID: id, Discovery: disc, Invalidate: func() { f.invalidates.Add(1) }}, nil
 }
-
-// v1beta2 is the older Provider and Alert version a remote may serve alone.
-const v1beta2 = "v1beta2"
 
 func atVersion(gvr schema.GroupVersionResource, version string) schema.GroupVersionResource {
 	gvr.Version = version
@@ -543,6 +543,145 @@ func TestRemote_BothVersionsServedPrefersV1beta3(t *testing.T) {
 	}
 	if got := versionsOf(hs.remoteDyn(), "list", "providers"); len(got) == 0 || got[len(got)-1] != FluxProviderGVR.Version {
 		t.Errorf("list versions = %v, want v1beta3", got)
+	}
+}
+
+// serve replaces the remote cluster's discovery with one list per entry of
+// versions, keyed "group-version" to the resources served there.
+func (hs *harness) serve(versions map[string][]string) {
+	var lists []*metav1.APIResourceList
+	kinds := map[string]string{"providers": "Provider", "alerts": "Alert", "receivers": "Receiver"}
+	for version, resources := range versions {
+		l := &metav1.APIResourceList{GroupVersion: FluxNotificationGroup + "/" + version}
+		for _, res := range resources {
+			l.APIResources = append(l.APIResources, metav1.APIResource{Name: res, Kind: kinds[res], Namespaced: true})
+		}
+		lists = append(lists, l)
+	}
+	hs.clients.clusters[remoteCluster].disc.Resources = lists
+}
+
+func TestRemote_MixedVersionsResolvePerResource(t *testing.T) {
+	hs := newHarness(t, FluxProviderGVR.Version)
+	hs.serve(map[string][]string{
+		v1beta2:                 {"providers"},
+		FluxAlertGVR.Version:    {"alerts"},
+		FluxReceiverGVR.Version: {"receivers"},
+	})
+
+	if rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateProvider, nil, providerBody); rr.Code != http.StatusOK {
+		t.Fatalf("provider create status %d: %s", rr.Code, rr.Body.String())
+	}
+	rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateAlert, nil,
+		`{"name":"new-alert","namespace":"flux-system","providerRef":"new-provider","eventSources":[{"kind":"Kustomization","name":"*"}]}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("alert create status %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := versionsOf(hs.remoteDyn(), "create", "providers"); len(got) != 1 || got[0] != v1beta2 {
+		t.Errorf("provider create versions = %v, want [v1beta2]", got)
+	}
+	if got := versionsOf(hs.remoteDyn(), "create", "alerts"); len(got) != 1 || got[0] != FluxAlertGVR.Version {
+		t.Errorf("alert create versions = %v, want [v1beta3]", got)
+	}
+}
+
+func TestRemote_Flux0xV1beta2IsNotInstalled(t *testing.T) {
+	// Flux 0.x served everything at v1beta2 and had no v1 Receiver API. Its
+	// Alert schema lacks spec.inclusionList, which a write would lose.
+	hs := newHarness(t, FluxProviderGVR.Version)
+	hs.serve(map[string][]string{v1beta2: {"providers", "alerts", "receivers"}})
+
+	st := decode[NotificationStatus](t, do(t, remoteCluster, http.MethodGet, hs.h.HandleStatus, nil, ""))
+	if st.Available || st.Reason != string(k8s.ReasonDiscoveryMissing) {
+		t.Errorf("status = %+v, want unavailable with discovery_missing", st)
+	}
+	rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateAlert, nil,
+		`{"name":"new-alert","namespace":"flux-system","providerRef":"p","eventSources":[{"kind":"Kustomization","name":"*"}],"inclusionList":["^ok$"]}`)
+	if rr.Code != http.StatusNotFound || decodeError(t, rr).Error.Reason != string(k8s.ReasonDiscoveryMissing) {
+		t.Errorf("alert create: status %d, body %s, want 404 discovery_missing", rr.Code, rr.Body.String())
+	}
+	if n := countVerb(hs.remoteDyn(), "create", "alerts"); n != 0 {
+		t.Errorf("remote alert creates = %d, want 0", n)
+	}
+}
+
+func TestRemote_V1beta2RefusesProviderTypesAddedAfterFlux20(t *testing.T) {
+	const laterType = `{"name":"new-provider","namespace":"flux-system","type":"githubpullrequestcomment","address":"https://github.com/o/r"}`
+	hs := newHarness(t, v1beta2, fluxObjAt("Provider", "remote-provider", v1beta2))
+
+	for name, rr := range map[string]*httptest.ResponseRecorder{
+		"create": do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateProvider, nil, laterType),
+		"update": do(t, remoteCluster, http.MethodPut, hs.h.HandleUpdateProvider, providerParams, `{"type":"githubpullrequestcomment"}`),
+	} {
+		if rr.Code != http.StatusBadRequest || !strings.Contains(decodeError(t, rr).Error.Message, "not supported by the Flux version") {
+			t.Errorf("%s: status %d, body %s, want 400 naming the Flux version", name, rr.Code, rr.Body.String())
+		}
+	}
+	for _, verb := range []string{"create", "update", "get"} {
+		if n := countVerb(hs.remoteDyn(), verb, "providers"); n != 0 {
+			t.Errorf("remote provider %ss = %d, want 0", verb, n)
+		}
+	}
+
+	// The same type is accepted where the cluster serves v1beta3.
+	hs = newHarness(t, FluxProviderGVR.Version)
+	if rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateProvider, nil, laterType); rr.Code != http.StatusOK {
+		t.Errorf("v1beta3 create status %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRemote_FallbackDropsTheCachedSchema(t *testing.T) {
+	// A cluster read at a fallback version re-reads discovery on the next
+	// request, so a Flux upgrade that stops serving v1beta2 is seen before a
+	// write is sent to it.
+	hs := newHarness(t, v1beta2)
+	if rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateProvider, nil, providerBody); rr.Code != http.StatusOK {
+		t.Fatalf("create status %d: %s", rr.Code, rr.Body.String())
+	}
+	if n := hs.clients.invalidates.Load(); n == 0 {
+		t.Error("a v1beta2 write left the cached schema in place, want it invalidated")
+	}
+
+	hs.serve(map[string][]string{FluxProviderGVR.Version: {"providers", "alerts"}, FluxReceiverGVR.Version: {"receivers"}})
+	if rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateProvider, nil, strings.Replace(providerBody, "new-provider", "after-upgrade", 1)); rr.Code != http.StatusOK {
+		t.Fatalf("create after upgrade status %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := versionsOf(hs.remoteDyn(), "create", "providers"); len(got) != 2 || got[1] != FluxProviderGVR.Version {
+		t.Errorf("create versions = %v, want the second at v1beta3", got)
+	}
+
+	// A cluster on the preferred versions keeps its cached schema.
+	hs = newHarness(t, FluxProviderGVR.Version)
+	if rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateProvider, nil, providerBody); rr.Code != http.StatusOK {
+		t.Fatalf("v1beta3 create status %d: %s", rr.Code, rr.Body.String())
+	}
+	if n := hs.clients.invalidates.Load(); n != 0 {
+		t.Errorf("v1beta3 write invalidated the cached schema %d times, want 0", n)
+	}
+}
+
+func TestLocal_WritesStayOnTheDefaultVersions(t *testing.T) {
+	hs := newHarness(t, v1beta2)
+	hs.h.baseDynOverride = hs.clients.clusters["local"].dyn
+	params := map[string]string{"namespace": testNS, "name": "local-provider"}
+
+	if rr := do(t, "local", http.MethodPost, hs.h.HandleSuspendProvider, params, `{"suspend":true}`); rr.Code != http.StatusOK {
+		t.Fatalf("suspend status %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr := do(t, "local", http.MethodDelete, hs.h.HandleDeleteProvider, params, ""); rr.Code != http.StatusOK {
+		t.Fatalf("delete status %d: %s", rr.Code, rr.Body.String())
+	}
+	local := hs.clients.clusters["local"].dyn
+	for _, verb := range []string{"patch", "delete"} {
+		if got := versionsOf(local, verb, "providers"); len(got) != 1 || got[0] != FluxProviderGVR.Version {
+			t.Errorf("local %s versions = %v, want [v1beta3]", verb, got)
+		}
+	}
+	if n := hs.clients.invalidates.Load(); n != 0 {
+		t.Errorf("local writes invalidated a cached schema %d times, want 0", n)
+	}
+	if n := len(hs.remoteDyn().Actions()); n != 0 {
+		t.Errorf("remote cluster recorded %d actions, want 0", n)
 	}
 }
 

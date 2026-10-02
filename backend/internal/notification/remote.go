@@ -233,9 +233,13 @@ func servedAt(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource) 
 }
 
 // servedVersion returns gvr at the first of its resource's remoteVersions
-// that lists serve, and false when they serve none of them.
-func servedVersion(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource) (schema.GroupVersionResource, bool) {
-	for _, version := range remoteVersions[gvr.Resource] {
+// that lists serve, and false when they serve none of them. Without
+// allowFallback only the preferred (first) version counts.
+func servedVersion(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource, allowFallback bool) (schema.GroupVersionResource, bool) {
+	for i, version := range remoteVersions[gvr.Resource] {
+		if i > 0 && !allowFallback {
+			break
+		}
 		at := schema.GroupVersionResource{Group: gvr.Group, Version: version, Resource: gvr.Resource}
 		if servedAt(lists, at) {
 			return at, true
@@ -249,6 +253,11 @@ func servedVersion(lists []*metav1.APIResourceList, gvr schema.GroupVersionResou
 // sees it. The API counts as installed only when Providers or Alerts are
 // served at a supported version: v1beta3, or v1beta2 on Flux 2.0 (#534). A
 // nil map means not installed. When that cannot be told, the error says why.
+//
+// The v1beta2 fallback counts only beside the v1 Receiver API that Flux 2.0
+// introduced. Flux 0.x served Providers and Alerts at v1beta2 too, but its
+// schema lacks fields this package writes (Alert spec.inclusionList), which
+// the API server would silently prune.
 func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth.User) (map[string]schema.GroupVersionResource, error) {
 	// Presence remembers an absence briefly and invalidates the cached
 	// schema when that lapses, so the API installed later is seen within
@@ -273,10 +282,13 @@ func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth
 	if unavailable || failedGroups[FluxNotificationGroup] {
 		return nil, k8s.ErrDiscoveryUnavailable
 	}
+	flux2 := servedAt(lists, FluxReceiverGVR)
 	served := make(map[string]schema.GroupVersionResource, len(notificationGVRs))
+	fallback := false
 	for _, gvr := range notificationGVRs {
-		if at, ok := servedVersion(lists, gvr); ok {
+		if at, ok := servedVersion(lists, gvr, flux2); ok {
 			served[gvr.Resource] = at
+			fallback = fallback || at.Version != gvr.Version
 		}
 	}
 	_, providers := served[FluxProviderGVR.Resource]
@@ -288,6 +300,13 @@ func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth
 		// than when the schema expires.
 		target.Invalidate()
 		return nil, nil
+	}
+	if fallback {
+		// A Flux upgrade can stop serving the fallback version. Drop the
+		// cached schema for the same reason, so the next read or write
+		// resolves the version the cluster serves then, not one that is
+		// gone. These clusters re-read discovery as they did before #534.
+		target.Invalidate()
 	}
 	return served, nil
 }

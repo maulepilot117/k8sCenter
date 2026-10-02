@@ -485,6 +485,10 @@ func (h *Handler) HandleCreateProvider(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !providerTypeServedAt(gvr, input.Type) {
+		httputil.WriteError(w, http.StatusBadRequest, unsupportedProviderTypeMsg(input.Type), "")
+		return
+	}
 
 	provider, err := CreateProvider(r.Context(), dynClient, gvr, input.Namespace, input)
 	if err != nil {
@@ -529,6 +533,10 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !providerTypeServedAt(gvr, input.Type) {
+		httputil.WriteError(w, http.StatusBadRequest, unsupportedProviderTypeMsg(input.Type), "")
+		return
+	}
 
 	provider, err := UpdateProvider(r.Context(), dynClient, gvr, ns, name, input)
 	if err != nil {
@@ -539,6 +547,12 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	h.auditLog(r, user, audit.ActionUpdate, "Provider", ns, name, audit.ResultSuccess, "")
 	h.invalidate(r.Context(), gvr)
 	httputil.WriteData(w, provider)
+}
+
+// unsupportedProviderTypeMsg answers a Provider write whose type the
+// selected cluster's Flux version does not accept.
+func unsupportedProviderTypeMsg(providerType string) string {
+	return "provider type " + providerType + " is not supported by the Flux version on the selected cluster"
 }
 
 // HandleDeleteProvider deletes a Flux notification Provider.
