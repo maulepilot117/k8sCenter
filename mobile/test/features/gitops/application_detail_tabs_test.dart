@@ -365,5 +365,52 @@ void main() {
 
       expect(find.textContaining('permission'), findsOneWidget);
     });
+
+    testWidgets('404 + discovery_missing renders the not-installed state',
+        (tester) async {
+      final mock = MockDioAdapter();
+      mock.on(
+        'GET',
+        '/api/v1/gitops/applications/argo%3Aargocd%3Amy-app',
+        (_) => _errorJson({
+          'error': {
+            'code': 404,
+            'message': 'raw backend text',
+            'reason': 'discovery_missing',
+          },
+        }, status: 404),
+      );
+      final router = GoRouter(
+        initialLocation: '/',
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) => const ApplicationDetailScreen(
+              id: 'argo:argocd:my-app',
+            ),
+          ),
+        ],
+      );
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          backendUrlProvider.overrideWithValue('http://test'),
+          secureTokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        ],
+        child: _MockedDio(
+          mock: mock,
+          child: MaterialApp.router(
+            theme: buildKubeTheme('liquid-glass'),
+            routerConfig: router,
+          ),
+        ),
+      ));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pumpAndSettle(const Duration(milliseconds: 200));
+
+      expect(find.text('Not installed on this cluster'), findsOneWidget);
+      expect(find.textContaining('was not found'), findsNothing);
+      expect(find.text('Retry'), findsNothing);
+    });
   });
 }

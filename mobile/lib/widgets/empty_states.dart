@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../api/api_error.dart';
 import '../api/remote_failure.dart';
+import 'remote_failure_state.dart';
 import '../theme/kube_theme_builder.dart';
 
 class LoadingState extends StatelessWidget {
@@ -105,51 +106,50 @@ class ListErrorShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    // An R-8 remote failure replaces the generic title and message, and
-    // drops Retry when retrying cannot fix it (remote-only view, feature
-    // not installed, rejected credentials).
+    // An R-8 remote failure renders the shared typed state, which drops
+    // Retry when retrying cannot fix it (remote-only view, feature not
+    // installed, rejected credentials).
     final failure = RemoteFailure.fromError(error);
-    final showRetry = failure?.retryable ?? true;
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        SizedBox(
-          height: 280,
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    failure?.title ?? title,
-                    style: TextStyle(
-                      color: colors.textPrimary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    failure?.message ?? ApiError.messageOf(error),
-                    style: TextStyle(color: colors.textMuted),
-                    textAlign: TextAlign.center,
-                  ),
-                  if (showRetry) ...[
-                    const SizedBox(height: 12),
-                    OutlinedButton(
-                      onPressed: onRetry,
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ],
+    if (failure != null) {
+      return _shell(RemoteFailureState(failure: failure, onRetry: onRetry));
+    }
+    return _shell(
+      Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+                textAlign: TextAlign.center,
               ),
-            ),
+              const SizedBox(height: 4),
+              Text(
+                ApiError.messageOf(error),
+                style: TextStyle(color: colors.textMuted),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton(
+                onPressed: onRetry,
+                child: const Text('Retry'),
+              ),
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
+
+  Widget _shell(Widget child) => ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [SizedBox(height: 280, child: child)],
+      );
 }
 
 class ErrorStateView extends StatelessWidget {

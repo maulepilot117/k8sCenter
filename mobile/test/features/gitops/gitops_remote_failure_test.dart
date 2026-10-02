@@ -155,6 +155,7 @@ void main() {
 
     await _pump(tester, mock, const ApplicationsListScreen());
 
+    expect(find.text('Credentials no longer valid'), findsOneWidget);
     expect(find.text('Failed to load applications'), findsNothing);
     expect(find.text('Retry'), findsNothing);
     expect(find.textContaining('raw backend text'), findsNothing);

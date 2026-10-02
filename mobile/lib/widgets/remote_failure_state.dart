@@ -127,7 +127,7 @@ class FeatureAbsentState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final failure = RemoteFailure.fromStatusReason(reason);
+    final failure = RemoteFailure.fromReason(reason);
     if (failure == null || !failure.presenceUnknown) return notInstalled;
     return RemoteFailureState(failure: failure, onRetry: onRetry);
   }

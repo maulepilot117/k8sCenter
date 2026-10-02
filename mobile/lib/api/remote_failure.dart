@@ -64,6 +64,12 @@ class RemoteFailure {
 
   /// Maps a reason code to its failure, or null for an absent, empty or
   /// unrecognised reason.
+  ///
+  /// For a KTD5 status payload's `reason`, null means the family's negative
+  /// value is a plain verdict (always the case on the local cluster, which
+  /// sends no reason). [RemoteFailureKind.notInstalled] is also a verdict;
+  /// any other kind means the backend could not tell whether the feature is
+  /// installed ([presenceUnknown]).
   static RemoteFailure? fromReason(String? reason) {
     final kind = _byReason[reason];
     return kind == null ? null : RemoteFailure._(kind);
@@ -80,14 +86,6 @@ class RemoteFailure {
     };
     return api == null ? null : fromReason(api.reason);
   }
-
-  /// Reads a KTD5 status payload's `reason`. Null means the family's
-  /// negative value is a plain verdict (always the case on the local
-  /// cluster, which sends no reason). A non-null result with
-  /// [RemoteFailureKind.notInstalled] is also a verdict; any other kind
-  /// means the backend could not tell whether the feature is installed.
-  /// Same function as [fromReason]; the name documents the call site.
-  static RemoteFailure? fromStatusReason(String? reason) => fromReason(reason);
 
   /// True when the backend could not tell whether the feature is
   /// installed, so a negative status value must not read as "not

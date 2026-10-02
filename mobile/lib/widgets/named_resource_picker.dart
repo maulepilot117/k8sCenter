@@ -18,7 +18,8 @@
 // Loading/error states: thin progress indicator while loading; an
 // inline error message with no retry button (the operator can change
 // the namespace to retry implicitly, and aggressive auto-retry would
-// hammer a struggling backend).
+// hammer a struggling backend). The exception is a transient R-8
+// remote failure, which gets a manual Retry.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -77,13 +78,30 @@ class NamedResourcePicker extends ConsumerWidget {
           child: LinearProgressIndicator(minHeight: 2),
         ),
       ),
-      error: (e, _) => _frame(
-        colors,
-        Text(
+      error: (e, _) {
+        final text = Text(
           _errorText(e),
           style: TextStyle(color: colors.error, fontSize: 12),
-        ),
-      ),
+        );
+        // A transient remote failure (unreachable, registry unavailable)
+        // gets a one-tap Retry: changing the namespace does not help when
+        // the cluster itself was the problem.
+        if (RemoteFailure.fromError(e)?.retryable != true) {
+          return _frame(colors, text);
+        }
+        return _frame(
+          colors,
+          Row(
+            children: [
+              Expanded(child: text),
+              TextButton(
+                onPressed: () => ref.invalidate(resourceListProvider(key)),
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        );
+      },
       data: (list) {
         final names = <String>{};
         for (final item in list.items) {

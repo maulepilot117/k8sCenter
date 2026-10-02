@@ -74,15 +74,15 @@ void main() {
     });
   });
 
-  group('RemoteFailure.fromStatusReason (KTD5 status payloads)', () {
+  group('RemoteFailure.fromReason (KTD5 status payloads)', () {
     test('a local payload (no reason) is a plain verdict', () {
-      expect(RemoteFailure.fromStatusReason(null), isNull);
-      expect(RemoteFailure.fromStatusReason(''), isNull);
+      expect(RemoteFailure.fromReason(null), isNull);
+      expect(RemoteFailure.fromReason(''), isNull);
     });
 
     test('discovery_missing is a real "not installed"', () {
       expect(
-        RemoteFailure.fromStatusReason('discovery_missing')?.kind,
+        RemoteFailure.fromReason('discovery_missing')?.kind,
         RemoteFailureKind.notInstalled,
       );
     });
@@ -95,7 +95,7 @@ void main() {
         'cluster_unknown',
         'db_unavailable',
       ]) {
-        final f = RemoteFailure.fromStatusReason(reason);
+        final f = RemoteFailure.fromReason(reason);
         expect(f, isNotNull, reason: reason);
         expect(f!.kind, isNot(RemoteFailureKind.notInstalled), reason: reason);
         expect(f.presenceUnknown, isTrue, reason: reason);
@@ -103,7 +103,7 @@ void main() {
     });
 
     test('an unknown reason falls back to the family negative value', () {
-      expect(RemoteFailure.fromStatusReason('stale_observation'), isNull);
+      expect(RemoteFailure.fromReason('stale_observation'), isNull);
     });
   });
 }
