@@ -25,9 +25,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../api/api_error.dart';
 import '../../api/mesh_repository.dart';
+import '../../api/remote_failure.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../util/composite_id.dart';
+import '../../widgets/empty_states.dart';
 import 'mesh_widgets.dart';
 
 class MeshRouteDetailScreen extends ConsumerWidget {
@@ -87,7 +89,10 @@ class MeshRouteDetailScreen extends ConsumerWidget {
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) {
-            if (e is ApiError && e.statusCode == 404) {
+            // An R-8 reason wins over the status-code special case.
+            if (RemoteFailure.fromError(e) == null &&
+                e is ApiError &&
+                e.statusCode == 404) {
               return ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 children: [
@@ -107,23 +112,10 @@ class MeshRouteDetailScreen extends ConsumerWidget {
                 ],
               );
             }
-            return ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              children: [
-                SizedBox(
-                  height: 280,
-                  child: Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text(
-                        e is ApiError ? e.message : e.toString(),
-                        style: TextStyle(color: colors.error),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+            return ListErrorShell(
+              title: 'Failed to load route',
+              error: e,
+              onRetry: handleRefresh,
             );
           },
           data: (route) => _Body(route: route, parsed: parsed),

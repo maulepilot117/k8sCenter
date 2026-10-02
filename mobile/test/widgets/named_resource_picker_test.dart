@@ -162,6 +162,67 @@ void main() {
       final hdr = mock.requests.last.headers['X-Cluster-ID'];
       expect(hdr, 'pinned-cluster-A');
     });
+
+    Future<MockDioAdapter> pumpRemoteError(
+      WidgetTester tester, {
+      required String reason,
+    }) async {
+      final (:container, :mock) = _makeContainer();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/resources/backups/velero',
+        status: 502,
+        body: {
+          'error': {
+            'code': 502,
+            'message': 'raw backend text',
+            'reason': reason,
+          },
+        },
+      );
+
+      await tester.pumpWidget(_wrap(
+        container,
+        const NamedResourcePicker(
+          clusterId: 'remote-1',
+          kind: 'backups',
+          namespace: 'velero',
+          selected: '',
+          onChanged: _noOp,
+        ),
+      ));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      return mock;
+    }
+
+    testWidgets('remote unreachable shows the typed copy and a Retry that '
+        'refetches', (tester) async {
+      final mock = await pumpRemoteError(tester, reason: 'unreachable');
+
+      expect(find.textContaining('Cannot load backups.'), findsOneWidget);
+      expect(find.textContaining('could not be reached'), findsOneWidget);
+      expect(find.textContaining('raw backend text'), findsNothing);
+      expect(find.textContaining('ApiError('), findsNothing);
+
+      final before = mock.requests.length;
+      await tester.tap(find.text('Retry'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(mock.requests.length, greaterThan(before));
+    });
+
+    testWidgets('rejected credentials show the typed copy with no Retry',
+        (tester) async {
+      await pumpRemoteError(tester, reason: 'credentials_invalid');
+
+      expect(find.textContaining('Cannot load backups.'), findsOneWidget);
+      expect(find.textContaining('stored credentials'), findsOneWidget);
+      expect(find.textContaining('raw backend text'), findsNothing);
+      expect(find.text('Retry'), findsNothing);
+    });
   });
 }
 

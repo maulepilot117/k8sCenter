@@ -79,6 +79,48 @@ void main() {
       expect(s.detected, isFalse);
     });
 
+    test('parses the optional reason from a remote status payload', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/externalsecrets/status',
+        body: {
+          'data': {'detected': false, 'reason': 'unreachable'},
+        },
+      );
+
+      final s = await container.read(esoRepositoryProvider).status();
+      expect(s.detected, isFalse);
+      expect(s.reason, 'unreachable');
+      expect(EsoDiscoveryStatus.fromJson({'detected': false}).reason, isNull);
+    });
+
+    test('503 db_unavailable is rethrown, not collapsed to not-installed',
+        () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/externalsecrets/status',
+        (_) => _json({
+          'error': {
+            'code': 503,
+            'message': 'registry down',
+            'reason': 'db_unavailable',
+          },
+        }, status: 503),
+      );
+
+      await expectLater(
+        container.read(esoRepositoryProvider).status(),
+        throwsA(isA<ApiError>()
+            .having((e) => e.reason, 'reason', 'db_unavailable')),
+      );
+    });
+
     test('forwards X-Cluster-ID when overridden', () async {
       final (:container, :mock) = _make();
       addTearDown(container.dispose);

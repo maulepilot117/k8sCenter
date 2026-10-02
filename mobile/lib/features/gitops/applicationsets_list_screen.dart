@@ -16,6 +16,7 @@ import '../../api/gitops_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/remote_failure_state.dart';
 import 'gitops_widgets.dart';
 
 class ApplicationSetsListScreen extends ConsumerWidget {
@@ -30,10 +31,17 @@ class ApplicationSetsListScreen extends ConsumerWidget {
       appBar: AppBar(title: const Text('ApplicationSets')),
       body: statusAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text(e.toString())),
+        error: (e, _) => ApiErrorStateView(
+          error: e,
+          onRetry: () => ref.invalidate(gitOpsStatusProvider(clusterId)),
+        ),
         data: (status) {
           if (!status.isInstalled) {
-            return FeatureUnavailableState.gitops();
+            return FeatureAbsentState(
+              reason: status.reason,
+              notInstalled: FeatureUnavailableState.gitops(),
+              onRetry: () => ref.invalidate(gitOpsStatusProvider(clusterId)),
+            );
           }
           if (!status.argoCD.appSetsAvailable) {
             return const _AppSetsUnavailable();
@@ -89,16 +97,7 @@ class _AppSetsBody extends ConsumerWidget {
           children: [
             SizedBox(
               height: 280,
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Text(
-                    e.toString(),
-                    style: TextStyle(color: colors.textMuted),
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-              ),
+              child: ApiErrorStateView(error: e, onRetry: handleRefresh),
             ),
           ],
         ),

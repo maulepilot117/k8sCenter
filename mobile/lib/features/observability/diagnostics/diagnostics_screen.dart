@@ -14,9 +14,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../api/api_error.dart';
 import '../../../api/diagnostics_repository.dart';
+import '../../../api/remote_failure.dart';
 import '../../../cluster/cluster_provider.dart';
 import '../../../theme/kube_theme_builder.dart';
 import '../../../widgets/empty_states.dart';
+import '../../../widgets/remote_failure_state.dart';
 import 'blast_radius_panel.dart';
 import 'diagnostic_checklist.dart';
 import 'diagnostics_controller.dart';
@@ -71,11 +73,16 @@ class DiagnosticsScreen extends ConsumerWidget {
         child: state.when(
           loading: () =>
               const ScrollableCenter(child: LoadingState(message: 'Running diagnostics…')),
+          // An R-8 reason (remote cluster unsupported / unreachable / ...)
+          // renders the typed state; every other failure keeps the
+          // kind-specific copy from _humanise.
           error: (e, _) => ScrollableCenter(
-            child: ErrorStateView(
-              message: _humanise(e),
-              onRetry: notifier.refresh,
-            ),
+            child: RemoteFailure.fromError(e) != null
+                ? ApiErrorStateView(error: e, onRetry: notifier.refresh)
+                : ErrorStateView(
+                    message: _humanise(e),
+                    onRetry: notifier.refresh,
+                  ),
           ),
           data: (response) => _DiagnosticsBody(
             clusterId: clusterId,

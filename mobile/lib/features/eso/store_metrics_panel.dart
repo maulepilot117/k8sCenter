@@ -12,10 +12,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
 import '../../theme/kube_theme_builder.dart';
-import '../../widgets/empty_states.dart';
+import '../../widgets/remote_failure_state.dart';
 import 'eso_widgets.dart';
 
 /// Renders rate (chart-suitable when paired with a time series, KV
@@ -55,10 +54,7 @@ class StoreMetricsPanel extends ConsumerWidget {
         padding: EdgeInsets.symmetric(vertical: 24),
         child: Center(child: CircularProgressIndicator()),
       ),
-      error: (e, _) => ErrorStateView(
-        message: e is ApiError ? e.message : e.toString(),
-        onRetry: onRetry,
-      ),
+      error: (e, _) => ApiErrorStateView(error: e, onRetry: onRetry),
       data: (metrics) => _MetricsBody(
         metrics: metrics,
         storeLabel: storeLabel,

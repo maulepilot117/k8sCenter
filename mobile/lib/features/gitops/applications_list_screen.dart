@@ -25,6 +25,7 @@ import '../../api/gitops_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/remote_failure_state.dart';
 import 'gitops_widgets.dart';
 
 /// Filter values for the tool chip row. `null` means "show all".
@@ -74,16 +75,18 @@ class _ApplicationsListScreenState
               ),
             );
           }
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(e.toString()),
-            ),
+          return ApiErrorStateView(
+            error: e,
+            onRetry: () => ref.invalidate(gitOpsStatusProvider(clusterId)),
           );
         },
         data: (status) {
           if (!status.isInstalled) {
-            return FeatureUnavailableState.gitops();
+            return FeatureAbsentState(
+              reason: status.reason,
+              notInstalled: FeatureUnavailableState.gitops(),
+              onRetry: () => ref.invalidate(gitOpsStatusProvider(clusterId)),
+            );
           }
           return _ApplicationsBody(
             clusterId: clusterId,
@@ -142,34 +145,7 @@ class _ApplicationsBody extends ConsumerWidget {
           children: [
             SizedBox(
               height: 280,
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        'Failed to load applications',
-                        style: TextStyle(
-                          color: colors.textPrimary,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        e.toString(),
-                        style: TextStyle(color: colors.textMuted),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 12),
-                      OutlinedButton(
-                        onPressed: handleRefresh,
-                        child: const Text('Retry'),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+              child: ApiErrorStateView(error: e, onRetry: handleRefresh),
             ),
           ],
         ),

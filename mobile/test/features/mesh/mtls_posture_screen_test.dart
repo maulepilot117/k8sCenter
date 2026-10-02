@@ -257,4 +257,21 @@ void main() {
     // Retry button present.
     expect(find.byIcon(Icons.refresh), findsOneWidget);
   });
+
+  testWidgets('status reason=unreachable renders unreachable + Retry',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/status', body: {
+        'data': {
+          'status': {'detected': '', 'reason': 'unreachable'},
+        },
+      })
+      ..onJson('GET', '/api/v1/resources/namespaces', body: _emptyNamespaceList());
+
+    await _pump(tester, mock);
+
+    expect(find.text('Cluster unreachable'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+    expect(find.textContaining('service mesh'), findsNothing);
+  });
 }

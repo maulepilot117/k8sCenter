@@ -143,6 +143,48 @@ void main() {
       expect(s.detected, '');
     });
 
+    test('parses a could-not-tell reason off the status payload', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/mesh/status',
+        body: {
+          'data': {
+            'status': {'detected': '', 'reason': 'unreachable'},
+          },
+        },
+      );
+
+      final s = await container.read(meshRepositoryProvider).status();
+      expect(s.reason, 'unreachable');
+    });
+
+    test('reason is null when absent or empty', () {
+      expect(MeshStatus.fromJson({'detected': ''}).reason, isNull);
+      expect(MeshStatus.fromJson({'detected': '', 'reason': ''}).reason, isNull);
+      expect(MeshStatus.empty.reason, isNull);
+    });
+
+    test('502 unreachable surfaces as ApiError carrying the reason', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/mesh/status',
+        (_) => _json({
+          'error': {'code': 502, 'message': 'down', 'reason': 'unreachable'},
+        }, status: 502),
+      );
+
+      await expectLater(
+        container.read(meshRepositoryProvider).status(),
+        throwsA(isA<ApiError>().having((e) => e.reason, 'reason', 'unreachable')),
+      );
+    });
+
     test('401 surfaces as ApiError', () async {
       final (:container, :mock) = _make();
       addTearDown(container.dispose);

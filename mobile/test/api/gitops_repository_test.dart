@@ -115,6 +115,41 @@ void main() {
       expect(s.detected, '');
     });
 
+    test('parses reason when present, null when absent or empty', () async {
+      expect(
+        GitOpsStatus.fromJson({'detected': '', 'reason': 'unreachable'}).reason,
+        'unreachable',
+      );
+      expect(GitOpsStatus.fromJson({'detected': ''}).reason, isNull);
+      expect(
+        GitOpsStatus.fromJson({'detected': '', 'reason': ''}).reason,
+        isNull,
+      );
+      expect(GitOpsStatus.empty.reason, isNull);
+    });
+
+    test('5xx carrying an R-8 reason is rethrown, not swallowed', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/gitops/status',
+        (_) => _json({
+          'error': {
+            'code': 502,
+            'message': 'cluster down',
+            'reason': 'unreachable',
+          },
+        }, status: 502),
+      );
+
+      await expectLater(
+        container.read(gitOpsRepositoryProvider).status(),
+        throwsA(isA<ApiError>().having((e) => e.reason, 'reason', 'unreachable')),
+      );
+    });
+
     test('forwards X-Cluster-ID when overridden', () async {
       final (:container, :mock) = _make();
       addTearDown(container.dispose);

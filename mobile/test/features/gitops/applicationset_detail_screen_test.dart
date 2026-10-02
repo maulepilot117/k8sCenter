@@ -199,5 +199,27 @@ void main() {
 
       expect(find.text('failed to clone repo'), findsNothing);
     });
+
+    testWidgets('404 + discovery_missing renders the not-installed state',
+        (tester) async {
+      final mock = MockDioAdapter()
+        ..on(
+          'GET',
+          '/api/v1/gitops/applicationsets/argo-as%3Aargocd%3Amy-set',
+          (_) => _json({
+            'error': {
+              'code': 404,
+              'message': 'raw backend text',
+              'reason': 'discovery_missing',
+            },
+          }, status: 404),
+        );
+
+      await _pump(tester, mock);
+
+      expect(find.text('Not installed on this cluster'), findsOneWidget);
+      expect(find.textContaining('was not found'), findsNothing);
+      expect(find.text('Retry'), findsNothing);
+    });
   });
 }

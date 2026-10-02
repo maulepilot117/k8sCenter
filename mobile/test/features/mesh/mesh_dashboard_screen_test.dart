@@ -122,4 +122,38 @@ void main() {
     expect(find.text('Routing rules'), findsOneWidget);
     expect(find.text('mTLS posture'), findsOneWidget);
   });
+
+  testWidgets('status reason=unreachable renders unreachable + Retry',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/status', body: {
+        'data': {
+          'status': {'detected': '', 'reason': 'unreachable'},
+        },
+      });
+
+    await _pump(tester, mock);
+
+    expect(find.text('Cluster unreachable'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+    expect(find.textContaining('is not installed on this cluster'),
+        findsNothing);
+  });
+
+  testWidgets('502 + credentials_invalid renders credentials state, no Retry',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/status', status: 502, body: {
+        'error': {
+          'code': 502,
+          'message': 'raw backend text',
+          'reason': 'credentials_invalid',
+        },
+      });
+
+    await _pump(tester, mock);
+
+    expect(find.text('Credentials no longer valid'), findsOneWidget);
+    expect(find.text('Retry'), findsNothing);
+  });
 }

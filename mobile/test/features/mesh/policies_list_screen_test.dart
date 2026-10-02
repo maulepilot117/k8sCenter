@@ -198,4 +198,21 @@ void main() {
     );
     expect(linkerdChipWidget.selected, isFalse);
   });
+
+  testWidgets('status reason=unreachable renders unreachable + Retry',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/status', body: {
+        'data': {
+          'status': {'detected': '', 'reason': 'unreachable'},
+        },
+      })
+      ..onJson('GET', '/api/v1/mesh/policies', body: _emptyPolicies());
+
+    await _pump(tester, mock);
+
+    expect(find.text('Cluster unreachable'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+    expect(find.textContaining('service mesh'), findsNothing);
+  });
 }

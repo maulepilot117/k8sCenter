@@ -125,6 +125,29 @@ void main() {
     expect(find.text('Prometheus offline'), findsOneWidget);
   });
 
+  testWidgets('remote unsupported_platform reason shows typed state, no Retry',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/golden-signals', body: {
+        'data': {
+          'status': {'detected': 'istio'},
+          'signals': {
+            'mesh': 'istio',
+            'namespace': 'app',
+            'service': 'web',
+            'available': false,
+            'reason': 'unsupported_platform',
+          },
+        },
+      });
+
+    await _pump(tester, mock, status: _istioStatus);
+
+    expect(find.text('Not available for remote clusters'), findsOneWidget);
+    expect(find.text('Retry'), findsNothing);
+    expect(find.text('Metrics unavailable'), findsNothing);
+  });
+
   testWidgets('happy path renders five tiles + values', (tester) async {
     final mock = MockDioAdapter()
       ..onJson('GET', '/api/v1/mesh/golden-signals', body: {

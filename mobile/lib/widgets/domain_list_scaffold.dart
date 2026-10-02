@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../theme/kube_theme_builder.dart';
 import 'empty_states.dart';
+import 'remote_failure_state.dart';
 
 /// A pull-to-refresh list scaffold for any domain-specific
 /// `AutoDisposeFutureProvider<List<T>>`. The autoDispose-typed bound
@@ -100,10 +101,7 @@ class _DomainListScaffoldState<T>
       child: async.when(
         loading: () => const _ScrollableShell(child: LoadingState()),
         error: (e, _) => _ScrollableShell(
-          child: ErrorStateView(
-            message: e.toString(),
-            onRetry: _doRefresh,
-          ),
+          child: ApiErrorStateView(error: e, onRetry: _doRefresh),
         ),
         data: (items) {
           if (items.isEmpty) {

@@ -24,6 +24,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../cluster/cluster_provider.dart';
 import 'api_error.dart';
 import 'dio_client.dart';
+import 'remote_failure.dart';
 
 /// Per-tool availability flags from `/v1/gitops/status`. Mirrors
 /// `backend/internal/gitops/types.go::ToolDetail` exactly.
@@ -73,6 +74,7 @@ class GitOpsStatus {
     required this.argoCD,
     required this.fluxCD,
     this.lastChecked,
+    this.reason,
   });
 
   /// `""` when neither tool is detected.
@@ -81,6 +83,11 @@ class GitOpsStatus {
   final GitOpsToolDetail fluxCD;
   final String? lastChecked;
 
+  /// R-8 reason for a negative `detected` on a remote cluster
+  /// (`discovery_missing` = really not installed; anything else = the
+  /// backend could not tell). Null on the local cluster.
+  final String? reason;
+
   bool get isInstalled => detected.isNotEmpty;
   bool get hasArgo => detected == 'argocd' || detected == 'both';
   bool get hasFlux => detected == 'fluxcd' || detected == 'both';
@@ -88,6 +95,7 @@ class GitOpsStatus {
   factory GitOpsStatus.fromJson(Map<String, dynamic> json) {
     final argo = json['argocd'];
     final flux = json['fluxcd'];
+    final reason = json['reason'];
     return GitOpsStatus(
       detected: json['detected'] as String? ?? '',
       argoCD: argo is Map
@@ -97,6 +105,7 @@ class GitOpsStatus {
           ? GitOpsToolDetail.fromJson(Map<String, dynamic>.from(flux))
           : GitOpsToolDetail.empty,
       lastChecked: json['lastChecked'] as String?,
+      reason: reason is String && reason.isNotEmpty ? reason : null,
     );
   }
 
@@ -568,8 +577,8 @@ class GitOpsRepository {
 
   final Dio _dio;
 
-  /// Fetches GitOps discovery status. Returns [GitOpsStatus.empty] on
-  /// 5xx so callers route straight to `FeatureUnavailableState.gitops()`
+  /// Fetches GitOps discovery status. Returns [GitOpsStatus.empty] on a
+  /// 5xx without an R-8 reason so callers route straight to `FeatureUnavailableState.gitops()`
   /// — a flaky reverse-proxy probe should not surface as an error card.
   Future<GitOpsStatus> status({
     String? clusterIdOverride,
@@ -591,9 +600,15 @@ class GitOpsRepository {
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
       final code = e.response?.statusCode ?? 0;
-      if (code >= 500 && code < 600) return GitOpsStatus.empty;
       final err = e.error;
-      throw err is ApiError ? err : ApiError.fromDio(e);
+      final apiError = err is ApiError ? err : ApiError.fromDio(e);
+      // A 5xx that names an R-8 reason (unreachable, db_unavailable, ...)
+      // is a real answer about the cluster: surface it so the screen can
+      // render the typed state instead of "not installed".
+      if (code >= 500 && code < 600 && RemoteFailure.fromError(apiError) == null) {
+        return GitOpsStatus.empty;
+      }
+      throw apiError;
     }
   }
 

@@ -111,4 +111,42 @@ void main() {
     // Destination row has the FQDN.
     expect(find.textContaining('web.app.svc.cluster.local'), findsOneWidget);
   });
+
+  testWidgets('404 + discovery_missing renders the not-installed state',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/routing/istio%3Aapp%3Avs%3Aweb',
+          status: 404,
+          body: {
+            'error': {
+              'code': 404,
+              'message': 'raw backend text',
+              'reason': 'discovery_missing',
+            },
+          });
+
+    await _pump(tester, mock, 'istio:app:vs:web');
+
+    expect(find.text('Not installed on this cluster'), findsOneWidget);
+    expect(find.textContaining('not found in namespace'), findsNothing);
+  });
+
+  testWidgets('502 + unreachable renders the unreachable state with Retry',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/routing/istio%3Aapp%3Avs%3Aweb',
+          status: 502,
+          body: {
+            'error': {
+              'code': 502,
+              'message': 'raw backend text',
+              'reason': 'unreachable',
+            },
+          });
+
+    await _pump(tester, mock, 'istio:app:vs:web');
+
+    expect(find.text('Cluster unreachable'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+  });
 }

@@ -10,10 +10,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
+import '../../api/remote_failure.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/confirm_sheet.dart';
-import '../../widgets/empty_states.dart';
+import '../../widgets/remote_failure_state.dart';
 import '../../widgets/feature_unavailable_state.dart';
 import 'bulk_refresh_sheet.dart';
 import 'force_sync_controller.dart';
@@ -38,12 +39,18 @@ class EsoStatusGate extends ConsumerWidget {
     final statusAsync = ref.watch(esoStatusProvider(clusterId));
     return statusAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => ErrorStateView(
-        message: e is ApiError ? e.message : e.toString(),
+      error: (e, _) => ApiErrorStateView(
+        error: e,
         onRetry: () => ref.invalidate(esoStatusProvider(clusterId)),
       ),
       data: (status) {
-        if (!status.detected) return FeatureUnavailableState.eso();
+        if (!status.detected) {
+          return FeatureAbsentState(
+            reason: status.reason,
+            notInstalled: FeatureUnavailableState.eso(),
+            onRetry: () => ref.invalidate(esoStatusProvider(clusterId)),
+          );
+        }
         return builder(clusterId);
       },
     );
@@ -62,13 +69,15 @@ Widget esoDetailErrorState({
   required Object error,
   required VoidCallback onRetry,
 }) {
+  // An R-8 reason (db_unavailable is also a 503) names a remote failure,
+  // not an absent ESO, so it wins over the 503 special case below.
+  if (RemoteFailure.fromError(error) != null) {
+    return ApiErrorStateView(error: error, onRetry: onRetry);
+  }
   if (error is ApiError && error.statusCode == 503) {
     return FeatureUnavailableState.eso();
   }
-  return ErrorStateView(
-    message: error is ApiError ? error.message : error.toString(),
-    onRetry: onRetry,
-  );
+  return ApiErrorStateView(error: error, onRetry: onRetry);
 }
 
 /// Surface a non-empty readyMessage from any ESO resource (ExternalSecret /
