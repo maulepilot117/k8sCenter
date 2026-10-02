@@ -186,10 +186,14 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
         <div class="space-y-6">
           {/* Backup Selection */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-restore-backup"
+            >
               Source Backup *
             </label>
             <select
+              id="velero-restore-backup"
               value={form.value.backupName}
               onChange={(e) =>
                 updateField("backupName", (e.target as HTMLSelectElement).value)
@@ -210,10 +214,14 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
 
           {/* Restore Name */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-restore-name"
+            >
               Restore Name
             </label>
             <input
+              id="velero-restore-name"
               type="text"
               value={form.value.name}
               onInput={(e) =>
@@ -229,13 +237,17 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
 
           {/* Included Namespaces */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-restore-namespaces"
+            >
               Include Namespaces (optional)
             </label>
             <p class="text-xs text-text-muted mb-2">
               Leave empty to restore all namespaces from the backup.
             </p>
             <select
+              id="velero-restore-namespaces"
               multiple
               onChange={(e) => {
                 const select = e.target as HTMLSelectElement;

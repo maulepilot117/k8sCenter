@@ -554,10 +554,13 @@ export default function NamespaceLimitsDashboard() {
         <div
           class="glass"
           style={{
+            // Below the top bar, not under it: the bar (z-index 50) overlays
+            // the content column's top strip, and at top: 0 it covered the
+            // panel header and swallowed clicks on its close button.
             position: "fixed",
             right: 0,
-            top: 0,
-            height: "100%",
+            top: "var(--topbar-height, 56px)",
+            height: "calc(100% - var(--topbar-height, 56px))",
             width: `${PANEL_WIDTH}px`,
             overflowY: "auto",
             borderLeft: "1px solid var(--border-primary)",

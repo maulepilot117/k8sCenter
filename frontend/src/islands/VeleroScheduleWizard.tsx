@@ -206,10 +206,14 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
         <div class="space-y-6">
           {/* Name */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-schedule-name"
+            >
               Schedule Name *
             </label>
             <input
+              id="velero-schedule-name"
               type="text"
               value={form.value.name}
               onInput={(e) =>
@@ -225,7 +229,10 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
 
           {/* Cron Schedule */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-schedule-cron"
+            >
               Schedule (Cron) *
             </label>
             <div class="flex gap-2 mb-2">
@@ -245,6 +252,7 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
               ))}
             </div>
             <input
+              id="velero-schedule-cron"
               type="text"
               value={form.value.schedule}
               onInput={(e) =>
@@ -263,13 +271,17 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
 
           {/* Included Namespaces */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-schedule-namespaces"
+            >
               Include Namespaces
             </label>
             <p class="text-xs text-text-muted mb-2">
               Leave empty to back up all namespaces.
             </p>
             <select
+              id="velero-schedule-namespaces"
               multiple
               onChange={(e) => {
                 const select = e.target as HTMLSelectElement;
@@ -294,10 +306,14 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
 
           {/* Storage Location */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-schedule-storage-location"
+            >
               Storage Location
             </label>
             <select
+              id="velero-schedule-storage-location"
               value={form.value.storageLocation}
               onChange={(e) =>
                 updateField(
@@ -318,10 +334,14 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
 
           {/* TTL */}
           <div>
-            <label class="block text-sm font-medium text-text-primary mb-1">
+            <label
+              class="block text-sm font-medium text-text-primary mb-1"
+              for="velero-schedule-ttl"
+            >
               Retention (TTL)
             </label>
             <select
+              id="velero-schedule-ttl"
               value={form.value.ttl}
               onChange={(e) =>
                 updateField("ttl", (e.target as HTMLSelectElement).value)

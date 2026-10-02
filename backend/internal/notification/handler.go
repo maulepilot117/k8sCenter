@@ -341,6 +341,21 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 // ---------- shared route bodies ----------
 
+// localControllerAbsent reports whether none of the notification resource
+// types is served on the local cluster at the version the local path reads.
+//
+// One type gone while another still lists is not "not installed": a Flux 2.0
+// cluster serves Providers and Alerts only at v1beta2, which the local path
+// does not read, while Receivers list at v1. Reporting that as an empty list
+// would offer a Create button whose request then fails, so only a wholly
+// absent controller reads as empty; anything else stays a load error.
+func (h *Handler) localControllerAbsent() bool {
+	_, provErr := h.fetchProviders()
+	_, alertErr := h.fetchAlerts()
+	_, recErr := h.fetchReceivers()
+	return k8s.IsResourceGone(provErr) && k8s.IsResourceGone(alertErr) && k8s.IsResourceGone(recErr)
+}
+
 // serveList answers a list route for gvr on the request's cluster,
 // RBAC-filtered and narrowed to ?namespace= when given.
 func serveList[T namespacedItem](h *Handler, w http.ResponseWriter, r *http.Request, gvr schema.GroupVersionResource, local func() ([]T, error), pick func(*snapshot) []T) {
@@ -350,7 +365,14 @@ func serveList[T namespacedItem](h *Handler, w http.ResponseWriter, r *http.Requ
 	}
 
 	items, err := loadItems(r.Context(), h, user, gvr, local, pick)
-	if err != nil {
+	switch {
+	case err == nil:
+	case isLocal(r.Context()) && k8s.IsResourceGone(err) && h.localControllerAbsent():
+		// The notification-controller is not installed: an empty list, as
+		// on a remote cluster (fetchRemote). The status route is what says
+		// "not available"; failing here as well hid that from the UI.
+		items = nil
+	default:
 		h.writeLoadError(w, r, err, gvr.Resource)
 		return
 	}
