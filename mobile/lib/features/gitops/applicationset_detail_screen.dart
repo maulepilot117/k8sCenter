@@ -20,10 +20,12 @@ import 'package:go_router/go_router.dart';
 
 import '../../api/api_error.dart';
 import '../../api/gitops_repository.dart';
+import '../../api/remote_failure.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../util/composite_id.dart';
 import '../../widgets/empty_states.dart';
+import '../../widgets/remote_failure_state.dart';
 import 'gitops_widgets.dart';
 
 class ApplicationSetDetailScreen extends ConsumerWidget {
@@ -57,17 +59,22 @@ class ApplicationSetDetailScreen extends ConsumerWidget {
       appBar: AppBar(title: Text(parsed.name)),
       body: detailAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: ErrorStateView(
-              message: _humanise(e),
-              onRetry: () => ref.invalidate(gitOpsApplicationSetDetailProvider(
+        error: (e, _) {
+          void retry() => ref.invalidate(gitOpsApplicationSetDetailProvider(
                 GitOpsAppKey(clusterId: clusterId, id: id),
-              )),
+              ));
+          // An R-8 reason wins over the status-code copy below: a 404
+          // with `discovery_missing` is not "ApplicationSet deleted".
+          if (RemoteFailure.fromError(e) != null) {
+            return ApiErrorStateView(error: e, onRetry: retry);
+          }
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: ErrorStateView(message: _humanise(e), onRetry: retry),
             ),
-          ),
-        ),
+          );
+        },
         data: (detail) => _AppSetBody(
           clusterId: clusterId,
           detail: detail,
