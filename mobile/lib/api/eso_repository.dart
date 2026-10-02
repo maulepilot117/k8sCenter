@@ -34,6 +34,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../cluster/cluster_provider.dart';
 import 'api_error.dart';
 import 'dio_client.dart';
+import 'remote_failure.dart';
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -190,11 +191,17 @@ class EsoDiscoveryStatus {
     this.version,
     this.lastChecked = '',
     this.serviceUnavailable = false,
+    this.reason,
   });
 
   final bool detected;
   final String? namespace;
   final String? version;
+
+  /// R-8 reason on a remote cluster's negative status: `discovery_missing`
+  /// (really not installed) or a could-not-tell reason. Null on the local
+  /// cluster, which never sends one.
+  final String? reason;
 
   /// RFC-3339 timestamp; empty when the first probe hasn't completed.
   final String lastChecked;
@@ -214,6 +221,7 @@ class EsoDiscoveryStatus {
       namespace: s(json['namespace']),
       version: s(json['version']),
       lastChecked: json['lastChecked'] as String? ?? '',
+      reason: s(json['reason']),
     );
   }
 
@@ -914,9 +922,10 @@ class EsoRepository {
   final Dio _dio;
 
   /// Fetches ESO discovery status. Returns [EsoDiscoveryStatus.unreachable]
-  /// on 5xx so the surface keeps rendering install-guidance copy without
-  /// flashing an error card; `serviceUnavailable: true` lets the UI add
-  /// a transient-error nuance if it wants (e.g., during rolling restarts).
+  /// on a plain 5xx so the surface keeps rendering install-guidance copy
+  /// without flashing an error card; `serviceUnavailable: true` lets the UI
+  /// add a transient-error nuance if it wants (e.g., during rolling
+  /// restarts). A 5xx carrying an R-8 reason is rethrown as an [ApiError].
   Future<EsoDiscoveryStatus> status({
     String? clusterIdOverride,
     CancelToken? cancelToken,
@@ -935,9 +944,15 @@ class EsoRepository {
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
       final code = e.response?.statusCode ?? 0;
-      if (code >= 500 && code < 600) return EsoDiscoveryStatus.unreachable;
       final err = e.error;
-      throw err is ApiError ? err : ApiError.fromDio(e);
+      final apiErr = err is ApiError ? err : ApiError.fromDio(e);
+      // A 5xx carrying an R-8 reason (db_unavailable, unreachable, ...) is
+      // a typed remote failure, not a transient blip: surface it so the
+      // gate renders it instead of collapsing to "ESO is not installed".
+      if (code >= 500 && code < 600 && RemoteFailure.fromError(apiErr) == null) {
+        return EsoDiscoveryStatus.unreachable;
+      }
+      throw apiErr;
     }
   }
 

@@ -10,11 +10,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../api/api_error.dart';
 import '../../../api/diagnostics_repository.dart';
 import '../../../cluster/cluster_provider.dart';
 import '../../../theme/kube_theme_builder.dart';
 import '../../../widgets/empty_states.dart';
+import '../../../widgets/remote_failure_state.dart';
 import 'diagnostics_controller.dart';
 import 'scrollable_center.dart';
 
@@ -53,8 +53,8 @@ class NamespaceSummaryScreen extends ConsumerWidget {
         child: summary.when(
           loading: () => const ScrollableCenter(child: LoadingState()),
           error: (e, _) => ScrollableCenter(
-            child: ErrorStateView(
-              message: e is ApiError ? e.message : e.toString(),
+            child: ApiErrorStateView(
+              error: e,
               onRetry: () => ref.invalidate(namespaceSummaryProvider(key)),
             ),
           ),

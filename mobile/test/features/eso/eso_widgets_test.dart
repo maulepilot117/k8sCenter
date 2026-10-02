@@ -9,6 +9,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kubecenter/api/api_error.dart';
 import 'package:kubecenter/api/eso_repository.dart';
 import 'package:kubecenter/cluster/cluster_provider.dart';
 import 'package:kubecenter/features/eso/eso_widgets.dart';
@@ -310,6 +311,74 @@ void main() {
       expect(tooltips, contains(ForceSyncButton.nonLocalTooltip));
       expect(ForceSyncButton.nonLocalTooltip, contains('local-cluster only'));
       expect(ForceSyncButton.nonLocalTooltip, contains('desktop UI'));
+    });
+  });
+
+  group('EsoStatusGate', () {
+    Future<void> pumpGate(
+      WidgetTester tester,
+      EsoDiscoveryStatus status,
+    ) async {
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          esoStatusProvider('local').overrideWith((ref) async => status),
+        ],
+        child: MaterialApp(
+          theme: buildKubeTheme('liquid-glass'),
+          home: Scaffold(
+            body: EsoStatusGate(builder: (_) => const Text('detected body')),
+          ),
+        ),
+      ));
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets('could-not-tell reason is not rendered as "not installed"',
+        (tester) async {
+      await pumpGate(
+        tester,
+        const EsoDiscoveryStatus(detected: false, reason: 'unreachable'),
+      );
+      expect(find.text('Cluster unreachable'), findsOneWidget);
+      expect(find.text('Retry'), findsOneWidget);
+      expect(find.text('is not installed on this cluster'), findsNothing);
+    });
+
+    testWidgets('detected:false without a reason renders the not-installed card',
+        (tester) async {
+      await pumpGate(tester, const EsoDiscoveryStatus(detected: false));
+      expect(find.text('is not installed on this cluster'), findsOneWidget);
+    });
+  });
+
+  group('esoDetailErrorState', () {
+    Widget wrap(Object error) => MaterialApp(
+          theme: buildKubeTheme('liquid-glass'),
+          home: Scaffold(
+            body: esoDetailErrorState(error: error, onRetry: () {}),
+          ),
+        );
+
+    testWidgets('503 db_unavailable wins over the not-installed card',
+        (tester) async {
+      await tester.pumpWidget(wrap(ApiError(
+        statusCode: 503,
+        code: 503,
+        message: 'registry down',
+        reason: 'db_unavailable',
+      )));
+      expect(find.text('Cluster registry unavailable'), findsOneWidget);
+      expect(find.text('Retry'), findsOneWidget);
+      expect(find.text('is not installed on this cluster'), findsNothing);
+    });
+
+    testWidgets('503 without a reason still renders the not-installed card',
+        (tester) async {
+      await tester.pumpWidget(
+        wrap(ApiError(statusCode: 503, code: 503, message: 'x')),
+      );
+      expect(find.text('is not installed on this cluster'), findsOneWidget);
     });
   });
 }
