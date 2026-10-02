@@ -40,10 +40,10 @@ type snapshot struct {
 	providers []NormalizedProvider
 	alerts    []NormalizedAlert
 	receivers []NormalizedReceiver
-	// served holds each resource the cluster serves at the version this
-	// package uses, keyed by resource name. Empty when the notification API
-	// is not installed.
-	served map[string]bool
+	// served holds, keyed by resource name, the GVR each resource is read
+	// and written at: the first of its remoteVersions the cluster serves.
+	// Empty when the notification API is not installed.
+	served map[string]schema.GroupVersionResource
 	// failed holds the error each failed list returned, keyed by resource
 	// name. A list whose resource type is gone counts as empty, not failed.
 	failed map[string]error
@@ -125,22 +125,26 @@ func writeAccessCheckError(w http.ResponseWriter, err error) {
 }
 
 // writeClient returns a dynamic client impersonating the user on the
-// request's cluster for a write to gvr, writing the error response when it
-// cannot. A remote cluster that does not serve gvr at the version this
-// package writes is answered 404 before anything is sent to it.
-func (h *Handler) writeClient(w http.ResponseWriter, r *http.Request, user *auth.User, gvr schema.GroupVersionResource) (dynamic.Interface, bool) {
+// request's cluster for a write to gvr, and the GVR to write at, writing the
+// error response when it cannot. The local cluster writes gvr itself; a
+// remote cluster writes the version of gvr's resource it serves, and one
+// that serves none this package supports is answered 404 before anything is
+// sent to it.
+func (h *Handler) writeClient(w http.ResponseWriter, r *http.Request, user *auth.User, gvr schema.GroupVersionResource) (dynamic.Interface, schema.GroupVersionResource, bool) {
 	ctx := r.Context()
 	clusterID := middleware.ClusterIDFromContext(ctx)
 	if !isLocal(ctx) {
 		served, err := h.remoteServed(ctx, clusterID, user)
 		if err != nil {
 			httputil.WriteRemoteLoadError(w, err, "Flux notification")
-			return nil, false
+			return nil, gvr, false
 		}
-		if !served[gvr.Resource] {
+		at, ok := served[gvr.Resource]
+		if !ok {
 			httputil.WriteErrorWithReason(w, http.StatusNotFound, notInstalledMsg, string(k8s.ReasonDiscoveryMissing), nil)
-			return nil, false
+			return nil, gvr, false
 		}
+		gvr = at
 	}
 	client, err := h.Clients.DynamicClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
@@ -150,9 +154,9 @@ func (h *Handler) writeClient(w http.ResponseWriter, r *http.Request, user *auth
 		} else {
 			httputil.WriteTargetError(w, err)
 		}
-		return nil, false
+		return nil, gvr, false
 	}
-	return client, true
+	return client, gvr, true
 }
 
 // failWrite audits a write the cluster refused or failed and answers it.
@@ -228,13 +232,33 @@ func servedAt(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource) 
 	return false
 }
 
-// remoteServed reads which notification resources a remote cluster serves
-// at the versions this package reads and writes, as the user sees it. The
-// API counts as installed only when Providers or Alerts are served at their
-// v1beta3 version, the one this package builds bodies for (R-8 U8); a
-// cluster serving only v1beta2 is not installed. A nil map means not
-// installed. When that cannot be told, the error says why.
-func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth.User) (map[string]bool, error) {
+// servedVersion returns gvr at the first of its resource's remoteVersions
+// that lists serve, and false when they serve none of them. Without
+// allowFallback only the preferred (first) version counts.
+func servedVersion(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource, allowFallback bool) (schema.GroupVersionResource, bool) {
+	for i, version := range remoteVersions[gvr.Resource] {
+		if i > 0 && !allowFallback {
+			break
+		}
+		at := schema.GroupVersionResource{Group: gvr.Group, Version: version, Resource: gvr.Resource}
+		if servedAt(lists, at) {
+			return at, true
+		}
+	}
+	return schema.GroupVersionResource{}, false
+}
+
+// remoteServed reads which notification resources a remote cluster serves,
+// and at which of the versions this package reads and writes, as the user
+// sees it. The API counts as installed only when Providers or Alerts are
+// served at a supported version: v1beta3, or v1beta2 on Flux 2.0 (#534). A
+// nil map means not installed. When that cannot be told, the error says why.
+//
+// The v1beta2 fallback counts only beside the v1 Receiver API that Flux 2.0
+// introduced. Flux 0.x served Providers and Alerts at v1beta2 too, but its
+// schema lacks fields this package writes (Alert spec.inclusionList), which
+// the API server would silently prune.
+func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth.User) (map[string]schema.GroupVersionResource, error) {
 	// Presence remembers an absence briefly and invalidates the cached
 	// schema when that lapses, so the API installed later is seen within
 	// seconds rather than when the schema cache expires.
@@ -258,18 +282,31 @@ func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth
 	if unavailable || failedGroups[FluxNotificationGroup] {
 		return nil, k8s.ErrDiscoveryUnavailable
 	}
-	if !servedAt(lists, FluxProviderGVR) && !servedAt(lists, FluxAlertGVR) {
-		// The group is served at another version. Presence does not track
-		// versions, so drop the cached schema here: an upgrade to v1beta3 is
-		// then seen by the next fetch rather than when the schema expires.
+	flux2 := servedAt(lists, FluxReceiverGVR)
+	served := make(map[string]schema.GroupVersionResource, len(notificationGVRs))
+	fallback := false
+	for _, gvr := range notificationGVRs {
+		if at, ok := servedVersion(lists, gvr, flux2); ok {
+			served[gvr.Resource] = at
+			fallback = fallback || at.Version != gvr.Version
+		}
+	}
+	_, providers := served[FluxProviderGVR.Resource]
+	_, alerts := served[FluxAlertGVR.Resource]
+	if !providers && !alerts {
+		// The group is served only at versions this package does not
+		// support. Presence does not track versions, so drop the cached
+		// schema here: an upgrade is then seen by the next fetch rather
+		// than when the schema expires.
 		target.Invalidate()
 		return nil, nil
 	}
-	served := make(map[string]bool, len(notificationGVRs))
-	for _, gvr := range notificationGVRs {
-		if servedAt(lists, gvr) {
-			served[gvr.Resource] = true
-		}
+	if fallback {
+		// A Flux upgrade can stop serving the fallback version. Drop the
+		// cached schema for the same reason, so the next read or write
+		// resolves the version the cluster serves then, not one that is
+		// gone. These clusters re-read discovery as they did before #534.
+		target.Invalidate()
 	}
 	return served, nil
 }
@@ -294,17 +331,27 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 	listCtx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
 	// Each list writes only its own snapshot field, so they need no lock.
-	lists := map[schema.GroupVersionResource]func() error{
-		FluxProviderGVR: func() (err error) { snap.providers, err = ListProviders(listCtx, dyn); return err },
-		FluxAlertGVR:    func() (err error) { snap.alerts, err = ListAlerts(listCtx, dyn); return err },
-		FluxReceiverGVR: func() (err error) { snap.receivers, err = ListReceivers(listCtx, dyn); return err },
+	// Each list reads the version the cluster serves.
+	lists := map[string]func() error{
+		FluxProviderGVR.Resource: func() (err error) {
+			snap.providers, err = ListProviders(listCtx, dyn, served[FluxProviderGVR.Resource])
+			return err
+		},
+		FluxAlertGVR.Resource: func() (err error) {
+			snap.alerts, err = ListAlerts(listCtx, dyn, served[FluxAlertGVR.Resource])
+			return err
+		},
+		FluxReceiverGVR.Resource: func() (err error) {
+			snap.receivers, err = ListReceivers(listCtx, dyn, served[FluxReceiverGVR.Resource])
+			return err
+		},
 	}
 	var sources []schema.GroupVersionResource
 	var runs []k8s.NamedList
 	for _, gvr := range notificationGVRs {
-		if served[gvr.Resource] {
-			sources = append(sources, gvr)
-			runs = append(runs, k8s.NamedList{Label: "notification list " + gvr.Resource, Run: lists[gvr]})
+		if at, ok := served[gvr.Resource]; ok {
+			sources = append(sources, at)
+			runs = append(runs, k8s.NamedList{Label: "notification list " + gvr.Resource, Run: lists[gvr.Resource]})
 		}
 	}
 	errs := k8s.RunLists(h.Logger, runs)

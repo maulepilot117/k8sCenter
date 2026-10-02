@@ -32,6 +32,46 @@ var (
 	}
 )
 
+// remoteVersions lists, per resource, the versions this package reads and
+// writes on a remote cluster, most preferred first; the first a cluster
+// serves is used (#534). The local cluster always uses the GVRs above.
+//
+// Providers and Alerts fall back to v1beta2 (Flux 2.0) because every field
+// this package reads or writes has the same name and shape there: v1beta3
+// removed the status subresource and deprecated spec.interval and
+// spec.summary, none of which a body built here sets. A v1beta2 object still
+// carries Ready conditions, which the normalizers map like any other. Two
+// limits apply to the fallback: it counts only on Flux 2.0 or later (see
+// remoteServed), and Flux 2.0 accepts fewer Provider types
+// (v1beta2ProviderTypes).
+var remoteVersions = map[string][]string{
+	FluxProviderGVR.Resource: {FluxProviderGVR.Version, v1beta2},
+	FluxAlertGVR.Resource:    {FluxAlertGVR.Version, v1beta2},
+	FluxReceiverGVR.Resource: {FluxReceiverGVR.Version},
+}
+
+// v1beta2 is the Provider and Alert version Flux 2.0 serves.
+const v1beta2 = "v1beta2"
+
+// v1beta2ProviderTypes is the spec.type enum of the Flux 2.0
+// (notification-controller v1.0.0) v1beta2 Provider CRD. Later types are
+// refused before a write at v1beta2 rather than left to the cluster's
+// generic 422.
+var v1beta2ProviderTypes = map[string]bool{
+	"slack": true, "discord": true, "msteams": true, "rocket": true,
+	"generic": true, "generic-hmac": true, "github": true, "gitlab": true,
+	"gitea": true, "bitbucket": true, "azuredevops": true, "googlechat": true,
+	"googlepubsub": true, "webex": true, "sentry": true, "azureeventhub": true,
+	"telegram": true, "lark": true, "matrix": true, "opsgenie": true,
+	"alertmanager": true, "grafana": true, "githubdispatch": true, "pagerduty": true,
+}
+
+// providerTypeServedAt reports whether a Provider of providerType can be
+// written at gvr's version.
+func providerTypeServedAt(gvr schema.GroupVersionResource, providerType string) bool {
+	return gvr.Version != v1beta2 || v1beta2ProviderTypes[providerType]
+}
+
 const managedByLabel = "app.kubernetes.io/managed-by"
 const managedByValue = "kubecenter"
 

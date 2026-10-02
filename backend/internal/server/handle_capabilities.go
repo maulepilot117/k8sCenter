@@ -433,8 +433,9 @@ var capabilityOperations = []capabilityOp{
 	{
 		// Remote since U8 (#518): Flux notification Providers, Alerts and
 		// Receivers are read and written on the selected cluster
-		// (notification/remote.go). Only v1beta3 bodies are built, so a
-		// remote that serves only v1beta2 reports not installed.
+		// (notification/remote.go). Providers and Alerts are read and
+		// written at v1beta3, or at v1beta2 on a remote that serves only
+		// that (Flux 2.0, #534); Flux 0.x reports not installed.
 		ID: "flux.notifications", Label: "Flux notifications",
 		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "notification.toolkit.fluxcd.io", AuthResource: "providers",

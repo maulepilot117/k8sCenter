@@ -69,7 +69,7 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Velero backups and restores | Yes | Yes | Backups, restores, schedules, locations and their actions. Backup logs are a download link issued by the remote cluster's object storage, so your browser must be able to reach that storage |
 | Volume snapshots | Yes | Yes | List, detail, create and delete |
 | CSI drivers and StorageClasses | Yes | Yes | Both lists, and each driver's expansion and snapshot capabilities, are read from the selected cluster |
-| Flux notifications | Yes | Yes | Providers, Alerts and Receivers. A remote that serves only the `v1beta2` API shows as not installed |
+| Flux notifications | Yes | Yes | Providers, Alerts and Receivers. Providers and Alerts are read and written at `v1beta3`, or at `v1beta2` on a remote that serves only that (Flux 2.0). On Flux 2.0, Provider types added in later Flux releases are refused. Older Flux (0.x) shows as not installed |
 | Alert rules | Yes | Yes | PrometheusRule objects only. Whether they fire depends on the remote running prometheus-operator; the active and history alert feeds are always the local Alertmanager's, and the Alerts page says so under a remote selection |
 | Gateway API views | Yes | Yes | GatewayClasses, Gateways and routes (read-only on every cluster) |
 | Service mesh routing | Yes | Yes | Istio and Linkerd routes, with mesh presence detected on the remote |
