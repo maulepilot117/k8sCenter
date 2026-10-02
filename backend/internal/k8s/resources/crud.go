@@ -44,10 +44,10 @@ func (h *Handler) HandleListResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Events take an involvedObject filter and are listed from the selected
-	// cluster, local or remote; see handleListEvents.
-	if _, isEvents := adapter.(eventAdapter); isEvents {
-		h.handleListEvents(w, r, user, ns, sel, params)
+	// An adapter whose list needs the request itself (query filters, the
+	// selected remote cluster) serves it; everything else reads the cache.
+	if rl, ok := adapter.(requestLister); ok {
+		rl.listForRequest(h, w, r, user, ns, sel, params)
 		return
 	}
 

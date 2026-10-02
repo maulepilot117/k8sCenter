@@ -137,6 +137,16 @@ func (f involvedObjectFilter) filterEvents(items []any) []any {
 	return out
 }
 
+// eventAdapter answers its list from the request (the involvedObject filter
+// and the selected cluster), not from the informer cache alone. The
+// assertion keeps a signature drift from silently sending events back to the
+// cache-only path.
+var _ requestLister = eventAdapter{}
+
+func (eventAdapter) listForRequest(h *Handler, w http.ResponseWriter, r *http.Request, user *auth.User, ns string, sel labels.Selector, params ListParams) {
+	h.handleListEvents(w, r, user, ns, sel, params)
+}
+
 // handleListEvents serves the events list once HandleListResource has
 // authorized it. The local cluster reads the informer cache; a remote cluster
 // has no informers, so its events are listed directly, as the user, through
@@ -203,32 +213,37 @@ func (h *Handler) listRemoteEvents(
 		return nil, false, false
 	}
 
-	opts := metav1.ListOptions{
+	base := metav1.ListOptions{
 		LabelSelector: sel.String(),
 		FieldSelector: filter.fieldSelector(),
-		Limit:         remoteListPageSize,
 	}
-	for page := 0; page < remoteListMaxPages; page++ {
+	items, truncated, err = pageRemoteList(ctx, base, func(ctx context.Context, opts metav1.ListOptions) ([]any, string, error) {
 		list, err := cs.CoreV1().Events(ns).List(ctx, opts)
 		if err != nil {
-			if apierrors.IsForbidden(err) {
-				writeError(w, http.StatusForbidden,
-					"you do not have permission to list events in namespace "+ns+" on the selected cluster", "")
-				return nil, false, false
-			}
-			h.Logger.Error("remote events: list", "cluster", clusterID, "namespace", ns, "error", err)
-			writeError(w, http.StatusBadGateway, "failed to list events on the selected cluster", "")
+			return nil, "", err
+		}
+		page := make([]any, len(list.Items))
+		for i := range list.Items {
+			page[i] = &list.Items[i]
+		}
+		return page, list.Continue, nil
+	})
+	if err != nil {
+		// Items read before a failure are discarded: a refusal at a later
+		// page means they may no longer be the user's to see, and a partial
+		// answer would be served as if it were complete.
+		if apierrors.IsForbidden(err) {
+			writeError(w, http.StatusForbidden,
+				"you do not have permission to list events in namespace "+ns+" on the selected cluster", "")
 			return nil, false, false
 		}
-		for i := range list.Items {
-			items = append(items, &list.Items[i])
-		}
-		if list.Continue == "" {
-			return items, false, true
-		}
-		opts.Continue = list.Continue
+		h.Logger.Error("remote events: list", "cluster", clusterID, "namespace", ns, "error", err)
+		writeError(w, http.StatusBadGateway, "failed to list events on the selected cluster", "")
+		return nil, false, false
 	}
-	h.Logger.Warn("remote events: list truncated",
-		"cluster", clusterID, "namespace", ns, "items", len(items))
-	return items, true, true
+	if truncated {
+		h.Logger.Warn("remote events: list truncated",
+			"cluster", clusterID, "namespace", ns, "items", len(items))
+	}
+	return items, truncated, true
 }
