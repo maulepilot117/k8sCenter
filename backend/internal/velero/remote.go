@@ -154,16 +154,17 @@ func (h *Handler) load(ctx context.Context, user *auth.User) (data *cachedVelero
 // loadList loads the request cluster's Velero lists for an endpoint that
 // serves the gvr list, writing the error response and returning false when
 // that list could not be read. Nil data means Velero is not installed.
-func (h *Handler) loadList(w http.ResponseWriter, r *http.Request, user *auth.User, gvr schema.GroupVersionResource, what string) (*cachedVeleroData, bool) {
+// failed holds the other lists a remote cluster could not provide.
+func (h *Handler) loadList(w http.ResponseWriter, r *http.Request, user *auth.User, gvr schema.GroupVersionResource, what string) (data *cachedVeleroData, failed map[string]error, ok bool) {
 	data, failed, err := h.load(r.Context(), user)
 	if err == nil && data != nil {
 		err = failed[gvr.Resource]
 	}
 	if err != nil {
 		h.writeLoadError(w, r, err, what)
-		return nil, false
+		return nil, nil, false
 	}
-	return data, true
+	return data, failed, true
 }
 
 // remoteInstalled reports whether Velero is installed on a remote cluster,

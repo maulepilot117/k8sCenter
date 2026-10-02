@@ -152,7 +152,21 @@ const (
 // error, so an unreachable cluster never looks empty or forbidden (R-8 R6,
 // R7). On the local cluster it counts as a denial, as it always has.
 func (h *Handler) checkAccess(w http.ResponseWriter, r *http.Request, user *auth.User, verb, resource, namespace string) accessResult {
-	can, err := h.AccessChecker.CanAccessGroupResource(
+	can, err := h.canAccess(r, user, verb, resource, namespace)
+	switch {
+	case err != nil && !isLocal(r.Context()):
+		writeAccessCheckError(w, err)
+		return accessFailed
+	case err != nil || !can:
+		return accessDenied
+	}
+	return accessAllowed
+}
+
+// canAccess runs the SAR for verb on a Velero resource against the
+// request's cluster.
+func (h *Handler) canAccess(r *http.Request, user *auth.User, verb, resource, namespace string) (bool, error) {
+	return h.AccessChecker.CanAccessGroupResource(
 		r.Context(),
 		middleware.ClusterIDFromContext(r.Context()),
 		user.KubernetesUsername,
@@ -162,14 +176,6 @@ func (h *Handler) checkAccess(w http.ResponseWriter, r *http.Request, user *auth
 		resource,
 		namespace,
 	)
-	switch {
-	case err != nil && !isLocal(r.Context()):
-		writeAccessCheckError(w, err)
-		return accessFailed
-	case err != nil || !can:
-		return accessDenied
-	}
-	return accessAllowed
 }
 
 // allowed is checkAccess for an endpoint that answers a denial with 403. It
@@ -232,7 +238,7 @@ func (h *Handler) HandleListBackups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, ok := h.loadList(w, r, user, BackupGVR, "backups")
+	data, _, ok := h.loadList(w, r, user, BackupGVR, "backups")
 	if !ok {
 		return
 	}
@@ -495,7 +501,7 @@ func (h *Handler) HandleListRestores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, ok := h.loadList(w, r, user, RestoreGVR, "restores")
+	data, _, ok := h.loadList(w, r, user, RestoreGVR, "restores")
 	if !ok {
 		return
 	}
@@ -685,7 +691,7 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, ok := h.loadList(w, r, user, ScheduleGVR, "schedules")
+	data, failed, ok := h.loadList(w, r, user, ScheduleGVR, "schedules")
 	if !ok {
 		return
 	}
@@ -694,8 +700,14 @@ func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sort a copy by name: the cached slice is shared.
-	schedules := slices.Clone(data.schedules)
+	// The last-backup phase needs the backup list, read and permitted for
+	// this user; without it the schedules are still served, phases empty.
+	var backups []Backup
+	if failed[BackupGVR.Resource] == nil {
+		backups = h.listableBackups(r, user, data.backups)
+	}
+	// withLastBackups returns a copy, so sorting leaves the shared cache alone.
+	schedules := withLastBackups(data.schedules, backups)
 	sort.Slice(schedules, func(i, j int) bool {
 		return schedules[i].Name < schedules[j].Name
 	})
@@ -728,6 +740,7 @@ func (h *Handler) HandleGetSchedule(w http.ResponseWriter, r *http.Request) {
 		h.writeGetError(w, r, err, "schedule not found")
 		return
 	}
+	h.withLastBackup(r.Context(), dynClient, schedule)
 
 	httputil.WriteData(w, schedule)
 }
@@ -973,7 +986,7 @@ func (h *Handler) HandleTriggerSchedule(w http.ResponseWriter, r *http.Request) 
 				"name":      backupName,
 				"namespace": namespace,
 				"labels": map[string]any{
-					"velero.io/schedule-name": name,
+					scheduleNameLabel: scheduleLabelValue(name),
 				},
 			},
 			"spec": template,
@@ -1247,6 +1260,7 @@ func parseBackup(obj *unstructured.Unstructured) Backup {
 		Name:      obj.GetName(),
 		Namespace: obj.GetNamespace(),
 		Labels:    obj.GetLabels(),
+		created:   obj.GetCreationTimestamp().Time,
 	}
 
 	// Spec fields
@@ -1272,7 +1286,7 @@ func parseBackup(obj *unstructured.Unstructured) Backup {
 
 	// Schedule name from label
 	if labels := obj.GetLabels(); labels != nil {
-		backup.ScheduleName = labels["velero.io/schedule-name"]
+		backup.ScheduleName = labels[scheduleNameLabel]
 	}
 
 	return backup
