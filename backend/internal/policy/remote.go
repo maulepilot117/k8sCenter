@@ -8,6 +8,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -32,6 +33,16 @@ const (
 	gatekeeperConstraintsGroup = "constraints.gatekeeper.sh"
 	// remoteListTimeout bounds each remote list call.
 	remoteListTimeout = 10 * time.Second
+	// remoteListConcurrency bounds concurrent remote lists in one fetch.
+	remoteListConcurrency = 20
+	// remoteMaxSources bounds how many lists one remote fetch will issue.
+	// At remoteListConcurrency it leaves each list about 2s of the cache's
+	// 30s fetch deadline; a remote serving more is refused, not truncated.
+	remoteMaxSources = 300
+	// reasonRemoteReadBudget is the error reason for a remote whose policy
+	// data could not be read in full within one fetch. Endpoint-specific,
+	// outside the capability k8s.ReasonCode set, as remote_history_unsupported is.
+	reasonRemoteReadBudget = "remote_read_budget_exceeded"
 	// remoteListLabel prefixes each remote list's recovered-panic log label,
 	// so it reads apart from the local fan-out's "policy normalize-*".
 	remoteListLabel = "policy remote list "
@@ -74,7 +85,16 @@ type remoteSource struct {
 type remoteData struct {
 	policies   []NormalizedPolicy
 	violations []NormalizedViolation
+	// budgetExceeded records that the remote could not be read in full
+	// within one fetch (too many lists, or the fetch deadline expired).
+	// It is cached for the cache TTL like data, so a cluster too large or
+	// too slow to read is not re-listed on every poll; load answers it with
+	// errRemoteBudget.
+	budgetExceeded bool
 }
+
+// errRemoteBudget is load's answer for a cached budgetExceeded verdict.
+var errRemoteBudget = errors.New("remote policy data could not be read within one fetch")
 
 // remoteCaches returns the per-(cluster, identity) caches of remote
 // snapshots and remote discovery, building them on first use.
@@ -127,6 +147,9 @@ func (h *Handler) load(ctx context.Context, user *auth.User) ([]NormalizedPolicy
 	if err != nil {
 		return nil, nil, err
 	}
+	if data.budgetExceeded {
+		return nil, nil, errRemoteBudget
+	}
 	return data.policies, data.violations, nil
 }
 
@@ -137,6 +160,15 @@ func (h *Handler) writeLoadError(w http.ResponseWriter, r *http.Request, err err
 	if isLocal(r.Context()) {
 		h.Logger.Error(localMsg, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, localMsg, "")
+		return
+	}
+	if errors.Is(err, errRemoteBudget) {
+		// The cluster answered; it is too large or too slow to read in full
+		// within one fetch. An endpoint-specific reason, like
+		// remote_history_unsupported, rather than "unreachable".
+		httputil.WriteErrorWithReason(w, http.StatusGatewayTimeout,
+			"the selected cluster's policy data could not be read in full in time",
+			reasonRemoteReadBudget, nil)
 		return
 	}
 	httputil.WriteRemoteLoadError(w, err, "Policy engine")
@@ -258,8 +290,9 @@ func kyvernoSources(lists []*metav1.APIResourceList) []remoteSource {
 //
 // Unlike the local path, the remote list is not capped at
 // maxConstraintCRDs: a silently truncated list would undercount violations,
-// which is what fetchRemote fails closed to avoid. The semaphore bounds the
-// fan-out's concurrency and the cache's fetch deadline bounds its duration.
+// which is what fetchRemote fails closed to avoid. fetchRemote instead
+// refuses a remote serving more than remoteMaxSources lists, and answers a
+// fetch that outruns the cache's deadline with errRemoteBudget.
 func gatekeeperSources(lists []*metav1.APIResourceList) []remoteSource {
 	type served struct {
 		version string
@@ -340,14 +373,26 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 		return data, nil
 	}
 
+	// A remote serving more lists than one fetch can read inside the cache's
+	// deadline cannot be answered in full, and k8s.RunLists parks one
+	// goroutine per list: refuse it up front rather than undercount or let a
+	// hostile discovery document size the fan-out. The verdict is cached
+	// like data, so polling does not re-read discovery and refuse again.
+	if len(d.sources) > remoteMaxSources {
+		h.Logger.Warn("remote policy read refused: too many sources", "cluster", clusterID, "sources", len(d.sources), "max", remoteMaxSources)
+		return &remoteData{budgetExceeded: true}, nil
+	}
+
 	dyn, err := h.Clients.DynamicClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		return nil, k8s.TargetError{Err: err}
 	}
 
 	var mu sync.Mutex
-	// sem bounds concurrent remote lists, as the local constraint fan-out is.
-	sem := make(chan struct{}, constraintSemaphore)
+	// sem bounds concurrent remote lists. It is wider than the local
+	// constraint fan-out's, since every remote list is a network round trip
+	// that must fit in the cache's fetch deadline.
+	sem := make(chan struct{}, remoteListConcurrency)
 	runs := make([]k8s.NamedList, len(d.sources))
 	for i, src := range d.sources {
 		runs[i] = k8s.NamedList{Label: src.label, Run: func() error {
@@ -366,6 +411,16 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 		}}
 	}
 	errs := k8s.RunLists(h.Logger, runs)
+
+	// The cache's fetch deadline expired before every list finished: the
+	// cluster answered, just not in time for all of it. That is not
+	// "unreachable", which is what the lists' own deadline errors would
+	// classify as, so it gets its own verdict, cached like data so the next
+	// poll does not re-issue every list.
+	if ctx.Err() != nil {
+		h.Logger.Warn("remote policy read exceeded the fetch deadline", "cluster", clusterID, "sources", len(d.sources), "error", ctx.Err())
+		return &remoteData{budgetExceeded: true}, nil
+	}
 
 	for i, src := range d.sources {
 		switch err := errs[i]; {

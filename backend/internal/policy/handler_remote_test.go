@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -543,6 +544,7 @@ func TestRemote_GoneResourceIsSkipped(t *testing.T) {
 	if len(got) != 1 || got["remote-require-limits"] != 1 {
 		t.Errorf("policies = %v, want only remote-require-limits", got)
 	}
+	f.assertNoLocal(t)
 }
 
 func TestRemote_TargetErrorIsFixedText(t *testing.T) {
@@ -580,11 +582,68 @@ func TestRemote_CachePerIdentity(t *testing.T) {
 		t.Errorf("another identity shared the cached read: %d lists, want %d", n, 2*first)
 	}
 
+	// Discovery (and its webhook reads, through the typed client) is cached
+	// separately from the lists; the evict must drop both.
+	webhookReads := len(remote.typed.Actions())
+	if webhookReads == 0 {
+		t.Fatal("remote discovery read no webhook configurations")
+	}
 	f.h.EvictRemoteCache(remoteCluster)
 	call(t, f.h.HandleListPolicies, "/policies")
 	if n := remoteLists(remote); n != 3*first {
 		t.Errorf("evicted cluster was not re-read: %d lists, want %d", n, 3*first)
 	}
+	if n := len(remote.typed.Actions()); n <= webhookReads {
+		t.Errorf("evicted cluster's discovery was not re-read: %d webhook reads, want more than %d", n, webhookReads)
+	}
+}
+
+// fetchRemote's deadline is the cache's fetch cap. When it expires before
+// every list finishes, the verdict is budget-exceeded, not unreachable,
+// and it is cached so the next poll does not re-issue every list.
+func TestRemote_FetchDeadlineIsBudgetNotUnreachable(t *testing.T) {
+	remote := remoteBothEngines()
+	remote.dyn.PrependReactor("list", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		time.Sleep(50 * time.Millisecond)
+		return false, nil, nil // fall through to the tracker
+	})
+	f := newRemoteFixture(t, remote)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	data, err := f.h.fetchRemote(ctx, remoteCluster, adminUser())
+	if err != nil || data == nil || !data.budgetExceeded {
+		t.Fatalf("fetchRemote = %+v, %v; want a budget-exceeded verdict", data, err)
+	}
+}
+
+// A remote serving more lists than one fetch can read is refused before
+// any list is issued, with the budget reason, and the refusal is cached.
+func TestRemote_TooManySourcesIsRefused(t *testing.T) {
+	lists := engineLists(false, true)
+	var many []metav1.APIResource
+	for i := 0; i <= remoteMaxSources; i++ {
+		many = append(many, metav1.APIResource{Name: fmt.Sprintf("k8sconstraint%d", i), Kind: fmt.Sprintf("K8sConstraint%d", i)})
+	}
+	lists = append(lists, &metav1.APIResourceList{GroupVersion: "constraints.gatekeeper.sh/v1", APIResources: many})
+	remote := newFakeCluster(lists, nil)
+	f := newRemoteFixture(t, remote)
+
+	for range 2 {
+		rr := call(t, f.h.HandleListPolicies, "/policies")
+		var body errorBody
+		_ = json.Unmarshal(rr.Body.Bytes(), &body)
+		if rr.Code != http.StatusGatewayTimeout || body.Error.Reason != reasonRemoteReadBudget {
+			t.Fatalf("got %d %s, want 504 %s", rr.Code, rr.Body.String(), reasonRemoteReadBudget)
+		}
+		if strings.Contains(body.Error.Reason, string(k8s.ReasonUnreachable)) {
+			t.Errorf("budget failure reported as unreachable")
+		}
+	}
+	if n := remoteLists(remote); n != 0 {
+		t.Errorf("issued %d lists for a refused remote, want 0", n)
+	}
+	f.assertNoLocal(t)
 }
 
 // Compliance history is recorded for the local cluster only, so a remote

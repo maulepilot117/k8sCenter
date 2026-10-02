@@ -231,9 +231,12 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 	status, err := h.clusterStatus(r.Context(), user)
 	if err != nil {
+		reason := k8s.RemoteReason(err)
+		h.Logger.Warn("remote policy engine status unknown",
+			"cluster", middleware.ClusterIDFromContext(r.Context()), "reason", reason, "error", err)
 		status = EngineStatus{
 			Detected:    EngineNone,
-			Reason:      string(k8s.RemoteReason(err)),
+			Reason:      string(reason),
 			LastChecked: time.Now().UTC().Format(time.RFC3339),
 		}
 	}
