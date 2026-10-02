@@ -3,6 +3,8 @@ package resources
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,8 +16,10 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -296,5 +300,184 @@ func TestListResource_FilterParamsIgnoredForOtherKinds(t *testing.T) {
 	h.HandleListResource(rr, req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx)))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("pods list with an events-only param: status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// --- remote error branches, paging and truncation ---
+
+// listMetadata decodes a 200 list response's metadata.
+func listMetadata(t *testing.T, rr *httptest.ResponseRecorder) (total int, cont string, truncated bool) {
+	t.Helper()
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	resp := decodeResponse(t, rr)
+	if resp.Metadata == nil {
+		t.Fatal("list response has no metadata")
+	}
+	return resp.Metadata.Total, resp.Metadata.Continue, resp.Metadata.Truncated
+}
+
+// errorMessage decodes an error response and returns its message and detail.
+func errorMessage(t *testing.T, rr *httptest.ResponseRecorder) (string, string) {
+	t.Helper()
+	resp := decodeResponse(t, rr)
+	if resp.Error == nil {
+		t.Fatalf("expected an error body, got %s", rr.Body.String())
+	}
+	return resp.Error.Message, resp.Error.Detail
+}
+
+func TestListEvents_RemoteClientResolveFailureIs502WithoutLocalFallback(t *testing.T) {
+	h, local := testHandler(t, eventFixtures()...)
+	h.remoteClient = func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+		return nil, errors.New("dial tcp 10.0.0.9:6443: connect: connection refused")
+	}
+	local.ClearActions()
+
+	rr := listEvents(t, h, remoteTestClusterID, "default", filterQuery("Pod", "web-1"))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "10.0.0.9") {
+		t.Errorf("502 body exposes the internal error: %s", rr.Body.String())
+	}
+	if got := eventListSelectors(t, local); len(got) != 0 {
+		t.Errorf("a remote resolve failure fell back to the local cluster: %v", got)
+	}
+}
+
+func TestListEvents_RemoteListErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantInMsg  string
+	}{
+		{
+			name:       "forbidden",
+			err:        apierrors.NewForbidden(schema.GroupResource{Resource: "events"}, "", errors.New("RBAC: denied")),
+			wantStatus: http.StatusForbidden,
+			wantInMsg:  "namespace default",
+		},
+		{
+			name:       "other error",
+			err:        errors.New("etcdserver: request timed out"),
+			wantStatus: http.StatusBadGateway,
+			wantInMsg:  "failed to list events",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, remote := remoteEventsHandler(t, eventFixtures())
+			remote.PrependReactor("list", "events", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, tc.err
+			})
+			rr := listEvents(t, h, remoteTestClusterID, "default", filterQuery("Pod", "web-1"))
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+			msg, detail := errorMessage(t, rr)
+			if !strings.Contains(msg, tc.wantInMsg) {
+				t.Errorf("message = %q, want it to contain %q", msg, tc.wantInMsg)
+			}
+			if strings.Contains(msg+detail, tc.err.Error()) {
+				t.Errorf("error body exposes the upstream error %q: %s", tc.err, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestListEvents_RemotePagesUntilContinueIsEmpty(t *testing.T) {
+	h, _, remote := remoteEventsHandler(t, nil)
+	var conts []string
+	remote.PrependReactor("list", "events", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		opts := a.(k8stesting.ListActionImpl).ListOptions
+		conts = append(conts, opts.Continue)
+		page := len(conts)
+		next := ""
+		if page < 3 {
+			next = fmt.Sprintf("tok-%d", page)
+		}
+		return true, &corev1.EventList{
+			ListMeta: metav1.ListMeta{Continue: next},
+			Items:    []corev1.Event{*testEvent("default", fmt.Sprintf("e-%d", page), "Pod", "x")},
+		}, nil
+	})
+
+	rr := listEvents(t, h, remoteTestClusterID, "default", url.Values{"limit": {"10"}})
+	body := rr.Body.String()
+	total, cont, truncated := listMetadata(t, rr)
+	if want := []string{"", "tok-1", "tok-2"}; strings.Join(conts, "|") != strings.Join(want, "|") {
+		t.Errorf("continue tokens sent = %q, want %q", conts, want)
+	}
+	if total != 3 || cont != "" || truncated {
+		t.Errorf("total=%d continue=%q truncated=%v, want 3, empty, false", total, cont, truncated)
+	}
+	if strings.Contains(body, `"truncated"`) {
+		t.Errorf("a complete list carries a truncated key: %s", body)
+	}
+}
+
+func TestListEvents_RemoteTruncatedListIsFlagged(t *testing.T) {
+	h, _, remote := remoteEventsHandler(t, nil)
+	pages := 0
+	remote.PrependReactor("list", "events", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		pages++
+		opts := a.(k8stesting.ListActionImpl).ListOptions
+		if opts.Limit != remoteListPageSize {
+			t.Errorf("page %d requested Limit=%d, want %d", pages, opts.Limit, remoteListPageSize)
+		}
+		// Every page claims there is more; the pager must stop at its cap.
+		return true, &corev1.EventList{
+			ListMeta: metav1.ListMeta{Continue: fmt.Sprintf("tok-%d", pages)},
+			Items:    []corev1.Event{*testEvent("default", fmt.Sprintf("e-%d", pages), "Pod", "x")},
+		}, nil
+	})
+
+	total, _, truncated := listMetadata(t, listEvents(t, h, remoteTestClusterID, "default", url.Values{"limit": {"100"}}))
+	if pages != remoteListMaxPages {
+		t.Errorf("pager fetched %d pages, want cap %d", pages, remoteListMaxPages)
+	}
+	if total != remoteListMaxPages {
+		t.Errorf("total = %d, want the %d items actually read", total, remoteListMaxPages)
+	}
+	if !truncated {
+		t.Error("a list stopped at the page cap is not flagged truncated")
+	}
+}
+
+func TestListEvents_RemoteForwardsLabelSelector(t *testing.T) {
+	h, _, remote := remoteEventsHandler(t, nil)
+	if rr := listEvents(t, h, remoteTestClusterID, "default", url.Values{"labelSelector": {"app=web"}}); rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var got []string
+	for _, a := range remote.Actions() {
+		if la, ok := a.(k8stesting.ListAction); ok && a.GetResource().Resource == "events" {
+			got = append(got, la.GetListRestrictions().Labels.String())
+		}
+	}
+	if len(got) == 0 || got[0] != "app=web" {
+		t.Errorf("remote label selectors = %v, want [app=web]", got)
+	}
+}
+
+func TestListEvents_AccessDeniedBeforeAnyList(t *testing.T) {
+	for _, cluster := range []string{"", remoteTestClusterID} {
+		h, local, remote := remoteEventsHandler(t, eventFixtures())
+		h.AccessChecker = NewAlwaysDenyAccessChecker()
+		local.ClearActions()
+
+		rr := listEvents(t, h, cluster, "default", filterQuery("Pod", "web-1"))
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("cluster %q: status = %d, want 403: %s", cluster, rr.Code, rr.Body.String())
+		}
+		if got := eventListSelectors(t, local); len(got) != 0 {
+			t.Errorf("cluster %q: local events listed despite a denied access check: %v", cluster, got)
+		}
+		if got := eventListSelectors(t, remote); len(got) != 0 {
+			t.Errorf("cluster %q: remote events listed despite a denied access check: %v", cluster, got)
+		}
 	}
 }

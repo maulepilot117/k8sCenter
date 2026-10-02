@@ -13,6 +13,10 @@ type Metadata struct {
 	Continue string `json:"continue,omitempty"`
 	Page     int    `json:"page,omitempty"`
 	PageSize int    `json:"pageSize,omitempty"`
+	// Truncated reports that the server stopped reading the underlying list
+	// at a cap, so Total counts only what was read and items past the cap
+	// cannot be fetched with Continue. Omitted (false) for a complete list.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // APIError is the standard error response.

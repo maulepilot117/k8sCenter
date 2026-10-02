@@ -14,6 +14,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/pkg/api"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/validation/path"
@@ -139,7 +140,8 @@ func (f involvedObjectFilter) filterEvents(items []any) []any {
 // handleListEvents serves the events list once HandleListResource has
 // authorized it. The local cluster reads the informer cache; a remote cluster
 // has no informers, so its events are listed directly, as the user, through
-// ClusterRouter.
+// ClusterRouter. A remote list stopped at its page cap is still served, with
+// metadata.truncated set so the client knows the set is incomplete.
 func (h *Handler) handleListEvents(w http.ResponseWriter, r *http.Request, user *auth.User, ns string, sel labels.Selector, params ListParams) {
 	filter, err := parseInvolvedObjectFilter(r.URL.Query())
 	if err != nil {
@@ -150,7 +152,10 @@ func (h *Handler) handleListEvents(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 
-	var items []any
+	var (
+		items     []any
+		truncated bool
+	)
 	clusterID := middleware.ClusterIDFromContext(r.Context())
 	if k8s.IsLocalClusterID(clusterID) {
 		items, err = eventAdapter{}.ListFromCache(h.Informers, ns, sel)
@@ -160,7 +165,7 @@ func (h *Handler) handleListEvents(w http.ResponseWriter, r *http.Request, user 
 		}
 	} else {
 		var ok bool
-		items, ok = h.listRemoteEvents(w, r, user, clusterID, ns, sel, filter)
+		items, truncated, ok = h.listRemoteEvents(w, r, user, clusterID, ns, sel, filter)
 		if !ok {
 			return
 		}
@@ -168,18 +173,26 @@ func (h *Handler) handleListEvents(w http.ResponseWriter, r *http.Request, user 
 
 	items = filter.filterEvents(items)
 	page, token := paginateAny(items, params.Limit, params.Continue)
-	writeList(w, page, len(items), token)
+	writeJSON(w, http.StatusOK, api.Response{
+		Data: page,
+		Metadata: &api.Metadata{
+			Total:     len(items),
+			Continue:  token,
+			Truncated: truncated,
+		},
+	})
 }
 
 // listRemoteEvents pages through the events on a remote cluster with the
 // filter pushed down as a field selector. The result is filtered again by the
 // caller, so an API server that ignored the selector still cannot widen the
-// answer. On failure it writes the error response and returns ok=false; it
-// never falls back to the local cluster.
+// answer. truncated reports that the list still had more pages after
+// remoteListMaxPages. On failure it writes the error response and returns
+// ok=false; it never falls back to the local cluster.
 func (h *Handler) listRemoteEvents(
 	w http.ResponseWriter, r *http.Request, user *auth.User,
 	clusterID, ns string, sel labels.Selector, filter involvedObjectFilter,
-) ([]any, bool) {
+) (items []any, truncated, ok bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), remoteEventsListTimeout)
 	defer cancel()
 
@@ -187,7 +200,7 @@ func (h *Handler) listRemoteEvents(
 	if err != nil {
 		h.Logger.Error("remote events: resolve cluster client", "cluster", clusterID, "error", err)
 		writeError(w, http.StatusBadGateway, "failed to reach the selected cluster", "")
-		return nil, false
+		return nil, false, false
 	}
 
 	opts := metav1.ListOptions{
@@ -195,28 +208,27 @@ func (h *Handler) listRemoteEvents(
 		FieldSelector: filter.fieldSelector(),
 		Limit:         remoteListPageSize,
 	}
-	var items []any
 	for page := 0; page < remoteListMaxPages; page++ {
 		list, err := cs.CoreV1().Events(ns).List(ctx, opts)
 		if err != nil {
 			if apierrors.IsForbidden(err) {
 				writeError(w, http.StatusForbidden,
 					"you do not have permission to list events in namespace "+ns+" on the selected cluster", "")
-				return nil, false
+				return nil, false, false
 			}
 			h.Logger.Error("remote events: list", "cluster", clusterID, "namespace", ns, "error", err)
 			writeError(w, http.StatusBadGateway, "failed to list events on the selected cluster", "")
-			return nil, false
+			return nil, false, false
 		}
 		for i := range list.Items {
 			items = append(items, &list.Items[i])
 		}
 		if list.Continue == "" {
-			return items, true
+			return items, false, true
 		}
 		opts.Continue = list.Continue
 	}
 	h.Logger.Warn("remote events: list truncated",
 		"cluster", clusterID, "namespace", ns, "items", len(items))
-	return items, true
+	return items, true, true
 }
