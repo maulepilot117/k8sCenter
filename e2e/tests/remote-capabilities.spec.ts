@@ -199,6 +199,7 @@ test.describe.serial("Remote cluster capabilities", () => {
       "mesh.routing",
       "mesh.mtls",
       "eso.read",
+      "certmanager.certificates",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");

@@ -76,6 +76,7 @@ export const CAPABILITY_OPERATION_IDS = [
   "mesh.routing",
   "mesh.mtls",
   "eso.read",
+  "certmanager.certificates",
   "cni.config",
   "mesh.golden_signals",
   "eso.history",

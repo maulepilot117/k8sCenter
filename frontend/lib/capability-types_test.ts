@@ -80,6 +80,7 @@ test("REASON_CODES matches the expected literal set (self-consistency; Go parity
 test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistency; Go parity is checked in capability_parity_test.go)", () => {
   expect([...CAPABILITY_OPERATION_IDS].sort()).toEqual([
     "alert.rules",
+    "certmanager.certificates",
     "cni.config",
     "dashboard.summary",
     "diagnostics.read",
