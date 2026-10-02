@@ -176,9 +176,8 @@ func BackupOutcomeOf(phase string) BackupOutcome {
 		return BackupOutcomeSucceeded
 	case "PartiallyFailed", "Failed", "FailedValidation":
 		return BackupOutcomeFailed
-	case "", "New", "Queued", "ReadyToStart", "InProgress",
-		"WaitingForPluginOperations", "WaitingForPluginOperationsPartiallyFailed",
-		"Finalizing", "FinalizingPartiallyFailed":
+	}
+	if phase == "" || IsProgressPhase(phase) {
 		return BackupOutcomeInProgress
 	}
 	return BackupOutcomeUnknown

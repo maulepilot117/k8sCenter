@@ -18,6 +18,11 @@ const SCHEDULES_COLUMNS: Column[] = [
   { key: "actions", label: "", width: "80px" },
 ];
 
+/** Names the phase of a schedule's newest backup, when it has one. */
+function newestBackupLabel(s: Schedule): string | undefined {
+  return s.lastBackupPhase ? `Newest backup: ${s.lastBackupPhase}` : undefined;
+}
+
 export function SchedulesResourceTable({
   schedules,
   deleting,
@@ -87,11 +92,7 @@ export function SchedulesResourceTable({
       ),
       lastBackup: (
         <span
-          title={
-            s.lastBackupPhase
-              ? `Newest backup: ${s.lastBackupPhase}`
-              : undefined
-          }
+          title={newestBackupLabel(s)}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -104,7 +105,7 @@ export function SchedulesResourceTable({
           {s.lastBackupPhase && (
             <>
               <StatusDot status={outcomeTone(s.lastBackupOutcome)} size={6} />
-              <span class="sr-only">Newest backup {s.lastBackupPhase},</span>
+              <span class="sr-only">{newestBackupLabel(s)},</span>
             </>
           )}
           {s.lastBackup ? age(s.lastBackup) : "Never"}

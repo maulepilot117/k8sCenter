@@ -13,7 +13,6 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
-	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // scheduleNameLabel is the label Velero puts on every backup a schedule
@@ -21,8 +20,12 @@ import (
 const scheduleNameLabel = "velero.io/schedule-name"
 
 // maxLabelValue is the longest label value Velero writes unchanged
-// (validation.DNS1035LabelMaxLength).
-const maxLabelValue = 63
+// (validation.DNS1035LabelMaxLength); a longer name keeps labelHashLen hex
+// characters of its hash.
+const (
+	maxLabelValue = 63
+	labelHashLen  = 6
+)
 
 // scheduleLabelValue is the scheduleNameLabel value Velero writes for the
 // schedule name, mirroring Velero's label.GetValidName: a name longer than
@@ -33,7 +36,15 @@ func scheduleLabelValue(name string) string {
 		return name
 	}
 	sum := sha256.Sum256([]byte(name))
-	return name[:maxLabelValue-6] + hex.EncodeToString(sum[:])[:6]
+	return name[:maxLabelValue-labelHashLen] + hex.EncodeToString(sum[:])[:labelHashLen]
+}
+
+// startTime is the backup's start time, zero when unset.
+func startTime(b *Backup) time.Time {
+	if b.StartTime == nil {
+		return time.Time{}
+	}
+	return *b.StartTime
 }
 
 // runTime orders a schedule's runs: the backup's creation time, or its start
@@ -42,10 +53,7 @@ func runTime(b *Backup) time.Time {
 	if !b.created.IsZero() {
 		return b.created
 	}
-	if b.StartTime != nil {
-		return *b.StartTime
-	}
-	return time.Time{}
+	return startTime(b)
 }
 
 // newerRun reports whether a ran after b: by run time, then start time, then
@@ -54,14 +62,7 @@ func newerRun(a, b *Backup) bool {
 	if ta, tb := runTime(a), runTime(b); !ta.Equal(tb) {
 		return ta.After(tb)
 	}
-	var sa, sb time.Time
-	if a.StartTime != nil {
-		sa = *a.StartTime
-	}
-	if b.StartTime != nil {
-		sb = *b.StartTime
-	}
-	if !sa.Equal(sb) {
+	if sa, sb := startTime(a), startTime(b); !sa.Equal(sb) {
 		return sa.After(sb)
 	}
 	return a.Name > b.Name
@@ -101,8 +102,7 @@ func withLastBackups(schedules []Schedule, backups []Backup) []Schedule {
 // cluster. A check that cannot be made counts as no: it only decides whether
 // a schedule shows its last-backup phase, never whether it is served.
 func (h *Handler) canListBackups(r *http.Request, user *auth.User) bool {
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()),
-		user.KubernetesUsername, user.KubernetesGroups, "list", "velero.io", BackupGVR.Resource, "")
+	can, err := h.canAccess(r, user, "list", BackupGVR.Resource, "")
 	return err == nil && can
 }
 
