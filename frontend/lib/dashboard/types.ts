@@ -713,12 +713,18 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * only status either handler writes itself. A remote cluster is not missing a
  * feature and a retry cannot change the answer, which is this set's meaning
  * exactly, and the handler's message is what the card should show.
+ *
+ * `diagnostics-summary` is the same case answered differently: the route reads
+ * the local informer cache and refuses any other cluster with 501
+ * `unsupported_platform` (#532, `diagnostics/handler.go` `refuseRemote`). 501
+ * is the only 5xx that handler writes deliberately; its 500s stay failures.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
   {
     "mesh-golden-signals": [400],
     "dashboard-trends": [400],
     "resource-counts": [400],
+    "diagnostics-summary": [501],
   };
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is

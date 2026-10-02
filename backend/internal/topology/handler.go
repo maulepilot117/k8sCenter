@@ -8,8 +8,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
+
+// remoteUnsupportedMessage is the fixed refusal for a topology request under
+// a remote cluster selection.
+const remoteUnsupportedMessage = "the resource topology graph is available for the local cluster only"
 
 // Handler serves topology HTTP endpoints.
 type Handler struct {
@@ -27,12 +33,26 @@ type Handler struct {
 //	  and Linkerd ServiceProfile routing) when the caller has list
 //	  permission on the underlying CRDs. Without this parameter the response
 //	  is byte-identical to the no-overlay path.
+//
+// On a remote cluster the request is refused with 501 and reason
+// unsupported_platform before the builder runs (#532): the graph is built
+// from the local cluster's informers (InformerLister), and remote clusters
+// have none, so answering would serve the local graph under the remote
+// cluster's name. The capability row topology.graph declares the same.
 func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+
+	if clusterID := middleware.ClusterIDFromContext(r.Context()); !k8s.IsLocalClusterID(clusterID) {
+		// The cluster id goes to the log only, never onto the wire.
+		h.Logger.Info("topology refused on remote cluster", "clusterID", clusterID, "namespace", namespace)
+		httputil.WriteErrorWithReason(w, http.StatusNotImplemented, remoteUnsupportedMessage,
+			string(k8s.ReasonUnsupportedPlatform), nil)
 		return
 	}
 

@@ -1,6 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
-import { apiGet } from "@/lib/api.ts";
+import { Alert } from "@/components/ui/Alert.tsx";
+import { ApiError, apiGet } from "@/lib/api.ts";
 import type { AffectedResource } from "@/src/islands/BlastRadiusPanel.tsx";
 import BlastRadiusPanel from "@/src/islands/BlastRadiusPanel.tsx";
 import type { DiagnosticResult } from "@/src/islands/DiagnosticChecklist.tsx";
@@ -32,6 +33,11 @@ export default function DiagnosticWorkspace() {
 
   const loading = useSignal(false);
   const error = useSignal<string | null>(null);
+  // The backend refuses diagnostics under a remote cluster selection with
+  // reason unsupported_platform (#532): the target, its pods and the blast
+  // radius come from the local cluster's informers. That is a fixed fact
+  // about the feature, not a failure, so it is not shown as an error.
+  const remoteUnsupported = useSignal(false);
 
   const results = useSignal<DiagnosticResult[]>([]);
   const directlyAffected = useSignal<AffectedResource[]>([]);
@@ -41,6 +47,7 @@ export default function DiagnosticWorkspace() {
   const fetchDiagnostics = async (ns: string, k: string, n: string) => {
     loading.value = true;
     error.value = null;
+    remoteUnsupported.value = false;
     try {
       const resp = await apiGet<DiagnosticResponse>(
         `/v1/diagnostics/${ns}/${k}/${n}`,
@@ -51,9 +58,13 @@ export default function DiagnosticWorkspace() {
       potentiallyAffected.value = data.blastRadius.potentiallyAffected;
       hasData.value = true;
     } catch (err) {
+      hasData.value = false;
+      if (err instanceof ApiError && err.reason === "unsupported_platform") {
+        remoteUnsupported.value = true;
+        return;
+      }
       error.value =
         err instanceof Error ? err.message : "Failed to run diagnostics";
-      hasData.value = false;
     } finally {
       loading.value = false;
     }
@@ -255,6 +266,18 @@ export default function DiagnosticWorkspace() {
           }}
         >
           Running diagnostics...
+        </div>
+      )}
+
+      {/* Unsupported on a remote cluster */}
+      {remoteUnsupported.value && (
+        <div data-diagnostics-state="remote-unsupported">
+          <Alert variant="info">
+            Resource diagnostics are not available for remote clusters. The
+            checks and the blast radius are built from the local cluster's live
+            resource cache, which remote clusters do not have. Switch to the
+            local cluster to investigate this resource.
+          </Alert>
         </div>
       )}
 
