@@ -487,6 +487,16 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "external-secrets.io", AuthResource: "externalsecrets",
 	},
 	{
+		// Remote since #531: Certificate, Issuer and ClusterIssuer lists, the
+		// expiring list, detail, renew and re-issue run on the selected
+		// cluster (certmanager/remote.go), with cert-manager presence read
+		// from that cluster's own discovery. The expiry poller and its
+		// notifications stay on the local cluster.
+		ID: "certmanager.certificates", Label: "cert-manager certificates and issuers",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "cert-manager.io", AuthResource: "certificates",
+	},
+	{
 		// Cilium config is tied to the local installation, so reads and
 		// updates are refused on remote (R13, the P2-5 decision).
 		// networking/handler.go:171 and :234 (rejectNonLocal, 501). The

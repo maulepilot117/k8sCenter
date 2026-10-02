@@ -15,13 +15,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
@@ -36,10 +37,15 @@ const (
 	issuingMessage  = "Certificate re-issuance manually triggered"
 )
 
-// Handler serves cert-manager HTTP endpoints.
+// Handler serves cert-manager HTTP endpoints for the cluster a request
+// selects. The local cluster is read through a service-account cache and the
+// local Discoverer; a remote cluster through Clients, as the requesting
+// identity, with presence decided by that cluster's own discovery and its
+// lists held briefly per identity in remote.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
-	ClusterRouter *k8s.ClusterRouter
+	Clients       k8s.ClusterClients
+	Presence      *k8s.Presence
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
 	AuditLogger   audit.Logger
@@ -51,17 +57,11 @@ type Handler struct {
 	cache      *cachedData
 	cacheGen   uint64
 
-	// F#16 (round-2) — per-cluster cache for fetchAllRemote results so a
-	// single page load with N cert-manager widgets doesn't fan out into N
-	// round-trips against the remote API. Coalesces across HandleList*
-	// + HandleGetCertificate + HandleListExpiring concurrent calls in
-	// the same 30s window (cacheTTL above). Singleflight (remoteFetchGroup)
-	// protects against concurrent first-loads; the cache + TTL bound the
-	// rate after that. F#11 (round-3) — was "60s window"; the constant
-	// has always been 30s.
-	remoteFetchGroup singleflight.Group
-	remoteCacheMu    sync.RWMutex
-	remoteCache      map[string]*cachedData // keyed by clusterID
+	// remote holds remote clusters' lists per (cluster, identity) for 30s
+	// (R-8 KTD1/KTD2), so a page that reads several cert-manager endpoints
+	// fetches once. Keying on identity means one identity's view, or its
+	// error, is never served to another.
+	remote *remotecache.Cache[*remoteSnapshot]
 }
 
 type cachedData struct {
@@ -74,7 +74,8 @@ type cachedData struct {
 // NewHandler creates a new cert-manager handler.
 func NewHandler(
 	k8sClient *k8s.ClientFactory,
-	clusterRouter *k8s.ClusterRouter,
+	clients k8s.ClusterClients,
+	presence *k8s.Presence,
 	discoverer *Discoverer,
 	accessChecker *resources.AccessChecker,
 	auditLogger audit.Logger,
@@ -83,69 +84,15 @@ func NewHandler(
 ) *Handler {
 	return &Handler{
 		K8sClient:     k8sClient,
-		ClusterRouter: clusterRouter,
+		Clients:       clients,
+		Presence:      presence,
 		Discoverer:    discoverer,
 		AccessChecker: accessChecker,
 		AuditLogger:   auditLogger,
 		NotifService:  notifService,
 		Logger:        logger,
+		remote:        remotecache.New[*remoteSnapshot](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, logger),
 	}
-}
-
-// InvalidateCache clears the cached data and emits a notification.
-func (h *Handler) InvalidateCache() {
-	h.cacheMu.Lock()
-	h.cacheGen++
-	h.cache = nil
-	h.cacheMu.Unlock()
-
-	if h.NotifService != nil {
-		go h.NotifService.Emit(context.Background(), notifications.Notification{
-			Source:   notifications.SourceCertManager,
-			Severity: notifications.SeverityInfo,
-			Title:    "cert-manager data updated",
-			Message:  "Certificate or issuer data has changed",
-		})
-	}
-}
-
-// EvictRemoteCache drops the per-cluster fetchAllRemote cache entry for
-// the given clusterID. Wired into ClusterRouter.RegisterEvictHook from
-// main.go so a cluster deletion or credential update wipes the cert-
-// manager remote cache in the same operation. Without this hook a
-// re-registered cluster ID could briefly serve the previous tenant's
-// data through HandleListCertificates / HandleGetCertificate /
-// HandleListExpiring until the next cacheTTL expired. F#8 round-3.
-func (h *Handler) EvictRemoteCache(clusterID string) {
-	h.remoteCacheMu.Lock()
-	if h.remoteCache != nil {
-		delete(h.remoteCache, clusterID)
-	}
-	h.remoteCacheMu.Unlock()
-}
-
-// getImpersonatingClient creates a dynamic client impersonating the user, routing to the
-// correct cluster via ClusterRouter. Returns (nil, false) and writes an error response on failure.
-func (h *Handler) getImpersonatingClient(ctx context.Context, w http.ResponseWriter, clusterID string, user *auth.User) (dynamic.Interface, bool) {
-	client, err := h.ClusterRouter.DynamicClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "clusterID", clusterID, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return nil, false
-	}
-	return client, true
-}
-
-// getTypedClient creates a typed Kubernetes clientset impersonating the user, routing to the
-// correct cluster via ClusterRouter. Returns (nil, false) and writes an error response on failure.
-func (h *Handler) getTypedClient(ctx context.Context, w http.ResponseWriter, clusterID string, user *auth.User) (kubernetes.Interface, bool) {
-	cs, err := h.ClusterRouter.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create typed client", "clusterID", clusterID, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
-		return nil, false
-	}
-	return cs, true
 }
 
 // canAccess checks if the user can access a cert-manager resource. The
@@ -229,76 +176,12 @@ func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 	return result.(*cachedData), nil
 }
 
+// fetchAll fills the local cluster's service-account cache.
 func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	dynClient := h.K8sClient.BaseDynamicClient()
-
-	var (
-		certificates   []Certificate
-		issuers        []Issuer
-		clusterIssuers []Issuer
-	)
-
-	g, gctx := errgroup.WithContext(ctx)
-
-	recoverutil.Go(g, h.Logger, "certmanager list certificates", func() error {
-		list, err := dynClient.Resource(CertificateGVR).Namespace("").List(gctx, metav1.ListOptions{})
-		if err != nil {
-			return fmt.Errorf("list certificates: %w", err)
-		}
-		certificates = make([]Certificate, 0, len(list.Items))
-		for i := range list.Items {
-			c, err := normalizeCertificate(&list.Items[i])
-			if err != nil {
-				continue
-			}
-			certificates = append(certificates, c)
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "certmanager list issuers", func() error {
-		list, err := dynClient.Resource(IssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
-		if err != nil {
-			return fmt.Errorf("list issuers: %w", err)
-		}
-		issuers = make([]Issuer, 0, len(list.Items))
-		for i := range list.Items {
-			issuers = append(issuers, normalizeIssuer(&list.Items[i], "Namespaced"))
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "certmanager list clusterissuers", func() error {
-		list, err := dynClient.Resource(ClusterIssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
-		if err != nil {
-			return fmt.Errorf("list clusterissuers: %w", err)
-		}
-		clusterIssuers = make([]Issuer, 0, len(list.Items))
-		for i := range list.Items {
-			clusterIssuers = append(clusterIssuers, normalizeIssuer(&list.Items[i], "Cluster"))
-		}
-		return nil
-	})
-
-	if err := g.Wait(); err != nil {
+	// nolint:cluster-routing local path: the service-account cache serves the local cluster only; remote reads go through fetchRemote.
+	data, err := h.listAll(ctx, h.K8sClient.BaseDynamicClient())
+	if err != nil {
 		return nil, err
-	}
-
-	// Resolve per-cert thresholds against the just-fetched issuer set
-	// before caching. Every read path (CachedCertificates, /expiring,
-	// detail) consumes the cache, so doing it once here keeps the
-	// resolution out of the hot path and ensures every consumer sees
-	// the same view.
-	ApplyThresholds(certificates, issuers, clusterIssuers, h.Logger)
-
-	data := &cachedData{
-		certificates:   certificates,
-		issuers:        issuers,
-		clusterIssuers: clusterIssuers,
-		fetchedAt:      time.Now(),
 	}
 
 	h.cacheMu.Lock()
@@ -310,151 +193,97 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 	return data, nil
 }
 
-// fetchAllRemote pulls certificates, issuers, and clusterissuers directly
-// from a remote cluster via an impersonating dynamic client.
-//
-// F#16 (round-2): wrapped by a 30s per-cluster cache + singleflight so a
-// single page load that touches three remote endpoints (list certs, list
-// issuers, get expiring) doesn't fan out into 3 sets of List calls against
-// the remote API. The cache is keyed only on clusterID — RBAC filtering
-// remains per-user-per-call via filterByRBAC, so the cached cluster-wide
-// list is still safe to share across users. Per-user RBAC re-evaluation
-// after the cache hit is what makes this safe; F#3's worry about RBAC
-// drift is bounded by the 30s TTL (see cacheTTL).
-//
-// F#3 (round-3) — singleflight ctx-cancel poisoning fix. The previous
-// implementation passed the FIRST caller's ctx straight into
-// fetchAllRemoteDirect inside the shared Do() closure. If that caller's
-// HTTP request was cancelled mid-flight (client disconnect, request
-// timeout), every coalesced waiter saw the same context.Canceled error
-// even though their own requests were still alive. Use context.WithoutCancel
-// to preserve caller VALUES (request_id, trace span) while severing the
-// cancel signal; cap at the caller's deadline if set, else default to
-// 30s (matches cluster_router.remoteConfig — F#6 cap).
-//
-// Callers must already have verified the cluster is non-local via
-// k8s.IsLocalClusterID. Returns (certs, issuers, clusterIssuers, err).
-// F#3 — security audit 2026-05-22; F#16 — re-review; F#3/F#6 round-3.
-func (h *Handler) fetchAllRemote(ctx context.Context, clusterID string, user *auth.User) ([]Certificate, []Issuer, []Issuer, error) {
-	// Cache check
-	h.remoteCacheMu.RLock()
-	if cached, ok := h.remoteCache[clusterID]; ok && time.Since(cached.fetchedAt) < cacheTTL {
-		h.remoteCacheMu.RUnlock()
-		return cached.certificates, cached.issuers, cached.clusterIssuers, nil
-	}
-	h.remoteCacheMu.RUnlock()
+// listTimeout bounds one fetch of every cert-manager list.
+const listTimeout = 10 * time.Second
 
-	// Singleflight coalesce — concurrent first-loads share one round-trip.
-	// Build a context that cannot be cancelled by any single caller's
-	// disconnect (F#3 round-3) but still respects the caller's deadline
-	// (and falls back to a 30s cap when no deadline was supplied — F#6).
-	val, err, _ := h.remoteFetchGroup.Do(clusterID, func() (any, error) {
-		sfCtx := context.WithoutCancel(ctx)
-		var cancel context.CancelFunc
-		if deadline, ok := ctx.Deadline(); ok {
-			sfCtx, cancel = context.WithDeadline(sfCtx, deadline)
-		} else {
-			// F#6 — bound the no-deadline case so a hung remote API
-			// doesn't pin the singleflight slot indefinitely. 30s
-			// matches cluster_router.remoteConfig's default.
-			sfCtx, cancel = context.WithTimeout(sfCtx, 30*time.Second)
-		}
-		defer cancel()
-
-		certs, issuers, cissuers, ferr := h.fetchAllRemoteDirect(sfCtx, clusterID, user)
-		if ferr != nil {
-			return nil, ferr
-		}
-		entry := &cachedData{
-			certificates:   certs,
-			issuers:        issuers,
-			clusterIssuers: cissuers,
-			fetchedAt:      time.Now(),
-		}
-		h.remoteCacheMu.Lock()
-		if h.remoteCache == nil {
-			h.remoteCache = map[string]*cachedData{}
-		}
-		h.remoteCache[clusterID] = entry
-		h.remoteCacheMu.Unlock()
-		return entry, nil
-	})
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	d := val.(*cachedData)
-	return d.certificates, d.issuers, d.clusterIssuers, nil
+// source is one cert-manager list and how to read it into a cachedData.
+type source struct {
+	gvr  schema.GroupVersionResource
+	list func(ctx context.Context, dyn dynamic.Interface) error
 }
 
-// fetchAllRemoteDirect is the un-cached, un-coalesced inner fetch. Exists
-// so the cache-aware fetchAllRemote can compose it with singleflight.
-func (h *Handler) fetchAllRemoteDirect(ctx context.Context, clusterID string, user *auth.User) ([]Certificate, []Issuer, []Issuer, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+// newCachedData returns empty lists, so a list that is not read (its
+// resource type is gone) serves as empty rather than null.
+func newCachedData() *cachedData {
+	return &cachedData{certificates: []Certificate{}, issuers: []Issuer{}, clusterIssuers: []Issuer{}}
+}
+
+// sources returns the lists that fill d, each across every namespace. A list
+// leaves its field of d untouched when it fails.
+func (d *cachedData) sources() []source {
+	return []source{
+		{CertificateGVR, func(ctx context.Context, dyn dynamic.Interface) error {
+			list, err := dyn.Resource(CertificateGVR).Namespace("").List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("list certificates: %w", err)
+			}
+			certificates := make([]Certificate, 0, len(list.Items))
+			for i := range list.Items {
+				c, err := normalizeCertificate(&list.Items[i])
+				if err != nil {
+					continue
+				}
+				certificates = append(certificates, c)
+			}
+			d.certificates = certificates
+			return nil
+		}},
+		{IssuerGVR, func(ctx context.Context, dyn dynamic.Interface) error {
+			list, err := dyn.Resource(IssuerGVR).Namespace("").List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("list issuers: %w", err)
+			}
+			issuers := make([]Issuer, 0, len(list.Items))
+			for i := range list.Items {
+				issuers = append(issuers, normalizeIssuer(&list.Items[i], "Namespaced"))
+			}
+			d.issuers = issuers
+			return nil
+		}},
+		{ClusterIssuerGVR, func(ctx context.Context, dyn dynamic.Interface) error {
+			list, err := dyn.Resource(ClusterIssuerGVR).Namespace("").List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("list clusterissuers: %w", err)
+			}
+			clusterIssuers := make([]Issuer, 0, len(list.Items))
+			for i := range list.Items {
+				clusterIssuers = append(clusterIssuers, normalizeIssuer(&list.Items[i], "Cluster"))
+			}
+			d.clusterIssuers = clusterIssuers
+			return nil
+		}},
+	}
+}
+
+// resolve stamps d and resolves each certificate's thresholds against the
+// issuers d holds. Every read path (CachedCertificates, /expiring, detail)
+// consumes the result, so resolving once here keeps it out of the hot path
+// and gives every consumer the same view.
+func (d *cachedData) resolve(logger *slog.Logger) {
+	ApplyThresholds(d.certificates, d.issuers, d.clusterIssuers, logger)
+	d.fetchedAt = time.Now()
+}
+
+// listAll lists certificates, issuers and clusterissuers through the local
+// service-account client dyn. The service account sees every list or the
+// cluster is failing, so any one failure fails the fetch; a remote cluster,
+// read as the user, goes through fetchRemote's per-list handling instead.
+func (h *Handler) listAll(ctx context.Context, dyn dynamic.Interface) (*cachedData, error) {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
 
-	dyn, err := h.ClusterRouter.DynamicClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("dynamic client for cluster %s: %w", clusterID, err)
-	}
-
-	var (
-		certificates   []Certificate
-		issuers        []Issuer
-		clusterIssuers []Issuer
-	)
-
+	data := newCachedData()
 	g, gctx := errgroup.WithContext(ctx)
-
-	recoverutil.Go(g, h.Logger, "certmanager remote list certificates", func() error {
-		list, err := dyn.Resource(CertificateGVR).Namespace("").List(gctx, metav1.ListOptions{})
-		if err != nil {
-			return fmt.Errorf("list certificates: %w", err)
-		}
-		certificates = make([]Certificate, 0, len(list.Items))
-		for i := range list.Items {
-			c, err := normalizeCertificate(&list.Items[i])
-			if err != nil {
-				continue
-			}
-			certificates = append(certificates, c)
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "certmanager remote list issuers", func() error {
-		list, err := dyn.Resource(IssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
-		if err != nil {
-			return fmt.Errorf("list issuers: %w", err)
-		}
-		issuers = make([]Issuer, 0, len(list.Items))
-		for i := range list.Items {
-			issuers = append(issuers, normalizeIssuer(&list.Items[i], "Namespaced"))
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "certmanager remote list clusterissuers", func() error {
-		list, err := dyn.Resource(ClusterIssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
-		if err != nil {
-			return fmt.Errorf("list clusterissuers: %w", err)
-		}
-		clusterIssuers = make([]Issuer, 0, len(list.Items))
-		for i := range list.Items {
-			clusterIssuers = append(clusterIssuers, normalizeIssuer(&list.Items[i], "Cluster"))
-		}
-		return nil
-	})
-
-	if err := g.Wait(); err != nil {
-		return nil, nil, nil, err
+	for _, src := range data.sources() {
+		recoverutil.Go(g, h.Logger, "certmanager list "+src.gvr.Resource, func() error {
+			return src.list(gctx, dyn)
+		})
 	}
-
-	// Apply per-cert threshold resolution against the just-fetched issuer set,
-	// so the response carries the same WarningThresholdDays / source fields
-	// that the local cache path emits via ApplyThresholds.
-	ApplyThresholds(certificates, issuers, clusterIssuers, h.Logger)
-
-	return certificates, issuers, clusterIssuers, nil
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	data.resolve(h.Logger)
+	return data, nil
 }
 
 // CachedCertificates returns the cached certificate list (for use by the Poller).
@@ -468,13 +297,16 @@ func (h *Handler) CachedCertificates(ctx context.Context) ([]Certificate, error)
 
 // HandleStatus returns the cert-manager detection status.
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
-	_, ok := httputil.RequireUser(w, r)
+	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
 
-	status := h.Discoverer.Status(r.Context())
-	httputil.WriteData(w, status)
+	if !isLocal(r.Context()) {
+		httputil.WriteData(w, h.remoteStatus(r.Context(), user))
+		return
+	}
+	httputil.WriteData(w, h.Discoverer.Status(r.Context()))
 }
 
 // HandleListCertificates returns all cert-manager certificates, optionally filtered by namespace.
@@ -484,39 +316,16 @@ func (h *Handler) HandleListCertificates(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
+	data, ok := h.loadList(w, r, user, CertificateGVR, "certificates")
+	if !ok {
+		return
+	}
+	if data == nil {
 		httputil.WriteData(w, []Certificate{})
 		return
 	}
 
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-
-	// F#3 — for non-local X-Cluster-ID, the cache (which is populated from the
-	// local cluster's BaseDynamicClient) would return the wrong cluster's data.
-	// Bypass it with a per-request dynamic.List against the remote cluster's
-	// API. We accept the staleness/latency tradeoff (per-request remote round-
-	// trip vs cached local) because returning wrong-cluster data silently is
-	// strictly worse than serving uncached remote results.
-	var certificates []Certificate
-	if !k8s.IsLocalClusterID(clusterID) {
-		remoteCerts, _, _, err := h.fetchAllRemote(r.Context(), clusterID, user)
-		if err != nil {
-			h.Logger.Error("failed to fetch certificates from remote cluster", "clusterID", clusterID, "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch certificates", "")
-			return
-		}
-		certificates = remoteCerts
-	} else {
-		data, err := h.getCached(r.Context())
-		if err != nil {
-			h.Logger.Error("failed to fetch certificates", "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch certificates", "")
-			return
-		}
-		certificates = data.certificates
-	}
-
-	filtered := filterByRBAC(r.Context(), h, user, "certificates", certificates)
+	filtered := filterByRBAC(r.Context(), h, user, "certificates", data.certificates)
 
 	// Optional namespace filter
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
@@ -548,9 +357,8 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	clusterID := middleware.ClusterIDFromContext(ctx)
 
-	dynClient, ok := h.getImpersonatingClient(ctx, w, clusterID, user)
+	dynClient, ok := h.dynamicClient(w, r, user)
 	if !ok {
 		return
 	}
@@ -558,8 +366,7 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	// Fetch the certificate
 	certObj, err := dynClient.Resource(CertificateGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		h.Logger.Error("failed to get certificate", "namespace", ns, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusNotFound, "certificate not found", "")
+		h.writeGetError(w, r, err, "certificate not found")
 		return
 	}
 
@@ -576,29 +383,25 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	// (without it the response would never show Status="Expiring",
 	// since computeStatus no longer overlays Expiring).
 	//
-	// F#9 (round-2): for non-local cluster IDs the local cache holds
-	// local-cluster issuers — applying those thresholds to a remote
-	// certificate would attribute the wrong issuer entirely. Route remote
-	// detail requests through fetchAllRemote so threshold resolution sees
-	// the remote cluster's own Issuers / ClusterIssuers. Local clusters
-	// continue to hit the cache. Cache miss for local falls through to
-	// defaults uniformly — same as before.
+	// F#9 (round-2): the issuers come from the request's own cluster (the
+	// local cache, or that remote cluster's per-identity lists), so a remote
+	// certificate is never attributed to a local issuer. A failed issuer
+	// read does not fail the detail response: thresholds fall through to
+	// package defaults, logged so the gap is visible. On a remote cluster
+	// each issuer list that did load still counts when the other failed.
 	var issuers, clusterIssuers []Issuer
-	if !k8s.IsLocalClusterID(clusterID) {
-		_, remoteIssuers, remoteCIssuers, ferr := h.fetchAllRemote(ctx, clusterID, user)
-		if ferr != nil {
-			// Don't fail the detail response on issuer-fetch error —
-			// threshold attribution falls through to package defaults
-			// just like a local cache miss. Log so the gap is visible.
-			h.Logger.Warn("remote issuer fetch for cert detail failed; thresholds will fall back to defaults",
-				"clusterID", clusterID, "namespace", ns, "name", name, "error", ferr)
-		} else {
-			issuers = remoteIssuers
-			clusterIssuers = remoteCIssuers
-		}
-	} else if data, derr := h.getCached(ctx); derr == nil && data != nil {
+	switch data, failed, derr := h.load(ctx, user); {
+	case derr != nil:
+		h.Logger.Warn("issuer fetch for cert detail failed; thresholds will fall back to defaults",
+			"clusterID", middleware.ClusterIDFromContext(ctx), "namespace", ns, "name", name, "error", derr)
+	case data != nil:
 		issuers = data.issuers
 		clusterIssuers = data.clusterIssuers
+		if ie, ce := failed[IssuerGVR.Resource], failed[ClusterIssuerGVR.Resource]; ie != nil || ce != nil {
+			h.Logger.Warn("an issuer list for cert detail failed; thresholds from it will fall back to defaults",
+				"clusterID", middleware.ClusterIDFromContext(ctx), "namespace", ns, "name", name,
+				"issuersError", ie, "clusterIssuersError", ce)
+		}
 	}
 	certs := []Certificate{cert}
 	ApplyThresholds(certs, issuers, clusterIssuers, h.Logger)
@@ -705,34 +508,16 @@ func (h *Handler) HandleListIssuers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
+	data, ok := h.loadList(w, r, user, IssuerGVR, "issuers")
+	if !ok {
+		return
+	}
+	if data == nil {
 		httputil.WriteData(w, []Issuer{})
 		return
 	}
 
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-
-	// F#3 — bypass local cache for non-local clusters; see HandleListCertificates.
-	var issuers []Issuer
-	if !k8s.IsLocalClusterID(clusterID) {
-		_, remoteIssuers, _, err := h.fetchAllRemote(r.Context(), clusterID, user)
-		if err != nil {
-			h.Logger.Error("failed to fetch issuers from remote cluster", "clusterID", clusterID, "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch issuers", "")
-			return
-		}
-		issuers = remoteIssuers
-	} else {
-		data, err := h.getCached(r.Context())
-		if err != nil {
-			h.Logger.Error("failed to fetch issuers", "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch issuers", "")
-			return
-		}
-		issuers = data.issuers
-	}
-
-	filtered := filterByRBAC(r.Context(), h, user, "issuers", issuers)
+	filtered := filterByRBAC(r.Context(), h, user, "issuers", data.issuers)
 	httputil.WriteData(w, filtered)
 }
 
@@ -743,35 +528,22 @@ func (h *Handler) HandleListClusterIssuers(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
+	// Cluster-scoped RBAC check. On the local cluster it runs before any
+	// read, so a user who may not see cluster issuers gets an empty list
+	// whatever state the cache is in. On a remote cluster the lists are read
+	// first: an unreachable remote also fails the access review, and must
+	// answer with its classified error rather than an empty list (KTD5).
+	local := isLocal(r.Context())
+	if local && !h.canAccess(r.Context(), user, "get", "clusterissuers", "") {
 		httputil.WriteData(w, []Issuer{})
 		return
 	}
-
-	// Cluster-scoped RBAC check
-	if !h.canAccess(r.Context(), user, "get", "clusterissuers", "") {
+	data, ok := h.loadList(w, r, user, ClusterIssuerGVR, "cluster issuers")
+	if !ok {
+		return
+	}
+	if data == nil || (!local && !h.canAccess(r.Context(), user, "get", "clusterissuers", "")) {
 		httputil.WriteData(w, []Issuer{})
-		return
-	}
-
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-
-	// F#3 — bypass local cache for non-local clusters; see HandleListCertificates.
-	if !k8s.IsLocalClusterID(clusterID) {
-		_, _, remoteClusterIssuers, err := h.fetchAllRemote(r.Context(), clusterID, user)
-		if err != nil {
-			h.Logger.Error("failed to fetch cluster issuers from remote cluster", "clusterID", clusterID, "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch cluster issuers", "")
-			return
-		}
-		httputil.WriteData(w, remoteClusterIssuers)
-		return
-	}
-
-	data, err := h.getCached(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch cluster issuers", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch cluster issuers", "")
 		return
 	}
 
@@ -786,34 +558,16 @@ func (h *Handler) HandleListExpiring(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.Discoverer.IsAvailable(r.Context()) {
+	data, ok := h.loadList(w, r, user, CertificateGVR, "certificates")
+	if !ok {
+		return
+	}
+	if data == nil {
 		httputil.WriteData(w, []ExpiringCertificate{})
 		return
 	}
 
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-
-	// F#3 — bypass local cache for non-local clusters; see HandleListCertificates.
-	var certificates []Certificate
-	if !k8s.IsLocalClusterID(clusterID) {
-		remoteCerts, _, _, err := h.fetchAllRemote(r.Context(), clusterID, user)
-		if err != nil {
-			h.Logger.Error("failed to fetch certificates from remote cluster", "clusterID", clusterID, "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch certificates", "")
-			return
-		}
-		certificates = remoteCerts
-	} else {
-		data, err := h.getCached(r.Context())
-		if err != nil {
-			h.Logger.Error("failed to fetch certificates", "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch certificates", "")
-			return
-		}
-		certificates = data.certificates
-	}
-
-	certs := filterByRBAC(r.Context(), h, user, "certificates", certificates)
+	certs := filterByRBAC(r.Context(), h, user, "certificates", data.certificates)
 
 	expiring := make([]ExpiringCertificate, 0)
 	for _, c := range certs {
@@ -862,7 +616,6 @@ func (h *Handler) HandleRenew(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	ctx := r.Context()
-	clusterID := middleware.ClusterIDFromContext(ctx)
 
 	// RBAC pre-check
 	if !h.canAccess(ctx, user, "patch", "certificates", ns) {
@@ -870,7 +623,7 @@ func (h *Handler) HandleRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.getImpersonatingClient(ctx, w, clusterID, user)
+	dynClient, ok := h.dynamicClient(w, r, user)
 	if !ok {
 		return
 	}
@@ -885,14 +638,13 @@ func (h *Handler) HandleRenew(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if lastErr != nil {
-		h.Logger.Error("failed to renew certificate", "namespace", ns, "name", name, "error", lastErr)
 		h.auditLog(r, user, audit.ActionCertRenew, "Certificate", ns, name, audit.ResultFailure)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to renew certificate", "")
+		h.writeClusterError(w, r, lastErr, http.StatusInternalServerError, "failed to renew certificate")
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionCertRenew, "Certificate", ns, name, audit.ResultSuccess)
-	h.InvalidateCache()
+	h.afterWrite(ctx)
 
 	w.WriteHeader(http.StatusAccepted)
 	httputil.WriteData(w, map[string]string{"status": "renewing"})
@@ -971,7 +723,6 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	ctx := r.Context()
-	clusterID := middleware.ClusterIDFromContext(ctx)
 
 	// RBAC pre-check — need delete on secrets
 	if !h.canAccess(ctx, user, "delete", "secrets", ns) {
@@ -979,7 +730,7 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.getImpersonatingClient(ctx, w, clusterID, user)
+	dynClient, ok := h.dynamicClient(w, r, user)
 	if !ok {
 		return
 	}
@@ -987,8 +738,7 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 	// GET the Certificate
 	certObj, err := dynClient.Resource(CertificateGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		h.Logger.Error("failed to get certificate", "namespace", ns, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusNotFound, "certificate not found", "")
+		h.writeGetError(w, r, err, "certificate not found")
 		return
 	}
 
@@ -1002,7 +752,7 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 	certUID := string(certObj.GetUID())
 
 	// Get the typed clientset for secret operations, routed to the correct cluster
-	cs, ok := h.getTypedClient(ctx, w, clusterID, user)
+	cs, ok := h.typedClient(w, r, user)
 	if !ok {
 		return
 	}
@@ -1010,8 +760,7 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 	// GET the Secret
 	secret, err := cs.CoreV1().Secrets(ns).Get(ctx, secretName, metav1.GetOptions{})
 	if err != nil {
-		h.Logger.Error("failed to get secret", "namespace", ns, "name", secretName, "error", err)
-		httputil.WriteError(w, http.StatusNotFound, "backing secret not found", "")
+		h.writeGetError(w, r, err, "backing secret not found")
 		return
 	}
 
@@ -1030,14 +779,13 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 
 	// Delete the Secret
 	if err := cs.CoreV1().Secrets(ns).Delete(ctx, secretName, metav1.DeleteOptions{}); err != nil {
-		h.Logger.Error("failed to delete secret", "namespace", ns, "name", secretName, "error", err)
 		h.auditLog(r, user, audit.ActionCertReissue, "Certificate", ns, name, audit.ResultFailure)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete backing secret", "")
+		h.writeClusterError(w, r, err, http.StatusInternalServerError, "failed to delete backing secret")
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionCertReissue, "Certificate", ns, name, audit.ResultSuccess)
-	h.InvalidateCache()
+	h.afterWrite(ctx)
 
 	w.WriteHeader(http.StatusAccepted)
 	httputil.WriteData(w, map[string]string{"status": "reissuing"})

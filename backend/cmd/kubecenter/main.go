@@ -785,14 +785,15 @@ func main() {
 
 	// Cert-Manager integration
 	cmDisc := certmanager.NewDiscoverer(k8sClient, logger)
-	cmHandler := certmanager.NewHandler(k8sClient, clusterRouter, cmDisc, accessChecker, auditLogger, notifService, logger)
+	cmHandler := certmanager.NewHandler(k8sClient, clusterRouter, remotePresence, cmDisc, accessChecker, auditLogger, notifService, logger)
 	cmPoller := certmanager.NewPoller(k8sClient, cmDisc, cmHandler, notifService, logger)
 	go cmPoller.Start(ctx)
-	// F#8 (round-3) — wire cert-manager's per-cluster remote cache into
+	// F#8 (round-3) — wire cert-manager's per-identity remote cache into
 	// ClusterRouter.EvictCluster so a cluster deletion or credential
-	// update drops the cached cert data in the same operation. Without
-	// this hook a re-registered cluster ID could briefly serve the
-	// previous tenant's certificates until cacheTTL expired.
+	// update drops every identity's cached cert data in the same
+	// operation. Without this hook a re-registered cluster ID could
+	// briefly serve the previous tenant's certificates until the TTL
+	// expired.
 	clusterRouter.RegisterEvictHook(cmHandler.EvictRemoteCache)
 
 	// External Secrets Operator integration (Phase A — observatory; Phase D

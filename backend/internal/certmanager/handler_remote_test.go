@@ -3,198 +3,585 @@ package certmanager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	fakediscovery "k8s.io/client-go/discovery/fake"
+	"k8s.io/client-go/dynamic"
+	dynfake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/kubernetes"
+	kfake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic/fake"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
 )
 
-// F#3 regression — verifies that when a non-local X-Cluster-ID is set on the
-// request context, the list endpoints route through ClusterRouter
-// (DynamicClientForCluster) instead of returning the locally-cached
-// BaseDynamicClient data.
-//
-// After F#18 (round-2), ClusterRouter hard-errors on (non-local clusterID +
-// nil clusterStore) instead of silently falling through to the local
-// factory. That means the remote branch now returns a 500 ("failed to fetch
-// certificates") in this test setup — and that IS the F#3 proof: if the
-// cache had been read, the handler would have returned a 200 with
-// "local-cert". A 500 here means the remote path was taken AND it failed
-// closed because no real remote store was wired. Both outcomes (500 here,
-// real-remote-data in production) are correct; only "200 + local-cert"
-// would indicate the F#3 regression we're guarding against.
-func TestHandleListCertificates_RemoteClusterBypassesLocalCache(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+// Remote-cluster tests (#531). cert-manager presence is decided on the
+// selected cluster through k8s.Presence, never by the local Discoverer, and
+// remote lists are cached per (cluster, identity) through remotecache.
 
-	gvrToListKind := map[schema.GroupVersionResource]string{
-		CertificateGVR:   "CertificateList",
-		IssuerGVR:        "IssuerList",
-		ClusterIssuerGVR: "ClusterIssuerList",
+const remoteCluster = "remote-1"
+
+// remoteHost is the address a remote transport error names. No response
+// may carry it.
+const remoteHost = "10.20.30.40"
+
+type fakeCluster struct {
+	disc *fakediscovery.FakeDiscovery
+	dyn  *dynfake.FakeDynamicClient
+	cs   *kfake.Clientset
+}
+
+// fakeClients is a k8s.ClusterClients over one fake cluster per id. A
+// target error makes every resolution fail. dynamicFor records the identity
+// each dynamic client was resolved for, so a test can tell whose view a
+// fetch read.
+type fakeClients struct {
+	mu         sync.Mutex
+	clusters   map[string]*fakeCluster
+	targetErr  error
+	dynamicFor []string
+}
+
+func (f *fakeClients) cluster(id string) (*fakeCluster, error) {
+	if f.targetErr != nil {
+		return nil, f.targetErr
 	}
-	remoteCert := newUnstructuredCert("remote-ns", "remote-cert", "remote-issuer")
-	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(scheme.Scheme, gvrToListKind, remoteCert)
-
-	factory := k8s.NewTestClientFactoryWithDynamic(&kubernetes.Clientset{}, dyn)
-	router := k8s.NewClusterRouter(factory, nil, "", logger)
-
-	h := &Handler{
-		K8sClient:     factory,
-		ClusterRouter: router,
-		Discoverer:    newAvailableDiscoverer(),
-		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
-		AuditLogger:   audit.NewSlogLogger(logger),
-		Logger:        logger,
+	c, ok := f.clusters[k8s.NormalizedClusterID(id)]
+	if !ok {
+		return nil, errors.New("no such fake cluster " + id)
 	}
+	return c, nil
+}
 
-	// Seed local cache with a sentinel. If the cache is wrongly used for a
-	// remote request, the response would be 200 + "local-cert"; with F#18
-	// the remote path is taken and the missing store path fails closed.
-	h.cache = &cachedData{
-		certificates: []Certificate{
-			{Name: "local-cert", Namespace: "local-ns"},
-		},
-		fetchedAt: time.Now(),
+func (f *fakeClients) ClientForCluster(_ context.Context, id, _ string, _ []string) (kubernetes.Interface, error) {
+	c, err := f.cluster(id)
+	if err != nil {
+		return nil, err
 	}
+	return c.cs, nil
+}
 
-	req := httptest.NewRequest("GET", "/", nil)
-	ctx := middleware.WithClusterID(req.Context(), "remote-cluster-1")
-	ctx = auth.ContextWithUser(ctx, testUser())
-	req = req.WithContext(ctx)
-	w := httptest.NewRecorder()
-
-	h.HandleListCertificates(w, req)
-
-	// After F#18 the remote path fails closed on nil clusterStore. The
-	// important assertion is that the cache was NOT served — 500 proves
-	// the bypass took effect.
-	if w.Code == http.StatusOK {
-		var envelope struct {
-			Data []Certificate `json:"data"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &envelope); err == nil {
-			for _, c := range envelope.Data {
-				if c.Name == "local-cert" {
-					t.Fatalf("F#3 regression: local cache leaked into remote response (got cert %q)", c.Name)
-				}
-			}
-		}
+func (f *fakeClients) DynamicClientForCluster(_ context.Context, id, username string, groups []string) (dynamic.Interface, error) {
+	c, err := f.cluster(id)
+	if err != nil {
+		return nil, err
 	}
-	// 500 with the cluster-store fail-closed error is the expected outcome here.
-	// F#7 (round-3): this must FAIL the test if F#3 regresses, not just log —
-	// the previous t.Logf would have let a silently-restored cache hit pass
-	// as long as 200's cert name was not "local-cert".
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d (expected 500 after F#18 fail-closed on nil clusterStore); body: %s", w.Code, w.Body.String())
+	f.mu.Lock()
+	f.dynamicFor = append(f.dynamicFor, username+"|"+strings.Join(groups, ","))
+	f.mu.Unlock()
+	return c.dyn, nil
+}
+
+func (f *fakeClients) identities() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.dynamicFor...)
+}
+
+func (f *fakeClients) TargetSchemaFor(_ context.Context, id, _ string, _ []string) (*k8s.TargetSchema, error) {
+	c, err := f.cluster(id)
+	if err != nil {
+		return nil, err
+	}
+	var disc discovery.DiscoveryInterface = c.disc
+	return &k8s.TargetSchema{ClusterID: id, Discovery: disc, Invalidate: func() {}}, nil
+}
+
+var certManagerListKinds = map[schema.GroupVersionResource]string{
+	CertificateGVR:        "CertificateList",
+	IssuerGVR:             "IssuerList",
+	ClusterIssuerGVR:      "ClusterIssuerList",
+	CertificateRequestGVR: "CertificateRequestList",
+	OrderGVR:              "OrderList",
+	ChallengeGVR:          "ChallengeList",
+}
+
+// certManagerLists is discovery for a cluster that does or does not serve
+// cert-manager.
+func certManagerLists(installed bool) []*metav1.APIResourceList {
+	lists := []*metav1.APIResourceList{{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "pods", Kind: "Pod", Namespaced: true}}}}
+	if installed {
+		lists = append(lists, &metav1.APIResourceList{GroupVersion: "cert-manager.io/v1", APIResources: []metav1.APIResource{
+			{Name: "certificates", Kind: "Certificate", Namespaced: true},
+			{Name: "issuers", Kind: "Issuer", Namespaced: true},
+			{Name: "clusterissuers", Kind: "ClusterIssuer", Namespaced: false},
+			{Name: "certificaterequests", Kind: "CertificateRequest", Namespaced: true},
+		}})
+	}
+	return lists
+}
+
+func newFakeCluster(installed bool, objs ...runtime.Object) *fakeCluster {
+	return &fakeCluster{
+		disc: &fakediscovery.FakeDiscovery{Fake: &k8stesting.Fake{Resources: certManagerLists(installed)}},
+		dyn:  dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), certManagerListKinds, objs...),
+		cs:   kfake.NewSimpleClientset(),
 	}
 }
 
-// Same shape for issuers — see HandleListCertificates test for the F#18
-// fail-closed expectation.
-func TestHandleListIssuers_RemoteClusterBypassesLocalCache(t *testing.T) {
+// expiringCert is a Certificate that expires in days days.
+func expiringCert(namespace, name string, days int) *unstructured.Unstructured {
+	u := newUnstructuredCert(namespace, name, "remote-issuer")
+	u.Object["status"] = map[string]any{
+		"notAfter": time.Now().Add(time.Duration(days)*24*time.Hour + time.Hour).UTC().Format(time.RFC3339),
+	}
+	return u
+}
+
+// newRemoteHandler builds a Handler whose remote cluster is served by
+// remote. The local cluster is a seeded cache plus a Discoverer reporting
+// localDetected; K8sClient is nil, so any service-account read on the
+// remote path panics.
+func newRemoteHandler(t *testing.T, localDetected bool, remote *fakeCluster) (*Handler, *fakeClients) {
+	t.Helper()
+	clients := &fakeClients{clusters: map[string]*fakeCluster{remoteCluster: remote}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	gvrToListKind := map[schema.GroupVersionResource]string{
-		CertificateGVR:   "CertificateList",
-		IssuerGVR:        "IssuerList",
-		ClusterIssuerGVR: "ClusterIssuerList",
-	}
-	remoteIssuer := newUnstructuredIssuer("remote-ns", "remote-issuer", false)
-	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(scheme.Scheme, gvrToListKind, remoteIssuer)
-
-	factory := k8s.NewTestClientFactoryWithDynamic(&kubernetes.Clientset{}, dyn)
-	router := k8s.NewClusterRouter(factory, nil, "", logger)
-
-	h := &Handler{
-		K8sClient:     factory,
-		ClusterRouter: router,
-		Discoverer:    newAvailableDiscoverer(),
-		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
-		AuditLogger:   audit.NewSlogLogger(logger),
-		Logger:        logger,
-	}
+	h := NewHandler(nil, clients, k8s.NewPresence(clients), seededDiscoverer(localDetected),
+		resources.NewAlwaysAllowAccessChecker(), audit.NewSlogLogger(logger), nil, logger)
 	h.cache = &cachedData{
-		issuers:   []Issuer{{Name: "local-issuer", Namespace: "local-ns"}},
-		fetchedAt: time.Now(),
+		certificates:   []Certificate{{Name: "local-cert", Namespace: "local-ns"}},
+		issuers:        []Issuer{{Name: "local-issuer", Namespace: "local-ns"}},
+		clusterIssuers: []Issuer{{Name: "local-clusterissuer"}},
+		fetchedAt:      time.Now(),
+	}
+	return h, clients
+}
+
+func seededDiscoverer(detected bool) *Discoverer {
+	d := NewDiscoverer(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d.status = CertManagerStatus{Detected: detected, LastChecked: time.Now().UTC()}
+	return d
+}
+
+var (
+	alice = &auth.User{Username: "alice", KubernetesUsername: "alice", KubernetesGroups: []string{"admins"}, Roles: []string{"admin"}}
+	bob   = &auth.User{Username: "bob", KubernetesUsername: "bob", KubernetesGroups: []string{"admins"}, Roles: []string{"admin"}}
+)
+
+func doAs(t *testing.T, user *auth.User, clusterID, method string, h http.HandlerFunc, params map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), method, "/certificates", nil)
+	rctx := chi.NewRouteContext()
+	for k, v := range params {
+		rctx.URLParams.Add(k, v)
+	}
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	ctx = auth.ContextWithUser(ctx, user)
+	ctx = middleware.WithClusterID(ctx, clusterID)
+	rr := httptest.NewRecorder()
+	h(rr, req.WithContext(ctx))
+	return rr
+}
+
+func do(t *testing.T, clusterID string, h http.HandlerFunc) *httptest.ResponseRecorder {
+	t.Helper()
+	return doAs(t, alice, clusterID, http.MethodGet, h, nil)
+}
+
+func decode[T any](t *testing.T, rr *httptest.ResponseRecorder) T {
+	t.Helper()
+	var resp struct {
+		Data T `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode %q: %v", rr.Body.String(), err)
+	}
+	return resp.Data
+}
+
+func countLists(dyn *dynfake.FakeDynamicClient, resource string) int {
+	n := 0
+	for _, a := range dyn.Actions() {
+		if a.GetVerb() == "list" && a.GetResource().Resource == resource {
+			n++
+		}
+	}
+	return n
+}
+
+func unreachable() error {
+	return &url.Error{Op: "Get", URL: "https://" + remoteHost + ":6443/apis",
+		Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}}
+}
+
+// The reported bug: cert-manager on the remote, not on the local cluster.
+// Every list must come from the remote, and status must say detected.
+func TestRemote_InstalledRemoteServedWhenLocalLacksCertManager(t *testing.T) {
+	h, _ := newRemoteHandler(t, false, newFakeCluster(true,
+		expiringCert("remote-ns", "remote-cert", 3),
+		newUnstructuredIssuer("remote-ns", "remote-issuer", false),
+		newUnstructuredIssuer("", "remote-clusterissuer", true),
+	))
+
+	rr := do(t, remoteCluster, h.HandleListCertificates)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("certificates status %d: %s", rr.Code, rr.Body.String())
+	}
+	if certs := decode[[]Certificate](t, rr); len(certs) != 1 || certs[0].Name != "remote-cert" {
+		t.Errorf("certificates = %+v, want only remote-cert", certs)
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
-	ctx := middleware.WithClusterID(req.Context(), "remote-cluster-1")
-	ctx = auth.ContextWithUser(ctx, testUser())
-	req = req.WithContext(ctx)
-	w := httptest.NewRecorder()
-
-	h.HandleListIssuers(w, req)
-
-	if w.Code == http.StatusOK {
-		var envelope struct {
-			Data []Issuer `json:"data"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &envelope); err == nil {
-			for _, i := range envelope.Data {
-				if i.Name == "local-issuer" {
-					t.Fatalf("F#3 regression: local cache leaked into remote response (got issuer %q)", i.Name)
-				}
-			}
-		}
+	rr = do(t, remoteCluster, h.HandleListIssuers)
+	if issuers := decode[[]Issuer](t, rr); rr.Code != http.StatusOK || len(issuers) != 1 || issuers[0].Name != "remote-issuer" {
+		t.Errorf("issuers: status %d, got %+v, want only remote-issuer", rr.Code, issuers)
 	}
-	if w.Code != http.StatusInternalServerError {
-		// F#7 (round-3): see TestHandleListCertificates_RemoteClusterBypassesLocalCache.
-		t.Errorf("status = %d (expected 500 after F#18 fail-closed on nil clusterStore); body: %s", w.Code, w.Body.String())
+
+	rr = do(t, remoteCluster, h.HandleListClusterIssuers)
+	if cis := decode[[]Issuer](t, rr); rr.Code != http.StatusOK || len(cis) != 1 || cis[0].Name != "remote-clusterissuer" {
+		t.Errorf("clusterissuers: status %d, got %+v, want only remote-clusterissuer", rr.Code, cis)
+	}
+
+	rr = do(t, remoteCluster, h.HandleListExpiring)
+	if exp := decode[[]ExpiringCertificate](t, rr); rr.Code != http.StatusOK || len(exp) != 1 || exp[0].Name != "remote-cert" {
+		t.Errorf("expiring: status %d, got %+v, want only remote-cert", rr.Code, exp)
+	}
+
+	st := decode[CertManagerStatus](t, do(t, remoteCluster, h.HandleStatus))
+	if !st.Detected || st.Reason != "" {
+		t.Errorf("status = %+v, want detected with no reason", st)
 	}
 }
 
-// Local-path control: with X-Cluster-ID="local", the seeded cache wins.
+// The reverse case: cert-manager on the local cluster only. The remote is
+// not asked for kinds it does not serve, the local cache never leaks into
+// the response, and status reports discovery_missing.
+func TestRemote_AbsentRemoteIsEmptyWhenLocalHasCertManager(t *testing.T) {
+	remote := newFakeCluster(false)
+	h, _ := newRemoteHandler(t, true, remote)
+
+	for name, handler := range map[string]http.HandlerFunc{
+		"certificates":   h.HandleListCertificates,
+		"issuers":        h.HandleListIssuers,
+		"clusterissuers": h.HandleListClusterIssuers,
+		"expiring":       h.HandleListExpiring,
+	} {
+		rr := do(t, remoteCluster, handler)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status %d: %s", name, rr.Code, rr.Body.String())
+		}
+		if got := decode[[]json.RawMessage](t, rr); len(got) != 0 {
+			t.Errorf("%s = %s, want empty", name, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "local-") {
+			t.Errorf("%s leaked local data: %s", name, rr.Body.String())
+		}
+	}
+	if n := len(remote.dyn.Actions()); n != 0 {
+		t.Errorf("remote recorded %d dynamic actions, want 0 (cert-manager is not served there)", n)
+	}
+
+	st := decode[CertManagerStatus](t, do(t, remoteCluster, h.HandleStatus))
+	if st.Detected || st.Reason != string(k8s.ReasonDiscoveryMissing) {
+		t.Errorf("status = %+v, want not detected with discovery_missing", st)
+	}
+}
+
+// Remote lists are cached per identity (R-8 KTD2): a repeat by the same
+// identity is served from cache, a second identity fetches its own view.
+func TestRemote_CacheIsKeyedPerIdentity(t *testing.T) {
+	remote := newFakeCluster(true, newUnstructuredCert("remote-ns", "remote-cert", "remote-issuer"))
+	h, clients := newRemoteHandler(t, false, remote)
+
+	doAs(t, alice, remoteCluster, http.MethodGet, h.HandleListCertificates, nil)
+	doAs(t, alice, remoteCluster, http.MethodGet, h.HandleListIssuers, nil)
+	if n := countLists(remote.dyn, "certificates"); n != 1 {
+		t.Fatalf("after two reads by one identity: %d certificate lists, want 1", n)
+	}
+
+	doAs(t, bob, remoteCluster, http.MethodGet, h.HandleListCertificates, nil)
+	if n := countLists(remote.dyn, "certificates"); n != 2 {
+		t.Errorf("after a second identity's read: %d certificate lists, want 2", n)
+	}
+	// Each fetch must read as the identity it is cached for, or bob's entry
+	// would hold alice's view.
+	if got, want := clients.identities(), []string{"alice|admins", "bob|admins"}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("dynamic clients resolved for %v, want %v", got, want)
+	}
+
+	h.EvictRemoteCache(remoteCluster)
+	doAs(t, alice, remoteCluster, http.MethodGet, h.HandleListCertificates, nil)
+	if n := countLists(remote.dyn, "certificates"); n != 3 {
+		t.Errorf("after EvictRemoteCache: %d certificate lists, want 3", n)
+	}
+}
+
+// An unreachable remote answers the lists through the KTD4 writer (502
+// unreachable, no address) and the status route with a reason (KTD5).
+func TestRemote_UnreachableReturnsClassifiedError(t *testing.T) {
+	h, clients := newRemoteHandler(t, true, newFakeCluster(true))
+	clients.targetErr = unreachable()
+	// The access review cannot reach the cluster either: an RBAC check
+	// that runs before the read must not turn the outage into an empty 200.
+	h.AccessChecker = resources.NewErroringAccessChecker(unreachable())
+
+	for name, handler := range map[string]http.HandlerFunc{
+		"certificates":   h.HandleListCertificates,
+		"issuers":        h.HandleListIssuers,
+		"clusterissuers": h.HandleListClusterIssuers,
+		"expiring":       h.HandleListExpiring,
+	} {
+		rr := do(t, remoteCluster, handler)
+		if rr.Code != http.StatusBadGateway {
+			t.Errorf("%s status %d, want 502: %s", name, rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), `"reason":"unreachable"`) {
+			t.Errorf("%s body lacks reason unreachable: %s", name, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), remoteHost) || strings.Contains(rr.Body.String(), "local-") {
+			t.Errorf("%s leaked the remote address or local data: %s", name, rr.Body.String())
+		}
+	}
+
+	rr := do(t, remoteCluster, h.HandleStatus)
+	st := decode[CertManagerStatus](t, rr)
+	if rr.Code != http.StatusOK || st.Detected || st.Reason != string(k8s.ReasonUnreachable) {
+		t.Errorf("status: code %d, body %+v, want 200 not detected with reason unreachable", rr.Code, st)
+	}
+}
+
+// A renew on a remote cluster drops every identity's cached view of it
+// (KTD7), so the next list re-reads the cluster.
+func TestRemote_RenewEvictsRemoteCache(t *testing.T) {
+	remote := newFakeCluster(true, newUnstructuredCert("remote-ns", "remote-cert", "remote-issuer"))
+	h, _ := newRemoteHandler(t, false, remote)
+
+	doAs(t, alice, remoteCluster, http.MethodGet, h.HandleListCertificates, nil)
+	rr := doAs(t, alice, remoteCluster, http.MethodPost, h.HandleRenew, map[string]string{"namespace": "remote-ns", "name": "remote-cert"})
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("renew status %d: %s", rr.Code, rr.Body.String())
+	}
+	doAs(t, alice, remoteCluster, http.MethodGet, h.HandleListCertificates, nil)
+	if n := countLists(remote.dyn, "certificates"); n != 2 {
+		t.Errorf("certificate lists = %d, want 2 (the renew must evict the cached view)", n)
+	}
+}
+
+// Local-path control: with X-Cluster-ID="local", the seeded cache wins and
+// the status route carries no reason.
 func TestHandleListCertificates_LocalClusterUsesCache(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	factory := k8s.NewTestClientFactoryWithDynamic(&kubernetes.Clientset{}, nil)
-	router := k8s.NewClusterRouter(factory, nil, "", logger)
+	h, _ := newRemoteHandler(t, true, newFakeCluster(true))
 
-	h := &Handler{
-		K8sClient:     factory,
-		ClusterRouter: router,
-		Discoverer:    newAvailableDiscoverer(),
-		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
-		AuditLogger:   audit.NewSlogLogger(logger),
-		Logger:        logger,
+	rr := do(t, "local", h.HandleListCertificates)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
 	}
-	h.cache = &cachedData{
-		certificates: []Certificate{{Name: "local-cert", Namespace: "local-ns"}},
-		fetchedAt:    time.Now(),
+	if certs := decode[[]Certificate](t, rr); len(certs) != 1 || certs[0].Name != "local-cert" {
+		t.Errorf("got %+v, want one cert named local-cert", certs)
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
-	ctx := middleware.WithClusterID(req.Context(), "local")
-	ctx = auth.ContextWithUser(ctx, testUser())
-	req = req.WithContext(ctx)
-	w := httptest.NewRecorder()
+	st := decode[CertManagerStatus](t, do(t, "local", h.HandleStatus))
+	if !st.Detected || st.Reason != "" {
+		t.Errorf("local status = %+v, want detected with no reason", st)
+	}
+}
 
-	h.HandleListCertificates(w, req)
+// Local-path control: a local cluster without cert-manager keeps its empty
+// lists, whatever the remote serves.
+func TestHandleListCertificates_LocalWithoutCertManagerIsEmpty(t *testing.T) {
+	h, _ := newRemoteHandler(t, false, newFakeCluster(true))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	rr := do(t, "local", h.HandleListCertificates)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
 	}
-	var envelope struct {
-		Data []Certificate `json:"data"`
+	if certs := decode[[]Certificate](t, rr); len(certs) != 0 {
+		t.Errorf("got %+v, want none", certs)
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
-		t.Fatalf("decode: %v", err)
+}
+
+// A user who may list Certificates and Issuers on a remote cluster but not
+// the cluster-scoped ClusterIssuers keeps every page that does not need
+// them; only the clusterissuers endpoint answers the classified refusal.
+func TestRemote_ForbiddenListFailsOnlyItsOwnEndpoint(t *testing.T) {
+	remote := newFakeCluster(true,
+		expiringCert("remote-ns", "remote-cert", 3),
+		newUnstructuredIssuer("remote-ns", "remote-issuer", false),
+	)
+	remote.dyn.PrependReactor("list", "clusterissuers", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(ClusterIssuerGVR.GroupResource(), "", errors.New("no clusterrole"))
+	})
+	h, _ := newRemoteHandler(t, false, remote)
+
+	rr := do(t, remoteCluster, h.HandleListCertificates)
+	if certs := decode[[]Certificate](t, rr); rr.Code != http.StatusOK || len(certs) != 1 || certs[0].Name != "remote-cert" {
+		t.Errorf("certificates: status %d, body %s, want 200 with remote-cert", rr.Code, rr.Body.String())
 	}
-	if len(envelope.Data) != 1 || envelope.Data[0].Name != "local-cert" {
-		t.Errorf("got %+v, want one cert named local-cert", envelope.Data)
+	rr = do(t, remoteCluster, h.HandleListIssuers)
+	if issuers := decode[[]Issuer](t, rr); rr.Code != http.StatusOK || len(issuers) != 1 {
+		t.Errorf("issuers: status %d, body %s, want 200 with remote-issuer", rr.Code, rr.Body.String())
 	}
+	rr = do(t, remoteCluster, h.HandleListExpiring)
+	if exp := decode[[]ExpiringCertificate](t, rr); rr.Code != http.StatusOK || len(exp) != 1 {
+		t.Errorf("expiring: status %d, body %s, want 200 with remote-cert", rr.Code, rr.Body.String())
+	}
+
+	rr = do(t, remoteCluster, h.HandleListClusterIssuers)
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), `"reason":"forbidden"`) {
+		t.Errorf("clusterissuers: status %d, body %s, want 403 with reason forbidden", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "no clusterrole") {
+		t.Errorf("clusterissuers leaked the cluster's error text: %s", rr.Body.String())
+	}
+}
+
+// When every list fails the fetch is an error, classified as before.
+func TestRemote_EveryListFailingIsAnError(t *testing.T) {
+	remote := newFakeCluster(true)
+	remote.dyn.PrependReactor("list", "*", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, unreachable()
+	})
+	h, _ := newRemoteHandler(t, false, remote)
+
+	rr := do(t, remoteCluster, h.HandleListCertificates)
+	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), `"reason":"unreachable"`) {
+		t.Errorf("status %d, body %s, want 502 with reason unreachable", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), remoteHost) {
+		t.Errorf("leaked the remote address: %s", rr.Body.String())
+	}
+}
+
+// The detail page resolves thresholds against the remote cluster's own
+// issuers, never a local issuer of the same namespace and name.
+func TestRemote_GetCertificateUsesRemoteIssuerThresholds(t *testing.T) {
+	issuer := newUnstructuredIssuer("remote-ns", "remote-issuer", false)
+	issuer.SetAnnotations(map[string]string{AnnotationWarnThreshold: "60"})
+	h, _ := newRemoteHandler(t, false, newFakeCluster(true, newUnstructuredCert("remote-ns", "remote-cert", "remote-issuer"), issuer))
+	localWarn := 90
+	h.cache.issuers = append(h.cache.issuers, Issuer{Name: "remote-issuer", Namespace: "remote-ns", Scope: "Namespaced", WarningThresholdDays: &localWarn})
+
+	rr := doAs(t, alice, remoteCluster, http.MethodGet, h.HandleGetCertificate, map[string]string{"namespace": "remote-ns", "name": "remote-cert"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	detail := decode[CertificateDetail](t, rr).Certificate
+	if detail.WarningThresholdDays != 60 || detail.WarningThresholdSource != ThresholdSourceIssuer {
+		t.Errorf("warn threshold = %d from %q, want 60 from the remote issuer", detail.WarningThresholdDays, detail.WarningThresholdSource)
+	}
+}
+
+// Re-issue on a remote cluster deletes the owned Secret through that
+// cluster's typed client and drops the cached view of it.
+func TestRemote_ReissueDeletesRemoteSecretAndEvicts(t *testing.T) {
+	cert := newUnstructuredCert("remote-ns", "remote-cert", "remote-issuer")
+	cert.SetUID("cert-uid")
+	remote := newFakeCluster(true, cert)
+	remote.cs = kfake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "remote-ns", Name: "remote-cert-tls",
+		OwnerReferences: []metav1.OwnerReference{{UID: "cert-uid", Kind: "Certificate", Name: "remote-cert"}},
+	}})
+	h, _ := newRemoteHandler(t, false, remote)
+
+	doAs(t, alice, remoteCluster, http.MethodGet, h.HandleListCertificates, nil)
+	rr := doAs(t, alice, remoteCluster, http.MethodPost, h.HandleReissue, map[string]string{"namespace": "remote-ns", "name": "remote-cert"})
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("reissue status %d: %s", rr.Code, rr.Body.String())
+	}
+	if _, err := remote.cs.CoreV1().Secrets("remote-ns").Get(t.Context(), "remote-cert-tls", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("remote secret after reissue: err = %v, want NotFound", err)
+	}
+	doAs(t, alice, remoteCluster, http.MethodGet, h.HandleListCertificates, nil)
+	if n := countLists(remote.dyn, "certificates"); n != 2 {
+		t.Errorf("certificate lists = %d, want 2 (the reissue must evict the cached view)", n)
+	}
+}
+
+// recordingAudit keeps every audit entry.
+type recordingAudit struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (a *recordingAudit) Log(_ context.Context, e audit.Entry) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.entries = append(a.entries, e)
+	return nil
+}
+
+// Remote write and detail failures are classified without the remote
+// address; only a NotFound is a 404.
+func TestRemote_CallFailuresAreClassified(t *testing.T) {
+	params := map[string]string{"namespace": "remote-ns", "name": "remote-cert"}
+
+	t.Run("renew transport error", func(t *testing.T) {
+		remote := newFakeCluster(true, newUnstructuredCert("remote-ns", "remote-cert", "remote-issuer"))
+		remote.dyn.PrependReactor("get", "certificates", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, unreachable()
+		})
+		h, _ := newRemoteHandler(t, false, remote)
+		rec := &recordingAudit{}
+		h.AuditLogger = rec
+
+		rr := doAs(t, alice, remoteCluster, http.MethodPost, h.HandleRenew, params)
+		if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), `"reason":"unreachable"`) {
+			t.Errorf("status %d, body %s, want 502 with reason unreachable", rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), remoteHost) {
+			t.Errorf("leaked the remote address: %s", rr.Body.String())
+		}
+		if len(rec.entries) != 1 || rec.entries[0].Result != audit.ResultFailure || rec.entries[0].ClusterID != remoteCluster {
+			t.Errorf("audit entries = %+v, want one failure on %s", rec.entries, remoteCluster)
+		}
+	})
+
+	t.Run("get transport error", func(t *testing.T) {
+		remote := newFakeCluster(true)
+		remote.dyn.PrependReactor("get", "certificates", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, unreachable()
+		})
+		h, _ := newRemoteHandler(t, false, remote)
+
+		rr := doAs(t, alice, remoteCluster, http.MethodGet, h.HandleGetCertificate, params)
+		if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), `"reason":"unreachable"`) {
+			t.Errorf("status %d, body %s, want 502 with reason unreachable", rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), remoteHost) {
+			t.Errorf("leaked the remote address: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("get not found", func(t *testing.T) {
+		h, _ := newRemoteHandler(t, false, newFakeCluster(true))
+		rr := doAs(t, alice, remoteCluster, http.MethodGet, h.HandleGetCertificate, params)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("status %d, body %s, want 404", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("client resolution failure", func(t *testing.T) {
+		h, clients := newRemoteHandler(t, false, newFakeCluster(true))
+		clients.targetErr = unreachable()
+		rr := doAs(t, alice, remoteCluster, http.MethodPost, h.HandleRenew, params)
+		if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), `"reason":"unreachable"`) {
+			t.Errorf("status %d, body %s, want 502 with reason unreachable", rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), remoteHost) {
+			t.Errorf("leaked the remote address: %s", rr.Body.String())
+		}
+	})
 }
 
 // --- Helpers --------------------------------------------------------------
@@ -210,20 +597,8 @@ func testUser() *auth.User {
 }
 
 func newAvailableDiscoverer() *Discoverer {
-	d := NewDiscoverer(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	// Seed Status so IsAvailable returns true without dialling a real cluster.
-	d.mu.Lock()
-	d.status = CertManagerStatus{
-		Detected:    true,
-		LastChecked: time.Now().UTC(),
-	}
-	d.mu.Unlock()
-	return d
+	return seededDiscoverer(true)
 }
-
-// Avoid an unused-import warning while keeping context imported in case
-// future tests need it.
-var _ = context.Background
 
 func newUnstructuredCert(namespace, name, issuerName string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
