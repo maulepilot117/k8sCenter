@@ -23,6 +23,7 @@ jobs:
           - { pkg: ./internal/server/, target: FuzzAuthzEnforcement }
           - { pkg: ./internal/k8s/resources/, target: FuzzMaskedSecret }
           - { pkg: ./internal/k8s/resources/, target: FuzzSecretPipeline }
+          - { pkg: ./internal/k8s/resources/, target: FuzzParseInvolvedObjectFilter }
           - { pkg: ./internal/auth/, target: FuzzParsePHC }
           - { pkg: ./internal/yaml/, target: FuzzParseMultiDoc }
           - { pkg: ./internal/yaml/, target: FuzzResolveGVR }

@@ -3,7 +3,9 @@ package resources
 import (
 	"context"
 	"errors"
+	"net/http"
 
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
@@ -73,6 +75,15 @@ var errReadOnly = errors.New("this resource is read-only and does not support th
 // Capability interfaces — adapters may optionally implement these for actions.
 // The actions.go handlers type-assert against them at runtime.
 // ---------------------------------------------------------------------------
+
+// requestLister indicates a resource whose list cannot be answered from the
+// informer cache alone, because it reads query parameters beyond the shared
+// ListParams or must serve a remote cluster directly (e.g. Events).
+// HandleListResource calls listForRequest after authentication, the RBAC check
+// and label-selector parsing, and the adapter writes the whole response.
+type requestLister interface {
+	listForRequest(h *Handler, w http.ResponseWriter, r *http.Request, user *auth.User, ns string, sel labels.Selector, params ListParams)
+}
 
 // Scalable indicates a resource supports scale (e.g. Deployments, StatefulSets, ReplicaSets).
 type Scalable interface {

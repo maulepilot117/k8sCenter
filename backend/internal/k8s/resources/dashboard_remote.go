@@ -222,37 +222,59 @@ func readRemoteSection[T any](
 		return remoteSection[T]{coverage: forbiddenSection(resource)}
 	}
 
-	var items []T
-	cont := ""
-	for page := 0; page < remoteListMaxPages; page++ {
-		batch, next, err := list(ctx, metav1.ListOptions{Limit: remoteListPageSize, Continue: cont})
-		if err != nil {
-			if apierrors.IsForbidden(err) {
-				return remoteSection[T]{coverage: forbiddenSection(resource)}
-			}
-			if len(items) > 0 {
-				return remoteSection[T]{items: items, coverage: SectionCoverage{
-					Section: resource, Status: coveragePartial, ReasonCode: reasonUnreachable, ObservedAt: observedNow(),
-					Detail: fmt.Sprintf("list stopped after %d items: a later page failed on the remote cluster", len(items)),
-				}}
-			}
-			return remoteSection[T]{coverage: SectionCoverage{
-				Section: resource, Status: coverageUnavailable, ReasonCode: reasonUnreachable,
-				Detail: "list failed on the remote cluster",
-			}}
+	items, truncated, err := pageRemoteList(ctx, metav1.ListOptions{}, list)
+	if err != nil {
+		if apierrors.IsForbidden(err) {
+			return remoteSection[T]{coverage: forbiddenSection(resource)}
 		}
-		items = append(items, batch...)
-		cont = next
-		if cont == "" {
+		if len(items) > 0 {
 			return remoteSection[T]{items: items, coverage: SectionCoverage{
-				Section: resource, Status: coverageOK, ReasonCode: reasonOK, ObservedAt: observedNow(),
+				Section: resource, Status: coveragePartial, ReasonCode: reasonUnreachable, ObservedAt: observedNow(),
+				Detail: fmt.Sprintf("list stopped after %d items: a later page failed on the remote cluster", len(items)),
 			}}
 		}
+		return remoteSection[T]{coverage: SectionCoverage{
+			Section: resource, Status: coverageUnavailable, ReasonCode: reasonUnreachable,
+			Detail: "list failed on the remote cluster",
+		}}
+	}
+	if truncated {
+		return remoteSection[T]{items: items, coverage: SectionCoverage{
+			Section: resource, Status: coveragePartial, ReasonCode: reasonOK, ObservedAt: observedNow(),
+			Detail: fmt.Sprintf("list truncated after %d items", remoteListPageSize*remoteListMaxPages),
+		}}
 	}
 	return remoteSection[T]{items: items, coverage: SectionCoverage{
-		Section: resource, Status: coveragePartial, ReasonCode: reasonOK, ObservedAt: observedNow(),
-		Detail: fmt.Sprintf("list truncated after %d items", remoteListPageSize*remoteListMaxPages),
+		Section: resource, Status: coverageOK, ReasonCode: reasonOK, ObservedAt: observedNow(),
 	}}
+}
+
+// pageRemoteList is the one remote paging policy: it reads list in pages of
+// remoteListPageSize, following continue tokens, for at most
+// remoteListMaxPages pages. base carries the caller's selectors; its Limit and
+// Continue are overwritten. truncated reports that the list still had a
+// continue token after the last allowed page. On error it returns the error
+// together with the items read before it, and the caller decides whether
+// those may be shown (a refusal at a later page means they may not).
+func pageRemoteList[T any](
+	ctx context.Context, base metav1.ListOptions,
+	list func(context.Context, metav1.ListOptions) ([]T, string, error),
+) (items []T, truncated bool, err error) {
+	opts := base
+	opts.Limit = remoteListPageSize
+	opts.Continue = ""
+	for page := 0; page < remoteListMaxPages; page++ {
+		batch, next, err := list(ctx, opts)
+		if err != nil {
+			return items, false, err
+		}
+		items = append(items, batch...)
+		if next == "" {
+			return items, false, nil
+		}
+		opts.Continue = next
+	}
+	return items, true, nil
 }
 
 // forbiddenSection reports a denied cluster-wide list. Every section is

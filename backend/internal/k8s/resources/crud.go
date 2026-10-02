@@ -44,6 +44,13 @@ func (h *Handler) HandleListResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An adapter whose list needs the request itself (query filters, the
+	// selected remote cluster) serves it; everything else reads the cache.
+	if rl, ok := adapter.(requestLister); ok {
+		rl.listForRequest(h, w, r, user, ns, sel, params)
+		return
+	}
+
 	items, err := adapter.ListFromCache(h.Informers, ns, sel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list "+adapter.DisplayName(), err.Error())
