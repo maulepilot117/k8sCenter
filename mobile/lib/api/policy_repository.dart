@@ -117,11 +117,13 @@ class PolicyDiscoveryStatus {
   /// RFC-3339 timestamp; empty when the first probe hasn't completed.
   final String lastChecked;
 
-  /// True when the backend status endpoint returned 5xx — distinguishes
-  /// "backend was unreachable" from "backend says no engine installed".
-  /// Both flow through `detected: false` so the install-guidance UI
-  /// renders; consumers that want to nudge toward retry can branch on
-  /// this flag.
+  /// True when the engines' presence could not be told — distinguishes
+  /// "backend or cluster was unreachable" from "no engine installed".
+  /// Set when the status endpoint returned 5xx, or when a remote cluster's
+  /// status carries a `reason` other than `discovery_missing` (unreachable,
+  /// credentials_invalid, discovery_unavailable, ...; R-8 KTD5). Both flow
+  /// through `detected: false`; `PolicyStatusGate` branches on this flag to
+  /// show a retryable state instead of install guidance.
   final bool serviceUnavailable;
 
   factory PolicyDiscoveryStatus.fromJson(Map<String, dynamic> json) {
@@ -132,6 +134,9 @@ class PolicyDiscoveryStatus {
     final kyvernoAvail = kyvernoBlock?['available'] == true;
     final gkAvail = gkBlock?['available'] == true;
     final detected = kyvernoAvail || gkAvail;
+    // A remote cluster that could not be asked answers the negative value
+    // with a reason; only discovery_missing means "not installed".
+    final reason = s(json['reason']);
     return PolicyDiscoveryStatus(
       detected: detected,
       kyvernoAvailable: kyvernoAvail,
@@ -141,6 +146,8 @@ class PolicyDiscoveryStatus {
       kyvernoWebhooks: i(kyvernoBlock?['webhooks']),
       gatekeeperWebhooks: i(gkBlock?['webhooks']),
       lastChecked: json['lastChecked'] as String? ?? '',
+      serviceUnavailable:
+          !detected && reason != null && reason != 'discovery_missing',
     );
   }
 
