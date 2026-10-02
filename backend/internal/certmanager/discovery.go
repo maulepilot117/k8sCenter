@@ -56,6 +56,7 @@ func (d *Discoverer) Probe(ctx context.Context) CertManagerStatus {
 	defer d.mu.Unlock()
 
 	now := time.Now().UTC()
+	// nolint:cluster-routing local path: the Discoverer answers for the local cluster only; remote presence comes from k8s.Presence (remote.go).
 	disco := d.k8sClient.DiscoveryClient()
 
 	status := CertManagerStatus{
@@ -88,6 +89,7 @@ func (d *Discoverer) Probe(ctx context.Context) CertManagerStatus {
 	status.Detected = true
 
 	// Probe the cert-manager namespace for deployment and version
+	// nolint:cluster-routing local path: the namespace and version probe describes the local installation only.
 	cs := d.k8sClient.BaseClientset()
 	deps, err := cs.AppsV1().Deployments(certManagerNS).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/name=cert-manager",

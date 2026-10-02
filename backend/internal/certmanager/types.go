@@ -99,6 +99,10 @@ type CertManagerStatus struct {
 	Namespace   string    `json:"namespace,omitempty"`
 	Version     string    `json:"version,omitempty"`
 	LastChecked time.Time `json:"lastChecked"`
+	// Reason explains a remote cluster's Detected false: discovery_missing
+	// when cert-manager is not installed there, or why it could not be told
+	// (unreachable, discovery_unavailable, ...). Absent on the local cluster.
+	Reason string `json:"reason,omitempty"`
 }
 
 // IssuerRef identifies the Issuer or ClusterIssuer that signs a certificate.

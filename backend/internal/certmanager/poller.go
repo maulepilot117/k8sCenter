@@ -277,6 +277,7 @@ func (p *Poller) fetchCertificates(ctx context.Context) ([]Certificate, error) {
 	}
 
 	// Fallback: direct list (used in tests or when handler is nil)
+	// nolint:cluster-routing local path: the expiry poller watches the local cluster only.
 	dyn := p.k8s.BaseDynamicClient()
 	list, err := dyn.Resource(CertificateGVR).Namespace("").List(ctx, metav1.ListOptions{})
 	if err != nil {
