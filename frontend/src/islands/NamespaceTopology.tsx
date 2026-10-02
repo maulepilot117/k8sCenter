@@ -1,8 +1,9 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
-import { apiGet } from "@/lib/api.ts";
+import { ApiError, apiGet } from "@/lib/api.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
@@ -243,6 +244,11 @@ export default function NamespaceTopology({
   const graph = useSignal<TopoGraph | null>(null);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
+  // The backend refuses topology under a remote cluster selection with
+  // reason unsupported_platform (#532): the graph comes from the local
+  // cluster's informers. That is a fixed fact about the feature, not a
+  // failure, so it gets its own state with no Retry.
+  const remoteUnsupported = useSignal(false);
   const selectedNode = useSignal<string | null>(null);
   const hoveredNode = useSignal<string | null>(null);
   const zoom = useSignal(1);
@@ -267,6 +273,7 @@ export default function NamespaceTopology({
     if (ns === "all") return;
     loading.value = true;
     error.value = null;
+    remoteUnsupported.value = false;
     try {
       const overlayParam =
         overlayMode.value === "none" ? "" : `?overlay=${overlayMode.value}`;
@@ -279,9 +286,13 @@ export default function NamespaceTopology({
         unavailableOverlay.value = null;
       }
     } catch (err) {
+      graph.value = null;
+      if (err instanceof ApiError && err.reason === "unsupported_platform") {
+        remoteUnsupported.value = true;
+        return;
+      }
       error.value =
         err instanceof Error ? err.message : "Failed to fetch topology";
-      graph.value = null;
     } finally {
       loading.value = false;
     }
@@ -486,6 +497,20 @@ export default function NamespaceTopology({
       <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
         <Spinner class="text-accent" />
         <span class="ml-3 text-text-secondary">Loading topology...</span>
+      </div>
+    );
+  }
+
+  // ── Unsupported on a remote cluster ──
+
+  if (remoteUnsupported.value) {
+    return (
+      <div data-topology-state="remote-unsupported">
+        <Alert variant="info">
+          Resource topology is not available for remote clusters. The graph is
+          built from the local cluster's live resource cache, which remote
+          clusters do not have. Switch to the local cluster to view it.
+        </Alert>
       </div>
     );
   }

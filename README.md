@@ -78,6 +78,8 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Service mesh golden signals | Yes | No | `servicemesh/handler.go` (reported unavailable: the signals come from the local Prometheus) |
 | External Secrets sync history | Yes | No | `externalsecrets/history_handler.go` and `externalsecrets/detail_evidence.go` (501: recorded for the local cluster only) |
 | External Secrets store metrics | Yes | No | `externalsecrets/metrics.go` (reported unavailable: the rate comes from the local Prometheus) |
+| Resource topology graph | Yes | No | `topology/handler.go` (501: the graph is built from the local cluster's informers) |
+| Resource diagnostics and blast radius | Yes | No | `diagnostics/handler.go` (501: the target, its pods and the blast-radius graph come from the local cluster's informers) |
 
 Dashboard trends (the sparklines) are local-only as well; the cards render without them.
 
@@ -87,7 +89,6 @@ Remote pages get no live updates: the WebSocket feed carries the local cluster's
 
 - Policy (Kyverno and Gatekeeper) lists read the local cluster, filtered by the remote cluster's RBAC ([#530](https://github.com/maulepilot117/k8sCenter/issues/530)).
 - cert-manager lists on a remote cluster are shown only when cert-manager is detected on the local cluster ([#531](https://github.com/maulepilot117/k8sCenter/issues/531)).
-- Topology is built from the local cluster's informers ([#532](https://github.com/maulepilot117/k8sCenter/issues/532)).
 - The storage driver and StorageClass lists read local informers ([#533](https://github.com/maulepilot117/k8sCenter/issues/533)). The VolumeSnapshotClasses the snapshot flow uses are read from the remote.
 
 "Unsupported" is reported only for the rows above marked "No". A remote cluster that is down, or an account without RBAC for an operation, shows as blocked right now or unknown, never as something k8sCenter cannot do.

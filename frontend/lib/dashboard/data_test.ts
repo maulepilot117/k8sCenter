@@ -798,6 +798,34 @@ test("errorKind: a 404 from the notification feed is an absence, a 503 is not", 
   expect(cache.state("audit-log").errorKind).toBe("failure");
 });
 
+test("errorKind: diagnostics-summary's remote refusal is unsupported, its 500 a failure", async () => {
+  // The route reads the local informer cache and answers 501
+  // unsupported_platform for a remote cluster (#532). Nothing is broken and a
+  // retry cannot change the answer, so the card must not offer one. A 500 is
+  // the server failing and keeps it.
+  const refused = sourceKeyFor("diagnostics-summary", { namespace: "team-a" });
+  const failed = sourceKeyFor("diagnostics-summary", { namespace: "team-b" });
+  const cache = createSourceCache({
+    "diagnostics-summary": (_signal, _range, params) =>
+      Promise.reject(
+        params.namespace === "team-a"
+          ? new ApiError(
+              501,
+              501,
+              "resource diagnostics are available for the local cluster only",
+            )
+          : new ApiError(500, 500, "failed to list pods"),
+      ),
+  });
+
+  cache.ensure([refused, failed], "1h");
+  await cache.settled();
+
+  expect(cache.state(refused).errorKind).toBe("unsupported");
+  expect(cache.state(refused).error).toContain("local cluster only");
+  expect(cache.state(failed).errorKind).toBe("failure");
+});
+
 test("errorKind: a 503 from any other source stays an ordinary failure", async () => {
   // The widening is declared per source for the same reason the not-found one
   // is. A 503 from a resource route is a backend that cannot reach the API

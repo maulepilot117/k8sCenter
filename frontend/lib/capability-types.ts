@@ -79,6 +79,8 @@ export const CAPABILITY_OPERATION_IDS = [
   "mesh.golden_signals",
   "eso.history",
   "eso.metrics",
+  "topology.graph",
+  "diagnostics.read",
 ] as const;
 
 export type CapabilityOperationId = (typeof CAPABILITY_OPERATION_IDS)[number];

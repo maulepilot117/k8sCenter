@@ -12,6 +12,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -79,8 +80,33 @@ var kindNeedsPods = map[string]bool{
 	"Service":     true,
 }
 
+// remoteUnsupportedMessage is the fixed refusal for a diagnostics request
+// under a remote cluster selection.
+const remoteUnsupportedMessage = "resource diagnostics are available for the local cluster only"
+
+// refuseRemote answers 501 unsupported_platform and returns true when the
+// request targets a remote cluster (#532). Diagnostics resolve the target,
+// its related pods and the blast-radius graph from the local cluster's
+// informers (Lister, TopoBuilder), which remote clusters do not have, so
+// answering would report the local cluster's state under the remote
+// cluster's name. It runs before any lister read, SAR or notification. The
+// capability row diagnostics.read declares the same.
+func (h *Handler) refuseRemote(w http.ResponseWriter, r *http.Request) bool {
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	if k8s.IsLocalClusterID(clusterID) {
+		return false
+	}
+	// The cluster id goes to the log only, never onto the wire.
+	h.Logger.Info("diagnostics refused on remote cluster", "clusterID", clusterID, "path", r.URL.Path)
+	httputil.WriteErrorWithReason(w, http.StatusNotImplemented, remoteUnsupportedMessage,
+		string(k8s.ReasonUnsupportedPlatform), nil)
+	return true
+}
+
 // HandleDiagnostics runs diagnostic checks and blast radius analysis for a resource.
 // GET /api/v1/diagnostics/{namespace}/{kind}/{name}
+//
+// Refused on a remote cluster (see refuseRemote).
 func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// Request-scoped timeout for the entire diagnostics + topology build
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -93,6 +119,10 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(ctx)
 	if !ok {
 		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+
+	if h.refuseRemote(w, r) {
 		return
 	}
 
@@ -195,12 +225,18 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 
 // HandleNamespaceSummary returns a quick diagnostic summary for a namespace.
 // GET /api/v1/diagnostics/{namespace}/summary
+//
+// Refused on a remote cluster (see refuseRemote).
 func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+
+	if h.refuseRemote(w, r) {
 		return
 	}
 

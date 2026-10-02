@@ -207,6 +207,8 @@ test.describe.serial("Remote cluster capabilities", () => {
       "mesh.golden_signals",
       "eso.history",
       "eso.metrics",
+      "topology.graph",
+      "diagnostics.read",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(false);
       expect(byId.get(id)?.reasonCode, id).toBe("unsupported_platform");
