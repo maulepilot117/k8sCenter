@@ -32,6 +32,21 @@ var (
 	}
 )
 
+// remoteVersions lists, per resource, the versions this package reads and
+// writes on a remote cluster, most preferred first; the first a cluster
+// serves is used (#534). The local cluster always uses the GVRs above.
+//
+// Providers and Alerts fall back to v1beta2 (Flux 2.0) because every field
+// this package reads or writes has the same name and shape there: v1beta3
+// removed the status subresource and deprecated spec.interval and
+// spec.summary, none of which a body built here sets. A v1beta2 object still
+// carries Ready conditions, which the normalizers map like any other.
+var remoteVersions = map[string][]string{
+	FluxProviderGVR.Resource: {FluxProviderGVR.Version, "v1beta2"},
+	FluxAlertGVR.Resource:    {FluxAlertGVR.Version, "v1beta2"},
+	FluxReceiverGVR.Resource: {FluxReceiverGVR.Version},
+}
+
 const managedByLabel = "app.kubernetes.io/managed-by"
 const managedByValue = "kubecenter"
 

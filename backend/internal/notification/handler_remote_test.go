@@ -89,10 +89,20 @@ func (f *fakeClients) TargetSchemaFor(_ context.Context, id, _ string, _ []strin
 	return &k8s.TargetSchema{ClusterID: id, Discovery: disc, Invalidate: func() {}}, nil
 }
 
+// v1beta2 is the older Provider and Alert version a remote may serve alone.
+const v1beta2 = "v1beta2"
+
+func atVersion(gvr schema.GroupVersionResource, version string) schema.GroupVersionResource {
+	gvr.Version = version
+	return gvr
+}
+
 var listKinds = map[schema.GroupVersionResource]string{
-	FluxProviderGVR: "ProviderList",
-	FluxAlertGVR:    "AlertList",
-	FluxReceiverGVR: "ReceiverList",
+	FluxProviderGVR:                     "ProviderList",
+	FluxAlertGVR:                        "AlertList",
+	FluxReceiverGVR:                     "ReceiverList",
+	atVersion(FluxProviderGVR, v1beta2): "ProviderList",
+	atVersion(FluxAlertGVR, v1beta2):    "AlertList",
 }
 
 var gvrForKind = map[string]schema.GroupVersionResource{
@@ -104,7 +114,12 @@ var gvrForKind = map[string]schema.GroupVersionResource{
 const testNS = "flux-system"
 
 func fluxObj(kind, name string) *unstructured.Unstructured {
-	gvr := gvrForKind[kind]
+	return fluxObjAt(kind, name, gvrForKind[kind].Version)
+}
+
+// fluxObjAt is a Flux notification object stored at version.
+func fluxObjAt(kind, name, version string) *unstructured.Unstructured {
+	gvr := atVersion(gvrForKind[kind], version)
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": gvr.GroupVersion().String(),
 		"kind":       kind,
@@ -136,7 +151,8 @@ func newFakeCluster(t *testing.T, providerVersion string, objs ...*unstructured.
 	t.Helper()
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
 	for _, o := range objs {
-		if err := dyn.Tracker().Create(gvrForKind[o.GetKind()], o, o.GetNamespace()); err != nil {
+		gvr := atVersion(gvrForKind[o.GetKind()], o.GroupVersionKind().Version)
+		if err := dyn.Tracker().Create(gvr, o, o.GetNamespace()); err != nil {
 			t.Fatalf("seed %s: %v", o.GetName(), err)
 		}
 	}
@@ -395,8 +411,143 @@ func TestRemote_EveryWriteActsOnTheRemote(t *testing.T) {
 	}
 }
 
-func TestRemote_V1beta2OnlyReportsNotInstalledAndRefusesWrites(t *testing.T) {
-	hs := newHarness(t, "v1beta2")
+// versionsOf returns the API version of every action of verb on resource.
+func versionsOf(dyn *dynfake.FakeDynamicClient, verb, resource string) []string {
+	var out []string
+	for _, a := range dyn.Actions() {
+		if a.GetVerb() == verb && a.GetResource().Resource == resource {
+			out = append(out, a.GetResource().Version)
+		}
+	}
+	return out
+}
+
+func TestRemote_V1beta2OnlyIsReadAtV1beta2(t *testing.T) {
+	hs := newHarness(t, v1beta2,
+		fluxObjAt("Provider", "remote-provider", v1beta2), fluxObjAt("Alert", "remote-alert", v1beta2), fluxObj("Receiver", "remote-receiver"))
+
+	st := decode[NotificationStatus](t, do(t, remoteCluster, http.MethodGet, hs.h.HandleStatus, nil, ""))
+	if !st.Available || st.Reason != "" || st.ProviderCount != 1 || st.AlertCount != 1 || st.ReceiverCount != 1 || len(st.Coverage) != 0 {
+		t.Errorf("status = %+v, want available with one of each and no reason", st)
+	}
+	if got := providerNames(t, do(t, remoteCluster, http.MethodGet, hs.h.HandleListProviders, nil, "")); len(got) != 1 || got[0] != "remote-provider" {
+		t.Errorf("providers = %v, want only remote-provider", got)
+	}
+	rr := do(t, remoteCluster, http.MethodGet, hs.h.HandleListAlerts, nil, "")
+	alerts := decode[struct {
+		Alerts []NormalizedAlert `json:"alerts"`
+	}](t, rr).Alerts
+	if rr.Code != http.StatusOK || len(alerts) != 1 || alerts[0].Name != "remote-alert" {
+		t.Errorf("alerts: status %d, %+v, want only remote-alert", rr.Code, alerts)
+	}
+	for _, res := range []string{"providers", "alerts"} {
+		if got := versionsOf(hs.remoteDyn(), "list", res); len(got) != 1 || got[0] != v1beta2 {
+			t.Errorf("%s list versions = %v, want [v1beta2]", res, got)
+		}
+	}
+	if got := versionsOf(hs.remoteDyn(), "list", "receivers"); len(got) != 1 || got[0] != FluxReceiverGVR.Version {
+		t.Errorf("receivers list versions = %v, want [v1]", got)
+	}
+	if n := hs.localActions(); n != 0 {
+		t.Errorf("local cluster recorded %d actions, want 0", n)
+	}
+}
+
+func TestRemote_V1beta2OnlyWritesAtV1beta2(t *testing.T) {
+	alertParams := map[string]string{"namespace": testNS, "name": "remote-alert"}
+	cases := []struct {
+		name     string
+		handler  func(*Handler) http.HandlerFunc
+		method   string
+		params   map[string]string
+		body     string
+		verb     string
+		resource string
+	}{
+		{"create provider", func(h *Handler) http.HandlerFunc { return h.HandleCreateProvider }, http.MethodPost, nil, providerBody, "create", "providers"},
+		{"update provider", func(h *Handler) http.HandlerFunc { return h.HandleUpdateProvider }, http.MethodPut, providerParams, `{"type":"generic"}`, "update", "providers"},
+		{"delete provider", func(h *Handler) http.HandlerFunc { return h.HandleDeleteProvider }, http.MethodDelete, providerParams, "", "delete", "providers"},
+		{"suspend provider", func(h *Handler) http.HandlerFunc { return h.HandleSuspendProvider }, http.MethodPost, providerParams, `{"suspend":true}`, "patch", "providers"},
+		{"create alert", func(h *Handler) http.HandlerFunc { return h.HandleCreateAlert }, http.MethodPost, nil,
+			`{"name":"new-alert","namespace":"flux-system","providerRef":"remote-provider","eventSources":[{"kind":"Kustomization","name":"*"}]}`, "create", "alerts"},
+		{"update alert", func(h *Handler) http.HandlerFunc { return h.HandleUpdateAlert }, http.MethodPut, alertParams,
+			`{"providerRef":"remote-provider","eventSources":[{"kind":"Kustomization","name":"*"}]}`, "update", "alerts"},
+		{"delete alert", func(h *Handler) http.HandlerFunc { return h.HandleDeleteAlert }, http.MethodDelete, alertParams, "", "delete", "alerts"},
+		{"suspend alert", func(h *Handler) http.HandlerFunc { return h.HandleSuspendAlert }, http.MethodPost, alertParams, `{"suspend":true}`, "patch", "alerts"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newHarness(t, v1beta2, fluxObjAt("Provider", "remote-provider", v1beta2), fluxObjAt("Alert", "remote-alert", v1beta2))
+
+			rr := do(t, remoteCluster, tc.method, tc.handler(hs.h), tc.params, tc.body)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+			}
+			if got := versionsOf(hs.remoteDyn(), tc.verb, tc.resource); len(got) != 1 || got[0] != v1beta2 {
+				t.Errorf("remote %s %s versions = %v, want [v1beta2]", tc.verb, tc.resource, got)
+			}
+			if n := hs.localActions(); n != 0 {
+				t.Errorf("local cluster recorded %d actions, want 0", n)
+			}
+		})
+	}
+}
+
+func TestRemote_V1beta2CreateSendsAV1beta2Body(t *testing.T) {
+	hs := newHarness(t, v1beta2)
+
+	for _, tc := range []struct {
+		gvr     schema.GroupVersionResource
+		handler http.HandlerFunc
+		body    string
+		name    string
+	}{
+		{atVersion(FluxProviderGVR, v1beta2), hs.h.HandleCreateProvider, providerBody, "new-provider"},
+		{atVersion(FluxAlertGVR, v1beta2), hs.h.HandleCreateAlert,
+			`{"name":"new-alert","namespace":"flux-system","providerRef":"new-provider","eventSources":[{"kind":"Kustomization","name":"*"}]}`, "new-alert"},
+	} {
+		rr := do(t, remoteCluster, http.MethodPost, tc.handler, nil, tc.body)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("create %s status %d: %s", tc.name, rr.Code, rr.Body.String())
+		}
+		obj, err := hs.remoteDyn().Resource(tc.gvr).Namespace(testNS).Get(t.Context(), tc.name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("get created %s: %v", tc.name, err)
+		}
+		if got, want := obj.GetAPIVersion(), tc.gvr.GroupVersion().String(); got != want {
+			t.Errorf("%s apiVersion = %q, want %q", tc.name, got, want)
+		}
+	}
+	if got := providerNames(t, do(t, remoteCluster, http.MethodGet, hs.h.HandleListProviders, nil, "")); len(got) != 1 || got[0] != "new-provider" {
+		t.Errorf("providers after create = %v, want [new-provider]", got)
+	}
+}
+
+func TestRemote_BothVersionsServedPrefersV1beta3(t *testing.T) {
+	hs := newHarness(t, FluxProviderGVR.Version)
+	disc := hs.clients.clusters[remoteCluster].disc
+	disc.Resources = append(disc.Resources, &metav1.APIResourceList{
+		GroupVersion: FluxNotificationGroup + "/" + v1beta2,
+		APIResources: []metav1.APIResource{{Name: "providers", Kind: "Provider", Namespaced: true}, {Name: "alerts", Kind: "Alert", Namespaced: true}},
+	})
+
+	rr := do(t, remoteCluster, http.MethodPost, hs.h.HandleCreateProvider, nil, providerBody)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create status %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := versionsOf(hs.remoteDyn(), "create", "providers"); len(got) != 1 || got[0] != FluxProviderGVR.Version {
+		t.Errorf("create versions = %v, want [v1beta3]", got)
+	}
+	if got := providerNames(t, do(t, remoteCluster, http.MethodGet, hs.h.HandleListProviders, nil, "")); len(got) != 1 || got[0] != "new-provider" {
+		t.Errorf("providers after create = %v, want [new-provider]", got)
+	}
+	if got := versionsOf(hs.remoteDyn(), "list", "providers"); len(got) == 0 || got[len(got)-1] != FluxProviderGVR.Version {
+		t.Errorf("list versions = %v, want v1beta3", got)
+	}
+}
+
+func TestRemote_UnsupportedVersionOnlyReportsNotInstalledAndRefusesWrites(t *testing.T) {
+	hs := newHarness(t, "v1beta1")
 
 	st := decode[NotificationStatus](t, do(t, remoteCluster, http.MethodGet, hs.h.HandleStatus, nil, ""))
 	if st.Available || st.Reason != string(k8s.ReasonDiscoveryMissing) {
@@ -582,6 +733,10 @@ func TestLocal_CreateActsOnLocalAndKeepsMessages(t *testing.T) {
 	if e := hs.audit.last(t); e.ClusterID != "local" || e.Result != audit.ResultSuccess {
 		t.Errorf("audit = %+v, want local success", e)
 	}
+	// The local cluster always writes v1beta3 and never reads discovery.
+	if got := versionsOf(hs.clients.clusters["local"].dyn, "create", "providers"); len(got) != 1 || got[0] != FluxProviderGVR.Version {
+		t.Errorf("local create versions = %v, want [v1beta3]", got)
+	}
 
 	rr = do(t, "local", http.MethodPost, hs.h.HandleCreateProvider, nil, providerBody)
 	if rr.Code != http.StatusConflict || !strings.Contains(decodeError(t, rr).Error.Message, "'new-provider' already exists") {
@@ -622,10 +777,10 @@ func TestRemote_EveryListFailingIsAvailableWithFullCoverage(t *testing.T) {
 
 func TestRemote_PartiallyServedClusterGatesEachResource(t *testing.T) {
 	hs := newHarness(t, FluxProviderGVR.Version)
-	// Alerts at v1beta3, Providers only at v1beta2: the API is installed,
-	// but a Provider write must not be sent.
+	// Alerts at v1beta3, Providers only at a version this package does not
+	// support: the API is installed, but a Provider write must not be sent.
 	hs.clients.clusters[remoteCluster].disc.Resources = []*metav1.APIResourceList{
-		{GroupVersion: FluxNotificationGroup + "/v1beta2", APIResources: []metav1.APIResource{{Name: "providers", Kind: "Provider", Namespaced: true}}},
+		{GroupVersion: FluxNotificationGroup + "/v1beta1", APIResources: []metav1.APIResource{{Name: "providers", Kind: "Provider", Namespaced: true}}},
 		{GroupVersion: FluxAlertGVR.GroupVersion().String(), APIResources: []metav1.APIResource{{Name: "alerts", Kind: "Alert", Namespaced: true}}},
 	}
 

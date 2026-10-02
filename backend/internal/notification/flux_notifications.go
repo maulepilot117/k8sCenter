@@ -325,19 +325,19 @@ func NormalizeReceiver(obj *unstructured.Unstructured) NormalizedReceiver {
 
 // --- List functions ---
 
-// ListProviders lists all Flux Provider resources across namespaces.
-func ListProviders(ctx context.Context, dynClient dynamic.Interface) ([]NormalizedProvider, error) {
-	return listResources(ctx, dynClient, FluxProviderGVR, NormalizeProvider)
+// ListProviders lists all Flux Provider resources across namespaces at gvr.
+func ListProviders(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource) ([]NormalizedProvider, error) {
+	return listResources(ctx, dynClient, gvr, NormalizeProvider)
 }
 
-// ListAlerts lists all Flux Alert resources across namespaces.
-func ListAlerts(ctx context.Context, dynClient dynamic.Interface) ([]NormalizedAlert, error) {
-	return listResources(ctx, dynClient, FluxAlertGVR, NormalizeAlert)
+// ListAlerts lists all Flux Alert resources across namespaces at gvr.
+func ListAlerts(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource) ([]NormalizedAlert, error) {
+	return listResources(ctx, dynClient, gvr, NormalizeAlert)
 }
 
-// ListReceivers lists all Flux Receiver resources across namespaces.
-func ListReceivers(ctx context.Context, dynClient dynamic.Interface) ([]NormalizedReceiver, error) {
-	return listResources(ctx, dynClient, FluxReceiverGVR, NormalizeReceiver)
+// ListReceivers lists all Flux Receiver resources across namespaces at gvr.
+func ListReceivers(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource) ([]NormalizedReceiver, error) {
+	return listResources(ctx, dynClient, gvr, NormalizeReceiver)
 }
 
 // --- Validation functions ---
@@ -425,8 +425,8 @@ func ValidateReceiverInput(input ReceiverInput) error {
 
 // --- CRUD: Provider ---
 
-// CreateProvider creates a new Flux Provider resource.
-func CreateProvider(ctx context.Context, dynClient dynamic.Interface, ns string, input ProviderInput) (*NormalizedProvider, error) {
+// CreateProvider creates a new Flux Provider resource at gvr.
+func CreateProvider(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, ns string, input ProviderInput) (*NormalizedProvider, error) {
 	spec := map[string]interface{}{
 		"type": input.Type,
 	}
@@ -444,7 +444,7 @@ func CreateProvider(ctx context.Context, dynClient dynamic.Interface, ns string,
 
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "notification.toolkit.fluxcd.io/v1beta3",
+			"apiVersion": gvr.GroupVersion().String(),
 			"kind":       "Provider",
 			"metadata": map[string]interface{}{
 				"name":      input.Name,
@@ -457,7 +457,7 @@ func CreateProvider(ctx context.Context, dynClient dynamic.Interface, ns string,
 		},
 	}
 
-	created, err := dynClient.Resource(FluxProviderGVR).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
+	created, err := dynClient.Resource(gvr).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("creating flux provider: %w", err)
 	}
@@ -466,9 +466,9 @@ func CreateProvider(ctx context.Context, dynClient dynamic.Interface, ns string,
 	return &result, nil
 }
 
-// UpdateProvider updates an existing Flux Provider resource.
-func UpdateProvider(ctx context.Context, dynClient dynamic.Interface, ns, name string, input ProviderInput) (*NormalizedProvider, error) {
-	existing, err := dynClient.Resource(FluxProviderGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+// UpdateProvider updates an existing Flux Provider resource at gvr.
+func UpdateProvider(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, input ProviderInput) (*NormalizedProvider, error) {
+	existing, err := dynClient.Resource(gvr).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting flux provider %s/%s: %w", ns, name, err)
 	}
@@ -503,7 +503,7 @@ func UpdateProvider(ctx context.Context, dynClient dynamic.Interface, ns, name s
 		return nil, fmt.Errorf("setting spec on provider: %w", err)
 	}
 
-	updated, err := dynClient.Resource(FluxProviderGVR).Namespace(ns).Update(ctx, existing, metav1.UpdateOptions{})
+	updated, err := dynClient.Resource(gvr).Namespace(ns).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("updating flux provider %s/%s: %w", ns, name, err)
 	}
@@ -512,20 +512,10 @@ func UpdateProvider(ctx context.Context, dynClient dynamic.Interface, ns, name s
 	return &result, nil
 }
 
-// DeleteProvider deletes a Flux Provider resource.
-func DeleteProvider(ctx context.Context, dynClient dynamic.Interface, ns, name string) error {
-	return deleteResource(ctx, dynClient, FluxProviderGVR, ns, name)
-}
-
-// SuspendProvider suspends or resumes a Flux Provider by patching spec.suspend.
-func SuspendProvider(ctx context.Context, dynClient dynamic.Interface, ns, name string, suspend bool) error {
-	return suspendResource(ctx, dynClient, FluxProviderGVR, ns, name, suspend)
-}
-
 // --- CRUD: Alert ---
 
-// CreateAlert creates a new Flux Alert resource.
-func CreateAlert(ctx context.Context, dynClient dynamic.Interface, ns string, input AlertInput) (*NormalizedAlert, error) {
+// CreateAlert creates a new Flux Alert resource at gvr.
+func CreateAlert(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, ns string, input AlertInput) (*NormalizedAlert, error) {
 	eventSeverity := input.EventSeverity
 	if eventSeverity == "" {
 		eventSeverity = "info"
@@ -548,7 +538,7 @@ func CreateAlert(ctx context.Context, dynClient dynamic.Interface, ns string, in
 
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "notification.toolkit.fluxcd.io/v1beta3",
+			"apiVersion": gvr.GroupVersion().String(),
 			"kind":       "Alert",
 			"metadata": map[string]interface{}{
 				"name":      input.Name,
@@ -561,7 +551,7 @@ func CreateAlert(ctx context.Context, dynClient dynamic.Interface, ns string, in
 		},
 	}
 
-	created, err := dynClient.Resource(FluxAlertGVR).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
+	created, err := dynClient.Resource(gvr).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("creating flux alert: %w", err)
 	}
@@ -570,9 +560,9 @@ func CreateAlert(ctx context.Context, dynClient dynamic.Interface, ns string, in
 	return &result, nil
 }
 
-// UpdateAlert updates an existing Flux Alert resource.
-func UpdateAlert(ctx context.Context, dynClient dynamic.Interface, ns, name string, input AlertInput) (*NormalizedAlert, error) {
-	existing, err := dynClient.Resource(FluxAlertGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+// UpdateAlert updates an existing Flux Alert resource at gvr.
+func UpdateAlert(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, input AlertInput) (*NormalizedAlert, error) {
+	existing, err := dynClient.Resource(gvr).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting flux alert %s/%s: %w", ns, name, err)
 	}
@@ -610,7 +600,7 @@ func UpdateAlert(ctx context.Context, dynClient dynamic.Interface, ns, name stri
 		return nil, fmt.Errorf("setting spec on alert: %w", err)
 	}
 
-	updated, err := dynClient.Resource(FluxAlertGVR).Namespace(ns).Update(ctx, existing, metav1.UpdateOptions{})
+	updated, err := dynClient.Resource(gvr).Namespace(ns).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("updating flux alert %s/%s: %w", ns, name, err)
 	}
@@ -619,23 +609,13 @@ func UpdateAlert(ctx context.Context, dynClient dynamic.Interface, ns, name stri
 	return &result, nil
 }
 
-// DeleteAlert deletes a Flux Alert resource.
-func DeleteAlert(ctx context.Context, dynClient dynamic.Interface, ns, name string) error {
-	return deleteResource(ctx, dynClient, FluxAlertGVR, ns, name)
-}
-
-// SuspendAlert suspends or resumes a Flux Alert by patching spec.suspend.
-func SuspendAlert(ctx context.Context, dynClient dynamic.Interface, ns, name string, suspend bool) error {
-	return suspendResource(ctx, dynClient, FluxAlertGVR, ns, name, suspend)
-}
-
 // --- CRUD: Receiver ---
 
-// CreateReceiver creates a new Flux Receiver resource.
-func CreateReceiver(ctx context.Context, dynClient dynamic.Interface, ns string, input ReceiverInput) (*NormalizedReceiver, error) {
+// CreateReceiver creates a new Flux Receiver resource at gvr.
+func CreateReceiver(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, ns string, input ReceiverInput) (*NormalizedReceiver, error) {
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "notification.toolkit.fluxcd.io/v1",
+			"apiVersion": gvr.GroupVersion().String(),
 			"kind":       "Receiver",
 			"metadata": map[string]interface{}{
 				"name":      input.Name,
@@ -654,7 +634,7 @@ func CreateReceiver(ctx context.Context, dynClient dynamic.Interface, ns string,
 		},
 	}
 
-	created, err := dynClient.Resource(FluxReceiverGVR).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
+	created, err := dynClient.Resource(gvr).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("creating flux receiver: %w", err)
 	}
@@ -663,9 +643,9 @@ func CreateReceiver(ctx context.Context, dynClient dynamic.Interface, ns string,
 	return &result, nil
 }
 
-// UpdateReceiver updates an existing Flux Receiver resource.
-func UpdateReceiver(ctx context.Context, dynClient dynamic.Interface, ns, name string, input ReceiverInput) (*NormalizedReceiver, error) {
-	existing, err := dynClient.Resource(FluxReceiverGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+// UpdateReceiver updates an existing Flux Receiver resource at gvr.
+func UpdateReceiver(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, input ReceiverInput) (*NormalizedReceiver, error) {
+	existing, err := dynClient.Resource(gvr).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting flux receiver %s/%s: %w", ns, name, err)
 	}
@@ -687,21 +667,11 @@ func UpdateReceiver(ctx context.Context, dynClient dynamic.Interface, ns, name s
 		return nil, fmt.Errorf("setting spec on receiver: %w", err)
 	}
 
-	updated, err := dynClient.Resource(FluxReceiverGVR).Namespace(ns).Update(ctx, existing, metav1.UpdateOptions{})
+	updated, err := dynClient.Resource(gvr).Namespace(ns).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("updating flux receiver %s/%s: %w", ns, name, err)
 	}
 
 	result := NormalizeReceiver(updated)
 	return &result, nil
-}
-
-// DeleteReceiver deletes a Flux Receiver resource.
-func DeleteReceiver(ctx context.Context, dynClient dynamic.Interface, ns, name string) error {
-	return deleteResource(ctx, dynClient, FluxReceiverGVR, ns, name)
-}
-
-// SuspendReceiver suspends or resumes a Flux Receiver by patching spec.suspend.
-func SuspendReceiver(ctx context.Context, dynClient dynamic.Interface, ns, name string, suspend bool) error {
-	return suspendResource(ctx, dynClient, FluxReceiverGVR, ns, name, suspend)
 }

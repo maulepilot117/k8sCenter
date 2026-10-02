@@ -91,7 +91,7 @@ func (h *Handler) doFetchProviders() ([]NormalizedProvider, error) {
 	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	items, err := ListProviders(fetchCtx, h.baseDyn())
+	items, err := ListProviders(fetchCtx, h.baseDyn(), FluxProviderGVR)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func (h *Handler) doFetchAlerts() ([]NormalizedAlert, error) {
 	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	items, err := ListAlerts(fetchCtx, h.baseDyn())
+	items, err := ListAlerts(fetchCtx, h.baseDyn(), FluxAlertGVR)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,7 @@ func (h *Handler) doFetchReceivers() ([]NormalizedReceiver, error) {
 	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	items, err := ListReceivers(fetchCtx, h.baseDyn())
+	items, err := ListReceivers(fetchCtx, h.baseDyn(), FluxReceiverGVR)
 	if err != nil {
 		return nil, err
 	}
@@ -379,9 +379,8 @@ func serveList[T namespacedItem](h *Handler, w http.ResponseWriter, r *http.Requ
 	})
 }
 
-// serveDelete answers a delete route for one object of gvr, deleted by del.
-func (h *Handler) serveDelete(w http.ResponseWriter, r *http.Request, gvr schema.GroupVersionResource, kind, noun string,
-	del func(ctx context.Context, dyn dynamic.Interface, ns, name string) error) {
+// serveDelete answers a delete route for one object of gvr.
+func (h *Handler) serveDelete(w http.ResponseWriter, r *http.Request, gvr schema.GroupVersionResource, kind, noun string) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
@@ -394,12 +393,12 @@ func (h *Handler) serveDelete(w http.ResponseWriter, r *http.Request, gvr schema
 		return
 	}
 
-	dynClient, ok := h.writeClient(w, r, user, gvr)
+	dynClient, gvr, ok := h.writeClient(w, r, user, gvr)
 	if !ok {
 		return
 	}
 
-	if err := del(r.Context(), dynClient, ns, name); err != nil {
+	if err := deleteResource(r.Context(), dynClient, gvr, ns, name); err != nil {
 		h.failWrite(w, r, user, err, audit.ActionDelete, "delete", kind, ns, name, gvr)
 		return
 	}
@@ -409,10 +408,8 @@ func (h *Handler) serveDelete(w http.ResponseWriter, r *http.Request, gvr schema
 	httputil.WriteData(w, map[string]string{"message": "Deleted " + noun + " " + name})
 }
 
-// serveSuspend answers a suspend or resume route for one object of gvr,
-// patched by suspend.
-func (h *Handler) serveSuspend(w http.ResponseWriter, r *http.Request, gvr schema.GroupVersionResource, kind, noun string,
-	suspend func(ctx context.Context, dyn dynamic.Interface, ns, name string, suspend bool) error) {
+// serveSuspend answers a suspend or resume route for one object of gvr.
+func (h *Handler) serveSuspend(w http.ResponseWriter, r *http.Request, gvr schema.GroupVersionResource, kind, noun string) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
@@ -434,12 +431,12 @@ func (h *Handler) serveSuspend(w http.ResponseWriter, r *http.Request, gvr schem
 		return
 	}
 
-	dynClient, ok := h.writeClient(w, r, user, gvr)
+	dynClient, gvr, ok := h.writeClient(w, r, user, gvr)
 	if !ok {
 		return
 	}
 
-	if err := suspend(r.Context(), dynClient, ns, name, req.Suspend); err != nil {
+	if err := suspendResource(r.Context(), dynClient, gvr, ns, name, req.Suspend); err != nil {
 		h.failWrite(w, r, user, err, ActionNotificationSuspend, "patch", kind, ns, name, gvr)
 		return
 	}
@@ -484,19 +481,19 @@ func (h *Handler) HandleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.writeClient(w, r, user, FluxProviderGVR)
+	dynClient, gvr, ok := h.writeClient(w, r, user, FluxProviderGVR)
 	if !ok {
 		return
 	}
 
-	provider, err := CreateProvider(r.Context(), dynClient, input.Namespace, input)
+	provider, err := CreateProvider(r.Context(), dynClient, gvr, input.Namespace, input)
 	if err != nil {
-		h.failWrite(w, r, user, err, audit.ActionCreate, "create", "Provider", input.Namespace, input.Name, FluxProviderGVR)
+		h.failWrite(w, r, user, err, audit.ActionCreate, "create", "Provider", input.Namespace, input.Name, gvr)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionCreate, "Provider", input.Namespace, input.Name, audit.ResultSuccess, "")
-	h.invalidate(r.Context(), FluxProviderGVR)
+	h.invalidate(r.Context(), gvr)
 	httputil.WriteData(w, provider)
 }
 
@@ -528,30 +525,30 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.writeClient(w, r, user, FluxProviderGVR)
+	dynClient, gvr, ok := h.writeClient(w, r, user, FluxProviderGVR)
 	if !ok {
 		return
 	}
 
-	provider, err := UpdateProvider(r.Context(), dynClient, ns, name, input)
+	provider, err := UpdateProvider(r.Context(), dynClient, gvr, ns, name, input)
 	if err != nil {
-		h.failWrite(w, r, user, err, audit.ActionUpdate, "update", "Provider", ns, name, FluxProviderGVR)
+		h.failWrite(w, r, user, err, audit.ActionUpdate, "update", "Provider", ns, name, gvr)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionUpdate, "Provider", ns, name, audit.ResultSuccess, "")
-	h.invalidate(r.Context(), FluxProviderGVR)
+	h.invalidate(r.Context(), gvr)
 	httputil.WriteData(w, provider)
 }
 
 // HandleDeleteProvider deletes a Flux notification Provider.
 func (h *Handler) HandleDeleteProvider(w http.ResponseWriter, r *http.Request) {
-	h.serveDelete(w, r, FluxProviderGVR, "Provider", "provider", DeleteProvider)
+	h.serveDelete(w, r, FluxProviderGVR, "Provider", "provider")
 }
 
 // HandleSuspendProvider suspends or resumes a Flux notification Provider.
 func (h *Handler) HandleSuspendProvider(w http.ResponseWriter, r *http.Request) {
-	h.serveSuspend(w, r, FluxProviderGVR, "Provider", "provider", SuspendProvider)
+	h.serveSuspend(w, r, FluxProviderGVR, "Provider", "provider")
 }
 
 // ---------- alerts ----------
@@ -584,19 +581,19 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.writeClient(w, r, user, FluxAlertGVR)
+	dynClient, gvr, ok := h.writeClient(w, r, user, FluxAlertGVR)
 	if !ok {
 		return
 	}
 
-	alert, err := CreateAlert(r.Context(), dynClient, input.Namespace, input)
+	alert, err := CreateAlert(r.Context(), dynClient, gvr, input.Namespace, input)
 	if err != nil {
-		h.failWrite(w, r, user, err, audit.ActionCreate, "create", "Alert", input.Namespace, input.Name, FluxAlertGVR)
+		h.failWrite(w, r, user, err, audit.ActionCreate, "create", "Alert", input.Namespace, input.Name, gvr)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionCreate, "Alert", input.Namespace, input.Name, audit.ResultSuccess, "")
-	h.invalidate(r.Context(), FluxAlertGVR)
+	h.invalidate(r.Context(), gvr)
 	httputil.WriteData(w, alert)
 }
 
@@ -628,30 +625,30 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.writeClient(w, r, user, FluxAlertGVR)
+	dynClient, gvr, ok := h.writeClient(w, r, user, FluxAlertGVR)
 	if !ok {
 		return
 	}
 
-	alert, err := UpdateAlert(r.Context(), dynClient, ns, name, input)
+	alert, err := UpdateAlert(r.Context(), dynClient, gvr, ns, name, input)
 	if err != nil {
-		h.failWrite(w, r, user, err, audit.ActionUpdate, "update", "Alert", ns, name, FluxAlertGVR)
+		h.failWrite(w, r, user, err, audit.ActionUpdate, "update", "Alert", ns, name, gvr)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionUpdate, "Alert", ns, name, audit.ResultSuccess, "")
-	h.invalidate(r.Context(), FluxAlertGVR)
+	h.invalidate(r.Context(), gvr)
 	httputil.WriteData(w, alert)
 }
 
 // HandleDeleteAlert deletes a Flux notification Alert.
 func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
-	h.serveDelete(w, r, FluxAlertGVR, "Alert", "alert", DeleteAlert)
+	h.serveDelete(w, r, FluxAlertGVR, "Alert", "alert")
 }
 
 // HandleSuspendAlert suspends or resumes a Flux notification Alert.
 func (h *Handler) HandleSuspendAlert(w http.ResponseWriter, r *http.Request) {
-	h.serveSuspend(w, r, FluxAlertGVR, "Alert", "alert", SuspendAlert)
+	h.serveSuspend(w, r, FluxAlertGVR, "Alert", "alert")
 }
 
 // ---------- receivers ----------
@@ -684,19 +681,19 @@ func (h *Handler) HandleCreateReceiver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.writeClient(w, r, user, FluxReceiverGVR)
+	dynClient, gvr, ok := h.writeClient(w, r, user, FluxReceiverGVR)
 	if !ok {
 		return
 	}
 
-	receiver, err := CreateReceiver(r.Context(), dynClient, input.Namespace, input)
+	receiver, err := CreateReceiver(r.Context(), dynClient, gvr, input.Namespace, input)
 	if err != nil {
-		h.failWrite(w, r, user, err, audit.ActionCreate, "create", "Receiver", input.Namespace, input.Name, FluxReceiverGVR)
+		h.failWrite(w, r, user, err, audit.ActionCreate, "create", "Receiver", input.Namespace, input.Name, gvr)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionCreate, "Receiver", input.Namespace, input.Name, audit.ResultSuccess, "")
-	h.invalidate(r.Context(), FluxReceiverGVR)
+	h.invalidate(r.Context(), gvr)
 	httputil.WriteData(w, receiver)
 }
 
@@ -728,28 +725,28 @@ func (h *Handler) HandleUpdateReceiver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.writeClient(w, r, user, FluxReceiverGVR)
+	dynClient, gvr, ok := h.writeClient(w, r, user, FluxReceiverGVR)
 	if !ok {
 		return
 	}
 
-	receiver, err := UpdateReceiver(r.Context(), dynClient, ns, name, input)
+	receiver, err := UpdateReceiver(r.Context(), dynClient, gvr, ns, name, input)
 	if err != nil {
-		h.failWrite(w, r, user, err, audit.ActionUpdate, "update", "Receiver", ns, name, FluxReceiverGVR)
+		h.failWrite(w, r, user, err, audit.ActionUpdate, "update", "Receiver", ns, name, gvr)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionUpdate, "Receiver", ns, name, audit.ResultSuccess, "")
-	h.invalidate(r.Context(), FluxReceiverGVR)
+	h.invalidate(r.Context(), gvr)
 	httputil.WriteData(w, receiver)
 }
 
 // HandleDeleteReceiver deletes a Flux notification Receiver.
 func (h *Handler) HandleDeleteReceiver(w http.ResponseWriter, r *http.Request) {
-	h.serveDelete(w, r, FluxReceiverGVR, "Receiver", "receiver", DeleteReceiver)
+	h.serveDelete(w, r, FluxReceiverGVR, "Receiver", "receiver")
 }
 
 // HandleSuspendReceiver suspends or resumes a Flux notification Receiver.
 func (h *Handler) HandleSuspendReceiver(w http.ResponseWriter, r *http.Request) {
-	h.serveSuspend(w, r, FluxReceiverGVR, "Receiver", "receiver", SuspendReceiver)
+	h.serveSuspend(w, r, FluxReceiverGVR, "Receiver", "receiver")
 }
