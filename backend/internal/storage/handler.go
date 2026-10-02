@@ -35,12 +35,10 @@ const snapshotCRDCheckTTL = 5 * time.Minute
 // k8sNameRegexp matches valid RFC 1123 DNS labels for URL param validation.
 var k8sNameRegexp = regexp.MustCompile(`^[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?$`)
 
-// Handler serves storage-related HTTP endpoints. Volume snapshots and
-// snapshot classes are read from the cluster a request selects: the local
-// cluster through the local discovery check and service account, a remote
-// one through Clients as the requesting identity (R-8). CSI drivers and
-// StorageClasses still come from the local informers on every cluster, a
-// known gap deferred to a follow-up.
+// Handler serves storage-related HTTP endpoints. Every list and action
+// answers for the cluster a request selects (R-8): the local cluster through
+// its informers, discovery check and service account, a remote one through
+// Clients as the requesting identity.
 type Handler struct {
 	K8sClient         *k8s.ClientFactory
 	Informers         *k8s.InformerManager
@@ -51,6 +49,11 @@ type Handler struct {
 	snapshotMu        sync.Mutex
 	snapshotAvail     bool
 	snapshotCheckedAt time.Time
+
+	// Remote CSI driver, StorageClass and snapshot-driver lists, per
+	// (cluster, identity); created on first use by caches.
+	remoteOnce sync.Once
+	remote     *remoteCaches
 }
 
 func isLocal(ctx context.Context) bool {
@@ -183,36 +186,55 @@ var volumeSnapshotClassGVR = schema.GroupVersionResource{
 	Resource: "volumesnapshotclasses",
 }
 
-// HandleListDrivers returns CSI drivers with enriched capability info.
+// HandleListDrivers returns CSI drivers with enriched capability info, for
+// the request's cluster.
 // GET /api/v1/storage/drivers
 func (h *Handler) HandleListDrivers(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
 		return
 	}
 
-	// nolint:cluster-routing local path (deferred R-8 follow-up): CSI drivers come from the local informers on every cluster.
-	drivers, err := h.Informers.CSIDrivers().List(labels.Everything())
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to list CSI drivers", "")
-		return
-	}
-
-	// Get StorageClasses to check driver capabilities
-	// nolint:cluster-routing local path (deferred R-8 follow-up): StorageClasses come from the local informers on every cluster.
-	classes, _ := h.Informers.StorageClasses().List(labels.Everything())
-
-	// Check snapshot support. Local like the driver list above, so the two
-	// never describe different clusters.
-	hasSnapshots := h.checkSnapshotCRDs()
-	snapshotDrivers := make(map[string]bool)
-	if hasSnapshots {
-		snapshotDrivers = h.getSnapshotDrivers(r)
+	var (
+		drivers         []*storagev1.CSIDriver
+		classes         []*storagev1.StorageClass
+		snapshotDrivers map[string]bool
+	)
+	if isLocal(r.Context()) {
+		var err error
+		// nolint:cluster-routing local path: the local cluster's CSI drivers come from its informers; a remote cluster is listed as the user in loadRemoteDrivers.
+		drivers, err = h.Informers.CSIDrivers().List(labels.Everything())
+		if err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to list CSI drivers", "")
+			return
+		}
+		// StorageClasses feed the drivers' capability flags.
+		// nolint:cluster-routing local path: the local cluster's StorageClasses come from its informers; a remote cluster is listed as the user in loadRemoteClasses.
+		classes, _ = h.Informers.StorageClasses().List(labels.Everything())
+		snapshotDrivers = make(map[string]bool)
+		if h.checkSnapshotCRDs() {
+			snapshotDrivers = h.getSnapshotDrivers(r)
+		}
+	} else {
+		var err error
+		drivers, err = h.loadRemoteDrivers(r.Context(), user)
+		if err != nil {
+			httputil.WriteRemoteLoadError(w, err, "Storage")
+			return
+		}
+		// Unlike the local path, a class list that cannot be read fails the
+		// request: drivers built without it would report guessed capabilities.
+		classes, err = h.loadRemoteClasses(r.Context(), user)
+		if err != nil {
+			httputil.WriteRemoteLoadError(w, err, "Storage")
+			return
+		}
+		snapshotDrivers = h.remoteSnapshotDrivers(r.Context(), user)
 	}
 
 	result := make([]DriverInfo, 0, len(drivers))
 	for _, d := range drivers {
-		info := buildDriverInfo(d, classes, snapshotDrivers)
-		result = append(result, info)
+		result = append(result, buildDriverInfo(d, classes, snapshotDrivers))
 	}
 
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
@@ -223,18 +245,31 @@ func (h *Handler) HandleListDrivers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleListClasses returns StorageClasses from the informer cache.
+// HandleListClasses returns the request cluster's StorageClasses.
 // GET /api/v1/storage/classes
 func (h *Handler) HandleListClasses(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
 		return
 	}
 
-	// nolint:cluster-routing local path (deferred R-8 follow-up): StorageClasses come from the local informers on every cluster.
-	classes, err := h.Informers.StorageClasses().List(labels.Everything())
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to list storage classes", "")
-		return
+	var (
+		classes []*storagev1.StorageClass
+		err     error
+	)
+	if isLocal(r.Context()) {
+		// nolint:cluster-routing local path: the local cluster's StorageClasses come from its informers; a remote cluster is listed as the user in loadRemoteClasses.
+		classes, err = h.Informers.StorageClasses().List(labels.Everything())
+		if err != nil {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to list storage classes", "")
+			return
+		}
+	} else {
+		classes, err = h.loadRemoteClasses(r.Context(), user)
+		if err != nil {
+			httputil.WriteRemoteLoadError(w, err, "Storage")
+			return
+		}
 	}
 
 	result := make([]ClassInfo, 0, len(classes))
@@ -356,7 +391,7 @@ func (h *Handler) checkSnapshotCRDs() bool {
 // VolumeSnapshotClasses on the local cluster, for the local driver list.
 func (h *Handler) getSnapshotDrivers(r *http.Request) map[string]bool {
 	result := make(map[string]bool)
-	// nolint:cluster-routing local path (deferred R-8 follow-up): feeds HandleListDrivers, which lists the local cluster's CSI drivers.
+	// nolint:cluster-routing local path: feeds HandleListDrivers for the local cluster; a remote cluster's snapshot classes are read as the user in remoteSnapshotDrivers.
 	dynClient := h.K8sClient.BaseDynamicClient()
 	if dynClient == nil {
 		return result

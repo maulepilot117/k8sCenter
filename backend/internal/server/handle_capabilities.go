@@ -166,8 +166,8 @@ type capabilityOp struct {
 	AuthVerb     string
 	AuthGroup    string
 	AuthResource string
-	// ClusterScoped marks AuthResource as a cluster-scoped resource (nodes),
-	// as opposed to a namespaced one (configmaps, pods, pods/exec, pods/log,
+	// ClusterScoped marks AuthResource as a cluster-scoped resource (nodes,
+	// storageclasses), as opposed to a namespaced one (configmaps, pods, pods/exec, pods/log,
 	// externalsecrets). It exists solely to decide how a NEGATIVE
 	// cluster-wide SAR verdict is reported — see Capability.Authorized and
 	// authorizedFromClusterWideSAR.
@@ -417,6 +417,18 @@ var capabilityOperations = []capabilityOp{
 		ID: "storage.snapshots", Label: "Volume snapshots",
 		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "snapshot.storage.k8s.io", AuthResource: "volumesnapshots",
+	},
+	{
+		// Remote since #533: the CSI driver and StorageClass lists are read
+		// from the selected cluster as the user, behind the per-identity
+		// remote cache (storage/remote.go loadRemoteDrivers,
+		// loadRemoteClasses), instead of the local informers. StorageClasses
+		// stand in for both lists. Cluster-scoped: StorageClasses are not
+		// namespaced, so a cluster-wide denial is a real one.
+		ID: "storage.classes", Label: "CSI drivers and StorageClasses",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "storage.k8s.io", AuthResource: "storageclasses",
+		ClusterScoped: true,
 	},
 	{
 		// Remote since U8 (#518): Flux notification Providers, Alerts and

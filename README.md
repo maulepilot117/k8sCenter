@@ -68,6 +68,7 @@ What works against a registered remote cluster, operation by operation. The tabl
 | GitOps applications and sync | Yes | Yes | Argo CD and Flux lists, detail, sync, suspend and rollback |
 | Velero backups and restores | Yes | Yes | Backups, restores, schedules, locations and their actions. Backup logs are a download link issued by the remote cluster's object storage, so your browser must be able to reach that storage |
 | Volume snapshots | Yes | Yes | List, detail, create and delete |
+| CSI drivers and StorageClasses | Yes | Yes | Both lists, and each driver's expansion and snapshot capabilities, are read from the selected cluster |
 | Flux notifications | Yes | Yes | Providers, Alerts and Receivers. A remote that serves only the `v1beta2` API shows as not installed |
 | Alert rules | Yes | Yes | PrometheusRule objects only. Whether they fire depends on the remote running prometheus-operator; the active and history alert feeds are always the local Alertmanager's, and the Alerts page says so under a remote selection |
 | Gateway API views | Yes | Yes | GatewayClasses, Gateways and routes (read-only on every cluster) |
@@ -89,7 +90,6 @@ Remote pages get no live updates: the WebSocket feed carries the local cluster's
 
 - Policy (Kyverno and Gatekeeper) lists read the local cluster, filtered by the remote cluster's RBAC ([#530](https://github.com/maulepilot117/k8sCenter/issues/530)).
 - cert-manager lists on a remote cluster are shown only when cert-manager is detected on the local cluster ([#531](https://github.com/maulepilot117/k8sCenter/issues/531)).
-- The storage driver and StorageClass lists read local informers ([#533](https://github.com/maulepilot117/k8sCenter/issues/533)). The VolumeSnapshotClasses the snapshot flow uses are read from the remote.
 
 "Unsupported" is reported only for the rows above marked "No". A remote cluster that is down, or an account without RBAC for an operation, shows as blocked right now or unknown, never as something k8sCenter cannot do.
 

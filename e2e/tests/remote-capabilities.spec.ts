@@ -192,6 +192,7 @@ test.describe.serial("Remote cluster capabilities", () => {
       "gitops.applications",
       "velero.backups",
       "storage.snapshots",
+      "storage.classes",
       "flux.notifications",
       "alert.rules",
       "gateway.read",

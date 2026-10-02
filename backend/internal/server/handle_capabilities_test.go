@@ -257,7 +257,7 @@ var (
 	wantRemoteSupported = []string{
 		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply", "dashboard.summary",
 		"node.drain", "gitops.applications", "velero.backups", "storage.snapshots",
-		"flux.notifications", "alert.rules", "gateway.read", "mesh.routing",
+		"storage.classes", "flux.notifications", "alert.rules", "gateway.read", "mesh.routing",
 		"mesh.mtls", "eso.read",
 	}
 	wantRemoteUnsupported = []string{
@@ -1335,13 +1335,15 @@ func TestAuthorizedFromClusterWideSAR(t *testing.T) {
 // visible. TestCapabilityOperations_RemoteSupportPinned is its counterpart
 // for the remote-supported dimension.
 func TestCapabilityOperations_ScopePinned(t *testing.T) {
-	// nodes is the only cluster-scoped resource probed today, by the
-	// dashboard summary and node drain. Every other AuthResource in the
+	// nodes (probed by the dashboard summary and node drain) and
+	// storageclasses (the storage driver and class lists) are the only
+	// cluster-scoped resources probed today. Every other AuthResource in the
 	// table (configmaps, pods and their subresources, and each feature's
 	// CRD) is namespaced.
 	wantClusterScoped := map[string]bool{
 		"dashboard.summary": true,
 		"node.drain":        true,
+		"storage.classes":   true,
 	}
 
 	seen := map[string]bool{}
