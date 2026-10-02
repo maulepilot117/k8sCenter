@@ -44,6 +44,13 @@ func (h *Handler) HandleListResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Events take an involvedObject filter and are listed from the selected
+	// cluster, local or remote; see handleListEvents.
+	if _, isEvents := adapter.(eventAdapter); isEvents {
+		h.handleListEvents(w, r, user, ns, sel, params)
+		return
+	}
+
 	items, err := adapter.ListFromCache(h.Informers, ns, sel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list "+adapter.DisplayName(), err.Error())
