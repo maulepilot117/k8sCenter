@@ -41,6 +41,9 @@ jobs:
               - '.github/workflows/ci.yml'
             frontend:
               - 'frontend/**'
+              # `bun run check` runs check-e2e-specs-in-testdir.ts, which
+              # guards e2e/, so an e2e-only change must still reach it.
+              - 'e2e/**'
               - '.github/workflows/ci.yml'
             helm:
               - 'helm/**'
@@ -147,7 +150,8 @@ jobs:
       # format, `astro check` types, and the repo's own build-time guards
       # (no /ws proxy in the dev config, no signal store on an SSR path, every
       # island call site carries a client:* directive, the lockfile is the
-      # text one). See frontend/package.json.
+      # text one, every E2E spec sits inside Playwright's testDir). See
+      # frontend/package.json.
       - name: Check
         run: bun run check
 
