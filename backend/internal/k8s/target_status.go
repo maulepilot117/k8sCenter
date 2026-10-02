@@ -204,6 +204,26 @@ func GVRPresentIn(lists []*metav1.APIResourceList, group, resource string) bool 
 	return false
 }
 
+// ServesGVR reports whether lists serve gvr's resource at exactly gvr's
+// version. Unlike GVRPresentIn, which asks whether the group/resource exists
+// at any version, it answers for a feature that reads a resource at one
+// fixed version: a cluster serving only another version cannot be read that
+// way and counts as not serving it.
+func ServesGVR(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource) bool {
+	gv := gvr.GroupVersion().String()
+	for _, l := range lists {
+		if l.GroupVersion != gv {
+			continue
+		}
+		for _, r := range l.APIResources {
+			if r.Name == gvr.Resource {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // presenceAbsentTTL is how long a definite "not installed" verdict is reused
 // before discovery is read again. The remote schema cache itself holds
 // discovery for clientCacheTTL (5 minutes); without this shorter window and

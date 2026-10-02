@@ -40,6 +40,10 @@ const remoteCluster = "remote-1"
 // requiredLabelsGVR is the Gatekeeper constraint kind the fixtures serve.
 var requiredLabelsGVR = schema.GroupVersionResource{Group: gatekeeperConstraintsGroup, Version: "v1beta1", Resource: "k8srequiredlabels"}
 
+// requiredLabelsV1GVR is the same constraint kind at v1, which current
+// Gatekeeper releases serve alongside v1beta1.
+var requiredLabelsV1GVR = schema.GroupVersionResource{Group: gatekeeperConstraintsGroup, Version: "v1", Resource: "k8srequiredlabels"}
+
 // listKinds maps every GVR the fixtures serve to its list kind.
 var listKinds = map[schema.GroupVersionResource]string{
 	KyvernoClusterPolicyGVR: "ClusterPolicyList",
@@ -47,6 +51,7 @@ var listKinds = map[schema.GroupVersionResource]string{
 	PolicyReportGVR:         "PolicyReportList",
 	ClusterPolicyReportGVR:  "ClusterPolicyReportList",
 	requiredLabelsGVR:       "K8sRequiredLabelsList",
+	requiredLabelsV1GVR:     "K8sRequiredLabelsList",
 }
 
 // fakeCluster is one fake cluster: its discovery, dynamic and typed clients.
@@ -489,17 +494,20 @@ func TestRemote_NoEngineOnRemoteIsEmpty(t *testing.T) {
 func TestRemote_FailedListFailsClosed(t *testing.T) {
 	tests := []struct {
 		name       string
+		resource   string
 		err        error
 		wantCode   int
 		wantReason string
 	}{
-		{"forbidden", apierrors.NewForbidden(PolicyReportGVR.GroupResource(), "", errors.New("RBAC: user admin at 10.20.30.40 cannot list")), http.StatusForbidden, string(k8s.ReasonForbidden)},
-		{"unreachable", unreachableErr, http.StatusBadGateway, string(k8s.ReasonUnreachable)},
+		{"report list forbidden", "policyreports", apierrors.NewForbidden(PolicyReportGVR.GroupResource(), "", errors.New("RBAC: user admin at 10.20.30.40 cannot list")), http.StatusForbidden, string(k8s.ReasonForbidden)},
+		{"report list unreachable", "policyreports", unreachableErr, http.StatusBadGateway, string(k8s.ReasonUnreachable)},
+		{"kyverno policy list unreachable", "clusterpolicies", unreachableErr, http.StatusBadGateway, string(k8s.ReasonUnreachable)},
+		{"constraint list forbidden", "k8srequiredlabels", apierrors.NewForbidden(requiredLabelsGVR.GroupResource(), "", errors.New("RBAC: user admin at 10.20.30.40 cannot list")), http.StatusForbidden, string(k8s.ReasonForbidden)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			remote := remoteBothEngines()
-			remote.dyn.PrependReactor("list", "policyreports", func(k8stesting.Action) (bool, runtime.Object, error) {
+			remote.dyn.PrependReactor("list", tt.resource, func(k8stesting.Action) (bool, runtime.Object, error) {
 				return true, nil, tt.err
 			})
 			f := newRemoteFixture(t, remote)
@@ -615,5 +623,147 @@ func TestLocal_Unchanged(t *testing.T) {
 	}
 	if n := f.clients.resolved.Load(); n != 0 {
 		t.Errorf("local reads resolved %d cluster clients, want 0", n)
+	}
+}
+
+// Gatekeeper serves each constraint kind at several versions at once. The
+// constraint is read once, at the highest version, not once per version,
+// which would duplicate the policy and multiply its violations.
+func TestRemote_MultiVersionConstraintReadOnce(t *testing.T) {
+	lists := engineLists(false, true)
+	lists = append(lists, &metav1.APIResourceList{GroupVersion: "constraints.gatekeeper.sh/v1", APIResources: []metav1.APIResource{
+		{Name: "k8srequiredlabels", Kind: "K8sRequiredLabels"},
+	}})
+	remote := newFakeCluster(lists, nil)
+	// The API server serves the same object at both versions.
+	for _, gvr := range []schema.GroupVersionResource{requiredLabelsGVR, requiredLabelsV1GVR} {
+		obj := requiredLabels("remote-owner-label", "shop")
+		obj.SetAPIVersion(gvr.GroupVersion().String())
+		if err := remote.dyn.Tracker().Create(gvr, obj, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := newRemoteFixture(t, remote)
+
+	got := decode[[]NormalizedPolicy](t, call(t, f.h.HandleListPolicies, "/policies"))
+	if len(got) != 1 || got[0].ViolationCount != 1 {
+		t.Fatalf("policies = %+v, want one constraint with one violation", got)
+	}
+	if v := decode[[]NormalizedViolation](t, call(t, f.h.HandleListViolations, "/policies/violations")); len(v) != 1 {
+		t.Errorf("violations = %+v, want one", v)
+	}
+	for _, a := range remote.dyn.Actions() {
+		if a.GetVerb() == "list" && a.GetResource() == requiredLabelsGVR {
+			t.Errorf("listed %v; want only the highest served version, v1", a.GetResource())
+		}
+	}
+}
+
+// partialDiscovery serves its lists but reports the named groups as failed
+// to load, the shape client-go returns when some APIServices are down.
+type partialDiscovery struct {
+	*fakediscovery.FakeDiscovery
+	failed []string
+}
+
+func (p partialDiscovery) ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	groups, lists, _ := p.FakeDiscovery.ServerGroupsAndResources()
+	failed := map[schema.GroupVersion]error{}
+	for _, g := range p.failed {
+		failed[schema.GroupVersion{Group: g, Version: "v1"}] = errors.New("unavailable at 10.20.30.40")
+	}
+	return groups, lists, &discovery.ErrGroupDiscoveryFailed{Groups: failed}
+}
+
+// A group that failed to load makes the answer unknown only when this
+// package needs it; an unrelated failed group does not stop the view.
+func TestRemote_PartialDiscoveryFailure(t *testing.T) {
+	tests := []struct {
+		name        string
+		failed      string
+		wantUnknown bool
+	}{
+		{"kyverno group", "kyverno.io", true},
+		{"gatekeeper templates group", "templates.gatekeeper.sh", true},
+		{"reports group while kyverno is installed", "wgpolicyk8s.io", true},
+		{"constraints group while gatekeeper is installed", gatekeeperConstraintsGroup, true},
+		{"unrelated group", "example.io", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			remote := remoteBothEngines()
+			remote.discOverride = partialDiscovery{FakeDiscovery: remote.disc, failed: []string{tt.failed}}
+			f := newRemoteFixture(t, remote)
+
+			status := decode[EngineStatus](t, call(t, f.h.HandleStatus, "/policies/status"))
+			rr := call(t, f.h.HandleListPolicies, "/policies")
+			if tt.wantUnknown {
+				if status.Detected != EngineNone || status.Reason != string(k8s.ReasonDiscoveryUnavailable) {
+					t.Errorf("status = %+v, want detected none with reason discovery_unavailable", status)
+				}
+				var body errorBody
+				_ = json.Unmarshal(rr.Body.Bytes(), &body)
+				if rr.Code != http.StatusBadGateway || body.Error.Reason != string(k8s.ReasonDiscoveryUnavailable) {
+					t.Errorf("list = %d %s, want 502 discovery_unavailable", rr.Code, rr.Body.String())
+				}
+				assertNoLeak(t, rr)
+				return
+			}
+			if status.Detected != EngineBoth || status.Reason != "" {
+				t.Errorf("status = %+v, want both engines with no reason", status)
+			}
+			if rr.Code != http.StatusOK || len(decode[[]NormalizedPolicy](t, rr)) != 2 {
+				t.Errorf("list = %d %s, want 200 with both remote policies", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+// Kyverno without the PolicyReport API: its policies are listed, there are
+// no violations to read, and nothing fails.
+func TestRemote_KyvernoWithoutReports(t *testing.T) {
+	lists := engineLists(true, false)[:1] // kyverno.io only, no wgpolicyk8s.io
+	remote := newFakeCluster(lists, []runtime.Object{
+		kyvernoPolicy(KyvernoClusterPolicyGVR, "ClusterPolicy", "", "remote-require-limits"),
+	})
+	f := newRemoteFixture(t, remote)
+
+	got := policyNames(decode[[]NormalizedPolicy](t, call(t, f.h.HandleListPolicies, "/policies")))
+	if len(got) != 1 || got["remote-require-limits"] != 0 {
+		t.Errorf("policies = %v, want remote-require-limits with no violations", got)
+	}
+	for _, a := range remote.dyn.Actions() {
+		if a.GetResource().Group == PolicyReportGVR.Group {
+			t.Errorf("listed %v, which the remote does not serve", a.GetResource())
+		}
+	}
+}
+
+// Remote data still passes the per-namespace RBAC filter, asked of the
+// remote cluster, and a non-admin sees no engine namespace.
+func TestRemote_RBACFilterAndNonAdminStatus(t *testing.T) {
+	f := newRemoteFixture(t, remoteBothEngines())
+	f.h.AccessChecker = resources.NewAlwaysDenyAccessChecker()
+	dev := &auth.User{Username: "dev", KubernetesUsername: "dev", KubernetesGroups: []string{"devs"}}
+
+	// Every remote violation is in namespace shop, which the checker denies.
+	if v := decode[[]NormalizedViolation](t, callAs(t, remoteCluster, dev, f.h.HandleListViolations, "/policies/violations")); len(v) != 0 {
+		t.Errorf("violations = %+v, want none: the user cannot list pods in shop", v)
+	}
+	// Cluster-scoped policies stay visible; their counts come from the
+	// filtered violations.
+	got := policyNames(decode[[]NormalizedPolicy](t, callAs(t, remoteCluster, dev, f.h.HandleListPolicies, "/policies")))
+	if len(got) != 2 || got["remote-require-limits"] != 0 || got["remote-owner-label"] != 0 {
+		t.Errorf("policies = %v, want both cluster-scoped policies with zero visible violations", got)
+	}
+
+	status := decode[EngineStatus](t, callAs(t, remoteCluster, dev, f.h.HandleStatus, "/policies/status"))
+	if status.Kyverno == nil || status.Kyverno.Namespace != "" {
+		t.Errorf("non-admin kyverno = %+v, want the namespace stripped", status.Kyverno)
+	}
+	// The strip must not reach the shared cached status the admin reads.
+	admin := decode[EngineStatus](t, call(t, f.h.HandleStatus, "/policies/status"))
+	if admin.Kyverno == nil || admin.Kyverno.Namespace != "kyverno-remote" {
+		t.Errorf("admin kyverno = %+v, want kyverno-remote", admin.Kyverno)
 	}
 }

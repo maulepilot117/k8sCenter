@@ -9,6 +9,7 @@ package policy
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -30,6 +32,9 @@ const (
 	gatekeeperConstraintsGroup = "constraints.gatekeeper.sh"
 	// remoteListTimeout bounds each remote list call.
 	remoteListTimeout = 10 * time.Second
+	// remoteListLabel prefixes each remote list's recovered-panic log label,
+	// so it reads apart from the local fan-out's "policy normalize-*".
+	remoteListLabel = "policy remote list "
 )
 
 var (
@@ -235,8 +240,8 @@ func kyvernoSources(lists []*metav1.APIResourceList) []remoteSource {
 			d.violations = append(d.violations, extractKyvernoViolations(o)...)
 		}},
 	} {
-		if servesGVR(lists, s.gvr) {
-			s.label = "policy list " + s.gvr.Resource
+		if k8s.ServesGVR(lists, s.gvr) {
+			s.label = remoteListLabel + s.gvr.Resource
 			out = append(out, s)
 		}
 	}
@@ -244,10 +249,23 @@ func kyvernoSources(lists []*metav1.APIResourceList) []remoteSource {
 }
 
 // gatekeeperSources are the constraint lists lists serves, one per
-// ConstraintTemplate, capped at maxConstraintCRDs as the local path is.
-// Subresources (constraint status) are not lists and are skipped.
+// ConstraintTemplate. Gatekeeper serves each constraint kind at several
+// versions at once (v1, v1beta1, v1alpha1), and discovery returns one list
+// per group-version, so each resource is read once, at its highest served
+// version; listing every version would count each constraint and its
+// violations once per version. Subresources (constraint status) are not
+// lists and are skipped.
+//
+// Unlike the local path, the remote list is not capped at
+// maxConstraintCRDs: a silently truncated list would undercount violations,
+// which is what fetchRemote fails closed to avoid. The semaphore bounds the
+// fan-out's concurrency and the cache's fetch deadline bounds its duration.
 func gatekeeperSources(lists []*metav1.APIResourceList) []remoteSource {
-	var out []remoteSource
+	type served struct {
+		version string
+		kind    string
+	}
+	best := map[string]served{}
 	for _, l := range lists {
 		gv, err := schema.ParseGroupVersion(l.GroupVersion)
 		if err != nil || gv.Group != gatekeeperConstraintsGroup {
@@ -257,19 +275,31 @@ func gatekeeperSources(lists []*metav1.APIResourceList) []remoteSource {
 			if strings.Contains(r.Name, "/") {
 				continue
 			}
-			if len(out) == maxConstraintCRDs {
-				return out
+			cur, seen := best[r.Name]
+			if !seen || version.CompareKubeAwareVersionStrings(gv.Version, cur.version) > 0 {
+				best[r.Name] = served{version: gv.Version, kind: r.Kind}
 			}
-			kind := r.Kind
-			out = append(out, remoteSource{
-				label: "policy list " + r.Name,
-				gvr:   gv.WithResource(r.Name),
-				add: func(d *remoteData, o *unstructured.Unstructured) {
-					d.policies = append(d.policies, NormalizeGatekeeperConstraint(o, kind))
-					d.violations = append(d.violations, extractGatekeeperViolations(o, kind)...)
-				},
-			})
 		}
+	}
+
+	names := make([]string, 0, len(best))
+	for name := range best {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]remoteSource, 0, len(names))
+	for _, name := range names {
+		s := best[name]
+		kind := s.kind
+		out = append(out, remoteSource{
+			label: remoteListLabel + name,
+			gvr:   schema.GroupVersionResource{Group: gatekeeperConstraintsGroup, Version: s.version, Resource: name},
+			add: func(d *remoteData, o *unstructured.Unstructured) {
+				d.policies = append(d.policies, NormalizeGatekeeperConstraint(o, kind))
+				d.violations = append(d.violations, extractGatekeeperViolations(o, kind)...)
+			},
+		})
 	}
 	return out
 }
@@ -282,24 +312,6 @@ func servesKind(lists []*metav1.APIResourceList, groupVersion, kind string) bool
 		}
 		for _, r := range l.APIResources {
 			if r.Kind == kind && !strings.Contains(r.Name, "/") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// servesGVR reports whether lists serve resource at exactly gvr's version.
-// The package lists every Kyverno resource at a fixed version, so a cluster
-// serving only another version cannot be read and counts as not serving it.
-func servesGVR(lists []*metav1.APIResourceList, gvr schema.GroupVersionResource) bool {
-	gv := gvr.GroupVersion().String()
-	for _, l := range lists {
-		if l.GroupVersion != gv {
-			continue
-		}
-		for _, r := range l.APIResources {
-			if r.Name == gvr.Resource {
 				return true
 			}
 		}
