@@ -23,6 +23,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/api_error.dart';
+import '../api/remote_failure.dart';
 import '../api/resource_repository.dart';
 import '../theme/kube_theme_builder.dart';
 
@@ -78,7 +80,7 @@ class NamedResourcePicker extends ConsumerWidget {
       error: (e, _) => _frame(
         colors,
         Text(
-          'Failed to load $kind: $e',
+          _errorText(e),
           style: TextStyle(color: colors.error, fontSize: 12),
         ),
       ),
@@ -132,6 +134,14 @@ class NamedResourcePicker extends ConsumerWidget {
         );
       },
     );
+  }
+
+  /// An R-8 remote failure (unreachable, rejected credentials, ...) names
+  /// the cluster problem instead of a raw `ApiError(502): ...` string.
+  String _errorText(Object e) {
+    final failure = RemoteFailure.fromError(e);
+    if (failure != null) return 'Cannot load $kind. ${failure.message}';
+    return 'Failed to load $kind: ${ApiError.messageOf(e)}';
   }
 
   Widget _frame(KubeColors colors, Widget child) {

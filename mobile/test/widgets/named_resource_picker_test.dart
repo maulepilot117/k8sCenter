@@ -162,6 +162,44 @@ void main() {
       final hdr = mock.requests.last.headers['X-Cluster-ID'];
       expect(hdr, 'pinned-cluster-A');
     });
+
+    testWidgets('remote unreachable names the cluster problem, not a raw '
+        'ApiError string', (tester) async {
+      final (:container, :mock) = _makeContainer();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/resources/backups/velero',
+        status: 502,
+        body: {
+          'error': {
+            'code': 502,
+            'message': 'the selected cluster could not be reached',
+            'reason': 'unreachable',
+          },
+        },
+      );
+
+      await tester.pumpWidget(_wrap(
+        container,
+        const NamedResourcePicker(
+          clusterId: 'remote-1',
+          kind: 'backups',
+          namespace: 'velero',
+          selected: '',
+          onChanged: _noOp,
+        ),
+      ));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(
+        find.textContaining('could not be reached'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('ApiError('), findsNothing);
+    });
   });
 }
 
