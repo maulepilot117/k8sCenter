@@ -19,7 +19,9 @@ import '../../api/mesh_repository.dart';
 import '../../api/resource_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
+import '../../widgets/empty_states.dart';
 import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/remote_failure_state.dart';
 import 'mesh_widgets.dart';
 
 class MeshMtlsPostureScreen extends ConsumerStatefulWidget {
@@ -60,14 +62,18 @@ class _MeshMtlsPostureScreenState
       ),
       body: statusAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text(e.toString()),
-          ),
+        error: (e, _) => ApiErrorStateView(
+          error: e,
+          onRetry: () => ref.invalidate(meshStatusProvider(clusterId)),
         ),
         data: (status) {
-          if (!status.isInstalled) return FeatureUnavailableState.mesh();
+          if (!status.isInstalled) {
+            return FeatureAbsentState(
+              reason: status.reason,
+              notInstalled: FeatureUnavailableState.mesh(),
+              onRetry: () => ref.invalidate(meshStatusProvider(clusterId)),
+            );
+          }
           return Column(
             children: [
               _NamespaceBar(
@@ -245,7 +251,11 @@ class _PostureBody extends ConsumerWidget {
       onRefresh: handleRefresh,
       child: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => _errorShell(e, handleRefresh, colors),
+        error: (e, _) => ListErrorShell(
+          title: _errorTitle(e),
+          error: e,
+          onRetry: handleRefresh,
+        ),
         data: (response) {
           final workloads = response.workloads;
           final summary = _summarise(workloads);
@@ -311,42 +321,16 @@ class _PostureBody extends ConsumerWidget {
     );
   }
 
-  Widget _errorShell(Object e, Future<void> Function() retry, KubeColors c) {
-    final body = e is ApiError && e.statusCode == 400
-        ? 'mTLS posture requires a namespace. Re-select above.'
-        : e is ApiError && e.statusCode == 403
-            ? 'You lack permission to view mTLS posture in this namespace.'
-            : e is ApiError
-                ? e.message
-                : e.toString();
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        SizedBox(
-          height: 280,
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    body,
-                    style: TextStyle(color: c.textPrimary),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton(
-                    onPressed: retry,
-                    child: const Text('Retry'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+  // Status-code-only copy applies only when the error carries no R-8
+  // reason; ListErrorShell lets the typed failure replace the title.
+  String _errorTitle(Object e) {
+    if (e is ApiError && e.statusCode == 400) {
+      return 'mTLS posture requires a namespace. Re-select above.';
+    }
+    if (e is ApiError && e.statusCode == 403) {
+      return 'You lack permission to view mTLS posture in this namespace.';
+    }
+    return 'Failed to load mTLS posture';
   }
 }
 

@@ -134,6 +134,69 @@ void main() {
     expect(find.textContaining('service mesh'), findsOneWidget);
   });
 
+  testWidgets('remote could-not-tell status shows typed state with Retry',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/status', body: {
+        'data': {
+          'status': {'detected': '', 'reason': 'unreachable'},
+        },
+      });
+
+    await _pump(tester, mock);
+
+    expect(find.text('Cluster unreachable'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+    expect(find.textContaining('is not installed on this cluster'),
+        findsNothing);
+  });
+
+  testWidgets('remote discovery_missing keeps the not-installed card',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/status', body: {
+        'data': {
+          'status': {'detected': '', 'reason': 'discovery_missing'},
+        },
+      });
+
+    await _pump(tester, mock);
+
+    expect(find.textContaining('service mesh'), findsOneWidget);
+    expect(find.text('Retry'), findsNothing);
+  });
+
+  testWidgets('502 unreachable on status shows typed state, not not-installed',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/status', status: 502, body: {
+        'error': {'code': 502, 'message': 'down', 'reason': 'unreachable'},
+      });
+
+    await _pump(tester, mock);
+
+    expect(find.text('Cluster unreachable'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+  });
+
+  testWidgets('routing 501 unsupported_platform shows no Retry',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/status', body: _statusBoth())
+      ..onJson('GET', '/api/v1/mesh/routing', status: 501, body: {
+        'error': {
+          'code': 501,
+          'message': 'local only',
+          'reason': 'unsupported_platform',
+        },
+      });
+
+    await _pump(tester, mock);
+
+    expect(find.text('Not available for remote clusters'), findsOneWidget);
+    expect(find.text('Retry'), findsNothing);
+  });
+
   testWidgets('empty routes shows guidance copy', (tester) async {
     final mock = MockDioAdapter()
       ..onJson('GET', '/api/v1/mesh/status', body: _statusBoth())

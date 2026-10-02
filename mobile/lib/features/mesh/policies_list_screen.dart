@@ -16,11 +16,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../api/api_error.dart';
 import '../../api/mesh_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
+import '../../widgets/empty_states.dart';
 import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/remote_failure_state.dart';
 import 'mesh_widgets.dart';
 
 enum _MeshFilter { all, istio, linkerd }
@@ -79,14 +80,18 @@ class _MeshPoliciesListScreenState
       appBar: AppBar(title: const Text('Mesh Policies')),
       body: statusAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text(e.toString()),
-          ),
+        error: (e, _) => ApiErrorStateView(
+          error: e,
+          onRetry: () => ref.invalidate(meshStatusProvider(clusterId)),
         ),
         data: (status) {
-          if (!status.isInstalled) return FeatureUnavailableState.mesh();
+          if (!status.isInstalled) {
+            return FeatureAbsentState(
+              reason: status.reason,
+              notInstalled: FeatureUnavailableState.mesh(),
+              onRetry: () => ref.invalidate(meshStatusProvider(clusterId)),
+            );
+          }
           return _PoliciesBody(
             clusterId: clusterId,
             mesh: _mesh,
@@ -141,7 +146,11 @@ class _PoliciesBody extends ConsumerWidget {
       onRefresh: handleRefresh,
       child: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => _errorShell(e, handleRefresh, colors),
+        error: (e, _) => ListErrorShell(
+          title: 'Failed to load mesh policies',
+          error: e,
+          onRetry: handleRefresh,
+        ),
         data: (response) {
           final filtered = _applyMeshFilter(response.policies);
           return CustomScrollView(
@@ -201,42 +210,6 @@ class _PoliciesBody extends ConsumerWidget {
       if (mesh == _MeshFilter.linkerd && p.mesh != 'linkerd') return false;
       return true;
     }).toList();
-  }
-
-  Widget _errorShell(Object e, Future<void> Function() retry, KubeColors c) {
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        SizedBox(
-          height: 280,
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Failed to load mesh policies',
-                    style: TextStyle(
-                      color: c.textPrimary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    e is ApiError ? e.message : e.toString(),
-                    style: TextStyle(color: c.textMuted),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton(onPressed: retry, child: const Text('Retry')),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
   }
 }
 

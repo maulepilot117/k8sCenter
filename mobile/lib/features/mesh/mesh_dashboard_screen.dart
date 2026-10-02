@@ -13,10 +13,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../api/api_error.dart';
+import '../../api/remote_failure.dart';
 import '../../api/mesh_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/remote_failure_state.dart';
 import 'mesh_widgets.dart';
 
 class MeshDashboardScreen extends ConsumerWidget {
@@ -42,7 +44,10 @@ class MeshDashboardScreen extends ConsumerWidget {
           loading: () =>
               const _ScrollableShell(child: Center(child: CircularProgressIndicator())),
           error: (e, _) {
-            if (e is ApiError && (e.statusCode == 401 || e.statusCode == 403)) {
+            // An R-8 reason wins over the status-code special case.
+            if (RemoteFailure.fromError(e) == null &&
+                e is ApiError &&
+                (e.statusCode == 401 || e.statusCode == 403)) {
               return _ScrollableShell(
                 child: Center(
                   child: Padding(
@@ -56,15 +61,21 @@ class MeshDashboardScreen extends ConsumerWidget {
               );
             }
             return _ScrollableShell(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(e.toString(), textAlign: TextAlign.center),
+              child: ApiErrorStateView(
+                error: e,
+                onRetry: () => ref.invalidate(meshStatusProvider(clusterId)),
               ),
             );
           },
           data: (status) {
             if (!status.isInstalled) {
-              return _ScrollableShell(child: FeatureUnavailableState.mesh());
+              return _ScrollableShell(
+                child: FeatureAbsentState(
+                  reason: status.reason,
+                  notInstalled: FeatureUnavailableState.mesh(),
+                  onRetry: () => ref.invalidate(meshStatusProvider(clusterId)),
+                ),
+              );
             }
             return ListView(
               physics: const AlwaysScrollableScrollPhysics(),

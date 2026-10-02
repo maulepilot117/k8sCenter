@@ -29,6 +29,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../cluster/cluster_provider.dart';
 import 'api_error.dart';
 import 'dio_client.dart';
+import 'remote_failure.dart';
 
 /// Per-engine availability flags from `/v1/mesh/status`. Mirrors
 /// `backend/internal/servicemesh/types.go::MeshInfo` exactly.
@@ -72,6 +73,7 @@ class MeshStatus {
     required this.istio,
     required this.linkerd,
     this.lastChecked = '',
+    this.reason,
   });
 
   /// `""` when neither mesh is detected.
@@ -83,6 +85,11 @@ class MeshStatus {
   /// when not yet available (e.g. the first poll hasn't completed).
   /// The backend always populates this field once a probe has run.
   final String lastChecked;
+
+  /// R-8 reason sent only on a remote cluster where nothing was detected:
+  /// `discovery_missing` (really not installed) or a could-not-tell code
+  /// such as `unreachable`. Null on the local cluster.
+  final String? reason;
 
   bool get isInstalled => detected.isNotEmpty;
   bool get hasIstio => detected == 'istio' || detected == 'both';
@@ -101,6 +108,9 @@ class MeshStatus {
           ? MeshInfo.fromJson(Map<String, dynamic>.from(linkerd))
           : MeshInfo.empty,
       lastChecked: json['lastChecked'] as String? ?? '',
+      reason: json['reason'] is String && (json['reason'] as String).isNotEmpty
+          ? json['reason'] as String
+          : null,
     );
   }
 
@@ -636,9 +646,14 @@ class MeshRepository {
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
       final code = e.response?.statusCode ?? 0;
-      if (code >= 500 && code < 600) return MeshStatus.empty;
       final err = e.error;
-      throw err is ApiError ? err : ApiError.fromDio(e);
+      final apiError = err is ApiError ? err : ApiError.fromDio(e);
+      // A 5xx that carries an R-8 reason (unreachable, db_unavailable...)
+      // is a typed failure the screen renders, not a "not installed".
+      if (code >= 500 && code < 600 && RemoteFailure.fromError(apiError) == null) {
+        return MeshStatus.empty;
+      }
+      throw apiError;
     }
   }
 

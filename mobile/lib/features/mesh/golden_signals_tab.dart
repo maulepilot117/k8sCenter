@@ -23,8 +23,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../api/api_error.dart';
 import '../../api/mesh_repository.dart';
+import '../../api/remote_failure.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
+import '../../widgets/empty_states.dart';
+import '../../widgets/remote_failure_state.dart';
 import 'mesh_widgets.dart';
 
 /// Body of the Metrics-style tab on Service detail. The host
@@ -281,9 +284,29 @@ class _SignalsBody extends ConsumerWidget {
       onRefresh: handleRefresh,
       child: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => _errorShell(e, handleRefresh, colors),
+        error: (e, _) => ListErrorShell(
+          title: _errorTitle(e),
+          error: e,
+          onRetry: handleRefresh,
+        ),
         data: (response) {
           final s = response.signals;
+          // A remote cluster answers 200 with available=false and reason
+          // unsupported_platform: render the typed local-only state.
+          // The tile grid would only show dashes, so the state replaces it.
+          final failure = s.available ? null : RemoteFailure.fromReason(s.reason);
+          if (failure != null &&
+              failure.kind == RemoteFailureKind.unsupportedPlatform) {
+            return ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                SizedBox(
+                  height: 280,
+                  child: RemoteFailureState(failure: failure),
+                ),
+              ],
+            );
+          }
           return ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.fromLTRB(0, 8, 0, 24),
@@ -325,45 +348,17 @@ class _SignalsBody extends ConsumerWidget {
     );
   }
 
-  Widget _errorShell(Object e, Future<void> Function() retry, KubeColors c) {
-    final body = e is ApiError && e.statusCode == 400
-        ? 'Service or namespace missing. This tab is rendered with '
-            'invalid arguments — please re-open this Service from the '
-            'list.'
-        : e is ApiError && e.statusCode == 403
-            ? 'You lack permission to read mesh metrics for this '
-                'namespace.'
-            : e is ApiError
-                ? e.message
-                : e.toString();
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        SizedBox(
-          height: 280,
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    body,
-                    style: TextStyle(color: c.textPrimary),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton(
-                    onPressed: retry,
-                    child: const Text('Retry'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+  // Status-code-only copy applies only when the error carries no R-8
+  // reason; ListErrorShell lets the typed failure replace the title.
+  String _errorTitle(Object e) {
+    if (e is ApiError && e.statusCode == 400) {
+      return 'Service or namespace missing. This tab is rendered with '
+          'invalid arguments. Re-open this Service from the list.';
+    }
+    if (e is ApiError && e.statusCode == 403) {
+      return 'You lack permission to read mesh metrics for this namespace.';
+    }
+    return 'Failed to load golden signals';
   }
 }
 
