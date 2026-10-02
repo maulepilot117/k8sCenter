@@ -178,6 +178,32 @@ void main() {
     expect(find.textContaining('is not installed'), findsOneWidget);
   });
 
+  // R-8 KTD5 (#530): a remote cluster that could not be asked answers
+  // detected:'' with a could-not-tell reason. That must render the typed
+  // remote state, never the install-guidance card.
+  testWidgets('remote unreachable reason renders the remote state, not '
+      'install guidance', (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/policies/status', body: {
+        'data': {'detected': '', 'reason': 'unreachable'},
+      });
+    await _pump(tester, mock);
+
+    expect(find.text('Cluster unreachable'), findsOneWidget);
+    expect(find.textContaining('is not installed'), findsNothing);
+  });
+
+  testWidgets('remote discovery_missing reason still renders not-installed',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/policies/status', body: {
+        'data': {'detected': '', 'reason': 'discovery_missing'},
+      });
+    await _pump(tester, mock);
+
+    expect(find.textContaining('is not installed'), findsOneWidget);
+  });
+
   testWidgets('renders compliance score with tier label', (tester) async {
     final mock = MockDioAdapter()
       ..onJson('GET', '/api/v1/policies/status', body: _detectedBoth())

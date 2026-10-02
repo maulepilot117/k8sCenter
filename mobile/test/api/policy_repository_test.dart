@@ -83,36 +83,29 @@ void main() {
       expect(s.detected, isFalse);
       expect(s.kyvernoAvailable, isFalse);
       expect(s.gatekeeperAvailable, isFalse);
-      expect(s.serviceUnavailable, isFalse);
+      expect(s.reason, isNull, reason: 'the local cluster sends no reason');
     });
 
-    // A remote cluster that could not be asked answers detected:'' with a
-    // reason (R-8 KTD5). Only discovery_missing means "not installed";
-    // any other reason must reach the retryable state, not install copy.
-    for (final (reason, unknown) in [
-      ('discovery_missing', false),
-      ('unreachable', true),
-      ('credentials_invalid', true),
-      ('discovery_unavailable', true),
-    ]) {
-      test('remote status reason $reason -> serviceUnavailable=$unknown',
-          () async {
-        final (:container, :mock) = _make();
-        addTearDown(container.dispose);
+    // A remote cluster answers detected:'' with a reason (R-8 KTD5, #530);
+    // it must survive decoding so PolicyStatusGate can tell "not
+    // installed" from "could not tell".
+    test('decodes the remote status reason', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
 
-        mock.onJson('GET', '/api/v1/policies/status', body: {
-          'data': {
-            'detected': '',
-            'lastChecked': '2026-10-02T10:00:00Z',
-            'reason': reason,
-          },
-        });
-
-        final s = await container.read(policyRepositoryProvider).status();
-        expect(s.detected, isFalse);
-        expect(s.serviceUnavailable, unknown);
+      mock.onJson('GET', '/api/v1/policies/status', body: {
+        'data': {
+          'detected': '',
+          'lastChecked': '2026-10-02T10:00:00Z',
+          'reason': 'unreachable',
+        },
       });
-    }
+
+      final s = await container.read(policyRepositoryProvider).status();
+      expect(s.detected, isFalse);
+      expect(s.reason, 'unreachable');
+      expect(s.serviceUnavailable, isFalse);
+    });
 
     test('503 from status returns PolicyDiscoveryStatus.unreachable', () async {
       final (:container, :mock) = _make();
