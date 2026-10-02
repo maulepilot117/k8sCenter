@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
@@ -24,9 +25,13 @@ import (
 )
 
 // remoteSnapshot is one remote cluster's cert-manager state as one identity
-// sees it. data is nil when cert-manager is not installed there.
+// sees it.
 type remoteSnapshot struct {
+	// data is nil when cert-manager is not installed on the cluster.
 	data *cachedData
+	// failed holds the error each failed list returned, keyed by resource
+	// name. A list whose resource type is gone counts as empty, not failed.
+	failed map[string]error
 }
 
 func isLocal(ctx context.Context) bool {
@@ -40,24 +45,41 @@ func (h *Handler) EvictRemoteCache(clusterID string) {
 	h.remote.EvictCluster(clusterID)
 }
 
-// load returns the request cluster's certificates and issuers, or nil when
-// cert-manager is not installed there: the service-account cache for the
-// local cluster, or a per-identity read of a remote one.
-func (h *Handler) load(ctx context.Context, user *auth.User) (*cachedData, error) {
+// load returns the request cluster's certificates and issuers, or nil data
+// when cert-manager is not installed there: the service-account cache for
+// the local cluster, or a per-identity read of a remote one. On a remote
+// cluster failed holds each list that failed while the others were read.
+func (h *Handler) load(ctx context.Context, user *auth.User) (data *cachedData, failed map[string]error, err error) {
 	if isLocal(ctx) {
 		if !h.Discoverer.IsAvailable(ctx) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return h.getCached(ctx)
+		data, err := h.getCached(ctx)
+		return data, nil, err
 	}
 	clusterID := middleware.ClusterIDFromContext(ctx)
 	snap, err := h.remote.Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*remoteSnapshot, error) {
 		return h.fetchRemote(ctx, clusterID, user)
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return snap.data, nil
+	return snap.data, snap.failed, nil
+}
+
+// loadList loads the request cluster's lists for an endpoint that serves the
+// gvr list, writing the error response and returning false when that list
+// could not be read. Nil data means cert-manager is not installed.
+func (h *Handler) loadList(w http.ResponseWriter, r *http.Request, user *auth.User, gvr schema.GroupVersionResource, what string) (*cachedData, bool) {
+	data, failed, err := h.load(r.Context(), user)
+	if err == nil && data != nil {
+		err = failed[gvr.Resource]
+	}
+	if err != nil {
+		h.writeLoadError(w, r, err, what)
+		return nil, false
+	}
+	return data, true
 }
 
 // remoteInstalled reports whether cert-manager is installed on a remote
@@ -97,7 +119,10 @@ func (h *Handler) remoteStatus(ctx context.Context, user *auth.User) CertManager
 
 // fetchRemote reads a remote cluster's certificates, issuers and
 // clusterissuers as the user, or an empty snapshot when cert-manager is not
-// installed there.
+// installed there. The lists run as the user, who may be allowed some kinds
+// and not others (a namespace tenant rarely may list cluster-scoped
+// ClusterIssuers), so each list succeeds or fails on its own; only when
+// every list fails is the fetch itself an error.
 func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.User) (*remoteSnapshot, error) {
 	installed, err := h.remoteInstalled(ctx, clusterID, user)
 	if err != nil {
@@ -110,19 +135,38 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 	if err != nil {
 		return nil, k8s.TargetError{Err: err}
 	}
-	data, err := h.listAll(ctx, dyn, "remote ")
-	if err != nil {
-		if k8s.IsResourceGone(err) {
-			// cert-manager went away after discovery was cached: re-read it,
-			// and report not installed when that confirms it.
-			v := h.Presence.Recheck(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, CertificateGVR.GroupResource())
-			if v.Installed != nil && !*v.Installed {
+
+	listCtx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
+	data := newCachedData()
+	sources := data.sources()
+	lists := make([]k8s.NamedList, len(sources))
+	for i, src := range sources {
+		lists[i] = k8s.NamedList{Label: "certmanager remote list " + src.gvr.Resource, Run: func() error { return src.list(listCtx, dyn) }}
+	}
+	errs := k8s.RunLists(h.Logger, lists)
+
+	failed := map[string]error{}
+	for i, src := range sources {
+		switch err := errs[i]; {
+		case err == nil:
+		case k8s.IsResourceGone(err):
+			// The CRD went away after discovery was cached: re-read it so the
+			// next fetch stops asking for it, and report cert-manager not
+			// installed when the Certificate type itself is confirmed gone.
+			v := h.Presence.Recheck(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, src.gvr.GroupResource())
+			if src.gvr == CertificateGVR && v.Installed != nil && !*v.Installed {
 				return &remoteSnapshot{}, nil
 			}
+		default:
+			failed[src.gvr.Resource] = err
 		}
-		return nil, err
 	}
-	return &remoteSnapshot{data: data}, nil
+	if len(failed) == len(sources) {
+		return nil, errs[0]
+	}
+	data.resolve(h.Logger)
+	return &remoteSnapshot{data: data, failed: failed}, nil
 }
 
 // writeLoadError answers a failure to read the cluster's cert-manager lists.

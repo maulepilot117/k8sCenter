@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -178,7 +179,7 @@ func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 // fetchAll fills the local cluster's service-account cache.
 func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error) {
 	// nolint:cluster-routing local path: the service-account cache serves the local cluster only; remote reads go through fetchRemote.
-	data, err := h.listAll(ctx, h.K8sClient.BaseDynamicClient(), "")
+	data, err := h.listAll(ctx, h.K8sClient.BaseDynamicClient())
 	if err != nil {
 		return nil, err
 	}
@@ -192,76 +193,97 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 	return data, nil
 }
 
-// listAll lists certificates, issuers and clusterissuers in every namespace
-// through dyn, and resolves each certificate's thresholds against the
-// just-fetched issuers. Every read path (CachedCertificates, /expiring,
-// detail) consumes the result, so resolving once here keeps it out of the
-// hot path and gives every consumer the same view. labelPrefix tells the
-// local and remote goroutines apart in panic logs.
-func (h *Handler) listAll(ctx context.Context, dyn dynamic.Interface, labelPrefix string) (*cachedData, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+// listTimeout bounds one fetch of every cert-manager list.
+const listTimeout = 10 * time.Second
+
+// source is one cert-manager list and how to read it into a cachedData.
+type source struct {
+	gvr  schema.GroupVersionResource
+	list func(ctx context.Context, dyn dynamic.Interface) error
+}
+
+// newCachedData returns empty lists, so a list that is not read (its
+// resource type is gone) serves as empty rather than null.
+func newCachedData() *cachedData {
+	return &cachedData{certificates: []Certificate{}, issuers: []Issuer{}, clusterIssuers: []Issuer{}}
+}
+
+// sources returns the lists that fill d, each across every namespace. A list
+// leaves its field of d untouched when it fails.
+func (d *cachedData) sources() []source {
+	return []source{
+		{CertificateGVR, func(ctx context.Context, dyn dynamic.Interface) error {
+			list, err := dyn.Resource(CertificateGVR).Namespace("").List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("list certificates: %w", err)
+			}
+			certificates := make([]Certificate, 0, len(list.Items))
+			for i := range list.Items {
+				c, err := normalizeCertificate(&list.Items[i])
+				if err != nil {
+					continue
+				}
+				certificates = append(certificates, c)
+			}
+			d.certificates = certificates
+			return nil
+		}},
+		{IssuerGVR, func(ctx context.Context, dyn dynamic.Interface) error {
+			list, err := dyn.Resource(IssuerGVR).Namespace("").List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("list issuers: %w", err)
+			}
+			issuers := make([]Issuer, 0, len(list.Items))
+			for i := range list.Items {
+				issuers = append(issuers, normalizeIssuer(&list.Items[i], "Namespaced"))
+			}
+			d.issuers = issuers
+			return nil
+		}},
+		{ClusterIssuerGVR, func(ctx context.Context, dyn dynamic.Interface) error {
+			list, err := dyn.Resource(ClusterIssuerGVR).Namespace("").List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("list clusterissuers: %w", err)
+			}
+			clusterIssuers := make([]Issuer, 0, len(list.Items))
+			for i := range list.Items {
+				clusterIssuers = append(clusterIssuers, normalizeIssuer(&list.Items[i], "Cluster"))
+			}
+			d.clusterIssuers = clusterIssuers
+			return nil
+		}},
+	}
+}
+
+// resolve stamps d and resolves each certificate's thresholds against the
+// issuers d holds. Every read path (CachedCertificates, /expiring, detail)
+// consumes the result, so resolving once here keeps it out of the hot path
+// and gives every consumer the same view.
+func (d *cachedData) resolve(logger *slog.Logger) {
+	ApplyThresholds(d.certificates, d.issuers, d.clusterIssuers, logger)
+	d.fetchedAt = time.Now()
+}
+
+// listAll lists certificates, issuers and clusterissuers through the local
+// service-account client dyn. The service account sees every list or the
+// cluster is failing, so any one failure fails the fetch; a remote cluster,
+// read as the user, goes through fetchRemote's per-list handling instead.
+func (h *Handler) listAll(ctx context.Context, dyn dynamic.Interface) (*cachedData, error) {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
 
-	var (
-		certificates   []Certificate
-		issuers        []Issuer
-		clusterIssuers []Issuer
-	)
-
+	data := newCachedData()
 	g, gctx := errgroup.WithContext(ctx)
-
-	recoverutil.Go(g, h.Logger, "certmanager "+labelPrefix+"list certificates", func() error {
-		list, err := dyn.Resource(CertificateGVR).Namespace("").List(gctx, metav1.ListOptions{})
-		if err != nil {
-			return fmt.Errorf("list certificates: %w", err)
-		}
-		certificates = make([]Certificate, 0, len(list.Items))
-		for i := range list.Items {
-			c, err := normalizeCertificate(&list.Items[i])
-			if err != nil {
-				continue
-			}
-			certificates = append(certificates, c)
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "certmanager "+labelPrefix+"list issuers", func() error {
-		list, err := dyn.Resource(IssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
-		if err != nil {
-			return fmt.Errorf("list issuers: %w", err)
-		}
-		issuers = make([]Issuer, 0, len(list.Items))
-		for i := range list.Items {
-			issuers = append(issuers, normalizeIssuer(&list.Items[i], "Namespaced"))
-		}
-		return nil
-	})
-
-	recoverutil.Go(g, h.Logger, "certmanager "+labelPrefix+"list clusterissuers", func() error {
-		list, err := dyn.Resource(ClusterIssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
-		if err != nil {
-			return fmt.Errorf("list clusterissuers: %w", err)
-		}
-		clusterIssuers = make([]Issuer, 0, len(list.Items))
-		for i := range list.Items {
-			clusterIssuers = append(clusterIssuers, normalizeIssuer(&list.Items[i], "Cluster"))
-		}
-		return nil
-	})
-
+	for _, src := range data.sources() {
+		recoverutil.Go(g, h.Logger, "certmanager list "+src.gvr.Resource, func() error {
+			return src.list(gctx, dyn)
+		})
+	}
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-
-	ApplyThresholds(certificates, issuers, clusterIssuers, h.Logger)
-
-	return &cachedData{
-		certificates:   certificates,
-		issuers:        issuers,
-		clusterIssuers: clusterIssuers,
-		fetchedAt:      time.Now(),
-	}, nil
+	data.resolve(h.Logger)
+	return data, nil
 }
 
 // CachedCertificates returns the cached certificate list (for use by the Poller).
@@ -294,9 +316,8 @@ func (h *Handler) HandleListCertificates(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	data, err := h.load(r.Context(), user)
-	if err != nil {
-		h.writeLoadError(w, r, err, "certificates")
+	data, ok := h.loadList(w, r, user, CertificateGVR, "certificates")
+	if !ok {
 		return
 	}
 	if data == nil {
@@ -366,14 +387,21 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	// local cache, or that remote cluster's per-identity lists), so a remote
 	// certificate is never attributed to a local issuer. A failed issuer
 	// read does not fail the detail response: thresholds fall through to
-	// package defaults, logged so the gap is visible.
+	// package defaults, logged so the gap is visible. On a remote cluster
+	// each issuer list that did load still counts when the other failed.
 	var issuers, clusterIssuers []Issuer
-	if data, derr := h.load(ctx, user); derr != nil {
+	switch data, failed, derr := h.load(ctx, user); {
+	case derr != nil:
 		h.Logger.Warn("issuer fetch for cert detail failed; thresholds will fall back to defaults",
 			"clusterID", middleware.ClusterIDFromContext(ctx), "namespace", ns, "name", name, "error", derr)
-	} else if data != nil {
+	case data != nil:
 		issuers = data.issuers
 		clusterIssuers = data.clusterIssuers
+		if ie, ce := failed[IssuerGVR.Resource], failed[ClusterIssuerGVR.Resource]; ie != nil || ce != nil {
+			h.Logger.Warn("an issuer list for cert detail failed; thresholds from it will fall back to defaults",
+				"clusterID", middleware.ClusterIDFromContext(ctx), "namespace", ns, "name", name,
+				"issuersError", ie, "clusterIssuersError", ce)
+		}
 	}
 	certs := []Certificate{cert}
 	ApplyThresholds(certs, issuers, clusterIssuers, h.Logger)
@@ -480,9 +508,8 @@ func (h *Handler) HandleListIssuers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.load(r.Context(), user)
-	if err != nil {
-		h.writeLoadError(w, r, err, "issuers")
+	data, ok := h.loadList(w, r, user, IssuerGVR, "issuers")
+	if !ok {
 		return
 	}
 	if data == nil {
@@ -501,13 +528,21 @@ func (h *Handler) HandleListClusterIssuers(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	data, err := h.load(r.Context(), user)
-	if err != nil {
-		h.writeLoadError(w, r, err, "cluster issuers")
+	// Cluster-scoped RBAC check. On the local cluster it runs before any
+	// read, so a user who may not see cluster issuers gets an empty list
+	// whatever state the cache is in. On a remote cluster the lists are read
+	// first: an unreachable remote also fails the access review, and must
+	// answer with its classified error rather than an empty list (KTD5).
+	local := isLocal(r.Context())
+	if local && !h.canAccess(r.Context(), user, "get", "clusterissuers", "") {
+		httputil.WriteData(w, []Issuer{})
 		return
 	}
-	// Cluster-scoped RBAC check
-	if data == nil || !h.canAccess(r.Context(), user, "get", "clusterissuers", "") {
+	data, ok := h.loadList(w, r, user, ClusterIssuerGVR, "cluster issuers")
+	if !ok {
+		return
+	}
+	if data == nil || (!local && !h.canAccess(r.Context(), user, "get", "clusterissuers", "")) {
 		httputil.WriteData(w, []Issuer{})
 		return
 	}
@@ -523,9 +558,8 @@ func (h *Handler) HandleListExpiring(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.load(r.Context(), user)
-	if err != nil {
-		h.writeLoadError(w, r, err, "certificates")
+	data, ok := h.loadList(w, r, user, CertificateGVR, "certificates")
+	if !ok {
 		return
 	}
 	if data == nil {
