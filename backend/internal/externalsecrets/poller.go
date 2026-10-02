@@ -390,8 +390,22 @@ func (p *Poller) emit(ctx context.Context, rec emitRecord) {
 	if p.notifService == nil {
 		return
 	}
+	p.notifService.Emit(ctx, notificationFor(rec))
+}
 
-	p.notifService.Emit(ctx, notifications.Notification{
+// notificationFor builds the notification for one emitRecord.
+//
+// ResourceUID carries the ExternalSecret UID, part of the notification
+// dedup identity: an ES deleted and recreated under the same name is a
+// different object. It is not an external-dispatch field (the webhook and
+// Slack payloads never carry it) and the email digest strips it alongside
+// the other resource fields for this source.
+//
+// ClusterID stays empty: the poller reads the local cluster only, empty is
+// the local notification identity, and RecentBySource's restart seeding
+// matches empty-cluster rows for the local poller.
+func notificationFor(rec emitRecord) notifications.Notification {
+	return notifications.Notification{
 		Source:                 notifications.SourceExternalSecrets,
 		Severity:               rec.Sev,
 		Title:                  rec.Title,
@@ -399,9 +413,10 @@ func (p *Poller) emit(ctx context.Context, rec emitRecord) {
 		ResourceKind:           "externalsecret",
 		ResourceNS:             rec.ES.Namespace,
 		ResourceName:           rec.ES.Name,
+		ResourceUID:            rec.ES.UID,
 		CreatedAt:              time.Now().UTC(),
 		SuppressResourceFields: true,
-	})
+	}
 }
 
 // emitConcurrency caps the number of in-flight Emit() calls per tick. The

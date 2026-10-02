@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
@@ -195,19 +196,7 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	if h.NotifService != nil {
 		for _, result := range results {
 			if result.Status == "fail" {
-				sev := notifications.SeverityWarning
-				if result.Severity == SeverityCritical {
-					sev = notifications.SeverityCritical
-				}
-				h.NotifService.Emit(ctx, notifications.Notification{
-					Source:       notifications.SourceDiagnostic,
-					Severity:     sev,
-					Title:        result.RuleName + ": " + name,
-					Message:      result.Message,
-					ResourceKind: kind,
-					ResourceNS:   namespace,
-					ResourceName: name,
-				})
+				h.NotifService.Emit(ctx, findingNotification(clusterID, target, result))
 			}
 		}
 	}
@@ -314,6 +303,35 @@ func (h *Handler) resolveRelatedRBAC(ctx context.Context, user *auth.User, clust
 	}
 
 	return related
+}
+
+// findingNotification builds the notification for one failed diagnostic
+// result. clusterID and the target object's UID are part of the
+// notification dedup identity: the same name on another cluster, or a
+// resource recreated under the same name, is a separate event. A target
+// without a readable object contributes no UID.
+func findingNotification(clusterID string, target *DiagnosticTarget, result Result) notifications.Notification {
+	sev := notifications.SeverityWarning
+	if result.Severity == SeverityCritical {
+		sev = notifications.SeverityCritical
+	}
+	var uid string
+	if target.Object != nil {
+		if obj, err := meta.Accessor(target.Object); err == nil {
+			uid = string(obj.GetUID())
+		}
+	}
+	return notifications.Notification{
+		Source:       notifications.SourceDiagnostic,
+		Severity:     sev,
+		Title:        result.RuleName + ": " + target.Name,
+		Message:      result.Message,
+		ResourceKind: target.Kind,
+		ResourceNS:   target.Namespace,
+		ResourceName: target.Name,
+		ResourceUID:  uid,
+		ClusterID:    clusterID,
+	}
 }
 
 // findNodeID searches the graph for a node matching the given kind and name.

@@ -159,6 +159,7 @@ func TestCheckerWithQuotas(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "quota1",
 				Namespace: "ns1",
+				UID:       "uid-quota1",
 			},
 			Status: corev1.ResourceQuotaStatus{
 				Hard: corev1.ResourceList{
@@ -195,6 +196,16 @@ func TestCheckerWithQuotas(t *testing.T) {
 		}
 		if n.ResourceKind != "ResourceQuota" {
 			t.Errorf("expected resource kind ResourceQuota, got %s", n.ResourceKind)
+		}
+		// The quota's UID is part of the notification dedup identity: a
+		// quota deleted and recreated under the same name is a new quota.
+		if n.ResourceUID != "uid-quota1" {
+			t.Errorf("expected ResourceUID uid-quota1, got %q", n.ResourceUID)
+		}
+		// The checker reads the local informer cache only; an empty
+		// ClusterID is the documented local identity.
+		if n.ClusterID != "" {
+			t.Errorf("expected empty (local) ClusterID, got %q", n.ClusterID)
 		}
 	}
 

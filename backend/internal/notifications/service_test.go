@@ -358,14 +358,14 @@ func TestSendSlack_SuppressResourceFields(t *testing.T) {
 
 func TestSanitizeForEmailDigest_StripsESOResourceFields(t *testing.T) {
 	notifs := []Notification{
-		{Source: SourceExternalSecrets, ResourceKind: "externalsecret", ResourceNS: "payments", ResourceName: "stripe-api-key"},
+		{Source: SourceExternalSecrets, ResourceKind: "externalsecret", ResourceNS: "payments", ResourceName: "stripe-api-key", ResourceUID: "uid-stripe"},
 		{Source: SourceCertManager, ResourceKind: "certificate", ResourceNS: "ingress", ResourceName: "wildcard-tls"},
 		{Source: SourceAlert, ResourceKind: "pod", ResourceNS: "default", ResourceName: "nginx"},
 	}
 	sanitizeForEmailDigest(notifs)
 
 	// ESO row is sanitized.
-	if notifs[0].ResourceKind != "" || notifs[0].ResourceNS != "" || notifs[0].ResourceName != "" {
+	if notifs[0].ResourceKind != "" || notifs[0].ResourceNS != "" || notifs[0].ResourceName != "" || notifs[0].ResourceUID != "" {
 		t.Errorf("ESO row should have resource fields stripped, got %+v", notifs[0])
 	}
 	// cert-manager + alert rows are untouched.

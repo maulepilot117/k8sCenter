@@ -114,6 +114,7 @@ func (c *Checker) check(ctx context.Context) {
 			c.dispatchIfChanged(ctx, key, currentStatus, QuotaThresholdEvent{
 				Namespace:   quota.Namespace,
 				QuotaName:   quota.Name,
+				QuotaUID:    string(quota.UID),
 				Resource:    resName,
 				Status:      currentStatus,
 				UsedPercent: util.Percentage,
@@ -166,6 +167,8 @@ func (c *Checker) dispatchIfChanged(ctx context.Context, key string, current Thr
 	message := fmt.Sprintf("Resource %s is at %.1f%% utilization (threshold: %.0f%%). Used: %s, Hard: %s",
 		event.Resource, event.UsedPercent, event.Threshold, event.Used, event.Hard)
 
+	// ClusterID stays empty: the checker reads the local informer cache
+	// only, and empty is the local cluster's notification identity.
 	c.notifier.Emit(ctx, notifications.Notification{
 		Source:       notifications.SourceLimits,
 		Severity:     severity,
@@ -174,6 +177,7 @@ func (c *Checker) dispatchIfChanged(ctx context.Context, key string, current Thr
 		ResourceKind: "ResourceQuota",
 		ResourceNS:   event.Namespace,
 		ResourceName: event.QuotaName,
+		ResourceUID:  event.QuotaUID,
 	})
 
 	c.logger.Info("quota threshold notification dispatched",

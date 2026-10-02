@@ -143,31 +143,44 @@ func (h *Handler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if h.NotifService != nil {
-			sev := notifications.SeverityWarning
-			if s, ok := action.Alert.Labels["severity"]; ok {
-				switch s {
-				case "critical":
-					sev = notifications.SeverityCritical
-				case "warning":
-					sev = notifications.SeverityWarning
-				default:
-					sev = notifications.SeverityInfo
-				}
-			}
-			title := "Alert " + action.Type + ": " + action.Alert.Labels["alertname"]
-			h.NotifService.Emit(r.Context(), notifications.Notification{
-				Source:       notifications.SourceAlert,
-				Severity:     sev,
-				Title:        title,
-				Message:      action.Alert.Annotations["description"],
-				ResourceKind: action.Alert.Labels["kind"],
-				ResourceNS:   action.Alert.Labels["namespace"],
-				ResourceName: action.Alert.Labels["name"],
-			})
+			h.NotifService.Emit(r.Context(), alertNotification(action))
 		}
 	}
 
 	httputil.WriteData(w, map[string]int{"accepted": len(actions)})
+}
+
+// alertNotification builds the notification for one processed webhook alert.
+//
+// ResourceUID carries the Alertmanager fingerprint (a hash of the alert's
+// full label set; HandleWebhook rejects alerts without one). Alerts have no
+// Kubernetes UID, and the fingerprint is their stable identity: it keeps two
+// alerts that share alertname and kind/namespace/name labels but differ in
+// any other label (cluster, instance, ...) from suppressing each other in
+// notification dedup. ClusterID stays empty: the webhook is ingested as this
+// deployment's local cluster, and empty is the local identity.
+func alertNotification(action AlertAction) notifications.Notification {
+	sev := notifications.SeverityWarning
+	if s, ok := action.Alert.Labels["severity"]; ok {
+		switch s {
+		case "critical":
+			sev = notifications.SeverityCritical
+		case "warning":
+			sev = notifications.SeverityWarning
+		default:
+			sev = notifications.SeverityInfo
+		}
+	}
+	return notifications.Notification{
+		Source:       notifications.SourceAlert,
+		Severity:     sev,
+		Title:        "Alert " + action.Type + ": " + action.Alert.Labels["alertname"],
+		Message:      action.Alert.Annotations["description"],
+		ResourceKind: action.Alert.Labels["kind"],
+		ResourceNS:   action.Alert.Labels["namespace"],
+		ResourceName: action.Alert.Labels["name"],
+		ResourceUID:  action.Alert.Fingerprint,
+	}
 }
 
 // HandleListActive returns currently firing alerts.
