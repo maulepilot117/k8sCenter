@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -472,5 +473,114 @@ func TestNextDigestTimeBoundary(t *testing.T) {
 	next := nextDigestTime(exactly)
 	if next.Day() != 11 {
 		t.Errorf("nextDigestTime at exactly 08:00 should advance to tomorrow, got day %d", next.Day())
+	}
+}
+
+// --- Release F U34a: SourceVelero digest suppression ------------------------
+
+func TestSourceVelero_StillValid(t *testing.T) {
+	if !SourceVelero.Valid() {
+		t.Fatal("SourceVelero must remain a Valid() source: saved rules filtering on it would otherwise be rejected")
+	}
+	if SourceVelero != "velero" {
+		t.Fatalf("SourceVelero wire value changed to %q", SourceVelero)
+	}
+}
+
+func TestSanitizeForEmailDigest_SuppressesVeleroResourceFields(t *testing.T) {
+	notifs := []Notification{{
+		Source:       SourceVelero,
+		Severity:     SeverityWarning,
+		Title:        "Backup overdue",
+		Message:      "No successful backup inside the configured freshness window.",
+		ResourceKind: "backup",
+		ResourceNS:   "tenant-a",
+		ResourceName: "daily",
+		ResourceUID:  "uid-daily",
+		ClusterID:    "local",
+	}}
+	sanitizeForEmailDigest(notifs)
+
+	got := notifs[0]
+	if got.ResourceKind != "" || got.ResourceNS != "" || got.ResourceName != "" || got.ResourceUID != "" {
+		t.Errorf("velero row must have resource identity stripped for the email digest, got %+v", got)
+	}
+	// Everything that is not resource identity survives.
+	if got.Source != SourceVelero || got.Severity != SeverityWarning || got.Title != "Backup overdue" ||
+		got.Message != "No successful backup inside the configured freshness window." || got.ClusterID != "local" {
+		t.Errorf("non-identity fields must be untouched, got %+v", got)
+	}
+
+	html, err := renderDigestEmail(notifs)
+	if err != nil {
+		t.Fatalf("renderDigestEmail: %v", err)
+	}
+	for _, leak := range []string{"tenant-a", "daily", "uid-daily"} {
+		if strings.Contains(html, leak) {
+			t.Errorf("velero digest must not leak %q: %s", leak, html)
+		}
+	}
+}
+
+// TestSanitizeForEmailDigest_ExistingVeleroCacheNotificationUnaffected pins
+// the one Velero emit that predates Release F — velero.Handler.afterWrite —
+// whose notification carries no resource fields. Adding SourceVelero to the
+// suppression map must therefore be a no-op for it (plan risk R-4), proven
+// here rather than argued.
+func TestSanitizeForEmailDigest_ExistingVeleroCacheNotificationUnaffected(t *testing.T) {
+	afterWrite := Notification{
+		Source:    SourceVelero,
+		Severity:  SeverityInfo,
+		Title:     "Velero data updated",
+		Message:   "Backup or restore data has changed",
+		ClusterID: "prod-east",
+	}
+	notifs := []Notification{afterWrite}
+	sanitizeForEmailDigest(notifs)
+	if !reflect.DeepEqual(notifs[0], afterWrite) {
+		t.Errorf("afterWrite notification changed by sanitize:\n got %+v\nwant %+v", notifs[0], afterWrite)
+	}
+
+	html, err := renderDigestEmail(notifs)
+	if err != nil {
+		t.Fatalf("renderDigestEmail: %v", err)
+	}
+	if !strings.Contains(html, "Velero data updated") || !strings.Contains(html, "Backup or restore data has changed") {
+		t.Errorf("digest must still render the afterWrite title and message: %s", html)
+	}
+}
+
+func TestSanitizeForEmailDigest_OtherSourcesUnaffected(t *testing.T) {
+	// Every source except the two suppressed ones keeps its resource identity.
+	others := []Source{
+		SourceAlert, SourcePolicy, SourceGitOps, SourceDiagnostic, SourceScan,
+		SourceCluster, SourceAudit, SourceLimits, SourceCertManager,
+	}
+	var notifs []Notification
+	for _, src := range others {
+		notifs = append(notifs, Notification{
+			Source:       src,
+			Severity:     SeverityCritical,
+			Title:        "title " + string(src),
+			ResourceKind: "kind-" + string(src),
+			ResourceNS:   "ns-" + string(src),
+			ResourceName: "name-" + string(src),
+			ResourceUID:  "uid-" + string(src),
+		})
+	}
+	before := append([]Notification(nil), notifs...)
+
+	sanitizeForEmailDigest(notifs)
+
+	for i, src := range others {
+		if !reflect.DeepEqual(notifs[i], before[i]) {
+			t.Errorf("%s: resource fields must survive the digest:\n got %+v\nwant %+v", src, notifs[i], before[i])
+		}
+	}
+
+	// The map holds exactly the two cross-tenant sources and nothing else.
+	want := map[Source]bool{SourceExternalSecrets: true, SourceVelero: true}
+	if !reflect.DeepEqual(suppressResourceFieldsBySource, want) {
+		t.Errorf("suppressResourceFieldsBySource = %v, want %v", suppressResourceFieldsBySource, want)
 	}
 }
