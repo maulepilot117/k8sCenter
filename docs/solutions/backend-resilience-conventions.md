@@ -223,6 +223,7 @@ doesn't apply.
 | #374 | recovery | certmanager poller + errgroup panic recovery (ESO parity) |
 | #375 | recovery | extracted `internal/recoverutil` (Go/Tick/Safe) + swept the gap across the backend |
 | #377 | fuzz | closed the arc: `ClientFactory` → `kubernetes.Interface` seam + `FuzzSecretPipeline` (`backend/internal/k8s/resources/secret_pipeline_fuzz_test.go`) — full HTTP-handler Secret fuzzing under oracles A and D |
+| #549 | fuzz | Release F U33: `FuzzAssuranceEvaluate` (`backend/internal/velero/assurance_fuzz_test.go`) — no-panic oracle plus a controller-text-confined-to-`Detail` oracle; **found + guarded a robfig/cron v3.0.1 panic** on a bare `CRON_TZ=`/`TZ=` prefix with no spec, now rejected by `parseCron` before robfig sees it |
 
 (#376 is this document itself, so it is not listed as a source.)
 

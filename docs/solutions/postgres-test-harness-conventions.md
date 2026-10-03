@@ -270,10 +270,52 @@ because both *look* like exceptions and neither is:
   (`docs/plans/2026-09-10-release-f-backup-assurance-impl.md:273-280`). Per-cluster, not
   global; a unique test cluster id isolates it like any other cluster-keyed table.
 
+**Release F's four tables (migration `000022_create_backup_assurance.up.sql`) are now real
+and none is a singleton.** Scope each by a unique test cluster id (`testOwnerID(t)`) the
+way the `eso_bulk_refresh_jobs` example below does:
+
+| Table | Uniqueness | Scoping key for tests |
+|-------|-----------|-----------------------|
+| `backup_assurance_policies` | unique index on `(cluster_id, scope_kind, scope_namespace, scope_name)` | cluster id |
+| `backup_assurance_exceptions` | partial unique index on `(cluster_id, subject_kind, subject_namespace, subject_name, subject_uid, condition) WHERE state = 'open'`; FK to `policies` `ON DELETE CASCADE` | cluster id |
+| `backup_assurance_deliveries` | unique index on `(exception_id, transition)`; FK to `exceptions` `ON DELETE CASCADE` | derived-key child: keyed on an exception the test created |
+| `backup_assurance_collector_lease` | `cluster_id TEXT PRIMARY KEY` | cluster id |
+
+Residue is harmless for the same reason as everywhere else: every uniqueness constraint
+either leads with `cluster_id` or hangs off a row the test created. The cascades mean a test
+that wants to clean up can delete its own policy rows and the exceptions and deliveries go
+with them, but the harness still registers no teardown. The open-row partial index and the
+`(exception_id, transition)` index are the correctness guarantees under test, so exercise
+them against the real database, never a fake.
+
 `backend/internal/store/migrations/NOTES.txt:86-115` carries the same rule from the migrations side, ending with
 the forward-looking instruction: *"If you add a new table, prefer giving it an owner or
 cluster column so it falls under the normal unique-id isolation rule rather than becoming a
 second exception."*
+
+### 6. Wider or instrumented pools: `testDBWithMaxConns` and `testDBWithOptions`
+
+`testDB` hands each test a private pool capped at `testDBDefaultMaxConns` (4,
+`testdb_test.go:149-153`); connections open lazily, so idle tests cost nothing and parallel
+suites stay under PostgreSQL's default `max_connections`. Two sibling helpers exist for the
+tests that need something else. Never build a `pgxpool` from the env var directly in a
+suite: these helpers share `testDB`'s gate, its once-per-process migration pass and its URL
+source, so the env-gating and hard-fail-in-CI rules of conventions 1 and 2 apply unchanged.
+
+- **`testDBWithMaxConns(t, maxConns int32)`** (`testdb_test.go:157`) is `testDB` with a
+  different pool ceiling. Use it when the point of the test is that many transactions are in
+  flight at once, such as competing-replica races on the Release F open-row index or the
+  collector lease, where the default ceiling of 4 would serialize most of them. It is a
+  thin wrapper that calls `testDBWithOptions(t, maxConns, nil)`.
+- **`testDBWithOptions(t, maxConns int32, configure func(*pgxpool.Config))`**
+  (`testdb_test.go:167`) is the single place a test pool is built (`testDB` and
+  `testDBWithMaxConns` both funnel into it). It parses the connection string, sets
+  `MaxConns` to `maxConns` and `MinConns` to 0, then calls `configure` (when non-nil) on the
+  parsed config before the pool opens, for example to install a `pgx.QueryTracer` that
+  makes a race deterministic. `configure` may adjust the pool config but must not change the
+  connection string: the gate and the URL source stay the harness's. The pool is closed in
+  `t.Cleanup(pool.Close)` like every other, and, as with `testDB`, nothing is truncated or
+  dropped.
 
 ---
 
