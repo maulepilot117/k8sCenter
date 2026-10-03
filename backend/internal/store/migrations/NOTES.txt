@@ -309,3 +309,45 @@ Rollback:
   The down migration drops the column and cannot fail on existing data; the
   only loss is the recorded UIDs. Roll the binary back first or together:
   the new binary's INSERT names resource_uid and fails once it is gone.
+
+------------------------------------------------------------------------
+000022_create_backup_assurance (Release F backup assurance, U32, 2026-10-03)
+------------------------------------------------------------------------
+
+Creates four new tables for the backup assurance state machine (KTD11):
+backup_assurance_policies, backup_assurance_exceptions,
+backup_assurance_deliveries and backup_assurance_collector_lease. Purely
+additive: no existing table, column, index or row is touched.
+
+Operator action required:
+  None on the way up. The migration creates no policy rows, and no policy
+  means no evaluation: installing or upgrading never starts raising backup
+  exceptions until an administrator configures a policy.
+
+Retention:
+  Resolved exceptions become eligible for pruning 90 days after they
+  resolve (store.BackupAssuranceExceptionRetention), matching the Notification
+  Center's 90-day feed retention. Open exceptions are never pruned, however
+  old they are: an exception stays open for as long as its condition holds.
+
+Scope:
+  The migration touches no Velero CRD and no nc_* table. The Notification
+  Center and the existing Velero (/backup) pages are unaffected in either
+  direction.
+
+Deleting a policy discards its history:
+  backup_assurance_exceptions cascades from backup_assurance_policies, and
+  backup_assurance_deliveries cascades from backup_assurance_exceptions.
+  Deleting a policy through the API therefore intentionally removes every
+  exception (open and resolved) recorded under it, together with their
+  delivery records. Export anything you need to keep before deleting.
+
+Rollback:
+  The down migration drops all four tables and cannot fail on existing
+  data, but it DESTROYS open-exception state. The collector keeps no
+  in-memory copy, so on the next start after a rollback-and-reapply it
+  re-opens every condition that is still true and notifies each one exactly
+  once more. Expect one repeat notification per still-failing backup
+  subject; that is the correct behaviour, not a defect. Roll the binary back
+  first or together: a binary that includes the assurance store fails every
+  assurance read and write once the tables are gone.
