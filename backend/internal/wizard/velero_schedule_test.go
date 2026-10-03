@@ -6,7 +6,7 @@ import "testing"
 // on a bare time-zone prefix: Validate must return a schedule field error,
 // never panic. Removing the guard in parseScheduleCron makes this test panic.
 func TestVeleroScheduleInputValidateCronGuard(t *testing.T) {
-	for _, sched := range []string{"CRON_TZ=UTC", "TZ=UTC", "CRON_TZ=", "TZ="} {
+	for _, sched := range []string{"CRON_TZ=UTC", "TZ=UTC", "CRON_TZ=", "TZ=", "TZ=UTC\t"} {
 		t.Run(sched, func(t *testing.T) {
 			in := &VeleroScheduleInput{Name: "nightly", Schedule: sched}
 			errs := in.Validate()

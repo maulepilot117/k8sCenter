@@ -296,7 +296,7 @@ second exception."*
 ### 6. Wider or instrumented pools: `testDBWithMaxConns` and `testDBWithOptions`
 
 `testDB` hands each test a private pool capped at `testDBDefaultMaxConns` (4,
-`testdb_test.go:149-153`); connections open lazily, so idle tests cost nothing and parallel
+`testdb_test.go:146-150`); connections open lazily, so idle tests cost nothing and parallel
 suites stay under PostgreSQL's default `max_connections`. Two sibling helpers exist for the
 tests that need something else. Never build a `pgxpool` from the env var directly in a
 suite: these helpers share `testDB`'s gate, its once-per-process migration pass and its URL
