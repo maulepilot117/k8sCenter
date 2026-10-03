@@ -79,11 +79,18 @@ type webhookPayload struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
+// eventBroadcaster is the one hub operation the service uses. *websocket.Hub
+// satisfies it; tests substitute a recorder so the exact broadcast a
+// notification produces can be asserted rather than recomputed.
+type eventBroadcaster interface {
+	HandleEvent(eventType, kind, namespace, name string, obj any)
+}
+
 // NotificationService is the core notification center.
 // It persists notifications, broadcasts via WebSocket, and dispatches to external channels.
 type NotificationService struct {
 	store       *Store
-	hub         *websocket.Hub
+	hub         eventBroadcaster
 	emailSender EmailSender
 	fcm         *FCMClient
 	queue       chan Notification
@@ -584,9 +591,11 @@ var suppressResourceFieldsBySource = map[Source]bool{
 	SourceExternalSecrets: true,
 	// Release F: backup-assurance exceptions are collected with the platform
 	// ServiceAccount and cover namespaces the digest recipient may not read.
-	// Every Velero notification inherits the suppression; the pre-existing
-	// velero.Handler.afterWrite notification carries no resource fields, so
-	// for it this is a no-op (pinned by
+	// This entry covers the email digest only; a Velero emitter that sets
+	// resource fields must also set SuppressResourceFields: true so Slack,
+	// webhook and mobile push strip them at send time (see the rule above).
+	// The pre-existing velero.Handler.afterWrite notification carries no
+	// resource fields, so for it this entry is a no-op (pinned by
 	// TestSanitizeForEmailDigest_ExistingVeleroCacheNotificationUnaffected).
 	SourceVelero: true,
 }

@@ -19,6 +19,7 @@ package notifications
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 
@@ -147,13 +149,96 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func newTestService(st *Store) *NotificationService {
+// broadcastCall is one hub.HandleEvent invocation as the service made it.
+type broadcastCall struct {
+	eventType, kind, namespace, name string
+	payload                          string
+}
+
+// recordingBroadcaster stands in for *websocket.Hub so a test can assert the
+// broadcast a notification actually produced, not a recomputation of it.
+type recordingBroadcaster struct {
+	mu    sync.Mutex
+	calls []broadcastCall
+}
+
+func (r *recordingBroadcaster) HandleEvent(eventType, kind, namespace, name string, obj any) {
+	raw, ok := obj.(json.RawMessage)
+	if !ok {
+		panic(fmt.Sprintf("broadcast payload is %T, want json.RawMessage", obj))
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, broadcastCall{eventType: eventType, kind: kind, namespace: namespace, name: name, payload: string(raw)})
+}
+
+// take returns the recorded calls and clears them.
+func (r *recordingBroadcaster) take() []broadcastCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.calls
+	r.calls = nil
+	return out
+}
+
+// newTestService builds a service over st whose hub is a recorder. A real
+// *websocket.Hub satisfies the same seam in production (NewService).
+func newTestService(st *Store) (*NotificationService, *recordingBroadcaster) {
 	logger := testLogger()
-	return NewService(st, websocket.NewHub(logger, nil), nil, nil, logger)
+	svc := NewService(st, websocket.NewHub(logger, nil), nil, nil, logger)
+	rec := &recordingBroadcaster{}
+	svc.hub = rec
+	return svc, rec
+}
+
+// assertBroadcast checks that exactly one feed event was broadcast for the
+// persisted row id, with the stripped {id, severity, source, title} payload.
+func assertBroadcast(t *testing.T, rec *recordingBroadcaster, id string, n Notification) {
+	t.Helper()
+	calls := rec.take()
+	if len(calls) != 1 {
+		t.Fatalf("broadcast calls = %d, want 1: %+v", len(calls), calls)
+	}
+	want := broadcastCall{
+		eventType: "ADDED",
+		kind:      "notifications",
+		namespace: "",
+		name:      id,
+		payload:   fmt.Sprintf(`{"id":%q,"severity":%q,"source":%q,"title":%q}`, id, n.Severity, n.Source, n.Title),
+	}
+	if calls[0] != want {
+		t.Errorf("broadcast call differs:\n got %+v\nwant %+v", calls[0], want)
+	}
+}
+
+// assertNoBroadcast checks that nothing reached the hub.
+func assertNoBroadcast(t *testing.T, rec *recordingBroadcaster) {
+	t.Helper()
+	if calls := rec.take(); len(calls) != 0 {
+		t.Errorf("expected no broadcast, got %+v", calls)
+	}
+}
+
+// unseenRow returns the one row whose ID is not in seen and marks it seen.
+// Two inserts in quick succession can share created_at, so "newest first"
+// is not a safe way to find the row a given call produced.
+func unseenRow(t *testing.T, rows []Notification, seen map[string]bool) Notification {
+	t.Helper()
+	var out []Notification
+	for _, r := range rows {
+		if !seen[r.ID] {
+			out = append(out, r)
+		}
+	}
+	if len(out) != 1 {
+		t.Fatalf("unseen rows = %d, want 1: %+v", len(out), out)
+	}
+	seen[out[0].ID] = true
+	return out[0]
 }
 
 func TestEmitSync_ContextCancellationSurfacesError(t *testing.T) {
-	svc := newTestService(unreachableStore(t))
+	svc, rec := newTestService(unreachableStore(t))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -170,10 +255,11 @@ func TestEmitSync_ContextCancellationSurfacesError(t *testing.T) {
 	if len(svc.queue) != 0 {
 		t.Errorf("nothing may be enqueued for dispatch on failure, queue len = %d", len(svc.queue))
 	}
+	assertNoBroadcast(t, rec)
 }
 
 func TestEmitSync_StoreUnavailableReturnsError(t *testing.T) {
-	svc := newTestService(unreachableStore(t))
+	svc, rec := newTestService(unreachableStore(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -189,6 +275,7 @@ func TestEmitSync_StoreUnavailableReturnsError(t *testing.T) {
 	if len(svc.queue) != 0 {
 		t.Errorf("nothing may be enqueued for dispatch on failure, queue len = %d", len(svc.queue))
 	}
+	assertNoBroadcast(t, rec)
 }
 
 // --- PostgreSQL-backed ------------------------------------------------------
@@ -262,7 +349,7 @@ func takeQueued(t *testing.T, svc *NotificationService) Notification {
 
 func TestEmitSync_ReturnsEmitPersistedOnFirstEmit(t *testing.T) {
 	st := testNotifStore(t)
-	svc := newTestService(st)
+	svc, rec := newTestService(st)
 	n := emitNotification(t, SourceVelero)
 
 	res, err := svc.EmitSync(t.Context(), n)
@@ -277,6 +364,7 @@ func TestEmitSync_ReturnsEmitPersistedOnFirstEmit(t *testing.T) {
 		t.Fatalf("persisted rows = %d, want 1", len(rows))
 	}
 	assertRowMatches(t, rows[0], n)
+	assertBroadcast(t, rec, rows[0].ID, n)
 	if q := takeQueued(t, svc); !reflect.DeepEqual(q, n) {
 		t.Errorf("queued item differs from input:\n got %+v\nwant %+v", q, n)
 	}
@@ -284,13 +372,14 @@ func TestEmitSync_ReturnsEmitPersistedOnFirstEmit(t *testing.T) {
 
 func TestEmitSync_ReturnsEmitDedupedInsideWindow(t *testing.T) {
 	st := testNotifStore(t)
-	svc := newTestService(st)
+	svc, rec := newTestService(st)
 	n := emitNotification(t, SourceVelero)
 
 	if res, err := svc.EmitSync(t.Context(), n); err != nil || res != EmitPersisted {
 		t.Fatalf("first EmitSync = (%v, %v), want (EmitPersisted, nil)", res, err)
 	}
 	takeQueued(t, svc)
+	rec.take()
 
 	res, err := svc.EmitSync(t.Context(), n)
 	if err != nil {
@@ -309,6 +398,7 @@ func TestEmitSync_ReturnsEmitDedupedInsideWindow(t *testing.T) {
 	if len(svc.queue) != 0 {
 		t.Errorf("a deduped emit must not enqueue dispatch, queue len = %d", len(svc.queue))
 	}
+	assertNoBroadcast(t, rec)
 
 	// A different UID is a different resource (migration 000021): not a dup.
 	recreated := n
@@ -318,12 +408,16 @@ func TestEmitSync_ReturnsEmitDedupedInsideWindow(t *testing.T) {
 		t.Fatalf("EmitSync for recreated UID = (%v, %v), want (EmitPersisted, nil)", res, err)
 	}
 	takeQueued(t, svc)
+	if calls := rec.take(); len(calls) != 1 {
+		t.Errorf("recreated UID must broadcast once, got %+v", calls)
+	}
 }
 
 func TestEmitSync_ReturnsEmitSkippedForAuditSource(t *testing.T) {
 	st := testNotifStore(t)
-	svc := newTestService(st)
+	svc, rec := newTestService(st)
 	n := emitNotification(t, SourceAudit)
+	seen := map[string]bool{}
 
 	for i := 1; i <= 2; i++ {
 		res, err := svc.EmitSync(t.Context(), n)
@@ -335,9 +429,11 @@ func TestEmitSync_ReturnsEmitSkippedForAuditSource(t *testing.T) {
 		}
 		// Audit is persisted and broadcast but never deduped and never
 		// externally dispatched — the pre-existing short circuit.
-		if rows := rowsFor(t, st, n); len(rows) != i {
-			t.Errorf("after EmitSync #%d persisted rows = %d, want %d (audit is never deduped)", i, len(rows), i)
+		rows := rowsFor(t, st, n)
+		if len(rows) != i {
+			t.Fatalf("after EmitSync #%d persisted rows = %d, want %d (audit is never deduped)", i, len(rows), i)
 		}
+		assertBroadcast(t, rec, unseenRow(t, rows, seen).ID, n)
 		if len(svc.queue) != 0 {
 			t.Errorf("audit must never be enqueued for external dispatch, queue len = %d", len(svc.queue))
 		}
@@ -346,7 +442,7 @@ func TestEmitSync_ReturnsEmitSkippedForAuditSource(t *testing.T) {
 
 func TestEmitSync_QueueFullStillReportsPersisted(t *testing.T) {
 	st := testNotifStore(t)
-	svc := newTestService(st)
+	svc, rec := newTestService(st)
 	// A one-slot queue already holding an item: the external leg is dropped.
 	svc.queue = make(chan Notification, 1)
 	occupant := Notification{Source: SourceAlert, Title: "occupant"}
@@ -360,9 +456,12 @@ func TestEmitSync_QueueFullStillReportsPersisted(t *testing.T) {
 	if res != EmitPersisted {
 		t.Fatalf("result = %v, want EmitPersisted (persisted is not the same as dispatched)", res)
 	}
-	if rows := rowsFor(t, st, n); len(rows) != 1 {
-		t.Errorf("persisted rows = %d, want 1", len(rows))
+	rows := rowsFor(t, st, n)
+	if len(rows) != 1 {
+		t.Fatalf("persisted rows = %d, want 1", len(rows))
 	}
+	// The feed and the WebSocket leg still happen; only the external leg drops.
+	assertBroadcast(t, rec, rows[0].ID, n)
 	if got := takeQueued(t, svc); !reflect.DeepEqual(got, occupant) {
 		t.Errorf("queue occupant was displaced: got %+v", got)
 	}
@@ -373,18 +472,21 @@ func TestEmitSync_QueueFullStillReportsPersisted(t *testing.T) {
 // pins, as golden values, the pre-change behaviour of Emit:
 //
 //   - the persisted feed row is exactly the input (ID/CreatedAt generated);
-//   - the WebSocket payload is the stripped {id, severity, source, title}
-//     object, with keys in json.Marshal's sorted order;
+//   - the hub receives exactly one ("ADDED", "notifications", "", <row id>)
+//     event whose payload is the stripped {id, severity, source, title}
+//     object, with keys in json.Marshal's sorted order — observed through
+//     the broadcaster seam, not recomputed;
 //   - the item enqueued for channel dispatch is the pre-persist copy of the
 //     input (no ID, SuppressResourceFields retained) — except audit, which
 //     is never enqueued;
-//   - a repeat inside the dedup window persists nothing and enqueues nothing
-//     — except audit, which is persisted again every time.
+//   - a repeat inside the dedup window persists nothing, broadcasts nothing
+//     and enqueues nothing — except audit, which is persisted and broadcast
+//     again every time.
 func TestEmit_DelegatesToEmitSyncWithIdenticalObservableBehaviour(t *testing.T) {
 	st := testNotifStore(t)
 	for _, src := range allSources {
 		t.Run(string(src), func(t *testing.T) {
-			svc := newTestService(st)
+			svc, rec := newTestService(st)
 			n := emitNotification(t, src)
 			isAudit := src == SourceAudit
 
@@ -395,13 +497,8 @@ func TestEmit_DelegatesToEmitSyncWithIdenticalObservableBehaviour(t *testing.T) 
 				t.Fatalf("after first Emit persisted rows = %d, want 1", len(rows))
 			}
 			assertRowMatches(t, rows[0], n)
-
-			persisted := n
-			persisted.ID = rows[0].ID
-			wantWS := fmt.Sprintf(`{"id":%q,"severity":"warning","source":%q,"title":%q}`, rows[0].ID, src, n.Title)
-			if got := string(broadcastPayload(persisted)); got != wantWS {
-				t.Errorf("WebSocket payload:\n got %s\nwant %s", got, wantWS)
-			}
+			seen := map[string]bool{rows[0].ID: true}
+			assertBroadcast(t, rec, rows[0].ID, n)
 
 			if isAudit {
 				if len(svc.queue) != 0 {
@@ -413,12 +510,17 @@ func TestEmit_DelegatesToEmitSyncWithIdenticalObservableBehaviour(t *testing.T) 
 
 			svc.Emit(t.Context(), n)
 
-			wantRows := 1
+			rows = rowsFor(t, st, n)
 			if isAudit {
-				wantRows = 2
-			}
-			if rows := rowsFor(t, st, n); len(rows) != wantRows {
-				t.Errorf("after repeat Emit persisted rows = %d, want %d", len(rows), wantRows)
+				if len(rows) != 2 {
+					t.Fatalf("after repeat Emit persisted rows = %d, want 2 (audit is never deduped)", len(rows))
+				}
+				assertBroadcast(t, rec, unseenRow(t, rows, seen).ID, n)
+			} else {
+				if len(rows) != 1 {
+					t.Errorf("after repeat Emit persisted rows = %d, want 1", len(rows))
+				}
+				assertNoBroadcast(t, rec)
 			}
 			if len(svc.queue) != 0 {
 				t.Errorf("repeat Emit must not enqueue, queue len = %d", len(svc.queue))
