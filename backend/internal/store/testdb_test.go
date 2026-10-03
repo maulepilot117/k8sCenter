@@ -140,6 +140,32 @@ func testDatabaseURL(lookup func(string) (string, bool)) string {
 // this file.
 func testDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	return testDBWithMaxConns(t, testDBDefaultMaxConns)
+}
+
+// testDBDefaultMaxConns is the per-test pool ceiling testDB hands out:
+// connections are opened lazily, so idle tests cost nothing, and a low
+// ceiling keeps parallel suites well under PostgreSQL's default
+// max_connections.
+const testDBDefaultMaxConns = 4
+
+// testDBWithMaxConns is testDB with a wider pool, for a test whose whole point
+// is that many transactions are in flight at once (competing-replica races):
+// the default ceiling would serialize most of them. It is the harness's only
+// other pool-construction path and shares testDB's gate, migration pass and
+// URL source, so a suite never builds its own pgxpool from an env var.
+func testDBWithMaxConns(t *testing.T, maxConns int32) *pgxpool.Pool {
+	t.Helper()
+	return testDBWithOptions(t, maxConns, nil)
+}
+
+// testDBWithOptions is the one place a test pool is built. configure, when
+// non-nil, may adjust the parsed pool config before the pool opens (for
+// example to install a pgx.QueryTracer that makes a race deterministic). It
+// may not change the connection string: the gate and the URL source stay the
+// harness's.
+func testDBWithOptions(t *testing.T, maxConns int32, configure func(*pgxpool.Config)) *pgxpool.Pool {
+	t.Helper()
 
 	connString := testDatabaseURL(os.LookupEnv)
 	if connString == "" {
@@ -175,11 +201,11 @@ func testDB(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("parsing %s: %v", testDatabaseURLEnv, err)
 	}
-	// Small per-test pool: connections are opened lazily on first Acquire,
-	// so idle tests cost nothing, and a low ceiling keeps parallel suites
-	// well under PostgreSQL's default max_connections.
-	config.MaxConns = 4
+	config.MaxConns = maxConns
 	config.MinConns = 0
+	if configure != nil {
+		configure(config)
+	}
 
 	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {

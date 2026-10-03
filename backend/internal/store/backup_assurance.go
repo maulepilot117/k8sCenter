@@ -18,6 +18,7 @@ package store
 // projecting it before it reaches a user is the handler's job.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -450,21 +451,37 @@ const assuranceExceptionColumns = `
 	subject_uid, condition, state, severity, opened_at, last_observed_at,
 	resolved_at, observation_count, last_success_at, detail`
 
+// assuranceExceptionScan is the single owner of the destination list that
+// matches assuranceExceptionColumns. Every scanner of an exception row (here
+// and the delivery-job join in backup_assurance_delivery.go) goes through it,
+// so a column added to the projection is added to exactly one Scan list.
+type assuranceExceptionScan struct {
+	e                      BackupAssuranceException
+	subjectKind, condition string
+}
+
+// dests returns the Scan destinations in assuranceExceptionColumns order.
+func (s *assuranceExceptionScan) dests() []any {
+	return []any{
+		&s.e.ID, &s.e.ClusterID, &s.e.PolicyID, &s.subjectKind, &s.e.SubjectNamespace, &s.e.SubjectName,
+		&s.e.SubjectUID, &s.condition, &s.e.State, &s.e.Severity, &s.e.OpenedAt, &s.e.LastObservedAt,
+		&s.e.ResolvedAt, &s.e.ObservationCount, &s.e.LastSuccessAt, &s.e.Detail,
+	}
+}
+
+// result converts the scanned enum strings and returns the exception.
+func (s *assuranceExceptionScan) result() BackupAssuranceException {
+	s.e.SubjectKind = AssuranceScopeKind(s.subjectKind)
+	s.e.Condition = AssuranceCondition(s.condition)
+	return s.e
+}
+
 func scanAssuranceException(row pgx.Row) (BackupAssuranceException, error) {
-	var (
-		e                      BackupAssuranceException
-		subjectKind, condition string
-	)
-	err := row.Scan(
-		&e.ID, &e.ClusterID, &e.PolicyID, &subjectKind, &e.SubjectNamespace, &e.SubjectName,
-		&e.SubjectUID, &condition, &e.State, &e.Severity, &e.OpenedAt, &e.LastObservedAt,
-		&e.ResolvedAt, &e.ObservationCount, &e.LastSuccessAt, &e.Detail)
-	if err != nil {
+	var s assuranceExceptionScan
+	if err := row.Scan(s.dests()...); err != nil {
 		return BackupAssuranceException{}, err
 	}
-	e.SubjectKind = AssuranceScopeKind(subjectKind)
-	e.Condition = AssuranceCondition(condition)
-	return e, nil
+	return s.result(), nil
 }
 
 func collectAssuranceExceptions(rows pgx.Rows) ([]BackupAssuranceException, error) {
@@ -548,9 +565,10 @@ func (s *BackupAssuranceStore) ListExceptions(ctx context.Context, clusterID str
 // it bumps observation_count and refreshes last_observed_at, severity,
 // last_success_at and detail. It never reopens a resolved row; observing a
 // row that is missing or resolved returns ErrAssuranceExceptionNotOpen.
-// An empty detail is stored as '{}'. A nil lastSuccessAt keeps the stored
-// value: "no success seen in this observation" never erases a success an
-// earlier observation recorded.
+// An empty detail is stored as '{}'; a non-empty detail must be a JSON
+// object, because resolution merges resolutionReason into it. A nil
+// lastSuccessAt keeps the stored value: "no success seen in this
+// observation" never erases a success an earlier observation recorded.
 //
 // Observations are monotonic in observedAt. Two replicas can observe the
 // same open exception concurrently; an observation older than the one
@@ -570,8 +588,8 @@ func (s *BackupAssuranceStore) ObserveException(
 	}
 	if len(detail) == 0 {
 		detail = []byte(`{}`)
-	} else if !json.Valid(detail) {
-		return fmt.Errorf("%w: detail is not valid JSON", ErrAssuranceObservationInvalid)
+	} else if !isJSONObject(detail) {
+		return fmt.Errorf("%w: detail must be a JSON object", ErrAssuranceObservationInvalid)
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE backup_assurance_exceptions
@@ -599,6 +617,15 @@ func (s *BackupAssuranceStore) ObserveException(
 	default:
 		return nil // stale observation of a still-open row: dropped
 	}
+}
+
+// isJSONObject reports whether b is valid JSON whose top-level value is an
+// object. Exception detail must be an object so that resolution can merge
+// resolutionReason into it; an array or scalar would be stored fine and then
+// make every later jsonb merge fail.
+func isJSONObject(b []byte) bool {
+	t := bytes.TrimSpace(b)
+	return len(t) > 0 && t[0] == '{' && json.Valid(t)
 }
 
 // PruneResolved deletes resolved exceptions whose resolved_at is older than
