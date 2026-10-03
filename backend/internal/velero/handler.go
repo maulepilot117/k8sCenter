@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/robfig/cron/v3"
 	"golang.org/x/sync/singleflight"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -786,7 +785,7 @@ func (h *Handler) HandleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate cron expression
-	if _, err := cron.ParseStandard(input.Schedule); err != nil {
+	if _, err := parseCron(input.Schedule); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid cron expression", err.Error())
 		return
 	}
@@ -889,7 +888,7 @@ func (h *Handler) HandleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		spec["paused"] = *input.Paused
 	}
 	if input.Schedule != "" {
-		if _, err := cron.ParseStandard(input.Schedule); err != nil {
+		if _, err := parseCron(input.Schedule); err != nil {
 			httputil.WriteError(w, http.StatusBadRequest, "invalid cron expression", err.Error())
 			return
 		}
@@ -1259,6 +1258,7 @@ func parseBackup(obj *unstructured.Unstructured) Backup {
 	backup := Backup{
 		Name:      obj.GetName(),
 		Namespace: obj.GetNamespace(),
+		UID:       string(obj.GetUID()),
 		Labels:    obj.GetLabels(),
 		created:   obj.GetCreationTimestamp().Time,
 	}
@@ -1334,6 +1334,8 @@ func parseSchedule(obj *unstructured.Unstructured) Schedule {
 	schedule := Schedule{
 		Name:      obj.GetName(),
 		Namespace: obj.GetNamespace(),
+		UID:       string(obj.GetUID()),
+		created:   obj.GetCreationTimestamp().Time,
 	}
 
 	// Spec fields
@@ -1436,15 +1438,13 @@ func getTime(m map[string]any, key string) *time.Time {
 	return &t
 }
 
+// computeNextRun is a display helper for the schedules page: it clamps the
+// start of its walk to now, so it can never report a missed run. Backup
+// assurance uses ExpectedRunsSince (assurance.go) instead.
 func computeNextRun(cronExpr string, lastRun *time.Time) *time.Time {
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	sched, err := parser.Parse(cronExpr)
+	sched, err := parseCron(cronExpr)
 	if err != nil {
-		// Try standard parser
-		sched, err = cron.ParseStandard(cronExpr)
-		if err != nil {
-			return nil
-		}
+		return nil
 	}
 
 	var from time.Time
