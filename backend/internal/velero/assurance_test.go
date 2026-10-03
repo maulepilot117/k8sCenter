@@ -343,12 +343,34 @@ func TestEvaluate_NotOverdueInsideGrace(t *testing.T) {
 		[]store.BackupAssurancePolicy{p}, evalNow)
 	assertConditions(t, got)
 
-	// The expected run's own grace: today's 03:00 run is missed, but only
+	// The expected run's own grace: a weekly (Monday 03:00) schedule whose
+	// last success was last Monday. This Monday's run is missed, but only
 	// by 30 minutes when now is 03:30, so the subject is not yet overdue
-	// even though the max-age floor is long exceeded.
-	got = Evaluate(dailyObs(dailyRun("daily-1", "Completed", "2026-09-08T03:00:00Z", "2026-09-08T03:05:00Z")),
+	// even though the max-age floor is long exceeded; an hour later it is.
+	s := dailySchedule()
+	s.Schedule = "0 3 * * 1"
+	weekly := observe([]Schedule{s}, []Backup{dailyRun("daily-1", "Completed", "2026-09-07T03:00:00Z", "2026-09-07T03:05:00Z")}, availableDefaultBSL())
+	assertConditions(t, Evaluate(weekly, []store.BackupAssurancePolicy{p}, at("2026-09-14T03:30:00Z")))
+	assertConditions(t, Evaluate(weekly, []store.BackupAssurancePolicy{p}, at("2026-09-14T04:30:00Z")), store.ConditionOverdue)
+}
+
+func TestEvaluate_LatestTickInsideGraceDoesNotMaskEarlierMissedRun(t *testing.T) {
+	p := dailyPolicy()
+	// Today's 03:00 run is only 30 minutes late, but yesterday's was missed
+	// by 24.5h: overdue, and the detail still names the latest expected run.
+	got := Evaluate(dailyObs(dailyRun("daily-1", "Completed", "2026-09-08T03:00:00Z", "2026-09-08T03:05:00Z")),
 		[]store.BackupAssurancePolicy{p}, at("2026-09-10T03:30:00Z"))
-	assertConditions(t, got)
+	assertConditions(t, got, store.ConditionOverdue)
+	timeEq(t, "expectedRunAt", got[0].Detail.ExpectedRunAt, "2026-09-10T03:00:00Z")
+
+	// An hourly schedule under the default one-hour grace: the latest tick
+	// is always under an hour old, yet a two-day-old success is overdue.
+	s := dailySchedule()
+	s.Schedule = "0 * * * *"
+	hourly := observe([]Schedule{s}, []Backup{dailyRun("daily-1", "Completed", "2026-09-08T12:00:00Z", "2026-09-08T12:05:00Z")}, availableDefaultBSL())
+	got = Evaluate(hourly, []store.BackupAssurancePolicy{p}, at("2026-09-10T12:30:00Z"))
+	assertConditions(t, got, store.ConditionOverdue)
+	timeEq(t, "expectedRunAt", got[0].Detail.ExpectedRunAt, "2026-09-10T12:00:00Z")
 }
 
 func TestEvaluate_ExpectedRunSparesAScheduleWithNoRunDue(t *testing.T) {
@@ -600,10 +622,91 @@ func TestEvaluate_NoDefaultBSLWithEmptyStorageLocationYieldsLocationUnavailable(
 		[]store.BackupAssurancePolicy{dailyPolicy()}, evalNow)
 	assertConditions(t, got, store.ConditionLocationUnavailable)
 
-	// No location list at all is the same: nothing is the default.
+	// An empty location list, read in full: nothing is the default.
+	assertConditions(t, Evaluate(observe([]Schedule{dailySchedule()}, []Backup{freshDaily()}),
+		[]store.BackupAssurancePolicy{dailyPolicy()}, evalNow), store.ConditionLocationUnavailable)
+}
+
+func TestEvaluate_NilLocationsIsUnreadNotEmpty(t *testing.T) {
+	// A collector that hands over no location list has not read it. That
+	// is unknown for the schedule, never a critical location_unavailable.
 	obs := observe([]Schedule{dailySchedule()}, []Backup{freshDaily()})
 	obs.Locations = nil
-	assertConditions(t, Evaluate(obs, []store.BackupAssurancePolicy{dailyPolicy()}, evalNow), store.ConditionLocationUnavailable)
+	got := Evaluate(obs, []store.BackupAssurancePolicy{dailyPolicy()}, evalNow)
+	assertConditions(t, got, store.ConditionCollectionUnknown)
+	if got[0].Subject.UID != "uid-daily" {
+		t.Errorf("subject = %+v, want the schedule bound to its UID", got[0].Subject)
+	}
+}
+
+func TestEvaluate_UntimestampedFailureStillOrdersAsNewest(t *testing.T) {
+	// A PartiallyFailed run Velero recorded no times for is newer (by
+	// creation time, as the schedules page orders it) than a recent
+	// success. Under the default policy it is a failure, which needs no
+	// timestamp: it opens partially_failed rather than vanishing.
+	partial := Backup{Name: "daily-2", Namespace: veleroNamespace, Phase: "PartiallyFailed", ScheduleName: "daily", created: at("2026-09-10T06:00:00Z")}
+	runs := []Backup{dailyRun("daily-1", "Completed", "2026-09-10T03:00:00Z", "2026-09-10T03:05:00Z"), partial}
+	got := Evaluate(dailyObs(runs...), []store.BackupAssurancePolicy{dailyPolicy()}, evalNow)
+	assertConditions(t, got, store.ConditionPartiallyFailed)
+	if got[0].Detail.LastOutcome != OutcomePartial {
+		t.Errorf("lastOutcome = %q, want partial", got[0].Detail.LastOutcome)
+	}
+
+	// Counted as a success, the same run has no time to reset the clock
+	// at, so it is skipped and the timestamped success stands.
+	p := dailyPolicy()
+	p.TreatPartialAs = store.AssuranceTreatPartialAsSuccess
+	assertConditions(t, Evaluate(dailyObs(runs...), []store.BackupAssurancePolicy{p}, evalNow))
+}
+
+func TestEvaluate_FutureTimestampIsNotFreshness(t *testing.T) {
+	// A success stamped a year ahead would hold off overdue until the clock
+	// caught up. It is not evidence; the old success decides.
+	future := dailyRun("daily-2", "Completed", "2027-09-10T03:00:00Z", "2027-09-10T03:05:00Z")
+	got := Evaluate(dailyObs(dailyRun("daily-1", "Completed", "2026-09-08T03:00:00Z", "2026-09-08T03:05:00Z"), future),
+		[]store.BackupAssurancePolicy{dailyPolicy()}, evalNow)
+	assertConditions(t, got, store.ConditionOverdue)
+	timeEq(t, "lastSuccessAt", got[0].Detail.LastSuccessAt, "2026-09-08T03:05:00Z")
+
+	// Ordinary skew (a completion two minutes ahead of now) still counts.
+	skewed := dailyRun("daily-2", "Completed", "2026-09-10T11:58:00Z", "2026-09-10T12:02:00Z")
+	assertConditions(t, Evaluate(dailyObs(skewed), []store.BackupAssurancePolicy{dailyPolicy()}, evalNow))
+}
+
+func TestEvaluate_AbsentScheduleProducesNoFindings(t *testing.T) {
+	// The policy's schedule is not in a complete schedule list: the subject
+	// is absent, and the reconciler resolves its exceptions as
+	// subject_absent. Evaluate must not invent never_run or overdue for it.
+	obs := observe(nil, []Backup{dailyRun("daily-1", "Failed", "2026-09-01T03:00:00Z", "")}, availableDefaultBSL())
+	if got := Evaluate(obs, []store.BackupAssurancePolicy{dailyPolicy()}, evalNow); got != nil {
+		t.Errorf("got %v, want no findings for an absent schedule", conditionsOf(got))
+	}
+}
+
+func TestEvaluate_RepeatedPolicyYieldsOneFindingPerIdentity(t *testing.T) {
+	// The exception store admits one open row per identity, so a policy
+	// listed twice (a caller bug) must not double every finding.
+	once := Evaluate(pausedObs(), []store.BackupAssurancePolicy{dailyPolicy()}, evalNow)
+	twice := Evaluate(pausedObs(), []store.BackupAssurancePolicy{dailyPolicy(), dailyPolicy()}, evalNow)
+	if !reflect.DeepEqual(once, twice) {
+		t.Errorf("repeated policy: got %v, want %v", conditionsOf(twice), conditionsOf(once))
+	}
+}
+
+func TestEvaluate_RecreatedScheduleClockStartsAtItsCreation(t *testing.T) {
+	// The schedule was deleted and recreated yesterday at 12:00; the old
+	// incarnation's last success (same label) is a week old. No run of the
+	// new schedule was expected before today's 03:00, which is inside
+	// grace at 03:30: not overdue yet, though the old success is stale.
+	s := dailySchedule()
+	s.UID, s.created = "uid-new", at("2026-09-09T12:00:00Z")
+	obs := observe([]Schedule{s}, []Backup{dailyRun("daily-1", "Completed", "2026-09-03T03:00:00Z", "2026-09-03T03:05:00Z")}, availableDefaultBSL())
+	assertConditions(t, Evaluate(obs, []store.BackupAssurancePolicy{dailyPolicy()}, at("2026-09-10T03:30:00Z")))
+	got := Evaluate(obs, []store.BackupAssurancePolicy{dailyPolicy()}, at("2026-09-10T04:30:00Z"))
+	assertConditions(t, got, store.ConditionOverdue)
+	if got[0].Subject.UID != "uid-new" {
+		t.Errorf("subject UID = %q, want the new incarnation's", got[0].Subject.UID)
+	}
 }
 
 // ---- Evaluate: namespace and cluster scope ----

@@ -99,10 +99,10 @@ type Observation struct {
 // Subject is what an exception is about. UID is the Schedule's metadata.uid
 // for a schedule subject and empty for namespace and cluster subjects.
 type Subject struct {
-	Kind      store.AssuranceScopeKind
-	Namespace string
-	Name      string
-	UID       string
+	Kind      store.AssuranceScopeKind `json:"kind"`
+	Namespace string                   `json:"namespace"`
+	Name      string                   `json:"name"`
+	UID       string                   `json:"uid"`
 }
 
 // Detail is the evidence attached to an exception, stored in the privileged
@@ -126,18 +126,20 @@ type Detail struct {
 const SuppressedByPaused = "paused"
 
 // Finding is one condition that holds for one subject under one policy.
+// Its json tags fix the wire shape for any caller that serializes it, so a
+// later unit never ships Go-cased keys.
 type Finding struct {
-	Subject   Subject
-	PolicyID  uuid.UUID
-	Condition store.AssuranceCondition
-	Severity  string // store.AssuranceSeverity*
-	Detail    Detail
+	Subject   Subject                  `json:"subject"`
+	PolicyID  uuid.UUID                `json:"policyId"`
+	Condition store.AssuranceCondition `json:"condition"`
+	Severity  string                   `json:"severity"` // store.AssuranceSeverity*
+	Detail    Detail                   `json:"detail"`
 	// Hold marks a condition that is still true but deliberately
 	// suppressed: overdue or never_run on a paused schedule. Pausing fixes
 	// nothing, so the reconciler keeps an already-open exception for it
 	// open (an observation, not a resolution), but it must not open a new
 	// one: calling a deliberately paused schedule overdue would be false.
-	Hold bool
+	Hold bool `json:"hold"`
 }
 
 const (
@@ -156,8 +158,10 @@ var errCronZoneOnly = errors.New("time zone prefix is not followed by a schedule
 
 // parseCron parses a Velero schedule expression: five fields or a
 // descriptor (@daily, @every 1h), with an optional CRON_TZ=/TZ= prefix. It
-// is the one parse path for schedules, shared with computeNextRun and the
-// create/update validation, so none of them can reach the robfig panic.
+// is this package's one parse path for schedules, shared with computeNextRun
+// and the create/update validation, so none of them can reach the robfig
+// panic. (internal/wizard still calls cron.ParseStandard directly; chi's
+// recovery turns that panic into a 500, not a crash.)
 func parseCron(expr string) (cron.Schedule, error) {
 	if (strings.HasPrefix(expr, "TZ=") || strings.HasPrefix(expr, "CRON_TZ=")) && !strings.Contains(expr, " ") {
 		return nil, errCronZoneOnly
@@ -276,13 +280,7 @@ func activePolicies(clusterID string, policies []store.BackupAssurancePolicy) []
 // clusterCollectionUnknown is the single finding for a failed collection,
 // attributed to the first active policy (a cluster-scope one when present).
 func clusterCollectionUnknown(active []store.BackupAssurancePolicy) Finding {
-	return Finding{
-		Subject:   Subject{Kind: store.ScopeCluster},
-		PolicyID:  active[0].ID,
-		Condition: store.ConditionCollectionUnknown,
-		Severity:  store.AssuranceSeverityWarning,
-		Detail:    Detail{LastOutcome: OutcomeUnknown},
-	}
+	return collectionUnknown(Subject{Kind: store.ScopeCluster}, active[0])
 }
 
 type evaluator struct {
@@ -290,9 +288,14 @@ type evaluator struct {
 	now time.Time
 }
 
-// missing reports whether the list for resource was not read.
+// missing reports whether the list for resource was not read. A nil
+// Locations is a location list that was not read, never an empty one: an
+// empty list would make every schedule's location look unavailable.
 func (e *evaluator) missing(resource string) bool {
 	if slices.Contains(e.obs.FailedLists, resource) {
+		return true
+	}
+	if resource == BackupStorageLocationGVR.Resource && e.obs.Locations == nil {
 		return true
 	}
 	return e.obs.Collection == CollectionDegraded && len(e.obs.FailedLists) == 0
@@ -379,13 +382,24 @@ func runTimestamp(b *Backup) *time.Time {
 	return b.StartTime
 }
 
-// effectiveOutcome is b's outcome for the clock. A success with no usable
-// timestamp is unknown: a backup that succeeded at no known time is not
-// evidence of freshness.
-func effectiveOutcome(b *Backup) FreshnessOutcome {
+// maxClockSkew is how far a run's timestamp may lie ahead of now and still
+// count: a little skew between Velero's clock and this process's is normal,
+// a timestamp further ahead is not evidence of anything.
+const maxClockSkew = 5 * time.Minute
+
+// effectiveOutcome is b's outcome for the clock. A run that would reset the
+// clock (a success, or a partial run the policy counts as one) needs a
+// believable timestamp: with none, or one more than maxClockSkew after now,
+// it is unknown, because a backup that succeeded at no believable time is
+// not evidence of freshness (and a future one would hold off overdue until
+// the clock caught up). A failure needs no timestamp: like the schedules
+// page, newerRun orders it by creation time when Velero never started it.
+func effectiveOutcome(b *Backup, now time.Time, partialIsSuccess bool) FreshnessOutcome {
 	o := FreshnessOutcomeOf(b.Phase)
-	if (o == OutcomeSuccess || o == OutcomePartial) && runTimestamp(b) == nil {
-		return OutcomeUnknown
+	if o == OutcomeSuccess || o == OutcomePartial && partialIsSuccess {
+		if ts := runTimestamp(b); ts == nil || ts.After(now.Add(maxClockSkew)) {
+			return OutcomeUnknown
+		}
 	}
 	return o
 }
@@ -400,7 +414,7 @@ func (e *evaluator) subject(p store.BackupAssurancePolicy, subj Subject, runs []
 	var lastSuccess *time.Time
 	inFlight, known := false, false
 	for _, b := range runs {
-		o := effectiveOutcome(b)
+		o := effectiveOutcome(b, e.now, partialIsSuccess)
 		switch o {
 		case OutcomeUnknown:
 			continue
@@ -513,7 +527,14 @@ func (e *evaluator) expectedRun(p store.BackupAssurancePolicy, s *Schedule, ref 
 		return false
 	}
 	d.ExpectedRunAt = &last
-	return e.now.Sub(last) > p.Grace
+	// A run is missed when any expected run since the anchor is more than
+	// grace old, not only the latest: for a schedule whose period is at most
+	// grace (hourly under the default one-hour grace) the latest tick is
+	// always inside grace, and a daily schedule would clear for the first
+	// grace window after each tick. The walk stops 1ns short of now - grace
+	// so a tick exactly grace old is still inside it (now - tick > grace).
+	missed, known := expectedRunsSince(sched, anchor, e.now.Add(-p.Grace-time.Nanosecond), maxExpectedRunSteps)
+	return !known || !missed.IsZero()
 }
 
 // location reports location_unavailable when s's target storage location is
