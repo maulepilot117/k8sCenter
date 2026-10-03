@@ -51,8 +51,11 @@ type VeleroStatus struct {
 // Backup is the API response for a Velero backup.
 // Phase is passed through from Velero's native phases.
 type Backup struct {
-	Name               string            `json:"name"`
-	Namespace          string            `json:"namespace"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	// UID is metadata.uid. It binds assurance evidence to this object, so a
+	// deleted-and-recreated backup of the same name is a different backup.
+	UID                string            `json:"uid"`
 	Phase              string            `json:"phase"`
 	IncludedNamespaces []string          `json:"includedNamespaces"`
 	ExcludedNamespaces []string          `json:"excludedNamespaces"`
@@ -94,8 +97,12 @@ type Restore struct {
 
 // Schedule is the API response for a Velero schedule.
 type Schedule struct {
-	Name               string     `json:"name"`
-	Namespace          string     `json:"namespace"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	// UID is metadata.uid. Backup assurance keys a schedule's exceptions on
+	// it, so a deleted-and-recreated schedule of the same name never
+	// inherits the old one's evidence.
+	UID                string     `json:"uid"`
 	Phase              string     `json:"phase"`
 	Schedule           string     `json:"schedule"`
 	Paused             bool       `json:"paused"`
@@ -111,6 +118,11 @@ type Schedule struct {
 	LastBackupPhase   string        `json:"lastBackupPhase,omitempty"`
 	LastBackupOutcome BackupOutcome `json:"lastBackupOutcome,omitempty"`
 	ValidationErrors  []string      `json:"validationErrors,omitempty"`
+
+	// created is the object's creationTimestamp: the backup assurance
+	// clock's starting point for a schedule that has never succeeded. Not
+	// serialized.
+	created time.Time
 }
 
 // BackupStorageLocation is the API response for a BSL.

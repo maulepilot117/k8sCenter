@@ -37,6 +37,7 @@ jobs:
           - { pkg: ./internal/store/, target: FuzzDecodeESOHistoryCursor }
           - { pkg: ./internal/gateway/, target: FuzzGatewayNormalizers }
           - { pkg: ./internal/velero/, target: FuzzVeleroParsers }
+          - { pkg: ./internal/velero/, target: FuzzAssuranceEvaluate }
           - { pkg: ./internal/preferences/, target: FuzzPreferencesValidators }
           - { pkg: ./internal/preferences/, target: FuzzValidateDashboardLayout }
     name: ${{ matrix.target }}
