@@ -14,7 +14,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"sync"
 	"testing"
@@ -133,26 +135,6 @@ func exceptionsForIdentity(t *testing.T, pool *pgxpool.Pool, e BackupAssuranceEx
 	return n
 }
 
-// wideTestPool opens a pool with maxConns connections against the harness
-// database, for tests whose whole point is that many transactions are in
-// flight at once. testDB's 4-connection pool would serialize most of them.
-func wideTestPool(t *testing.T, maxConns int32) *pgxpool.Pool {
-	t.Helper()
-	testDB(t) // gate + migrate
-	config, err := pgxpool.ParseConfig(testDatabaseURL(os.LookupEnv))
-	if err != nil {
-		t.Fatalf("parsing %s: %v", testDatabaseURLEnv, err)
-	}
-	config.MaxConns = maxConns
-	config.MinConns = 0
-	pool, err := pgxpool.NewWithConfig(t.Context(), config)
-	if err != nil {
-		t.Fatalf("creating wide pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
 // backdateLease moves the lease's expiry into the past on the database
 // clock, standing in for an incumbent that stopped renewing.
 func backdateLease(t *testing.T, pool *pgxpool.Pool, cluster string) {
@@ -168,28 +150,54 @@ func backdateLease(t *testing.T, pool *pgxpool.Pool, cluster string) {
 // Hermetic tests — no database required.
 // ---------------------------------------------------------------------------
 
-// TestBackupAssuranceDelivery_NoProcessClockOrBackgroundContext pins two
-// exit criteria of the unit by reading the source: lease expiry is judged
-// on the database clock only (so no time.Now anywhere in the file), and no
-// store method detaches from the caller's context.
-func TestBackupAssuranceDelivery_NoProcessClockOrBackgroundContext(t *testing.T) {
-	src, err := os.ReadFile("backup_assurance_delivery.go")
-	if err != nil {
-		t.Fatalf("reading source: %v", err)
+// TestBackupAssurance_NoProcessClockOrBackgroundContext pins two exit
+// criteria of Release F's store layer by parsing the source: lease expiry
+// and every other timestamp the store decides on come from the database
+// clock (no time.Now selector in either assurance file), and no store method
+// detaches from the caller's context (no context.Background / context.TODO;
+// WithTx's bounded rollback uses context.WithoutCancel, which keeps the
+// caller's values and is the one sanctioned detachment). Parsing the AST
+// rather than grepping text means comments and string literals cannot trip
+// it and an aliased import cannot slip past it.
+func TestBackupAssurance_NoProcessClockOrBackgroundContext(t *testing.T) {
+	forbidden := map[string][]string{
+		"time":    {"Now"},
+		"context": {"Background", "TODO"},
 	}
-	// Comments may name the rule; code may not break it.
-	var code strings.Builder
-	for _, line := range strings.Split(string(src), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "//") {
-			continue
+	for _, file := range []string{"backup_assurance.go", "backup_assurance_delivery.go"} {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", file, err)
 		}
-		code.WriteString(line)
-		code.WriteByte('\n')
-	}
-	for _, forbidden := range []string{"time.Now(", "context.Background(", "context.TODO("} {
-		if strings.Contains(code.String(), forbidden) {
-			t.Errorf("backup_assurance_delivery.go contains %q; the store must use the database clock and the caller's context", forbidden)
+		// Map local import names to package paths so an alias is still caught.
+		pkgByName := map[string]string{}
+		for _, imp := range f.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			name := path[strings.LastIndex(path, "/")+1:]
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+			pkgByName[name] = path
 		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			pkg := pkgByName[ident.Name]
+			for _, fn := range forbidden[pkg] {
+				if sel.Sel.Name == fn {
+					t.Errorf("%s: %s.%s used; the store must use the database clock and the caller's context",
+						fset.Position(sel.Pos()), pkg, fn)
+				}
+			}
+			return true
+		})
 	}
 }
 
@@ -215,6 +223,10 @@ func TestValidateOpenException_RejectsInconsistentShapes(t *testing.T) {
 		{"unknown severity", func(e *BackupAssuranceException) { e.Severity = "severe" }},
 		{"zero openedAt", func(e *BackupAssuranceException) { e.OpenedAt = time.Time{} }},
 		{"malformed detail", func(e *BackupAssuranceException) { e.Detail = []byte(`{not json`) }},
+		// Valid JSON but not an object: resolution merges into detail, so an
+		// array or scalar would be stored fine and then break every resolve.
+		{"array detail", func(e *BackupAssuranceException) { e.Detail = []byte(`[1]`) }},
+		{"scalar detail", func(e *BackupAssuranceException) { e.Detail = []byte(`"text"`) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -348,7 +360,7 @@ func TestOpenExceptionAndEnqueue_SecondCallerGetsOpenedFalseAndNoDelivery(t *tes
 // exactly one delivery intent.
 func TestOpenExceptionAndEnqueue_ConcurrentGoroutinesProduceOneRow(t *testing.T) {
 	const openers = 16
-	pool := wideTestPool(t, openers)
+	pool := testDBWithMaxConns(t, openers)
 	s := NewBackupAssuranceStore(pool)
 	ctx := t.Context()
 	cluster := testOwnerID(t)
@@ -518,13 +530,82 @@ func TestOpenExceptionAndEnqueue_RejectsPolicyFromAnotherCluster(t *testing.T) {
 	}
 }
 
+// TestOpenExceptionAndEnqueue_ReusedIDIsRefusedNotRetried: ON CONFLICT DO
+// NOTHING also swallows a primary-key collision, so a caller that reuses an
+// exception id must get a precise, permanent error rather than three burned
+// transactions and a misleading "contended" error.
+func TestOpenExceptionAndEnqueue_ReusedIDIsRefusedNotRetried(t *testing.T) {
+	s, pool := newAssuranceStore(t)
+	ctx := t.Context()
+	cluster, in := openFixture(t, s)
+	first := mustOpen(t, s, in)
+	mustResolve(t, s, first.ID)
+
+	// Same id, same identity (no open row any more): the id is the problem.
+	again := in
+	again.OpenedAt = in.OpenedAt.Add(time.Hour)
+	_, _, err := s.OpenExceptionAndEnqueue(ctx, again)
+	if !errors.Is(err, ErrAssuranceExceptionInvalid) || errors.Is(err, ErrAssuranceOpenContended) {
+		t.Fatalf("re-open with a used id = %v; want ErrAssuranceExceptionInvalid, not a contention error", err)
+	}
+	// Same id, a different identity.
+	other := scheduleException(cluster, in.PolicyID, "velero", "weekly", "uid-w", ConditionOverdue)
+	other.ID = first.ID
+	if _, _, err := s.OpenExceptionAndEnqueue(ctx, other); !errors.Is(err, ErrAssuranceExceptionInvalid) {
+		t.Fatalf("open of another identity with a used id = %v; want ErrAssuranceExceptionInvalid", err)
+	}
+	if n := exceptionsForIdentity(t, pool, other); n != 0 {
+		t.Errorf("refused open wrote %d rows", n)
+	}
+	if open, _ := s.ListOpenExceptions(ctx, cluster); len(open) != 0 {
+		t.Errorf("open rows after refused opens = %v; want none", open)
+	}
+}
+
+// TestNonObjectDetailNeverStrandsAnOpenException covers the two entry points
+// for detail and the resolve-side merge: the store refuses a non-object
+// detail on open and on observe, and even a row that somehow holds one can
+// still be resolved.
+func TestNonObjectDetailNeverStrandsAnOpenException(t *testing.T) {
+	s, pool := newAssuranceStore(t)
+	ctx := t.Context()
+	cluster, in := openFixture(t, s)
+	opened := mustOpen(t, s, in)
+
+	if err := s.ObserveException(ctx, opened.ID, in.OpenedAt.Add(time.Minute), AssuranceSeverityWarning, nil, []byte(`[1]`)); !errors.Is(err, ErrAssuranceObservationInvalid) {
+		t.Errorf("ObserveException with an array detail = %v; want ErrAssuranceObservationInvalid", err)
+	}
+	if err := s.ObserveException(ctx, opened.ID, in.OpenedAt.Add(time.Minute), AssuranceSeverityWarning, nil, []byte(`"s"`)); !errors.Is(err, ErrAssuranceObservationInvalid) {
+		t.Errorf("ObserveException with a scalar detail = %v; want ErrAssuranceObservationInvalid", err)
+	}
+	// Bypass the store (as a hand edit or an older writer could) and resolve anyway.
+	if _, err := pool.Exec(ctx, `UPDATE backup_assurance_exceptions SET detail = '[1]'::jsonb WHERE id = $1`, opened.ID); err != nil {
+		t.Fatalf("seeding a non-object detail: %v", err)
+	}
+	resolved, err := s.ResolveExceptionAndEnqueue(ctx, opened.ID, time.Now(), AssuranceResolutionConditionCleared)
+	if err != nil || !resolved {
+		t.Fatalf("resolve of a row with array detail = (%v, %v); want (true, nil)", resolved, err)
+	}
+	all, _, err := s.ListExceptions(ctx, cluster, AssuranceExceptionQuery{State: AssuranceStateResolved})
+	if err != nil || len(all) != 1 {
+		t.Fatalf("ListExceptions(resolved) = (%v, %v)", all, err)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(all[0].Detail, &detail); err != nil || detail["resolutionReason"] != AssuranceResolutionConditionCleared {
+		t.Errorf("detail after resolving a non-object detail = %s (%v); want an object carrying resolutionReason", all[0].Detail, err)
+	}
+	if ds := deliveriesFor(t, pool, opened.ID); len(ds) != 2 {
+		t.Errorf("deliveries = %+v; want opened and resolved intents", ds)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Resolve
 // ---------------------------------------------------------------------------
 
 func TestResolveExceptionAndEnqueue_OnlyFirstCallerEnqueues(t *testing.T) {
 	const resolvers = 8
-	pool := wideTestPool(t, resolvers)
+	pool := testDBWithMaxConns(t, resolvers)
 	s := NewBackupAssuranceStore(pool)
 	ctx := t.Context()
 	cluster := testOwnerID(t)
@@ -629,15 +710,262 @@ func TestResolveExceptionAndEnqueue_AlwaysStampsResolvedAt(t *testing.T) {
 	if state != AssuranceStateResolved || resolvedAt == nil || !resolvedAt.Equal(at) {
 		t.Errorf("row = state %s resolved_at %v; want resolved at %v", state, resolvedAt, at)
 	}
-	var violations int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM backup_assurance_exceptions WHERE cluster_id = $1 AND state = 'resolved' AND resolved_at IS NULL`,
-		cluster).Scan(&violations); err != nil {
-		t.Fatalf("checking invariant: %v", err)
+}
+
+// TestResolveExceptionAndEnqueue_RollsBackStateWhenDeliveryInsertFails is the
+// resolve-side half of the one-transaction guarantee: when the "resolved"
+// intent cannot be inserted, the row must still be open, or a resolution
+// would commit with no notification behind it.
+func TestResolveExceptionAndEnqueue_RollsBackStateWhenDeliveryInsertFails(t *testing.T) {
+	s, pool := newAssuranceStore(t)
+	ctx := t.Context()
+	cluster, in := openFixture(t, s)
+	opened := mustOpen(t, s, in)
+
+	// Occupy the primary key the resolved intent will derive, attached to an
+	// unrelated exception, so the intent insert fails after the UPDATE ran.
+	decoy := mustOpen(t, s, scheduleException(cluster, in.PolicyID, "velero", "daily", "uid-decoy", ConditionPaused))
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO backup_assurance_deliveries (id, exception_id, transition, state) VALUES ($1, $2, 'resolved', 'pending')`,
+		deliveryIDFor(opened.ID, AssuranceTransitionResolved), decoy.ID); err != nil {
+		t.Fatalf("seeding the colliding delivery: %v", err)
 	}
-	if violations != 0 {
-		t.Errorf("%d resolved rows without resolved_at", violations)
+	resolved, err := s.ResolveExceptionAndEnqueue(ctx, opened.ID, time.Now(), AssuranceResolutionConditionCleared)
+	if err == nil || resolved {
+		t.Fatalf("resolve = (%v, %v); want an error and resolved = false", resolved, err)
 	}
+	var state string
+	var resolvedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT state, resolved_at FROM backup_assurance_exceptions WHERE id = $1`, opened.ID).Scan(&state, &resolvedAt); err != nil {
+		t.Fatalf("reading row: %v", err)
+	}
+	if state != AssuranceStateOpen || resolvedAt != nil {
+		t.Errorf("after a failed intent insert the row is state=%s resolved_at=%v; want still open with no resolved_at", state, resolvedAt)
+	}
+	if ds := deliveriesFor(t, pool, opened.ID); len(ds) != 1 || ds[0].transition != AssuranceTransitionOpened {
+		t.Errorf("deliveries = %+v; want only the opened intent", ds)
+	}
+	if open, _ := s.ListOpenExceptions(ctx, cluster); len(open) != 2 {
+		t.Errorf("open rows = %d; want both still open", len(open))
+	}
+}
+
+// openStatementTracer is a pgx.QueryTracer for one test pool that lets a
+// test act at two precise points inside OpenExceptionAndEnqueue's
+// transaction: just before its INSERT ... ON CONFLICT runs, and just after
+// that INSERT returned zero rows. That is the window in which another
+// replica can open and then resolve the same identity, which no amount of
+// goroutine racing hits reliably.
+type openStatementTracer struct {
+	beforeInsert      func()
+	afterInsertNoRows func()
+}
+
+type openTracerKey struct{}
+
+func (tr *openStatementTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	if !strings.Contains(d.SQL, "ON CONFLICT DO NOTHING") {
+		return ctx
+	}
+	if tr.beforeInsert != nil {
+		tr.beforeInsert()
+	}
+	return context.WithValue(ctx, openTracerKey{}, true)
+}
+
+func (tr *openStatementTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryEndData) {
+	if ctx.Value(openTracerKey{}) == nil || d.Err != nil || d.CommandTag.RowsAffected() != 0 {
+		return
+	}
+	if tr.afterInsertNoRows != nil {
+		tr.afterInsertNoRows()
+	}
+}
+
+// TestOpenExceptionAndEnqueue_RetriesWhenConflictingRowIsResolvedMidFlight
+// drives the "conflict, but the row is already resolved again" branch
+// deterministically: a rival opens the identity right before the opener's
+// INSERT and resolves it right after that INSERT lost, so the opener's
+// re-SELECT finds no open row, nothing else is wrong, and it must retry in a
+// fresh transaction. With the rival doing that once, the retry succeeds and
+// opens a new row; with the rival doing it on every attempt, the opener
+// gives up with ErrAssuranceOpenContended and writes nothing.
+func TestOpenExceptionAndEnqueue_RetriesWhenConflictingRowIsResolvedMidFlight(t *testing.T) {
+	ctx := t.Context()
+	rival, rivalPool := newAssuranceStore(t)
+	cluster := testOwnerID(t)
+	p := mustInsertPolicy(t, rival, schedulePolicy(cluster, "velero", "daily"))
+	identity := func() BackupAssuranceException {
+		return scheduleException(cluster, p.ID, "velero", "daily", "uid-a", ConditionOverdue)
+	}
+
+	var rivalRows []uuid.UUID
+	var mu sync.Mutex
+	var interferences int
+	limit := 0 // how many attempts the rival interferes with
+	tracer := &openStatementTracer{
+		beforeInsert: func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if interferences >= limit {
+				return
+			}
+			rivalRows = append(rivalRows, mustOpen(t, rival, identity()).ID)
+		},
+		afterInsertNoRows: func() {
+			mu.Lock()
+			defer mu.Unlock()
+			if interferences >= limit {
+				return
+			}
+			interferences++
+			mustResolve(t, rival, rivalRows[len(rivalRows)-1])
+		},
+	}
+	tracedPool := testDBWithOptions(t, 2, func(c *pgxpool.Config) { c.ConnConfig.Tracer = tracer })
+	opener := NewBackupAssuranceStore(tracedPool)
+
+	// One interference: the retry wins.
+	limit = 1
+	in := identity()
+	got, opened, err := opener.OpenExceptionAndEnqueue(ctx, in)
+	if err != nil || !opened {
+		t.Fatalf("open with one mid-flight resolve = (%v, %v); want opened = true after a retry", opened, err)
+	}
+	if interferences != 1 {
+		t.Fatalf("the rival interfered %d times; want exactly 1 (the race was not exercised)", interferences)
+	}
+	if got.ID != in.ID || got.ID == rivalRows[0] {
+		t.Errorf("retry returned row %s; want the opener's own new row %s, not the rival's resolved %s", got.ID, in.ID, rivalRows[0])
+	}
+	if ds := deliveriesFor(t, rivalPool, got.ID); len(ds) != 1 || ds[0].transition != AssuranceTransitionOpened {
+		t.Errorf("deliveries for the retried open = %+v; want exactly one opened intent", ds)
+	}
+	open, _ := rival.ListOpenExceptions(ctx, cluster)
+	if len(open) != 1 || open[0].ID != got.ID {
+		t.Errorf("open rows = %v; want only the retried open", open)
+	}
+	mustResolve(t, rival, got.ID)
+
+	// Interference on every attempt: bounded, then a contention error.
+	interferences, rivalRows = 0, nil
+	limit = assuranceOpenMaxAttempts + 5
+	again := identity()
+	_, _, err = opener.OpenExceptionAndEnqueue(ctx, again)
+	if !errors.Is(err, ErrAssuranceOpenContended) {
+		t.Fatalf("open under permanent interference = %v; want ErrAssuranceOpenContended", err)
+	}
+	if interferences != assuranceOpenMaxAttempts {
+		t.Errorf("attempts under permanent interference = %d; want exactly %d", interferences, assuranceOpenMaxAttempts)
+	}
+	if exceptionExists(t, rivalPool, again.ID) {
+		t.Error("a contended open left its own row behind")
+	}
+	if n := exceptionsForIdentity(t, rivalPool, again); n != 1+1+assuranceOpenMaxAttempts {
+		t.Errorf("rows for the identity = %d; want the first open, the retried open and one per rival interference (%d)", n, 2+assuranceOpenMaxAttempts)
+	}
+}
+
+// TestOpenAndResolve_ConcurrentOnOneIdentityNeverDuplicates runs openers
+// against a resolver on one identity and asserts the invariants that must
+// hold whatever the interleaving: never two open rows, one opened intent per
+// exception row, one resolved intent per resolution, and no error other than
+// contention. (The retry branch itself is driven deterministically by the
+// tracer test above; here it may or may not fire.)
+func TestOpenAndResolve_ConcurrentOnOneIdentityNeverDuplicates(t *testing.T) {
+	const (
+		openers = 12
+		rounds  = 6
+	)
+	pool := testDBWithMaxConns(t, openers+2)
+	s := NewBackupAssuranceStore(pool)
+	ctx := t.Context()
+	cluster := testOwnerID(t)
+	p := mustInsertPolicy(t, s, schedulePolicy(cluster, "velero", "daily"))
+
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		opens     int
+		contended int
+		failures  []error
+	)
+	stop := make(chan struct{})
+	for range openers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				in := scheduleException(cluster, p.ID, "velero", "daily", "uid-a", ConditionOverdue)
+				_, opened, err := s.OpenExceptionAndEnqueue(ctx, in)
+				mu.Lock()
+				switch {
+				case errors.Is(err, ErrAssuranceOpenContended):
+					contended++
+				case err != nil:
+					failures = append(failures, err)
+				case opened:
+					opens++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	// The resolver repeatedly resolves whatever is open, forcing the
+	// open/resolve/open cycle the openers race against.
+	resolutions := 0
+	for range rounds {
+		for {
+			open, err := s.ListOpenExceptions(ctx, cluster)
+			if err != nil {
+				t.Fatalf("ListOpenExceptions: %v", err)
+			}
+			if len(open) > 1 {
+				t.Fatalf("%d open rows for one identity", len(open))
+			}
+			if len(open) == 1 {
+				ok, err := s.ResolveExceptionAndEnqueue(ctx, open[0].ID, time.Now(), AssuranceResolutionConditionCleared)
+				if err != nil {
+					t.Fatalf("resolve: %v", err)
+				}
+				if ok {
+					resolutions++
+				}
+				break
+			}
+		}
+	}
+	close(stop)
+	wg.Wait()
+
+	if len(failures) != 0 {
+		t.Fatalf("openers hit %d non-contention errors, first: %v", len(failures), failures[0])
+	}
+	var rows, openRows, openedIntents, resolvedIntents int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*), count(*) FILTER (WHERE state = 'open'),
+		       (SELECT count(*) FROM backup_assurance_deliveries d JOIN backup_assurance_exceptions x ON x.id = d.exception_id
+		         WHERE x.cluster_id = $1 AND d.transition = 'opened'),
+		       (SELECT count(*) FROM backup_assurance_deliveries d JOIN backup_assurance_exceptions x ON x.id = d.exception_id
+		         WHERE x.cluster_id = $1 AND d.transition = 'resolved')
+		  FROM backup_assurance_exceptions WHERE cluster_id = $1`, cluster).Scan(&rows, &openRows, &openedIntents, &resolvedIntents); err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if openRows > 1 {
+		t.Errorf("open rows at the end = %d; want at most 1", openRows)
+	}
+	if rows != opens || openedIntents != rows {
+		t.Errorf("exception rows = %d, opened=true results = %d, opened intents = %d; want all equal", rows, opens, openedIntents)
+	}
+	if resolvedIntents != resolutions || resolutions != rounds {
+		t.Errorf("resolved intents = %d, resolutions = %d, rounds = %d; want all equal", resolvedIntents, resolutions, rounds)
+	}
+	t.Logf("rows=%d opens=%d resolutions=%d contended=%d", rows, opens, resolutions, contended)
 }
 
 func TestResolveExceptionAndEnqueue_ReopenAfterResolveCreatesNewRow(t *testing.T) {
@@ -704,9 +1032,13 @@ func TestClaimPendingDeliveries_SkipsLockedAndRespectsLimit(t *testing.T) {
 		t.Fatalf("locking: %v", err)
 	}
 
-	jobs, err := s.ClaimPendingDeliveries(ctx, cluster, 5, 10)
+	// Bounded so that a claim without SKIP LOCKED fails this assertion
+	// instead of blocking on the locker until the package timeout.
+	claimCtx, cancelClaim := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelClaim()
+	jobs, err := s.ClaimPendingDeliveries(claimCtx, cluster, 5, 10)
 	if err != nil {
-		t.Fatalf("ClaimPendingDeliveries: %v", err)
+		t.Fatalf("ClaimPendingDeliveries with one row locked = %v; want it to skip the locked row, not wait on it", err)
 	}
 	gotExc := map[uuid.UUID]AssuranceDeliveryJob{}
 	for _, j := range jobs {
@@ -798,8 +1130,10 @@ func TestClaimPendingDeliveries_StopsAtMaxAttempts(t *testing.T) {
 	}
 
 	// An abandoned final attempt (claimed, then the process died) is a
-	// pending row with its attempts spent. The next claim fails it instead of
-	// leaving an unclaimable pending row in the backlog forever.
+	// pending row with its attempts spent. Nothing claims it again, and
+	// nothing moves it to failed behind a possibly-live sender's back: it
+	// stays pending, visible in the backlog, and the sender that claimed it
+	// can still mark it.
 	abandoned := mustOpen(t, s, scheduleException(cluster, in.PolicyID, "velero", "daily", "uid-a", ConditionPaused))
 	abandonedID := deliveryIDFor(abandoned.ID, AssuranceTransitionOpened)
 	if _, err := pool.Exec(ctx, `UPDATE backup_assurance_deliveries SET attempts = $2 WHERE id = $1`, abandonedID, maxAttempts); err != nil {
@@ -808,8 +1142,15 @@ func TestClaimPendingDeliveries_StopsAtMaxAttempts(t *testing.T) {
 	if jobs, err := s.ClaimPendingDeliveries(ctx, cluster, maxAttempts, 10); err != nil || len(jobs) != 0 {
 		t.Fatalf("claim = (%d jobs, %v); want the exhausted row not claimed", len(jobs), err)
 	}
-	if d := deliveryByID(t, pool, abandonedID); d.state != AssuranceDeliveryFailed || d.lastError != assuranceDeliveryExhaustedError {
-		t.Errorf("abandoned intent = %+v; want failed with the exhausted marker", d)
+	if d := deliveryByID(t, pool, abandonedID); d.state != AssuranceDeliveryPending || d.attempts != maxAttempts {
+		t.Errorf("exhausted pending intent after another claim = %+v; want left pending, untouched", d)
+	}
+	if pending, failed, _ := s.CountPendingDeliveries(ctx, cluster); pending != 1 || failed != 1 {
+		t.Errorf("CountPendingDeliveries = (%d, %d); want the exhausted row counted as pending backlog", pending, failed)
+	}
+	// The sender that holds it (in flight on its last attempt) still wins.
+	if err := s.MarkDelivered(ctx, abandonedID); err != nil {
+		t.Errorf("MarkDelivered on the in-flight final attempt = %v; want success", err)
 	}
 }
 
@@ -829,6 +1170,23 @@ func TestMarkDeliveryFailed_TransitionsToFailedAtCap(t *testing.T) {
 	}
 	if d := deliveryByID(t, pool, id); d.state != AssuranceDeliveryPending || d.attempts != 1 || d.lastError != "first failure" {
 		t.Errorf("below cap = %+v; want pending, 1 attempt, error kept", d)
+	}
+
+	// Error text is bounded and sanitised, never a reason for the failure
+	// record to fail: a multi-byte rune straddling the byte cap is cut
+	// before it, a NUL byte is dropped, invalid UTF-8 is replaced.
+	straddle := strings.Repeat("x", assuranceDeliveryErrorMaxLen-1) + "é" + "tail"
+	if err := s.MarkDeliveryFailed(ctx, id, straddle, 5); err != nil {
+		t.Fatalf("MarkDeliveryFailed with a rune on the cap: %v", err)
+	}
+	if d := deliveryByID(t, pool, id); d.lastError != strings.Repeat("x", assuranceDeliveryErrorMaxLen-1) {
+		t.Errorf("rune-straddling error stored as %d bytes %q...; want cut before the rune", len(d.lastError), d.lastError[:8])
+	}
+	if err := s.MarkDeliveryFailed(ctx, id, "smtp: 5\x00.7.1 \xffrejected", 5); err != nil {
+		t.Fatalf("MarkDeliveryFailed with NUL and invalid UTF-8: %v", err)
+	}
+	if d := deliveryByID(t, pool, id); d.lastError != "smtp: 5.7.1 �rejected" {
+		t.Errorf("sanitised error = %q; want NUL dropped and the bad byte replaced", d.lastError)
 	}
 
 	// At the cap (attempts >= maxAttempts): terminal.
@@ -1009,7 +1367,7 @@ func TestAcquireOrRenewLease_SecondHolderRejectedWhileLive(t *testing.T) {
 // new holder and a fence that moved by exactly one.
 func TestAcquireOrRenewLease_TakeoverAfterExpiryIncrementsFence(t *testing.T) {
 	const challengers = 8
-	pool := wideTestPool(t, challengers)
+	pool := testDBWithMaxConns(t, challengers)
 	s := NewBackupAssuranceStore(pool)
 	ctx := t.Context()
 	cluster := testOwnerID(t)
@@ -1157,12 +1515,13 @@ func TestReleaseLease_OnlyByHolder(t *testing.T) {
 	}
 }
 
-// TestLeaseUsesDatabaseClockNotProcessClock: the store never consults the
-// process clock (pinned hermetically above), so the only clock that can
-// expire a lease is PostgreSQL's. Here the process clock is made to disagree
-// wildly with the database — the test "advances" it by treating a Go time far
-// in the future as now — and nothing about the lease changes: expiry is
-// relative to the database's NOW(), and the challenger is still rejected.
+// TestLeaseUsesDatabaseClockNotProcessClock: the lease API takes no
+// timestamp from the caller, and the store never consults the process clock
+// (TestBackupAssurance_NoProcessClockOrBackgroundContext pins that in the
+// source), so the only clock that can expire a lease is PostgreSQL's. This
+// test proves the two halves that are observable from outside: expiry is
+// relative to the database's NOW() (not to anything the process supplied),
+// and only a change to the database's view of expiry enables a takeover.
 func TestLeaseUsesDatabaseClockNotProcessClock(t *testing.T) {
 	s, pool := newAssuranceStore(t)
 	ctx := t.Context()
@@ -1179,22 +1538,16 @@ func TestLeaseUsesDatabaseClockNotProcessClock(t *testing.T) {
 	if remaining := a.ExpiresAt.Sub(dbNow); remaining < 2*time.Hour-time.Minute || remaining > 2*time.Hour {
 		t.Errorf("expiry is %s from the database clock; want ~2h (ttl is applied to NOW(), not to a process timestamp)", remaining)
 	}
-
-	// The process believes hours have passed. The database does not care.
-	skewedProcessNow := time.Now().Add(48 * time.Hour)
-	if skewedProcessNow.Before(a.ExpiresAt) {
-		t.Fatal("test setup: the skewed process clock should be past the lease expiry")
+	if a.ExpiresAt.Sub(a.AcquiredAt) != 2*time.Hour || !a.RenewedAt.Equal(a.AcquiredAt) {
+		t.Errorf("lease timestamps = acquired %v renewed %v expires %v; want all derived from one database NOW()", a.AcquiredAt, a.RenewedAt, a.ExpiresAt)
 	}
+
+	// A challenger cannot bring its own notion of time: there is no
+	// parameter for it, and the live lease is rejected on the database's view.
 	if _, err := s.AcquireOrRenewLease(ctx, cluster, "replica-b", time.Hour); !errors.Is(err, ErrLeaseHeldByOther) {
-		t.Errorf("challenger with a skewed process clock = %v; want ErrLeaseHeldByOther (expiry is judged by the database)", err)
+		t.Errorf("challenger against a live lease = %v; want ErrLeaseHeldByOther", err)
 	}
-	got, _ := s.GetLease(ctx, cluster)
-	if got.Expired || got.Holder != "replica-a" {
-		t.Errorf("GetLease = %+v; want live and held by replica-a", got)
-	}
-
-	// Conversely, moving the database's view of expiry is what enables a
-	// takeover — no process time is involved.
+	// Moving the database's view of expiry is what enables a takeover.
 	backdateLease(t, pool, cluster)
 	if _, err := s.AcquireOrRenewLease(ctx, cluster, "replica-b", time.Hour); err != nil {
 		t.Errorf("takeover after database-side expiry = %v; want success", err)

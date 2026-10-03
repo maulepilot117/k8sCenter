@@ -14,16 +14,22 @@ package store
 //     can never both open the same condition. The loser's INSERT ... ON
 //     CONFLICT DO NOTHING affects zero rows and it is handed the winner's row
 //     with opened = false.
-//   - idx_backup_assurance_deliveries_once admits one delivery intent per
-//     (exception, transition), so a transition is notifiable exactly once
+//   - idx_backup_assurance_deliveries_once admits one delivery INTENT per
+//     (exception, transition), so a transition can be enqueued exactly once
 //     across restarts. The intent commits in the SAME transaction as the
 //     transition; sending it is a separate, later step (U34b's drain).
+//
+// Sending is at-least-once per intent, not exactly-once: a claimed intent
+// stays pending until the sender marks it, so a sender that dies, or a
+// second drainer that overlaps it, can send the same transition again.
+// notifications.DedupExists is the second layer against that double send
+// and must stay in place in the consumer.
 //
 // The lease is ADVISORY. It suppresses duplicate Kubernetes reads and racing
 // observations when more than one replica runs; if two replicas both believe
 // they hold it, the indexes above still make a duplicate exception or a
-// duplicate notification impossible. Nothing gates a write on the lease or
-// its fence. Expiry is judged on the DATABASE clock (NOW()) only, so replica
+// duplicate intent impossible. Nothing gates a write on the lease or its
+// fence. Expiry is judged on the DATABASE clock (NOW()) only, so replica
 // clock skew cannot cause a premature takeover or an immortal lease.
 //
 // No method here reads the process clock or uses context.Background(): the
@@ -32,11 +38,11 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -69,9 +75,9 @@ const (
 	AssuranceResolutionSubjectAbsent = "subject_absent"
 )
 
-// assuranceDeliveryErrorMaxLen bounds last_error so a pathological error
-// string cannot grow the row without limit. The head of the message is kept:
-// that is where the sentinel and the operation name live.
+// assuranceDeliveryErrorMaxLen bounds last_error, in bytes, so a pathological
+// error string cannot grow the row without limit. The head of the message is
+// kept: that is where the sentinel and the operation name live.
 const assuranceDeliveryErrorMaxLen = 1024
 
 // assuranceOpenMaxAttempts bounds the retry inside OpenExceptionAndEnqueue
@@ -80,16 +86,18 @@ const assuranceDeliveryErrorMaxLen = 1024
 // transaction; three is far beyond what a 60 s tick can race against.
 const assuranceOpenMaxAttempts = 3
 
-// assuranceDeliveryExhaustedError is written to last_error when a pending
-// intent is found with its attempts already spent (a process died between
-// claiming and marking it, on its last attempt).
-const assuranceDeliveryExhaustedError = "delivery attempts exhausted"
-
 var (
 	// ErrAssuranceExceptionInvalid wraps an exception OpenExceptionAndEnqueue
-	// refuses before touching the database; the wrapped message names the
-	// offending field. It is permanent: retrying the same input cannot succeed.
+	// refuses before touching the database, or an id that already belongs to
+	// another exception row; the wrapped message names the problem. It is
+	// permanent: retrying the same input cannot succeed.
 	ErrAssuranceExceptionInvalid = errors.New("invalid backup assurance exception")
+	// ErrAssuranceOpenContended is returned when the same identity was opened
+	// and resolved by someone else between this call's INSERT and its
+	// re-SELECT, assuranceOpenMaxAttempts times in a row. Nothing was written;
+	// the next tick will see a settled state. It is distinct from a database
+	// failure so a caller can log it as contention rather than an outage.
+	ErrAssuranceOpenContended = errors.New("backup assurance exception identity contended")
 	// ErrAssuranceResolutionInvalid wraps a resolution with no timestamp or
 	// no reason. A resolved row always carries resolved_at and a reason; the
 	// schema does not enforce either, so this method does.
@@ -149,6 +157,18 @@ func deliveryIDFor(exceptionID uuid.UUID, transition string) uuid.UUID {
 	return uuid.NewSHA1(exceptionID, []byte(transition))
 }
 
+// enqueueDelivery inserts the pending intent for one transition of one
+// exception inside the caller's transaction.
+func enqueueDelivery(ctx context.Context, tx pgx.Tx, exceptionID uuid.UUID, transition string) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO backup_assurance_deliveries (id, exception_id, transition, state)
+		VALUES ($1, $2, $3, 'pending')`,
+		deliveryIDFor(exceptionID, transition), exceptionID, transition); err != nil {
+		return fmt.Errorf("enqueue %s delivery: %w", transition, err)
+	}
+	return nil
+}
+
 // validateOpenException rejects what the schema cannot express or would
 // store in an inconsistent shape. The subject shape rules mirror
 // validatePolicy's scope rules, plus one: a schedule subject needs its UID,
@@ -192,8 +212,8 @@ func validateOpenException(e BackupAssuranceException) error {
 	if e.OpenedAt.IsZero() {
 		return invalid("openedAt is required")
 	}
-	if len(e.Detail) > 0 && !json.Valid(e.Detail) {
-		return invalid("detail is not valid JSON")
+	if len(e.Detail) > 0 && !isJSONObject(e.Detail) {
+		return invalid("detail must be a JSON object")
 	}
 	return nil
 }
@@ -217,8 +237,10 @@ func validateOpenException(e BackupAssuranceException) error {
 // restricted to e.ClusterID, so an exception can never cite a policy from
 // another cluster and a policy deleted between the caller's ListPolicies and
 // this call cannot be referenced: both surface as ErrAssurancePolicyNotFound
-// with nothing written. e.State, e.ObservationCount and e.ResolvedAt are
-// ignored; an empty Detail is stored as '{}'.
+// with nothing written. An e.ID that already names another row returns
+// ErrAssuranceExceptionInvalid. e.State, e.ObservationCount and e.ResolvedAt
+// are ignored; an empty Detail is stored as '{}', a non-empty one must be a
+// JSON object.
 func (s *BackupAssuranceStore) OpenExceptionAndEnqueue(
 	ctx context.Context, e BackupAssuranceException,
 ) (BackupAssuranceException, bool, error) {
@@ -239,8 +261,9 @@ func (s *BackupAssuranceStore) OpenExceptionAndEnqueue(
 		err := s.WithTx(ctx, func(tx pgx.Tx) error {
 			// ON CONFLICT DO NOTHING without a named arbiter: the arbiter is
 			// a partial index, which cannot be named as a constraint target.
-			// A concurrent opener blocks here until the first committer is
-			// decided, then sees the conflict and returns zero rows.
+			// (The primary key is an arbiter too; that case is told apart
+			// below.) A concurrent opener blocks here until the first
+			// committer is decided, then sees the conflict and gets zero rows.
 			inserted, err := scanAssuranceException(tx.QueryRow(ctx, `
 				INSERT INTO backup_assurance_exceptions (
 					id, cluster_id, policy_id, subject_kind, subject_namespace, subject_name,
@@ -259,19 +282,14 @@ func (s *BackupAssuranceStore) OpenExceptionAndEnqueue(
 			switch {
 			case err == nil:
 				got, opened = inserted, true
-				if _, err := tx.Exec(ctx, `
-					INSERT INTO backup_assurance_deliveries (id, exception_id, transition, state)
-					VALUES ($1, $2, $3, 'pending')`,
-					deliveryIDFor(inserted.ID, AssuranceTransitionOpened), inserted.ID, AssuranceTransitionOpened); err != nil {
-					return fmt.Errorf("enqueue opened delivery: %w", err)
-				}
-				return nil
+				return enqueueDelivery(ctx, tx, inserted.ID, AssuranceTransitionOpened)
 			case !errors.Is(err, pgx.ErrNoRows):
 				return fmt.Errorf("open backup_assurance_exceptions: %w", err)
 			}
 
-			// Zero rows: an open row holds this identity, or the policy is
-			// not in this cluster. A new statement sees the winner's commit.
+			// Zero rows: an open row holds this identity, the id is taken,
+			// or the policy is not in this cluster. A new statement sees the
+			// winner's commit.
 			existing, err := scanAssuranceException(tx.QueryRow(ctx, `
 				SELECT `+assuranceExceptionColumns+`
 				  FROM backup_assurance_exceptions
@@ -287,6 +305,15 @@ func (s *BackupAssuranceStore) OpenExceptionAndEnqueue(
 				return fmt.Errorf("find open backup_assurance_exceptions: %w", err)
 			}
 
+			var idTaken bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS (SELECT 1 FROM backup_assurance_exceptions WHERE id = $1)`, e.ID).Scan(&idTaken); err != nil {
+				return fmt.Errorf("probe backup_assurance_exceptions id: %w", err)
+			}
+			if idTaken {
+				return fmt.Errorf("%w: id %s already belongs to another exception", ErrAssuranceExceptionInvalid, e.ID)
+			}
+
 			var one int
 			err = tx.QueryRow(ctx,
 				`SELECT 1 FROM backup_assurance_policies WHERE id = $1 AND cluster_id = $2`,
@@ -297,8 +324,9 @@ func (s *BackupAssuranceStore) OpenExceptionAndEnqueue(
 			case err != nil:
 				return fmt.Errorf("probe backup_assurance_policies: %w", err)
 			}
-			// The policy is fine, so the conflict was a concurrent open that
-			// has already been resolved again. Retry in a fresh transaction.
+			// The policy and the id are fine, so the conflict was a concurrent
+			// open that has already been resolved again. Retry in a fresh
+			// transaction.
 			raced = true
 			return nil
 		})
@@ -310,14 +338,14 @@ func (s *BackupAssuranceStore) OpenExceptionAndEnqueue(
 		}
 	}
 	return BackupAssuranceException{}, false, fmt.Errorf(
-		"open backup_assurance_exceptions: identity was opened and resolved concurrently %d times in a row",
-		assuranceOpenMaxAttempts)
+		"%w: opened and resolved concurrently %d times in a row", ErrAssuranceOpenContended, assuranceOpenMaxAttempts)
 }
 
 // ResolveExceptionAndEnqueue flips one open exception to resolved and inserts
 // its "resolved" delivery intent in ONE transaction. at becomes resolved_at
-// and reason is recorded as detail.resolutionReason (merged, never replacing
-// the rest of detail).
+// and reason is recorded as detail.resolutionReason (merged into the rest of
+// detail, never replacing it; a detail that is somehow not an object is
+// replaced by one so the merge cannot fail).
 //
 // resolved = true: this call performed the transition and enqueued exactly
 // one pending "resolved" intent. resolved = false, nil error: the row was
@@ -344,7 +372,8 @@ func (s *BackupAssuranceStore) ResolveExceptionAndEnqueue(
 			UPDATE backup_assurance_exceptions
 			   SET state = 'resolved',
 			       resolved_at = $2,
-			       detail = jsonb_set(detail, '{resolutionReason}', to_jsonb($3::text), true)
+			       detail = (CASE WHEN jsonb_typeof(detail) = 'object' THEN detail ELSE '{}'::jsonb END)
+			                || jsonb_build_object('resolutionReason', $3::text)
 			 WHERE id = $1 AND state = 'open'
 			RETURNING id`, id, at, reason).Scan(&resolvedID)
 		switch {
@@ -353,11 +382,8 @@ func (s *BackupAssuranceStore) ResolveExceptionAndEnqueue(
 		case err != nil:
 			return fmt.Errorf("resolve backup_assurance_exceptions: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO backup_assurance_deliveries (id, exception_id, transition, state)
-			VALUES ($1, $2, $3, 'pending')`,
-			deliveryIDFor(id, AssuranceTransitionResolved), id, AssuranceTransitionResolved); err != nil {
-			return fmt.Errorf("enqueue resolved delivery: %w", err)
+		if err := enqueueDelivery(ctx, tx, id, AssuranceTransitionResolved); err != nil {
+			return err
 		}
 		resolved = true
 		return nil
@@ -373,7 +399,9 @@ const assuranceDeliveryColumns = `
 	id, exception_id, transition, state, attempts, created_at, delivered_at, last_error`
 
 // qualifyColumns prefixes every column in a comma-separated projection with
-// alias so two projections can share one SELECT without ambiguity.
+// alias so two projections can share one SELECT without ambiguity. It is a
+// plain split on commas, so the projections it is given must list bare column
+// names only (no expressions with embedded commas); both callers do.
 func qualifyColumns(alias, columns string) string {
 	cols := strings.Split(columns, ",")
 	for i, c := range cols {
@@ -385,16 +413,19 @@ func qualifyColumns(alias, columns string) string {
 // ClaimPendingDeliveries atomically claims up to limit pending intents for
 // clusterID whose attempts are below maxAttempts, oldest first, incrementing
 // attempts on each, and returns them joined to their exceptions. Concurrent
-// claimers never receive the same row: the selection is FOR UPDATE SKIP
-// LOCKED, so a row another transaction is claiming is skipped, not waited on.
+// claimers never receive the same row from one statement: the selection is
+// FOR UPDATE SKIP LOCKED, so a row another transaction is claiming is
+// skipped, not waited on.
 //
-// Claiming counts as an attempt. A caller that claims and then neither marks
-// the row delivered nor failed (crash, cancelled context) leaves it pending
-// with attempts incremented; the next claim picks it up again until the
-// attempts are spent. A pending row found with attempts already at or above
-// maxAttempts is one such abandoned final attempt: it is moved to failed
-// (last_error set if empty) before the claim so the backlog cannot carry an
-// unclaimable pending row forever.
+// Claiming counts as an attempt, and a claimed row stays pending until the
+// caller marks it delivered or failed. A caller that does neither (crash,
+// cancelled context) leaves it pending with attempts incremented; the next
+// claim picks it up again until the attempts are spent. That is the
+// at-least-once window described in the file comment. A row whose attempts
+// are already spent is never claimed again; if its last claimer died before
+// marking it, it stays pending and visible in CountPendingDeliveries rather
+// than being moved to failed behind a live sender's back (there is no
+// claim timestamp to tell the two apart).
 //
 // The claim is scoped to clusterID through the exception join, so one
 // cluster's drain never spends another cluster's attempts.
@@ -406,17 +437,6 @@ func (s *BackupAssuranceStore) ClaimPendingDeliveries(
 	}
 	if maxAttempts <= 0 || limit <= 0 {
 		return nil, fmt.Errorf("claim backup_assurance_deliveries: maxAttempts (%d) and limit (%d) must be positive", maxAttempts, limit)
-	}
-
-	if _, err := s.pool.Exec(ctx, `
-		UPDATE backup_assurance_deliveries d
-		   SET state = 'failed',
-		       last_error = CASE WHEN d.last_error = '' THEN $3::text ELSE d.last_error END
-		  FROM backup_assurance_exceptions e
-		 WHERE e.id = d.exception_id AND e.cluster_id = $2
-		   AND d.state = 'pending' AND d.attempts >= $1`,
-		maxAttempts, clusterID, assuranceDeliveryExhaustedError); err != nil {
-		return nil, fmt.Errorf("fail exhausted backup_assurance_deliveries: %w", err)
 	}
 
 	rows, err := s.pool.Query(ctx, `
@@ -454,21 +474,16 @@ func (s *BackupAssuranceStore) ClaimPendingDeliveries(
 
 func scanAssuranceDeliveryJob(row pgx.CollectableRow) (AssuranceDeliveryJob, error) {
 	var (
-		j                      AssuranceDeliveryJob
-		subjectKind, condition string
+		d  AssuranceDelivery
+		es assuranceExceptionScan
 	)
-	d, e := &j.Delivery, &j.Exception
-	err := row.Scan(
+	dests := append([]any{
 		&d.ID, &d.ExceptionID, &d.Transition, &d.State, &d.Attempts, &d.CreatedAt, &d.DeliveredAt, &d.LastError,
-		&e.ID, &e.ClusterID, &e.PolicyID, &subjectKind, &e.SubjectNamespace, &e.SubjectName,
-		&e.SubjectUID, &condition, &e.State, &e.Severity, &e.OpenedAt, &e.LastObservedAt,
-		&e.ResolvedAt, &e.ObservationCount, &e.LastSuccessAt, &e.Detail)
-	if err != nil {
+	}, es.dests()...)
+	if err := row.Scan(dests...); err != nil {
 		return AssuranceDeliveryJob{}, err
 	}
-	e.SubjectKind = AssuranceScopeKind(subjectKind)
-	e.Condition = AssuranceCondition(condition)
-	return j, nil
+	return AssuranceDeliveryJob{Delivery: d, Exception: es.result()}, nil
 }
 
 // MarkDelivered moves a pending intent to delivered, stamping delivered_at on
@@ -488,23 +503,38 @@ func (s *BackupAssuranceStore) MarkDelivered(ctx context.Context, id uuid.UUID) 
 	return nil
 }
 
+// boundDeliveryError makes an arbitrary error string storable in a TEXT
+// column: NUL bytes (which PostgreSQL rejects) are dropped, invalid UTF-8 is
+// replaced, and the result is cut to assuranceDeliveryErrorMaxLen bytes on a
+// rune boundary so the cut itself cannot produce an invalid sequence.
+func boundDeliveryError(msg string) string {
+	msg = strings.ToValidUTF8(strings.ReplaceAll(msg, "\x00", ""), "�")
+	if len(msg) <= assuranceDeliveryErrorMaxLen {
+		return msg
+	}
+	cut := assuranceDeliveryErrorMaxLen
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut]
+}
+
 // MarkDeliveryFailed records a failed attempt on a pending intent. While
 // attempts < maxAttempts the row stays pending with last_error updated and
 // is retried by a later claim; once attempts >= maxAttempts it moves to
 // failed, which is terminal. A row that is missing or no longer pending
-// returns ErrAssuranceDeliveryNotPending.
+// returns ErrAssuranceDeliveryNotPending. errMsg is bounded and sanitised
+// before it is stored, so a hostile or oversized error cannot make the
+// failure record itself fail.
 func (s *BackupAssuranceStore) MarkDeliveryFailed(ctx context.Context, id uuid.UUID, errMsg string, maxAttempts int) error {
 	if maxAttempts <= 0 {
 		return fmt.Errorf("mark backup_assurance_deliveries failed: maxAttempts (%d) must be positive", maxAttempts)
-	}
-	if len(errMsg) > assuranceDeliveryErrorMaxLen {
-		errMsg = errMsg[:assuranceDeliveryErrorMaxLen]
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE backup_assurance_deliveries
 		   SET last_error = $2,
 		       state = CASE WHEN attempts >= $3 THEN 'failed' ELSE 'pending' END
-		 WHERE id = $1 AND state = 'pending'`, id, errMsg, maxAttempts)
+		 WHERE id = $1 AND state = 'pending'`, id, boundDeliveryError(errMsg), maxAttempts)
 	if err != nil {
 		return fmt.Errorf("mark backup_assurance_deliveries failed: %w", err)
 	}
@@ -516,7 +546,9 @@ func (s *BackupAssuranceStore) MarkDeliveryFailed(ctx context.Context, id uuid.U
 
 // CountPendingDeliveries returns how many intents for clusterID are still
 // pending and how many have terminally failed. The status endpoint reports
-// both as the delivery backlog.
+// both as the delivery backlog. A pending row whose attempts are spent (its
+// last claimer died before marking it) is counted as pending: it is honest
+// backlog, and nothing will claim it again.
 func (s *BackupAssuranceStore) CountPendingDeliveries(ctx context.Context, clusterID string) (pending, failed int, err error) {
 	err = s.pool.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE d.state = 'pending'),
