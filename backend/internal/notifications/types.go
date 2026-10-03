@@ -1,6 +1,9 @@
 package notifications
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // Source identifies the subsystem that produced a notification.
 type Source string
@@ -51,6 +54,58 @@ const (
 	SeverityWarning  Severity = "warning"
 	SeverityCritical Severity = "critical"
 )
+
+// EmitResult reports what NotificationService.EmitSync did with a
+// notification, so a caller holding a durable delivery intent (Release F
+// backup assurance) can tell "the feed carries it" from "nothing was written".
+// Emit discards it; only EmitSync returns it.
+type EmitResult int
+
+const (
+	// EmitFailed is the zero value: nothing was persisted. EmitSync returns
+	// it together with a non-nil error, so a caller that only inspects the
+	// result still cannot read a failure as a delivery.
+	EmitFailed EmitResult = iota
+	// EmitPersisted: the row was written, broadcast over WebSocket and
+	// offered to the external-channel queue. Persisted is not dispatched —
+	// when the queue is full the external leg is dropped and the result is
+	// still EmitPersisted, because the feed entry exists.
+	EmitPersisted
+	// EmitDeduped: an equivalent notification already exists inside the
+	// dedup window; nothing was written. The feed carries the earlier entry.
+	EmitDeduped
+	// EmitSkipped: the audit-source short circuit ran. The row was persisted
+	// and broadcast, but the dedup check and external dispatch were skipped
+	// (audit → Emit → audit would otherwise loop).
+	EmitSkipped
+)
+
+// Delivered reports whether the in-app feed carries the notification after
+// this result: true for EmitPersisted, EmitDeduped and EmitSkipped, false
+// for EmitFailed. A durable-intent caller marks its intent delivered on
+// true and retries (or gives up) on false.
+func (r EmitResult) Delivered() bool {
+	switch r {
+	case EmitPersisted, EmitDeduped, EmitSkipped:
+		return true
+	}
+	return false
+}
+
+// String names the result for logs.
+func (r EmitResult) String() string {
+	switch r {
+	case EmitFailed:
+		return "failed"
+	case EmitPersisted:
+		return "persisted"
+	case EmitDeduped:
+		return "deduped"
+	case EmitSkipped:
+		return "skipped"
+	}
+	return "EmitResult(" + strconv.Itoa(int(r)) + ")"
+}
 
 // ChannelType identifies the external dispatch mechanism.
 type ChannelType string

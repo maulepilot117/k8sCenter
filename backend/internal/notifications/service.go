@@ -79,11 +79,18 @@ type webhookPayload struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
+// eventBroadcaster is the one hub operation the service uses. *websocket.Hub
+// satisfies it; tests substitute a recorder so the exact broadcast a
+// notification produces can be asserted rather than recomputed.
+type eventBroadcaster interface {
+	HandleEvent(eventType, kind, namespace, name string, obj any)
+}
+
 // NotificationService is the core notification center.
 // It persists notifications, broadcasts via WebSocket, and dispatches to external channels.
 type NotificationService struct {
 	store       *Store
-	hub         *websocket.Hub
+	hub         eventBroadcaster
 	emailSender EmailSender
 	fcm         *FCMClient
 	queue       chan Notification
@@ -142,14 +149,35 @@ func (s *NotificationService) refreshCache(ctx context.Context) {
 
 // Emit persists a notification, broadcasts via WebSocket, and enqueues for external dispatch.
 // Safe to call from any goroutine. Non-blocking.
+//
+// Emit is the fire-and-forget path every existing emit site uses. It is
+// EmitSync with the outcome discarded and the error logged; callers that
+// must know whether the feed carries the notification use EmitSync.
 func (s *NotificationService) Emit(ctx context.Context, n Notification) {
+	if _, err := s.EmitSync(ctx, n); err != nil {
+		s.logger.Error("emit notification", "error", err)
+	}
+}
+
+// EmitSync is Emit with a reported outcome. It exists for callers holding a
+// durable delivery intent (Release F backup assurance) that must decide
+// whether to mark the intent delivered or retry: EmitPersisted, EmitDeduped
+// and EmitSkipped all mean the in-app feed carries the notification
+// (EmitResult.Delivered), EmitFailed with a non-nil error means nothing was
+// written. The result is never EmitFailed with a nil error.
+//
+// A dedup lookup failure is logged and emission continues ("better to
+// duplicate than to drop"), so a flaky dedup query yields EmitPersisted, not
+// an error. A full dispatch queue drops only the external leg and still
+// yields EmitPersisted: persisted is not dispatched.
+func (s *NotificationService) EmitSync(ctx context.Context, n Notification) (EmitResult, error) {
 	// Guard: skip audit-source to prevent circular audit → Emit → audit loop.
 	// Audit notifications are persisted and broadcast but never externally dispatched.
 	if n.Source == SourceAudit {
 		if err := s.persistAndBroadcast(ctx, n); err != nil {
-			s.logger.Error("emit notification", "error", err)
+			return EmitFailed, err
 		}
-		return
+		return EmitSkipped, nil
 	}
 
 	// Dedup: suppress if same (source, kind, ns, name, title, cluster, UID)
@@ -160,12 +188,11 @@ func (s *NotificationService) Emit(ctx context.Context, n Notification) {
 		// Continue — better to duplicate than to drop
 	}
 	if exists {
-		return
+		return EmitDeduped, nil
 	}
 
 	if err := s.persistAndBroadcast(ctx, n); err != nil {
-		s.logger.Error("emit notification", "error", err)
-		return
+		return EmitFailed, err
 	}
 
 	// Enqueue for external dispatch (non-blocking)
@@ -175,6 +202,7 @@ func (s *NotificationService) Emit(ctx context.Context, n Notification) {
 		s.logger.Warn("notification dispatch queue full, dropping external dispatch",
 			"source", n.Source, "title", n.Title)
 	}
+	return EmitPersisted, nil
 }
 
 func (s *NotificationService) persistAndBroadcast(ctx context.Context, n Notification) error {
@@ -183,10 +211,16 @@ func (s *NotificationService) persistAndBroadcast(ctx context.Context, n Notific
 		return fmt.Errorf("persist: %w", err)
 	}
 	n.ID = id
+	s.hub.HandleEvent("ADDED", "notifications", "", n.ID, broadcastPayload(n))
+	return nil
+}
 
-	// Broadcast stripped payload via WebSocket — only id, source, severity, title.
-	// No resource fields to prevent namespace leakage to unauthorized WS subscribers.
-	// Clients fetch full details via REST (which enforces RBAC).
+// broadcastPayload is the WebSocket payload for a persisted notification:
+// only id, source, severity and title. No resource fields, so an
+// unauthorized WS subscriber learns nothing about namespaces; clients fetch
+// full details via REST, which enforces RBAC. Kept as a pure function so the
+// exact bytes can be pinned by test.
+func broadcastPayload(n Notification) json.RawMessage {
 	stripped := map[string]any{
 		"id":       n.ID,
 		"source":   n.Source,
@@ -194,8 +228,7 @@ func (s *NotificationService) persistAndBroadcast(ctx context.Context, n Notific
 		"title":    n.Title,
 	}
 	strippedJSON, _ := json.Marshal(stripped)
-	s.hub.HandleEvent("ADDED", "notifications", "", n.ID, json.RawMessage(strippedJSON))
-	return nil
+	return json.RawMessage(strippedJSON)
 }
 
 // --- Dispatch goroutine ---
@@ -556,6 +589,15 @@ func (s *NotificationService) sendDigests(ctx context.Context) {
 // persisted (json:"-").
 var suppressResourceFieldsBySource = map[Source]bool{
 	SourceExternalSecrets: true,
+	// Release F: backup-assurance exceptions are collected with the platform
+	// ServiceAccount and cover namespaces the digest recipient may not read.
+	// This entry covers the email digest only; a Velero emitter that sets
+	// resource fields must also set SuppressResourceFields: true so Slack,
+	// webhook and mobile push strip them at send time (see the rule above).
+	// The pre-existing velero.Handler.afterWrite notification carries no
+	// resource fields, so for it this entry is a no-op (pinned by
+	// TestSanitizeForEmailDigest_ExistingVeleroCacheNotificationUnaffected).
+	SourceVelero: true,
 }
 
 // sanitizeForEmailDigest mutates the slice in place, zeroing resource
