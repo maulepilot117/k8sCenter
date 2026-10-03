@@ -1,6 +1,9 @@
 package wizard
 
 import (
+	"errors"
+	"strings"
+
 	"github.com/robfig/cron/v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -196,6 +199,19 @@ type VeleroScheduleInput struct {
 	SnapshotVolumes    *bool    `json:"snapshotVolumes,omitempty"`
 }
 
+// parseScheduleCron parses a Velero schedule expression without reaching the
+// robfig/cron v3.0.1 panic: a CRON_TZ=/TZ= prefix with no spec after it makes
+// the library slice at a space that is not there. Mirrors the guard in
+// internal/velero (parseCron, assurance.go); duplicated rather than imported
+// because pulling the velero handler package, and its k8s/store dependency
+// tree, into the wizard package for four lines is the wrong layering.
+func parseScheduleCron(expr string) (cron.Schedule, error) {
+	if (strings.HasPrefix(expr, "TZ=") || strings.HasPrefix(expr, "CRON_TZ=")) && !strings.Contains(expr, " ") {
+		return nil, errors.New("time zone prefix is not followed by a schedule")
+	}
+	return cron.ParseStandard(expr)
+}
+
 // Validate checks the VeleroScheduleInput and returns field-level errors.
 func (v *VeleroScheduleInput) Validate() []FieldError {
 	var errs []FieldError
@@ -212,7 +228,7 @@ func (v *VeleroScheduleInput) Validate() []FieldError {
 
 	if v.Schedule == "" {
 		errs = append(errs, FieldError{Field: "schedule", Message: "cron schedule is required"})
-	} else if _, err := cron.ParseStandard(v.Schedule); err != nil {
+	} else if _, err := parseScheduleCron(v.Schedule); err != nil {
 		errs = append(errs, FieldError{Field: "schedule", Message: "must be a valid cron expression (e.g., '0 * * * *' for hourly)"})
 	}
 

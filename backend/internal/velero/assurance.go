@@ -160,8 +160,8 @@ var errCronZoneOnly = errors.New("time zone prefix is not followed by a schedule
 // descriptor (@daily, @every 1h), with an optional CRON_TZ=/TZ= prefix. It
 // is this package's one parse path for schedules, shared with computeNextRun
 // and the create/update validation, so none of them can reach the robfig
-// panic. (internal/wizard still calls cron.ParseStandard directly; chi's
-// recovery turns that panic into a 500, not a crash.)
+// panic. internal/wizard keeps an equivalent guard (parseScheduleCron); keep
+// the two in step.
 func parseCron(expr string) (cron.Schedule, error) {
 	if (strings.HasPrefix(expr, "TZ=") || strings.HasPrefix(expr, "CRON_TZ=")) && !strings.Contains(expr, " ") {
 		return nil, errCronZoneOnly
