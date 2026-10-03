@@ -184,6 +184,10 @@ func TestValidatePolicy_RejectsInconsistentShapes(t *testing.T) {
 		{"bad treatPartialAs", func(p *BackupAssurancePolicy) { p.TreatPartialAs = "ignore" }},
 		{"fractional max age", func(p *BackupAssurancePolicy) { p.MaxAge = 10*time.Minute + time.Millisecond }},
 		{"max age overflows INTEGER", func(p *BackupAssurancePolicy) { p.MaxAge = 1 << 31 * time.Second }},
+		// -(2^32 - 86400) seconds wraps to +86400 in an int32 conversion: a
+		// valid-looking one-day max age that the CHECKs would accept.
+		{"max age wraps negative to positive", func(p *BackupAssurancePolicy) { p.MaxAge = -(1<<32 - 86400) * time.Second }},
+		{"grace underflows INTEGER", func(p *BackupAssurancePolicy) { p.Grace = -(1<<31 + 1) * time.Second }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -553,6 +557,42 @@ func TestException_ObserveIncrementsCountWithoutReopening(t *testing.T) {
 		t.Errorf("detail = %s (%v); want the last observation's detail", e.Detail, err)
 	}
 
+	// A delayed observation from another replica, older than the stored one,
+	// is dropped: it must not overwrite newer severity, success time or detail.
+	if err := s.ObserveException(ctx, id, observedAt.Add(-time.Minute), "info", nil, []byte(`{"stale":true}`)); err != nil {
+		t.Fatalf("stale ObserveException = %v; want nil (dropped)", err)
+	}
+	// Permanent input errors are classified before reaching the database.
+	if err := s.ObserveException(ctx, id, observedAt, "severe", nil, nil); !errors.Is(err, ErrAssuranceObservationInvalid) {
+		t.Errorf("ObserveException with an unknown severity = %v; want ErrAssuranceObservationInvalid", err)
+	}
+	if err := s.ObserveException(ctx, id, observedAt, "warning", nil, []byte(`{not json`)); !errors.Is(err, ErrAssuranceObservationInvalid) {
+		t.Errorf("ObserveException with malformed detail = %v; want ErrAssuranceObservationInvalid", err)
+	}
+	open, err = s.ListOpenExceptions(ctx, cluster)
+	if err != nil || len(open) != 1 {
+		t.Fatalf("ListOpenExceptions after stale/invalid observations = (%d rows, %v)", len(open), err)
+	}
+	if e := open[0]; e.ObservationCount != 3 || e.Severity != "critical" || !e.LastObservedAt.Equal(observedAt) ||
+		e.LastSuccessAt == nil || string(e.Detail) == `{"stale": true}` {
+		t.Errorf("stale or invalid observation changed the row: count=%d severity=%s lastObserved=%v lastSuccess=%v detail=%s",
+			e.ObservationCount, e.Severity, e.LastObservedAt, e.LastSuccessAt, e.Detail)
+	}
+
+	// An observation at the same instant is applied, and a nil lastSuccessAt
+	// keeps the success an earlier observation recorded.
+	if err := s.ObserveException(ctx, id, observedAt, "critical", nil, nil); err != nil {
+		t.Fatalf("same-instant ObserveException: %v", err)
+	}
+	open, err = s.ListOpenExceptions(ctx, cluster)
+	if err != nil || len(open) != 1 {
+		t.Fatalf("ListOpenExceptions = (%d rows, %v)", len(open), err)
+	}
+	if e := open[0]; e.ObservationCount != 4 || e.LastSuccessAt == nil || !e.LastSuccessAt.Equal(lastSuccess) {
+		t.Errorf("after a nil-lastSuccess observation got count=%d lastSuccess=%v; want 4 and %v retained",
+			e.ObservationCount, e.LastSuccessAt, lastSuccess)
+	}
+
 	// A resolved row is never resurrected by a late observation.
 	if _, err := pool.Exec(ctx,
 		`UPDATE backup_assurance_exceptions SET state = 'resolved', resolved_at = NOW() WHERE id = $1`, id); err != nil {
@@ -570,8 +610,8 @@ func TestException_ObserveIncrementsCountWithoutReopening(t *testing.T) {
 		`SELECT observation_count, state FROM backup_assurance_exceptions WHERE id = $1`, id).Scan(&count, &state); err != nil {
 		t.Fatalf("reading row: %v", err)
 	}
-	if count != 3 || state != AssuranceStateResolved {
-		t.Errorf("resolved row after late observation: count=%d state=%s; want 3 resolved", count, state)
+	if count != 4 || state != AssuranceStateResolved {
+		t.Errorf("resolved row after late observation: count=%d state=%s; want 4 resolved", count, state)
 	}
 }
 
@@ -652,6 +692,7 @@ func TestException_ListExceptionsFiltersAndPages(t *testing.T) {
 		{"resolved only", AssuranceExceptionQuery{State: AssuranceStateResolved}, []uuid.UUID{veleroID}, 1},
 		{"restricted to apps", AssuranceExceptionQuery{RestrictNamespaces: true, Namespaces: []string{"apps"}}, []uuid.UUID{appsID}, 1},
 		{"restricted with no namespaces sees nothing", AssuranceExceptionQuery{RestrictNamespaces: true}, []uuid.UUID{}, 0},
+		{`listing "" admits cluster-scoped subjects`, AssuranceExceptionQuery{RestrictNamespaces: true, Namespaces: []string{"", "apps"}}, []uuid.UUID{appsID, clusterScopedID}, 2},
 		{"page 2 of size 1", AssuranceExceptionQuery{Limit: 1, Offset: 1}, []uuid.UUID{veleroID}, 3},
 		{"offset past the end keeps the total", AssuranceExceptionQuery{Offset: 10}, []uuid.UUID{}, 3},
 	}
@@ -678,8 +719,15 @@ func TestException_ListExceptionsFiltersAndPages(t *testing.T) {
 	}
 }
 
+// TestException_PruneResolvedRespectsRetention runs on a throwaway database:
+// PruneResolved is deliberately global (no cluster predicate), so on the
+// shared harness database it could delete another suite's backdated rows.
 func TestException_PruneResolvedRespectsRetention(t *testing.T) {
-	s, pool := newAssuranceStore(t)
+	m, pool := migrationScratchDB(t)
+	if err := m.Up(); err != nil {
+		t.Fatalf("migrating the scratch database: %v", err)
+	}
+	s := NewBackupAssuranceStore(pool)
 	ctx := t.Context()
 	cluster := testOwnerID(t)
 	p := mustInsertPolicy(t, s, schedulePolicy(cluster, "velero", "daily"))
@@ -697,10 +745,8 @@ func TestException_PruneResolvedRespectsRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PruneResolved: %v", err)
 	}
-	// The prune is global, so other suites' expired residue may be counted
-	// too; this test's expired row guarantees at least one.
-	if n < 1 {
-		t.Errorf("PruneResolved removed %d rows; want at least the expired one", n)
+	if n != 1 {
+		t.Errorf("PruneResolved removed %d rows; want exactly the one expired row", n)
 	}
 	if exceptionExists(t, pool, expired) {
 		t.Error("resolved exception past retention survived the prune")
@@ -780,6 +826,26 @@ func TestBackupAssuranceStore_WithTxRollsBackOnError(t *testing.T) {
 	}
 	if _, err := s.GetPolicy(ctx, cluster, p.ID); !errors.Is(err, ErrAssurancePolicyNotFound) {
 		t.Fatalf("row written inside a failed WithTx is visible (GetPolicy = %v); want rollback", err)
+	}
+
+	// A panic inside fn propagates, and the deferred rollback still runs.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("WithTx swallowed a panic from fn; want it to propagate")
+			}
+		}()
+		_ = s.WithTx(ctx, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO backup_assurance_policies (id, cluster_id, scope_kind, scope_namespace, scope_name, max_age_seconds, created_by)
+				VALUES ($1, $2, 'schedule', 'velero', 'daily', 3600, 'test')`, p.ID, cluster); err != nil {
+				t.Errorf("insert inside tx: %v", err)
+			}
+			panic("boom")
+		})
+	}()
+	if _, err := s.GetPolicy(ctx, cluster, p.ID); !errors.Is(err, ErrAssurancePolicyNotFound) {
+		t.Fatalf("row written inside a panicking WithTx is visible (GetPolicy = %v); want rollback", err)
 	}
 
 	cancelled, cancel := context.WithCancel(ctx)

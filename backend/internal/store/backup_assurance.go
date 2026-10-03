@@ -19,6 +19,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -97,6 +98,22 @@ const (
 	AssuranceStateOpen     = "open"
 	AssuranceStateResolved = "resolved"
 )
+
+// Exception severities. Mirror the CHECK on backup_assurance_exceptions.severity.
+const (
+	AssuranceSeverityInfo     = "info"
+	AssuranceSeverityWarning  = "warning"
+	AssuranceSeverityCritical = "critical"
+)
+
+// validAssuranceSeverity reports whether s is a severity the schema admits.
+func validAssuranceSeverity(s string) bool {
+	switch s {
+	case AssuranceSeverityInfo, AssuranceSeverityWarning, AssuranceSeverityCritical:
+		return true
+	}
+	return false
+}
 
 // TreatPartialAs values for BackupAssurancePolicy.TreatPartialAs.
 const (
@@ -197,6 +214,10 @@ var (
 	// row does not exist or is no longer open. An observation never
 	// resurrects a resolved exception.
 	ErrAssuranceExceptionNotOpen = errors.New("backup assurance exception is not open")
+	// ErrAssuranceObservationInvalid wraps an observation the schema would
+	// reject (unknown severity, malformed detail). It is permanent: retrying
+	// the same observation can never succeed.
+	ErrAssuranceObservationInvalid = errors.New("invalid backup assurance observation")
 )
 
 // validatePolicy rejects what the schema cannot express or would store in an
@@ -236,10 +257,18 @@ func validatePolicy(p BackupAssurancePolicy) error {
 	if p.MaxAge%time.Second != 0 || p.Grace%time.Second != 0 {
 		return invalid("max age and grace must be whole seconds")
 	}
-	if p.MaxAge/time.Second > math.MaxInt32 || p.Grace/time.Second > math.MaxInt32 {
-		return invalid("max age and grace must fit in %d seconds", math.MaxInt32)
+	// Both bounds matter: an out-of-range value in either direction would
+	// wrap in the int32 conversion into an unrelated value that might pass
+	// the CHECKs (a huge negative grace can wrap to a positive one).
+	if !fitsInt32Seconds(p.MaxAge) || !fitsInt32Seconds(p.Grace) {
+		return invalid("max age and grace must fit in a 32-bit count of seconds")
 	}
 	return nil
+}
+
+func fitsInt32Seconds(d time.Duration) bool {
+	s := d / time.Second
+	return s >= math.MinInt32 && s <= math.MaxInt32
 }
 
 // durationSeconds converts a validated duration to the INTEGER column value.
@@ -519,27 +548,57 @@ func (s *BackupAssuranceStore) ListExceptions(ctx context.Context, clusterID str
 // it bumps observation_count and refreshes last_observed_at, severity,
 // last_success_at and detail. It never reopens a resolved row; observing a
 // row that is missing or resolved returns ErrAssuranceExceptionNotOpen.
-// A nil detail is stored as '{}'.
+// An empty detail is stored as '{}'. A nil lastSuccessAt keeps the stored
+// value: "no success seen in this observation" never erases a success an
+// earlier observation recorded.
+//
+// Observations are monotonic in observedAt. Two replicas can observe the
+// same open exception concurrently; an observation older than the one
+// already stored is dropped (nil error, nothing written) so a delayed write
+// can never replace newer severity, last_success_at or detail with stale
+// values. An observation at the same instant as the stored one is applied.
+//
+// An unknown severity or malformed detail returns
+// ErrAssuranceObservationInvalid before anything is sent to the database,
+// so a permanent input error is distinguishable from a transient one.
 func (s *BackupAssuranceStore) ObserveException(
 	ctx context.Context, id uuid.UUID, observedAt time.Time,
 	severity string, lastSuccessAt *time.Time, detail []byte,
 ) error {
-	if detail == nil {
+	if !validAssuranceSeverity(severity) {
+		return fmt.Errorf("%w: unknown severity %q", ErrAssuranceObservationInvalid, severity)
+	}
+	if len(detail) == 0 {
 		detail = []byte(`{}`)
+	} else if !json.Valid(detail) {
+		return fmt.Errorf("%w: detail is not valid JSON", ErrAssuranceObservationInvalid)
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE backup_assurance_exceptions
 		SET last_observed_at = $2, observation_count = observation_count + 1,
-		    severity = $3, last_success_at = $4, detail = $5
-		WHERE id = $1 AND state = 'open'`,
+		    severity = $3, last_success_at = COALESCE($4, last_success_at), detail = $5
+		WHERE id = $1 AND state = 'open' AND last_observed_at <= $2`,
 		id, observedAt, severity, lastSuccessAt, detail)
 	if err != nil {
 		return fmt.Errorf("observe backup_assurance_exceptions: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrAssuranceExceptionNotOpen
+	if tag.RowsAffected() > 0 {
+		return nil
 	}
-	return nil
+	// Zero rows: missing, resolved, or a stale observation of an open row.
+	var state string
+	err = s.pool.QueryRow(ctx,
+		`SELECT state FROM backup_assurance_exceptions WHERE id = $1`, id).Scan(&state)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrAssuranceExceptionNotOpen
+	case err != nil:
+		return fmt.Errorf("probe backup_assurance_exceptions: %w", err)
+	case state != AssuranceStateOpen:
+		return ErrAssuranceExceptionNotOpen
+	default:
+		return nil // stale observation of a still-open row: dropped
+	}
 }
 
 // PruneResolved deletes resolved exceptions whose resolved_at is older than
@@ -561,6 +620,9 @@ func (s *BackupAssuranceStore) PruneResolved(ctx context.Context, retention time
 	return tag.RowsAffected(), nil
 }
 
+// assuranceRollbackTimeout bounds WithTx's deferred rollback.
+const assuranceRollbackTimeout = 5 * time.Second
+
 // WithTx runs fn inside a transaction, committing when fn returns nil and
 // rolling back otherwise (including when fn panics, via the deferred
 // Rollback). U32b's OpenExceptionAndEnqueue / ResolveExceptionAndEnqueue
@@ -571,7 +633,14 @@ func (s *BackupAssuranceStore) WithTx(ctx context.Context, fn func(pgx.Tx) error
 		return fmt.Errorf("begin backup assurance tx: %w", err)
 	}
 	// Rollback after a successful Commit is a no-op returning ErrTxClosed.
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	// It runs on a context detached from ctx's cancellation (a cancelled
+	// caller must still release the transaction) but with its own bound, so
+	// a wedged connection cannot hold the calling goroutine indefinitely.
+	defer func() {
+		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), assuranceRollbackTimeout)
+		defer cancel()
+		_ = tx.Rollback(rbCtx)
+	}()
 
 	if err := fn(tx); err != nil {
 		return err
