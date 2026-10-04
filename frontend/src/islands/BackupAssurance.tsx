@@ -31,7 +31,10 @@ import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
-import { ExceptionList } from "@/components/velero/AssuranceExceptions.tsx";
+import {
+  ExceptionList,
+  type RequestFailure,
+} from "@/components/velero/AssuranceExceptions.tsx";
 import {
   emptyForm,
   FIELD_LABELS,
@@ -75,13 +78,6 @@ const POLICIES_URL = "/v1/velero/assurance/policies";
 
 const ROOT_CLASS = "flex flex-col gap-5 p-6";
 const ROOT_TEST_ID = "backup-assurance";
-
-/** A failed request, reduced to what the page branches on. */
-interface RequestFailure {
-  status: number;
-  reason?: string;
-  message: string;
-}
 
 function toFailure(err: unknown): RequestFailure {
   if (err instanceof ApiError) {

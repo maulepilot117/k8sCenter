@@ -28,6 +28,16 @@ import {
   scopeLabel,
 } from "@/lib/backup-assurance-types.ts";
 
+/**
+ * A failed request, reduced to what the page branches on. The island builds
+ * these for every request stream; the exception list renders one.
+ */
+export interface RequestFailure {
+  status: number;
+  reason?: string;
+  message: string;
+}
+
 function ExceptionCard({ ex }: { ex: AssuranceException }) {
   const d = ex.detail;
   const subject = scopeLabel(
@@ -199,7 +209,7 @@ export function ExceptionList({
   total: number;
   offset: number;
   loading: boolean;
-  failure: { status: number; message: string } | null;
+  failure: RequestFailure | null;
   state: SurfaceState;
   policyCount: number;
   onSwitchState: (next: AssuranceExceptionState) => void;
