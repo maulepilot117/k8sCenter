@@ -254,7 +254,13 @@ func (h *Handler) objectAccessFor(ctx context.Context, user *auth.User, clusterI
 	if !mayReachCluster(user, clusterID) {
 		return denyAll
 	}
-	m := &accessMemo{ctx: ctx, checker: h.access, clusterID: clusterID, user: user,
+	// One budget for every SAR of this request: a stalled cluster makes the
+	// first check time out and the memo fail closed for the rest, instead of
+	// the route timeout rendering nothing. The context is released with the
+	// request; nothing outlives it.
+	cctx, cancel := context.WithTimeout(ctx, h.clusterTimeout)
+	context.AfterFunc(ctx, cancel)
+	m := &accessMemo{ctx: cctx, checker: h.access, clusterID: clusterID, user: user,
 		logger: h.logger, cache: map[accessKey]bool{}}
 	return m.allowed
 }
@@ -370,7 +376,9 @@ func (h *Handler) currentGeneration(ctx context.Context, user *auth.User, cluste
 	if h.clusters == nil || !mayReachCluster(user, clusterID) {
 		return ""
 	}
-	_, target, err := h.clusters.TargetFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	gctx, cancel := context.WithTimeout(ctx, h.clusterTimeout)
+	defer cancel()
+	_, target, err := h.clusters.TargetFor(gctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil || target == nil {
 		h.logger.Debug("change receipt: target generation unavailable", "cluster", clusterID, "error", err)
 		return ""
@@ -438,7 +446,8 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 // watcher; the write is derived state, not an operator action, so it is not
 // audited). Every other reader gets the same evaluation live and nothing is
 // stored. A receipt whose verification is already final returns the stored
-// verdict without touching the cluster, for every reader.
+// verdict without a verification read; the per-object SARs that redact its
+// checks still run, for every reader.
 //
 // A non-admin reading a remote receipt whose verdict is not yet final is
 // answered 403 (middleware.ClusterContext's rule), so the status for that
@@ -478,7 +487,7 @@ func (h *Handler) HandleVerification(w http.ResponseWriter, r *http.Request) {
 			err = vctx.Err()
 		}
 		if err != nil {
-			h.writeVerifyError(w, rec.ID, err)
+			h.writeVerifyError(w, r, rec.ID, err)
 			return
 		}
 	}
@@ -493,14 +502,16 @@ func (h *Handler) HandleVerification(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeVerifyError maps a verification pass's errors identically for every
-// reader. Context errors are matched first, wrapped or not: a
-// cancelled client gets nothing (there is no one to write to), the request
-// budget is a 504. Nothing about the receipt or the cluster is echoed.
-func (h *Handler) writeVerifyError(w http.ResponseWriter, id uuid.UUID, err error) {
+// reader. A request whose own context has ended gets nothing (there is no
+// one to write to); that is decided on the request's state, not on the error
+// text, so a cancellation raised anywhere else still gets an answer. Then the
+// request budget is a 504, and store or input errors keep their codes.
+// Nothing about the receipt or the cluster is echoed.
+func (h *Handler) writeVerifyError(w http.ResponseWriter, r *http.Request, id uuid.UUID, err error) {
 	var unavailable *StoreUnavailableError
 	switch {
-	case errors.Is(err, context.Canceled):
-		h.logger.Debug("change receipt verification abandoned: request cancelled", "receiptId", id)
+	case r.Context().Err() != nil:
+		h.logger.Debug("change receipt verification abandoned: request ended", "receiptId", id, "error", err)
 	case errors.Is(err, context.DeadlineExceeded):
 		httputil.WriteError(w, http.StatusGatewayTimeout, "verification timed out", "")
 	case errors.As(err, &unavailable):
@@ -530,7 +541,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	page, ok := intQuery(q.Get("page"))
 	if !ok || page > maxListPage {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid page",
-			fmt.Sprintf("page must be an integer between 1 and %d", maxListPage))
+			fmt.Sprintf("page must be an integer of at most %d", maxListPage))
 		return
 	}
 	pageSize, ok := intQuery(q.Get("pageSize"))

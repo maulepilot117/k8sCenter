@@ -134,10 +134,44 @@ func TestHandleVerification_RequestCancelled(t *testing.T) {
 			t.Fatal("a cancelled verification must persist nothing")
 		}
 	}
-	for _, c := range hs.reader.calls {
-		if c == "setVerification" {
-			t.Fatal("a cancelled verification reached the store")
-		}
+}
+
+func TestHandleVerification_StoreErrorWithLiveRequestIsNotSilent(t *testing.T) {
+	hs := newHarness(t)
+	hs.targeter.dyn, _ = fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
+	// The store's own cancellation, while THIS request is still alive: the
+	// error text says "canceled" but the client is waiting for an answer.
+	hs.reader.failSetVerification = context.Canceled
+	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
+
+	w := hs.verify(t, testUser, rec.ID)
+	expectError(t, w, http.StatusServiceUnavailable, "change receipt store unavailable")
+	if decodeEnvelope(t, w).Error.Reason != ReasonReceiptStoreUnavailable {
+		t.Fatalf("reason = %s", w.Body.String())
+	}
+}
+
+func TestHandleVerification_StalledAccessCheckRedactsWithinBudget(t *testing.T) {
+	hs := newHarness(t)
+	hs.h.clusterTimeout = 20 * time.Millisecond
+	hs.access.delay = 5 * time.Second // a blackholed cluster
+	hs.targeter.dyn, _ = fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
+	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, 10*time.Second,
+		recordedDeployment(0, "web", "uid-web"), recordedObj(1, "", "v1", "configmaps", "ConfigMap", "prod", "cfg", "uid-cfg"))
+
+	start := time.Now()
+	w := hs.verify(t, testUser, rec.ID)
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("the post-pass SARs were not bounded by the budget")
+	}
+	v := decodeView(t, w)
+	// Two objects: a ready Deployment (pass) and a ConfigMap (kind not
+	// supported), so the aggregate is inconclusive. Both checks are stubs.
+	if v.State != store.VerifyInconclusive || len(v.Checks) != 2 || v.RedactedChecks != 2 {
+		t.Fatalf("a stalled SAR must fail closed: %+v", v)
+	}
+	if len(hs.access.calls) != 1 {
+		t.Fatalf("after the deadline the memo must stop dialing: %v", hs.access.calls)
 	}
 }
 

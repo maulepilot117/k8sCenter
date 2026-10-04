@@ -68,11 +68,13 @@ type CheckView struct {
 }
 
 // OwnershipView is one stored ownership entry after read-time
-// re-authorization. RedactedApps counts confirming applications removed
-// because the caller may not currently get them. When every confirming
-// application was removed the verdict is collapsed too (controller none,
-// confidence forbidden, reason OwnershipReasonAppsRedacted): a caller who may
-// not get the application is not told that it claims the object.
+// re-authorization. RedactedApps is the COUNT of confirming applications
+// removed because the caller may not currently get them; that count is the
+// only thing disclosed about them. Their identity, repository and tool are
+// not: Controller, Confidence and Reason are recomputed from the applications
+// that remain (argocd / fluxcd confirmed, both conflicting), and when none
+// remains the entry collapses to controller none, confidence forbidden,
+// reason OwnershipReasonAppsRedacted.
 type OwnershipView struct {
 	gitops.OwnershipResult
 	RedactedApps int `json:"redactedApps,omitempty"`
@@ -81,6 +83,16 @@ type OwnershipView struct {
 // OwnershipReasonAppsRedacted is the OwnershipResult.Reason of a collapsed
 // entry. Stable wire value, in the gitops reason vocabulary.
 const OwnershipReasonAppsRedacted = "apps-redacted"
+
+// The gitops confirmation reasons a recomputed verdict carries. They are
+// gitops' wire values (unexported there); restated here so an entry whose
+// confirming set shrank reads like one gitops would have produced for that
+// set.
+const (
+	ownershipReasonConfirmedArgo = "confirmed-argo-status"
+	ownershipReasonConfirmedFlux = "confirmed-flux-inventory"
+	ownershipReasonBothClaim     = "both-claim"
+)
 
 // ReceiptSummary is the historical outcome count of a receipt, computed from
 // every recorded object BEFORE redaction: counts leak no identity and the
@@ -279,11 +291,12 @@ type objectKey struct{ group, kind, namespace, name string }
 // confirming applications the caller may currently get (Argo Applications,
 // Flux Kustomizations and HelmReleases are checked by their own GVR in their
 // namespace; an application of any other kind cannot be re-authorized and is
-// removed). Evidence naming a removed application goes with it, and an entry
-// left with no application collapses to controller none / confidence
-// forbidden / reason apps-redacted. The rule is the same for owner, grantee
-// and admin: an application the caller can no longer list is not disclosed
-// through a receipt they wrote earlier.
+// removed). Evidence naming a removed application goes with it, and once any
+// application was removed the verdict is recomputed from the tools of those
+// that remain (verdictFor), so a hidden application's tool is not disclosed
+// through controller "both" or reason "both-claim". The rule is the same for
+// owner, grantee and admin: an application the caller can no longer list is
+// not disclosed through a receipt they wrote earlier.
 //
 // objs are the receipt's recorded objects and views their redacted
 // counterparts from redactObjects, aligned by position: a hidden view carries
@@ -317,6 +330,7 @@ func redactOwnership(stored []gitops.OwnershipResult, objs []store.ReceiptObject
 		v := OwnershipView{OwnershipResult: res}
 		v.Apps = nil
 		kept := map[string]bool{}
+		var argo, flux bool
 		for _, app := range res.Apps {
 			group, resource, ok := appResource(app.Kind)
 			if !ok || !allowed(group, resource, app.Namespace) {
@@ -325,6 +339,12 @@ func redactOwnership(stored []gitops.OwnershipResult, objs []store.ReceiptObject
 			}
 			v.Apps = append(v.Apps, app)
 			kept[app.AppID] = true
+			switch app.Tool {
+			case gitops.ToolArgoCD:
+				argo = true
+			case gitops.ToolFluxCD:
+				flux = true
+			}
 		}
 		v.Evidence = nil
 		for _, ev := range res.Evidence {
@@ -332,14 +352,30 @@ func redactOwnership(stored []gitops.OwnershipResult, objs []store.ReceiptObject
 				v.Evidence = append(v.Evidence, ev)
 			}
 		}
-		if len(res.Apps) > 0 && len(v.Apps) == 0 {
-			v.Controller = gitops.OwnedByNone
-			v.Confidence = gitops.ConfidenceForbidden
-			v.Reason = OwnershipReasonAppsRedacted
+		if v.RedactedApps > 0 {
+			v.Controller, v.Confidence, v.Reason = verdictFor(argo, flux)
 		}
 		out = append(out, v)
 	}
 	return out, redacted
+}
+
+// verdictFor restates an ownership verdict from the tools of the confirming
+// applications the caller may still see, the way gitops decides from its own
+// confirmations: one tool is confirmed, two are conflicting, none collapses
+// to the apps-redacted form. Used only when at least one application was
+// hidden; an untouched entry keeps the stored verdict verbatim.
+func verdictFor(argo, flux bool) (gitops.OwnershipController, gitops.OwnershipConfidence, string) {
+	switch {
+	case argo && flux:
+		return gitops.OwnedByBoth, gitops.ConfidenceConflicting, ownershipReasonBothClaim
+	case argo:
+		return gitops.OwnedByArgoCD, gitops.ConfidenceConfirmed, ownershipReasonConfirmedArgo
+	case flux:
+		return gitops.OwnedByFluxCD, gitops.ConfidenceConfirmed, ownershipReasonConfirmedFlux
+	default:
+		return gitops.OwnedByNone, gitops.ConfidenceForbidden, OwnershipReasonAppsRedacted
+	}
 }
 
 // appResource maps a confirming application's kind to the (group, resource)

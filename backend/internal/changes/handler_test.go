@@ -91,16 +91,25 @@ func (f *fakeReader) GrantsFor(_ context.Context, id uuid.UUID) ([]string, error
 type fakeTargeter struct {
 	mu         sync.Mutex
 	asked      []string
+	delay      time.Duration // a stalled cluster: honours ctx like the real router
 	dyn        dynamic.Interface
 	mapper     meta.RESTMapper
 	generation string
 	err        error
 }
 
-func (f *fakeTargeter) TargetFor(_ context.Context, clusterID, _ string, _ []string) (*k8s.ClientPair, *k8s.TargetSchema, error) {
+func (f *fakeTargeter) TargetFor(ctx context.Context, clusterID, _ string, _ []string) (*k8s.ClientPair, *k8s.TargetSchema, error) {
 	f.mu.Lock()
 	f.asked = append(f.asked, clusterID)
+	delay := f.delay
 	f.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, nil, fmt.Errorf("remote cluster: %w", ctx.Err())
+		}
+	}
 	if f.err != nil {
 		return nil, nil, f.err
 	}
@@ -154,16 +163,24 @@ type accessCall struct{ cluster, group, resource, namespace string }
 type fakeAccess struct {
 	allow func(group, resource, namespace string) bool
 	err   error
+	delay time.Duration // a stalled SAR: honours ctx like the real checker
 	calls []accessCall
 }
 
 func allowAll(string, string, string) bool { return true }
 
-func (f *fakeAccess) CanAccessGroupResource(_ context.Context, clusterID, _ string, _ []string, verb, apiGroup, resource, namespace string) (bool, error) {
+func (f *fakeAccess) CanAccessGroupResource(ctx context.Context, clusterID, _ string, _ []string, verb, apiGroup, resource, namespace string) (bool, error) {
 	if verb != "get" {
 		panic("receipt redaction must check get, got " + verb)
 	}
 	f.calls = append(f.calls, accessCall{clusterID, apiGroup, resource, namespace})
+	if f.delay > 0 {
+		select {
+		case <-time.After(f.delay):
+		case <-ctx.Done():
+			return false, fmt.Errorf("SelfSubjectAccessReview: %w", ctx.Err())
+		}
+	}
 	if f.err != nil {
 		return false, f.err
 	}
@@ -966,12 +983,16 @@ func TestRedactOwnership_ReauthorizesEveryAppKind(t *testing.T) {
 	objs := []store.ReceiptObject{web}
 	visible, _ := redactObjects(objs, false, allowAll)
 	app := func(kind, ns, repo string) gitops.OwnedByApp {
-		return gitops.OwnedByApp{AppID: "x:" + ns + ":" + kind, Tool: gitops.ToolFluxCD, Kind: kind, Namespace: ns, Name: "n",
+		tool := gitops.ToolFluxCD
+		if kind == "Application" {
+			tool = gitops.ToolArgoCD
+		}
+		return gitops.OwnedByApp{AppID: "x:" + ns + ":" + kind, Tool: tool, Kind: kind, Namespace: ns, Name: "n",
 			Source: gitops.AppSource{RepoURL: repo}}
 	}
 	stored := []gitops.OwnershipResult{{
 		Object:     gitops.ObjectRef{Group: web.Group, Kind: web.Kind, Namespace: web.Namespace, Name: web.Name},
-		Controller: gitops.OwnedByBoth, Confidence: gitops.ConfidenceConflicting,
+		Controller: gitops.OwnedByBoth, Confidence: gitops.ConfidenceConflicting, Reason: "both-claim",
 		Apps: []gitops.OwnedByApp{
 			app("Application", "argocd", "repo://argo"),
 			app("Kustomization", "flux-system", "repo://ks"),
@@ -986,17 +1007,35 @@ func TestRedactOwnership_ReauthorizesEveryAppKind(t *testing.T) {
 			{Kind: gitops.EvidenceInstanceLabel, RawValue: "web"},
 		},
 	}}
+	const (
+		argoApps = "argoproj.io/applications"
+		fluxKS   = "kustomize.toolkit.fluxcd.io/kustomizations"
+		fluxHR   = "helm.toolkit.fluxcd.io/helmreleases"
+	)
+	type verdict struct {
+		ctl    gitops.OwnershipController
+		conf   gitops.OwnershipConfidence
+		reason string
+	}
+	both := verdict{gitops.OwnedByBoth, gitops.ConfidenceConflicting, "both-claim"}
 	cases := []struct {
 		name     string
 		deny     map[string]bool // "group/resource" tuples the caller may not get
 		wantApps []string        // repo URLs that survive
 		wantEv   int
+		want     verdict
 	}{
-		{"all allowed", nil, []string{"repo://argo", "repo://ks", "repo://hr"}, 4},
-		{"no kustomizations", map[string]bool{"kustomize.toolkit.fluxcd.io/kustomizations": true}, []string{"repo://argo", "repo://hr"}, 3},
-		{"no helmreleases", map[string]bool{"helm.toolkit.fluxcd.io/helmreleases": true}, []string{"repo://argo", "repo://ks"}, 3},
-		{"no applications", map[string]bool{"argoproj.io/applications": true}, []string{"repo://ks", "repo://hr"}, 3},
-		{"nothing", map[string]bool{"argoproj.io/applications": true, "kustomize.toolkit.fluxcd.io/kustomizations": true, "helm.toolkit.fluxcd.io/helmreleases": true}, nil, 1},
+		{"all allowed", nil, []string{"repo://argo", "repo://ks", "repo://hr"}, 4, both},
+		{"no kustomizations", map[string]bool{fluxKS: true}, []string{"repo://argo", "repo://hr"}, 3, both},
+		{"no helmreleases", map[string]bool{fluxHR: true}, []string{"repo://argo", "repo://ks"}, 3, both},
+		// Hiding the only Argo app must not leave "both": the caller may not
+		// learn that Argo claims the object.
+		{"no applications", map[string]bool{argoApps: true}, []string{"repo://ks", "repo://hr"}, 3,
+			verdict{gitops.OwnedByFluxCD, gitops.ConfidenceConfirmed, "confirmed-flux-inventory"}},
+		{"only argo", map[string]bool{fluxKS: true, fluxHR: true}, []string{"repo://argo"}, 2,
+			verdict{gitops.OwnedByArgoCD, gitops.ConfidenceConfirmed, "confirmed-argo-status"}},
+		{"nothing", map[string]bool{argoApps: true, fluxKS: true, fluxHR: true}, nil, 1,
+			verdict{gitops.OwnedByNone, gitops.ConfidenceForbidden, OwnershipReasonAppsRedacted}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1033,12 +1072,11 @@ func TestRedactOwnership_ReauthorizesEveryAppKind(t *testing.T) {
 			if strings.Contains(string(raw), "unknown-kind") || strings.Contains(string(raw), "Widget") {
 				t.Fatalf("unknown app kind leaked: %s", raw)
 			}
-			if len(tc.wantApps) > 0 {
-				if v.Controller != gitops.OwnedByBoth || v.Confidence != gitops.ConfidenceConflicting {
-					t.Fatalf("verdict must survive while an app is visible: %+v", v)
-				}
-			} else if v.Controller != gitops.OwnedByNone || v.Confidence != gitops.ConfidenceForbidden || v.Reason != OwnershipReasonAppsRedacted {
-				t.Fatalf("verdict must collapse when every app is hidden: %+v", v)
+			if got := (verdict{v.Controller, v.Confidence, v.Reason}); got != tc.want {
+				t.Fatalf("verdict = %+v, want %+v", got, tc.want)
+			}
+			if tc.want.ctl != gitops.OwnedByBoth && strings.Contains(string(raw), "both") {
+				t.Fatalf("hidden tool leaked through the verdict: %s", raw)
 			}
 		})
 	}
@@ -1115,6 +1153,28 @@ func TestHandleGet_RemoteReceiptReauthorizedOnItsOwnCluster(t *testing.T) {
 	}
 	if calls := hs.targeter.calls(); len(calls) != 1 || calls[0] != "remote-1" {
 		t.Fatalf("generation lookup went to %v", calls)
+	}
+}
+
+func TestHandleGet_StalledRemoteIsBoundedAndFailsClosed(t *testing.T) {
+	hs := newHarness(t)
+	hs.h.clusterTimeout = 20 * time.Millisecond
+	hs.targeter.delay = 5 * time.Second // generation lookup stalls
+	hs.access.delay = 5 * time.Second   // and so do the SARs
+	rec := hs.seed(adminUser, "remote-1",
+		recordedDeployment(0, "web", "uid-web"), recordedObj(1, "", "v1", "configmaps", "ConfigMap", "prod", "cfg", "uid-cfg"))
+
+	start := time.Now()
+	w := hs.do(t, hs.h.HandleGet, http.MethodGet, request{user: adminUser, cluster: "remote-1", id: rec.ID.String()})
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("a stalled remote cluster was not bounded by the budget")
+	}
+	d := decodeDetail(t, w)
+	if d.RedactedObjects != 2 || d.TargetGenerationChanged {
+		t.Fatalf("stalled SARs must redact and a stalled generation lookup must not flag: %+v", d)
+	}
+	if len(hs.access.calls) != 1 {
+		t.Fatalf("after the deadline the memo must stop dialing: %v", hs.access.calls)
 	}
 }
 

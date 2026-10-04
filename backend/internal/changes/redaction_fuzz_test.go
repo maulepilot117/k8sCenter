@@ -38,8 +38,34 @@ var fuzzAppGVRs = map[string][2]string{
 }
 
 // fuzzAppKinds is what the generator cycles through: the three known kinds
-// plus two that are not.
+// plus two that are not. fuzzAppTools is the tool each kind belongs to, as
+// gitops labels them.
 var fuzzAppKinds = []string{"Application", "Kustomization", "HelmRelease", "Widget", ""}
+
+var fuzzAppTools = map[string]gitops.Tool{
+	"Application": gitops.ToolArgoCD, "Kustomization": gitops.ToolFluxCD, "HelmRelease": gitops.ToolFluxCD,
+}
+
+// expectedVerdict is the oracle's own statement of the recomputed verdict for
+// an entry that lost at least one application: from the tools of the kept
+// applications alone.
+func expectedVerdict(kept []gitops.OwnedByApp) (controller, confidence, reason string) {
+	var argo, flux bool
+	for _, a := range kept {
+		argo = argo || a.Tool == "argocd"
+		flux = flux || a.Tool == "fluxcd"
+	}
+	switch {
+	case argo && flux:
+		return "both", "conflicting", "both-claim"
+	case argo:
+		return "argocd", "confirmed", "confirmed-argo-status"
+	case flux:
+		return "fluxcd", "confirmed", "confirmed-flux-inventory"
+	default:
+		return "none", "forbidden", fuzzReasonAppsRedacted
+	}
+}
 
 // Fixed, non-attacker-controlled check fields. A check's status and reason
 // are the verifier's, never the object's, so the fuzzer only picks among them.
@@ -117,7 +143,7 @@ func ownershipFromFuzz(objs []store.ReceiptObject) []gitops.OwnershipResult {
 			kind := fuzzAppKinds[(i+a)%len(fuzzAppKinds)]
 			id := fmt.Sprintf("app:%d:%d:%s", i, a, o.Name)
 			res.Apps = append(res.Apps, gitops.OwnedByApp{
-				AppID: id, Kind: kind, Namespace: o.Namespace + "-gitops", Name: o.Name + "-app",
+				AppID: id, Tool: fuzzAppTools[kind], Kind: kind, Namespace: o.Namespace + "-gitops", Name: o.Name + "-app",
 				Source: gitops.AppSource{RepoURL: "repo://" + id},
 			})
 			res.Evidence = append(res.Evidence, gitops.OwnershipEvidence{Kind: gitops.EvidenceArgoStatusResource, AppID: id})
@@ -387,11 +413,15 @@ func FuzzReceiptRedaction(f *testing.F) {
 				if _, has := m["apps"]; has {
 					t.Fatalf("ownership view %d has an apps key with nothing to show: %s", n, raw)
 				}
-				if len(src.Apps) > 0 && (m["controller"] != "none" || m["confidence"] != "forbidden" || m["reason"] != fuzzReasonAppsRedacted) {
-					t.Fatalf("ownership view %d with every app hidden must not name a controller: %s", n, raw)
+			}
+			if wantKept < len(src.Apps) {
+				// Something was hidden: the verdict may describe only what remains.
+				ctl, conf, reason := expectedVerdict(v.Apps)
+				if m["controller"] != ctl || m["confidence"] != conf || m["reason"] != reason {
+					t.Fatalf("ownership view %d lost an app; verdict must be %s/%s/%s: %s", n, ctl, conf, reason, raw)
 				}
-			} else if m["controller"] != string(src.Controller) || m["confidence"] != string(src.Confidence) {
-				t.Fatalf("ownership view %d with a visible app must keep its verdict: %s", n, raw)
+			} else if m["controller"] != string(src.Controller) || m["confidence"] != string(src.Confidence) || m["reason"] != src.Reason {
+				t.Fatalf("ownership view %d lost nothing and must keep its verdict verbatim: %s", n, raw)
 			}
 		}
 	})
