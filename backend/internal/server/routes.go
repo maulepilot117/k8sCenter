@@ -699,6 +699,16 @@ func (s *Server) registerVeleroRoutes(ar chi.Router) {
 
 		// Locations (read-only)
 		vr.Get("/locations", h.HandleListLocations)
+
+		// Backup assurance (Release F U35). Registered unconditionally inside
+		// the velero group so a DB-less deployment answers 503 with an
+		// explicit reason rather than a 404 that looks like a client bug.
+		// Reads are open to any user (RBAC-filtered in the handler); policy
+		// management is admin-only and the writes are rate-limited. None of
+		// these endpoints writes to Kubernetes.
+		vr.Route("/assurance", func(asr chi.Router) {
+			h.RegisterAssuranceRoutes(asr, middleware.RateLimit(yamlRL))
+		})
 	})
 }
 
