@@ -38,4 +38,12 @@ func TestAssuranceWiring_HandlerFieldDefaultsToNil(t *testing.T) {
 	if h.Assurance != nil {
 		t.Fatal("a Handler built without wiring must have a nil Assurance service")
 	}
+	if h.AssuranceStore != nil {
+		t.Fatal("a Handler built without wiring must have a nil AssuranceStore")
+	}
+	// DB-less main wiring: the constructor's nil must stay a nil pointer on the field.
+	h.AssuranceStore = store.NewBackupAssuranceStore(nil)
+	if h.AssuranceStore != nil {
+		t.Fatal("NewBackupAssuranceStore(nil) must be nil (no DB)")
+	}
 }

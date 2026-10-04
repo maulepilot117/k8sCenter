@@ -30,6 +30,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/store"
 )
 
 // dnsLabelRegex validates DNS label names (RFC 1123).
@@ -61,6 +62,9 @@ type Handler struct {
 	// after construction (like NotifService); nil until main wires it, and
 	// the collector inside is disabled when no PostgreSQL is configured.
 	Assurance *AssuranceService
+	// AssuranceStore is the same store the collector uses, for the policy and
+	// exception endpoints. Nil when no PostgreSQL is configured.
+	AssuranceStore *store.BackupAssuranceStore
 
 	remote *remotecache.Cache[*snapshot]
 

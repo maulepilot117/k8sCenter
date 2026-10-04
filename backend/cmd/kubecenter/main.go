@@ -790,11 +790,13 @@ func main() {
 	// ServiceAccount identity (no user token). Disabled (Start logs the reason
 	// and returns) without PostgreSQL or a notification service; NewBackupAssuranceStore
 	// returns nil for a nil pool. Empty holder = hostname-pid.
+	assuranceStore := appstore.NewBackupAssuranceStore(dbPool)
 	veleroAssurance := velero.NewAssuranceService(
-		veleroHandler, veleroDiscoverer, appstore.NewBackupAssuranceStore(dbPool),
+		veleroHandler, veleroDiscoverer, assuranceStore,
 		notifService, cfg.ClusterID, "", logger,
 	)
 	veleroHandler.Assurance = veleroAssurance
+	veleroHandler.AssuranceStore = assuranceStore
 	assuranceDone := make(chan struct{})
 	go func() {
 		defer close(assuranceDone)
