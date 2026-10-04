@@ -33,6 +33,22 @@ func TestAssuranceWiring_NoDatabaseDisablesAndStartReturns(t *testing.T) {
 	}
 }
 
+// main wires the handler through AttachAssurance; the handler and the
+// collector must end up with the same service and store.
+func TestAssuranceWiring_AttachAssuranceSetsServiceAndStore(t *testing.T) {
+	h := &Handler{Logger: slog.Default()}
+	svc := h.AttachAssurance(&Discoverer{}, nil, nil, "local", "holder-a", nil)
+	if svc == nil || h.Assurance != svc {
+		t.Fatal("AttachAssurance must return the service it assigns to Handler.Assurance")
+	}
+	if h.AssuranceStore != nil {
+		t.Fatal("nil store (no DB) must stay nil on the handler")
+	}
+	if svc.Snapshot().Enabled || svc.Snapshot().Holder != "holder-a" {
+		t.Fatalf("unexpected snapshot %+v", svc.Snapshot())
+	}
+}
+
 func TestAssuranceWiring_HandlerFieldDefaultsToNil(t *testing.T) {
 	h := &Handler{}
 	if h.Assurance != nil {

@@ -40,6 +40,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/preferences"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -790,17 +791,17 @@ func main() {
 	// ServiceAccount identity (no user token). Disabled (Start logs the reason
 	// and returns) without PostgreSQL or a notification service; NewBackupAssuranceStore
 	// returns nil for a nil pool. Empty holder = hostname-pid.
-	assuranceStore := appstore.NewBackupAssuranceStore(dbPool)
-	veleroAssurance := velero.NewAssuranceService(
-		veleroHandler, veleroDiscoverer, assuranceStore,
+	veleroAssurance := veleroHandler.AttachAssurance(
+		veleroDiscoverer, appstore.NewBackupAssuranceStore(dbPool),
 		notifService, cfg.ClusterID, "", logger,
 	)
-	veleroHandler.Assurance = veleroAssurance
-	veleroHandler.AssuranceStore = assuranceStore
+	// Start runs outside chi's recovery middleware: recover a panic so it cannot
+	// take the process down, and close assuranceDone outside the recovered
+	// closure so shutdown coordination always completes.
 	assuranceDone := make(chan struct{})
 	go func() {
 		defer close(assuranceDone)
-		veleroAssurance.Start(ctx)
+		recoverutil.Safe(logger, "velero assurance collector", func() { veleroAssurance.Start(ctx) })
 	}()
 
 	// External Secrets Operator integration (Phase A — observatory; Phase D
