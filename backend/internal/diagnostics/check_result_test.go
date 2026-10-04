@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var checkNow = time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
@@ -164,6 +165,38 @@ func TestNormalizeMarksPodDeniedChecksInconclusive(t *testing.T) {
 			}
 		}
 	})
+
+	// A Deployment's pods are found through its ReplicaSets, so a user who can
+	// list pods but not ReplicaSets gets no pods either. The workload rules must
+	// read that as not observed, while ReplicaMismatch still reads the
+	// Deployment itself.
+	t.Run("replicasets denied", func(t *testing.T) {
+		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "team-a", UID: "uid-dep"}}
+		depLister := &limitLister{
+			countingLister: &countingLister{pods: []*corev1.Pod{testPod(true)}},
+			deployments:    []*appsv1.Deployment{dep},
+		}
+		target, err := Resolve(ctx, depLister, "team-a", "Deployment", "web", &RelatedRBAC{Pods: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		results := RunDiagnostics(ctx, target)
+		checks := Normalize("local", target, checkNow, results)
+
+		for rule, id := range podRules {
+			if got := resultByRule(t, results, rule).Status; got != "pass" {
+				t.Fatalf("legacy %s status = %q, want the frozen false \"pass\"", rule, got)
+			}
+			c := checkByID(t, checks, id)
+			if c.Status != CheckStatusInconclusive || c.Inconclusive != ReasonPermissionDenied {
+				t.Errorf("%s = %s/%s, want inconclusive/permission_denied", id, c.Status, c.Inconclusive)
+			}
+		}
+		// The Deployment has no ready replicas of the one it defaults to.
+		if c := checkByID(t, checks, "diagnostics/replicamismatch"); c.Status != CheckStatusFail || c.Inconclusive != "" {
+			t.Errorf("ReplicaMismatch = %s/%q, want a conclusive fail", c.Status, c.Inconclusive)
+		}
+	})
 }
 
 // TestNormalizeMarksUnreadablePodsInconclusive covers the other way pods go
@@ -220,6 +253,11 @@ func TestResolveRecordsLimitations(t *testing.T) {
 		},
 		{
 			name: "pod listing fails", kind: "Deployment", related: &RelatedRBAC{Pods: true, ReplicaSets: true},
+			podsErr: errors.New("boom"),
+			want:    []Limitation{{Kind: limitPods, Reason: ReasonSourceUnavailable}},
+		},
+		{
+			name: "pod listing fails while replicasets are denied: only the failed listing is recorded", kind: "Deployment", related: &RelatedRBAC{Pods: true},
 			podsErr: errors.New("boom"),
 			want:    []Limitation{{Kind: limitPods, Reason: ReasonSourceUnavailable}},
 		},
@@ -463,6 +501,57 @@ func TestNormalizeCarriesSourceIdentity(t *testing.T) {
 		got := Normalize("c", &DiagnosticTarget{Kind: "Widget", Name: "w"}, checkNow, in)[0]
 		if got.Source.Resource != "" || got.Source.APIGroup != "" {
 			t.Fatalf("unknown kind produced %+v", got.Source)
+		}
+	})
+}
+
+// TestNormalizeEvidenceCarriesObservedPodUIDs: evidence that names a pod must
+// say which instance was observed, so a pod recreated under the same name
+// cannot inherit the finding.
+func TestNormalizeEvidenceCarriesObservedPodUIDs(t *testing.T) {
+	ctx := context.Background()
+
+	normalizeCrashLoop := func(uid types.UID) CheckResult {
+		pod := testPod(true)
+		pod.UID = uid
+		target, err := Resolve(ctx, &countingLister{pods: []*corev1.Pod{pod}}, "team-a", "Pod", "web", &RelatedRBAC{Pods: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return checkByID(t, Normalize("local", target, checkNow, RunDiagnostics(ctx, target)), "diagnostics/crashloopbackoff")
+	}
+
+	first := normalizeCrashLoop("uid-web-1")
+	if len(first.Evidence) != 1 || first.Evidence[0].Name != "web" || first.Evidence[0].UID != "uid-web-1" {
+		t.Fatalf("evidence = %+v, want the observed pod web with uid-web-1", first.Evidence)
+	}
+	recreated := normalizeCrashLoop("uid-web-2")
+	if len(recreated.Evidence) != 1 || recreated.Evidence[0].UID != "uid-web-2" {
+		t.Fatalf("recreated evidence = %+v, want uid-web-2", recreated.Evidence)
+	}
+
+	link := func(kind, name string) []Result {
+		return []Result{{
+			RuleName: "CrashLoopBackOff", Status: "fail", Severity: SeverityCritical, Message: "m",
+			Links: []Link{{Label: name, Kind: kind, Name: name}},
+		}}
+	}
+	observed := &DiagnosticTarget{Pods: []*corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "web", UID: "uid-web-1"}}}}
+
+	t.Run("a pod that was not observed gets no uid", func(t *testing.T) {
+		if got := Normalize("local", observed, checkNow, link("Pod", "ghost"))[0].Evidence[0].UID; got != "" {
+			t.Fatalf("uid = %q for a pod the target never listed", got)
+		}
+	})
+	t.Run("only pod links take a pod uid", func(t *testing.T) {
+		if got := Normalize("local", observed, checkNow, link("Service", "web"))[0].Evidence[0].UID; got != "" {
+			t.Fatalf("uid = %q on a Service link", got)
+		}
+	})
+	t.Run("the legacy links are unchanged", func(t *testing.T) {
+		in := link("Pod", "web")
+		if got := Denormalize(Normalize("local", observed, checkNow, in)); !reflect.DeepEqual(got, in) {
+			t.Fatalf("round trip changed the legacy links: %#v", got)
 		}
 	})
 }

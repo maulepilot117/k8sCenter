@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 )
 
@@ -137,29 +138,37 @@ func Normalize(clusterID string, target *DiagnosticTarget, observedAt time.Time,
 	if results == nil {
 		return nil
 	}
-	src := sourceRef(clusterID, target)
-	var limits []Limitation
+	env := normalizeEnv{src: sourceRef(clusterID, target), observedAt: observedAt}
 	if target != nil {
-		limits = target.Limitations
+		env.limits = target.Limitations
+		env.podUIDs = podUIDsByName(target.Pods)
 	}
 
 	out := make([]CheckResult, len(results))
 	for i, r := range results {
-		out[i] = normalizeResult(r, src, observedAt, limits)
+		out[i] = normalizeResult(r, env)
 	}
 	return out
 }
 
-func normalizeResult(r Result, src CheckSourceRef, observedAt time.Time, limits []Limitation) CheckResult {
+// normalizeEnv is what every result in one Normalize call shares.
+type normalizeEnv struct {
+	src        CheckSourceRef
+	observedAt time.Time
+	limits     []Limitation
+	podUIDs    map[string]string // pod name -> UID, for the pods the target observed
+}
+
+func normalizeResult(r Result, env normalizeEnv) CheckResult {
 	c := CheckResult{
 		CheckID:        checkIDForRule[r.RuleName],
 		Severity:       r.Severity,
 		Summary:        r.Message,
 		Detail:         r.Detail,
 		Remediation:    r.Remediation,
-		Source:         src,
-		ObservedAt:     observedAt,
-		Evidence:       evidenceFromLinks(r.Links),
+		Source:         env.src,
+		ObservedAt:     env.observedAt,
+		Evidence:       evidenceFromLinks(r.Links, env.podUIDs),
 		legacyRuleName: r.RuleName,
 		legacyStatus:   r.Status,
 	}
@@ -178,7 +187,7 @@ func normalizeResult(r Result, src CheckSourceRef, observedAt time.Time, limits 
 		// neither stands when an input the rule reads was never observed. A
 		// finding that links the objects it observed does.
 		lacksObservedEvidence := c.Status == CheckStatusPass || len(r.Links) == 0
-		if reason, limited := limitedBy(ruleDependsOn(r.RuleName), limits); limited && lacksObservedEvidence {
+		if reason, limited := limitedBy(ruleDependsOn(r.RuleName), env.limits); limited && lacksObservedEvidence {
 			c.Status, c.Inconclusive = CheckStatusInconclusive, reason
 		}
 	}
@@ -215,16 +224,33 @@ func Denormalize(cs []CheckResult) []Result {
 }
 
 // evidenceFromLinks keeps a nil slice nil and an empty one empty, which is what
-// lets Denormalize round-trip exactly.
-func evidenceFromLinks(links []Link) []CheckEvidenceItem {
+// lets Denormalize round-trip exactly. A link to a pod the target observed
+// carries that pod's UID, so a pod recreated under the same name is a different
+// piece of evidence; a link to anything else gets none.
+func evidenceFromLinks(links []Link, podUIDs map[string]string) []CheckEvidenceItem {
 	if links == nil {
 		return nil
 	}
 	items := make([]CheckEvidenceItem, len(links))
 	for i, l := range links {
 		items[i] = CheckEvidenceItem{Label: l.Label, Kind: l.Kind, Name: l.Name}
+		if l.Kind == "Pod" {
+			items[i].UID = podUIDs[l.Name]
+		}
 	}
 	return items
+}
+
+// podUIDsByName indexes the observed pods by name. Pods without a UID are left
+// out, so no identity is invented for them.
+func podUIDsByName(pods []*corev1.Pod) map[string]string {
+	uids := make(map[string]string, len(pods))
+	for _, p := range pods {
+		if p != nil && p.UID != "" {
+			uids[p.Name] = string(p.UID)
+		}
+	}
+	return uids
 }
 
 // sourceRef describes the checked object. Only its identity leaves the object:
