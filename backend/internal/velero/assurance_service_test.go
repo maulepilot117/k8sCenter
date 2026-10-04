@@ -10,9 +10,11 @@ package velero
 // assurance_service_db_test.go.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -48,7 +50,8 @@ import (
 type fakeAssuranceStore struct {
 	mu sync.Mutex
 
-	leaseErr     error // when set, AcquireOrRenewLease returns it
+	leaseErr     error                     // when set, AcquireOrRenewLease returns it
+	acquireHook  func(ctx context.Context) // runs inside AcquireOrRenewLease, outside the lock; blocking injection
 	lease        store.AssuranceLease
 	acquireCalls int
 	releaseCalls []releaseCall
@@ -57,6 +60,21 @@ type fakeAssuranceStore struct {
 	listPoliciesErr  error
 	listPoliciesHook func() // runs inside ListPolicies; panic injection
 	listPoliciesCall int
+
+	// Per-method failure and interposition hooks. An error field makes that
+	// method return it; a before* hook runs outside the lock just before the
+	// method's own logic, so a test can change the store underneath the
+	// collector exactly where a second replica would.
+	listOpenErr      error
+	openErr          error
+	beforeOpen       func()
+	observeErr       error
+	resolveErr       error
+	beforeResolve    func(id uuid.UUID)
+	claimErr         error
+	markDeliveredErr error
+	markFailedErr    error
+	pruneErr         error
 
 	exceptions map[uuid.UUID]*store.BackupAssuranceException
 	deliveries map[uuid.UUID]*store.AssuranceDelivery
@@ -70,10 +88,19 @@ func newFakeAssuranceStore() *fakeAssuranceStore {
 	}
 }
 
-func (f *fakeAssuranceStore) AcquireOrRenewLease(_ context.Context, clusterID, holder string, ttl time.Duration) (store.AssuranceLease, error) {
+func (f *fakeAssuranceStore) AcquireOrRenewLease(ctx context.Context, clusterID, holder string, ttl time.Duration) (store.AssuranceLease, error) {
+	f.mu.Lock()
+	f.acquireCalls++
+	hook := f.acquireHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+		if err := ctx.Err(); err != nil {
+			return store.AssuranceLease{}, err
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.acquireCalls++
 	if f.leaseErr != nil {
 		return store.AssuranceLease{}, f.leaseErr
 	}
@@ -102,7 +129,10 @@ func (f *fakeAssuranceStore) ReleaseLease(ctx context.Context, _, _ string) erro
 	return nil
 }
 
-func (f *fakeAssuranceStore) ListPolicies(_ context.Context, clusterID string) ([]store.BackupAssurancePolicy, error) {
+func (f *fakeAssuranceStore) ListPolicies(ctx context.Context, clusterID string) ([]store.BackupAssurancePolicy, error) {
+	if err := ctx.Err(); err != nil { // pgx fails fast on a done context
+		return nil, err
+	}
 	f.mu.Lock()
 	f.listPoliciesCall++
 	hook, err := f.listPoliciesHook, f.listPoliciesErr
@@ -122,9 +152,15 @@ func (f *fakeAssuranceStore) ListPolicies(_ context.Context, clusterID string) (
 	return out, nil
 }
 
-func (f *fakeAssuranceStore) ListOpenExceptions(_ context.Context, clusterID string) ([]store.BackupAssuranceException, error) {
+func (f *fakeAssuranceStore) ListOpenExceptions(ctx context.Context, clusterID string) ([]store.BackupAssuranceException, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listOpenErr != nil {
+		return nil, f.listOpenErr
+	}
 	var out []store.BackupAssuranceException
 	for _, e := range f.exceptions {
 		if e.ClusterID == clusterID && e.State == store.AssuranceStateOpen {
@@ -149,7 +185,19 @@ func (f *fakeAssuranceStore) enqueueLocked(exceptionID uuid.UUID, transition str
 	f.deliveries[id] = &store.AssuranceDelivery{ID: id, ExceptionID: exceptionID, Transition: transition, State: store.AssuranceDeliveryPending, CreatedAt: time.Now()}
 }
 
-func (f *fakeAssuranceStore) OpenExceptionAndEnqueue(_ context.Context, e store.BackupAssuranceException) (store.BackupAssuranceException, bool, error) {
+func (f *fakeAssuranceStore) OpenExceptionAndEnqueue(ctx context.Context, e store.BackupAssuranceException) (store.BackupAssuranceException, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return store.BackupAssuranceException{}, false, err
+	}
+	f.mu.Lock()
+	hook, err := f.beforeOpen, f.openErr
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if err != nil {
+		return store.BackupAssuranceException{}, false, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e.ID == uuid.Nil || e.OpenedAt.IsZero() || (e.SubjectKind == store.ScopeSchedule && e.SubjectUID == "") {
@@ -176,12 +224,32 @@ func (f *fakeAssuranceStore) OpenExceptionAndEnqueue(_ context.Context, e store.
 	return stored, true, nil
 }
 
+// ObserveException mirrors the real store's rules: an unknown severity or a
+// non-object detail is ErrAssuranceObservationInvalid before anything is
+// written; a missing or resolved row is ErrAssuranceExceptionNotOpen; an
+// observation older than the stored one is dropped with a nil error.
 func (f *fakeAssuranceStore) ObserveException(_ context.Context, id uuid.UUID, observedAt time.Time, severity string, lastSuccessAt *time.Time, detail []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.observeErr != nil {
+		return f.observeErr
+	}
+	switch severity {
+	case store.AssuranceSeverityInfo, store.AssuranceSeverityWarning, store.AssuranceSeverityCritical:
+	default:
+		return fmt.Errorf("%w: unknown severity %q", store.ErrAssuranceObservationInvalid, severity)
+	}
+	if len(detail) == 0 {
+		detail = []byte(`{}`)
+	} else if trimmed := bytes.TrimSpace(detail); len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
+		return fmt.Errorf("%w: detail must be a JSON object", store.ErrAssuranceObservationInvalid)
+	}
 	e, ok := f.exceptions[id]
 	if !ok || e.State != store.AssuranceStateOpen {
 		return store.ErrAssuranceExceptionNotOpen
+	}
+	if e.LastObservedAt.After(observedAt) {
+		return nil // stale observation of a still-open row: dropped
 	}
 	e.ObservationCount++
 	e.LastObservedAt = observedAt
@@ -194,6 +262,15 @@ func (f *fakeAssuranceStore) ObserveException(_ context.Context, id uuid.UUID, o
 }
 
 func (f *fakeAssuranceStore) ResolveExceptionAndEnqueue(_ context.Context, id uuid.UUID, at time.Time, reason string) (bool, error) {
+	f.mu.Lock()
+	hook, err := f.beforeResolve, f.resolveErr
+	f.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	if err != nil {
+		return false, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	e, ok := f.exceptions[id]
@@ -215,6 +292,9 @@ func (f *fakeAssuranceStore) ResolveExceptionAndEnqueue(_ context.Context, id uu
 func (f *fakeAssuranceStore) ClaimPendingDeliveries(_ context.Context, clusterID string, maxAttempts, limit int) ([]store.AssuranceDeliveryJob, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.claimErr != nil {
+		return nil, f.claimErr
+	}
 	var jobs []store.AssuranceDeliveryJob
 	for _, d := range f.deliveries {
 		e := f.exceptions[d.ExceptionID]
@@ -242,6 +322,9 @@ func (f *fakeAssuranceStore) ClaimPendingDeliveries(_ context.Context, clusterID
 func (f *fakeAssuranceStore) MarkDelivered(_ context.Context, id uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.markDeliveredErr != nil {
+		return f.markDeliveredErr
+	}
 	d, ok := f.deliveries[id]
 	if !ok || d.State != store.AssuranceDeliveryPending {
 		return store.ErrAssuranceDeliveryNotPending
@@ -254,6 +337,9 @@ func (f *fakeAssuranceStore) MarkDelivered(_ context.Context, id uuid.UUID) erro
 func (f *fakeAssuranceStore) MarkDeliveryFailed(_ context.Context, id uuid.UUID, errMsg string, maxAttempts int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.markFailedErr != nil {
+		return f.markFailedErr
+	}
 	d, ok := f.deliveries[id]
 	if !ok || d.State != store.AssuranceDeliveryPending {
 		return store.ErrAssuranceDeliveryNotPending
@@ -269,6 +355,9 @@ func (f *fakeAssuranceStore) PruneResolved(_ context.Context, _ time.Duration) (
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pruneCalls++
+	if f.pruneErr != nil {
+		return 0, f.pruneErr
+	}
 	return 0, nil
 }
 
@@ -1040,8 +1129,15 @@ func TestAssurance_NotificationCarriesSuppressResourceFields(t *testing.T) {
 	if !n.SuppressResourceFields {
 		t.Error("SuppressResourceFields = false; want true on every assurance notification")
 	}
-	if n.Source != notifications.SourceVelero || n.ResourceKind != assuranceResourceKind || n.ResourceNS != veleroNamespace || n.ResourceName != "daily" || n.ResourceUID != "uid-daily" || n.ClusterID != testAssuranceCluster {
+	open := ah.st.open()
+	if len(open) != 1 {
+		t.Fatalf("open = %d, want 1", len(open))
+	}
+	if n.Source != notifications.SourceVelero || n.ResourceKind != assuranceResourceKind || n.ResourceNS != veleroNamespace || n.ResourceName != "daily" || n.ClusterID != testAssuranceCluster {
 		t.Errorf("notification identity = %+v", n)
+	}
+	if n.ResourceUID != open[0].ID.String() {
+		t.Errorf("ResourceUID = %q; want the exception id %s (the dedup identity is the exception, not the schedule)", n.ResourceUID, open[0].ID)
 	}
 	if n.CreatedAt.IsZero() {
 		t.Error("CreatedAt is zero")

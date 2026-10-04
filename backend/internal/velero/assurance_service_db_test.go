@@ -293,11 +293,11 @@ func TestAssurance_AE8_FreshSuccessfulBackupResolvesAndEmitsResolution(t *testin
 	}
 
 	// The condition recurring later is a NEW exception (the resolved row is
-	// terminal) with its own "opened" intent. Its notification, inside the
-	// Notification Center's 15 min dedup window of the first one, is
-	// deduped: the intent is still marked delivered (the feed carries the
-	// earlier entry) and no third row is written. That is the second layer
-	// doing its job, not a lost notification.
+	// terminal) with its own "opened" intent. It opens inside the
+	// Notification Center's 15 min dedup window of the first alert, yet it
+	// must reach the feed: the dedup identity is the exception id, so a new
+	// episode is a new notification, and "Resolved" is never the last word
+	// on a problem that came back.
 	if err := d.localDyn().Tracker().Delete(BackupGVR, veleroNamespace, "daily-fresh"); err != nil {
 		t.Fatal(err)
 	}
@@ -311,8 +311,27 @@ func TestAssurance_AE8_FreshSuccessfulBackupResolvesAndEmitsResolution(t *testin
 	if len(ds) != 3 || ds[2] != (deliveryRow{store.AssuranceTransitionOpened, store.AssuranceDeliveryDelivered, 1}) {
 		t.Fatalf("deliveries after recurrence = %+v; want a third, delivered 'opened'", ds)
 	}
-	if titles := d.notificationTitles(t); len(titles) != 2 {
-		t.Errorf("persisted notifications after recurrence = %v, want 2 (the re-open is deduped inside the window)", titles)
+	if titles := d.notificationTitles(t); len(titles) != 3 || titles[2] != TitleBackupOverdue {
+		t.Errorf("persisted notifications after recurrence = %v, want a third %q (a new episode is not deduped)", titles, TitleBackupOverdue)
+	}
+
+	// A re-send of the SAME intent (a crash between send and MarkDelivered)
+	// is still absorbed by the window: the same exception id yields
+	// EmitDeduped, which the drain marks delivered.
+	var reopened store.BackupAssuranceException
+	for _, e := range es {
+		if e.State == store.AssuranceStateOpen {
+			reopened = e
+		}
+	}
+	res, err := d.notif.EmitSync(t.Context(), d.svc.notificationFor(store.AssuranceDeliveryJob{
+		Delivery: store.AssuranceDelivery{Transition: store.AssuranceTransitionOpened}, Exception: reopened,
+	}))
+	if err != nil || res != notifications.EmitDeduped {
+		t.Errorf("re-send of the same intent: result=%v err=%v; want EmitDeduped", res, err)
+	}
+	if titles := d.notificationTitles(t); len(titles) != 3 {
+		t.Errorf("persisted notifications after re-send = %v, want still 3", titles)
 	}
 }
 

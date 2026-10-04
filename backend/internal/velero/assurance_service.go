@@ -62,6 +62,13 @@ const (
 	// assuranceLeaseTTL is three missed ticks before another replica takes
 	// over. Expiry is judged on the database clock (store.AcquireOrRenewLease).
 	assuranceLeaseTTL = 3 * assuranceInterval
+	// assuranceTickTimeout bounds one tick. The loop is serial on the root
+	// context, so without it one wedged PostgreSQL call (half-open
+	// connection, lock wait) would stop every later tick while Snapshot kept
+	// reporting the last good state. It equals the lease TTL so a wedged
+	// tick is abandoned, and recorded as a failure, no later than the moment
+	// another replica may take over.
+	assuranceTickTimeout = assuranceLeaseTTL
 	// assuranceDeliveryBatch bounds the serial drain per tick. At most two
 	// transitions per subject can occur in one tick and the steady state is
 	// zero, so the bound is a ceiling on a bad day, not a throttle.
@@ -70,7 +77,9 @@ const (
 	// before it is parked as failed and surfaced as backlog. One attempt per
 	// tick means every retry lands inside the Notification Center's 15 min
 	// dedup window, so a send whose MarkDelivered did not commit is
-	// suppressed on retry rather than duplicated.
+	// suppressed on retry rather than duplicated. The dedup identity is the
+	// exception row (notificationFor), so that suppression never hides a NEW
+	// exception for the same subject that opens inside the window.
 	assuranceMaxDeliveryAttempts = 5
 	// assurancePruneInterval spaces PruneResolved; retention itself is
 	// store.BackupAssuranceExceptionRetention.
@@ -79,6 +88,11 @@ const (
 	// after the loop's context is already cancelled.
 	assuranceReleaseTimeout = 2 * time.Second
 )
+
+// errAssuranceTickDeadline is the cause a tick's context carries when
+// assuranceTickTimeout expires, so fail can tell a wedged tick (recorded as
+// an error) from process shutdown (expected, logged at debug).
+var errAssuranceTickDeadline = errors.New("backup assurance tick exceeded its deadline")
 
 // assuranceResourceKind is the ResourceKind on every assurance notification.
 // It is one fixed string: encoding the condition in it ("backup.overdue")
@@ -203,10 +217,11 @@ type AssuranceService struct {
 	logger    *slog.Logger
 	disabled  string // non-empty: why the collector is disabled
 
-	// interval and now are the loop's cadence and clock; tests shorten
-	// and pin them.
-	interval time.Duration
-	now      func() time.Time
+	// interval, tickTimeout and now are the loop's cadence, per-tick bound
+	// and clock; tests shorten and pin them.
+	interval    time.Duration
+	tickTimeout time.Duration
+	now         func() time.Time
 
 	mu          sync.RWMutex
 	status      AssuranceRuntimeStatus
@@ -261,7 +276,7 @@ func newAssuranceServiceWith(h *Handler, d *Discoverer, st assuranceStore, n ass
 	a := &AssuranceService{
 		handler: h, disc: d, store: st, notif: n,
 		clusterID: clusterID, holder: holder, logger: logger,
-		interval: assuranceInterval, now: time.Now,
+		interval: assuranceInterval, tickTimeout: assuranceTickTimeout, now: time.Now,
 	}
 	switch {
 	case st == nil:
@@ -305,8 +320,21 @@ func (a *AssuranceService) Start(ctx context.Context) {
 	}
 }
 
+// runTickWithRecover runs one tick under its own deadline (see
+// assuranceTickTimeout) and under recoverutil.Tick. The deadline carries
+// errAssuranceTickDeadline as its cause so the tick can tell it from the
+// parent's cancellation.
 func (a *AssuranceService) runTickWithRecover(ctx context.Context) {
-	recoverutil.Tick(ctx, a.logger, "velero assurance tick", a.tick)
+	tickCtx, cancel := context.WithTimeoutCause(ctx, a.tickTimeout, errAssuranceTickDeadline)
+	defer cancel()
+	recoverutil.Tick(tickCtx, a.logger, "velero assurance tick", a.tick)
+}
+
+// shuttingDown reports whether ctx ended because the process is stopping,
+// as opposed to the tick's own deadline expiring. Only the former is an
+// expected, silent end to a tick.
+func shuttingDown(ctx context.Context) bool {
+	return ctx.Err() != nil && !errors.Is(context.Cause(ctx), errAssuranceTickDeadline)
 }
 
 // releaseLeaseOnShutdown hands the lease back so a replacement replica
@@ -407,6 +435,17 @@ func (a *AssuranceService) collect(ctx context.Context) Observation {
 		return obs
 	}
 	data, err := a.handler.fetchAll(ctx)
+	if isForeignCancellation(ctx, err) {
+		// fetchAll's singleflight runs the lists under the FIRST caller's
+		// context. When that caller was an HTTP request the browser
+		// abandoned, every waiter, this tick included, gets its
+		// context.Canceled although Velero was never asked. Our own context
+		// is live, so the error says nothing about Velero: read again, now
+		// as the leader under this tick's context (doFetchAll bounds itself
+		// with listTimeout, so the second read is as bounded as the first).
+		a.logger.Debug("backup assurance: shared velero read cancelled by another caller; retrying", "error", err)
+		data, err = a.handler.fetchAll(ctx)
+	}
 	if err != nil {
 		a.logger.Warn("backup assurance: velero read failed; collection is unknown", "error", err)
 		return obs
@@ -414,6 +453,13 @@ func (a *AssuranceService) collect(ctx context.Context) Observation {
 	obs.Backups, obs.Schedules, obs.Locations = data.backups, data.schedules, data.locations
 	obs.Collection = CollectionOK
 	return obs
+}
+
+// isForeignCancellation reports whether err is a context cancellation or
+// deadline that cannot be ours, because ctx is still live.
+func isForeignCancellation(ctx context.Context, err error) bool {
+	return err != nil && ctx.Err() == nil &&
+		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 }
 
 // exceptionKey is the condition identity (Design Decisions §4): the subject
@@ -536,11 +582,18 @@ func (a *AssuranceService) reconcile(ctx context.Context, now time.Time, obs Obs
 
 // observe records a repeat of an open exception. A row resolved between the
 // load and this write is not an error: the condition, if still true, opens
-// afresh on the next tick.
+// afresh on the next tick. An observation the schema cannot store is a bug
+// in the evaluator or in this mapping, not an outage: it is logged loudly
+// and skipped, so one bad finding cannot starve every other row's
+// resolution and the delivery drain on every tick.
 func (a *AssuranceService) observe(ctx context.Context, id uuid.UUID, now time.Time, f Finding, detail []byte) error {
 	err := a.store.ObserveException(ctx, id, now, f.Severity, f.Detail.LastSuccessAt, detail)
-	if errors.Is(err, store.ErrAssuranceExceptionNotOpen) {
+	switch {
+	case errors.Is(err, store.ErrAssuranceExceptionNotOpen):
 		a.logger.Debug("backup assurance: exception closed before observation", "id", id)
+		return nil
+	case errors.Is(err, store.ErrAssuranceObservationInvalid):
+		a.logger.Error("backup assurance: evaluator produced an unstorable observation", "id", id, "condition", f.Condition, "error", err)
 		return nil
 	}
 	return err
@@ -566,6 +619,11 @@ func scheduleObserved(obs Observation, e store.BackupAssuranceException) bool {
 // intent left unmarked by a cancelled context or a crash is claimable
 // again, and the Notification Center's dedup window absorbs the re-send.
 func (a *AssuranceService) drainDeliveries(ctx context.Context) error {
+	// Claiming spends an attempt. Do not spend one on a tick that is already
+	// over: the rows would be claimed and never sent.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	jobs, err := a.store.ClaimPendingDeliveries(ctx, a.clusterID, assuranceMaxDeliveryAttempts, assuranceDeliveryBatch)
 	if err != nil {
 		return err
@@ -620,6 +678,16 @@ func deliveryFailureReason(err error) string {
 // SuppressResourceFields so Slack, webhook and the email digest drop them,
 // and title and message that never carry controller text or the subject's
 // name. ClusterID is the exception's cluster, so the feed can attribute it.
+//
+// ResourceUID is the exception row's id, not the schedule's Kubernetes UID.
+// It is the Notification Center's dedup identity (Notification.ResourceUID
+// admits "the source's equivalent stable identity"), and the exception is
+// the identity Release F wants: a re-send of the same intent (a crash
+// between send and MarkDelivered) still dedups inside the window, while a
+// NEW exception for the same subject, which the resolved row's terminal
+// state makes a new row, reaches the feed even when it opens minutes after
+// the last one resolved. Keying on the schedule UID would fold the two, and
+// the subject UID is already carried in the exception for anyone who needs it.
 func (a *AssuranceService) notificationFor(j store.AssuranceDeliveryJob) notifications.Notification {
 	e := j.Exception
 	n := notifications.Notification{
@@ -627,7 +695,7 @@ func (a *AssuranceService) notificationFor(j store.AssuranceDeliveryJob) notific
 		ResourceKind:           assuranceResourceKind,
 		ResourceNS:             e.SubjectNamespace,
 		ResourceName:           e.SubjectName,
-		ResourceUID:            e.SubjectUID,
+		ResourceUID:            e.ID.String(),
 		ClusterID:              e.ClusterID,
 		CreatedAt:              a.now().UTC(),
 		SuppressResourceFields: true,
@@ -721,10 +789,11 @@ func (a *AssuranceService) completeRun(now time.Time, fn func(*AssuranceRuntimeS
 }
 
 // fail logs a step that ended the tick and records its label. A failure
-// caused by shutdown (the context is done) is expected and is neither
-// recorded nor logged above debug.
+// caused by shutdown (the parent context is done) is expected and is
+// neither recorded nor logged above debug; a step cut off by the tick's own
+// deadline is a real failure and is recorded like any other.
 func (a *AssuranceService) fail(ctx context.Context, now time.Time, op string, err error) {
-	if ctx.Err() != nil {
+	if shuttingDown(ctx) {
 		a.logger.Debug("backup assurance: "+op+" abandoned on shutdown", "error", err)
 		return
 	}
