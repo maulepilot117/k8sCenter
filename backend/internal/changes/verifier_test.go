@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -70,10 +71,12 @@ type statefulSetSpec struct {
 	replicas, updated, ready int64
 	statusReplicas           int64
 	currentRev, updateRev    string
+	strategy                 string // spec.updateStrategy.type; "" = API default
+	partition                int64  // spec.updateStrategy.rollingUpdate.partition
 }
 
 func statefulSetObj(s statefulSetSpec) *unstructured.Unstructured {
-	return &unstructured.Unstructured{Object: map[string]any{
+	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apps/v1",
 		"kind":       "StatefulSet",
 		"metadata": map[string]any{
@@ -89,6 +92,13 @@ func statefulSetObj(s statefulSetSpec) *unstructured.Unstructured {
 			"updateRevision":     s.updateRev,
 		},
 	}}
+	if s.strategy != "" {
+		_ = unstructured.SetNestedField(u.Object, s.strategy, "spec", "updateStrategy", "type")
+	}
+	if s.partition != 0 {
+		_ = unstructured.SetNestedField(u.Object, s.partition, "spec", "updateStrategy", "rollingUpdate", "partition")
+	}
+	return u
 }
 
 func readyStatefulSet(name, uid string) statefulSetSpec {
@@ -101,10 +111,11 @@ type daemonSetSpec struct {
 	generation, observedGen              int64
 	desired, updated, ready, unavailable int64
 	current, available                   int64
+	strategy                             string
 }
 
 func daemonSetObj(d daemonSetSpec) *unstructured.Unstructured {
-	return &unstructured.Unstructured{Object: map[string]any{
+	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apps/v1",
 		"kind":       "DaemonSet",
 		"metadata": map[string]any{
@@ -120,6 +131,10 @@ func daemonSetObj(d daemonSetSpec) *unstructured.Unstructured {
 			"numberUnavailable":      d.unavailable,
 		},
 	}}
+	if d.strategy != "" {
+		_ = unstructured.SetNestedField(u.Object, d.strategy, "spec", "updateStrategy", "type")
+	}
+	return u
 }
 
 func readyDaemonSet(name, uid string) daemonSetSpec {
@@ -825,6 +840,17 @@ func TestCheckRollout_TableDriven(t *testing.T) {
 		{"statefulset revisions unset", smut(sts, func(s *statefulSetSpec) { s.currentRev, s.updateRev = "", "" }), CheckPass, ReasonRolloutComplete, "<unset> == updateRevision <unset>"},
 		{"statefulset status.replicas short (pod missing)", smut(sts, func(s *statefulSetSpec) { s.statusReplicas = 2 }), CheckWarn, ReasonRolloutInProgress, "status.replicas 2 == replicas 3"},
 		{"statefulset status.replicas over (scale-down pending)", smut(sts, func(s *statefulSetSpec) { s.statusReplicas = 4 }), CheckWarn, ReasonRolloutInProgress, "status.replicas 4 == replicas 3"},
+		{"statefulset explicit RollingUpdate behaves as default", smut(sts, func(s *statefulSetSpec) { s.strategy = "RollingUpdate" }), CheckPass, ReasonRolloutComplete, "currentRevision db-7f8 == updateRevision db-7f8"},
+		{"statefulset OnDelete never converges", smut(sts, func(s *statefulSetSpec) { s.strategy = "OnDelete" }), CheckInconclusive, ReasonStrategyNotSupported, "OnDelete"},
+		{"statefulset partition satisfied (revisions differ legitimately)", smut(sts, func(s *statefulSetSpec) {
+			s.partition, s.updated, s.updateRev = 1, 2, "db-9a1"
+		}), CheckPass, ReasonRolloutComplete, "updatedReplicas 2 >= replicas 3 - partition 1"},
+		{"statefulset partition not yet satisfied", smut(sts, func(s *statefulSetSpec) {
+			s.partition, s.updated, s.updateRev = 1, 1, "db-9a1"
+		}), CheckWarn, ReasonRolloutInProgress, "updatedReplicas 1 >= replicas 3 - partition 1"},
+		{"statefulset partition still requires ready pods", smut(sts, func(s *statefulSetSpec) {
+			s.partition, s.updated, s.ready = 1, 2, 2
+		}), CheckWarn, ReasonRolloutInProgress, "readyReplicas 2 >= replicas 3"},
 		// DaemonSet
 		{"daemonset ready", daemonSetObj(ds), CheckPass, ReasonRolloutComplete, "numberUnavailable 0 == 0"},
 		{"daemonset observedGeneration behind", dmut(ds, func(d *daemonSetSpec) { d.observedGen = 0 }), CheckWarn, ReasonRolloutInProgress, "observedGeneration 0 >= generation 1"},
@@ -833,6 +859,9 @@ func TestCheckRollout_TableDriven(t *testing.T) {
 		{"daemonset numberUnavailable nonzero", dmut(ds, func(d *daemonSetSpec) { d.unavailable = 2 }), CheckWarn, ReasonRolloutInProgress, "numberUnavailable 2 == 0"},
 		{"daemonset currentNumberScheduled short", dmut(ds, func(d *daemonSetSpec) { d.current = 4 }), CheckWarn, ReasonRolloutInProgress, "currentNumberScheduled 4 == desiredNumberScheduled 5"},
 		{"daemonset numberAvailable short", dmut(ds, func(d *daemonSetSpec) { d.available = 4 }), CheckWarn, ReasonRolloutInProgress, "numberAvailable 4 >= desiredNumberScheduled 5"},
+		{"daemonset explicit RollingUpdate behaves as default", dmut(ds, func(d *daemonSetSpec) { d.strategy = "RollingUpdate" }), CheckPass, ReasonRolloutComplete, "numberUnavailable 0 == 0"},
+		{"daemonset OnDelete never converges", dmut(ds, func(d *daemonSetSpec) { d.strategy = "OnDelete" }), CheckInconclusive, ReasonStrategyNotSupported, "OnDelete"},
+		{"daemonset surge mid-rollout: oldest pod per node drives the counters", dmut(ds, func(d *daemonSetSpec) { d.updated = 3 }), CheckWarn, ReasonRolloutInProgress, "updatedNumberScheduled 3 == desiredNumberScheduled 5"},
 		{"daemonset no nodes desired", dmut(ds, func(d *daemonSetSpec) { d.desired, d.current, d.updated, d.available, d.ready = 0, 0, 0, 0, 0 }), CheckPass, ReasonRolloutComplete, "desiredNumberScheduled 0"},
 		// Unsupported
 		{"configmap", configMapObj("c", "u"), CheckInconclusive, ReasonKindNotSupported, ""},
@@ -859,7 +888,7 @@ func TestCheckRollout_TableDriven(t *testing.T) {
 			if got.Status == CheckPass && got.Reason != ReasonRolloutComplete {
 				t.Fatalf("a pass must carry the ok reason")
 			}
-			if tc.obj != nil && tc.status != CheckInconclusive {
+			if tc.obj != nil && (tc.status != CheckInconclusive || tc.reason == ReasonStrategyNotSupported) {
 				if got.Source.UID != "u" || got.Source.Name != tc.obj.GetName() {
 					t.Fatalf("source not filled from the object: %+v", got.Source)
 				}
@@ -930,6 +959,8 @@ func TestAggregateVerification(t *testing.T) {
 	forbidden := CheckResult{Status: CheckInconclusive, Reason: ReasonReadForbidden}
 	recreated := CheckResult{Status: CheckInconclusive, Reason: ReasonTargetRecreated}
 	expired := CheckResult{Status: CheckInconclusive, Reason: ReasonWindowExpired}
+	unrecordedDoc := CheckResult{Status: CheckInconclusive, Reason: ReasonOutcomeUnrecorded}
+	strategy := CheckResult{Status: CheckInconclusive, Reason: ReasonStrategyNotSupported}
 
 	cases := []struct {
 		name   string
@@ -946,6 +977,8 @@ func TestAggregateVerification(t *testing.T) {
 		{"forbidden", []CheckResult{pass, forbidden}, store.VerifyInconclusive},
 		{"recreated", []CheckResult{pass, recreated}, store.VerifyInconclusive},
 		{"expired", []CheckResult{pass, expired}, store.VerifyInconclusive},
+		{"unrecorded document", []CheckResult{pass, unrecordedDoc}, store.VerifyInconclusive},
+		{"strategy not supported", []CheckResult{pass, strategy}, store.VerifyInconclusive},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1090,7 +1123,8 @@ func TestVerifyOnce_FirstFinalVerdictWins(t *testing.T) {
 	}
 	// Poll B started before A persisted (stale snapshot says pending) and sees
 	// a healthy same-UID object -> would compute verified (also final). The
-	// store allows final-to-final replaces; the service must not perform one.
+	// store's UPDATE guard refuses the second final write; the service must
+	// hand back A's stored verdict, not an error.
 	healthy, _ := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
 	resB, err := svc.VerifyOnce(context.Background(), &stale, healthy, VerifyOptions{Persist: true})
 	if err != nil {
@@ -1141,8 +1175,8 @@ func TestVerifyOnce_WithoutPersist_EvaluatesAndWritesNothing(t *testing.T) {
 func TestCheckRollout_UnsupportedWhenKindTableHasNoPredicates(t *testing.T) {
 	// The kind table is the single source of truth; a kind registered with no
 	// predicates must still be unsupported, never a vacuous pass.
-	workloadPredicates["ReplicaSet"] = func(*unstructured.Unstructured) []predicate { return nil }
-	defer delete(workloadPredicates, "ReplicaSet")
+	workloadEvaluators["ReplicaSet"] = func(*unstructured.Unstructured) evaluation { return evaluation{} }
+	defer delete(workloadEvaluators, "ReplicaSet")
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apps/v1", "kind": "ReplicaSet",
 		"metadata": map[string]any{"name": "rs", "uid": "u"},
@@ -1150,5 +1184,164 @@ func TestCheckRollout_UnsupportedWhenKindTableHasNoPredicates(t *testing.T) {
 	got := CheckRollout(u, SourceRef{}, fixedNow)
 	if got.Status != CheckInconclusive || got.Reason != ReasonKindNotSupported {
 		t.Fatalf("got %s/%s", got.Status, got.Reason)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Re-review follow-ups (PR #565, commit 56a7877c)
+// ---------------------------------------------------------------------------
+
+func TestVerifyOnce_UnrecordedDocumentsPreventVerified(t *testing.T) {
+	t.Run("unknown receipt with a healthy recorded object", func(t *testing.T) {
+		fs := newFakeStore()
+		svc := newTestService(fs)
+		// Three documents, one recorded outcome: the original was interrupted.
+		r := completedReceipt(fs, store.ReceiptUnknown, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
+		r.DocumentCount = 3
+		fs.put(*r)
+		dyn, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
+
+		res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.State == store.VerifyVerified {
+			t.Fatal("a receipt with unrecorded documents must never aggregate to verified")
+		}
+		if res.State != store.VerifyInconclusive || res.RetryAfterSeconds != 0 {
+			t.Fatalf("result = %+v", res)
+		}
+		if len(res.Checks) != 3 || gets.Load() != 1 {
+			t.Fatalf("one check per document, one read: checks=%d gets=%d", len(res.Checks), gets.Load())
+		}
+		expectCheck(t, res.Checks[0], CheckPass, ReasonRolloutComplete)
+		for i, c := range res.Checks[1:] {
+			expectCheck(t, c, CheckInconclusive, ReasonOutcomeUnrecorded)
+			if !strings.Contains(c.Detail, fmt.Sprintf("document index %d", i+1)) || c.Source.Name != "" || c.Source.UID != "" {
+				t.Fatalf("unrecorded check must name the index and carry no identity: %+v", c)
+			}
+		}
+		st, _ := persistedState(t, fs, r.ID)
+		if st != store.VerifyInconclusive {
+			t.Fatalf("persisted = %s", st)
+		}
+	})
+	t.Run("end to end: append fails after the engine applied doc 1", func(t *testing.T) {
+		fs := newFakeStore()
+		fs.failAppendAt = 1
+		svc := newTestService(fs)
+		id := uuid.New()
+		eng := &fakeEngine{script: []ApplyObservation{
+			{Index: 0, Group: "apps", Version: "v1", Resource: "deployments", Kind: "Deployment", Namespace: "prod", Name: "web", UID: "uid-web", Action: ActionConfigured},
+			okObs(1, "Service", "prod", "web", ActionUnchanged),
+			okObs(2, "ConfigMap", "prod", "web-config", ActionCreated),
+		}}
+		res, err := svc.TrackedApply(context.Background(), newRequest(id, threeDocs(), "raw"), eng.apply)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Tracking.State != store.ReceiptUnknown || res.Tracking.RecordedThrough != 1 {
+			t.Fatalf("tracking = %+v", res.Tracking)
+		}
+		// Doc 0 is healthy on the cluster. Verification must still not say
+		// "verified": docs 1 and 2 have no recorded outcome.
+		dyn, _ := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
+		v, err := svc.VerifyOnce(context.Background(), fs.row(t, id), dyn, VerifyOptions{Persist: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.State != store.VerifyInconclusive || len(v.Checks) != 3 {
+			t.Fatalf("verification = %+v", v)
+		}
+		if v.Checks[0].Status != CheckPass || v.Checks[1].Reason != ReasonOutcomeUnrecorded || v.Checks[2].Reason != ReasonOutcomeUnrecorded {
+			t.Fatalf("checks = %+v", v.Checks)
+		}
+	})
+	t.Run("never-started receipt: every document unrecorded", func(t *testing.T) {
+		fs := newFakeStore()
+		svc := newTestService(fs)
+		r := completedReceipt(fs, store.ReceiptFailed, 10*time.Second)
+		r.DocumentCount = 2
+		fs.put(*r)
+		dyn, gets := fakeDyn()
+		res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.State != store.VerifyInconclusive || len(res.Checks) != 2 || gets.Load() != 0 {
+			t.Fatalf("result = %+v gets=%d", res, gets.Load())
+		}
+	})
+}
+
+func TestVerifyOnce_StrategyNotSupported_Terminal(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	r := completedReceipt(fs, store.ReceiptApplied, 10*time.Second,
+		recordedObj(0, "apps", "v1", "statefulsets", "StatefulSet", "prod", "db", "uid-db"),
+		recordedObj(1, "apps", "v1", "daemonsets", "DaemonSet", "kube-system", "agent", "uid-ag"))
+	sts := readyStatefulSet("db", "uid-db")
+	sts.strategy, sts.updated, sts.updateRev = "OnDelete", 0, "db-9a1" // would otherwise be in progress forever
+	ds := readyDaemonSet("agent", "uid-ag")
+	ds.strategy, ds.updated = "OnDelete", 0
+	dyn, _ := fakeDyn(statefulSetObj(sts), daemonSetObj(ds))
+
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != store.VerifyInconclusive || res.RetryAfterSeconds != 0 {
+		t.Fatalf("OnDelete must settle immediately, not hold the window: %+v", res)
+	}
+	for _, c := range res.Checks {
+		expectCheck(t, c, CheckInconclusive, ReasonStrategyNotSupported)
+	}
+	if fs.row(t, r.ID).VerifiedAt == nil {
+		t.Fatal("verdict must be final")
+	}
+}
+
+func TestVerifyOnce_PartitionedStatefulSet(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	r := completedReceipt(fs, store.ReceiptApplied, 10*time.Second,
+		recordedObj(0, "apps", "v1", "statefulsets", "StatefulSet", "prod", "db", "uid-db"))
+	sts := readyStatefulSet("db", "uid-db")
+	sts.partition, sts.updated, sts.updateRev = 2, 1, "db-9a1" // 1 of (3-2) pods updated: complete
+	dyn, _ := fakeDyn(statefulSetObj(sts))
+
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != store.VerifyVerified {
+		t.Fatalf("a satisfied partitioned roll out is complete: %+v", res)
+	}
+	expectCheck(t, singleCheck(t, res), CheckPass, ReasonRolloutComplete)
+}
+
+func TestVerifyOnce_PersistRefusedByStoreGuard_ReturnsStored(t *testing.T) {
+	// The store's UPDATE guard is the only arbiter: no pre-write Get. The fake
+	// mirrors the guard, so a second final verdict must come back as the first.
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	r := completedReceipt(fs, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
+	stale := *r
+	gone, _ := fakeDyn()
+	if _, err := svc.VerifyOnce(context.Background(), r, gone, VerifyOptions{Persist: true}); err != nil {
+		t.Fatal(err)
+	}
+	fs.calls = nil
+	healthy, _ := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
+	res, err := svc.VerifyOnce(context.Background(), &stale, healthy, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != store.VerifyFailed {
+		t.Fatalf("stored verdict not returned: %+v", res)
+	}
+	// One guarded write, one read-back; no speculative Get before the write.
+	if strings.Join(fs.calls, ",") != "setVerification,get" {
+		t.Fatalf("store calls = %v", fs.calls)
 	}
 }

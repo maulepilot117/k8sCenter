@@ -160,7 +160,8 @@ func (s *Service) TrackedApply(ctx context.Context, req TrackedApplyRequest, app
 	// Step 4: apply, recording as we go.
 	rec := &recorder{
 		svc: s, parent: ctx, id: req.OperationID, containsSecret: containsSecret, docCount: len(req.Docs),
-		refs: []TrackedObjectRef{}, // never null on the wire
+		lastIndex: -1,
+		refs:      []TrackedObjectRef{}, // never null on the wire
 	}
 	outcome := apply(rec.observe)
 
@@ -377,21 +378,30 @@ type recorder struct {
 	containsSecret bool
 	docCount       int
 
-	recorded int                // successful appends
-	refs     []TrackedObjectRef // references of the recorded objects, in order
-	err      error              // first append failure; sticky
+	recorded  int                // successful appends
+	lastIndex int                // highest index recorded so far; -1 before the first
+	refs      []TrackedObjectRef // references of the recorded objects, in order
+	err       error              // first recording failure; sticky
 }
 
 // observe is the ApplyObserverFunc. It appends one outcome and returns an
-// error (which the engine must honor by stopping) when the append fails. The
-// error is sticky: once recording has failed nothing further is recorded, so
-// the receipt stays a truthful ordered prefix.
+// error (which the engine must honor by stopping) when the append fails or
+// the engine misbehaves. The error is sticky: once recording has failed
+// nothing further is recorded, so the receipt stays a truthful ordered
+// prefix. The contract is one observation per document in strictly
+// increasing index order; an out-of-range, duplicate or out-of-order index is
+// a recording failure, so a misbehaving engine always yields an `unknown`
+// receipt rather than one that quietly claims more or less than happened.
 func (r *recorder) observe(obs ApplyObservation) error {
 	if r.err != nil {
 		return r.err
 	}
 	if obs.Index < 0 || obs.Index >= r.docCount {
 		r.err = fmt.Errorf("apply engine reported document index %d outside 0..%d", obs.Index, r.docCount-1)
+		return r.err
+	}
+	if obs.Index <= r.lastIndex {
+		r.err = fmt.Errorf("apply engine reported document index %d after index %d; observations must be strictly increasing", obs.Index, r.lastIndex)
 		return r.err
 	}
 	ctx, cancel := r.svc.recordContext(r.parent)
@@ -402,6 +412,7 @@ func (r *recorder) observe(obs ApplyObservation) error {
 		return r.err
 	}
 	r.recorded++
+	r.lastIndex = obs.Index
 	r.refs = append(r.refs, TrackedObjectRef{Index: obs.Index, Group: obs.Group, Version: obs.Version, Resource: obs.Resource, UID: obs.UID})
 	return nil
 }

@@ -38,13 +38,19 @@ const verifyRetryAfterSeconds = 5
 //   - a receipt whose verification is already final returns the stored verdict
 //     untouched: it is frozen, no read is made, Persist or not;
 //   - a receipt that has not completed returns pending without reading;
+//   - every document index in 0..DocumentCount-1 yields exactly one check. A
+//     document with no recorded outcome (an interrupted original) is
+//     inconclusive/outcome_unrecorded without a read, so such a receipt can
+//     never aggregate to verified;
 //   - objects whose apply failed are skipped, never verified, EXCEPT those
 //     whose failure is indeterminate (the request was cut off and the server
 //     may have committed it): those are verified like a success;
 //   - an object with no recorded UID is inconclusive/identity_unknown without
 //     a read: a live object cannot be bound to the one that was applied (R1),
 //     and no live UID is stamped as evidence;
-//   - an unsupported kind is inconclusive/kind_not_supported, never a pass;
+//   - an unsupported kind is inconclusive/kind_not_supported, never a pass; a
+//     supported kind under an OnDelete strategy is
+//     inconclusive/strategy_not_supported, never a pass;
 //   - not found is fail/not_found; a different UID is
 //     inconclusive/target_recreated; forbidden is inconclusive/read_forbidden;
 //   - a satisfied postcondition is pass; an unsatisfied one is
@@ -54,13 +60,11 @@ const verifyRetryAfterSeconds = 5
 //     the window -> verifying (retry in 5s); all pass -> verified; otherwise
 //     (nothing to check, or a terminal inconclusive) -> inconclusive.
 //
-// Persistence: a final verdict is written only if the row's verdict is still
-// open when re-read just before the write, and a write the store refuses
-// because the stored verdict is already final (the row was reconciled, or a
-// concurrent poll finished first) returns that stored verdict rather than an
-// error. Either way the first final verdict wins. With Persist false the
-// computed result is returned and nothing is written; that is how a grantee
-// or admin reads a live evaluation without replacing the owner's verdict.
+// Persistence: the store never replaces a final verdict (the guard is in its
+// UPDATE), so the first final verdict wins atomically; a refused write returns
+// the stored verdict rather than an error. With Persist false the computed
+// result is returned and nothing is written; that is how a grantee or admin
+// reads a live evaluation without replacing the owner's verdict.
 func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dynamic.Interface, opts VerifyOptions) (*VerificationResult, error) {
 	if !s.Available() {
 		return nil, &StoreUnavailableError{Step: "verification", Err: errors.New("no receipt store configured")}
@@ -79,12 +83,19 @@ func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dy
 	}
 
 	now := s.now()
-	checks := make([]CheckResult, 0, len(r.Objects))
+	checks := make([]CheckResult, 0, r.DocumentCount)
+	recorded := make(map[int]bool, len(r.Objects))
 	for _, o := range r.Objects {
+		recorded[o.Index] = true
 		if !verifiable(o) {
 			continue
 		}
 		checks = append(checks, s.verifyObject(ctx, dyn, r.ClusterID, o, now))
+	}
+	for i := 0; i < r.DocumentCount; i++ {
+		if !recorded[i] {
+			checks = append(checks, unrecordedOutcome(r.ClusterID, i, now))
+		}
 	}
 	if now.Sub(*r.CompletedAt) > verificationWindow {
 		for i := range checks {
@@ -102,24 +113,13 @@ func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dy
 		return res, nil
 	}
 
-	if state.IsFinal() {
-		// First final verdict wins. The store allows a final-to-final replace,
-		// so check the row just before writing; the store's own guard covers
-		// the non-final-over-final case below.
-		current, err := s.receipts.Get(ctx, r.ID)
-		if err != nil {
-			return nil, &StoreUnavailableError{Step: "verification", Err: err}
-		}
-		if current != nil && current.VerificationState.IsFinal() {
-			return storedVerdict(current), nil
-		}
-	}
 	payload, err := json.Marshal(checks)
 	if err != nil {
 		return nil, fmt.Errorf("encode verification checks: %w", err)
 	}
 	if err := s.receipts.SetVerification(ctx, r.ID, state, payload); err != nil {
 		if errors.Is(err, store.ErrReceiptAlreadyFinal) {
+			// Reconciled, or a concurrent poll's final verdict landed first.
 			current, getErr := s.receipts.Get(ctx, r.ID)
 			if getErr != nil || current == nil {
 				return nil, &StoreUnavailableError{Step: "verification", Err: firstErr(getErr, errors.New("receipt disappeared"))}
@@ -135,6 +135,15 @@ func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dy
 // the cluster: a success, or a failure the API server may have committed.
 func verifiable(o store.ReceiptObject) bool {
 	return o.Action != ActionFailed || o.ErrorClass == ErrorClassIndeterminate
+}
+
+// unrecordedOutcome is the check for a document the receipt holds nothing
+// about. The receipt stores no identity for it, so Source carries only the
+// cluster and Detail names the document position.
+func unrecordedOutcome(clusterID string, index int, now time.Time) CheckResult {
+	return newCheck(SourceRef{ClusterID: clusterID}, now, CheckInconclusive, ReasonOutcomeUnrecorded, diagnostics.SeverityWarning,
+		"no outcome was recorded for this document; the original apply was interrupted and the object may or may not exist",
+		fmt.Sprintf("document index %d", index))
 }
 
 // verifyObject does the one live read for o and evaluates it.
@@ -183,14 +192,22 @@ func (s *Service) verifyObject(ctx context.Context, dyn dynamic.Interface, clust
 	return CheckRollout(live, src, now)
 }
 
-// workloadPredicates is the single source of truth for which kinds have a
+// evaluation is what a kind's evaluator returns: the clauses to test, or a
+// reason the configured update strategy cannot be observed (unsupported is a
+// non-empty detail string; the reason is always strategy_not_supported).
+type evaluation struct {
+	preds       []predicate
+	unsupported string
+}
+
+// workloadEvaluators is the single source of truth for which kinds have a
 // rollout postcondition and what it is. A kind absent here is unsupported;
-// CheckRollout also treats an empty predicate list as unsupported, so adding
-// a kind without predicates cannot produce a pass.
-var workloadPredicates = map[string]func(*unstructured.Unstructured) []predicate{
-	"Deployment":  deploymentPredicates,
-	"StatefulSet": statefulSetPredicates,
-	"DaemonSet":   daemonSetPredicates,
+// CheckRollout also treats an evaluation with no predicates as unsupported,
+// so adding a kind without clauses cannot produce a pass.
+var workloadEvaluators = map[string]func(*unstructured.Unstructured) evaluation{
+	"Deployment":  evaluateDeployment,
+	"StatefulSet": evaluateStatefulSet,
+	"DaemonSet":   evaluateDaemonSet,
 }
 
 // supportedWorkload reports whether CheckRollout defines a postcondition for
@@ -200,7 +217,7 @@ func supportedWorkload(group, kind string) bool {
 	if group != "apps" {
 		return false
 	}
-	_, ok := workloadPredicates[kind]
+	_, ok := workloadEvaluators[kind]
 	return ok
 }
 
@@ -296,9 +313,13 @@ func storedVerdict(r *store.ChangeReceipt) *VerificationResult {
 //	                     condition Available == True
 //	apps/v1 StatefulSet: observedGeneration >= generation,
 //	                     status.replicas == spec.replicas,
-//	                     updatedReplicas == spec.replicas,
-//	                     readyReplicas >= spec.replicas,
-//	                     currentRevision == updateRevision
+//	                     readyReplicas >= spec.replicas, then
+//	                     RollingUpdate, partition == 0:
+//	                       updatedReplicas == spec.replicas,
+//	                       currentRevision == updateRevision
+//	                     RollingUpdate, partition > 0 (kubectl's partitioned
+//	                     clause; the revisions legitimately differ):
+//	                       updatedReplicas >= spec.replicas - partition
 //	apps/v1 DaemonSet:   observedGeneration >= generation,
 //	                     updatedNumberScheduled == desiredNumberScheduled,
 //	                     currentNumberScheduled == desiredNumberScheduled,
@@ -306,9 +327,16 @@ func storedVerdict(r *store.ChangeReceipt) *VerificationResult {
 //	                     numberReady >= desiredNumberScheduled,
 //	                     numberUnavailable == 0
 //
-// Known limit, shared with kubectl: a DaemonSet rolling out with maxSurge > 0
-// exposes no status field that counts surge pods, so a node whose old pod is
-// still available while the new one is not can satisfy these clauses.
+// A StatefulSet or DaemonSet whose spec.updateStrategy.type is OnDelete never
+// converges on its own (pods are replaced only when something deletes them),
+// so it is CheckInconclusive/"strategy_not_supported" at once instead of
+// holding the window open.
+//
+// DaemonSet surge is covered by the clauses above: the daemon controller
+// derives every per-node counter (ready, available, updated) from the OLDEST
+// scheduled pod on the node (updateDaemonSetStatus sorts by creation time and
+// reads daemonPods[0]), so a node that still holds its old pod is counted as
+// not updated until that pod is gone.
 //
 // Any other kind, or one of these kinds outside the apps group, is
 // CheckInconclusive with Reason "kind_not_supported": a kind the check does
@@ -339,13 +367,20 @@ func CheckRollout(obj *unstructured.Unstructured, src SourceRef, now time.Time) 
 	if !supportedWorkload(gvk.Group, gvk.Kind) {
 		return unsupportedKind(src, now)
 	}
-	preds := workloadPredicates[gvk.Kind](obj)
-	if len(preds) == 0 {
+	ev := workloadEvaluators[gvk.Kind](obj)
+	evidence := map[string]string{gvk.Kind + "/" + obj.GetName(): src.UID}
+	if ev.unsupported != "" {
+		c := newCheck(src, now, CheckInconclusive, ReasonStrategyNotSupported, diagnostics.SeverityInfo,
+			"the rollout postcondition cannot be observed under this update strategy; the apply was accepted but not verified", ev.unsupported)
+		c.Evidence = evidence
+		return c
+	}
+	if len(ev.preds) == 0 {
 		return unsupportedKind(src, now)
 	}
 
 	var observed, failing []string
-	for _, p := range preds {
+	for _, p := range ev.preds {
 		observed = append(observed, p.detail)
 		if !p.ok {
 			failing = append(failing, p.detail)
@@ -359,7 +394,7 @@ func CheckRollout(obj *unstructured.Unstructured, src SourceRef, now time.Time) 
 		c = newCheck(src, now, CheckWarn, ReasonRolloutInProgress, diagnostics.SeverityWarning,
 			"rollout not complete", strings.Join(failing, "; "))
 	}
-	c.Evidence = map[string]string{gvk.Kind + "/" + obj.GetName(): src.UID}
+	c.Evidence = evidence
 	return c
 }
 
@@ -370,7 +405,11 @@ type predicate struct {
 	detail string
 }
 
-func deploymentPredicates(obj *unstructured.Unstructured) []predicate {
+// onDeleteStrategy is the spec.updateStrategy.type value that never
+// converges on its own.
+const onDeleteStrategy = "OnDelete"
+
+func evaluateDeployment(obj *unstructured.Unstructured) evaluation {
 	gen := obj.GetGeneration()
 	og := statusInt(obj, "observedGeneration")
 	replicas := specReplicas(obj)
@@ -378,34 +417,52 @@ func deploymentPredicates(obj *unstructured.Unstructured) []predicate {
 	updated := statusInt(obj, "updatedReplicas")
 	available := statusInt(obj, "availableReplicas")
 	availCond := conditionStatus(obj, "Available")
-	return []predicate{
+	return evaluation{preds: []predicate{
 		{og >= gen, fmt.Sprintf("observedGeneration %d >= generation %d", og, gen)},
 		{updated == replicas, fmt.Sprintf("updatedReplicas %d == replicas %d", updated, replicas)},
 		{total == updated, fmt.Sprintf("status.replicas %d == updatedReplicas %d", total, updated)},
 		{available >= updated, fmt.Sprintf("availableReplicas %d >= updatedReplicas %d", available, updated)},
 		{availCond == "True", fmt.Sprintf("condition Available=%s", orUnset(availCond))},
-	}
+	}}
 }
 
-func statefulSetPredicates(obj *unstructured.Unstructured) []predicate {
+func evaluateStatefulSet(obj *unstructured.Unstructured) evaluation {
+	if strategy := updateStrategyType(obj); strategy == onDeleteStrategy {
+		return evaluation{unsupported: "spec.updateStrategy.type=OnDelete: pods are replaced only when deleted"}
+	}
 	gen := obj.GetGeneration()
 	og := statusInt(obj, "observedGeneration")
 	replicas := specReplicas(obj)
 	total := statusInt(obj, "replicas")
 	updated := statusInt(obj, "updatedReplicas")
 	ready := statusInt(obj, "readyReplicas")
-	current := statusString(obj, "currentRevision")
-	update := statusString(obj, "updateRevision")
-	return []predicate{
+	preds := []predicate{
 		{og >= gen, fmt.Sprintf("observedGeneration %d >= generation %d", og, gen)},
 		{total == replicas, fmt.Sprintf("status.replicas %d == replicas %d", total, replicas)},
-		{updated == replicas, fmt.Sprintf("updatedReplicas %d == replicas %d", updated, replicas)},
 		{ready >= replicas, fmt.Sprintf("readyReplicas %d >= replicas %d", ready, replicas)},
-		{current == update, fmt.Sprintf("currentRevision %s == updateRevision %s", orUnset(current), orUnset(update))},
 	}
+	partition, _, _ := unstructured.NestedInt64(obj.Object, "spec", "updateStrategy", "rollingUpdate", "partition")
+	if partition > 0 {
+		// kubectl: a partitioned roll out is complete when the pods above the
+		// partition are updated; the revisions legitimately stay different.
+		want := replicas - partition
+		preds = append(preds, predicate{updated >= want,
+			fmt.Sprintf("updatedReplicas %d >= replicas %d - partition %d", updated, replicas, partition)})
+		return evaluation{preds: preds}
+	}
+	current := statusString(obj, "currentRevision")
+	update := statusString(obj, "updateRevision")
+	preds = append(preds,
+		predicate{updated == replicas, fmt.Sprintf("updatedReplicas %d == replicas %d", updated, replicas)},
+		predicate{current == update, fmt.Sprintf("currentRevision %s == updateRevision %s", orUnset(current), orUnset(update))},
+	)
+	return evaluation{preds: preds}
 }
 
-func daemonSetPredicates(obj *unstructured.Unstructured) []predicate {
+func evaluateDaemonSet(obj *unstructured.Unstructured) evaluation {
+	if strategy := updateStrategyType(obj); strategy == onDeleteStrategy {
+		return evaluation{unsupported: "spec.updateStrategy.type=OnDelete: pods are replaced only when deleted"}
+	}
 	gen := obj.GetGeneration()
 	og := statusInt(obj, "observedGeneration")
 	desired := statusInt(obj, "desiredNumberScheduled")
@@ -414,14 +471,24 @@ func daemonSetPredicates(obj *unstructured.Unstructured) []predicate {
 	available := statusInt(obj, "numberAvailable")
 	ready := statusInt(obj, "numberReady")
 	unavailable := statusInt(obj, "numberUnavailable")
-	return []predicate{
+	return evaluation{preds: []predicate{
 		{og >= gen, fmt.Sprintf("observedGeneration %d >= generation %d", og, gen)},
 		{updated == desired, fmt.Sprintf("updatedNumberScheduled %d == desiredNumberScheduled %d", updated, desired)},
 		{current == desired, fmt.Sprintf("currentNumberScheduled %d == desiredNumberScheduled %d", current, desired)},
 		{available >= desired, fmt.Sprintf("numberAvailable %d >= desiredNumberScheduled %d", available, desired)},
 		{ready >= desired, fmt.Sprintf("numberReady %d >= desiredNumberScheduled %d", ready, desired)},
 		{unavailable == 0, fmt.Sprintf("numberUnavailable %d == 0", unavailable)},
+	}}
+}
+
+// updateStrategyType reads spec.updateStrategy.type; "" when unset (the API
+// default is RollingUpdate for both StatefulSet and DaemonSet).
+func updateStrategyType(obj *unstructured.Unstructured) string {
+	v, found, err := unstructured.NestedString(obj.Object, "spec", "updateStrategy", "type")
+	if err != nil || !found {
+		return ""
 	}
+	return v
 }
 
 // specReplicas reads spec.replicas with the API default of 1 when unset.

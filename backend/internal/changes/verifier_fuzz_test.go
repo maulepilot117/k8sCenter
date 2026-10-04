@@ -87,6 +87,19 @@ func FuzzCheckRollout(f *testing.F) {
 		"metadata":{"name":"agent","namespace":"kube-system","uid":"u","generation":1},
 		"status":{"observedGeneration":1,"desiredNumberScheduled":5,"currentNumberScheduled":5,"updatedNumberScheduled":5,
 		          "numberAvailable":5,"numberReady":5,"numberUnavailable":0}}`))
+	// Strategies: OnDelete never passes; a partition changes the clauses.
+	f.Add([]byte(`{"apiVersion":"apps/v1","kind":"StatefulSet",
+		"metadata":{"name":"db","namespace":"prod","uid":"u","generation":2},
+		"spec":{"replicas":3,"updateStrategy":{"type":"OnDelete"}},
+		"status":{"observedGeneration":2,"replicas":3,"updatedReplicas":3,"readyReplicas":3,"currentRevision":"a","updateRevision":"a"}}`))
+	f.Add([]byte(`{"apiVersion":"apps/v1","kind":"StatefulSet",
+		"metadata":{"name":"db","namespace":"prod","uid":"u","generation":2},
+		"spec":{"replicas":3,"updateStrategy":{"type":"RollingUpdate","rollingUpdate":{"partition":1}}},
+		"status":{"observedGeneration":2,"replicas":3,"updatedReplicas":2,"readyReplicas":3,"currentRevision":"a","updateRevision":"b"}}`))
+	f.Add([]byte(`{"apiVersion":"apps/v1","kind":"DaemonSet","metadata":{"name":"agent","uid":"u"},
+		"spec":{"updateStrategy":{"type":"OnDelete"}},"status":{"desiredNumberScheduled":0}}`))
+	f.Add([]byte(`{"apiVersion":"apps/v1","kind":"StatefulSet","spec":{"updateStrategy":"OnDelete"},"status":{}}`))
+	f.Add([]byte(`{"apiVersion":"apps/v1","kind":"StatefulSet","spec":{"updateStrategy":{"type":7,"rollingUpdate":{"partition":"one"}}}}`))
 	// Malformed shapes: the type-assertion traps.
 	f.Add([]byte(`{}`))
 	f.Add([]byte(`{"metadata":"oops"}`))
@@ -119,7 +132,14 @@ func FuzzCheckRollout(f *testing.F) {
 			}
 			return
 		}
+		strategy, _, _ := unstructured.NestedString(obj.Object, "spec", "updateStrategy", "type")
+		onDelete := gvk.Kind != "Deployment" && strategy == "OnDelete"
 		switch {
+		case onDelete:
+			if got.Status != CheckInconclusive || got.Reason != ReasonStrategyNotSupported {
+				t.Fatalf("OnDelete %s produced %s/%s", gvk.Kind, got.Status, got.Reason)
+			}
+			return
 		case got.Status == CheckPass && got.Reason == ReasonRolloutComplete:
 		case got.Status == CheckWarn && got.Reason == ReasonRolloutInProgress:
 		default:

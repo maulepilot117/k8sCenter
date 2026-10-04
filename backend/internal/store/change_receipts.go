@@ -374,13 +374,15 @@ func (s *ChangeReceiptStore) Finalize(ctx context.Context, id uuid.UUID, state R
 // state is an outcome (verified, inconclusive or verification_failed) and left
 // alone for pending/verifying.
 //
-// A receipt whose verification is already final is never reopened: a non-final
-// write (pending or verifying) against a final row returns
-// ErrReceiptAlreadyFinal and changes nothing. That is what stops a slow
-// verifier from overwriting the "inconclusive" that reconciliation recorded.
-// A final-to-final write is allowed and replaces the stored outcome and
-// evidence (a re-verification supersedes the earlier result). Returns
-// ErrReceiptNotFound for an unknown id.
+// A final verdict is never replaced: ANY write (final or not) against a row
+// whose verification_state is already final returns ErrReceiptAlreadyFinal
+// and changes nothing. The guard is in the UPDATE's WHERE clause, so two
+// pollers that both compute a final verdict cannot race it: exactly one write
+// lands and the other is told the row was already final. That is also what
+// stops a slow verifier from overwriting the "inconclusive" that
+// reconciliation recorded. The caller treats ErrReceiptAlreadyFinal as "read
+// the stored verdict back", not as a failure. Returns ErrReceiptNotFound for
+// an unknown id.
 func (s *ChangeReceiptStore) SetVerification(
 	ctx context.Context, id uuid.UUID, state VerificationState, payload json.RawMessage,
 ) error {
@@ -397,8 +399,7 @@ func (s *ChangeReceiptStore) SetVerification(
 		       verification       = $3::jsonb,
 		       verified_at        = CASE WHEN $4::boolean THEN NOW() ELSE verified_at END
 		 WHERE id = $1
-		   AND ($4::boolean
-		        OR verification_state NOT IN ('verified', 'inconclusive', 'verification_failed'))`,
+		   AND verification_state NOT IN ('verified', 'inconclusive', 'verification_failed')`,
 		id, string(state), verification, state.IsFinal())
 	if err != nil {
 		return fmt.Errorf("set change receipt verification: %w", err)

@@ -30,9 +30,9 @@
 package changes
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -96,6 +96,14 @@ const (
 	// read could not be bound to the object that was applied (R1). The object
 	// is not read and no live UID is stamped as evidence. Terminal.
 	ReasonIdentityUnknown = "identity_unknown"
+	// ReasonOutcomeUnrecorded: the receipt holds no outcome at all for one of
+	// its documents (the original apply was interrupted), so nothing can be
+	// said about it and the receipt can never aggregate to verified. Terminal.
+	ReasonOutcomeUnrecorded = "outcome_unrecorded"
+	// ReasonStrategyNotSupported: the workload's update strategy (OnDelete)
+	// never converges on its own, so the rollout postcondition cannot be
+	// observed within the window. Terminal.
+	ReasonStrategyNotSupported = "strategy_not_supported"
 	// ReasonReadFailed: the live read failed for a reason other than not-found
 	// or forbidden. Retryable while the verification window is open.
 	ReasonReadFailed = diagnostics.ReasonSourceUnavailable
@@ -135,26 +143,43 @@ const (
 	ErrorClassOther         = "other"
 )
 
-// ClassifyAPIError maps a Kubernetes API error to one of the ErrorClass*
-// values. nil maps to "". The apply engine sets ApplyObservation.ErrorClass
-// with it so the service never has to parse error prose.
+// ClassifyAPIError maps the error of a mutating API call (the SSA PATCH) to
+// one of the ErrorClass* values. nil maps to "". The apply engine sets
+// ApplyObservation.ErrorClass with it so the service never has to parse
+// error prose.
+//
+// The classification is an allowlist of DEFINITE rejections: a Status the API
+// server returned with a code that means "not applied" (400, 401, 403, 404,
+// 405, 409, 415, 422, 429, 503). Everything else is indeterminate, because
+// the server may have committed the write before the error reached us: a
+// cancelled or timed-out context, a connection reset or unexpected EOF after
+// the body was sent, an HTTP/2 GOAWAY, a 500 wrapping an etcd timeout, a 504,
+// or any error that carries no Status at all. Only the PATCH's error belongs
+// here; a failed pre-PATCH GET did not mutate anything and is not
+// indeterminate (U30a).
 func ClassifyAPIError(err error) string {
-	switch {
-	case err == nil:
+	if err == nil {
 		return ""
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
-		apierrors.IsTimeout(err), apierrors.IsServerTimeout(err):
+	}
+	var st apierrors.APIStatus
+	if !errors.As(err, &st) {
 		return ErrorClassIndeterminate
-	case apierrors.IsConflict(err):
+	}
+	switch st.Status().Code {
+	case http.StatusConflict:
 		return ErrorClassConflict
-	case apierrors.IsForbidden(err):
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return ErrorClassForbidden
-	case apierrors.IsInvalid(err):
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return ErrorClassInvalid
-	case apierrors.IsNotFound(err):
+	case http.StatusNotFound:
 		return ErrorClassNotFound
-	default:
+	case http.StatusMethodNotAllowed, http.StatusUnsupportedMediaType,
+		http.StatusTooManyRequests, http.StatusServiceUnavailable:
 		return ErrorClassOther
+	default:
+		// 500, 504, 408, a Status with no code, anything unexpected.
+		return ErrorClassIndeterminate
 	}
 }
 

@@ -943,13 +943,17 @@ func TestChangeReceiptStore_SetVerification_DoesNotReopenFinalOutcome(t *testing
 				t.Errorf("a final verification was reopened or altered: %+v", got)
 			}
 
-			// Final to final replaces: a re-verification supersedes the result.
-			if err := s.SetVerification(ctx, r.ID, VerifyVerified, json.RawMessage(`[{"checkId":"c2","status":"pass"}]`)); err != nil {
-				t.Errorf("final-to-final SetVerification: %v", err)
+			// Final to final is refused too: the first final verdict wins, and
+			// the guard lives in the UPDATE so two overlapping pollers cannot
+			// both land one.
+			for _, other := range []VerificationState{VerifyVerified, VerifyInconclusive, VerifyFailed} {
+				if err := s.SetVerification(ctx, r.ID, other, json.RawMessage(`[{"checkId":"c2","status":"pass"}]`)); !errors.Is(err, ErrReceiptAlreadyFinal) {
+					t.Errorf("SetVerification(%s) over %s = %v; want ErrReceiptAlreadyFinal", other, final, err)
+				}
 			}
-			if got = mustGetReceipt(t, s, r.ID); got.VerificationState != VerifyVerified ||
-				!jsonEqual(t, got.Verification, `[{"checkId":"c2","status":"pass"}]`) {
-				t.Errorf("final-to-final did not replace the outcome: %+v", got)
+			if got = mustGetReceipt(t, s, r.ID); got.VerificationState != final ||
+				!got.VerifiedAt.Equal(stamped) || !jsonEqual(t, got.Verification, string(payload)) {
+				t.Errorf("a final verdict was replaced: %+v", got)
 			}
 		})
 	}

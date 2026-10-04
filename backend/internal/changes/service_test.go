@@ -9,15 +9,19 @@ import (
 	"go/token"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -188,7 +192,8 @@ func (f *fakeStore) SetVerification(ctx context.Context, id uuid.UUID, state sto
 	if !ok {
 		return store.ErrReceiptNotFound
 	}
-	if r.VerificationState.IsFinal() && !state.IsFinal() {
+	if r.VerificationState.IsFinal() {
+		// Mirrors the store: a final verdict is never replaced, final or not.
 		return store.ErrReceiptAlreadyFinal
 	}
 	r.VerificationState = state
@@ -1382,12 +1387,25 @@ func TestClassifyAPIError(t *testing.T) {
 		{"forbidden", apierrors.NewForbidden(gr, "web", errors.New("x")), ErrorClassForbidden},
 		{"invalid", apierrors.NewInvalid(schema.GroupKind{Group: "apps", Kind: "Deployment"}, "web", nil), ErrorClassInvalid},
 		{"not found", apierrors.NewNotFound(gr, "web"), ErrorClassNotFound},
+		{"bad request", apierrors.NewBadRequest("malformed"), ErrorClassInvalid},
+		{"unauthorized", apierrors.NewUnauthorized("token expired"), ErrorClassForbidden},
+		{"method not allowed", apierrors.NewMethodNotSupported(gr, "patch"), ErrorClassOther},
+		{"unsupported media type", apierrors.NewGenericServerResponse(http.StatusUnsupportedMediaType, "patch", gr, "web", "", 0, false), ErrorClassOther},
+		{"too many requests", apierrors.NewTooManyRequests("slow down", 1), ErrorClassOther},
+		{"service unavailable", apierrors.NewServiceUnavailable("etcd"), ErrorClassOther},
+		{"wrapped definite rejection", fmt.Errorf("apply: %w", apierrors.NewConflict(gr, "web", errors.New("x"))), ErrorClassConflict},
+		// Everything below may have been committed by the server.
 		{"context canceled", context.Canceled, ErrorClassIndeterminate},
 		{"wrapped deadline", fmt.Errorf("patch: %w", context.DeadlineExceeded), ErrorClassIndeterminate},
 		{"api timeout", apierrors.NewTimeoutError("too slow", 5), ErrorClassIndeterminate},
 		{"server timeout", apierrors.NewServerTimeout(gr, "patch", 5), ErrorClassIndeterminate},
-		{"service unavailable", apierrors.NewServiceUnavailable("etcd"), ErrorClassOther},
-		{"plain", errors.New("boom"), ErrorClassOther},
+		{"internal error (etcd timeout wrapped)", apierrors.NewInternalError(errors.New("etcdserver: request timed out")), ErrorClassIndeterminate},
+		{"unexpected server error", apierrors.NewGenericServerResponse(http.StatusBadGateway, "patch", gr, "web", "", 0, true), ErrorClassIndeterminate},
+		{"gateway timeout", apierrors.NewGenericServerResponse(http.StatusGatewayTimeout, "patch", gr, "web", "", 0, false), ErrorClassIndeterminate},
+		{"connection reset", &net.OpError{Op: "write", Err: syscall.ECONNRESET}, ErrorClassIndeterminate},
+		{"unexpected EOF", io.ErrUnexpectedEOF, ErrorClassIndeterminate},
+		{"status with no code", &apierrors.StatusError{ErrStatus: metav1.Status{Reason: metav1.StatusReasonUnknown}}, ErrorClassIndeterminate},
+		{"plain", errors.New("boom"), ErrorClassIndeterminate},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1432,5 +1450,51 @@ func TestReceiptView_SingleVerificationState(t *testing.T) {
 	v := m["verification"].(map[string]any)
 	if v["state"] != "pending" || v["url"] != "/v1/changes/"+id.String()+"/verification" {
 		t.Fatalf("verification = %v", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Re-review follow-ups (PR #565, commit 56a7877c): observer ordering
+// ---------------------------------------------------------------------------
+
+func TestTrackedApply_ObserverRejectsDuplicateAndOutOfOrderIndices(t *testing.T) {
+	cases := map[string][]ApplyObservation{
+		"duplicate index": {
+			okObs(0, "Deployment", "prod", "web", ActionConfigured),
+			okObs(1, "Service", "prod", "web", ActionUnchanged),
+			okObs(1, "Service", "prod", "web", ActionCreated),
+			okObs(2, "ConfigMap", "prod", "web-config", ActionCreated),
+		},
+		"out of order": {
+			okObs(0, "Deployment", "prod", "web", ActionConfigured),
+			okObs(2, "ConfigMap", "prod", "web-config", ActionCreated),
+			okObs(1, "Service", "prod", "web", ActionUnchanged),
+		},
+	}
+	for name, script := range cases {
+		t.Run(name, func(t *testing.T) {
+			fs := newFakeStore()
+			svc := newTestService(fs)
+			eng := &fakeEngine{script: script}
+			id := uuid.New()
+			res, err := svc.TrackedApply(context.Background(), newRequest(id, threeDocs(), "raw"), eng.apply)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Tracking.State != store.ReceiptUnknown {
+				t.Fatalf("a misbehaving engine must always yield unknown: %+v", res.Tracking)
+			}
+			if len(fs.row(t, id).Objects) != 2 {
+				t.Fatalf("recording must stop at the offending observation: %d objects", len(fs.row(t, id).Objects))
+			}
+			if res.Tracking.RecordedThrough != 2 || len(res.Tracking.Warnings) == 0 {
+				t.Fatalf("tracking = %+v", res.Tracking)
+			}
+			// The offending observation stopped the engine (Stopped set) and
+			// nothing after it was recorded.
+			if fs.appends != 2 {
+				t.Fatalf("appends = %d; the rejected index must not reach the store", fs.appends)
+			}
+		})
 	}
 }
