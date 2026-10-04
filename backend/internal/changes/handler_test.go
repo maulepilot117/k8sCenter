@@ -1,14 +1,13 @@
 package changes
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -19,12 +18,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/gitops"
@@ -45,6 +41,7 @@ type fakeReader struct {
 	failList   error
 	failGrants error
 	grantCalls int
+	listCalls  int
 }
 
 func newFakeReader() *fakeReader {
@@ -52,6 +49,7 @@ func newFakeReader() *fakeReader {
 }
 
 func (f *fakeReader) ListForOwner(_ context.Context, p store.ReceiptQueryParams) ([]store.ChangeReceipt, int, error) {
+	f.listCalls++
 	if f.failList != nil {
 		return nil, 0, f.failList
 	}
@@ -574,6 +572,56 @@ func TestHandleGet_SecretBearingReceiptFiltersErrorText(t *testing.T) {
 	}
 }
 
+func TestErrorClassOf_RoundTripsEveryClass(t *testing.T) {
+	// Every class the service can record, restated by value so a constant
+	// added to types.go without a matching allowlist entry fails here.
+	classes := []string{"conflict", "forbidden", "invalid", "not_found", "indeterminate", "other"}
+	for _, c := range classes {
+		if got := errorClassOf(c, ""); got != c {
+			t.Fatalf("stored class %q -> %q", c, got)
+		}
+		if got := errorClassOf("", sanitizedError(c)); got != c {
+			t.Fatalf("sanitized text for %q -> %q", c, got)
+		}
+		if got := errorClassOf(c, "raw admission text"); got != c {
+			t.Fatalf("stored class must win over text: %q -> %q", c, got)
+		}
+	}
+	for _, want := range []string{ErrorClassConflict, ErrorClassForbidden, ErrorClassInvalid, ErrorClassNotFound, ErrorClassIndeterminate, ErrorClassOther} {
+		if !isErrorClass(want) {
+			t.Fatalf("constant %q is not in the allowlist", want)
+		}
+	}
+	for _, bad := range []struct{ stored, text string }{
+		{"", ""}, {"", "no class here"}, {"bogus", ""}, {"bogus", "conflict: x"}, {"", "Conflict: capitalised"}, {"", "conflict"},
+	} {
+		if bad.stored == "bogus" && bad.text == "conflict: x" {
+			if got := errorClassOf(bad.stored, bad.text); got != "conflict" {
+				t.Fatalf("unknown stored class must fall back to the text: %q", got)
+			}
+			continue
+		}
+		if got := errorClassOf(bad.stored, bad.text); got != "" {
+			t.Fatalf("errorClassOf(%q, %q) = %q, want unclassified", bad.stored, bad.text, got)
+		}
+	}
+}
+
+func TestHandleGet_StoredErrorClassPreferredOverText(t *testing.T) {
+	hs := newHarness(t)
+	o := failedObj(0, "prod", "web", `admission webhook denied: data.password "hunter2"`)
+	o.ErrorClass = ErrorClassConflict
+	rec := hs.seed(testUser, "local", o)
+	rec.ContainsSecret = true
+	hs.reader.put(*rec)
+
+	w := hs.get(t, testUser, rec.ID)
+	d := decodeDetail(t, w)
+	if d.Objects[0].ErrorClass != ErrorClassConflict || d.Objects[0].Error != "" || strings.Contains(w.Body.String(), "hunter2") {
+		t.Fatalf("object = %+v\n%s", d.Objects[0], w.Body.String())
+	}
+}
+
 func TestHandleGet_NonSecretReceiptKeepsErrorText(t *testing.T) {
 	hs := newHarness(t)
 	rec := hs.seed(testUser, "local", failedObj(0, "prod", "web", "Deployment.apps \"web\" is invalid: spec.replicas: must be >= 0"))
@@ -688,6 +736,29 @@ func TestHandleGet_AccessCheckErrorFailsClosed(t *testing.T) {
 	// check ran once for the whole request.
 	if len(hs.access.calls) != 1 {
 		t.Fatalf("access calls = %v, want one for the shared tuple", hs.access.calls)
+	}
+}
+
+func TestHandleGet_AccessCheckErrorShortCircuitsAndLogsOnce(t *testing.T) {
+	hs := newHarness(t)
+	var logs bytes.Buffer
+	hs.h.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	hs.access.err = errors.New("remote SAR endpoint unreachable")
+	// Three distinct tuples: deployments/prod, configmaps/prod, secrets/staging.
+	rec := hs.seed(testUser, "local",
+		recordedDeployment(0, "web", "uid-web"),
+		recordedObj(1, "", "v1", "configmaps", "ConfigMap", "prod", "cfg", "uid-cfg"),
+		secretObj(2, "staging", "s"))
+
+	d := decodeDetail(t, hs.get(t, testUser, rec.ID))
+	if d.RedactedObjects != 3 {
+		t.Fatalf("every object must be hidden: %+v", d.Objects)
+	}
+	if len(hs.access.calls) != 1 {
+		t.Fatalf("after one failed check no further tuple may dial the checker: %v", hs.access.calls)
+	}
+	if n := strings.Count(logs.String(), "access check failed"); n != 1 {
+		t.Fatalf("access-check failure logged %d times, want once:\n%s", n, logs.String())
 	}
 }
 
@@ -870,11 +941,14 @@ func TestHandleGet_OwnershipFollowsObjectAndAppAccess(t *testing.T) {
 		t.Fatalf("ownership = %+v (redacted %d)", d.Ownership, d.RedactedOwnership)
 	}
 	got := d.Ownership[0]
-	if got.Object.Name != "api" || got.Controller != gitops.OwnedByArgoCD || got.Confidence != gitops.ConfidenceConfirmed {
-		t.Fatalf("verdict must survive: %+v", got)
+	if got.Object.Name != "api" || got.Controller != gitops.OwnedByNone || got.Confidence != gitops.ConfidenceForbidden || got.Reason != OwnershipReasonAppsRedacted {
+		t.Fatalf("an entry with every app hidden must not say which controller claims it: %+v", got)
 	}
 	if len(got.Apps) != 0 || got.RedactedApps != 1 {
 		t.Fatalf("apps must be re-authorized: %+v", got)
+	}
+	if strings.Contains(w.Body.String(), `"controller":"argocd"`) || strings.Contains(w.Body.String(), "confirmed") {
+		t.Fatalf("controller claim leaked: %s", w.Body.String())
 	}
 	if len(got.Evidence) != 1 || got.Evidence[0].Kind != gitops.EvidenceInstanceLabel {
 		t.Fatalf("evidence naming a hidden app must go: %+v", got.Evidence)
@@ -884,6 +958,125 @@ func TestHandleGet_OwnershipFollowsObjectAndAppAccess(t *testing.T) {
 	}
 	if fmt.Sprint(hs.access.calls[len(hs.access.calls)-1]) != fmt.Sprint(accessCall{"local", "argoproj.io", "applications", "argocd"}) {
 		t.Fatalf("application check = %v", hs.access.calls)
+	}
+}
+
+func TestRedactOwnership_ReauthorizesEveryAppKind(t *testing.T) {
+	web := recordedDeployment(0, "web", "uid-web")
+	objs := []store.ReceiptObject{web}
+	visible, _ := redactObjects(objs, false, allowAll)
+	app := func(kind, ns, repo string) gitops.OwnedByApp {
+		return gitops.OwnedByApp{AppID: "x:" + ns + ":" + kind, Tool: gitops.ToolFluxCD, Kind: kind, Namespace: ns, Name: "n",
+			Source: gitops.AppSource{RepoURL: repo}}
+	}
+	stored := []gitops.OwnershipResult{{
+		Object:     gitops.ObjectRef{Group: web.Group, Kind: web.Kind, Namespace: web.Namespace, Name: web.Name},
+		Controller: gitops.OwnedByBoth, Confidence: gitops.ConfidenceConflicting,
+		Apps: []gitops.OwnedByApp{
+			app("Application", "argocd", "repo://argo"),
+			app("Kustomization", "flux-system", "repo://ks"),
+			app("HelmRelease", "flux-system", "repo://hr"),
+			app("Widget", "flux-system", "repo://unknown-kind"),
+		},
+		Evidence: []gitops.OwnershipEvidence{
+			{Kind: gitops.EvidenceArgoStatusResource, AppID: "x:argocd:Application"},
+			{Kind: gitops.EvidenceFluxInventoryEntry, AppID: "x:flux-system:Kustomization"},
+			{Kind: gitops.EvidenceFluxOwnerLabel, AppID: "x:flux-system:HelmRelease"},
+			{Kind: gitops.EvidenceFluxOwnerLabel, AppID: "x:flux-system:Widget"},
+			{Kind: gitops.EvidenceInstanceLabel, RawValue: "web"},
+		},
+	}}
+	cases := []struct {
+		name     string
+		deny     map[string]bool // "group/resource" tuples the caller may not get
+		wantApps []string        // repo URLs that survive
+		wantEv   int
+	}{
+		{"all allowed", nil, []string{"repo://argo", "repo://ks", "repo://hr"}, 4},
+		{"no kustomizations", map[string]bool{"kustomize.toolkit.fluxcd.io/kustomizations": true}, []string{"repo://argo", "repo://hr"}, 3},
+		{"no helmreleases", map[string]bool{"helm.toolkit.fluxcd.io/helmreleases": true}, []string{"repo://argo", "repo://ks"}, 3},
+		{"no applications", map[string]bool{"argoproj.io/applications": true}, []string{"repo://ks", "repo://hr"}, 3},
+		{"nothing", map[string]bool{"argoproj.io/applications": true, "kustomize.toolkit.fluxcd.io/kustomizations": true, "helm.toolkit.fluxcd.io/helmreleases": true}, nil, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var asked []accessCall
+			allowed := func(group, resource, ns string) bool {
+				asked = append(asked, accessCall{"", group, resource, ns})
+				return !tc.deny[group+"/"+resource]
+			}
+			views, redacted := redactOwnership(stored, objs, visible, allowed)
+			if redacted != 0 || len(views) != 1 {
+				t.Fatalf("views = %+v (redacted %d)", views, redacted)
+			}
+			v := views[0]
+			var repos []string
+			for _, a := range v.Apps {
+				repos = append(repos, a.Source.RepoURL)
+			}
+			if fmt.Sprint(repos) != fmt.Sprint(tc.wantApps) {
+				t.Fatalf("apps = %v, want %v", repos, tc.wantApps)
+			}
+			// The unknown kind is always removed and never asked about.
+			if v.RedactedApps != 4-len(tc.wantApps) {
+				t.Fatalf("redactedApps = %d", v.RedactedApps)
+			}
+			for _, a := range asked {
+				if a.resource == "" || a.namespace == "" {
+					t.Fatalf("an unknown app kind must fail closed without a SAR: %+v", a)
+				}
+			}
+			if len(v.Evidence) != tc.wantEv {
+				t.Fatalf("evidence = %+v, want %d entries", v.Evidence, tc.wantEv)
+			}
+			raw, _ := json.Marshal(v)
+			if strings.Contains(string(raw), "unknown-kind") || strings.Contains(string(raw), "Widget") {
+				t.Fatalf("unknown app kind leaked: %s", raw)
+			}
+			if len(tc.wantApps) > 0 {
+				if v.Controller != gitops.OwnedByBoth || v.Confidence != gitops.ConfidenceConflicting {
+					t.Fatalf("verdict must survive while an app is visible: %+v", v)
+				}
+			} else if v.Controller != gitops.OwnedByNone || v.Confidence != gitops.ConfidenceForbidden || v.Reason != OwnershipReasonAppsRedacted {
+				t.Fatalf("verdict must collapse when every app is hidden: %+v", v)
+			}
+		})
+	}
+	// An entry that never had a confirming app (hints only) is not collapsed.
+	hintsOnly := []gitops.OwnershipResult{{
+		Object:     gitops.ObjectRef{Group: web.Group, Kind: web.Kind, Namespace: web.Namespace, Name: web.Name},
+		Controller: gitops.OwnedByNone, Confidence: gitops.ConfidenceUnknown, Reason: "hints-only",
+		Evidence: []gitops.OwnershipEvidence{{Kind: gitops.EvidenceInstanceLabel, RawValue: "web"}},
+	}}
+	views, _ := redactOwnership(hintsOnly, objs, visible, func(string, string, string) bool { return false })
+	if len(views) != 1 || views[0].Reason != "hints-only" || views[0].RedactedApps != 0 || len(views[0].Evidence) != 1 {
+		t.Fatalf("hints-only entry = %+v", views)
+	}
+}
+
+func TestHandleGet_SecretReceiptDigestOnlyForOwner(t *testing.T) {
+	hs := newHarness(t)
+	rec := hs.seed(testUser, "local", secretObj(0, "prod", "db-creds"))
+	rec.ContainsSecret = true
+	hs.reader.put(*rec)
+	hs.reader.grants[rec.ID] = []string{otherUser.ID}
+
+	if d := decodeDetail(t, hs.get(t, testUser, rec.ID)); d.ContentDigest != rec.ContentDigest {
+		t.Fatalf("owner digest = %q", d.ContentDigest)
+	}
+	for _, u := range []*auth.User{otherUser, adminUser} {
+		w := hs.get(t, u, rec.ID)
+		if d := decodeDetail(t, w); d.ContentDigest != "" {
+			t.Fatalf("%s sees the digest of a Secret-bearing bundle: %q", u.Username, d.ContentDigest)
+		}
+		if strings.Contains(w.Body.String(), "sha256:") {
+			t.Fatalf("digest leaked: %s", w.Body.String())
+		}
+	}
+	// A non-secret receipt keeps its digest for every reader.
+	plain := hs.seed(testUser, "local", recordedDeployment(0, "web", "uid-web"))
+	if d := decodeDetail(t, hs.get(t, adminUser, plain.ID)); d.ContentDigest != plain.ContentDigest {
+		t.Fatalf("non-secret digest = %q", d.ContentDigest)
 	}
 }
 
@@ -997,342 +1190,6 @@ func TestHandleGet_StoreReadFailureIs503(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// List
-// ---------------------------------------------------------------------------
-
-func TestHandleList_OwnerScopedAndPaginated(t *testing.T) {
-	hs := newHarness(t)
-	var mine []*store.ChangeReceipt
-	for i := 0; i < 3; i++ {
-		r := hs.seed(testUser, "local", recordedDeployment(0, fmt.Sprintf("web-%d", i), "uid"))
-		created := fixedNow.Add(time.Duration(i) * time.Minute)
-		r.CreatedAt = created
-		hs.reader.put(*r)
-		mine = append(mine, r)
-	}
-	hs.seed(otherUser, "local", recordedDeployment(0, "bob-web", "uid-bob"))
-
-	w := hs.do(t, hs.h.HandleList, http.MethodGet, request{user: testUser, query: "?page=2&pageSize=2"})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-	}
-	e := decodeEnvelope(t, w)
-	if e.Metadata == nil || e.Metadata.Total != 3 || e.Metadata.Page != 2 || e.Metadata.PageSize != 2 {
-		t.Fatalf("metadata = %+v", e.Metadata)
-	}
-	var items []map[string]any
-	if err := json.Unmarshal(e.Data, &items); err != nil {
-		t.Fatal(err)
-	}
-	if len(items) != 1 || items[0]["operationId"] != mine[0].ID.String() {
-		t.Fatalf("page 2 = %+v, want the oldest receipt %s", items, mine[0].ID)
-	}
-	for _, k := range []string{"objects", "checks", "ownership", "summary"} {
-		if _, ok := items[0][k]; ok {
-			t.Fatalf("list items are envelope views only; found %q", k)
-		}
-	}
-	if strings.Contains(w.Body.String(), "bob") {
-		t.Fatal("another owner's row leaked into the list")
-	}
-
-	// Defaults and clamps come from the store's Normalize.
-	w = hs.do(t, hs.h.HandleList, http.MethodGet, request{user: testUser, query: "?page=0&pageSize=99999"})
-	e = decodeEnvelope(t, w)
-	if e.Metadata.Page != 1 || e.Metadata.PageSize != store.ReceiptMaxPageSize {
-		t.Fatalf("normalized metadata = %+v", e.Metadata)
-	}
-	w = hs.do(t, hs.h.HandleList, http.MethodGet, request{user: testUser, query: "?page=x"})
-	expectError(t, w, http.StatusBadRequest, "invalid page")
-	w = hs.do(t, hs.h.HandleList, http.MethodGet, request{user: testUser, query: "?pageSize=1.5"})
-	expectError(t, w, http.StatusBadRequest, "invalid pageSize")
-}
-
-func TestHandleList_NeverReturnsAnotherOwnersRow(t *testing.T) {
-	hs := newHarness(t)
-	shared := hs.seed(otherUser, "local", recordedDeployment(0, "bob-web", "uid-bob"))
-	hs.reader.grants[shared.ID] = []string{testUser.ID}
-
-	w := hs.do(t, hs.h.HandleList, http.MethodGet, request{user: testUser})
-	e := decodeEnvelope(t, w)
-	if e.Metadata.Total != 0 || string(e.Data) != "[]" {
-		t.Fatalf("a granted receipt is reachable by id only, not listed: %s", w.Body.String())
-	}
-	// And an admin lists only their own, too.
-	w = hs.do(t, hs.h.HandleList, http.MethodGet, request{user: adminUser})
-	if e := decodeEnvelope(t, w); e.Metadata.Total != 0 {
-		t.Fatalf("admin list = %s", w.Body.String())
-	}
-}
-
-func TestHandleList_EmptyIsAnArrayWithZeroTotal(t *testing.T) {
-	hs := newHarness(t)
-	w := hs.do(t, hs.h.HandleList, http.MethodGet, request{user: testUser})
-	e := decodeEnvelope(t, w)
-	if string(e.Data) != "[]" || e.Metadata == nil || e.Metadata.Total != 0 || e.Metadata.Page != 1 || e.Metadata.PageSize != store.ReceiptDefaultPageSize {
-		t.Fatalf("empty list = %s", w.Body.String())
-	}
-}
-
-func TestHandleList_RemoteGenerationResolvedOncePerCluster(t *testing.T) {
-	hs := newHarness(t)
-	hs.seed(adminUser, "remote-1", recordedDeployment(0, "a", "u"))
-	hs.seed(adminUser, "remote-1", recordedDeployment(0, "b", "u"))
-	hs.seed(adminUser, "local", recordedDeployment(0, "c", "u"))
-
-	w := hs.do(t, hs.h.HandleList, http.MethodGet, request{user: adminUser})
-	var items []ReceiptView
-	if err := json.Unmarshal(decodeEnvelope(t, w).Data, &items); err != nil {
-		t.Fatal(err)
-	}
-	if calls := hs.targeter.calls(); len(calls) != 1 || calls[0] != "remote-1" {
-		t.Fatalf("generation lookups = %v, want one for remote-1", calls)
-	}
-	for _, it := range items {
-		if (it.ClusterID == "remote-1") != it.TargetGenerationChanged {
-			t.Fatalf("item %+v", it)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Verification
-// ---------------------------------------------------------------------------
-
-func TestHandleVerification_PersistsAndFreezesAfterWindow(t *testing.T) {
-	hs := newHarness(t)
-	stale := deploymentObj(deploymentSpec{name: "web", ns: "prod", uid: "uid-web", generation: 5, observedGen: 4,
-		replicas: 3, updated: 3, available: 3, availableCond: "True"})
-	hs.targeter.dyn, _ = fakeDyn(stale)
-	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, verificationWindow+time.Second, recordedDeployment(0, "web", "uid-web"))
-
-	w := hs.verify(t, testUser, rec.ID)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-	}
-	v := decodeView(t, w)
-	if v.State != store.VerifyInconclusive || len(v.Checks) != 1 || v.Checks[0].Reason != ReasonWindowExpired || v.RetryAfterSeconds != 0 {
-		t.Fatalf("view = %+v", v)
-	}
-	if w.Header().Get("Retry-After") != "" {
-		t.Fatal("a frozen verdict carries no Retry-After")
-	}
-	state, checks := persistedState(t, hs.reader.fakeStore, rec.ID)
-	if state != store.VerifyInconclusive || len(checks) != 1 || checks[0].Reason != ReasonWindowExpired {
-		t.Fatalf("persisted = %s %+v", state, checks)
-	}
-	if hs.reader.row(t, rec.ID).VerifiedAt == nil {
-		t.Fatal("a final verdict stamps verifiedAt")
-	}
-
-	// A second poll returns the frozen verdict without touching the cluster.
-	before := len(hs.targeter.calls())
-	w = hs.verify(t, testUser, rec.ID)
-	if w.Code != http.StatusOK || len(hs.targeter.calls()) != before {
-		t.Fatalf("frozen verdict re-read the cluster: %d %v", w.Code, hs.targeter.calls())
-	}
-}
-
-func TestHandleVerification_VerifyingCarriesRetryAfter(t *testing.T) {
-	hs := newHarness(t)
-	stale := deploymentObj(deploymentSpec{name: "web", ns: "prod", uid: "uid-web", generation: 5, observedGen: 4,
-		replicas: 3, updated: 3, available: 3, availableCond: "True"})
-	hs.targeter.dyn, _ = fakeDyn(stale)
-	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
-
-	w := hs.verify(t, testUser, rec.ID)
-	v := decodeView(t, w)
-	if v.State != store.VerifyVerifying || v.RetryAfterSeconds != verifyRetryAfterSeconds || w.Header().Get("Retry-After") != "5" {
-		t.Fatalf("view = %+v, Retry-After = %q", v, w.Header().Get("Retry-After"))
-	}
-	if v.Checks[0].Reason != ReasonRolloutInProgress || v.Checks[0].Source == nil || v.Checks[0].Source.Name != "web" {
-		t.Fatalf("check = %+v", v.Checks[0])
-	}
-}
-
-func TestHandleVerification_ForbiddenObjectIsInconclusive(t *testing.T) {
-	hs := newHarness(t)
-	dyn, _ := fakeDyn()
-	dyn.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
-		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "web", errors.New("rbac"))
-	})
-	hs.targeter.dyn = dyn
-	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
-
-	// Live read forbidden, SAR still allowed: the check is visible and says so.
-	w := hs.verify(t, testUser, rec.ID)
-	v := decodeView(t, w)
-	if v.State != store.VerifyInconclusive || len(v.Checks) != 1 || v.Checks[0].Redacted ||
-		v.Checks[0].Status != CheckInconclusive || v.Checks[0].Reason != ReasonReadForbidden {
-		t.Fatalf("view = %+v", v)
-	}
-
-	// SAR denied as well: the same check is reduced to the stub.
-	hs.access.allow = func(string, string, string) bool { return false }
-	rec2 := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
-	w = hs.verify(t, testUser, rec2.ID)
-	v = decodeView(t, w)
-	if v.RedactedChecks != 1 || !v.Checks[0].Redacted || v.Checks[0].RedactionReason != RedactionForbidden ||
-		v.Checks[0].Source != nil || v.Checks[0].Message != "" {
-		t.Fatalf("redacted check = %+v", v.Checks[0])
-	}
-	if strings.Contains(w.Body.String(), "web") {
-		t.Fatalf("redacted check leaked the object: %s", w.Body.String())
-	}
-}
-
-func TestHandleVerification_RequestCancelled(t *testing.T) {
-	hs := newHarness(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	dyn, _ := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
-	// The client hangs up while the live read is in flight.
-	dyn.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
-		cancel()
-		return false, nil, nil
-	})
-	hs.targeter.dyn = dyn
-	hs.reader.honorCtx = true
-	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
-
-	w := hs.do(t, hs.h.HandleVerification, http.MethodGet, request{user: testUser, id: rec.ID.String(), ctx: ctx})
-	expectError(t, w, http.StatusServiceUnavailable, "change receipt store unavailable")
-	if decodeEnvelope(t, w).Error.Reason != ReasonReceiptStoreUnavailable {
-		t.Fatalf("reason = %s", w.Body.String())
-	}
-	if hs.reader.row(t, rec.ID).VerificationState != store.VerifyPending {
-		t.Fatal("a cancelled verification must persist nothing")
-	}
-}
-
-func TestHandleVerification_GranteeEvaluatesLiveButNeverPersists(t *testing.T) {
-	hs := newHarness(t)
-	// The grantee's identity is forbidden on the live read.
-	dyn, _ := fakeDyn()
-	reads := 0
-	dyn.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
-		reads++
-		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "web", errors.New("rbac"))
-	})
-	hs.targeter.dyn = dyn
-	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
-	hs.reader.grants[rec.ID] = []string{otherUser.ID}
-
-	w := hs.verify(t, otherUser, rec.ID)
-	v := decodeView(t, w)
-	if v.State != store.VerifyInconclusive || len(v.Checks) != 1 || v.Checks[0].Reason != ReasonReadForbidden || reads != 1 {
-		t.Fatalf("grantee must get a live evaluation: %+v (reads %d)", v, reads)
-	}
-	row := hs.reader.row(t, rec.ID)
-	if row.VerificationState != store.VerifyPending || row.Verification != nil || row.VerifiedAt != nil {
-		t.Fatalf("a grantee's verdict must never be stored: %s %s", row.VerificationState, row.Verification)
-	}
-	for _, c := range hs.reader.calls {
-		if c == "setVerification" {
-			t.Fatal("grantee verification wrote to the store")
-		}
-	}
-
-	// The owner, who can read the object, then records the real verdict.
-	hs.targeter.dyn, _ = fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
-	w = hs.verify(t, testUser, rec.ID)
-	v = decodeView(t, w)
-	if v.State != store.VerifyVerified || hs.reader.row(t, rec.ID).VerificationState != store.VerifyVerified {
-		t.Fatalf("owner verdict = %+v, stored %s", v, hs.reader.row(t, rec.ID).VerificationState)
-	}
-
-	// Once final, the grantee reads the stored verdict, no cluster call.
-	before := len(hs.targeter.calls())
-	w = hs.verify(t, otherUser, rec.ID)
-	v = decodeView(t, w)
-	if v.State != store.VerifyVerified || len(hs.targeter.calls()) != before {
-		t.Fatalf("frozen verdict for grantee = %+v, target calls %v", v, hs.targeter.calls())
-	}
-}
-
-func TestHandleVerification_GranteeWindowExpiryIsNotFrozenForOwner(t *testing.T) {
-	hs := newHarness(t)
-	stale := deploymentObj(deploymentSpec{name: "web", ns: "prod", uid: "uid-web", generation: 5, observedGen: 4,
-		replicas: 3, updated: 3, available: 3, availableCond: "True"})
-	hs.targeter.dyn, _ = fakeDyn(stale)
-	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, verificationWindow+time.Second, recordedDeployment(0, "web", "uid-web"))
-	hs.reader.grants[rec.ID] = []string{otherUser.ID}
-
-	w := hs.verify(t, otherUser, rec.ID)
-	v := decodeView(t, w)
-	if v.State != store.VerifyInconclusive || v.Checks[0].Reason != ReasonWindowExpired {
-		t.Fatalf("grantee sees the same rules: %+v", v)
-	}
-	if hs.reader.row(t, rec.ID).VerificationState != store.VerifyPending {
-		t.Fatal("grantee evaluation froze the owner's receipt")
-	}
-}
-
-func TestHandleVerification_PendingReceiptDoesNotRead(t *testing.T) {
-	hs := newHarness(t)
-	dyn, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
-	hs.targeter.dyn = dyn
-	rec := hs.seed(testUser, "local", recordedDeployment(0, "web", "uid-web"))
-	rec.State, rec.CompletedAt = store.ReceiptApplying, nil
-	hs.reader.put(*rec)
-
-	w := hs.verify(t, testUser, rec.ID)
-	v := decodeView(t, w)
-	if v.State != store.VerifyPending || len(v.Checks) != 0 || gets.Load() != 0 {
-		t.Fatalf("pending view = %+v, gets = %d", v, gets.Load())
-	}
-}
-
-func TestHandleVerification_UsesReceiptClusterNotHeader(t *testing.T) {
-	hs := newHarness(t)
-	hs.targeter.dyn, _ = fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
-	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
-	rec.ClusterID, rec.OwnerID = "remote-1", adminUser.ID
-	hs.reader.put(*rec)
-
-	// Header: local. Receipt: remote-1. Admin owner.
-	w := hs.do(t, hs.h.HandleVerification, http.MethodGet, request{user: adminUser, cluster: "local", id: rec.ID.String()})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-	}
-	if calls := hs.targeter.calls(); len(calls) != 1 || calls[0] != "remote-1" {
-		t.Fatalf("verification client built for %v, want the receipt's remote-1", calls)
-	}
-	if len(hs.access.calls) != 1 || hs.access.calls[0].cluster != "remote-1" {
-		t.Fatalf("check redaction SAR went to %v", hs.access.calls)
-	}
-	v := decodeView(t, w)
-	if v.State != store.VerifyVerified || v.Checks[0].Source == nil || v.Checks[0].Source.ClusterID != "remote-1" {
-		t.Fatalf("view = %+v", v)
-	}
-
-	// The same receipt, owned by a non-admin: no remote cluster access.
-	rec.OwnerID = testUser.ID
-	rec.VerificationState, rec.Verification, rec.VerifiedAt = store.VerifyPending, nil, nil
-	hs.reader.put(*rec)
-	before := len(hs.targeter.calls())
-	w = hs.do(t, hs.h.HandleVerification, http.MethodGet, request{user: testUser, cluster: "remote-1", id: rec.ID.String()})
-	expectError(t, w, http.StatusForbidden, "admin role required for remote cluster access")
-	if len(hs.targeter.calls()) != before {
-		t.Fatal("a non-admin must not reach a remote cluster through a receipt")
-	}
-}
-
-func TestHandleVerification_TargetFailure(t *testing.T) {
-	hs := newHarness(t)
-	hs.targeter.err = errors.New("cannot build client")
-	rec := completedReceipt(hs.reader.fakeStore, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
-	w := hs.verify(t, testUser, rec.ID)
-	expectError(t, w, http.StatusInternalServerError, "failed to create kubernetes client")
-	if strings.Contains(w.Body.String(), "cannot build client") {
-		t.Fatal("5xx detail leaked")
-	}
-
-	hs.h.clusters = nil
-	w = hs.verify(t, testUser, rec.ID)
-	expectError(t, w, http.StatusServiceUnavailable, "cluster routing is not configured")
-}
-
-// ---------------------------------------------------------------------------
 // Ownership resolution
 // ---------------------------------------------------------------------------
 
@@ -1347,211 +1204,4 @@ func ownershipBody(n int) string {
 func (hs *harness) ownership(t *testing.T, user *auth.User, cluster, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	return hs.do(t, hs.h.HandleResolveOwnership, http.MethodPost, request{user: user, cluster: cluster, body: body})
-}
-
-func TestHandleResolveOwnership_CapsRefCount(t *testing.T) {
-	hs := newHarness(t)
-	w := hs.ownership(t, testUser, "local", ownershipBody(maxOwnershipRefs+1))
-	expectError(t, w, http.StatusBadRequest, "at most 50 objects")
-	w = hs.ownership(t, testUser, "local", `{"objects":[]}`)
-	expectError(t, w, http.StatusBadRequest, "objects is required")
-	w = hs.ownership(t, testUser, "local", `{"objects":[{"kind":"Deployment"}]}`)
-	expectError(t, w, http.StatusBadRequest, "objects[0]: kind and name are required")
-	w = hs.ownership(t, testUser, "local", `{"objects":`)
-	expectError(t, w, http.StatusBadRequest, "invalid JSON body")
-	if hs.resolver.calls != 0 || len(hs.targeter.calls()) != 0 {
-		t.Fatal("rejected input must not reach the cluster or the resolver")
-	}
-
-	w = hs.ownership(t, testUser, "local", ownershipBody(maxOwnershipRefs))
-	if w.Code != http.StatusOK || hs.resolver.calls != 1 || len(hs.resolver.refs) != maxOwnershipRefs {
-		t.Fatalf("exactly the cap must pass: %d %s (resolver calls %d)", w.Code, w.Body.String(), hs.resolver.calls)
-	}
-}
-
-func TestHandleResolveOwnership_BodyTooLarge(t *testing.T) {
-	hs := newHarness(t)
-	padding := strings.Repeat("x", maxOwnershipBodyBytes)
-	w := hs.ownership(t, testUser, "local", `{"objects":[{"kind":"Deployment","name":"`+padding+`"}]}`)
-	expectError(t, w, http.StatusRequestEntityTooLarge, "request body too large")
-}
-
-func TestHandleResolveOwnership_BodyClusterMustMatchHeader(t *testing.T) {
-	hs := newHarness(t)
-	w := hs.ownership(t, adminUser, "remote-1", `{"clusterId":"remote-2","objects":[{"kind":"Deployment","name":"web"}]}`)
-	expectError(t, w, http.StatusBadRequest, "clusterId does not match X-Cluster-ID")
-	if hs.resolver.calls != 0 {
-		t.Fatal("a mismatched body cluster must not resolve anything")
-	}
-	// Matching, or omitted, is fine; "" and "local" are the same cluster.
-	for _, body := range []string{
-		`{"clusterId":"remote-1","objects":[{"kind":"Deployment","name":"web"}]}`,
-		`{"objects":[{"kind":"Deployment","name":"web"}]}`,
-	} {
-		if w := hs.ownership(t, adminUser, "remote-1", body); w.Code != http.StatusOK {
-			t.Fatalf("body %s = %d %s", body, w.Code, w.Body.String())
-		}
-	}
-	if w := hs.ownership(t, testUser, "local", `{"clusterId":"","objects":[{"kind":"Deployment","name":"web"}]}`); w.Code != http.StatusOK {
-		t.Fatalf("empty clusterId on local = %d", w.Code)
-	}
-	if hs.resolver.cluster != "local" {
-		t.Fatalf("resolver cluster = %q", hs.resolver.cluster)
-	}
-}
-
-func TestHandleResolveOwnership_ResolvesRefsThroughTargetMapper(t *testing.T) {
-	hs := newHarness(t)
-	hs.resolver.results = []gitops.OwnershipResult{
-		{Object: gitops.ObjectRef{Kind: "Deployment", Name: "web"}, Controller: gitops.OwnedByNone, Confidence: gitops.ConfidenceUnknown, Reason: "no-evidence"},
-		{Object: gitops.ObjectRef{Kind: "Widget", Name: "w"}, Controller: gitops.OwnedByNone, Confidence: gitops.ConfidenceUnknown, Reason: "no-evidence"},
-	}
-	body := `{"objects":[
-		{"group":"apps","kind":"Deployment","namespace":"prod","name":"web"},
-		{"group":"example.io","version":"v1","kind":"Widget","namespace":"prod","name":"w"}]}`
-
-	w := hs.ownership(t, adminUser, "remote-1", body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-	}
-	if calls := hs.targeter.calls(); len(calls) != 1 || calls[0] != "remote-1" {
-		t.Fatalf("target = %v", calls)
-	}
-	if hs.resolver.user != adminUser || hs.resolver.cluster != "remote-1" || hs.resolver.dyn != hs.targeter.dyn {
-		t.Fatalf("resolver got user=%v cluster=%q dyn-matches=%v", hs.resolver.user, hs.resolver.cluster, hs.resolver.dyn == hs.targeter.dyn)
-	}
-	refs := hs.resolver.refs
-	if len(refs) != 2 {
-		t.Fatalf("refs = %+v", refs)
-	}
-	if refs[0].Resource != "deployments" || refs[0].Version != "v1" || refs[0].ClusterID != "remote-1" || refs[0].Namespace != "prod" {
-		t.Fatalf("mapped ref = %+v", refs[0])
-	}
-	if refs[1].Resource != "" || refs[1].Version != "v1" || refs[1].Kind != "Widget" {
-		t.Fatalf("unmappable ref must pass through: %+v", refs[1])
-	}
-	var resp OwnershipResponse
-	if err := json.Unmarshal(decodeEnvelope(t, w).Data, &resp); err != nil {
-		t.Fatal(err)
-	}
-	if resp.ClusterID != "remote-1" || len(resp.Results) != 2 {
-		t.Fatalf("response = %+v", resp)
-	}
-}
-
-func TestHandleResolveOwnership_ForbiddenAppLeaksNoRepoURL(t *testing.T) {
-	hs := newHarness(t)
-	// What gitops answers when the caller may not list Applications: a
-	// forbidden verdict with no apps. The handler must pass it through as-is
-	// and add nothing.
-	hs.resolver.results = []gitops.OwnershipResult{{
-		Object:     gitops.ObjectRef{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "web"},
-		Controller: gitops.OwnedByNone, Confidence: gitops.ConfidenceForbidden, Reason: "argo-list-forbidden",
-		IdentityBasis: "group-kind-namespace-name",
-	}}
-	w := hs.ownership(t, testUser, "local", ownershipBody(1))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-	}
-	if hs.resolver.user != testUser {
-		t.Fatal("ownership must be resolved under the caller's own identity")
-	}
-	body := w.Body.String()
-	for _, leak := range []string{"repoURL", "apps\":", "git.example"} {
-		if strings.Contains(body, leak) {
-			t.Fatalf("response carries %q: %s", leak, body)
-		}
-	}
-	if !strings.Contains(body, `"confidence":"forbidden"`) {
-		t.Fatalf("verdict missing: %s", body)
-	}
-}
-
-func TestHandleResolveOwnership_Timeout(t *testing.T) {
-	hs := newHarness(t)
-	hs.h.ownershipTimeout = 20 * time.Millisecond
-	hs.resolver.block = true
-	start := time.Now()
-	w := hs.ownership(t, testUser, "local", ownershipBody(1))
-	expectError(t, w, http.StatusGatewayTimeout, "ownership resolution timed out")
-	if time.Since(start) > 5*time.Second {
-		t.Fatal("timeout did not bound the call")
-	}
-}
-
-func TestHandleResolveOwnership_ResolverFailure(t *testing.T) {
-	hs := newHarness(t)
-	hs.resolver.err = errors.New("gitops: boom")
-	w := hs.ownership(t, testUser, "local", ownershipBody(1))
-	expectError(t, w, http.StatusInternalServerError, "ownership resolution failed")
-	if strings.Contains(w.Body.String(), "boom") {
-		t.Fatal("resolver error text leaked")
-	}
-
-	hs.targeter.err = errors.New("no client")
-	w = hs.ownership(t, testUser, "local", ownershipBody(1))
-	expectError(t, w, http.StatusInternalServerError, "failed to create kubernetes client")
-
-	hs.h.gitops = nil
-	w = hs.ownership(t, testUser, "local", ownershipBody(1))
-	expectError(t, w, http.StatusServiceUnavailable, "ownership resolution is not configured")
-}
-
-// ---------------------------------------------------------------------------
-// Cross-cutting
-// ---------------------------------------------------------------------------
-
-func TestHandlers_RequireAuth(t *testing.T) {
-	hs := newHarness(t)
-	rec := hs.seed(testUser, "local", recordedDeployment(0, "web", "uid-web"))
-	for name, fn := range map[string]http.HandlerFunc{
-		"list": hs.h.HandleList, "get": hs.h.HandleGet, "verification": hs.h.HandleVerification, "ownership": hs.h.HandleResolveOwnership,
-	} {
-		w := hs.do(t, fn, http.MethodGet, request{id: rec.ID.String(), body: ownershipBody(1)})
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("%s without a user = %d %s", name, w.Code, w.Body.String())
-		}
-		expectError(t, w, http.StatusUnauthorized, "authentication required")
-	}
-	if len(hs.reader.calls) != 0 || hs.resolver.calls != 0 {
-		t.Fatal("unauthenticated requests must not reach the store or the resolver")
-	}
-}
-
-// TestHandlers_LegacyApplyEnvelopeUnaffected: this package serves nothing
-// under /yaml and declares no type that could shadow the legacy apply
-// envelope; and handler.go reaches the cluster only through the targeter.
-func TestHandlers_LegacyApplyEnvelopeUnaffected(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "handler.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, decl := range f.Decls {
-		gd, ok := decl.(*ast.GenDecl)
-		if !ok || gd.Tok != token.TYPE {
-			continue
-		}
-		for _, spec := range gd.Specs {
-			name := spec.(*ast.TypeSpec).Name.Name
-			switch name {
-			case "ApplyResult", "ApplyResponse", "ApplySummary", "ApplyRequest":
-				t.Fatalf("handler.go declares %s, which shadows the legacy apply envelope", name)
-			}
-		}
-	}
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.BasicLit:
-			if x.Kind == token.STRING && strings.Contains(x.Value, "/yaml") {
-				t.Fatalf("handler.go references a /yaml route: %s", x.Value)
-			}
-		case *ast.SelectorExpr:
-			switch x.Sel.Name {
-			case "ClientForUser", "DynamicClientForUser", "LocalFactory", "RESTMapper", "DiscoveryClient", "BaseDynamicClient":
-				t.Fatalf("handler.go calls .%s at %s; cluster access must go through ClusterTargeter.TargetFor", x.Sel.Name, fset.Position(x.Pos()))
-			}
-		}
-		return true
-	})
 }

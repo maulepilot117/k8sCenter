@@ -224,6 +224,7 @@ doesn't apply.
 | #375 | recovery | extracted `internal/recoverutil` (Go/Tick/Safe) + swept the gap across the backend |
 | #377 | fuzz | closed the arc: `ClientFactory` → `kubernetes.Interface` seam + `FuzzSecretPipeline` (`backend/internal/k8s/resources/secret_pipeline_fuzz_test.go`) — full HTTP-handler Secret fuzzing under oracles A and D |
 | #549 | fuzz | Release F U33: `FuzzAssuranceEvaluate` (`backend/internal/velero/assurance_fuzz_test.go`) — no-panic oracle plus a controller-text-confined-to-`Detail` oracle; **found + guarded a robfig/cron v3.0.1 panic** on a bare `CRON_TZ=`/`TZ=` prefix with no spec, now rejected by `parseCron` before robfig sees it |
+| #566 | fuzz | Release E U29a: `FuzzReceiptRedaction` (`backend/internal/changes/redaction_fuzz_test.go`) — oracle D (a hidden object, check or ownership entry marshals to exactly its identity-free literal stub) plus oracle C (the redaction decision, the Secret `errorClass`-only rule and the per-app GVR re-authorization are re-derived from the oracle's own literals); teeth verified by three mutations (objects, Secret error text, checks passed through) |
 
 (#376 is this document itself, so it is not listed as a source.)
 
