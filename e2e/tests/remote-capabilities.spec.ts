@@ -187,7 +187,7 @@ test.describe.serial("Remote cluster capabilities", () => {
     }
     // R-8: the features routed to the selected cluster are declared supported,
     // and the carve-outs that stay local are declared unsupported (U13; the
-    // policy rows since #530).
+    // policy rows since #530, backup assurance since #556).
     for (const id of [
       "node.drain",
       "gitops.applications",
