@@ -374,42 +374,70 @@ func (h *Handler) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 
 // filterAppsByRBAC removes apps the user cannot access.
 func (h *Handler) filterAppsByRBAC(ctx context.Context, user *auth.User, apps []NormalizedApp) []NormalizedApp {
-	// Cache RBAC decisions keyed by tool prefix + namespace
+	return h.visibleApps(ctx, middleware.ClusterIDFromContext(ctx), user, apps).apps
+}
+
+// appVisibility is the full answer of the RBAC filter: the apps the user may
+// list, and per tool prefix how many were hidden by a denial and how many
+// because the access check itself failed. A failed check is not a denial
+// (see resources.NewErroringAccessChecker); callers that only need the list
+// use filterAppsByRBAC, which drops both.
+type appVisibility struct {
+	apps   []NormalizedApp
+	denied map[string]int
+	failed map[string]int
+}
+
+// visibleApps applies the RBAC filter on clusterID: a cluster-scoped app is
+// admin-only, a namespaced one needs list on its tool's resource in its
+// namespace. Decisions are memoized per (tool prefix, namespace).
+func (h *Handler) visibleApps(ctx context.Context, clusterID string, user *auth.User, apps []NormalizedApp) appVisibility {
 	type accessKey struct {
 		prefix    string
 		namespace string
 	}
-	access := make(map[accessKey]bool)
-	var filtered []NormalizedApp
+	type decision struct {
+		allowed bool
+		failed  bool
+	}
+	access := make(map[accessKey]decision)
+	v := appVisibility{denied: map[string]int{}, failed: map[string]int{}}
 
 	for _, app := range apps {
+		prefix := toolPrefixForApp(app)
 		ns := app.Namespace
 		if ns == "" {
 			if auth.IsAdmin(user) {
-				filtered = append(filtered, app)
+				v.apps = append(v.apps, app)
+			} else {
+				v.denied[prefix]++
 			}
 			continue
 		}
 
-		prefix := toolPrefixForApp(app)
 		key := accessKey{prefix, ns}
-		allowed, checked := access[key]
+		d, checked := access[key]
 		if !checked {
 			apiGroup, resource, ok := toolGVR(prefix)
 			if !ok {
 				continue
 			}
-			can, err := h.AccessChecker.CanAccessGroupResource(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, ns)
-			allowed = err == nil && can
-			access[key] = allowed
+			can, err := h.AccessChecker.CanAccessGroupResource(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, ns)
+			d = decision{allowed: err == nil && can, failed: err != nil}
+			access[key] = d
 		}
 
-		if allowed {
-			filtered = append(filtered, app)
+		switch {
+		case d.allowed:
+			v.apps = append(v.apps, app)
+		case d.failed:
+			v.failed[prefix]++
+		default:
+			v.denied[prefix]++
 		}
 	}
 
-	return filtered
+	return v
 }
 
 // parseCompositeID splits "argo:namespace:name" into (tool, namespace, name).
