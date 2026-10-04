@@ -574,6 +574,17 @@ var capabilityOperations = []capabilityOp{
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "list", AuthGroup: "kyverno.io", AuthResource: "policies",
 	},
+	{
+		// Backup assurance (status, exceptions, policies) is collected and
+		// stored for the local cluster only. velero/assurance_handler.go
+		// assuranceGate answers every assurance route on a non-local
+		// selection with 501 remote_assurance_unsupported, before the store
+		// is read. AuthResource schedules mirrors the schedule existence
+		// check the handlers make against the shared Velero read.
+		ID: "velero.assurance", Label: "Backup assurance",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "list", AuthGroup: "velero.io", AuthResource: "schedules",
+	},
 }
 
 // supportedFor returns the static platformSupported value for this

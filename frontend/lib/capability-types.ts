@@ -85,6 +85,7 @@ export const CAPABILITY_OPERATION_IDS = [
   "topology.graph",
   "diagnostics.read",
   "policy.compliance_history",
+  "velero.assurance",
 ] as const;
 
 export type CapabilityOperationId = (typeof CAPABILITY_OPERATION_IDS)[number];

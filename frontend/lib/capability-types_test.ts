@@ -105,6 +105,7 @@ test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistenc
     "storage.classes",
     "storage.snapshots",
     "topology.graph",
+    "velero.assurance",
     "velero.backups",
     "yaml.apply",
     "yaml.diff",
