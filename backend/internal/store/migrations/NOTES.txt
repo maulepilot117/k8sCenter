@@ -370,11 +370,15 @@ What the table stores:
 What it emphatically does NOT store:
   No manifest, no spec, no data, no stringData and no rendered YAML, for
   tracked or untracked applies, Secret-bearing or not. contains_secret
-  records only that the bundle held at least one kind: Secret document. A
-  receipt therefore cannot leak a Secret value by construction, and a Go
-  reflection test (TestReceiptObject_NeverCarriesManifestFields and
-  TestChangeReceipt_NeverCarriesManifestFields) fails the build if a field
-  capable of holding content is ever added to the store types.
+  records only that the bundle held at least one kind: Secret document.
+  What is actually enforced: the store types have no field for manifest
+  content, and a Go reflection test (TestReceiptObject_NeverCarriesManifestFields
+  and TestChangeReceipt_NeverCarriesManifestFields) fails if one is added.
+  What is not: the free-form per-object error string is written by the
+  tracked-apply layer and may echo submitted values from admission or
+  validation messages. Filtering it (to its Kubernetes reason class for
+  Secret-bearing bundles) happens at read time, per plan D2; keeping raw
+  Secret text out of it is that layer's responsibility, not the store's.
 
 The primary key is client-supplied:
   change_receipts.id is the client's operation id, which is what makes a
@@ -383,16 +387,28 @@ The primary key is client-supplied:
   the store; the column itself is just UUID.
 
 Retention:
-  30 days by default, via a DELETE-WHERE sweep on created_at. Override with
-  KUBECENTER_CHANGES_RECEIPTRETENTIONDAYS. change_receipt_grants rows go with
-  their receipt (ON DELETE CASCADE).
+  The store provides Cleanup(retentionDays), a DELETE-WHERE sweep on
+  created_at. The 30-day default and the KUBECENTER_CHANGES_RECEIPTRETENTIONDAYS
+  override are added by the Release E wiring unit (U29b), not by this
+  migration. Cleanup removes receipts regardless of completion, so replay
+  protection for an operation id ends at retention: after that, the same id
+  inserts as a fresh receipt. change_receipt_grants rows go with their receipt
+  (ON DELETE CASCADE).
 
-Startup reconciliation (single replica only):
-  ReconcileOrphans marks every row with completed_at IS NULL as failed when
-  mutation_started_at IS NULL (the cluster was never touched) or unknown when
-  it is set (the apply was interrupted). It never replays anything. Like the
-  ESO bulk-job reaper it is only safe with one backend replica; the Helm chart
-  pins one.
+Orphan reconciliation:
+  ReconcileOrphans(olderThan) closes rows with state = 'applying' and
+  completed_at IS NULL whose created_at is older than olderThan (the store
+  exports ReceiptOrphanGrace = 10 minutes): failed when mutation_started_at IS
+  NULL (the cluster was never touched), unknown when it is set (the apply was
+  interrupted). It never replays anything, and never touches a previewed row
+  or a row that is already terminal. The age bound is what makes it safe across
+  a rolling update, where the old and new backend pods overlap (the backend
+  Deployment uses the default RollingUpdate and replicaCount may be raised):
+  a new pod's boot-time call cannot reap the old pod's live apply, because a
+  live apply is far younger than the grace. The remaining assumption is that no
+  apply runs longer than the grace; applies are bounded by the 30s BFF proxy
+  cap. The wiring unit (U29b) is expected to call it at boot and again on the
+  periodic retention tick so a row too young to reap at boot is reaped later.
 
 Inspect rows that never reached a terminal state:
   SELECT id, owner_username, cluster_id, state, verification_state, created_at
@@ -402,7 +418,8 @@ Inspect rows that never reached a terminal state:
 
 Rollback:
   The down migration drops both tables and DESTROYS all receipt history;
-  there is no forward path that preserves it. A backend image that contains
-  the Release E handler returns 503 on /changes rather than crashing once the
-  tables are gone, because every access is nil-guarded. Roll the binary back
-  first or together.
+  there is no forward path that preserves it. The Release E wiring unit
+  (U29b) is expected to nil-guard every receipt access so a backend image
+  containing the /changes handler returns 503 rather than crashing once the
+  tables are gone; until it lands there is no handler to roll back. Roll the
+  binary back first or together.

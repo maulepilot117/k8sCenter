@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -363,9 +364,17 @@ func (s *ChangeReceiptStore) Finalize(ctx context.Context, id uuid.UUID, state R
 }
 
 // SetVerification records the verification state and its evidence. payload is
-// a JSON array (nil or empty stores []). verified_at is stamped when state is
-// an outcome (verified, inconclusive or verification_failed) and left alone
-// for pending/verifying. Returns ErrReceiptNotFound for an unknown id.
+// a JSON array (nil, empty and null store []). verified_at is stamped when
+// state is an outcome (verified, inconclusive or verification_failed) and left
+// alone for pending/verifying.
+//
+// A receipt whose verification is already final is never reopened: a non-final
+// write (pending or verifying) against a final row returns
+// ErrReceiptAlreadyFinal and changes nothing. That is what stops a slow
+// verifier from overwriting the "inconclusive" that reconciliation recorded.
+// A final-to-final write is allowed and replaces the stored outcome and
+// evidence (a re-verification supersedes the earlier result). Returns
+// ErrReceiptNotFound for an unknown id.
 func (s *ChangeReceiptStore) SetVerification(
 	ctx context.Context, id uuid.UUID, state VerificationState, payload json.RawMessage,
 ) error {
@@ -381,12 +390,15 @@ func (s *ChangeReceiptStore) SetVerification(
 		   SET verification_state = $2,
 		       verification       = $3::jsonb,
 		       verified_at        = CASE WHEN $4::boolean THEN NOW() ELSE verified_at END
-		 WHERE id = $1`, id, string(state), verification, state.IsFinal())
+		 WHERE id = $1
+		   AND ($4::boolean
+		        OR verification_state NOT IN ('verified', 'inconclusive', 'verification_failed'))`,
+		id, string(state), verification, state.IsFinal())
 	if err != nil {
 		return fmt.Errorf("set change receipt verification: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrReceiptNotFound
+		return s.noRowsError(ctx, id)
 	}
 	return nil
 }
@@ -497,21 +509,47 @@ func (s *ChangeReceiptStore) GrantsFor(ctx context.Context, id uuid.UUID) ([]str
 	return out, nil
 }
 
-// ReconcileOrphans marks every non-terminal receipt after a restart: failed
-// when the mutation never started, unknown when it had. It sets
-// verification_state to inconclusive and never touches a row that already has
-// completed_at. It NEVER replays anything. Returns the number of rows touched.
+// ReceiptOrphanGrace is the recommended olderThan for ReconcileOrphans. A
+// tracked apply is one live request bounded by the 30s BFF proxy cap, so a row
+// still in flight after ten minutes belongs to a process that is gone, while a
+// row younger than that may belong to a live request on another pod (a rolling
+// update overlaps old and new pods). The margin is deliberately generous: the
+// cost of reaping late is a stale "applying" row for a few minutes, the cost of
+// reaping early is aborting a live apply mid-bundle.
+const ReceiptOrphanGrace = 10 * time.Minute
+
+// ReconcileOrphans closes receipts whose owning process died: rows with
+// state = 'applying', completed_at IS NULL and created_at older than
+// olderThan. They become failed when the mutation never started
+// (mutation_started_at IS NULL) or unknown when it had, with
+// verification_state = 'inconclusive' and verified_at stamped (the same rule
+// SetVerification applies to a final verification state). It NEVER replays
+// anything. Returns the number of rows touched. olderThan must be positive;
+// pass ReceiptOrphanGrace.
 //
-// Single-replica-safe only, exactly like ESOBulkJobStore.CompleteOrphans: a
-// second replica starting during a rolling update would reap the first
-// replica's in-flight rows. The Helm chart pins one replica.
-func (s *ChangeReceiptStore) ReconcileOrphans(ctx context.Context) (int64, error) {
+// Only 'applying' rows are reaped. A 'previewed' row is not an orphaned
+// mutation (nothing was ever going to be applied by it); the retention sweep
+// (Cleanup) removes those. Rows that already have completed_at are never
+// touched.
+//
+// Safety under rolling updates: because a row younger than olderThan is never
+// reaped, a new pod's boot-time call cannot kill the old pod's in-flight apply.
+// The remaining assumption is that no apply legitimately runs longer than
+// olderThan. The caller should run this at boot AND on the periodic retention
+// tick, so a row too young to reap at boot is still reaped on a later tick.
+func (s *ChangeReceiptStore) ReconcileOrphans(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, fmt.Errorf("%w: reconcile age bound must be positive, got %s", ErrReceiptInvalid, olderThan)
+	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE change_receipts
 		   SET state = CASE WHEN mutation_started_at IS NULL THEN 'failed' ELSE 'unknown' END,
 		       verification_state = 'inconclusive',
+		       verified_at = NOW(),
 		       completed_at = NOW()
-		 WHERE completed_at IS NULL`)
+		 WHERE completed_at IS NULL
+		   AND state = 'applying'
+		   AND created_at < NOW() - make_interval(secs => $1)`, olderThan.Seconds())
 	if err != nil {
 		return 0, fmt.Errorf("reconcile change receipt orphans: %w", err)
 	}
@@ -562,16 +600,23 @@ func (s *ChangeReceiptStore) noRowsError(ctx context.Context, id uuid.UUID) erro
 	return ErrReceiptAlreadyFinal
 }
 
-// jsonArrayOrEmpty returns raw when it is non-empty valid JSON, "[]" when it is
-// empty, and an ErrReceiptInvalid-wrapped error when it is not valid JSON.
+// jsonArrayOrEmpty normalizes an opaque JSON array column value. Surrounding
+// whitespace is trimmed; empty input and the JSON literal null become "[]".
+// Anything else must be a valid JSON array (first byte '['); objects, strings
+// and scalars are rejected with ErrReceiptInvalid so the column's shape cannot
+// drift.
 func jsonArrayOrEmpty(raw json.RawMessage, field string) ([]byte, error) {
-	if len(raw) == 0 {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
 		return []byte("[]"), nil
 	}
-	if !json.Valid(raw) {
+	if trimmed[0] != '[' {
+		return nil, fmt.Errorf("%w: %s must be a JSON array", ErrReceiptInvalid, field)
+	}
+	if !json.Valid(trimmed) {
 		return nil, fmt.Errorf("%w: %s is not valid JSON", ErrReceiptInvalid, field)
 	}
-	return raw, nil
+	return trimmed, nil
 }
 
 // scanReceipt centralizes the row-scan boilerplate shared by Get and

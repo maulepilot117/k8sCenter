@@ -30,6 +30,7 @@ import (
 	"io/fs"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -278,6 +279,52 @@ func TestChangeReceiptStore_RejectsInvalidInputBeforeSQL(t *testing.T) {
 	if _, _, err := s.ListForOwner(ctx, ReceiptQueryParams{}); !errors.Is(err, ErrReceiptInvalid) {
 		t.Errorf("ListForOwner(no owner) = %v; want ErrReceiptInvalid", err)
 	}
+	for _, age := range []time.Duration{0, -time.Minute} {
+		if _, err := s.ReconcileOrphans(ctx, age); !errors.Is(err, ErrReceiptInvalid) {
+			t.Errorf("ReconcileOrphans(%s) = %v; want ErrReceiptInvalid", age, err)
+		}
+	}
+}
+
+func TestVerificationState_IsFinalAndIsValid(t *testing.T) {
+	want := map[VerificationState]struct{ valid, final bool }{
+		VerifyPending:      {true, false},
+		VerifyVerifying:    {true, false},
+		VerifyVerified:     {true, true},
+		VerifyInconclusive: {true, true},
+		VerifyFailed:       {true, true},
+		"":                 {false, false},
+		"bogus":            {false, false},
+	}
+	for v, w := range want {
+		if v.IsValid() != w.valid || v.IsFinal() != w.final {
+			t.Errorf("%q: IsValid=%v IsFinal=%v; want %v/%v", v, v.IsValid(), v.IsFinal(), w.valid, w.final)
+		}
+	}
+}
+
+func TestJSONArrayOrEmpty(t *testing.T) {
+	accepted := map[string]string{
+		"":           "[]",
+		"   \n\t":    "[]",
+		"null":       "[]",
+		"  null  ":   "[]",
+		"[]":         "[]",
+		"  [ ]  ":    "[ ]",
+		`[{"a":1}]`:  `[{"a":1}]`,
+		"\n[1, 2]\n": "[1, 2]",
+	}
+	for in, want := range accepted {
+		got, err := jsonArrayOrEmpty(json.RawMessage(in), "f")
+		if err != nil || string(got) != want {
+			t.Errorf("jsonArrayOrEmpty(%q) = (%q, %v); want (%q, nil)", in, got, err, want)
+		}
+	}
+	for _, in := range []string{`{}`, `{"a":1}`, `"x"`, `1`, `true`, `[1,`, `[1] x`, `nul`} {
+		if _, err := jsonArrayOrEmpty(json.RawMessage(in), "f"); !errors.Is(err, ErrReceiptInvalid) {
+			t.Errorf("jsonArrayOrEmpty(%q) = %v; want ErrReceiptInvalid", in, err)
+		}
+	}
 }
 
 func TestMigration000023_UpAndDownAreWellFormed(t *testing.T) {
@@ -522,12 +569,23 @@ func TestChangeReceiptStore_MarkMutationStarted_GuardedAndIdempotent(t *testing.
 	}
 }
 
+// backdateReceipt moves a receipt's created_at into the past so the age-bounded
+// reconciler considers it orphaned. Only ever called on the test's own rows.
+func backdateReceipt(t *testing.T, pool *pgxpool.Pool, id uuid.UUID, age time.Duration) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE change_receipts SET created_at = NOW() - make_interval(secs => $2) WHERE id = $1`,
+		id, age.Seconds()); err != nil {
+		t.Fatalf("backdating receipt %s: %v", id, err)
+	}
+}
+
 func TestChangeReceiptStore_MarkMutationStarted_RefusesReconciledRow(t *testing.T) {
-	s, _ := newReceiptStore(t)
+	s, pool := newReceiptStore(t)
 	r := mustInsertReceipt(t, s, newReceipt(testOwnerID(t)))
 
-	// Reconcile exactly this row (the global sweep may also touch others).
-	if _, err := s.ReconcileOrphans(t.Context()); err != nil {
+	backdateReceipt(t, pool, r.ID, 2*ReceiptOrphanGrace)
+	if _, err := s.ReconcileOrphans(t.Context(), ReceiptOrphanGrace); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustGetReceipt(t, s, r.ID); got.State != ReceiptFailed {
@@ -635,12 +693,13 @@ func TestChangeReceiptStore_Finalize_GuardedAgainstRefinalize(t *testing.T) {
 }
 
 func TestChangeReceiptStore_Finalize_DoesNotResurrectReconciledRow(t *testing.T) {
-	s, _ := newReceiptStore(t)
+	s, pool := newReceiptStore(t)
 	r := mustInsertReceipt(t, s, newReceipt(testOwnerID(t)))
 	if err := s.MarkMutationStarted(t.Context(), r.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ReconcileOrphans(t.Context()); err != nil {
+	backdateReceipt(t, pool, r.ID, 2*ReceiptOrphanGrace)
+	if _, err := s.ReconcileOrphans(t.Context(), ReceiptOrphanGrace); err != nil {
 		t.Fatal(err)
 	}
 	// The process that owned this apply is gone; a late Finalize must not
@@ -725,7 +784,12 @@ func TestChangeReceiptStore_ReconcileOrphans_SplitsFailedFromUnknown(t *testing.
 	}
 	doneBefore := mustGetReceipt(t, s, done.ID)
 
-	n, err := s.ReconcileOrphans(ctx)
+	// Every row is old enough to be reaped, so only the state filter decides.
+	for _, r := range []ChangeReceipt{neverStarted, midApply, done} {
+		backdateReceipt(t, pool, r.ID, 2*ReceiptOrphanGrace)
+	}
+
+	n, err := s.ReconcileOrphans(ctx, ReceiptOrphanGrace)
 	if err != nil {
 		t.Fatalf("ReconcileOrphans: %v", err)
 	}
@@ -737,12 +801,13 @@ func TestChangeReceiptStore_ReconcileOrphans_SplitsFailedFromUnknown(t *testing.
 
 	nsGot := mustGetReceipt(t, s, neverStarted.ID)
 	if nsGot.State != ReceiptFailed || nsGot.VerificationState != VerifyInconclusive ||
-		nsGot.CompletedAt == nil || nsGot.MutationStartedAt != nil {
+		nsGot.CompletedAt == nil || nsGot.MutationStartedAt != nil || nsGot.VerifiedAt == nil {
 		t.Errorf("never-started row: %+v; want failed/inconclusive, completed, still no mutation stamp", nsGot)
 	}
 
 	maGot := mustGetReceipt(t, s, midApply.ID)
-	if maGot.State != ReceiptUnknown || maGot.VerificationState != VerifyInconclusive || maGot.CompletedAt == nil {
+	if maGot.State != ReceiptUnknown || maGot.VerificationState != VerifyInconclusive ||
+		maGot.CompletedAt == nil || maGot.VerifiedAt == nil {
 		t.Errorf("mid-apply row: %+v; want unknown/inconclusive, completed", maGot)
 	}
 	if len(maGot.Objects) != 1 {
@@ -751,12 +816,12 @@ func TestChangeReceiptStore_ReconcileOrphans_SplitsFailedFromUnknown(t *testing.
 
 	doneAfter := mustGetReceipt(t, s, done.ID)
 	if doneAfter.State != ReceiptApplied || doneAfter.VerificationState != VerifyPending ||
-		!doneAfter.CompletedAt.Equal(*doneBefore.CompletedAt) {
+		doneAfter.VerifiedAt != nil || !doneAfter.CompletedAt.Equal(*doneBefore.CompletedAt) {
 		t.Errorf("a terminal row was touched: before %+v after %+v", doneBefore, doneAfter)
 	}
 
 	// Idempotent for our rows: a second sweep must not move them again.
-	if _, err := s.ReconcileOrphans(ctx); err != nil {
+	if _, err := s.ReconcileOrphans(ctx, ReceiptOrphanGrace); err != nil {
 		t.Fatal(err)
 	}
 	if again := mustGetReceipt(t, s, midApply.ID); !again.CompletedAt.Equal(*maGot.CompletedAt) {
@@ -771,6 +836,153 @@ func TestChangeReceiptStore_ReconcileOrphans_SplitsFailedFromUnknown(t *testing.
 	}
 	if unfinished != 0 {
 		t.Errorf("%d of our rows are still unfinished after reconciliation", unfinished)
+	}
+}
+
+// TestChangeReceiptStore_ReconcileOrphans_LeavesLiveRowAlone is the rolling
+// update case: a new pod reconciles at boot while the old pod is still
+// applying. A row younger than the grace must be left exactly as it is, and
+// the old pod's remaining writes must still succeed.
+func TestChangeReceiptStore_ReconcileOrphans_LeavesLiveRowAlone(t *testing.T) {
+	s, pool := newReceiptStore(t)
+	ctx := t.Context()
+	live := mustInsertReceipt(t, s, newReceipt(testOwnerID(t)))
+	if err := s.MarkMutationStarted(ctx, live.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendObject(ctx, live.ID, sampleObject(0, "a", "created")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.ReconcileOrphans(ctx, ReceiptOrphanGrace); err != nil {
+		t.Fatal(err)
+	}
+	got := mustGetReceipt(t, s, live.ID)
+	if got.State != ReceiptApplying || got.CompletedAt != nil || got.VerifiedAt != nil ||
+		got.VerificationState != VerifyPending || len(got.Objects) != 1 {
+		t.Fatalf("a live in-flight row was reaped or altered: %+v", got)
+	}
+
+	// The old pod carries on and finishes normally.
+	if err := s.AppendObject(ctx, live.ID, sampleObject(1, "b", "created")); err != nil {
+		t.Errorf("AppendObject after a boot-time reconcile: %v", err)
+	}
+	if err := s.Finalize(ctx, live.ID, ReceiptApplied); err != nil {
+		t.Errorf("Finalize after a boot-time reconcile: %v", err)
+	}
+	if got = mustGetReceipt(t, s, live.ID); got.State != ReceiptApplied || len(got.Objects) != 2 {
+		t.Errorf("after finishing: state %q, %d objects; want applied, 2", got.State, len(got.Objects))
+	}
+
+	// A second live row, reaped once it ages past the grace: unknown, and the
+	// owning process's late writes are refused rather than resurrecting it.
+	late := mustInsertReceipt(t, s, newReceipt(testOwnerID(t)))
+	if err := s.MarkMutationStarted(ctx, late.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendObject(ctx, late.ID, sampleObject(0, "a", "created")); err != nil {
+		t.Fatal(err)
+	}
+	backdateReceipt(t, pool, late.ID, 2*ReceiptOrphanGrace)
+	if _, err := s.ReconcileOrphans(ctx, ReceiptOrphanGrace); err != nil {
+		t.Fatal(err)
+	}
+	lateGot := mustGetReceipt(t, s, late.ID)
+	if lateGot.State != ReceiptUnknown || lateGot.CompletedAt == nil || len(lateGot.Objects) != 1 {
+		t.Fatalf("an aged-out in-flight row: %+v; want unknown, completed, prefix kept", lateGot)
+	}
+	if err := s.AppendObject(ctx, late.ID, sampleObject(1, "b", "created")); !errors.Is(err, ErrReceiptAlreadyFinal) {
+		t.Errorf("AppendObject on a reaped row = %v; want ErrReceiptAlreadyFinal", err)
+	}
+	if err := s.Finalize(ctx, late.ID, ReceiptApplied); !errors.Is(err, ErrReceiptAlreadyFinal) {
+		t.Errorf("Finalize on a reaped row = %v; want ErrReceiptAlreadyFinal", err)
+	}
+}
+
+func TestChangeReceiptStore_ReconcileOrphans_SkipsPreviewedRows(t *testing.T) {
+	s, pool := newReceiptStore(t)
+	ctx := t.Context()
+	r := newReceipt(testOwnerID(t))
+	r.State = ReceiptPreviewed
+	mustInsertReceipt(t, s, r)
+	backdateReceipt(t, pool, r.ID, 2*ReceiptOrphanGrace)
+
+	if _, err := s.ReconcileOrphans(ctx, ReceiptOrphanGrace); err != nil {
+		t.Fatal(err)
+	}
+	got := mustGetReceipt(t, s, r.ID)
+	if got.State != ReceiptPreviewed || got.CompletedAt != nil || got.VerificationState != VerifyPending {
+		t.Errorf("a previewed row is not an orphaned mutation and must be left alone: %+v", got)
+	}
+}
+
+func TestChangeReceiptStore_SetVerification_DoesNotReopenFinalOutcome(t *testing.T) {
+	s, pool := newReceiptStore(t)
+	ctx := t.Context()
+
+	for _, final := range []VerificationState{VerifyVerified, VerifyInconclusive, VerifyFailed} {
+		t.Run(string(final), func(t *testing.T) {
+			r := mustInsertReceipt(t, s, newReceipt(testOwnerID(t)))
+			payload := json.RawMessage(`[{"checkId":"c","status":"pass"}]`)
+			if err := s.SetVerification(ctx, r.ID, final, payload); err != nil {
+				t.Fatalf("SetVerification(%s): %v", final, err)
+			}
+			got := mustGetReceipt(t, s, r.ID)
+			if got.VerificationState != final || got.VerifiedAt == nil || !jsonEqual(t, got.Verification, string(payload)) {
+				t.Fatalf("after %s: %+v", final, got)
+			}
+			stamped := *got.VerifiedAt
+
+			for _, reopen := range []VerificationState{VerifyPending, VerifyVerifying} {
+				if err := s.SetVerification(ctx, r.ID, reopen, json.RawMessage(`[]`)); !errors.Is(err, ErrReceiptAlreadyFinal) {
+					t.Errorf("SetVerification(%s) over %s = %v; want ErrReceiptAlreadyFinal", reopen, final, err)
+				}
+			}
+			got = mustGetReceipt(t, s, r.ID)
+			if got.VerificationState != final || !got.VerifiedAt.Equal(stamped) || !jsonEqual(t, got.Verification, string(payload)) {
+				t.Errorf("a final verification was reopened or altered: %+v", got)
+			}
+
+			// Final to final replaces: a re-verification supersedes the result.
+			if err := s.SetVerification(ctx, r.ID, VerifyVerified, json.RawMessage(`[{"checkId":"c2","status":"pass"}]`)); err != nil {
+				t.Errorf("final-to-final SetVerification: %v", err)
+			}
+			if got = mustGetReceipt(t, s, r.ID); got.VerificationState != VerifyVerified ||
+				!jsonEqual(t, got.Verification, `[{"checkId":"c2","status":"pass"}]`) {
+				t.Errorf("final-to-final did not replace the outcome: %+v", got)
+			}
+		})
+	}
+
+	// Reconciliation records inconclusive; a slow verifier must not reopen it.
+	r := mustInsertReceipt(t, s, newReceipt(testOwnerID(t)))
+	backdateReceipt(t, pool, r.ID, 2*ReceiptOrphanGrace)
+	if _, err := s.ReconcileOrphans(ctx, ReceiptOrphanGrace); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetVerification(ctx, r.ID, VerifyVerifying, nil); !errors.Is(err, ErrReceiptAlreadyFinal) {
+		t.Errorf("SetVerification(verifying) over a reconciled row = %v; want ErrReceiptAlreadyFinal", err)
+	}
+}
+
+func TestChangeReceiptStore_Insert_PreviewedStateAndSeededObjects(t *testing.T) {
+	s, _ := newReceiptStore(t)
+	r := newReceipt(testOwnerID(t))
+	r.State = ReceiptPreviewed
+	r.Objects = []ReceiptObject{
+		{Index: 0, Kind: "Namespace", Name: "prod", Action: "created", RecordedAt: time.Date(2026, 9, 10, 13, 0, 0, 0, time.UTC)},
+		sampleObject(1, "web", "configured"),
+	}
+	mustInsertReceipt(t, s, r)
+
+	got := mustGetReceipt(t, s, r.ID)
+	if got.State != ReceiptPreviewed {
+		t.Errorf("state = %q; want previewed", got.State)
+	}
+	if len(got.Objects) != 2 || got.Objects[0].Kind != "Namespace" || got.Objects[0].Name != "prod" ||
+		!got.Objects[0].RecordedAt.Equal(r.Objects[0].RecordedAt) ||
+		got.Objects[1].Name != "web" || got.Objects[1].UID != "uid-web" || got.Objects[1].Resource != "deployments" {
+		t.Errorf("seeded objects did not round-trip: %+v", got.Objects)
 	}
 }
 
@@ -957,7 +1169,7 @@ func TestMigration000023_RoundTripLeavesOtherTablesIntact(t *testing.T) {
 		t.Fatalf("migrating to 000022: %v", err)
 	}
 	before := publicTables(t, pool)
-	if containsString(before, "change_receipts") {
+	if slices.Contains(before, "change_receipts") {
 		t.Fatal("change_receipts exists before 000023")
 	}
 
@@ -977,7 +1189,8 @@ func TestMigration000023_RoundTripLeavesOtherTablesIntact(t *testing.T) {
 			t.Errorf("index %s missing after 000023", idx)
 		}
 	}
-	if got, want := append([]string(nil), publicTables(t, pool)...), append(append([]string(nil), before...), "change_receipt_grants", "change_receipts"); !sameSet(got, want) {
+	if got, want := slices.Sorted(slices.Values(publicTables(t, pool))),
+		slices.Sorted(slices.Values(append(slices.Clone(before), "change_receipt_grants", "change_receipts"))); !slices.Equal(got, want) {
 		t.Errorf("tables after up = %v; want %v", got, want)
 	}
 
@@ -1009,7 +1222,7 @@ func TestMigration000023_RoundTripLeavesOtherTablesIntact(t *testing.T) {
 		t.Fatalf("rolling back 000023: %v", err)
 	}
 	after := publicTables(t, pool)
-	if !sameSet(after, before) {
+	if !slices.Equal(slices.Sorted(slices.Values(after)), slices.Sorted(slices.Values(before))) {
 		t.Errorf("tables after down = %v; want exactly the pre-000023 set %v", after, before)
 	}
 
@@ -1039,21 +1252,4 @@ func publicTables(t *testing.T, pool *pgxpool.Pool) []string {
 		t.Fatal(err)
 	}
 	return out
-}
-
-func containsString(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
-func sameSet(a, b []string) bool {
-	a = append([]string(nil), a...)
-	b = append([]string(nil), b...)
-	sort.Strings(a)
-	sort.Strings(b)
-	return reflect.DeepEqual(a, b)
 }
