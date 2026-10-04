@@ -265,7 +265,7 @@ var (
 	wantRemoteUnsupported = []string{
 		"resources.counts", "pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
 		"cni.config", "mesh.golden_signals", "eso.history", "eso.metrics",
-		"topology.graph", "diagnostics.read", "policy.compliance_history",
+		"topology.graph", "diagnostics.read", "policy.compliance_history", "velero.assurance",
 	}
 )
 
