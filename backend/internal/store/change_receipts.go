@@ -475,14 +475,10 @@ func (s *ChangeReceiptStore) ListForOwner(
 	}
 	defer rows.Close()
 
-	// Normalize already clamped PageSize; the local bound is restated here so
-	// the allocation size is visibly controlled at the call site (CodeQL
-	// go/uncontrolled-allocation-size cannot see through Normalize).
-	capacity := p.PageSize
-	if capacity < 0 || capacity > ReceiptMaxPageSize {
-		capacity = ReceiptMaxPageSize
-	}
-	out := make([]ChangeReceipt, 0, capacity)
+	// No capacity hint: a page is at most ReceiptMaxPageSize rows, so
+	// preallocation buys nothing, and deriving a size from caller input is what
+	// CodeQL go/uncontrolled-allocation-size flags even after a clamp.
+	out := make([]ChangeReceipt, 0)
 	for rows.Next() {
 		r, err := scanReceipt(rows)
 		if err != nil {
