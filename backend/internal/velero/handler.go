@@ -57,6 +57,11 @@ type Handler struct {
 	Presence      *k8s.Presence
 	Logger        *slog.Logger
 
+	// Assurance backs the Release F /velero/assurance/* endpoints. Assigned
+	// after construction (like NotifService); nil until main wires it, and
+	// the collector inside is disabled when no PostgreSQL is configured.
+	Assurance *AssuranceService
+
 	remote *remotecache.Cache[*snapshot]
 
 	// baseDynOverride is a test-only seam for the local service-account

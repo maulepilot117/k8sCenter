@@ -786,6 +786,17 @@ func main() {
 	// expired.
 	clusterRouter.RegisterEvictHook(cmHandler.EvictRemoteCache)
 
+	// Release F — backup assurance collector. Local cluster only, platform
+	// ServiceAccount identity (no user token). Disabled (Start logs the reason
+	// and returns) without PostgreSQL or a notification service; NewBackupAssuranceStore
+	// returns nil for a nil pool. Empty holder = hostname-pid.
+	veleroAssurance := velero.NewAssuranceService(
+		veleroHandler, veleroDiscoverer, appstore.NewBackupAssuranceStore(dbPool),
+		notifService, cfg.ClusterID, "", logger,
+	)
+	veleroHandler.Assurance = veleroAssurance
+	go veleroAssurance.Start(ctx)
+
 	// External Secrets Operator integration (Phase A — observatory; Phase D
 	// — alerting + threshold annotations; Phase C — DB persistence + drift
 	// history). esoHistoryStore is nil when no DB is configured, in which
