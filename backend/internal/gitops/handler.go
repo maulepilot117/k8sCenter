@@ -71,6 +71,10 @@ type Handler struct {
 type cachedApps struct {
 	apps      []NormalizedApp
 	fetchedAt time.Time
+	// failed holds, keyed by list resource, the error of each engine whose
+	// apps are missing from apps because its list failed. The list endpoint
+	// ignores it; ownership resolution must not read the gap as "no apps".
+	failed map[string]error
 }
 
 type cachedAppSetData struct {
@@ -113,11 +117,20 @@ func toolPrefixForApp(app NormalizedApp) string {
 // fetchApps returns cached application data, refreshing if stale.
 // Cache is populated using the service account; callers must RBAC-filter.
 func (h *Handler) fetchApps(ctx context.Context) ([]NormalizedApp, error) {
+	data, err := h.fetchLocal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return data.apps, nil
+}
+
+// fetchLocal is fetchApps with the per-engine list failures kept.
+func (h *Handler) fetchLocal(ctx context.Context) (*cachedApps, error) {
 	h.cacheMu.RLock()
 	if h.cachedData != nil && time.Since(h.cachedData.fetchedAt) < cacheTTL {
-		apps := h.cachedData.apps
+		data := h.cachedData
 		h.cacheMu.RUnlock()
-		return apps, nil
+		return data, nil
 	}
 	h.cacheMu.RUnlock()
 
@@ -127,8 +140,7 @@ func (h *Handler) fetchApps(ctx context.Context) ([]NormalizedApp, error) {
 	if err != nil {
 		return nil, err
 	}
-	data := result.(*cachedApps)
-	return data.apps, nil
+	return result.(*cachedApps), nil
 }
 
 // doFetch queries both engines based on discovery and merges results.
@@ -209,14 +221,19 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 	ar := <-argoCh
 	fr := <-fluxCh
 
+	failed := map[string]error{}
 	if ar.err != nil {
 		h.Logger.Warn("argocd fetch error", "error", ar.err)
+		failed[ArgoApplicationGVR.Resource] = ar.err
 	} else {
 		allApps = append(allApps, ar.apps...)
 	}
 
 	if fr.err != nil {
 		h.Logger.Warn("flux fetch error", "error", fr.err)
+		// Either Flux list failing drops every Flux app, Kustomizations
+		// included, so the Kustomization view is the one that is incomplete.
+		failed[FluxKustomizationGVR.Resource] = fr.err
 	} else {
 		allApps = append(allApps, fr.apps...)
 	}
@@ -224,6 +241,7 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 	data := &cachedApps{
 		apps:      allApps,
 		fetchedAt: time.Now(),
+		failed:    failed,
 	}
 
 	// Only write cache if no invalidation occurred during fetch.

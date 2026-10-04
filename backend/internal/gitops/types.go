@@ -70,9 +70,13 @@ type NormalizedApp struct {
 	LastSyncTime         string       `json:"lastSyncTime,omitempty"`
 	Message              string       `json:"message,omitempty"`
 	DestinationCluster   string       `json:"destinationCluster,omitempty"`
+	DestinationName      string       `json:"destinationName,omitempty"` // Argo: spec.destination.name
 	DestinationNamespace string       `json:"destinationNamespace,omitempty"`
-	ManagedResourceCount int          `json:"managedResourceCount"`
-	Suspended            bool         `json:"suspended"`
+	// RemoteKubeConfig: a Flux Kustomization with spec.kubeConfig set, which
+	// applies to the cluster that kubeconfig names, not the one it runs on.
+	RemoteKubeConfig     bool `json:"remoteKubeConfig,omitempty"`
+	ManagedResourceCount int  `json:"managedResourceCount"`
+	Suspended            bool `json:"suspended"`
 }
 
 // AppSource describes where an application's manifests come from.

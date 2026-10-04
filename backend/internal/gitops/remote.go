@@ -152,13 +152,42 @@ func (h *Handler) loadApps(ctx context.Context, user *auth.User) ([]NormalizedAp
 	return snap.apps, coverage, nil
 }
 
-// load returns the remote cluster's GitOps snapshot for the user.
+// load returns the request's cluster's GitOps snapshot for the user.
 func (h *Handler) load(ctx context.Context, user *auth.User) (*snapshot, error) {
-	clusterID := middleware.ClusterIDFromContext(ctx)
+	return h.loadFor(ctx, middleware.ClusterIDFromContext(ctx), user)
+}
+
+// loadFor returns clusterID's GitOps state: for the local cluster the
+// service-account cache (unfiltered, so callers RBAC-filter) and the local
+// discoverer; for a remote one the per-identity snapshot. In both, failed
+// names each application list whose apps are missing.
+func (h *Handler) loadFor(ctx context.Context, clusterID string, user *auth.User) (*snapshot, error) {
+	if k8s.IsLocalClusterID(clusterID) {
+		if h.Discoverer == nil {
+			return nil, errors.New("gitops: no local discoverer")
+		}
+		data, err := h.fetchLocal(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &snapshot{status: h.Discoverer.Status(), apps: data.apps, failed: data.failed}, nil
+	}
 	return h.remoteCache().Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*snapshot, error) {
 		return h.fetchRemote(ctx, clusterID, user)
 	})
 }
+
+// allListsFailedError is a remote fetch in which every list failed. It
+// unwraps to the first failure, so every classification of the fetch error
+// is unchanged, and keeps the partial snapshot so a caller can still say
+// which tool's lists failed and how.
+type allListsFailedError struct {
+	snap *snapshot
+	err  error
+}
+
+func (e *allListsFailedError) Error() string { return e.err.Error() }
+func (e *allListsFailedError) Unwrap() error { return e.err }
 
 // remoteDiscovery reads which GitOps tools a remote cluster serves, as the
 // user sees it, and returns the discovery lists it read. A definite absence
@@ -283,7 +312,7 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 		}
 	}
 	if len(snap.failed) == len(sources) {
-		return nil, errs[0]
+		return nil, &allListsFailedError{snap: snap, err: errs[0]}
 	}
 	return snap, nil
 }

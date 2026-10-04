@@ -61,8 +61,8 @@ func evPair(kind, tool, app int) []byte { return []byte{byte(kind), byte(tool | 
 
 func statesFromFuzz(bits uint16) (argo, flux toolState) {
 	bit := func(n uint) bool { return bits&(1<<n) != 0 }
-	argo = toolState{installed: bit(0), unavailable: bit(1), forbidden: bit(2), hidden: bit(3), exhausted: bit(4)}
-	flux = toolState{installed: bit(5), unavailable: bit(6), forbidden: bit(7), hidden: bit(8), exhausted: bit(9), helmReleaseHinted: bit(10)}
+	argo = toolState{installed: bit(0), unavailable: bit(1), forbidden: bit(2), hidden: bit(3), exhausted: bit(4), offClusterClaim: bit(11)}
+	flux = toolState{installed: bit(5), unavailable: bit(6), forbidden: bit(7), hidden: bit(8), exhausted: bit(9), helmReleaseHinted: bit(10), offClusterClaim: bit(12)}
 	return argo, flux
 }
 

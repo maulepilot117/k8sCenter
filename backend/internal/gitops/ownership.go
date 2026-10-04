@@ -3,10 +3,11 @@ package gitops
 // Read-only GitOps ownership evidence for a live object (Release E U26,
 // R18, KTD10). The answer to "which controller manages this object?" comes
 // only from a controller's own reconciliation record — Argo CD's
-// Application status.resources[] or a Flux Kustomization's inventory. Labels,
-// annotations and field managers on the object are hints: anyone who can
-// write the object can write them, so they only decide which applications
-// are checked first and never establish ownership or a Git source.
+// Application status.resources[] or a Flux Kustomization's inventory — and
+// only from one that applies to the cluster it runs on. Labels, annotations
+// and field managers on the object are hints: anyone who can write the
+// object can write them, so they only decide which applications are checked
+// first and never establish ownership or a Git source.
 
 import (
 	"context"
@@ -24,13 +25,12 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
-	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
-// maxDetailFetches bounds per-request Application/Kustomization detail GETs.
-// Exhausting it yields ConfidenceUnknown/"search-bound-exhausted", never
-// OwnedByNone/"no-evidence" -- absence of evidence we did not look for is not
-// evidence.
+// maxDetailFetches bounds per-request Application/Kustomization detail GETs,
+// across both controllers. Exhausting it yields
+// ConfidenceUnknown/"search-bound-exhausted", never OwnedByNone/"no-evidence"
+// -- absence of evidence we did not look for is not evidence.
 const maxDetailFetches = 25
 
 // maxHintValueBytes caps an untrusted hint value before it reaches a response.
@@ -40,21 +40,29 @@ const maxHintValueBytes = 256
 // neither controller records the UID of what it manages.
 const identityBasisNameScoped = "group-kind-namespace-name"
 
+// The Argo CD destination that means "the cluster Argo CD runs on".
+const (
+	argoInClusterServer = "https://kubernetes.default.svc"
+	argoInClusterName   = "in-cluster"
+)
+
 // Reason codes carried in OwnershipResult.Reason. Stable wire values.
 const (
-	reasonConfirmedArgo   = "confirmed-argo-status"
-	reasonConfirmedFlux   = "confirmed-flux-inventory"
-	reasonBothClaim       = "both-claim"
-	reasonArgoForbidden   = "argo-list-forbidden"
-	reasonFluxForbidden   = "flux-list-forbidden"
-	reasonArgoUnavailable = "argo-unavailable"
-	reasonFluxUnavailable = "flux-unavailable"
-	reasonHelmRelease     = "flux-helmrelease-no-inventory"
-	reasonBoundExhausted  = "search-bound-exhausted"
-	reasonPartial         = "partial-visibility"
-	reasonHintsOnly       = "hints-only"
-	reasonNoController    = "no-controller-installed"
-	reasonNoEvidence      = "no-evidence"
+	reasonConfirmedArgo        = "confirmed-argo-status"
+	reasonConfirmedFlux        = "confirmed-flux-inventory"
+	reasonBothClaim            = "both-claim"
+	reasonArgoForbidden        = "argo-list-forbidden"
+	reasonFluxForbidden        = "flux-list-forbidden"
+	reasonArgoUnavailable      = "argo-unavailable"
+	reasonFluxUnavailable      = "flux-unavailable"
+	reasonArgoOffCluster       = "argo-destination-unverified"
+	reasonFluxRemoteKubeConfig = "flux-remote-kubeconfig"
+	reasonHelmRelease          = "flux-helmrelease-no-inventory"
+	reasonBoundExhausted       = "search-bound-exhausted"
+	reasonPartial              = "partial-visibility"
+	reasonHintsOnly            = "hints-only"
+	reasonNoController         = "no-controller-installed"
+	reasonNoEvidence           = "no-evidence"
 )
 
 // Object metadata the hints are read from.
@@ -82,6 +90,11 @@ type toolState struct {
 	hidden bool
 	// exhausted: maxDetailFetches ran out before every candidate was read.
 	exhausted bool
+	// offClusterClaim: an application that applies to another cluster (an
+	// Argo destination other than in-cluster, a Flux kubeConfig) names the
+	// object. Its record describes that other cluster's object of the same
+	// name, so it cannot confirm this one.
+	offClusterClaim bool
 	// helmReleaseHinted: the object carries Flux HelmRelease labels, and a
 	// HelmRelease keeps no inventory to confirm them against (flux only).
 	helmReleaseHinted bool
@@ -109,11 +122,17 @@ type objectHints struct {
 // application's detail and the live object's hints, so a caller who can list
 // but not get an application is answered forbidden rather than shown another
 // tenant's inventory. Hints are read only for refs that carry Version and
-// Resource. The detail-fetch bound and its memo span the whole call.
+// Resource. The detail-fetch bound and its memo span the whole call and both
+// controllers.
+//
+// "Authoritative" assumes the writers of Applications and Kustomizations are
+// trusted: Argo CD's Application has no status subresource, so anyone with
+// update on an Application can write the status.resources[] this trusts.
 //
 // Never returns a writable Git source (Q4 unresolved). It errors only on a
 // cancelled context (with no partial slice) or a missing user or client;
-// every cluster-side failure is a per-ref verdict.
+// every cluster-side failure is a per-ref verdict. It has no bound on len(refs)
+// and no deadline of its own: callers cap the input and set the timeout.
 func (h *Handler) ResolveOwnership(
 	ctx context.Context,
 	user *auth.User,
@@ -156,56 +175,43 @@ func (h *Handler) ResolveOwnership(
 // clusterView is one cluster's applications as the caller may see them.
 type clusterView struct {
 	argo, flux toolState
-	argoApps   []NormalizedApp
-	fluxKS     []NormalizedApp
+	// candidates are the visible Argo Applications and Flux Kustomizations:
+	// the only applications whose records can name an object.
+	candidates []NormalizedApp
 }
 
-// ownershipView reads clusterID's applications the way the list endpoint
-// does for that cluster and applies the caller's RBAC filter.
+// ownershipView loads clusterID's applications the way the list endpoint
+// does and applies the caller's RBAC filter.
 func (h *Handler) ownershipView(ctx context.Context, clusterID string, user *auth.User) clusterView {
-	var (
-		v      clusterView
-		status GitOpsStatus
-		apps   []NormalizedApp
-		failed map[string]error
-	)
-	if k8s.IsLocalClusterID(clusterID) {
-		if h.Discoverer == nil {
-			return unreadableView(nil)
-		}
-		status = h.Discoverer.Status()
-		var err error
-		if apps, err = h.fetchApps(ctx); err != nil {
+	snap, err := h.loadFor(ctx, clusterID, user)
+	if err != nil {
+		// A remote fetch whose every list failed still says which lists
+		// failed and how; anything else leaves both controllers unseen.
+		var allFailed *allListsFailedError
+		if !errors.As(err, &allFailed) {
 			return unreadableView(err)
 		}
-	} else {
-		snap, err := h.remoteCache().Get(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*snapshot, error) {
-			return h.fetchRemote(ctx, clusterID, user)
-		})
-		if err != nil {
-			return unreadableView(err)
-		}
-		status, apps, failed = snap.status, snap.apps, snap.failed
+		snap = allFailed.snap
 	}
 
-	v.argo.installed = status.ArgoCD != nil && status.ArgoCD.Available
-	v.flux.installed = status.FluxCD != nil && status.FluxCD.Available
-	markReadFailure(&v.argo, failed[ArgoApplicationGVR.Resource])
-	markReadFailure(&v.flux, failed[FluxKustomizationGVR.Resource])
+	var v clusterView
+	v.argo.installed = snap.status.ArgoCD != nil && snap.status.ArgoCD.Available
+	v.flux.installed = snap.status.FluxCD != nil && snap.status.FluxCD.Available
+	markReadFailure(&v.argo, snap.failed[ArgoApplicationGVR.Resource])
+	markReadFailure(&v.flux, snap.failed[FluxKustomizationGVR.Resource])
 
-	vis := h.visibleApps(ctx, clusterID, user, apps)
+	vis := h.visibleApps(ctx, clusterID, user, snap.apps)
+	visible := map[string]int{}
 	for _, app := range vis.apps {
-		switch toolPrefixForApp(app) {
-		case "argo":
-			v.argoApps = append(v.argoApps, app)
-		case "flux-ks":
-			v.fluxKS = append(v.fluxKS, app)
+		// HelmReleases keep no inventory, so they can neither confirm nor
+		// shape a controller's visibility.
+		if prefix := toolPrefixForApp(app); prefix != "flux-hr" {
+			v.candidates = append(v.candidates, app)
+			visible[prefix]++
 		}
 	}
-	// HelmReleases cannot confirm anything, so only the prefixes that can
-	// shape a tool's visibility.
-	applyVisibility(&v.argo, vis, "argo", len(v.argoApps))
-	applyVisibility(&v.flux, vis, "flux-ks", len(v.fluxKS))
+	applyVisibility(&v.argo, vis, "argo", visible["argo"])
+	applyVisibility(&v.flux, vis, "flux-ks", visible["flux-ks"])
 	return v
 }
 
@@ -213,9 +219,6 @@ func (h *Handler) ownershipView(ctx context.Context, clusterID string, user *aut
 // both controllers count as installed and unseen.
 func unreadableView(err error) clusterView {
 	v := clusterView{argo: toolState{installed: true}, flux: toolState{installed: true}}
-	if err == nil {
-		err = errors.New("no discoverer")
-	}
 	markReadFailure(&v.argo, err)
 	markReadFailure(&v.flux, err)
 	return v
@@ -247,6 +250,16 @@ func applyVisibility(st *toolState, vis appVisibility, prefix string, visible in
 	}
 }
 
+// appliesInCluster reports whether app deploys to the cluster it runs on,
+// the only case in which its record speaks for objects on that cluster.
+func appliesInCluster(app NormalizedApp) bool {
+	if app.Tool == ToolArgoCD {
+		server := strings.TrimSuffix(app.DestinationCluster, "/")
+		return server == argoInClusterServer || (server == "" && app.DestinationName == argoInClusterName)
+	}
+	return !app.RemoteKubeConfig
+}
+
 // appDetail is one application's managed resources, or why they are unknown.
 type appDetail struct {
 	resources []ManagedResource
@@ -271,30 +284,18 @@ func (r *ownershipRun) resolve(ctx context.Context, ref ObjectRef) (OwnershipRes
 	argo, flux := r.view.argo, r.view.flux
 	flux.helmReleaseHinted = hints.helmRelease
 
+	owners, err := r.search(ctx, ref, hints, &argo, &flux)
+	if err != nil {
+		return OwnershipResult{}, err
+	}
 	ev := hints.evidence
 	var apps []OwnedByApp
-	searches := []struct {
-		apps   []NormalizedApp
-		st     *toolState
-		kind   OwnershipEvidenceKind
-		hinted func(NormalizedApp) bool
-	}{
-		{r.view.argoApps, &argo, EvidenceArgoStatusResource, func(a NormalizedApp) bool {
-			return hints.argoApps[a.Name] || hints.argoApps[a.Namespace+"_"+a.Name]
-		}},
-		{r.view.fluxKS, &flux, EvidenceFluxInventoryEntry, func(a NormalizedApp) bool {
-			return hints.fluxKustomizations[a.Namespace+"/"+a.Name]
-		}},
-	}
-	for _, s := range searches {
-		owner, err := r.search(ctx, ref, s.apps, s.hinted, s.st)
-		if err != nil {
-			return OwnershipResult{}, err
+	for _, owner := range owners {
+		kind := EvidenceArgoStatusResource
+		if owner.Tool == ToolFluxCD {
+			kind = EvidenceFluxInventoryEntry
 		}
-		if owner == nil {
-			continue
-		}
-		ev = append(ev, OwnershipEvidence{Kind: s.kind, Tool: owner.Tool, AppID: owner.ID})
+		ev = append(ev, OwnershipEvidence{Kind: kind, Tool: owner.Tool, AppID: owner.ID})
 		apps = append(apps, OwnedByApp{
 			AppID:     owner.ID,
 			Tool:      owner.Tool,
@@ -326,19 +327,29 @@ func (r *ownershipRun) liveHints(ctx context.Context, ref ObjectRef) (objectHint
 	return hintsFor(obj), nil
 }
 
-// search walks one controller's visible applications — hinted ones first,
-// then those targeting the object's namespace, then the rest — and returns
-// the first whose own record names ref. Every way the walk falls short of
-// the whole space is recorded on st.
-func (r *ownershipRun) search(ctx context.Context, ref ObjectRef, apps []NormalizedApp, hinted func(NormalizedApp) bool, st *toolState) (*NormalizedApp, error) {
-	for _, app := range orderCandidates(apps, ref, hinted) {
+// search walks both controllers' candidates in one order (see
+// orderCandidates), so the shared fetch budget goes to the likeliest owners
+// of either tool first, and returns at most one confirming owner per tool,
+// Argo first. A candidate past the budget is skipped but the walk goes on,
+// since one already fetched for an earlier ref costs nothing. Every way the
+// walk falls short of the whole space is recorded on argo or flux.
+func (r *ownershipRun) search(ctx context.Context, ref ObjectRef, hints objectHints, argo, flux *toolState) ([]NormalizedApp, error) {
+	var argoOwner, fluxOwner *NormalizedApp
+	for _, app := range orderCandidates(r.view.candidates, ref, hints) {
+		st, owner := flux, &fluxOwner
+		if app.Tool == ToolArgoCD {
+			st, owner = argo, &argoOwner
+		}
+		if *owner != nil {
+			continue
+		}
 		d, ok, err := r.detail(ctx, app)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			st.exhausted = true
-			return nil, nil
+			continue
 		}
 		switch {
 		case d.forbidden:
@@ -346,20 +357,44 @@ func (r *ownershipRun) search(ctx context.Context, ref ObjectRef, apps []Normali
 		case d.failed:
 			st.unavailable = true
 		}
-		for _, mr := range d.resources {
-			if matchesRef(mr, ref) {
-				return &app, nil
-			}
+		if !namesRef(d.resources, ref) {
+			continue
+		}
+		if !appliesInCluster(app) {
+			st.offClusterClaim = true
+			continue
+		}
+		*owner = &app
+	}
+	var owners []NormalizedApp
+	for _, o := range []*NormalizedApp{argoOwner, fluxOwner} {
+		if o != nil {
+			owners = append(owners, *o)
 		}
 	}
-	return nil, nil
+	return owners, nil
 }
 
-// orderCandidates returns apps in search order without reordering the input.
-func orderCandidates(apps []NormalizedApp, ref ObjectRef, hinted func(NormalizedApp) bool) []NormalizedApp {
+func namesRef(resources []ManagedResource, ref ObjectRef) bool {
+	for _, mr := range resources {
+		if matchesRef(mr, ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// orderCandidates returns apps in search order, without reordering the
+// input: those an object's hint names, then those targeting its namespace,
+// then the rest, and last every application that applies to another
+// cluster (it can at most make the verdict unknown). Ties go by id.
+func orderCandidates(apps []NormalizedApp, ref ObjectRef, hints objectHints) []NormalizedApp {
 	rank := func(a NormalizedApp) int {
 		switch {
-		case hinted(a):
+		case !appliesInCluster(a):
+			return 3
+		case a.Tool == ToolArgoCD && (hints.argoApps[a.Name] || hints.argoApps[a.Namespace+"_"+a.Name]),
+			a.Tool == ToolFluxCD && hints.fluxKustomizations[a.Namespace+"/"+a.Name]:
 			return 0
 		case ref.Namespace != "" && (a.DestinationNamespace == ref.Namespace || a.Namespace == ref.Namespace):
 			return 1
@@ -487,7 +522,8 @@ func decide(ref ObjectRef, ev []OwnershipEvidence, apps []OwnedByApp, argo, flux
 
 // unconfirmedVerdict explains why nothing was confirmed, most limiting
 // first: a search the caller could not see beats one that failed, which
-// beats one that saw everything it was allowed to and found only hints.
+// beats one that found an unverifiable claim, which beats one that saw
+// everything it was allowed to and found only hints.
 func unconfirmedVerdict(hasHints bool, argo, flux toolState) (OwnershipConfidence, string) {
 	switch {
 	case argo.forbidden:
@@ -498,6 +534,10 @@ func unconfirmedVerdict(hasHints bool, argo, flux toolState) (OwnershipConfidenc
 		return ConfidenceUnavailable, reasonArgoUnavailable
 	case flux.unavailable:
 		return ConfidenceUnavailable, reasonFluxUnavailable
+	case argo.offClusterClaim:
+		return ConfidenceUnknown, reasonArgoOffCluster
+	case flux.offClusterClaim:
+		return ConfidenceUnknown, reasonFluxRemoteKubeConfig
 	case flux.helmReleaseHinted:
 		return ConfidenceUnknown, reasonHelmRelease
 	case argo.exhausted || flux.exhausted:

@@ -109,6 +109,9 @@ func NormalizeFluxKustomization(obj *unstructured.Unstructured) NormalizedApp {
 	if destNS == "" {
 		destNS = namespace
 	}
+	// A kubeConfig makes the Kustomization apply to another cluster.
+	kubeConfig, hasKubeConfig, _ := unstructured.NestedFieldNoCopy(obj.Object, "spec", "kubeConfig")
+	remoteKubeConfig := hasKubeConfig && kubeConfig != nil
 
 	// Suspended
 	suspended, _, _ := unstructured.NestedBool(obj.Object, "spec", "suspend")
@@ -149,6 +152,7 @@ func NormalizeFluxKustomization(obj *unstructured.Unstructured) NormalizedApp {
 		LastSyncTime:         lastSyncTime,
 		Message:              message,
 		DestinationNamespace: destNS,
+		RemoteKubeConfig:     remoteKubeConfig,
 		ManagedResourceCount: managedCount,
 		Suspended:            suspended,
 	}

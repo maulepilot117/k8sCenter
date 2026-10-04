@@ -74,6 +74,7 @@ func NormalizeArgoApp(obj *unstructured.Unstructured) NormalizedApp {
 
 	// Destination
 	destServer, _, _ := unstructured.NestedString(obj.Object, "spec", "destination", "server")
+	destName, _, _ := unstructured.NestedString(obj.Object, "spec", "destination", "name")
 	destNS, _, _ := unstructured.NestedString(obj.Object, "spec", "destination", "namespace")
 
 	// Status - sync
@@ -126,6 +127,7 @@ func NormalizeArgoApp(obj *unstructured.Unstructured) NormalizedApp {
 		LastSyncTime:         lastSyncTime,
 		Message:              message,
 		DestinationCluster:   destServer,
+		DestinationName:      destName,
 		DestinationNamespace: destNS,
 		ManagedResourceCount: managedCount,
 		Suspended:            suspended,
