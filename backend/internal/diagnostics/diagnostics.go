@@ -103,18 +103,24 @@ type ruleEntry struct {
 	name      string
 	severity  Severity
 	appliesTo []string
-	// dependsOn lists the related resolutions (limit* kinds) the rule reads
-	// beyond the target object itself. A rule that reads only target.Object
-	// declares none.
-	dependsOn []string
+	// dependsOn returns the related resolutions (limit* kinds) the rule reads for
+	// this target, beyond the target object itself. A rule that reads only
+	// target.Object leaves it nil.
+	dependsOn func(target *DiagnosticTarget) []string
 	check     CheckFunc
+}
+
+// always is a dependsOn for a rule that reads the same related resolutions
+// whatever the target looks like.
+func always(kinds ...string) func(*DiagnosticTarget) []string {
+	return func(*DiagnosticTarget) []string { return kinds }
 }
 
 // rules is the global registry of diagnostic rules, populated by init() in rules.go.
 var rules []ruleEntry
 
 // registerRule appends a rule to the global registry.
-func registerRule(name string, severity Severity, appliesTo, dependsOn []string, check CheckFunc) {
+func registerRule(name string, severity Severity, appliesTo []string, dependsOn func(*DiagnosticTarget) []string, check CheckFunc) {
 	rules = append(rules, ruleEntry{
 		name:      name,
 		severity:  severity,

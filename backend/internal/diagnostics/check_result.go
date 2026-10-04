@@ -144,12 +144,14 @@ func internalErrorMessage(rule string) string {
 //   - A status this contract does not know is inconclusive, never a pass.
 //
 // The legacy Results are not altered, and Denormalize restores them exactly.
-// A nil results slice yields nil.
+// A nil results slice yields nil. A Result from a rule that is not in
+// checkIDForRule gets an empty CheckID, so only pass it Results RunDiagnostics
+// produced.
 func Normalize(clusterID string, target *DiagnosticTarget, observedAt time.Time, results []Result) []CheckResult {
 	if results == nil {
 		return nil
 	}
-	env := normalizeEnv{src: sourceRef(clusterID, target), observedAt: observedAt}
+	env := normalizeEnv{src: sourceRef(clusterID, target), observedAt: observedAt, target: target}
 	if target != nil {
 		env.limits = target.Limitations
 		env.podUIDs = podUIDsByName(target.Pods)
@@ -166,6 +168,7 @@ func Normalize(clusterID string, target *DiagnosticTarget, observedAt time.Time,
 type normalizeEnv struct {
 	src        SourceRef
 	observedAt time.Time
+	target     *DiagnosticTarget // nil when Normalize was given none
 	limits     []Limitation
 	podUIDs    map[string]string // pod name -> UID, for the pods the target observed
 }
@@ -202,8 +205,10 @@ func normalizeResult(r Result, env normalizeEnv) CheckResult {
 		// neither stands when an input the rule reads was never observed. A
 		// finding that links the objects it observed does.
 		lacksObservedEvidence := r.Status == "pass" || len(r.Links) == 0
-		if reason, limited := limitedBy(ruleDependsOn(r.RuleName), env.limits); limited && lacksObservedEvidence {
-			c.Status, c.Reason = CheckInconclusive, reason
+		if lacksObservedEvidence {
+			if reason, limited := limitedBy(ruleDependsOn(r.RuleName, env.target), env.limits); limited {
+				c.Status, c.Reason = CheckInconclusive, reason
+			}
 		}
 	}
 	return c
@@ -284,12 +289,19 @@ func sourceRef(clusterID string, target *DiagnosticTarget) SourceRef {
 	return ref
 }
 
-// ruleDependsOn returns the related resolutions the named rule reads. An
-// unregistered name depends on nothing.
-func ruleDependsOn(rule string) []string {
+// ruleDependsOn returns the related resolutions the named rule reads for target.
+// An unregistered name, a rule that reads only the target object, and a nil
+// target depend on nothing.
+func ruleDependsOn(rule string, target *DiagnosticTarget) []string {
+	if target == nil {
+		return nil
+	}
 	for _, r := range rules {
 		if r.name == rule {
-			return r.dependsOn
+			if r.dependsOn == nil {
+				return nil
+			}
+			return r.dependsOn(target)
 		}
 	}
 	return nil

@@ -13,7 +13,7 @@ import (
 func init() {
 	// workloadPods is what a rule reads when it inspects a workload's pods: the
 	// pods themselves, plus the ReplicaSet chain that finds a Deployment's pods.
-	workloadPods := []string{limitPods, limitReplicaSets}
+	workloadPods := always(limitPods, limitReplicaSets)
 
 	registerRule("CrashLoopBackOff", SeverityCritical, []string{"Deployment", "StatefulSet", "DaemonSet", "Pod"}, workloadPods, checkCrashLoop)
 	registerRule("ImagePullBackOff", SeverityCritical, []string{"Deployment", "StatefulSet", "DaemonSet", "Pod"}, workloadPods, checkImagePull)
@@ -21,8 +21,20 @@ func init() {
 	// ReplicaMismatch compares the workload's own spec and status, never its
 	// pods, so a pod-access limitation does not touch it.
 	registerRule("ReplicaMismatch", SeverityWarning, []string{"Deployment", "StatefulSet", "DaemonSet"}, nil, checkReplicaMismatch)
-	registerRule("ZeroEndpoints", SeverityWarning, []string{"Service"}, []string{limitPods}, checkZeroEndpoints)
+	registerRule("ZeroEndpoints", SeverityWarning, []string{"Service"}, zeroEndpointsReads, checkZeroEndpoints)
 	registerRule("PendingPVC", SeverityWarning, []string{"PersistentVolumeClaim"}, nil, checkPendingPVC)
+}
+
+// zeroEndpointsReads mirrors checkZeroEndpoints: a Service with a selector is
+// judged by the pods that match it, while a selectorless one (ExternalName,
+// headless) and a non-Service target are judged by the object alone and never
+// consult pods.
+func zeroEndpointsReads(target *DiagnosticTarget) []string {
+	svc, ok := target.Object.(*corev1.Service)
+	if !ok || len(svc.Spec.Selector) == 0 {
+		return nil
+	}
+	return []string{limitPods}
 }
 
 // checkCrashLoop detects pods stuck in CrashLoopBackOff.

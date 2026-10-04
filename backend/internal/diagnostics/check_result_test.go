@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -17,12 +20,21 @@ import (
 
 var checkNow = time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
 
-// limitLister serves the countingLister fixtures plus the two behaviours the
-// limitation tests need: a Deployment to resolve, and a pod listing that fails.
+// limitLister serves the countingLister fixtures plus the behaviours the
+// limitation tests need: a Deployment to resolve, and a pod or ReplicaSet
+// listing that fails.
 type limitLister struct {
 	*countingLister
 	deployments []*appsv1.Deployment
 	podsErr     error
+	rsErr       error
+}
+
+func (l *limitLister) ListReplicaSets(ctx context.Context, ns string) ([]*appsv1.ReplicaSet, error) {
+	if l.rsErr != nil {
+		return nil, l.rsErr
+	}
+	return l.countingLister.ListReplicaSets(ctx, ns)
 }
 
 func (l *limitLister) ListPods(ctx context.Context, ns string) ([]*corev1.Pod, error) {
@@ -231,6 +243,7 @@ func TestResolveRecordsLimitations(t *testing.T) {
 		kind    string
 		related *RelatedRBAC
 		podsErr error
+		rsErr   error
 		want    []Limitation
 	}{
 		{name: "legacy nil gate records nothing", kind: "Pod", related: nil, want: nil},
@@ -261,6 +274,13 @@ func TestResolveRecordsLimitations(t *testing.T) {
 			podsErr: errors.New("boom"),
 			want:    []Limitation{{Kind: limitPods, Reason: ReasonSourceUnavailable}},
 		},
+		{
+			// The pods were listed but the chain that finds a Deployment's pods broke, so
+			// the pods are unobserved all the same.
+			name: "replicaset listing fails: the deployment's pods are unobserved", kind: "Deployment", related: &RelatedRBAC{Pods: true, ReplicaSets: true},
+			rsErr: errors.New("boom"),
+			want:  []Limitation{{Kind: limitPods, Reason: ReasonSourceUnavailable}},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -268,6 +288,7 @@ func TestResolveRecordsLimitations(t *testing.T) {
 				countingLister: &countingLister{pods: []*corev1.Pod{testPod(false)}},
 				deployments:    []*appsv1.Deployment{dep},
 				podsErr:        c.podsErr,
+				rsErr:          c.rsErr,
 			}
 			target, err := Resolve(ctx, lister, "team-a", c.kind, "web", c.related)
 			if err != nil {
@@ -860,5 +881,103 @@ func TestNormalizeDowngradesPassThatCarriesLinks(t *testing.T) {
 	got := Normalize("local", target, checkNow, in)[0]
 	if got.Status != CheckInconclusive || got.Reason != ReasonPermissionDenied {
 		t.Fatalf("pass with links under a limitation = %s/%s, want inconclusive/permission_denied", got.Status, got.Reason)
+	}
+}
+
+// TestNormalizeKeepsSelectorlessServiceConclusiveUnderPodDenial: a Service with
+// no selector (ExternalName, headless) is judged by its own spec, so pod denial
+// says nothing about it. One with a selector is judged by its pods and is not
+// (see TestNormalizeDowngradesAbsenceFindingUnderLimitation).
+func TestNormalizeKeepsSelectorlessServiceConclusiveUnderPodDenial(t *testing.T) {
+	target := &DiagnosticTarget{
+		Kind: "Service", Name: "db", Namespace: "team-a",
+		Object: &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "team-a", UID: "uid-svc"},
+			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeExternalName, ExternalName: "db.example.com"},
+		},
+		Limitations: []Limitation{{Kind: limitPods, Reason: ReasonPermissionDenied}},
+	}
+	results := RunDiagnostics(context.Background(), target)
+	if got := resultByRule(t, results, "ZeroEndpoints").Status; got != "pass" {
+		t.Fatalf("legacy ZeroEndpoints on a selectorless Service = %q, want pass", got)
+	}
+	c := checkByID(t, Normalize("local", target, checkNow, results), "diagnostics/zeroendpoints")
+	if c.Status != CheckPass || c.Reason != ReasonOK {
+		t.Fatalf("selectorless Service under pod denial = %s/%q, want a conclusive pass/ok", c.Status, c.Reason)
+	}
+}
+
+// TestNormalizeTimeoutAndPanicOutrankALimitation: a check that never ran says
+// why it never ran, not that pods were denied. Both results come from the real
+// runSafeCheck.
+func TestNormalizeTimeoutAndPanicOutrankALimitation(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	target := &DiagnosticTarget{
+		Kind: "Pod", Name: "web", Namespace: "team-a",
+		Limitations: []Limitation{{Kind: limitPods, Reason: ReasonPermissionDenied}},
+	}
+	hang := ruleEntry{
+		name: "CrashLoopBackOff", severity: SeverityCritical,
+		check: func(context.Context, *DiagnosticTarget) Result {
+			<-release
+			return Result{Status: "pass"}
+		},
+	}
+	boom := ruleEntry{
+		name: "ImagePullBackOff", severity: SeverityCritical,
+		check: func(context.Context, *DiagnosticTarget) Result { panic("rule bug") },
+	}
+	results := []Result{runSafeCheck(cancelled, hang, target), runSafeCheck(context.Background(), boom, target)}
+
+	got := Normalize("local", target, checkNow, results)
+	if got[0].Status != CheckInconclusive || got[0].Reason != ReasonTimedOut {
+		t.Errorf("timed-out check under a limitation = %s/%s, want inconclusive/timed_out", got[0].Status, got[0].Reason)
+	}
+	if got[1].Status != CheckInconclusive || got[1].Reason != ReasonInternalError {
+		t.Errorf("panicked check under a limitation = %s/%s, want inconclusive/internal_error", got[1].Status, got[1].Reason)
+	}
+}
+
+// TestReleaseEMirrorMatchesThePlanText keeps the mirrored types honest: every
+// JSON key in the Release E plan's contract section is a key of the mirror, and
+// the other way round. Editing either side alone fails here.
+func TestReleaseEMirrorMatchesThePlanText(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "plans", "2026-09-10-release-e-tracked-changes-impl.md"))
+	if err != nil {
+		t.Fatalf("cannot read the Release E plan that the contract test mirrors: %v", err)
+	}
+	text := string(raw)
+	start := strings.Index(text, "## Interface contract with Release D U20")
+	end := strings.Index(text, "## Fuzzing summary")
+	if start < 0 || end < start {
+		t.Fatal("the Release E contract section moved; update this test")
+	}
+
+	planKeys := map[string]bool{}
+	for _, m := range regexp.MustCompile(`json:"([^",]+)`).FindAllStringSubmatch(text[start:end], -1) {
+		planKeys[m[1]] = true
+	}
+	mirrorKeys := map[string]bool{}
+	for _, typ := range []reflect.Type{reflect.TypeOf(releaseECheckResult{}), reflect.TypeOf(releaseESourceRef{})} {
+		for i := 0; i < typ.NumField(); i++ {
+			mirrorKeys[strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]] = true
+		}
+	}
+	if len(planKeys) == 0 {
+		t.Fatal("found no json keys in the Release E contract section")
+	}
+	for k := range planKeys {
+		if !mirrorKeys[k] {
+			t.Errorf("the Release E plan declares json:%q and the mirrored types do not", k)
+		}
+	}
+	for k := range mirrorKeys {
+		if !planKeys[k] {
+			t.Errorf("the mirrored types declare json:%q and the Release E plan does not", k)
+		}
 	}
 }
