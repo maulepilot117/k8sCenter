@@ -28,6 +28,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/preferences"
 	"github.com/kubecenter/kubecenter/internal/certmanager"
+	"github.com/kubecenter/kubecenter/internal/changes"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/servicemesh"
@@ -60,6 +61,7 @@ type Server struct {
 	SettingsService    *store.SettingsService
 	RateLimiter        *middleware.RateLimiter
 	YAMLRateLimiter    *middleware.RateLimiter
+	ChangesRateLimiter *middleware.RateLimiter
 	ResourceHandler    *resources.Handler
 	YAMLHandler        *yamlpkg.Handler
 	WizardHandler      *wizard.Handler
@@ -72,6 +74,8 @@ type Server struct {
 	DiagnosticsHandler *diagnostics.Handler
 	PolicyHandler      *policy.Handler
 	GitOpsHandler      *gitops.Handler
+	ChangesHandler     *changes.Handler
+	ChangesService     *changes.Service
 	FluxNotifHandler   *notification.Handler
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
@@ -110,6 +114,7 @@ type Deps struct {
 	SettingsService    *store.SettingsService
 	RateLimiter        *middleware.RateLimiter
 	YAMLRateLimiter    *middleware.RateLimiter
+	ChangesRateLimiter *middleware.RateLimiter
 	Hub                *websocket.Hub
 	MonitoringHandler  *monitoring.Handler
 	LokiHandler        *loki.Handler
@@ -120,6 +125,8 @@ type Deps struct {
 	DiagnosticsHandler *diagnostics.Handler
 	PolicyHandler      *policy.Handler
 	GitOpsHandler      *gitops.Handler
+	ChangesHandler     *changes.Handler
+	ChangesService     *changes.Service
 	FluxNotifHandler   *notification.Handler
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
@@ -160,6 +167,7 @@ func New(deps Deps) *Server {
 		SettingsService: deps.SettingsService,
 		RateLimiter:     deps.RateLimiter,
 		YAMLRateLimiter: deps.YAMLRateLimiter,
+		ChangesRateLimiter: deps.ChangesRateLimiter,
 		Hub:             deps.Hub,
 		ready:           deps.ReadyFn,
 		dbPing:          deps.DBPing,
@@ -282,6 +290,14 @@ func New(deps Deps) *Server {
 	if deps.GitOpsHandler != nil {
 		s.GitOpsHandler = deps.GitOpsHandler
 	}
+
+	// Tracked changes handler + service (Release E). The service is copied
+	// unconditionally: a nil value is the "tracked apply unavailable" signal
+	// the YAML handler reads in U30a.
+	if deps.ChangesHandler != nil {
+		s.ChangesHandler = deps.ChangesHandler
+	}
+	s.ChangesService = deps.ChangesService
 
 	// Notification handler
 	if deps.FluxNotifHandler != nil {

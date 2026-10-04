@@ -24,6 +24,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/certmanager"
+	"github.com/kubecenter/kubecenter/internal/changes"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/externalsecrets"
@@ -301,6 +302,11 @@ func main() {
 	yamlRateLimiter := middleware.NewRateLimiterWithRate(yamlRateLimit(cfg.Dev))
 	yamlRateLimiter.StartCleanup(ctx)
 	yamlRateLimiter.SetAuditLogger(auditLogger)
+	// Dedicated bucket for /changes/* (receipt reads and 5s verification polling)
+	// so polling cannot starve /yaml/apply. See changesRateLimit.
+	changesRateLimiter := middleware.NewRateLimiterWithRate(changesRateLimit(cfg.Dev))
+	changesRateLimiter.StartCleanup(ctx)
+	changesRateLimiter.SetAuditLogger(auditLogger)
 
 	// Initialize monitoring discoverer and start background discovery
 	monDiscoverer := monitoring.NewDiscoverer(k8sClient, cfg.Monitoring, logger)
@@ -903,6 +909,69 @@ func main() {
 		}()
 	}
 
+	// Tracked changes (Release E). Receipts require PostgreSQL; with no dbPool the
+	// /changes routes are not registered and ChangesService stays nil, so tracked
+	// apply is unavailable while the untracked /yaml/apply path is unaffected.
+	//
+	// gitopsHandler and clusterRouter are always non-nil here, so they cross the
+	// interface parameters as real values. Anything that may be absent must be
+	// passed as an untyped nil: a nil *gitops.Handler inside OwnershipResolver is
+	// a non-nil interface and would panic instead of answering 503.
+	var changesService *changes.Service
+	var changesHandler *changes.Handler
+	var changesDone chan struct{}
+	if dbPool != nil {
+		receiptStore := appstore.NewChangeReceiptStore(dbPool)
+		changesService = changes.NewService(receiptStore, logger)
+		changesHandler = changes.NewHandler(changesService, receiptStore, gitopsHandler,
+			clusterRouter, accessChecker, logger)
+
+		// sweepReceipts closes applies whose process died (never replays them) and
+		// prunes receipts past retention. ReconcileOrphans only touches 'applying'
+		// rows older than store.ReceiptOrphanGrace, so it is safe while an old pod
+		// is still finishing a live apply during a rolling update. Each call gets
+		// a bounded context so a wedged database cannot stall startup or the loop.
+		sweepReceipts := func(parent context.Context) {
+			rctx, cancel := context.WithTimeout(parent, 30*time.Second)
+			defer cancel()
+			if n, err := receiptStore.ReconcileOrphans(rctx, appstore.ReceiptOrphanGrace); err != nil {
+				logger.Warn("changes: receipt reconcile failed", "error", err)
+			} else if n > 0 {
+				logger.Info("changes: reconciled interrupted receipts", "count", n)
+			}
+			// Cleanup bounds itself; pass the parent so shutdown still cancels it.
+			if n, err := receiptStore.Cleanup(parent, cfg.Changes.ReceiptRetentionDays); err != nil {
+				logger.Warn("changes: receipt retention sweep failed", "error", err)
+			} else if n > 0 {
+				logger.Info("changes: receipts pruned", "count", n, "retentionDays", cfg.Changes.ReceiptRetentionDays)
+			}
+		}
+
+		// Boot reconcile, synchronous so interrupted rows from the prior run are
+		// closed before the first request. Rows younger than the grace period are
+		// picked up by a later tick.
+		recoverutil.Tick(ctx, logger, "changes receipt sweep (boot)", sweepReceipts)
+
+		// The loop runs outside chi's recovery middleware, so each pass goes
+		// through recoverutil.Tick; close(changesDone) stays outside the wrapped
+		// closure so shutdown coordination always completes. The sweep period
+		// equals the orphan grace, bounding how long a reapable row lingers.
+		changesDone = make(chan struct{})
+		go func() {
+			defer close(changesDone)
+			ticker := time.NewTicker(appstore.ReceiptOrphanGrace)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					recoverutil.Tick(ctx, logger, "changes receipt sweep", sweepReceipts)
+				}
+			}
+		}()
+	}
+
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
 	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, clusterRouter, remotePresence, logger)
@@ -962,6 +1031,7 @@ func main() {
 		SettingsService:        settingsService,
 		RateLimiter:            rateLimiter,
 		YAMLRateLimiter:        yamlRateLimiter,
+		ChangesRateLimiter:     changesRateLimiter,
 		Hub:                    hub,
 		MonitoringHandler:      monHandler,
 		LokiHandler:            lokiHandler,
@@ -972,6 +1042,8 @@ func main() {
 		DiagnosticsHandler:     diagHandler,
 		PolicyHandler:          policyHandler,
 		GitOpsHandler:          gitopsHandler,
+		ChangesHandler:         changesHandler,
+		ChangesService:         changesService,
 		FluxNotifHandler:       fluxNotifHandler,
 		NotifCenterHandler:     notifCenterHandler,
 		NotifCenterService:     notifService,
@@ -1032,6 +1104,16 @@ func main() {
 	case <-assuranceDone:
 	case <-time.After(3 * time.Second):
 		logger.Warn("backup assurance collector did not stop in time; its lease will expire")
+	}
+
+	// The receipt sweep loop exits on ctx; wait briefly so no database call is
+	// in flight when the pool closes. Each sweep call is itself bounded at 30s.
+	if changesDone != nil {
+		select {
+		case <-changesDone:
+		case <-time.After(3 * time.Second):
+			logger.Warn("changes receipt sweep did not stop in time")
+		}
 	}
 
 	// Flush pending audit log entries

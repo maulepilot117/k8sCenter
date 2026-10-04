@@ -14,6 +14,9 @@ const (
 	// Audit defaults
 	DefaultAuditRetentionDays = 90
 
+	// Changes (Release E tracked changes) defaults
+	DefaultChangesReceiptRetentionDays = 30
+
 	// Alerting defaults
 	DefaultAlertingEnabled       = false
 	DefaultAlertingRetentionDays = 30

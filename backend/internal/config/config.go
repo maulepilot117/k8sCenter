@@ -21,6 +21,7 @@ type Config struct {
 	Loki        LokiConfig        `koanf:"loki"`
 	Alerting    AlertingConfig    `koanf:"alerting"`
 	Audit       AuditConfig       `koanf:"audit"`
+	Changes     ChangesConfig     `koanf:"changes"`
 	Database    DatabaseConfig    `koanf:"database"`
 	Dev         bool              `koanf:"dev"`
 	ClusterID   string            `koanf:"clusterid"`
@@ -31,6 +32,15 @@ type Config struct {
 // AuditConfig holds configuration for audit logging.
 type AuditConfig struct {
 	RetentionDays int `koanf:"retentiondays"` // Days to retain audit entries (default: 90)
+}
+
+// ChangesConfig holds tracked-change (Release E) settings.
+type ChangesConfig struct {
+	// ReceiptRetentionDays bounds how long change receipts are kept (default: 30).
+	// Env: KUBECENTER_CHANGES_RECEIPTRETENTIONDAYS. Like Audit.RetentionDays it is
+	// not validated here; the receipt store refuses a value below 1 (it never
+	// deletes on one) and the sweep logs the refusal each pass.
+	ReceiptRetentionDays int `koanf:"receiptretentiondays"`
 }
 
 // DatabaseConfig holds PostgreSQL connection configuration.
@@ -178,18 +188,19 @@ func Load(configPath string) (*Config, error) {
 
 	// Set defaults
 	defaults := map[string]any{
-		"server.port":            DefaultPort,
-		"server.shutdowntimeout": DefaultShutdownTimeout,
-		"server.requesttimeout":  DefaultRequestTimeout,
-		"log.level":              DefaultLogLevel,
-		"log.format":             DefaultLogFormat,
-		"dev":                    DefaultDevMode,
-		"clusterid":              DefaultClusterID,
-		"audit.retentiondays":    DefaultAuditRetentionDays,
-		"alerting.enabled":       DefaultAlertingEnabled,
-		"alerting.retentiondays": DefaultAlertingRetentionDays,
-		"alerting.ratelimit":     DefaultAlertingRateLimit,
-		"alerting.smtp.port":     DefaultAlertingSMTPPort,
+		"server.port":                  DefaultPort,
+		"server.shutdowntimeout":       DefaultShutdownTimeout,
+		"server.requesttimeout":        DefaultRequestTimeout,
+		"log.level":                    DefaultLogLevel,
+		"log.format":                   DefaultLogFormat,
+		"dev":                          DefaultDevMode,
+		"clusterid":                    DefaultClusterID,
+		"audit.retentiondays":          DefaultAuditRetentionDays,
+		"changes.receiptretentiondays": DefaultChangesReceiptRetentionDays,
+		"alerting.enabled":             DefaultAlertingEnabled,
+		"alerting.retentiondays":       DefaultAlertingRetentionDays,
+		"alerting.ratelimit":           DefaultAlertingRateLimit,
+		"alerting.smtp.port":           DefaultAlertingSMTPPort,
 	}
 	for key, val := range defaults {
 		k.Set(key, val)

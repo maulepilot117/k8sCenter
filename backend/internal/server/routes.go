@@ -197,6 +197,11 @@ func (s *Server) registerRoutes() {
 				s.registerGitOpsRoutes(ar)
 			}
 
+			// Tracked-change routes — only registered if the changes handler is available
+			if s.ChangesHandler != nil {
+				s.registerChangesRoutes(ar)
+			}
+
 			// Security scanning routes — only registered if scanning handler is available
 			if s.ScanningHandler != nil {
 				s.registerScanningRoutes(ar)
@@ -583,6 +588,34 @@ func (s *Server) registerPolicyRoutes(ar chi.Router) {
 		pr.Get("/violations", h.HandleListViolations)
 		pr.Get("/compliance", h.HandleCompliance)
 		pr.With(middleware.RequireAdmin).Get("/compliance/history", h.HandleComplianceHistory)
+	})
+}
+
+// registerChangesRoutes mounts the tracked-change receipt endpoints. Auth,
+// CSRF and ClusterContext are inherited from the enclosing authenticated group.
+//
+// {id} is a UUID, not a Kubernetes name, so resources.ValidateURLParams is
+// deliberately not applied; the handlers validate it with uuid.Parse.
+func (s *Server) registerChangesRoutes(ar chi.Router) {
+	h := s.ChangesHandler
+	// A dedicated bucket, not the shared YAML one: the UI polls
+	// /changes/{id}/verification every 5s per open receipt, and that polling
+	// must neither starve /yaml/apply nor be starved by a wizard burst. Falls
+	// back to the YAML bucket, then the auth bucket, when unwired (tests).
+	rl := s.ChangesRateLimiter
+	if rl == nil {
+		rl = s.YAMLRateLimiter
+	}
+	if rl == nil {
+		rl = s.RateLimiter
+	}
+	ar.Route("/changes", func(cr chi.Router) {
+		cr.Use(middleware.RateLimit(rl))
+
+		cr.Get("/", h.HandleList)
+		cr.Post("/ownership", h.HandleResolveOwnership)
+		cr.Get("/{id}", h.HandleGet)
+		cr.Get("/{id}/verification", h.HandleVerification)
 	})
 }
 

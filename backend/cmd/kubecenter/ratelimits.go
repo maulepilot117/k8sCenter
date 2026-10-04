@@ -28,3 +28,25 @@ func yamlRateLimit(dev bool) (int, time.Duration) {
 	}
 	return 30, time.Minute
 }
+
+// changesRateLimit returns the per-IP budget for the tracked-change receipt
+// routes (/changes/*), which have their own limiter rather than the shared
+// YAML bucket.
+//
+// The UI polls GET /changes/{id}/verification every 5s (12 req/min per open
+// receipt) and lists receipts on navigation. On the shared 30/min YAML bucket
+// two open tabs would use most of the budget and starve /yaml/apply and the
+// wizard previews that produce the receipts. Reads are cheap indexed lookups,
+// so a separate 120/min bucket (room for ~8 concurrent pollers) costs little.
+// POST /changes/ownership is the one costlier route (it resolves GitOps
+// ownership for up to 50 objects) and is bounded per request by the handler's
+// object cap and 20s timeout.
+//
+// Dev follows the yamlRateLimit rule: the e2e suite is a single IP, so it gets
+// a 5x budget.
+func changesRateLimit(dev bool) (int, time.Duration) {
+	if dev {
+		return 600, time.Minute
+	}
+	return 120, time.Minute
+}
