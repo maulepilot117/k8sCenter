@@ -39,6 +39,14 @@ storageMapping:
   volumeSnapshotClasses:
     - source: "PENDING-Q3"
       destination: "PENDING-Q3"
+portabilityAnalysis:
+  summary: "PENDING-Q3: which backed-up resources and volume data are restorable on the destination"
+  evidence: "PENDING-Q3: operator inventory reference or official documentation URL for the installed versions"
+citations: []
+signOff:
+  operator: "PENDING-Q3"
+  reviewer: "PENDING-Q3"
+  date: "PENDING-Q3"
 backupStorageLocation:
   destinationCanRead: "PENDING-Q3"
   credentials: "PENDING-Q3"

@@ -11,6 +11,10 @@ authorizes none. It records the human procedure so the profile and checks can be
 reviewed before any capability is built. Find open inputs with
 `grep -rn "PENDING-Q3" docs/ e2e/fixtures/`.
 
+Input numbers below (inputs 1 to 11) refer to the numbered inputs in
+`docs/plans/recovery-profile-validation.md`. The six Deferred Appendix milestones
+are defined in `docs/plans/2026-09-10-release-f-backup-assurance-impl.md`.
+
 ## What a rehearsal would establish
 
 - One specific backup restored into one specific, isolated destination under a
