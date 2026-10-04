@@ -40,6 +40,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/preferences"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -786,6 +787,23 @@ func main() {
 	// expired.
 	clusterRouter.RegisterEvictHook(cmHandler.EvictRemoteCache)
 
+	// Release F — backup assurance collector. Local cluster only, platform
+	// ServiceAccount identity (no user token). Disabled (Start logs the reason
+	// and returns) without PostgreSQL or a notification service; NewBackupAssuranceStore
+	// returns nil for a nil pool. Empty holder = hostname-pid.
+	veleroAssurance := veleroHandler.AttachAssurance(
+		veleroDiscoverer, appstore.NewBackupAssuranceStore(dbPool),
+		notifService, cfg.ClusterID, "", logger,
+	)
+	// Start runs outside chi's recovery middleware: recover a panic so it cannot
+	// take the process down, and close assuranceDone outside the recovered
+	// closure so shutdown coordination always completes.
+	assuranceDone := make(chan struct{})
+	go func() {
+		defer close(assuranceDone)
+		recoverutil.Safe(logger, "velero assurance collector", func() { veleroAssurance.Start(ctx) })
+	}()
+
 	// External Secrets Operator integration (Phase A — observatory; Phase D
 	// — alerting + threshold annotations; Phase C — DB persistence + drift
 	// history). esoHistoryStore is nil when no DB is configured, in which
@@ -1006,6 +1024,14 @@ func main() {
 	// Stop background checkers
 	if limitsChecker != nil {
 		limitsChecker.Stop()
+	}
+
+	// Let the assurance collector hand its lease back before the process (and
+	// the deferred DB close) goes away; Start's release is itself bounded at 2s.
+	select {
+	case <-assuranceDone:
+	case <-time.After(3 * time.Second):
+		logger.Warn("backup assurance collector did not stop in time; its lease will expire")
 	}
 
 	// Flush pending audit log entries

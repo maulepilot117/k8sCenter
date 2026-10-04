@@ -228,6 +228,20 @@ type AssuranceService struct {
 	lastPruneAt time.Time
 }
 
+// AttachAssurance builds the collector for h and records it, together with
+// its store, on the handler so the collector and the HTTP endpoints share one
+// store. main calls it once after the notification service exists; st is nil
+// without PostgreSQL, which leaves the service disabled. The caller runs
+// Start on the returned service.
+func (h *Handler) AttachAssurance(
+	d *Discoverer, st *store.BackupAssuranceStore,
+	n *notifications.NotificationService, clusterID, holder string, logger *slog.Logger,
+) *AssuranceService {
+	h.Assurance = NewAssuranceService(h, d, st, n, clusterID, holder, logger)
+	h.AssuranceStore = st
+	return h.Assurance
+}
+
 // DefaultAssuranceHolder is the lease identity for this process:
 // "<hostname>-<pid>", stable for the process lifetime and distinct across
 // replicas and restarts.
