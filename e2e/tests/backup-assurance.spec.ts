@@ -266,22 +266,37 @@ test.describe.serial("Backup assurance AE8 (live collector)", () => {
   // next pass after the policy is created.
   test.setTimeout(150_000);
 
-  let policyId: string | null = null;
-  let openTotal = 0;
+  // Every policy this describe created, across retries: CI retries a failed
+  // test, and each attempt creates its own policy.
+  const createdPolicies: string[] = [];
+  let exceptionId: string | null = null;
 
   test.afterAll(async ({ browser }) => {
-    if (!policyId) return;
+    if (createdPolicies.length === 0) return;
     const context = await browser.newContext({
       storageState: "playwright/.auth/admin.json",
     });
-    const page = await context.newPage();
-    await page.goto("/backup/backups");
-    const headers = await getAuthHeaders(page);
-    await page.request.delete(`${API}/policies/${policyId}?confirm=true`, {
-      headers,
-      failOnStatusCode: false,
-    });
-    await context.close();
+    try {
+      const page = await context.newPage();
+      await page.goto("/backup/backups");
+      const headers = await getAuthHeaders(page);
+      const failures: string[] = [];
+      for (const id of createdPolicies) {
+        const res = await page.request.delete(
+          `${API}/policies/${id}?confirm=true`,
+          { headers, failOnStatusCode: false },
+        );
+        // 404 policy_not_found means it is already gone, which is the goal.
+        if (!res.ok() && res.status() !== 404) {
+          failures.push(`${id}: ${res.status()} ${await res.text()}`);
+        }
+      }
+      // A policy left behind keeps opening exceptions and notifications for
+      // every later spec on this backend: fail loudly rather than leak it.
+      expect(failures, "AE8 policy cleanup").toEqual([]);
+    } finally {
+      await context.close();
+    }
   });
 
   test("AE8: an exception opened by background evaluation is visible to a fresh client", async ({
@@ -295,44 +310,45 @@ test.describe.serial("Backup assurance AE8 (live collector)", () => {
       !s.ok() || !(await s.json()).data?.enabled,
       "backup assurance not enabled (no database or collector)",
     );
+    // Attribution needs this test's policy to be the only one: a Velero
+    // outage opens ONE cluster-wide collection_unknown exception, owned by
+    // whichever policy evaluates first, and another policy's open rows are
+    // re-observed on every pass. With other policies present, nothing here
+    // could prove the new policy caused what is on screen.
+    const existing = await page.request.get(`${API}/policies`, { headers });
+    expect(existing.ok(), await existing.text()).toBe(true);
+    test.skip(
+      ((await existing.json()).data ?? []).length > 0,
+      "other backup assurance policies exist; AE8 needs a clean policy set",
+    );
 
-    // A namespace-scope policy on a namespace nobody else uses: unique per
-    // run, so it cannot collide with an operator's or another run's policy.
+    // A namespace-scope policy on a namespace nobody else uses.
     const ns = `e2e-assure-${Math.random().toString(36).slice(2, 10)}`;
     const created = await page.request.post(`${API}/policies`, {
       headers,
       data: { scopeKind: "namespace", scopeNamespace: ns, maxAgeSeconds: 300 },
     });
     expect(created.status(), await created.text()).toBe(201);
-    policyId = (await created.json()).data.id as string;
+    const policyId = (await created.json()).data.id as string;
+    createdPolicies.push(policyId);
 
-    // Wait for a collector pass AFTER the policy existed: without Velero it
-    // fails collection and opens collection_unknown; with Velero, a
-    // namespace with no backups is overdue. Either way an exception is
-    // observed at or after the policy's creation. Requiring that timestamp
-    // keeps a row left over from before this run from satisfying AE8.
-    const createdAt = Date.parse(
-      (await created.json()).data.createdAt as string,
-    );
-    const observedSince = async (): Promise<number> => {
+    // Wait for a collector pass after the policy existed. Without Velero it
+    // fails collection and opens collection_unknown; with Velero, a namespace
+    // with no backups is overdue. Either way the row is this policy's.
+    const ownRow = async (): Promise<string | null> => {
       const r = await page.request.get(
         `${API}/exceptions?state=open&limit=500&offset=0`,
         { headers },
       );
-      if (!r.ok()) return 0;
-      const rows: Array<{ lastObservedAt: string }> = (await r.json()).data;
-      return rows.filter((e) => Date.parse(e.lastObservedAt) >= createdAt)
-        .length;
+      if (!r.ok()) return null;
+      const rows: Array<{ id: string; policyId: string }> = (await r.json())
+        .data;
+      return rows.find((e) => e.policyId === policyId)?.id ?? null;
     };
     await expect
-      .poll(observedSince, { timeout: 120_000, intervals: [2_000, 5_000] })
-      .toBeGreaterThan(0);
-
-    const r = await page.request.get(
-      `${API}/exceptions?state=open&limit=500&offset=0`,
-      { headers },
-    );
-    openTotal = Math.min((await r.json()).metadata.total as number, 50);
+      .poll(ownRow, { timeout: 120_000, intervals: [2_000, 5_000] })
+      .not.toBeNull();
+    exceptionId = await ownRow();
 
     // A brand-new browser context: nothing carried over from the client
     // that created the policy. The exception exists because the server
@@ -344,9 +360,11 @@ test.describe.serial("Backup assurance AE8 (live collector)", () => {
       const freshPage = await fresh.newPage();
       await attachAuthInjection(freshPage);
       await openPage(freshPage);
-      await expect(freshPage.getByTestId("assurance-exception")).toHaveCount(
-        openTotal,
+      const card = freshPage.locator(
+        `[data-testid="assurance-exception"][data-exception-id="${exceptionId}"]`,
       );
+      await expect(card).toHaveCount(1);
+      await expect(card).toHaveAttribute("data-policy-id", policyId);
       if (
         (await freshPage
           .getByTestId("assurance-surface-state")
@@ -364,15 +382,22 @@ test.describe.serial("Backup assurance AE8 (live collector)", () => {
   test("AE8: reloading the page does not change the exception count", async ({
     page,
   }) => {
-    test.skip(policyId === null, "AE8 policy was not created");
+    test.skip(exceptionId === null, "AE8 exception was not observed");
     await openPage(page);
     const cards = page.getByTestId("assurance-exception");
-    await expect(cards).toHaveCount(openTotal);
+    const own = page.locator(
+      `[data-testid="assurance-exception"][data-exception-id="${exceptionId}"]`,
+    );
+    await expect(own).toHaveCount(1);
+    const before = await cards.count();
     await page.reload();
     await expect(page.getByTestId("assurance-surface-state")).toBeVisible({
       timeout: 15_000,
     });
-    await expect(cards).toHaveCount(openTotal);
+    // Durable server state, not client state: the same exception is still
+    // there and the page shows the same number of cards.
+    await expect(own).toHaveCount(1);
+    await expect(cards).toHaveCount(before);
   });
 });
 
@@ -519,6 +544,11 @@ test.describe("Backup assurance (stubbed states)", () => {
         .locator('[data-testid="assurance-exception"][data-condition="overdue"]')
         .getByTestId("assurance-partial-success-chip"),
     ).toHaveText("last success was partial");
+    // The partial run is reported as PartiallyFailed, never as a completed
+    // (successful) run, on both rows, including the one whose policy treats
+    // partial as success.
+    await expect(partial).toContainText("PartiallyFailed");
+    await expect(root(page)).not.toContainText("Completed");
     // No success tally, score or percentage anywhere on the page.
     await expect(root(page)).not.toContainText(/%|success rate|protected/i);
     await expect(
@@ -746,5 +776,417 @@ test.describe("Backup assurance policy editing (stubbed)", () => {
       "aria-invalid",
       "true",
     );
+  });
+});
+
+test.describe("Backup assurance (stubbed states, continued)", () => {
+  test("stale collection shows counts as not current, never as all clear", async ({
+    page,
+  }) => {
+    await stubAssurance(page, {
+      "GET /assurance/status": {
+        body: {
+          data: status({ collection: "stale", open: counts({ failed: 2 }) }),
+        },
+      },
+      "GET /assurance/exceptions": list([]),
+      "GET /assurance/policies": list([POLICY]),
+    });
+    await openPage(page);
+    const surface = page.getByTestId("assurance-surface-state");
+    await expect(surface).toHaveAttribute("data-state", "stale");
+    await expect(page.getByTestId("assurance-state-word")).toHaveText("stale");
+    await expect(surface).toContainText("Counts may be out of date.");
+    // A zero is not evidence when collection is stale; a non-zero still is.
+    await expect(page.getByTestId("assurance-count-overdue")).toHaveAttribute(
+      "data-unknown",
+      "true",
+    );
+    const failed = page.getByTestId("assurance-count-failed");
+    await expect(failed).toHaveAttribute("data-unknown", "false");
+    await expect(failed).toContainText("2");
+    await expect(page.getByTestId("assurance-no-open")).toHaveCount(0);
+    await expect(page.getByTestId("assurance-no-open-unknown")).toContainText(
+      "collection is stale",
+    );
+  });
+
+  test("ok collection with no open exceptions says so, with the honesty caveat", async ({
+    page,
+  }) => {
+    await stubAssurance(page, {
+      "GET /assurance/status": { body: { data: status() } },
+      "GET /assurance/exceptions": list([]),
+      "GET /assurance/policies": list([POLICY]),
+    });
+    await openPage(page);
+    await expect(page.getByTestId("assurance-no-open")).toHaveText(
+      "No open backup exceptions. This is not a recoverability guarantee.",
+    );
+    await expect(page.getByTestId("assurance-no-open-unknown")).toHaveCount(0);
+  });
+
+  test("a failed status read renders unknown with the error, not an empty page", async ({
+    page,
+  }) => {
+    await stubAssurance(page, {
+      "GET /assurance/status": errorReply(
+        500,
+        "",
+        "failed to read backup assurance status",
+      ),
+    });
+    await openPage(page);
+    await expect(page.getByTestId("assurance-surface-state")).toHaveAttribute(
+      "data-state",
+      "unknown",
+    );
+    await expect(page.getByTestId("assurance-error")).toContainText(
+      "Backup state is unknown",
+    );
+    await expect(page.getByTestId("assurance-empty-policies")).toHaveCount(0);
+  });
+
+  test("the Resolved tab and pagination request the right slice", async ({
+    page,
+  }) => {
+    const firstPage = Array.from({ length: 50 }, () => exception("failed"));
+    const secondPage = [exception("failed")];
+    const calls = await stubAssurance(page, {
+      "GET /assurance/status": {
+        body: { data: status({ open: counts({ failed: 51 }) }) },
+      },
+      "GET /assurance/exceptions": (req) => {
+        const q = new URL(req.url()).searchParams;
+        if (q.get("state") === "resolved") {
+          return list([
+            exception(
+              "failed",
+              {
+                state: "resolved",
+                resolvedAt: new Date().toISOString(),
+              },
+              { resolutionReason: "condition_cleared" },
+            ),
+          ]);
+        }
+        return list(q.get("offset") === "50" ? secondPage : firstPage, 51);
+      },
+      "GET /assurance/policies": list([POLICY]),
+    });
+    await openPage(page);
+    await expect(page.getByTestId("assurance-exception")).toHaveCount(50);
+    await root(page).getByRole("button", { name: "Next" }).click();
+    await expect(page.getByTestId("assurance-exception")).toHaveCount(1);
+    await expect(root(page)).toContainText("51–51 of 51");
+
+    await root(page).getByRole("button", { name: "Resolved" }).click();
+    await expect(page.getByTestId("assurance-exception")).toHaveCount(1);
+    await expect(page.getByTestId("assurance-exception")).toContainText(
+      "the condition cleared",
+    );
+    const exCalls = calls.filter((c) => c.path === "/assurance/exceptions");
+    for (const c of exCalls) {
+      // Every list request names its state, limit and offset explicitly.
+      expect(c.search).toMatch(/state=(open|resolved)/);
+      expect(c.search).toContain("limit=50");
+      expect(c.search).toMatch(/offset=\d+/);
+    }
+    expect(exCalls.map((c) => c.search)).toEqual([
+      "?state=open&limit=50&offset=0",
+      "?state=open&limit=50&offset=50",
+      "?state=resolved&limit=50&offset=0",
+    ]);
+  });
+
+  test("a page that emptied on refresh moves back to the last page instead of claiming none", async ({
+    page,
+  }) => {
+    let total = 51;
+    await stubAssurance(page, {
+      "GET /assurance/status": {
+        body: { data: status({ open: counts({ failed: total }) }) },
+      },
+      "GET /assurance/exceptions": (req) => {
+        const offset = new URL(req.url()).searchParams.get("offset");
+        const rows = Array.from(
+          { length: Math.max(0, Math.min(50, total - Number(offset))) },
+          () => exception("failed"),
+        );
+        return list(rows, total);
+      },
+      "GET /assurance/policies": list([POLICY]),
+    });
+    await openPage(page);
+    await root(page).getByRole("button", { name: "Next" }).click();
+    await expect(page.getByTestId("assurance-exception")).toHaveCount(1);
+
+    total = 50; // the one row on page two resolved
+    await root(page).getByRole("button", { name: "Refresh" }).click();
+    await expect(page.getByTestId("assurance-exception")).toHaveCount(50);
+    await expect(page.getByTestId("assurance-no-open")).toHaveCount(0);
+  });
+
+  test("a slow reply for the previous tab cannot replace the current one", async ({
+    page,
+  }) => {
+    let releaseOpen: () => void = () => {};
+    const openGate = new Promise<void>((r) => {
+      releaseOpen = r;
+    });
+    let openCalls = 0;
+    await stubAssurance(page, {
+      "GET /assurance/status": {
+        body: { data: status({ open: counts({ failed: 1 }) }) },
+      },
+      "GET /assurance/exceptions": (req) =>
+        new URL(req.url()).searchParams.get("state") === "resolved"
+          ? list([
+              exception("paused", {
+                state: "resolved",
+                resolvedAt: new Date().toISOString(),
+              }),
+            ])
+          : list([exception("failed")]),
+      "GET /assurance/policies": list([POLICY]),
+    });
+    // Registered after the stub, so it runs first (Playwright runs the most
+    // recently added matching route first) and holds the second Open reply.
+    await page.route("**/api/v1/velero/assurance/exceptions**", async (route) => {
+      const state = new URL(route.request().url()).searchParams.get("state");
+      if (state === "open" && ++openCalls === 2) await openGate;
+      await route.fallback();
+    });
+    await openPage(page);
+    await expect(page.getByTestId("assurance-exception")).toHaveCount(1);
+    const toggle = root(page);
+    // Resolved -> Open (held) -> Resolved: the held Open reply lands last.
+    await toggle.getByRole("button", { name: "Resolved" }).click();
+    await expect(page.getByTestId("assurance-group-paused")).toBeVisible();
+    await toggle.getByRole("button", { name: "Open", exact: true }).click();
+    await toggle.getByRole("button", { name: "Resolved" }).click();
+    await expect(page.getByTestId("assurance-group-paused")).toBeVisible();
+    releaseOpen();
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId("assurance-group-paused")).toBeVisible();
+    await expect(page.getByTestId("assurance-group-failed")).toHaveCount(0);
+  });
+
+  test("a populated page still exposes no restore trigger", async ({ page }) => {
+    await stubAssurance(page, {
+      "GET /assurance/status": {
+        body: { data: status({ open: counts({ failed: 1, overdue: 1 }) }) },
+      },
+      "GET /assurance/exceptions": list([
+        exception("failed", {}, { failureReason: "restore of item failed" }),
+        exception("overdue"),
+      ]),
+      "GET /assurance/policies": list([POLICY]),
+    });
+    await openPage(page);
+    await expect(page.getByTestId("assurance-exception")).toHaveCount(2);
+    await page
+      .getByTestId("assurance-policy-row")
+      .getByRole("button", { name: "Edit" })
+      .click();
+    await expect(policyForm(page)).toBeVisible();
+    await expect(
+      root(page).getByRole("button", { name: /restore|rehears/i }),
+    ).toHaveCount(0);
+    await expect(
+      root(page).getByRole("link", { name: /restore|rehears/i }),
+    ).toHaveCount(0);
+    await expect(root(page).locator('a[href*="restore"]')).toHaveCount(0);
+  });
+});
+
+test.describe("Backup assurance policy editing (stubbed, success paths)", () => {
+  test("creating a namespace policy sends seconds and no schedule name", async ({
+    page,
+  }) => {
+    let body: Record<string, unknown> | undefined;
+    let created = false;
+    const calls = await stubAssurance(page, {
+      "GET /assurance/status": { body: { data: status() } },
+      "GET /assurance/exceptions": list([]),
+      "GET /assurance/policies": () => list(created ? [POLICY] : []),
+      "POST /assurance/policies": (req) => {
+        body = req.postDataJSON();
+        created = true;
+        return { status: 201, body: { data: POLICY } };
+      },
+    });
+    await openPage(page);
+    await page.getByRole("button", { name: "Add policy" }).click();
+    await policyForm(page)
+      .getByLabel("Scope", { exact: true })
+      .selectOption("namespace");
+    await policyForm(page)
+      .getByLabel("Namespace", { exact: true })
+      .fill("velero");
+    await policyForm(page).getByLabel("Maximum age (minutes)").fill("90");
+    await policyForm(page).getByLabel("Grace (minutes)").fill("15");
+    await policyForm(page)
+      .getByLabel("Treat PartiallyFailed as")
+      .selectOption("success");
+    await page.getByRole("button", { name: "Create policy" }).click();
+
+    await expect(page.getByTestId("assurance-notice")).toContainText(
+      "Policy created",
+    );
+    expect(body).toEqual({
+      scopeKind: "namespace",
+      scopeNamespace: "velero",
+      scopeName: "",
+      maxAgeSeconds: 5400,
+      graceSeconds: 900,
+      treatPartialAs: "success",
+      alertOnPaused: true,
+      enabled: true,
+    });
+    await expect(page.getByTestId("assurance-policy-row")).toHaveCount(1);
+    expect(
+      calls.filter((c) => c.method === "GET" && c.path === "/assurance/policies")
+        .length,
+    ).toBeGreaterThan(1);
+  });
+
+  test("saving an edit sends the revision and mutable fields only", async ({
+    page,
+  }) => {
+    let body: Record<string, unknown> | undefined;
+    await stubAssurance(page, {
+      "GET /assurance/status": { body: { data: status() } },
+      "GET /assurance/exceptions": list([]),
+      "GET /assurance/policies": list([POLICY]),
+      [`PUT /assurance/policies/${POLICY.id}`]: (req) => {
+        body = req.postDataJSON();
+        return { body: { data: { ...POLICY, revision: 4 } } };
+      },
+    });
+    await openPage(page);
+    await page
+      .getByTestId("assurance-policy-row")
+      .getByRole("button", { name: "Edit" })
+      .click();
+    await expect(
+      policyForm(page).getByLabel("Namespace", { exact: true }),
+    ).toBeDisabled();
+    await policyForm(page).getByLabel("Maximum age (minutes)").fill("720");
+    await policyForm(page).getByLabel("Enabled", { exact: true }).uncheck();
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect(page.getByTestId("assurance-notice")).toHaveText(
+      "Policy saved.",
+    );
+    expect(body).toEqual({
+      revision: 3,
+      maxAgeSeconds: 43_200,
+      graceSeconds: 3_600,
+      treatPartialAs: "failure",
+      alertOnPaused: true,
+      enabled: false,
+    });
+  });
+
+  test("Reload policy after a conflict reopens the form with the current values", async ({
+    page,
+  }) => {
+    let reloaded = false;
+    await stubAssurance(page, {
+      "GET /assurance/status": { body: { data: status() } },
+      "GET /assurance/exceptions": list([]),
+      "GET /assurance/policies": () =>
+        list([reloaded ? { ...POLICY, revision: 4, maxAgeSeconds: 7_200 } : POLICY]),
+      [`PUT /assurance/policies/${POLICY.id}`]: () => {
+        reloaded = true;
+        return errorReply(409, "revision_conflict", "changed");
+      },
+    });
+    await openPage(page);
+    await page
+      .getByTestId("assurance-policy-row")
+      .getByRole("button", { name: "Edit" })
+      .click();
+    await policyForm(page).getByLabel("Maximum age (minutes)").fill("720");
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await page.getByRole("button", { name: "Reload policy" }).click();
+
+    await expect(page.getByTestId("assurance-notice")).toContainText(
+      "Reloaded the current values",
+    );
+    await expect(
+      policyForm(page).getByLabel("Maximum age (minutes)"),
+    ).toHaveValue("120");
+    await expect(page.getByTestId("assurance-policy-form-error")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Save changes" }),
+    ).toBeEnabled();
+  });
+
+  for (const [reply, expected] of [
+    [
+      errorReply(409, "policy_exists", "exists"),
+      "A policy already exists for this scope",
+    ],
+    [
+      errorReply(400, "scope_immutable", "immutable"),
+      "A policy's scope cannot be changed",
+    ],
+    [
+      errorReply(403, "", "forbidden"),
+      "Only administrators can change freshness policies",
+    ],
+  ] as const) {
+    test(`a create rejected with ${reply.status} ${
+      (reply.body as { error: { reason: string } }).error.reason || "forbidden"
+    } explains why`, async ({ page }) => {
+      await stubAssurance(page, {
+        "GET /assurance/status": { body: { data: status() } },
+        "GET /assurance/exceptions": list([]),
+        "GET /assurance/policies": list([]),
+        "POST /assurance/policies": reply,
+      });
+      await openPage(page);
+      await page.getByRole("button", { name: "Add policy" }).click();
+      await policyForm(page)
+        .getByLabel("Namespace", { exact: true })
+        .fill("velero");
+      await policyForm(page)
+        .getByLabel("Schedule", { exact: true })
+        .fill("nightly");
+      await page.getByRole("button", { name: "Create policy" }).click();
+      await expect(
+        page.getByTestId("assurance-policy-form-error"),
+      ).toContainText(expected);
+    });
+  }
+
+  test("a failed confirmed delete keeps the dialog open with the error", async ({
+    page,
+  }) => {
+    await stubAssurance(page, {
+      "GET /assurance/status": { body: { data: status() } },
+      "GET /assurance/exceptions": list([]),
+      "GET /assurance/policies": list([POLICY]),
+      [`DELETE /assurance/policies/${POLICY.id}`]: (req) =>
+        new URL(req.url()).searchParams.get("confirm") === "true"
+          ? errorReply(500, "", "failed to delete backup assurance policy")
+          : errorReply(400, "confirmation_required", "confirm", {
+              openExceptions: 1,
+            }),
+    });
+    await openPage(page);
+    await page
+      .getByTestId("assurance-policy-row")
+      .getByRole("button", { name: "Delete" })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("1 open exception will be discarded");
+    await dialog.getByRole("textbox").fill(POLICY.scopeName);
+    await dialog.getByRole("button", { name: "Delete policy" }).click();
+    await expect(dialog).toContainText(
+      "failed to delete backup assurance policy",
+    );
+    await expect(page.getByTestId("assurance-policy-row")).toHaveCount(1);
   });
 });

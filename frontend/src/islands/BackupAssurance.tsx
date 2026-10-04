@@ -24,8 +24,11 @@
 
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
+import { Input } from "@/components/ui/Input.tsx";
+import { Select } from "@/components/ui/Select.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ApiError, api, apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import {
@@ -349,6 +352,8 @@ function ExceptionCard({ ex }: { ex: AssuranceException }) {
       class="rounded-lg border border-border-subtle bg-surface p-4"
       data-testid="assurance-exception"
       data-condition={ex.condition}
+      data-exception-id={ex.id}
+      data-policy-id={ex.policyId}
     >
       <div class="flex flex-wrap items-center gap-2">
         <Chip
@@ -567,17 +572,19 @@ const FIELD_LABELS: Record<string, string> = {
   revision: "Revision",
 };
 
-const INPUT_CLASS =
-  "w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary disabled:opacity-60";
+const SCOPE_OPTIONS = [
+  { value: "schedule", label: "Schedule" },
+  { value: "namespace", label: "Namespace" },
+  { value: "cluster", label: "Cluster" },
+];
 
-function FieldError({ id, message }: { id: string; message?: string }) {
-  if (!message) return null;
-  return (
-    <p id={id} class="mt-1 text-xs text-error" role="alert">
-      {message}
-    </p>
-  );
-}
+const PARTIAL_OPTIONS = [
+  { value: "failure", label: "Failure (opens an exception)" },
+  {
+    value: "success",
+    label: "Success (still shown as partial, never as a plain success)",
+  },
+];
 
 function PolicyEditor({
   editing,
@@ -603,16 +610,10 @@ function PolicyEditor({
   onReload: () => void;
 }) {
   const creating = editing === null;
-  const ids = {
-    kind: "assurance-policy-scope-kind",
-    ns: "assurance-policy-namespace",
-    name: "assurance-policy-schedule",
-    maxAge: "assurance-policy-max-age",
-    grace: "assurance-policy-grace",
-    partial: "assurance-policy-partial",
-  };
   const maxAgeSec = minutesToSeconds(form.maxAgeMinutes);
   const graceSec = minutesToSeconds(form.graceMinutes);
+  const value = (e: Event) =>
+    (e.target as HTMLInputElement | HTMLSelectElement).value;
   return (
     <form
       class="rounded-lg border border-border-subtle bg-surface p-4"
@@ -639,184 +640,79 @@ function PolicyEditor({
         </p>
       )}
       <div class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div>
-          <label
-            for={ids.kind}
-            class="block text-xs font-medium text-text-secondary"
-          >
-            Scope
-          </label>
-          <select
-            id={ids.kind}
-            class={INPUT_CLASS}
-            value={form.scopeKind}
-            disabled={!creating}
-            onChange={(e) =>
-              onChange({
-                scopeKind: (e.target as HTMLSelectElement)
-                  .value as AssuranceScopeKind,
-              })
-            }
-          >
-            <option value="schedule">Schedule</option>
-            <option value="namespace">Namespace</option>
-            <option value="cluster">Cluster</option>
-          </select>
-          <FieldError
-            id={`${ids.kind}-error`}
-            message={fieldErrors.scopeKind}
-          />
-        </div>
+        <Select
+          id="assurance-policy-scope-kind"
+          label="Scope"
+          options={SCOPE_OPTIONS}
+          value={form.scopeKind}
+          disabled={!creating}
+          error={fieldErrors.scopeKind}
+          onChange={(e) =>
+            onChange({ scopeKind: value(e) as AssuranceScopeKind })
+          }
+        />
         {form.scopeKind !== "cluster" && (
-          <div>
-            <label
-              for={ids.ns}
-              class="block text-xs font-medium text-text-secondary"
-            >
-              Namespace
-            </label>
-            <input
-              id={ids.ns}
-              class={INPUT_CLASS}
-              value={form.scopeNamespace}
-              disabled={!creating}
-              aria-invalid={fieldErrors.scopeNamespace ? "true" : undefined}
-              aria-describedby={
-                fieldErrors.scopeNamespace ? `${ids.ns}-error` : undefined
-              }
-              onInput={(e) =>
-                onChange({
-                  scopeNamespace: (e.target as HTMLInputElement).value,
-                })
-              }
-            />
-            <FieldError
-              id={`${ids.ns}-error`}
-              message={fieldErrors.scopeNamespace}
-            />
-          </div>
+          <Input
+            id="assurance-policy-namespace"
+            label="Namespace"
+            value={form.scopeNamespace}
+            disabled={!creating}
+            error={fieldErrors.scopeNamespace}
+            onInput={(e) => onChange({ scopeNamespace: value(e) })}
+          />
         )}
         {form.scopeKind === "schedule" && (
-          <div>
-            <label
-              for={ids.name}
-              class="block text-xs font-medium text-text-secondary"
-            >
-              Schedule
-            </label>
-            <input
-              id={ids.name}
-              class={INPUT_CLASS}
-              value={form.scopeName}
-              disabled={!creating}
-              aria-invalid={fieldErrors.scopeName ? "true" : undefined}
-              aria-describedby={
-                fieldErrors.scopeName ? `${ids.name}-error` : undefined
-              }
-              onInput={(e) =>
-                onChange({ scopeName: (e.target as HTMLInputElement).value })
-              }
-            />
-            <FieldError
-              id={`${ids.name}-error`}
-              message={fieldErrors.scopeName}
-            />
-          </div>
+          <Input
+            id="assurance-policy-schedule"
+            label="Schedule"
+            value={form.scopeName}
+            disabled={!creating}
+            error={fieldErrors.scopeName}
+            onInput={(e) => onChange({ scopeName: value(e) })}
+          />
         )}
       </div>
       <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div>
-          <label
-            for={ids.maxAge}
-            class="block text-xs font-medium text-text-secondary"
-          >
-            Maximum age (minutes)
-          </label>
-          <input
-            id={ids.maxAge}
-            type="number"
-            min={MIN_MAX_AGE_SECONDS / 60}
-            step="any"
-            class={INPUT_CLASS}
-            value={form.maxAgeMinutes}
-            aria-invalid={fieldErrors.maxAgeSeconds ? "true" : undefined}
-            aria-describedby={`${ids.maxAge}-hint${
-              fieldErrors.maxAgeSeconds ? ` ${ids.maxAge}-error` : ""
-            }`}
-            onInput={(e) =>
-              onChange({ maxAgeMinutes: (e.target as HTMLInputElement).value })
-            }
-          />
-          <p id={`${ids.maxAge}-hint`} class="mt-1 text-xs text-text-muted">
-            {maxAgeSec !== null && maxAgeSec > 0
+        <Input
+          id="assurance-policy-max-age"
+          label="Maximum age (minutes)"
+          type="number"
+          min={MIN_MAX_AGE_SECONDS / 60}
+          step="any"
+          value={form.maxAgeMinutes}
+          error={fieldErrors.maxAgeSeconds}
+          description={
+            maxAgeSec !== null && maxAgeSec > 0
               ? `${formatSeconds(maxAgeSec)} without a successful backup opens an exception (after grace).`
-              : `At least ${MIN_MAX_AGE_SECONDS / 60} minutes.`}
-          </p>
-          <FieldError
-            id={`${ids.maxAge}-error`}
-            message={fieldErrors.maxAgeSeconds}
-          />
-        </div>
-        <div>
-          <label
-            for={ids.grace}
-            class="block text-xs font-medium text-text-secondary"
-          >
-            Grace (minutes)
-          </label>
-          <input
-            id={ids.grace}
-            type="number"
-            min={0}
-            step="any"
-            class={INPUT_CLASS}
-            value={form.graceMinutes}
-            aria-invalid={fieldErrors.graceSeconds ? "true" : undefined}
-            aria-describedby={`${ids.grace}-hint${
-              fieldErrors.graceSeconds ? ` ${ids.grace}-error` : ""
-            }`}
-            onInput={(e) =>
-              onChange({ graceMinutes: (e.target as HTMLInputElement).value })
-            }
-          />
-          <p id={`${ids.grace}-hint`} class="mt-1 text-xs text-text-muted">
-            {graceSec !== null && graceSec >= 0
+              : `At least ${MIN_MAX_AGE_SECONDS / 60} minutes.`
+          }
+          onInput={(e) => onChange({ maxAgeMinutes: value(e) })}
+        />
+        <Input
+          id="assurance-policy-grace"
+          label="Grace (minutes)"
+          type="number"
+          min={0}
+          step="any"
+          value={form.graceMinutes}
+          error={fieldErrors.graceSeconds}
+          description={
+            graceSec !== null && graceSec >= 0
               ? `${formatSeconds(graceSec)} of slack for late runs and clock changes.`
-              : "Slack for late runs and clock changes."}
-          </p>
-          <FieldError
-            id={`${ids.grace}-error`}
-            message={fieldErrors.graceSeconds}
-          />
-        </div>
-        <div>
-          <label
-            for={ids.partial}
-            class="block text-xs font-medium text-text-secondary"
-          >
-            Treat PartiallyFailed as
-          </label>
-          <select
-            id={ids.partial}
-            class={INPUT_CLASS}
-            value={form.treatPartialAs}
-            onChange={(e) =>
-              onChange({
-                treatPartialAs: (e.target as HTMLSelectElement)
-                  .value as TreatPartialAs,
-              })
-            }
-          >
-            <option value="failure">Failure (opens an exception)</option>
-            <option value="success">
-              Success (still shown as partial, never as a plain success)
-            </option>
-          </select>
-          <FieldError
-            id={`${ids.partial}-error`}
-            message={fieldErrors.treatPartialAs}
-          />
-        </div>
+              : "Slack for late runs and clock changes."
+          }
+          onInput={(e) => onChange({ graceMinutes: value(e) })}
+        />
+        <Select
+          id="assurance-policy-partial"
+          label="Treat PartiallyFailed as"
+          options={PARTIAL_OPTIONS}
+          value={form.treatPartialAs}
+          error={fieldErrors.treatPartialAs}
+          onChange={(e) =>
+            onChange({ treatPartialAs: value(e) as TreatPartialAs })
+          }
+        />
       </div>
       <div class="mt-4 flex flex-wrap gap-6 text-sm text-text-secondary">
         <label class="inline-flex items-center gap-2">
@@ -844,22 +740,24 @@ function PolicyEditor({
       </div>
       {formError && (
         <div
-          class="mt-4 rounded-md bg-error-dim px-3 py-2 text-sm text-error"
+          class="mt-4"
           role="alert"
           data-testid="assurance-policy-form-error"
         >
-          {formError}
-          {conflict && (
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              class="ml-3"
-              onClick={onReload}
-            >
-              Reload policy
-            </Button>
-          )}
+          <Alert variant="error">
+            {formError}
+            {conflict && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                class="ml-3"
+                onClick={onReload}
+              >
+                Reload policy
+              </Button>
+            )}
+          </Alert>
         </div>
       )}
       <div class="mt-4 flex justify-end gap-2">
@@ -1022,10 +920,18 @@ export default function BackupAssurance() {
   const deleteError = useSignal<string | null>(null);
   const notice = useSignal<string | null>(null);
 
-  /** Bumped per load so a late reply cannot overwrite a newer one. */
-  const generation = useRef(0);
+  /**
+   * One counter per request stream. Each call takes the next ticket and
+   * applies its reply only while it still holds the latest one, so a slow
+   * reply to an earlier status load, page or Open/Resolved toggle can never
+   * overwrite a newer one.
+   */
+  const statusTicket = useRef(0);
+  const exTicket = useRef(0);
+  const policyTicket = useRef(0);
 
-  async function loadExceptions(gen: number) {
+  async function loadExceptions(): Promise<void> {
+    const ticket = ++exTicket.current;
     exLoading.value = true;
     try {
       const qs = new URLSearchParams({
@@ -1036,40 +942,53 @@ export default function BackupAssurance() {
       const res = await apiGet<AssuranceException[]>(
         `${BASE}/exceptions?${qs.toString()}`,
       );
-      if (gen !== generation.current) return;
-      exceptions.value = Array.isArray(res.data) ? res.data : [];
-      exTotal.value = res.metadata?.total ?? exceptions.value.length;
+      if (ticket !== exTicket.current) return;
+      const rows = Array.isArray(res.data) ? res.data : [];
+      const total = res.metadata?.total ?? rows.length;
+      if (rows.length === 0 && total > 0 && exOffset.value > 0) {
+        // The list shrank below the page being shown (a refresh, a resolved
+        // exception or a deleted policy). Move to the last page that exists
+        // instead of rendering an empty page as "no exceptions".
+        exOffset.value =
+          Math.floor((total - 1) / EXCEPTION_PAGE_SIZE) * EXCEPTION_PAGE_SIZE;
+        await loadExceptions();
+        return;
+      }
+      exceptions.value = rows;
+      exTotal.value = total;
       exFailure.value = null;
     } catch (err) {
-      if (gen !== generation.current) return;
+      if (ticket !== exTicket.current) return;
       exceptions.value = [];
       exTotal.value = 0;
       exFailure.value = toFailure(err);
     } finally {
-      if (gen === generation.current) exLoading.value = false;
+      if (ticket === exTicket.current) exLoading.value = false;
     }
   }
 
-  async function loadPolicies(gen: number) {
+  async function loadPolicies(): Promise<void> {
+    const ticket = ++policyTicket.current;
     try {
       const res = await apiGet<AssurancePolicy[]>(`${BASE}/policies`);
-      if (gen !== generation.current) return;
+      if (ticket !== policyTicket.current) return;
       policies.value = Array.isArray(res.data) ? res.data : [];
       policiesFailure.value = null;
     } catch (err) {
-      if (gen !== generation.current) return;
+      if (ticket !== policyTicket.current) return;
       policies.value = null;
       policiesFailure.value = toFailure(err);
     }
   }
 
-  async function loadAll() {
-    const gen = ++generation.current;
+  async function loadAll(): Promise<void> {
+    const ticket = ++statusTicket.current;
+    loading.value = true;
     const [statusRes, veleroRes] = await Promise.allSettled([
       apiGet<AssuranceStatus>(`${BASE}/status`),
       apiGet<VeleroStatus>("/v1/velero/status"),
     ]);
-    if (gen !== generation.current) return;
+    if (ticket !== statusTicket.current) return;
 
     veleroDetected.value =
       veleroRes.status === "fulfilled" &&
@@ -1080,7 +999,13 @@ export default function BackupAssurance() {
     if (statusRes.status === "rejected") {
       status.value = null;
       statusFailure.value = toFailure(statusRes.reason);
+      // Invalidate any list request still in flight: nothing below the
+      // failed status is shown, and none of it may land later.
+      exTicket.current++;
+      policyTicket.current++;
       exceptions.value = [];
+      exTotal.value = 0;
+      exLoading.value = false;
       policies.value = null;
       loading.value = false;
       return;
@@ -1092,10 +1017,10 @@ export default function BackupAssurance() {
     // server's own answer to "may this caller manage policies".
     const admin = status.value?.runtime !== undefined;
     await Promise.all([
-      loadExceptions(gen),
-      admin ? loadPolicies(gen) : Promise.resolve(),
+      loadExceptions(),
+      admin ? loadPolicies() : Promise.resolve(),
     ]);
-    if (gen === generation.current) loading.value = false;
+    if (ticket === statusTicket.current) loading.value = false;
   }
 
   useEffect(() => {
@@ -1113,16 +1038,15 @@ export default function BackupAssurance() {
   const state = surfaceStateFor(status.value, failure?.status);
 
   function changePage(delta: number) {
-    const next = Math.max(0, exOffset.value + delta * EXCEPTION_PAGE_SIZE);
-    exOffset.value = next;
-    loadExceptions(generation.current);
+    exOffset.value = Math.max(0, exOffset.value + delta * EXCEPTION_PAGE_SIZE);
+    loadExceptions();
   }
 
   function switchExState(next: AssuranceExceptionState) {
     if (exState.value === next) return;
     exState.value = next;
     exOffset.value = 0;
-    loadExceptions(generation.current);
+    loadExceptions();
   }
 
   function openCreate() {
@@ -1152,7 +1076,7 @@ export default function BackupAssurance() {
 
   async function reloadEditedPolicy() {
     const current = editing.value;
-    await loadPolicies(generation.current);
+    await loadPolicies();
     const fresh = policies.value?.find((p) => p.id === current?.id);
     if (fresh) {
       openEdit(fresh);
@@ -1241,7 +1165,7 @@ export default function BackupAssurance() {
           break;
         case ASSURANCE_REASONS.policyNotFound:
           formError.value = "This policy no longer exists.";
-          await loadPolicies(generation.current);
+          await loadPolicies();
           break;
         case ASSURANCE_REASONS.scopeImmutable:
           formError.value =
@@ -1283,7 +1207,7 @@ export default function BackupAssurance() {
         };
       } else if (fail.reason === ASSURANCE_REASONS.policyNotFound) {
         notice.value = "That policy no longer exists.";
-        await loadPolicies(generation.current);
+        await loadPolicies();
       } else {
         notice.value = fail.message;
       }
@@ -1311,7 +1235,7 @@ export default function BackupAssurance() {
       if (fail.reason === ASSURANCE_REASONS.policyNotFound) {
         deleteTarget.value = null;
         notice.value = "That policy no longer exists.";
-        await loadPolicies(generation.current);
+        await loadPolicies();
       } else {
         deleteError.value = fail.message;
       }
@@ -1479,7 +1403,9 @@ export default function BackupAssurance() {
               <div class="flex justify-center py-6">
                 <Spinner />
               </div>
-            ) : exceptions.value.length === 0 ? (
+            ) : exTotal.value === 0 ? (
+              // Keyed on the server's total, not the rows on this page: an
+              // empty page of a non-empty list is never "no exceptions".
               exState.value === "open" &&
               state === "ok" &&
               st.policyCount > 0 ? (
