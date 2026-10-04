@@ -585,6 +585,25 @@ var capabilityOperations = []capabilityOp{
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "list", AuthGroup: "velero.io", AuthResource: "schedules",
 	},
+	{
+		// Remote since Release E (U29b): change receipts are rows in this
+		// installation's PostgreSQL, readable for any cluster by their owner
+		// (changes/handler.go HandleList, HandleGet). Verification and ownership
+		// resolution act on the receipt's cluster: each resolves its client from
+		// the request's X-Cluster-ID through ClusterRouter.TargetFor. Every
+		// /changes route sits behind middleware.ClusterContext (pinned by
+		// TestRoutes_ChangesRemoteClusterIsAdminGated), so any request that
+		// names a non-local cluster is admin-only, exactly like every other
+		// remote operation here.
+		// A receipt is only verified against the cluster and registration
+		// generation it recorded (changes/handler.go currentGeneration), so a
+		// delete-and-re-register cannot be verified against the wrong cluster.
+		// AuthResource configmaps stands in for the objects a receipt names (the
+		// handlers check each recorded object individually); see yaml.export.
+		ID: "changes.receipts", Label: "Tracked change receipts",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
+	},
 }
 
 // supportedFor returns the static platformSupported value for this

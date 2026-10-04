@@ -1,6 +1,10 @@
 package main
 
-import "time"
+import (
+	"time"
+
+	"github.com/kubecenter/kubecenter/internal/server"
+)
 
 // yamlRateLimit returns the per-IP budget for the shared YAML/wizard rate
 // limiter: the limiter guarding /yaml/*, /wizards/*, the secret routes, and
@@ -29,24 +33,36 @@ func yamlRateLimit(dev bool) (int, time.Duration) {
 	return 30, time.Minute
 }
 
-// changesRateLimit returns the per-IP budget for the tracked-change receipt
-// routes (/changes/*), which have their own limiter rather than the shared
-// YAML bucket.
+// changesRateLimit returns the budget of the tracked-change receipt limiter
+// (/changes/*). The limiter is keyed per authenticated user, not per IP: in the
+// default install every request reaches the backend through the frontend BFF,
+// which forwards no client address, so a per-IP bucket would be one bucket for
+// the whole installation (see middleware.RateLimitByUser).
 //
-// The UI polls GET /changes/{id}/verification every 5s (12 req/min per open
-// receipt) and lists receipts on navigation. On the shared 30/min YAML bucket
-// two open tabs would use most of the budget and starve /yaml/apply and the
-// wizard previews that produce the receipts. Reads are cheap indexed lookups,
-// so a separate 120/min bucket (room for ~8 concurrent pollers) costs little.
-// POST /changes/ownership is the one costlier route (it resolves GitOps
-// ownership for up to 50 objects) and is bounded per request by the handler's
-// object cap and 20s timeout.
+// Why a separate bucket from the shared YAML one: the UI polls
+// GET /changes/{id}/verification every 5s per open receipt, and that polling
+// must not eat the budget of /yaml/apply and the wizard previews that produce
+// the receipts.
 //
-// Dev follows the yamlRateLimit rule: the e2e suite is a single IP, so it gets
-// a 5x budget.
+// Budget arithmetic (per user, per minute). A poll is 12 req/min per open
+// receipt. It is not a cheap read: verification loads the receipt, resolves the
+// target cluster, and does one impersonated GET per recorded object (up to
+// about 100 for a large bundle) plus access checks, then persists the verdict.
+// The UI shows one receipt at a time, so the steady load is 12 req/min, and a
+// user flipping between receipts or with a second tab stays near 24-36. 60/min
+// allows about five receipts polled at once, with headroom for list/detail
+// navigation, while capping one user at 1 req/s of verification work (at most
+// ~100 GETs each) rather than the 2 req/s a 120/min bucket would allow. The
+// shared-identity worst case is therefore bounded per person, not per install.
+// POST /changes/ownership is the one other costly route (GitOps ownership for up
+// to 50 objects) and is bounded per request by the handler's object cap and 20s
+// timeout.
+//
+// Dev follows the yamlRateLimit rule: the e2e suite is one user from one IP,
+// serial with retries, so it gets 10x the production budget.
 func changesRateLimit(dev bool) (int, time.Duration) {
 	if dev {
 		return 600, time.Minute
 	}
-	return 120, time.Minute
+	return server.DefaultChangesRateLimit, time.Minute
 }

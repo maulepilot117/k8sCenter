@@ -202,6 +202,7 @@ test.describe.serial("Remote cluster capabilities", () => {
       "eso.read",
       "certmanager.certificates",
       "policy.read",
+      "changes.receipts",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");

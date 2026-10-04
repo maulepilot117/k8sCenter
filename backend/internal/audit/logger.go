@@ -50,6 +50,10 @@ const (
 	ActionESOBulkRefresh           Action = "eso_bulk_refresh"
 	ActionESOBulkRefreshNamespace  Action = "eso_bulk_refresh_namespace"
 
+	// Tracked changes (Release E): a verification verdict became final for a
+	// change receipt. See server.changesVerificationAudit.
+	ActionChangeVerify Action = "change_verify"
+
 	// Infrastructure / cross-cutting actions
 	//
 	// ActionRateLimited fires when the rate-limit middleware rejects a

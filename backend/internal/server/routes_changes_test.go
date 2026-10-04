@@ -89,11 +89,11 @@ func TestRoutes_ChangesRegisteredWhenHandlerPresent(t *testing.T) {
 
 // changesFullServer builds the production server through New so requests pass
 // the real /api/v1 stack. A nil handler leaves the changes group unregistered.
-func changesFullServer(t *testing.T, h *changes.Handler, changesLimiter, yamlLimiter *middleware.RateLimiter) (*Server, string) {
+func changesFullServer(t *testing.T, h *changes.Handler, changesLimiter, yamlLimiter *middleware.RateLimiter, mut ...func(*Deps)) (*Server, string) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tm := auth.NewTokenManager([]byte("test-signing-key-minimum-32-bytes"))
-	srv := New(Deps{
+	deps := Deps{
 		Config: &config.Config{
 			Dev:       true,
 			ClusterID: "test-cluster",
@@ -115,12 +115,27 @@ func changesFullServer(t *testing.T, h *changes.Handler, changesLimiter, yamlLim
 		ChangesRateLimiter: changesLimiter,
 		ReadyFn:            func() bool { return true },
 		ChangesHandler:     h,
-	})
-	tok, err := tm.IssueAccessToken(&auth.User{ID: "u1", Username: "u1", KubernetesUsername: "u1", Roles: []string{"admin"}})
+	}
+	for _, m := range mut {
+		m(&deps)
+	}
+	srv := New(deps)
+	return srv, changesTokenFor(t, srv, "u1", true)
+}
+
+// changesTokenFor issues an access token for a user on the server's token
+// manager. Admins get the admin role; everyone else has none.
+func changesTokenFor(t *testing.T, srv *Server, id string, admin bool) string {
+	t.Helper()
+	u := &auth.User{ID: id, Username: id, Provider: "local", KubernetesUsername: id}
+	if admin {
+		u.Roles = []string{"admin"}
+	}
+	tok, err := srv.TokenManager.IssueAccessToken(u)
 	if err != nil {
 		t.Fatalf("IssueAccessToken: %v", err)
 	}
-	return srv, tok
+	return tok
 }
 
 func changesSend(srv *Server, tok, method, path string, csrf bool) int {
@@ -233,5 +248,103 @@ func TestRoutes_YAMLRoutesUnchanged(t *testing.T) {
 		if !wantYAMLRoutes[have] {
 			t.Errorf("unexpected yaml route %q", have)
 		}
+	}
+}
+
+// changesSendWith sends a request with extra headers.
+func changesSendWith(srv *Server, tok, method, path string, hdr map[string]string) int {
+	req := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	srv.Router.ServeHTTP(rec, req)
+	return rec.Code
+}
+
+// TestRoutes_ChangesRemoteClusterIsAdminGated proves the /changes routes sit
+// behind middleware.ClusterContext: a non-admin naming a remote cluster is
+// refused 403 on the two routes that act on that cluster (ownership resolution
+// and verification) and on the reads, while an admin gets through to the
+// handler and a non-admin on the local cluster is unaffected.
+func TestRoutes_ChangesRemoteClusterIsAdminGated(t *testing.T) {
+	srv, _ := changesFullServer(t, changesHandlerWithoutDB(), nil, middleware.NewRateLimiterWithRate(100, time.Minute))
+	viewer := changesTokenFor(t, srv, "viewer-1", false)
+	admin := changesTokenFor(t, srv, "admin-1", true)
+	remote := map[string]string{"X-Cluster-ID": "0123456789abcdef0123456789abcdef"}
+
+	for route := range wantChangesRoutes {
+		method, path, _ := strings.Cut(route, " ")
+		path = "/api/v1" + strings.Replace(path, "{id}", changesTestID, 1)
+		t.Run(route, func(t *testing.T) {
+			if code := changesSendWith(srv, viewer, method, path, remote); code != http.StatusForbidden {
+				t.Errorf("non-admin with a remote X-Cluster-ID: status %d, want 403", code)
+			}
+			if code := changesSendWith(srv, admin, method, path, remote); code != http.StatusServiceUnavailable {
+				t.Errorf("admin with a remote X-Cluster-ID: status %d, want 503 from the DB-less handler", code)
+			}
+			if code := changesSendWith(srv, viewer, method, path, nil); code != http.StatusServiceUnavailable {
+				t.Errorf("non-admin on the local cluster: status %d, want 503 from the DB-less handler", code)
+			}
+		})
+	}
+}
+
+// TestRoutes_ChangesRateLimitIsPerUser proves two users arriving from the same
+// socket IP (every web user behind the frontend BFF) do not share a bucket.
+func TestRoutes_ChangesRateLimitIsPerUser(t *testing.T) {
+	srv, _ := changesFullServer(t, changesHandlerWithoutDB(), middleware.NewRateLimiterWithRate(1, time.Minute),
+		middleware.NewRateLimiterWithRate(100, time.Minute))
+	alice := changesTokenFor(t, srv, "alice", false)
+	bob := changesTokenFor(t, srv, "bob", false)
+	path := "/api/v1/changes/" + changesTestID + "/verification"
+
+	// httptest gives every request the same RemoteAddr.
+	if code := changesSend(srv, alice, http.MethodGet, path, false); code != http.StatusServiceUnavailable {
+		t.Fatalf("alice first: %d, want 503", code)
+	}
+	if code := changesSend(srv, alice, http.MethodGet, path, false); code != http.StatusTooManyRequests {
+		t.Fatalf("alice second: %d, want 429", code)
+	}
+	if code := changesSend(srv, bob, http.MethodGet, path, false); code != http.StatusServiceUnavailable {
+		t.Fatalf("bob first from the same IP: %d, want 503 (his own bucket)", code)
+	}
+}
+
+// TestRoutes_ChangesUnwiredLimiterNeverUsesYAMLBucket: if main.go stops passing
+// ChangesRateLimiter, /changes still gets its own limiter; polling must not
+// silently draw on the 30/min YAML bucket.
+func TestRoutes_ChangesUnwiredLimiterNeverUsesYAMLBucket(t *testing.T) {
+	yamlLimiter := middleware.NewRateLimiterWithRate(1, time.Minute)
+	srv, tok := changesFullServer(t, changesHandlerWithoutDB(), nil, yamlLimiter)
+	path := "/api/v1/changes/" + changesTestID + "/verification"
+
+	for i := range 3 {
+		if code := changesSend(srv, tok, http.MethodGet, path, false); code != http.StatusServiceUnavailable {
+			t.Fatalf("poll %d: status %d, want 503", i+1, code)
+		}
+	}
+	if allowed, _ := yamlLimiter.Check("192.0.2.1"); !allowed {
+		t.Fatal("unwired /changes limiter consumed the YAML bucket")
+	}
+}
+
+// TestNew_ChangesServicePropagation pins the contract U30a reads: a nil
+// ChangesService stays nil ("tracked apply unavailable"), a non-nil one is
+// copied through server.New.
+func TestNew_ChangesServicePropagation(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	srv, _ := changesFullServer(t, nil, nil, nil)
+	if srv.ChangesService != nil {
+		t.Errorf("ChangesService = %v with none in Deps; want nil", srv.ChangesService)
+	}
+
+	svc := changes.NewService(nil, logger)
+	srv, _ = changesFullServer(t, nil, nil, nil, func(d *Deps) { d.ChangesService = svc })
+	if srv.ChangesService != svc {
+		t.Errorf("ChangesService not propagated from Deps")
 	}
 }

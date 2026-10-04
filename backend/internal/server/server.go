@@ -76,6 +76,7 @@ type Server struct {
 	GitOpsHandler      *gitops.Handler
 	ChangesHandler     *changes.Handler
 	ChangesService     *changes.Service
+	ChangesReceipts    *store.ChangeReceiptStore
 	FluxNotifHandler   *notification.Handler
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
@@ -127,6 +128,7 @@ type Deps struct {
 	GitOpsHandler      *gitops.Handler
 	ChangesHandler     *changes.Handler
 	ChangesService     *changes.Service
+	ChangesReceipts    *store.ChangeReceiptStore
 	FluxNotifHandler   *notification.Handler
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
@@ -298,6 +300,9 @@ func New(deps Deps) *Server {
 		s.ChangesHandler = deps.ChangesHandler
 	}
 	s.ChangesService = deps.ChangesService
+	// Read by the verification audit; stays a nil pointer (never a typed nil
+	// inside an interface) when no database is configured.
+	s.ChangesReceipts = deps.ChangesReceipts
 
 	// Notification handler
 	if deps.FluxNotifHandler != nil {

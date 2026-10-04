@@ -81,6 +81,7 @@ test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistenc
   expect([...CAPABILITY_OPERATION_IDS].sort()).toEqual([
     "alert.rules",
     "certmanager.certificates",
+    "changes.receipts",
     "cni.config",
     "dashboard.summary",
     "diagnostics.read",

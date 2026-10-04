@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 )
 
 // recordingAuditLogger captures audit entries for assertion in tests.
@@ -280,5 +281,81 @@ func TestRateLimit_AuditLoggerNotInvokedOn200(t *testing.T) {
 
 	if got := rec.snapshot(); len(got) != 0 {
 		t.Fatalf("expected 0 audit entries for under-limit traffic, got %d: %+v", len(got), got)
+	}
+}
+
+func serveAs(handler http.Handler, user *auth.User, remoteAddr string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/changes/x", nil)
+	req.RemoteAddr = remoteAddr
+	if user != nil {
+		req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w
+}
+
+// TestRateLimitByUser_UsersDoNotShareBucket proves two users arriving from the
+// same socket IP (every web user behind the frontend BFF) each get their own
+// budget, and that one user exhausting theirs does not block the other.
+func TestRateLimitByUser_UsersDoNotShareBucket(t *testing.T) {
+	rl := NewRateLimiterWithRate(2, time.Minute)
+	handler := RateLimitByUser(rl, "changes")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	const bff = "10.1.2.3:4000"
+	alice := &auth.User{ID: "alice-id", Username: "alice", Provider: "local"}
+	bob := &auth.User{ID: "bob-id", Username: "bob", Provider: "local"}
+
+	for i := range 2 {
+		if w := serveAs(handler, alice, bff); w.Code != http.StatusOK {
+			t.Fatalf("alice request %d: %d, want 200", i+1, w.Code)
+		}
+	}
+	if w := serveAs(handler, alice, bff); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("alice third request: %d, want 429", w.Code)
+	}
+	for i := range 2 {
+		if w := serveAs(handler, bob, bff); w.Code != http.StatusOK {
+			t.Fatalf("bob request %d from the same IP: %d, want 200 (bucket must not be shared)", i+1, w.Code)
+		}
+	}
+	// Same ID under another provider is a different person.
+	aliceLDAP := &auth.User{ID: "alice-id", Username: "alice", Provider: "ldap"}
+	if w := serveAs(handler, aliceLDAP, bff); w.Code != http.StatusOK {
+		t.Fatalf("same id, other provider: %d, want 200", w.Code)
+	}
+}
+
+// TestRateLimitByUser_FallsBackToIPWithoutUser: a route mounted without Auth in
+// front must still be limited, per IP, not left open.
+func TestRateLimitByUser_FallsBackToIPWithoutUser(t *testing.T) {
+	rl := NewRateLimiterWithRate(1, time.Minute)
+	handler := RateLimitByUser(rl, "changes")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	if w := serveAs(handler, nil, "203.0.113.9:1"); w.Code != http.StatusOK {
+		t.Fatalf("first: %d", w.Code)
+	}
+	if w := serveAs(handler, nil, "203.0.113.9:2"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second from the same IP: %d, want 429", w.Code)
+	}
+	if w := serveAs(handler, nil, "203.0.113.10:1"); w.Code != http.StatusOK {
+		t.Fatalf("other IP: %d, want 200", w.Code)
+	}
+}
+
+// TestRateLimitByUser_AuditNamesUser: the 429 audit entry names the user.
+func TestRateLimitByUser_AuditNamesUser(t *testing.T) {
+	rec := &recordingAuditLogger{}
+	rl := NewRateLimiterWithRate(1, time.Minute)
+	rl.SetAuditLogger(rec)
+	handler := RateLimitByUser(rl, "changes")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	u := &auth.User{ID: "u1", Username: "alice", Provider: "local"}
+	serveAs(handler, u, "10.0.0.1:1")
+	serveAs(handler, u, "10.0.0.1:1")
+	got := rec.snapshot()
+	if len(got) != 1 || got[0].User != "alice" || got[0].SourceIP != "10.0.0.1" {
+		t.Fatalf("audit entries = %+v; want one for alice from 10.0.0.1", got)
 	}
 }

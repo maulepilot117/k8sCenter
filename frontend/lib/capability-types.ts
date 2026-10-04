@@ -86,6 +86,7 @@ export const CAPABILITY_OPERATION_IDS = [
   "diagnostics.read",
   "policy.compliance_history",
   "velero.assurance",
+  "changes.receipts",
 ] as const;
 
 export type CapabilityOperationId = (typeof CAPABILITY_OPERATION_IDS)[number];

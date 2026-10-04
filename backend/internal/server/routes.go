@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
@@ -591,6 +593,14 @@ func (s *Server) registerPolicyRoutes(ar chi.Router) {
 	})
 }
 
+// DefaultChangesRateLimit is the per-user, per-minute budget of the /changes
+// limiter. main.go uses it for production so the fallback built when no limiter
+// is wired matches. The UI polls GET /changes/{id}/verification every 5s (12/min
+// per open receipt) and each poll does a live, impersonated read of the
+// receipt's objects, so this is deliberately not larger: 60/min allows about
+// five receipts open at once for one person.
+const DefaultChangesRateLimit = 60
+
 // registerChangesRoutes mounts the tracked-change receipt endpoints. Auth,
 // CSRF and ClusterContext are inherited from the enclosing authenticated group.
 //
@@ -600,22 +610,35 @@ func (s *Server) registerChangesRoutes(ar chi.Router) {
 	h := s.ChangesHandler
 	// A dedicated bucket, not the shared YAML one: the UI polls
 	// /changes/{id}/verification every 5s per open receipt, and that polling
-	// must neither starve /yaml/apply nor be starved by a wizard burst. Falls
-	// back to the YAML bucket, then the auth bucket, when unwired (tests).
+	// must neither starve /yaml/apply nor be starved by a wizard burst.
+	//
+	// When main.go does not pass one the group still gets its own limiter at
+	// the production budget, never the YAML or auth bucket: silently sharing
+	// those would let receipt polling starve /yaml/apply with no test failing.
 	rl := s.ChangesRateLimiter
 	if rl == nil {
-		rl = s.YAMLRateLimiter
-	}
-	if rl == nil {
-		rl = s.RateLimiter
+		if s.Logger != nil {
+			s.Logger.Warn("changes: no dedicated rate limiter wired; using a default per-user limiter")
+		}
+		rl = middleware.NewRateLimiterWithRate(DefaultChangesRateLimit, time.Minute)
 	}
 	ar.Route("/changes", func(cr chi.Router) {
-		cr.Use(middleware.RateLimit(rl))
+		// Keyed per authenticated user, not per IP: behind the frontend BFF every
+		// user shares the pod's IP, so a per-IP bucket is installation-wide. The
+		// enclosing group runs Auth before this, so the user is in the context.
+		cr.Use(middleware.RateLimitByUser(rl, "changes"))
 
 		cr.Get("/", h.HandleList)
 		cr.Post("/ownership", h.HandleResolveOwnership)
 		cr.Get("/{id}", h.HandleGet)
-		cr.Get("/{id}/verification", h.HandleVerification)
+		// The audit middleware needs {id} and the user, so it is mounted inline on
+		// the route (after routing and after the group's Auth), not on the group.
+		var receipts changesReceiptGetter
+		if s.ChangesReceipts != nil {
+			receipts = s.ChangesReceipts
+		}
+		cr.With(changesVerificationAudit(receipts, s.AuditLogger, s.Logger)).
+			Get("/{id}/verification", h.HandleVerification)
 	})
 }
 
