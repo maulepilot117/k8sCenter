@@ -214,6 +214,7 @@ test.describe.serial("Remote cluster capabilities", () => {
       "topology.graph",
       "diagnostics.read",
       "policy.compliance_history",
+      "velero.assurance",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(false);
       expect(byId.get(id)?.reasonCode, id).toBe("unsupported_platform");
