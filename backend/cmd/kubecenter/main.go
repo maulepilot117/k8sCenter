@@ -795,7 +795,11 @@ func main() {
 		notifService, cfg.ClusterID, "", logger,
 	)
 	veleroHandler.Assurance = veleroAssurance
-	go veleroAssurance.Start(ctx)
+	assuranceDone := make(chan struct{})
+	go func() {
+		defer close(assuranceDone)
+		veleroAssurance.Start(ctx)
+	}()
 
 	// External Secrets Operator integration (Phase A — observatory; Phase D
 	// — alerting + threshold annotations; Phase C — DB persistence + drift
@@ -1017,6 +1021,14 @@ func main() {
 	// Stop background checkers
 	if limitsChecker != nil {
 		limitsChecker.Stop()
+	}
+
+	// Let the assurance collector hand its lease back before the process (and
+	// the deferred DB close) goes away; Start's release is itself bounded at 2s.
+	select {
+	case <-assuranceDone:
+	case <-time.After(3 * time.Second):
+		logger.Warn("backup assurance collector did not stop in time; its lease will expire")
 	}
 
 	// Flush pending audit log entries
