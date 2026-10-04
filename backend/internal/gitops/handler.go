@@ -71,6 +71,10 @@ type Handler struct {
 type cachedApps struct {
 	apps      []NormalizedApp
 	fetchedAt time.Time
+	// failed holds, keyed by list resource, the error of each engine whose
+	// apps are missing from apps because its list failed. The list endpoint
+	// ignores it; ownership resolution must not read the gap as "no apps".
+	failed map[string]error
 }
 
 type cachedAppSetData struct {
@@ -113,11 +117,20 @@ func toolPrefixForApp(app NormalizedApp) string {
 // fetchApps returns cached application data, refreshing if stale.
 // Cache is populated using the service account; callers must RBAC-filter.
 func (h *Handler) fetchApps(ctx context.Context) ([]NormalizedApp, error) {
+	data, err := h.fetchLocal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return data.apps, nil
+}
+
+// fetchLocal is fetchApps with the per-engine list failures kept.
+func (h *Handler) fetchLocal(ctx context.Context) (*cachedApps, error) {
 	h.cacheMu.RLock()
 	if h.cachedData != nil && time.Since(h.cachedData.fetchedAt) < cacheTTL {
-		apps := h.cachedData.apps
+		data := h.cachedData
 		h.cacheMu.RUnlock()
-		return apps, nil
+		return data, nil
 	}
 	h.cacheMu.RUnlock()
 
@@ -127,8 +140,7 @@ func (h *Handler) fetchApps(ctx context.Context) ([]NormalizedApp, error) {
 	if err != nil {
 		return nil, err
 	}
-	data := result.(*cachedApps)
-	return data.apps, nil
+	return result.(*cachedApps), nil
 }
 
 // doFetch queries both engines based on discovery and merges results.
@@ -157,7 +169,9 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var r fetchResult
+			// Pre-seeded so a recovered panic reads as a failed list, never
+			// an empty one; a body that finishes overwrites it.
+			r := fetchResult{err: k8s.ErrListPanicked}
 			recoverutil.Safe(h.Logger, "gitops argo-fetch", func() {
 				r.apps, r.err = ListArgoApplications(ctx, dynClient)
 			})
@@ -172,10 +186,11 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var r fetchResult
+			// Pre-seeded as for Argo, here and for each inner list.
+			r := fetchResult{err: k8s.ErrListPanicked}
 			recoverutil.Safe(h.Logger, "gitops flux-fetch", func() {
 				var ks, hr []NormalizedApp
-				var ksErr, hrErr error
+				ksErr, hrErr := k8s.ErrListPanicked, k8s.ErrListPanicked
 				var inner sync.WaitGroup
 				inner.Add(2)
 				go func() {
@@ -191,10 +206,13 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 					})
 				}()
 				inner.Wait()
-				if ksErr != nil {
+				switch {
+				case ksErr != nil:
 					r.err = ksErr
-				} else if hrErr != nil {
+				case hrErr != nil:
 					r.err = hrErr
+				default:
+					r.err = nil
 				}
 				r.apps = append(ks, hr...)
 			})
@@ -209,14 +227,19 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 	ar := <-argoCh
 	fr := <-fluxCh
 
+	failed := map[string]error{}
 	if ar.err != nil {
 		h.Logger.Warn("argocd fetch error", "error", ar.err)
+		failed[ArgoApplicationGVR.Resource] = ar.err
 	} else {
 		allApps = append(allApps, ar.apps...)
 	}
 
 	if fr.err != nil {
 		h.Logger.Warn("flux fetch error", "error", fr.err)
+		// Either Flux list failing drops every Flux app, Kustomizations
+		// included, so the Kustomization view is the one that is incomplete.
+		failed[FluxKustomizationGVR.Resource] = fr.err
 	} else {
 		allApps = append(allApps, fr.apps...)
 	}
@@ -224,11 +247,15 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 	data := &cachedApps{
 		apps:      allApps,
 		fetchedAt: time.Now(),
+		failed:    failed,
 	}
 
-	// Only write cache if no invalidation occurred during fetch.
+	// Only write cache if no invalidation occurred during fetch, and not
+	// when the first caller's context ended mid-fetch: its lists failed for
+	// that caller's reasons, not the cluster's, and caching them would show
+	// every user an empty view for cacheTTL.
 	h.cacheMu.Lock()
-	if h.cacheGen == gen {
+	if h.cacheGen == gen && ctx.Err() == nil {
 		h.cachedData = data
 	}
 	h.cacheMu.Unlock()
@@ -374,42 +401,70 @@ func (h *Handler) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 
 // filterAppsByRBAC removes apps the user cannot access.
 func (h *Handler) filterAppsByRBAC(ctx context.Context, user *auth.User, apps []NormalizedApp) []NormalizedApp {
-	// Cache RBAC decisions keyed by tool prefix + namespace
+	return h.visibleApps(ctx, middleware.ClusterIDFromContext(ctx), user, apps).apps
+}
+
+// appVisibility is the full answer of the RBAC filter: the apps the user may
+// list, and per tool prefix how many were hidden by a denial and how many
+// because the access check itself failed. A failed check is not a denial
+// (see resources.NewErroringAccessChecker); callers that only need the list
+// use filterAppsByRBAC, which drops both.
+type appVisibility struct {
+	apps   []NormalizedApp
+	denied map[string]int
+	failed map[string]int
+}
+
+// visibleApps applies the RBAC filter on clusterID: a cluster-scoped app is
+// admin-only, a namespaced one needs list on its tool's resource in its
+// namespace. Decisions are memoized per (tool prefix, namespace).
+func (h *Handler) visibleApps(ctx context.Context, clusterID string, user *auth.User, apps []NormalizedApp) appVisibility {
 	type accessKey struct {
 		prefix    string
 		namespace string
 	}
-	access := make(map[accessKey]bool)
-	var filtered []NormalizedApp
+	type decision struct {
+		allowed bool
+		failed  bool
+	}
+	access := make(map[accessKey]decision)
+	v := appVisibility{denied: map[string]int{}, failed: map[string]int{}}
 
 	for _, app := range apps {
+		prefix := toolPrefixForApp(app)
 		ns := app.Namespace
 		if ns == "" {
 			if auth.IsAdmin(user) {
-				filtered = append(filtered, app)
+				v.apps = append(v.apps, app)
+			} else {
+				v.denied[prefix]++
 			}
 			continue
 		}
 
-		prefix := toolPrefixForApp(app)
 		key := accessKey{prefix, ns}
-		allowed, checked := access[key]
+		d, checked := access[key]
 		if !checked {
 			apiGroup, resource, ok := toolGVR(prefix)
 			if !ok {
 				continue
 			}
-			can, err := h.AccessChecker.CanAccessGroupResource(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, ns)
-			allowed = err == nil && can
-			access[key] = allowed
+			can, err := h.AccessChecker.CanAccessGroupResource(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, ns)
+			d = decision{allowed: err == nil && can, failed: err != nil}
+			access[key] = d
 		}
 
-		if allowed {
-			filtered = append(filtered, app)
+		switch {
+		case d.allowed:
+			v.apps = append(v.apps, app)
+		case d.failed:
+			v.failed[prefix]++
+		default:
+			v.denied[prefix]++
 		}
 	}
 
-	return filtered
+	return v
 }
 
 // parseCompositeID splits "argo:namespace:name" into (tool, namespace, name).
