@@ -177,7 +177,8 @@ C (partial)             U7 → U8 → U11a          pulled forward — see below
 Release G               D0 → P1 → P2 → P3 → P4  personal dashboard builder   [done]
 Release B               U13 → U14a → U14b → U15 → U16 → U17 → U18 → U19a → U19b   [done]
 Release C (remainder)   U9a → U9b → U10 → U10i*** → U11b → U11c → U12*
-Release F               U32 → U32b → U33 → U34a → U34b → U34c → U35 → U36 → U36b → U37**
+Release F               U32 → U32b → U33 → U34a → U34b → U34c → U35 → U36 → U36b → U37**   [done]
+                        PRs #548–#559 + U37 docs PR (template only; Q3 pending, rehearsal execution gated)
 U20                     pulled forward from Release D
 Release E               U26 → U27 → U28 → U29a → U29b → U30a → U30b → U31
 Release D (remainder)   U21a → U21b → U22a → U22b → U23a → U23b → U24a → U24b → U24c → U25a → U25b
@@ -185,6 +186,9 @@ Release D (remainder)   U21a → U21b → U22a → U22b → U23a → U23b → U2
 Release G / P5          29 catalog widgets, ~7 units — interleaved as waves   [done]
                         between the releases above; no ordering dependency
 ```
+
+**Next (2026-10-04):** with Release F done, U20 is next, then Release E, per
+the order above.
 
 ### Correction (2026-09-13): C/U7-U8-U11a pulled forward, Release G inserted
 
@@ -264,13 +268,16 @@ regressions introduced by this work.
 
 | # | Defect | Evidence | Impact |
 |---|---|---|---|
-| 1 | Events tab sends `involvedObjectKind`/`involvedObjectName`; backend never reads them | `ResourceDetail.tsx:429-431` vs `resources/handler.go:115`; string absent from all backend Go | Every resource detail page shows all namespace events, not the resource's |
-| 2 | `DedupExists` keys omit cluster ID and UID | `notifications/store.go:49-65` | Multi-cluster: a same-named resource failing in a second cluster is silently suppressed. Affects every notification source |
-| 3 | No web cluster switcher — `selectedCluster` is never assigned | read at `TopBarV2.tsx:98`, `api.ts:142`, `resource-counts.ts:85`; written only at `cluster.ts:13` | The entire shipped multi-cluster backend is unreachable from the UI |
-| 4 | 3 E2E specs outside Playwright's `testDir` | `playwright.config.ts:4` = `./tests`; `velero.spec.ts`, `flux-notifications.spec.ts`, `namespace-limits.spec.ts` at `e2e/` root | 893 lines of tests never execute |
-| 5 | `Schedule.LastBackupPhase` never written; `IsSuccessPhase` accepts BSL/Schedule phases | `velero/types.go:97`, `types.go:144-150` | Dead field feeding UI; helper cannot classify backup outcomes |
+| 1 | Events tab sends `involvedObjectKind`/`involvedObjectName`; backend never reads them | `ResourceDetail.tsx:429-431` vs `resources/handler.go:115`; string absent from all backend Go | Every resource detail page shows all namespace events, not the resource's. **Fixed in #544** |
+| 2 | `DedupExists` keys omit cluster ID and UID | `notifications/store.go:49-65` | Multi-cluster: a same-named resource failing in a second cluster is silently suppressed. Affects every notification source. **Fixed in #545** |
+| 3 | No web cluster switcher — `selectedCluster` is never assigned | read at `TopBarV2.tsx:98`, `api.ts:142`, `resource-counts.ts:85`; written only at `cluster.ts:13` | The entire shipped multi-cluster backend is unreachable from the UI. **Fixed in #440 (C/U11a)** |
+| 4 | 3 E2E specs outside Playwright's `testDir` | `playwright.config.ts:4` = `./tests`; `velero.spec.ts`, `flux-notifications.spec.ts`, `namespace-limits.spec.ts` at `e2e/` root | 893 lines of tests never execute. **Fixed in #546** |
+| 5 | `Schedule.LastBackupPhase` never written; `IsSuccessPhase` accepts BSL/Schedule phases | `velero/types.go:97`, `types.go:144-150` | Dead field feeding UI; helper cannot classify backup outcomes. **Fixed in #547** |
 
-\#3 is the highest-value fix independent of this roadmap: it gates whether
+**Status (2026-10-04): all five docket items are fixed** (#1 #544, #2 #545,
+#3 #440, #4 #546, #5 #547). The note below is kept as history.
+
+\#3 was the highest-value fix independent of this roadmap: it gates whether
 Release C is reachable by any user. Release C's U11a builds the switcher as part
 of the track.
 

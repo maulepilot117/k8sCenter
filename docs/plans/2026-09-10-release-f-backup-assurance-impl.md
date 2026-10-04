@@ -548,11 +548,28 @@ func ExpectedRunsSince(cronExpr string, anchor, now time.Time, maxSteps int) (la
   descriptors (`@daily`, `@every 1h`) and 5-field expressions both work. An expression
   that fails both parsers yields `known = false` **and** a `detail.cronParseError`.
 
-**When `known == true`**, the subject is overdue if
-`lastSuccessAt < lastExpected && now - lastExpected > grace`.
-**When `known == false`**, the subject is overdue if
-`now - lastSuccessAt > max_age + grace`, and the API response carries
-`expectedRunKnown: false` so the UI can say so.
+**Overdue rule (as implemented in U33, #549).** `max_age + grace` is always the
+floor: a subject is overdue only when `now - ref > max_age + grace`, where `ref` is
+`lastSuccessAt` (or the schedule's creation time if it never succeeded), **and** a run
+was missed:
+
+- **`known == true`, a run was expected since the anchor:** a run counts as missed
+  when **any** expected run since the anchor is more than `grace` old
+  (`now - tick > grace`), not only the latest. A latest-only check masked overdue
+  for any schedule whose period is at most `grace` (an hourly schedule under the
+  default one-hour grace always has its latest tick inside grace), and let a daily
+  schedule clear for the first `grace` window after each tick.
+- **`known == true`, no run expected since the anchor** (for example a weekly
+  schedule under a shorter `max_age`): not overdue. The expected run only ever
+  spares a subject; it never makes one overdue on its own.
+- **`known == false`** (unparseable cron, lookback or step cap exceeded) or no cron
+  (namespace and cluster scope): the plain `now - ref > max_age + grace` rule
+  applies, and the API response carries `expectedRunKnown: false` so the UI can say
+  so. A cron parse failure also sets `detail.cronParseError`.
+
+*Implementation notes:* see `expectedRun` in `backend/internal/velero/assurance.go`.
+The missed-run walk is `expectedRunsSince` bounded to `now - grace - 1ns`, so a tick
+exactly `grace` old is still inside grace.
 
 **DST and calendar boundaries — stated honestly.** `cron.NewParser(...).Parse` and
 `cron.ParseStandard` produce a `SpecSchedule` whose `Location` defaults to the
