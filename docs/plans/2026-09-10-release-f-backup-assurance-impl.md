@@ -649,6 +649,12 @@ Enforced in five concrete ways, all testable:
    a separate "Actions" area, never inside an exception card as a remediation CTA. The
    assurance surface offers no button that mutates a cluster.
 
+   > **Reconciled in U36/U36b (supersedes rule 5):** the "Start a restore (manual,
+   > unverified)" link was deliberately **not** built. No assurance surface (the
+   > page, nor the `VeleroDashboard` cross-link strip) offers any restore action or
+   > link; e2e asserts this. The "offers no button that mutates a cluster" half of
+   > the rule stands.
+
 ---
 
 ## U32. Backup assurance schema and policy/exception store

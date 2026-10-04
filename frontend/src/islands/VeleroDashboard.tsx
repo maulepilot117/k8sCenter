@@ -14,7 +14,14 @@ import { BackupsResourceTable } from "@/components/velero/BackupsResourceTable.t
 import { RestoresResourceTable } from "@/components/velero/RestoresResourceTable.tsx";
 import { SchedulesResourceTable } from "@/components/velero/SchedulesResourceTable.tsx";
 import { phaseTone } from "@/components/velero/velero-utils.ts";
-import { apiDelete, apiGet } from "@/lib/api.ts";
+import { ApiError, apiDelete, apiGet } from "@/lib/api.ts";
+import {
+  type AssuranceStatus,
+  countsAreCurrent,
+  HONESTY_TEXT,
+  surfaceStateCopy,
+  surfaceStateFor,
+} from "@/lib/backup-assurance-types.ts";
 import { age } from "@/lib/format.ts";
 import type {
   Backup,
@@ -338,6 +345,8 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
       {/* ── Main content (Velero detected, not loading) ──────────── */}
       {!loading.value && !error.value && status.value?.detected && (
         <>
+          {initialTab === "overview" && <AssuranceStrip />}
+
           {initialTab === "overview" && (
             <VeleroOverview
               backups={backups.value}
@@ -395,6 +404,81 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
           onClose={() => (scheduleWizardOpen.value = false)}
         />
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Assurance strip — read-only cross-link to /backup/assurance
+// ---------------------------------------------------------------------------
+
+const ASSURANCE_STATUS_URL = "/v1/velero/assurance/status";
+
+/**
+ * One summary strip on the overview. Self-contained: it owns its own fetch so
+ * the dashboard's state is untouched. Read-only by design — it links to the
+ * assurance page and offers no restore action. A 501 (remote cluster) hides
+ * the strip entirely; 403/503 and other failures show the six-state word
+ * without counts, never a "no backups" claim.
+ */
+function AssuranceStrip() {
+  const assurance = useSignal<AssuranceStatus | null>(null);
+  const httpStatus = useSignal<number | undefined>(undefined);
+  const hidden = useSignal(false);
+  const ready = useSignal(false);
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    apiGet<AssuranceStatus>(ASSURANCE_STATUS_URL)
+      .then((res) => {
+        assurance.value = res.data;
+      })
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 501) hidden.value = true;
+        httpStatus.value = err instanceof ApiError ? err.status : undefined;
+      })
+      .finally(() => {
+        ready.value = true;
+      });
+  }, []);
+
+  if (hidden.value) return null;
+
+  const state = surfaceStateFor(assurance.value, httpStatus.value);
+  const copy = surfaceStateCopy(state);
+  const current = ready.value && countsAreCurrent(state) && assurance.value;
+  const lastRun = assurance.value?.runtime?.lastRunAt;
+
+  return (
+    <div
+      data-testid="velero-assurance-strip"
+      class="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-[var(--border-primary)] px-4 py-3 text-sm text-[var(--text-secondary)]"
+    >
+      <span class="font-medium text-[var(--text-primary)]">
+        Backup assurance
+      </span>
+      {!ready.value && <span>Checking…</span>}
+      {ready.value && current && (
+        <span data-testid="velero-assurance-open-count">
+          {current.open.total} open{" "}
+          {current.open.total === 1 ? "exception" : "exceptions"}
+        </span>
+      )}
+      {ready.value && !current && (
+        <span data-testid="velero-assurance-state" data-state={state}>
+          State: {copy.word}
+        </span>
+      )}
+      {lastRun && <span>Last evaluated {age(lastRun)} ago</span>}
+      <a href="/backup/assurance" class="text-[var(--accent)] hover:underline">
+        View recovery readiness &rarr;
+      </a>
+      <span
+        data-testid="velero-assurance-honesty"
+        class="basis-full text-xs text-[var(--text-muted)]"
+      >
+        Freshness is not demonstrated recoverability. {HONESTY_TEXT}
+      </span>
     </div>
   );
 }
