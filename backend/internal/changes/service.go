@@ -174,10 +174,11 @@ func (s *Service) TrackedApply(ctx context.Context, req TrackedApplyRequest, app
 	results, notAttempted := assembleResults(req.Docs, outcome.Attempted, notReached)
 	warnings := []string{}
 	var finalState store.ReceiptState
-	// Recording failed when an append errored, or when the engine attempted
-	// more than was recorded (it skipped the observer for a document). Either
-	// way the receipt is incomplete about something that was attempted.
-	recordingFailed := rec.err != nil || rec.recorded < len(outcome.Attempted)
+	// Recording failed when an append errored, or when what the engine says
+	// it attempted is not exactly what it reported to the observer (a skipped
+	// observation, a document reported but not attempted, a different order).
+	// Either way the receipt does not match what happened on the cluster.
+	recordingFailed := rec.err != nil || !recordedMatches(rec.refs, outcome.Attempted)
 	if recordingFailed {
 		// The receipt holds a truthful prefix; the cluster may hold more. That
 		// is exactly what "unknown" means, and it is what reconciliation would
@@ -495,6 +496,22 @@ func assembleResults(docs []*unstructured.Unstructured, attempted []ApplyObserva
 		}
 	}
 	return results, notAttempted
+}
+
+// recordedMatches reports whether the observer recorded exactly the documents
+// the engine says it attempted, in the same order. The two lists come from the
+// same engine; a disagreement between them means the receipt cannot be
+// trusted to describe what happened.
+func recordedMatches(recorded []TrackedObjectRef, attempted []ApplyObservation) bool {
+	if len(recorded) != len(attempted) {
+		return false
+	}
+	for i := range recorded {
+		if recorded[i].Index != attempted[i].Index {
+			return false
+		}
+	}
+	return true
 }
 
 // stateFor is the terminal state of a fully recorded apply: applied when every

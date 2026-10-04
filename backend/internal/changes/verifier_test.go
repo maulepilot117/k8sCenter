@@ -1220,6 +1220,9 @@ func TestVerifyOnce_UnrecordedDocumentsPreventVerified(t *testing.T) {
 			if !strings.Contains(c.Detail, fmt.Sprintf("document index %d", i+1)) || c.Source.Name != "" || c.Source.UID != "" {
 				t.Fatalf("unrecorded check must name the index and carry no identity: %+v", c)
 			}
+			if !strings.Contains(c.Message, "may or may not exist") {
+				t.Fatalf("an interrupted receipt must say the object may exist: %q", c.Message)
+			}
 		}
 		st, _ := persistedState(t, fs, r.ID)
 		if st != store.VerifyInconclusive {
@@ -1270,6 +1273,12 @@ func TestVerifyOnce_UnrecordedDocumentsPreventVerified(t *testing.T) {
 		}
 		if res.State != store.VerifyInconclusive || len(res.Checks) != 2 || gets.Load() != 0 {
 			t.Fatalf("result = %+v gets=%d", res, gets.Load())
+		}
+		for _, c := range res.Checks {
+			expectCheck(t, c, CheckInconclusive, ReasonOutcomeUnrecorded)
+			if !strings.Contains(c.Message, "nothing was applied for it") || strings.Contains(c.Message, "may or may not exist") {
+				t.Fatalf("a never-started receipt must not claim the object may exist: %q", c.Message)
+			}
 		}
 	})
 }

@@ -94,7 +94,7 @@ func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dy
 	}
 	for i := 0; i < r.DocumentCount; i++ {
 		if !recorded[i] {
-			checks = append(checks, unrecordedOutcome(r.ClusterID, i, now))
+			checks = append(checks, unrecordedOutcome(r, i, now))
 		}
 	}
 	if now.Sub(*r.CompletedAt) > verificationWindow {
@@ -139,11 +139,19 @@ func verifiable(o store.ReceiptObject) bool {
 
 // unrecordedOutcome is the check for a document the receipt holds nothing
 // about. The receipt stores no identity for it, so Source carries only the
-// cluster and Detail names the document position.
-func unrecordedOutcome(clusterID string, index int, now time.Time) CheckResult {
-	return newCheck(SourceRef{ClusterID: clusterID}, now, CheckInconclusive, ReasonOutcomeUnrecorded, diagnostics.SeverityWarning,
-		"no outcome was recorded for this document; the original apply was interrupted and the object may or may not exist",
-		fmt.Sprintf("document index %d", index))
+// cluster and Detail names the document position. The wording follows what
+// the receipt's state proves (the same split replay() makes): an `unknown`
+// receipt was interrupted after the mutation window opened, so the object may
+// or may not exist; any other terminal state means the apply never reached
+// the document (it never started, or the engine stopped before it) and
+// nothing was applied for it. The verdict is inconclusive either way.
+func unrecordedOutcome(r *store.ChangeReceipt, index int, now time.Time) CheckResult {
+	msg := "no outcome was recorded for this document; the apply stopped before reaching it and nothing was applied for it"
+	if r.State == store.ReceiptUnknown {
+		msg = "no outcome was recorded for this document; the original apply was interrupted and the object may or may not exist"
+	}
+	return newCheck(SourceRef{ClusterID: r.ClusterID}, now, CheckInconclusive, ReasonOutcomeUnrecorded, diagnostics.SeverityWarning,
+		msg, fmt.Sprintf("document index %d", index))
 }
 
 // verifyObject does the one live read for o and evaluates it.

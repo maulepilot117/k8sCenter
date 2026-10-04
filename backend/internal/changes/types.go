@@ -150,11 +150,15 @@ const (
 //
 // The classification is an allowlist of DEFINITE rejections: a Status the API
 // server returned with a code that means "not applied" (400, 401, 403, 404,
-// 405, 409, 415, 422, 429, 503). Everything else is indeterminate, because
-// the server may have committed the write before the error reached us: a
+// 405, 409, 415, 422, 429). Everything else is indeterminate, because the
+// server may have committed the write before the error reached us: a
 // cancelled or timed-out context, a connection reset or unexpected EOF after
 // the body was sent, an HTTP/2 GOAWAY, a 500 wrapping an etcd timeout, a 504,
-// or any error that carries no Status at all. Only the PATCH's error belongs
+// or any error that carries no Status at all. 503 is indeterminate too:
+// client-go turns ANY non-Status response body into a generic 503 (a service
+// mesh or load balancer answering "upstream connect error ... reset before
+// headers", an aggregator proxy, a Teleport/Rancher front door), and by then
+// the PATCH may already have been forwarded. Only the PATCH's error belongs
 // here; a failed pre-PATCH GET did not mutate anything and is not
 // indeterminate (U30a).
 func ClassifyAPIError(err error) string {
@@ -174,11 +178,10 @@ func ClassifyAPIError(err error) string {
 		return ErrorClassInvalid
 	case http.StatusNotFound:
 		return ErrorClassNotFound
-	case http.StatusMethodNotAllowed, http.StatusUnsupportedMediaType,
-		http.StatusTooManyRequests, http.StatusServiceUnavailable:
+	case http.StatusMethodNotAllowed, http.StatusUnsupportedMediaType, http.StatusTooManyRequests:
 		return ErrorClassOther
 	default:
-		// 500, 504, 408, a Status with no code, anything unexpected.
+		// 500, 503, 504, 408, a Status with no code, anything unexpected.
 		return ErrorClassIndeterminate
 	}
 }

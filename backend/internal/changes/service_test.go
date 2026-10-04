@@ -1392,9 +1392,12 @@ func TestClassifyAPIError(t *testing.T) {
 		{"method not allowed", apierrors.NewMethodNotSupported(gr, "patch"), ErrorClassOther},
 		{"unsupported media type", apierrors.NewGenericServerResponse(http.StatusUnsupportedMediaType, "patch", gr, "web", "", 0, false), ErrorClassOther},
 		{"too many requests", apierrors.NewTooManyRequests("slow down", 1), ErrorClassOther},
-		{"service unavailable", apierrors.NewServiceUnavailable("etcd"), ErrorClassOther},
 		{"wrapped definite rejection", fmt.Errorf("apply: %w", apierrors.NewConflict(gr, "web", errors.New("x"))), ErrorClassConflict},
 		// Everything below may have been committed by the server.
+		{"service unavailable", apierrors.NewServiceUnavailable("etcd"), ErrorClassIndeterminate},
+		{"generic 503 from a proxy body (client-go's non-Status fallback)",
+			apierrors.NewGenericServerResponse(http.StatusServiceUnavailable, "patch", gr, "web",
+				"upstream connect error or disconnect/reset before headers. reset reason: connection failure", 0, true), ErrorClassIndeterminate},
 		{"context canceled", context.Canceled, ErrorClassIndeterminate},
 		{"wrapped deadline", fmt.Errorf("patch: %w", context.DeadlineExceeded), ErrorClassIndeterminate},
 		{"api timeout", apierrors.NewTimeoutError("too slow", 5), ErrorClassIndeterminate},
@@ -1456,6 +1459,61 @@ func TestReceiptView_SingleVerificationState(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Re-review follow-ups (PR #565, commit 56a7877c): observer ordering
 // ---------------------------------------------------------------------------
+
+func TestTrackedApply_AttemptedMustMatchObserved(t *testing.T) {
+	// The engine's Attempted list and what it reported to the observer come
+	// from the same engine. When they disagree, by set or by order, the
+	// receipt cannot be trusted and the apply is unknown, even though the
+	// counts agree.
+	cases := map[string]struct {
+		observe   []int // indices the engine reports to the observer, in order
+		attempted []int // indices the engine then claims it attempted
+	}{
+		"different set, same count":   {observe: []int{0, 1}, attempted: []int{0, 2}},
+		"same set, different order":   {observe: []int{0, 1, 2}, attempted: []int{1, 0, 2}},
+		"attempted shorter than seen": {observe: []int{0, 1, 2}, attempted: []int{0, 1}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			fs := newFakeStore()
+			svc := newTestService(fs)
+			all := threeSuccess()
+			engine := func(observe ApplyObserverFunc) TrackedApplyOutcome {
+				for _, i := range tc.observe {
+					if err := observe(all[i]); err != nil {
+						t.Fatalf("observer refused a well-formed observation: %v", err)
+					}
+				}
+				out := TrackedApplyOutcome{}
+				for _, i := range tc.attempted {
+					out.Attempted = append(out.Attempted, all[i])
+				}
+				return out
+			}
+			id := uuid.New()
+			res, err := svc.TrackedApply(context.Background(), newRequest(id, threeDocs(), "raw"), engine)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Tracking.State != store.ReceiptUnknown {
+				t.Fatalf("a disagreeing engine must yield unknown: %+v", res.Tracking)
+			}
+			if res.Tracking.RecordedThrough != len(tc.observe) || len(fs.row(t, id).Objects) != len(tc.observe) {
+				t.Fatalf("recorded = %d/%d, want %d", res.Tracking.RecordedThrough, len(fs.row(t, id).Objects), len(tc.observe))
+			}
+			if !containsWarning(res.Tracking.Warnings, "change recording failed") {
+				t.Fatalf("warnings = %v", res.Tracking.Warnings)
+			}
+		})
+	}
+	// Agreement in set and order is the happy path and stays applied.
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	res, err := svc.TrackedApply(context.Background(), newRequest(uuid.New(), threeDocs(), "raw"), (&fakeEngine{script: threeSuccess()}).apply)
+	if err != nil || res.Tracking.State != store.ReceiptApplied {
+		t.Fatalf("agreeing engine: err=%v state=%s", err, res.Tracking.State)
+	}
+}
 
 func TestTrackedApply_ObserverRejectsDuplicateAndOutOfOrderIndices(t *testing.T) {
 	cases := map[string][]ApplyObservation{
