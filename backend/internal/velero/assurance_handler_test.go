@@ -363,8 +363,8 @@ func TestAssuranceExceptions_NonAdminNeverReceivesPrivilegedDetailKeys(t *testin
 		}
 	}
 	views := decodeEnv[[]AssuranceExceptionView](t, rr).Data
-	if len(views) != 1 || views[0].Detail.LastOutcome != "failure" || views[0].ExpectedRunNote != "not computable" {
-		t.Fatalf("non-admin view = %+v; want the allow-listed fields and the not-computable note", views)
+	if len(views) != 1 || views[0].Detail.LastOutcome != "failure" || views[0].ExpectedRunNote != "" {
+		t.Fatalf("non-admin view = %+v; want the allow-listed fields and no expected-run note on a location exception", views)
 	}
 
 	adm := a.get(t, asrAdmin, "/velero/assurance/exceptions")
@@ -458,8 +458,17 @@ func TestAssuranceExceptions_RequestCancellationReturnsWithoutPanic(t *testing.T
 
 func TestAssurance_RemoteClusterIsNotImplemented(t *testing.T) {
 	a := newAssuranceAPINoDB(t)
-	rr := a.serve(t, asrReq{user: asrAdmin, method: http.MethodGet, path: "/velero/assurance/exceptions", cluster: remoteCluster})
-	wantReason(t, rr, http.StatusNotImplemented, "remote_assurance_unsupported")
+	// The collector's own configured cluster id is a remote selection too: the
+	// router treats any id but "local" as remote, so answering it from the
+	// local store would serve local data under a remote cluster's name.
+	for _, cluster := range []string{remoteCluster, a.clusterID} {
+		rr := a.serve(t, asrReq{user: asrAdmin, method: http.MethodGet, path: "/velero/assurance/exceptions", cluster: cluster})
+		wantReason(t, rr, http.StatusNotImplemented, "remote_assurance_unsupported")
+	}
+	// A remote selection is refused before the database is consulted.
+	b := newAssuranceAPIWith(t, nil)
+	wantReason(t, b.serve(t, asrReq{user: asrAdmin, method: http.MethodGet, path: "/velero/assurance/status", cluster: remoteCluster}),
+		http.StatusNotImplemented, "remote_assurance_unsupported")
 }
 
 // ---------------------------------------------------------------------------
@@ -739,6 +748,10 @@ func TestAssurancePolicyWrite_IsAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.open(t, *p, store.ConditionOverdue, "", nil)
+	// Another policy's open exceptions are not this delete's to discard.
+	other := a.policy(t, store.ScopeNamespace, "team-b", "")
+	a.open(t, other, store.ConditionOverdue, "", nil)
+	a.open(t, other, store.ConditionFailed, "", nil)
 
 	// Without confirm=true nothing is deleted, nothing is audited, and the
 	// refusal says how many open exceptions the delete would discard.
@@ -761,8 +774,8 @@ func TestAssurancePolicyWrite_IsAudited(t *testing.T) {
 		!strings.Contains(e.Detail, "open at delete: 1") {
 		t.Fatalf("delete audit = %+v", e)
 	}
-	if got := a.exceptions(t, asrAdmin, ""); len(got.Data) != 0 {
-		t.Fatalf("exceptions survived their policy's delete: %d", len(got.Data))
+	if got := a.exceptions(t, asrAdmin, ""); len(got.Data) != 2 || subjectNamespaces(got.Data)[0] != "team-b" {
+		t.Fatalf("after the delete, exceptions = %+v; want only the other policy's two", got.Data)
 	}
 	wantReason(t, a.serve(t, asrReq{user: asrAdmin, method: http.MethodDelete, path: path + "?confirm=true"}), http.StatusNotFound, "policy_not_found")
 }
@@ -827,15 +840,16 @@ func TestAssuranceStatus_ReportsCollectionFreshnessAndLeaseHolder(t *testing.T) 
 	rr := a.get(t, asrAdmin, "/velero/assurance/status")
 	wantStatus(t, rr, http.StatusOK)
 	st := decodeEnv[AssuranceStatusView](t, rr).Data
-	if !st.Enabled || st.Collection != "ok" || st.LastCollection != "ok" || st.LastRunAt == nil || st.PolicyCount != 1 {
-		t.Fatalf("status = %+v; want enabled ok collection with a run time", st)
+	if !st.Enabled || st.Collection != "ok" || st.CollectionSource != "this_replica" || st.PolicyCount != 1 {
+		t.Fatalf("status = %+v; want enabled ok collection judged by this replica", st)
 	}
 	if st.Open.Total != 1 || st.Open.ByCondition["overdue"] != 1 {
 		t.Fatalf("open = %+v, want the overdue exception", st.Open)
 	}
 	rt := st.Runtime
-	if rt == nil || rt.Holder != "holder-a" || !rt.LeaseHeld || rt.Lease == nil || rt.Lease.Holder != "holder-a" || rt.Lease.Expired {
-		t.Fatalf("runtime = %+v; want holder-a holding an unexpired lease", rt)
+	if rt == nil || rt.Holder != "holder-a" || !rt.LeaseHeld || rt.Lease == nil || rt.Lease.Holder != "holder-a" || rt.Lease.Expired ||
+		rt.LastCollection != "ok" || rt.LastRunAt == nil {
+		t.Fatalf("runtime = %+v; want holder-a holding an unexpired lease after an ok run", rt)
 	}
 	if rt.DeliveryBacklog.Pending != 0 || rt.DeliveryBacklog.Failed != 0 {
 		t.Errorf("backlog = %+v, want drained", rt.DeliveryBacklog)
@@ -844,10 +858,13 @@ func TestAssuranceStatus_ReportsCollectionFreshnessAndLeaseHolder(t *testing.T) 
 	a.allow(veleroNamespace)
 	rr = a.get(t, asrAlice, "/velero/assurance/status")
 	wantStatus(t, rr, http.StatusOK)
-	if strings.Contains(rr.Body.String(), "holder-a") || strings.Contains(rr.Body.String(), `"runtime"`) {
-		t.Fatalf("non-admin status carries runtime detail: %s", rr.Body.String())
+	body := rr.Body.String()
+	for _, leak := range []string{"holder-a", `"runtime"`, "lastRunAt", "lastCollection"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("non-admin status carries runtime detail %q: %s", leak, body)
+		}
 	}
-	if st := decodeEnv[AssuranceStatusView](t, rr).Data; st.Collection != "ok" || st.Open.Total != 1 {
+	if st := decodeEnv[AssuranceStatusView](t, rr).Data; st.Collection != "ok" || st.Open.Total != 1 || st.PolicyCount != 1 {
 		t.Fatalf("non-admin status = %+v", st)
 	}
 }
@@ -862,11 +879,39 @@ func TestAssuranceStatus_UnknownWhenLastCollectionFailed(t *testing.T) {
 	rr := a.get(t, asrAdmin, "/velero/assurance/status")
 	wantStatus(t, rr, http.StatusOK)
 	st := decodeEnv[AssuranceStatusView](t, rr).Data
-	if st.Collection != "unknown" || st.LastCollection != "failed" {
+	if st.Collection != "unknown" || st.Runtime == nil || st.Runtime.LastCollection != "failed" {
 		t.Fatalf("status = %+v; a failed collection must read unknown", st)
 	}
 	if st.Open.ByCondition["collection_unknown"] != 1 {
 		t.Errorf("open = %+v, want the cluster collection_unknown exception for admin", st.Open)
+	}
+}
+
+// TestAssuranceStatus_FollowerReplicaJudgesFromTheLeaseHolder: a replica that
+// does not hold the lease has never collected, but another replica holds a
+// live lease. Its status must follow the durable state that holder keeps,
+// not report unknown because its own snapshot is empty.
+func TestAssuranceStatus_FollowerReplicaJudgesFromTheLeaseHolder(t *testing.T) {
+	a := newAssuranceAPI(t)
+	pc := a.policy(t, store.ScopeCluster, "", "")
+	if _, err := a.st.AcquireOrRenewLease(t.Context(), a.clusterID, "holder-b", assuranceLeaseTTL); err != nil {
+		t.Fatalf("AcquireOrRenewLease: %v", err)
+	}
+
+	status := func() AssuranceStatusView {
+		t.Helper()
+		rr := a.get(t, asrAdmin, "/velero/assurance/status")
+		wantStatus(t, rr, http.StatusOK)
+		return decodeEnv[AssuranceStatusView](t, rr).Data
+	}
+	if st := status(); st.Collection != "ok" || st.CollectionSource != "lease_holder" || st.Runtime.LeaseHeld || st.Runtime.Lease.Holder != "holder-b" {
+		t.Fatalf("follower status = %+v (runtime %+v); want ok judged from holder-b's lease", st, st.Runtime)
+	}
+
+	// The holder's collection fails: it leaves collection_unknown open.
+	a.open(t, pc, store.ConditionCollectionUnknown, "", nil)
+	if st := status(); st.Collection != "unknown" || st.CollectionSource != "lease_holder" {
+		t.Fatalf("follower status = %+v; an open collection_unknown must read unknown", st)
 	}
 }
 
@@ -875,32 +920,91 @@ func TestAssuranceStatus_EmptyWithoutPolicies(t *testing.T) {
 	rr := a.get(t, asrAdmin, "/velero/assurance/status")
 	wantStatus(t, rr, http.StatusOK)
 	st := decodeEnv[AssuranceStatusView](t, rr).Data
-	if st.Collection != "empty" || st.PolicyCount != 0 || st.Runtime == nil || st.Runtime.Lease != nil {
+	if st.Collection != "empty" || st.CollectionSource != "none" || st.PolicyCount != 0 || st.Runtime == nil || st.Runtime.Lease != nil {
 		t.Fatalf("status = %+v; want empty, no policies, null lease", st)
+	}
+}
+
+// TestAssuranceStatus_NonAdminPolicyCountIsScopedToVisibleNamespaces: the
+// policy count must not reveal policies in namespaces the caller cannot see,
+// nor cluster-scope policies.
+func TestAssuranceStatus_NonAdminPolicyCountIsScopedToVisibleNamespaces(t *testing.T) {
+	a := newAssuranceAPI(t)
+	a.policy(t, store.ScopeNamespace, "team-a", "")
+	a.policy(t, store.ScopeNamespace, "team-b", "")
+	a.policy(t, store.ScopeCluster, "", "")
+
+	a.allow("team-a")
+	rr := a.get(t, asrAlice, "/velero/assurance/status")
+	wantStatus(t, rr, http.StatusOK)
+	if st := decodeEnv[AssuranceStatusView](t, rr).Data; st.PolicyCount != 1 {
+		t.Fatalf("alice policyCount = %d, want 1 (team-a only)", st.PolicyCount)
+	}
+
+	a.allow()
+	rr = a.get(t, asrAlice, "/velero/assurance/status")
+	if st := decodeEnv[AssuranceStatusView](t, rr).Data; st.PolicyCount != 0 || st.Collection != "empty" {
+		t.Fatalf("alice with no visible policy = %+v; want 0 and empty", st)
+	}
+
+	rr = a.get(t, asrAdmin, "/velero/assurance/status")
+	if st := decodeEnv[AssuranceStatusView](t, rr).Data; st.PolicyCount != 3 {
+		t.Fatalf("admin policyCount = %d, want 3", st.PolicyCount)
 	}
 }
 
 func TestAssuranceCollectionState_Vocabulary(t *testing.T) {
 	now := time.Now()
-	ok := AssuranceRuntimeStatus{Enabled: true, LastCollection: CollectionOK, LastRunAt: now.Add(-time.Minute)}
+	ok := AssuranceRuntimeStatus{Enabled: true, Holder: "a", LeaseHeld: true, LastCollection: CollectionOK, LastRunAt: now.Add(-time.Minute)}
+	follower := AssuranceRuntimeStatus{Enabled: true, Holder: "b"}
+	liveOther := &store.AssuranceLease{Holder: "a", ExpiresAt: now.Add(time.Minute)}
+	expiredOther := &store.AssuranceLease{Holder: "a", Expired: true}
 	for name, tc := range map[string]struct {
-		snap     AssuranceRuntimeStatus
-		policies int
-		want     string
+		snap        AssuranceRuntimeStatus
+		lease       *store.AssuranceLease
+		policies    int
+		unknownOpen bool
+		want, src   string
 	}{
-		"disabled":          {AssuranceRuntimeStatus{}, 3, "unavailable"},
-		"no policies":       {ok, 0, "empty"},
-		"never collected":   {AssuranceRuntimeStatus{Enabled: true}, 1, "unknown"},
-		"failed collection": {AssuranceRuntimeStatus{Enabled: true, LastCollection: CollectionFailed, LastRunAt: now}, 1, "unknown"},
-		"degraded":          {AssuranceRuntimeStatus{Enabled: true, LastCollection: CollectionDegraded, LastRunAt: now}, 1, "unknown"},
-		"stale":             {AssuranceRuntimeStatus{Enabled: true, LastCollection: CollectionOK, LastRunAt: now.Add(-4 * time.Minute)}, 1, "stale"},
-		"fresh":             {ok, 1, "ok"},
+		"disabled":                     {AssuranceRuntimeStatus{}, nil, 3, false, "unavailable", "none"},
+		"no policies":                  {ok, nil, 0, false, "empty", "none"},
+		"never collected":              {AssuranceRuntimeStatus{Enabled: true}, nil, 1, false, "unknown", "none"},
+		"failed collection":            {AssuranceRuntimeStatus{Enabled: true, LastCollection: CollectionFailed, LastRunAt: now}, nil, 1, false, "unknown", "this_replica"},
+		"degraded":                     {AssuranceRuntimeStatus{Enabled: true, LastCollection: CollectionDegraded, LastRunAt: now}, nil, 1, false, "unknown", "this_replica"},
+		"stale":                        {AssuranceRuntimeStatus{Enabled: true, LastCollection: CollectionOK, LastRunAt: now.Add(-4 * time.Minute)}, nil, 1, false, "stale", "this_replica"},
+		"fresh":                        {ok, nil, 1, false, "ok", "this_replica"},
+		"follower, holder healthy":     {follower, liveOther, 1, false, "ok", "lease_holder"},
+		"follower, holder failing":     {follower, liveOther, 1, true, "unknown", "lease_holder"},
+		"follower, lease expired":      {follower, expiredOther, 1, false, "unknown", "none"},
+		"holder never trusts follower": {ok, liveOther, 1, true, "ok", "this_replica"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := assuranceCollectionState(tc.snap, tc.policies, now); got != tc.want {
-				t.Fatalf("state = %q, want %q", got, tc.want)
+			got, src := assuranceCollectionState(tc.snap, tc.lease, tc.policies, tc.unknownOpen, now)
+			if got != tc.want || src != tc.src {
+				t.Fatalf("state = %q/%q, want %q/%q", got, src, tc.want, tc.src)
 			}
 		})
+	}
+}
+
+func TestAssuranceProjectException_ExpectedRunNoteOnlyOnFreshnessConditions(t *testing.T) {
+	for cond, want := range map[store.AssuranceCondition]string{
+		store.ConditionOverdue:             "not computable",
+		store.ConditionNeverRun:            "not computable",
+		store.ConditionFailed:              "",
+		store.ConditionPartiallyFailed:     "",
+		store.ConditionPaused:              "",
+		store.ConditionLocationUnavailable: "",
+		store.ConditionCollectionUnknown:   "",
+	} {
+		e := store.BackupAssuranceException{SubjectKind: store.ScopeSchedule, Condition: cond, Detail: []byte(`{"expectedRunKnown":false}`)}
+		if got := projectException(e, true).ExpectedRunNote; got != want {
+			t.Errorf("%s: expectedRunNote = %q, want %q", cond, got, want)
+		}
+	}
+	known := store.BackupAssuranceException{SubjectKind: store.ScopeSchedule, Condition: store.ConditionOverdue, Detail: []byte(`{"expectedRunKnown":true}`)}
+	if got := projectException(known, true).ExpectedRunNote; got != "" {
+		t.Errorf("known expected run: note = %q, want empty", got)
 	}
 }
 
@@ -954,6 +1058,59 @@ func TestAssuranceEndpoints_NeverWriteToKubernetes(t *testing.T) {
 		case "list", "get", "watch":
 		default:
 			t.Errorf("assurance endpoints sent %s %s to the cluster", act.GetVerb(), act.GetResource().Resource)
+		}
+	}
+}
+
+func TestAssurancePolicies_UpdateValidatesMergedValues(t *testing.T) {
+	a := newAssuranceAPI(t)
+	v := a.create(t, `{"scopeKind":"cluster","maxAgeSeconds":86400}`)
+	path := "/velero/assurance/policies/" + v.ID
+	for name, tc := range map[string]struct{ body, field string }{
+		"below floor":     {`{"revision":1,"maxAgeSeconds":60}`, "maxAgeSeconds"},
+		"unknown partial": {`{"revision":1,"treatPartialAs":"sometimes"}`, "treatPartialAs"},
+		"negative grace":  {`{"revision":1,"graceSeconds":-5}`, "graceSeconds"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := wantReason(t, a.serve(t, asrReq{user: asrAdmin, method: http.MethodPut, path: path, body: tc.body}), http.StatusBadRequest, "invalid_policy")
+			if fields := fieldErrorFields(t, e); !slices.Contains(fields, tc.field) {
+				t.Fatalf("field errors %v do not name %s", fields, tc.field)
+			}
+		})
+	}
+	rr := a.serve(t, asrReq{user: asrAdmin, method: http.MethodPut, path: path, body: `{"revision":1,"bogus":true}`})
+	wantReason(t, rr, http.StatusBadRequest, "invalid_body")
+
+	// Nothing above changed the policy.
+	list := decodeEnv[[]AssurancePolicyView](t, a.get(t, asrAdmin, "/velero/assurance/policies")).Data
+	if len(list) != 1 || list[0].Revision != 1 || list[0].MaxAgeSeconds != 86400 {
+		t.Fatalf("policy after refused updates = %+v", list)
+	}
+}
+
+func TestAssuranceExceptions_StateFilterAndPaging(t *testing.T) {
+	a := newAssuranceAPI(t)
+	p := a.policy(t, store.ScopeNamespace, "team-a", "")
+	resolved := a.open(t, p, store.ConditionOverdue, "", nil)
+	if ok, err := a.st.ResolveExceptionAndEnqueue(t.Context(), resolved.ID, time.Now().UTC(), store.AssuranceResolutionConditionCleared); err != nil || !ok {
+		t.Fatalf("resolve: %v %v", ok, err)
+	}
+	a.open(t, p, store.ConditionFailed, "", nil)
+	a.open(t, p, store.ConditionNeverRun, "", nil)
+	a.allow("team-a")
+
+	for _, user := range []*auth.User{asrAdmin, asrAlice} {
+		open := a.exceptions(t, user, "?state=open")
+		if len(open.Data) != 2 || open.Metadata.Total != 2 {
+			t.Fatalf("%s open = %d rows, total %d; want 2", user.Username, len(open.Data), open.Metadata.Total)
+		}
+		res := a.exceptions(t, user, "?state=resolved")
+		if len(res.Data) != 1 || res.Data[0].State != "resolved" || res.Data[0].Detail.ResolutionReason != "condition_cleared" || res.Data[0].ResolvedAt == nil {
+			t.Fatalf("%s resolved = %+v; want the one resolved row with its reason", user.Username, res.Data)
+		}
+		page2 := a.exceptions(t, user, "?limit=2&offset=2")
+		if len(page2.Data) != 1 || page2.Metadata.Total != 3 {
+			t.Fatalf("%s page 2 = %d rows, total %d; want 1 of 3", user.Username, len(page2.Data), page2.Metadata.Total)
 		}
 	}
 }

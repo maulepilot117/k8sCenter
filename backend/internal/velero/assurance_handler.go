@@ -33,21 +33,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 
-	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
-	"github.com/kubecenter/kubecenter/internal/k8s"
-	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/pkg/api"
@@ -64,17 +58,6 @@ const (
 	// assuranceStaleAfter is how old the last completed collection may be
 	// before the status reports "stale": three missed ticks.
 	assuranceStaleAfter = 3 * assuranceInterval
-
-	// assurancePolicyBodyLimit bounds a policy write body; a policy is a
-	// handful of scalars.
-	assurancePolicyBodyLimit = 16 << 10
-
-	// assuranceDefaultGrace is the grace a new policy gets when none is
-	// given: one hour absorbs the largest DST discontinuity (§5).
-	assuranceDefaultGrace = time.Hour
-
-	// assuranceAuditKind is the audit ResourceKind for policy writes.
-	assuranceAuditKind = "BackupAssurancePolicy"
 )
 
 // Collection states reported by the status endpoint: the R3 six-state
@@ -119,29 +102,6 @@ func (h *Handler) RegisterAssuranceRoutes(r chi.Router, writeLimit func(http.Han
 // ---------------------------------------------------------------------------
 // Wire shapes
 // ---------------------------------------------------------------------------
-
-// AssurancePolicyView is one policy on the wire.
-type AssurancePolicyView struct {
-	ID             string     `json:"id"`
-	ScopeKind      string     `json:"scopeKind"`
-	ScopeNamespace string     `json:"scopeNamespace"`
-	ScopeName      string     `json:"scopeName"`
-	MaxAgeSeconds  int64      `json:"maxAgeSeconds"`
-	GraceSeconds   int64      `json:"graceSeconds"`
-	TreatPartialAs string     `json:"treatPartialAs"`
-	AlertOnPaused  bool       `json:"alertOnPaused"`
-	Enabled        bool       `json:"enabled"`
-	CreatedBy      string     `json:"createdBy"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedBy      string     `json:"updatedBy"`
-	UpdatedAt      *time.Time `json:"updatedAt"`
-	Revision       int64      `json:"revision"`
-	// ScheduleStatus is set for schedule-scope policies only: found,
-	// not_found or unknown. A schedule that is gone produces no findings at
-	// all, so without this a policy would silently watch nothing.
-	ScheduleStatus *string `json:"scheduleStatus"`
-	ScheduleNote   string  `json:"scheduleNote,omitempty"`
-}
 
 // AssuranceSubjectView is what an exception is about.
 type AssuranceSubjectView struct {
@@ -205,20 +165,28 @@ type AssuranceStatusView struct {
 	Enabled bool `json:"enabled"`
 	// Collection is ok, stale, empty, unknown or unavailable.
 	Collection string `json:"collection"`
-	// LastCollection is the raw outcome of this replica's last collecting
-	// run ("ok", "failed", or "" before the first).
-	LastCollection string              `json:"lastCollection"`
-	LastRunAt      *time.Time          `json:"lastRunAt"`
-	PolicyCount    int                 `json:"policyCount"`
-	Open           AssuranceOpenCounts `json:"open"`
+	// CollectionSource says what Collection was judged from: "this_replica"
+	// (this replica's own last run), "lease_holder" (another replica holds a
+	// live lease; judged from the durable exceptions it maintains), or
+	// "none" (nothing to judge: unavailable, empty, or never collected).
+	CollectionSource string `json:"collectionSource"`
+	// PolicyCount is every policy for an admin, and for anyone else the
+	// policies whose scope namespace they may see (never cluster scope), so
+	// the count reveals nothing about namespaces the caller cannot read.
+	PolicyCount int                 `json:"policyCount"`
+	Open        AssuranceOpenCounts `json:"open"`
 	// Runtime is admin-only and omitted for everyone else.
 	Runtime *AssuranceRuntimeView `json:"runtime,omitempty"`
 }
 
 // AssuranceRuntimeView is the collector's operational state, for admins.
 type AssuranceRuntimeView struct {
-	Holder          string               `json:"holder"`
-	LastTickAt      *time.Time           `json:"lastTickAt"`
+	Holder     string     `json:"holder"`
+	LastTickAt *time.Time `json:"lastTickAt"`
+	// LastRunAt and LastCollection describe THIS replica's last completed
+	// run ("ok", "failed", or "" before the first).
+	LastRunAt       *time.Time           `json:"lastRunAt"`
+	LastCollection  string               `json:"lastCollection"`
 	FindingCount    int                  `json:"findingCount"`
 	LastError       string               `json:"lastError,omitempty"`
 	LastErrorAt     *time.Time           `json:"lastErrorAt"`
@@ -268,16 +236,20 @@ func (h *Handler) assuranceGate(w http.ResponseWriter, r *http.Request) (assuran
 	if !ok {
 		return assuranceTarget{}, false
 	}
+	// Any non-local selection is refused, including one that happens to equal
+	// the collector's configured cluster id: the router treats that id as a
+	// remote cluster, and answering it from the local store would serve local
+	// data under a remote cluster's name.
+	if !isLocal(r.Context()) {
+		httputil.WriteErrorWithReason(w, http.StatusNotImplemented,
+			"backup assurance is collected for the local cluster only", assuranceReasonRemote, nil)
+		return assuranceTarget{}, false
+	}
 	if h.AssuranceStore == nil || h.Assurance == nil {
 		writeAssuranceUnavailable(w)
 		return assuranceTarget{}, false
 	}
 	clusterID := h.Assurance.clusterID
-	if reqCluster := middleware.ClusterIDFromContext(r.Context()); !k8s.IsLocalClusterID(reqCluster) && reqCluster != clusterID {
-		httputil.WriteErrorWithReason(w, http.StatusNotImplemented,
-			"backup assurance is collected for the local cluster only", assuranceReasonRemote, nil)
-		return assuranceTarget{}, false
-	}
 	if clusterID == "" {
 		// The collector refuses to start without a cluster id, and no row can
 		// be written without one: report it as the unavailable capability.
@@ -318,13 +290,9 @@ func (h *Handler) assuranceFail(w http.ResponseWriter, r *http.Request, err erro
 // returned to a non-admin; the restriction fails closed. A check that cannot
 // be made fails the request rather than shortening the answer, so "you may
 // not see it" and "we could not tell" are never conflated.
-func (h *Handler) assuranceVisibleNamespaces(r *http.Request, t assuranceTarget) (namespaces []string, admin bool, err error) {
+func (h *Handler) assuranceVisibleNamespaces(r *http.Request, t assuranceTarget, policies []store.BackupAssurancePolicy) (namespaces []string, admin bool, err error) {
 	if auth.IsAdmin(t.user) {
 		return nil, true, nil
-	}
-	policies, err := t.st.ListPolicies(r.Context(), t.clusterID)
-	if err != nil {
-		return nil, false, err
 	}
 	candidates := make([]string, 0, len(policies))
 	for _, p := range policies {
@@ -360,25 +328,50 @@ func exceptionVisible(e store.BackupAssuranceException, admin bool, visible []st
 	return slices.Contains(visible, e.SubjectNamespace)
 }
 
-// assuranceSchedules returns the local schedules' uids keyed by
-// "namespace/name", or ok=false when Velero is not detected or the shared
-// read failed. Reads the handler's service-account cache; no write.
-func (h *Handler) assuranceSchedules(ctx context.Context) (map[string]string, bool) {
+// assuranceScheduleSet is the local schedule inventory as of one shared
+// Velero read: uids keyed by "namespace/name". known=false means Velero was
+// not detected or the read failed, and every answer is then unknown.
+type assuranceScheduleSet struct {
+	uids  map[string]string
+	known bool
+}
+
+// assuranceSchedules reads the inventory through the handler's
+// service-account cache; no write.
+func (h *Handler) assuranceSchedules(ctx context.Context) *assuranceScheduleSet {
 	if h.Discoverer == nil || !h.Discoverer.Status(ctx).Detected {
-		return nil, false
+		return &assuranceScheduleSet{}
 	}
 	data, err := h.fetchAll(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			h.Logger.Warn("backup assurance: velero read failed; schedule existence is unknown", "error", err)
 		}
-		return nil, false
+		return &assuranceScheduleSet{}
 	}
-	out := make(map[string]string, len(data.schedules))
+	out := &assuranceScheduleSet{uids: make(map[string]string, len(data.schedules)), known: true}
 	for _, s := range data.schedules {
-		out[s.Namespace+"/"+s.Name] = s.UID
+		out.uids[s.Namespace+"/"+s.Name] = s.UID
 	}
-	return out, true
+	return out
+}
+
+// existence reports whether the schedule ns/name exists: found, not_found
+// or unknown, with the "schedule not found" note for not_found. A non-empty
+// uid must match too, so a schedule recreated under the same name is
+// not_found for rows about its predecessor. A nil set is unknown.
+func (s *assuranceScheduleSet) existence(ns, name, uid string) (*string, string) {
+	status := assuranceScheduleUnknown
+	if s != nil && s.known {
+		status = assuranceScheduleNotFound
+		if got, ok := s.uids[ns+"/"+name]; ok && (uid == "" || got == uid) {
+			status = assuranceScheduleFound
+		}
+	}
+	if status == assuranceScheduleNotFound {
+		return &status, assuranceScheduleNotFoundNote
+	}
+	return &status, ""
 }
 
 // ---------------------------------------------------------------------------
@@ -386,8 +379,8 @@ func (h *Handler) assuranceSchedules(ctx context.Context) (map[string]string, bo
 // ---------------------------------------------------------------------------
 
 // HandleAssuranceStatus reports the collector's state and the caller's
-// visible open-exception counts. Holder, lease, last error and delivery
-// backlog are admin-only.
+// visible open-exception counts. This replica's runtime, the lease, the last
+// error and the delivery backlog are admin-only.
 func (h *Handler) HandleAssuranceStatus(w http.ResponseWriter, r *http.Request) {
 	t, ok := h.assuranceGate(w, r)
 	if !ok {
@@ -400,7 +393,7 @@ func (h *Handler) HandleAssuranceStatus(w http.ResponseWriter, r *http.Request) 
 		h.assuranceFail(w, r, err, "failed to read backup assurance status")
 		return
 	}
-	visible, admin, err := h.assuranceVisibleNamespaces(r, t)
+	visible, admin, err := h.assuranceVisibleNamespaces(r, t, policies)
 	if err != nil {
 		h.assuranceFail(w, r, err, "failed to check access")
 		return
@@ -410,34 +403,52 @@ func (h *Handler) HandleAssuranceStatus(w http.ResponseWriter, r *http.Request) 
 		h.assuranceFail(w, r, err, "failed to read backup assurance status")
 		return
 	}
+	var lease *store.AssuranceLease
+	switch l, err := t.st.GetLease(ctx, t.clusterID); {
+	case err == nil:
+		lease = &l
+	case errors.Is(err, store.ErrLeaseNotFound):
+	default:
+		h.assuranceFail(w, r, err, "failed to read backup assurance status")
+		return
+	}
+
+	policyCount := len(policies)
+	if !admin {
+		policyCount = 0
+		for _, p := range policies {
+			if p.ScopeNamespace != "" && slices.Contains(visible, p.ScopeNamespace) {
+				policyCount++
+			}
+		}
+	}
+	collectionUnknownOpen := slices.ContainsFunc(open, func(e store.BackupAssuranceException) bool {
+		return e.Condition == store.ConditionCollectionUnknown
+	})
 
 	snap := h.Assurance.Snapshot()
+	state, source := assuranceCollectionState(snap, lease, policyCount, collectionUnknownOpen, time.Now())
 	view := AssuranceStatusView{
-		Enabled:        snap.Enabled,
-		Collection:     assuranceCollectionState(snap, len(policies), time.Now()),
-		LastCollection: string(snap.LastCollection),
-		LastRunAt:      timePtr(snap.LastRunAt),
-		PolicyCount:    len(policies),
-		Open:           countOpen(open, admin, visible),
+		Enabled:          snap.Enabled,
+		Collection:       state,
+		CollectionSource: source,
+		PolicyCount:      policyCount,
+		Open:             countOpen(open, admin, visible),
 	}
 
 	if admin {
 		rt := &AssuranceRuntimeView{
-			Holder:       snap.Holder,
-			LastTickAt:   timePtr(snap.LastTickAt),
-			FindingCount: snap.FindingCount,
-			LastError:    snap.LastError,
-			LastErrorAt:  timePtr(snap.LastErrorAt),
-			LeaseHeld:    snap.LeaseHeld,
+			Holder:         snap.Holder,
+			LastTickAt:     timePtr(snap.LastTickAt),
+			LastRunAt:      timePtr(snap.LastRunAt),
+			LastCollection: string(snap.LastCollection),
+			FindingCount:   snap.FindingCount,
+			LastError:      snap.LastError,
+			LastErrorAt:    timePtr(snap.LastErrorAt),
+			LeaseHeld:      snap.LeaseHeld,
 		}
-		lease, err := t.st.GetLease(ctx, t.clusterID)
-		switch {
-		case err == nil:
+		if lease != nil {
 			rt.Lease = &AssuranceLeaseView{Holder: lease.Holder, Fence: lease.Fence, ExpiresAt: lease.ExpiresAt, Expired: lease.Expired}
-		case errors.Is(err, store.ErrLeaseNotFound):
-		default:
-			h.assuranceFail(w, r, err, "failed to read backup assurance status")
-			return
 		}
 		pending, failed, err := t.st.CountPendingDeliveries(ctx, t.clusterID)
 		if err != nil {
@@ -451,24 +462,47 @@ func (h *Handler) HandleAssuranceStatus(w http.ResponseWriter, r *http.Request) 
 	httputil.WriteData(w, view)
 }
 
-// assuranceCollectionState maps the runtime snapshot onto the status
-// vocabulary. The hard rule (§5) at the API layer: anything other than a
-// recent ok collection is never reported as ok, and a collection that failed
-// or never happened is unknown, never "no backups".
-func assuranceCollectionState(snap AssuranceRuntimeStatus, policyCount int, now time.Time) string {
+// Values of AssuranceStatusView.CollectionSource.
+const (
+	assuranceSourceThisReplica = "this_replica"
+	assuranceSourceLeaseHolder = "lease_holder"
+	assuranceSourceNone        = "none"
+)
+
+// assuranceCollectionState maps the collector's evidence onto the status
+// vocabulary and says where the verdict came from. The hard rule (section 5)
+// at the API layer: anything other than a recent ok collection is never
+// reported as ok, and a collection that failed or never happened is unknown,
+// never "no backups".
+//
+// The runtime snapshot is per replica, and only the lease holder collects.
+// When another replica holds a live lease, this replica's snapshot says
+// nothing, so the verdict comes from durable state that holder maintains: a
+// failed collection always leaves a cluster-scope collection_unknown
+// exception open (the evaluator emits exactly one, and only an ok collection
+// resolves it), so its presence is unknown and its absence, under a lease
+// renewed within its TTL, is ok. An expired or absent lease falls back to
+// this replica's own snapshot, which then reads unknown or stale.
+func assuranceCollectionState(snap AssuranceRuntimeStatus, lease *store.AssuranceLease, policyCount int, collectionUnknownOpen bool, now time.Time) (state, source string) {
 	switch {
 	case !snap.Enabled:
-		return AssuranceStateUnavailable
+		return AssuranceStateUnavailable, assuranceSourceNone
 	case policyCount == 0:
 		// No policy means no evaluation: install creates none (O-2).
-		return AssuranceStateEmpty
+		return AssuranceStateEmpty, assuranceSourceNone
+	case !snap.LeaseHeld && lease != nil && !lease.Expired && lease.Holder != snap.Holder:
+		if collectionUnknownOpen {
+			return AssuranceStateUnknown, assuranceSourceLeaseHolder
+		}
+		return AssuranceStateOK, assuranceSourceLeaseHolder
+	case snap.LastCollection == "":
+		return AssuranceStateUnknown, assuranceSourceNone
 	case snap.LastCollection != CollectionOK:
-		// Failed, or not yet collected by this replica.
-		return AssuranceStateUnknown
+		return AssuranceStateUnknown, assuranceSourceThisReplica
 	case snap.LastRunAt.IsZero() || now.Sub(snap.LastRunAt) > assuranceStaleAfter:
-		return AssuranceStateStale
+		return AssuranceStateStale, assuranceSourceThisReplica
 	}
-	return AssuranceStateOK
+	return AssuranceStateOK, assuranceSourceThisReplica
 }
 
 // countOpen counts the open exceptions the caller may see, per condition.
@@ -513,7 +547,15 @@ func (h *Handler) HandleListAssuranceExceptions(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	visible, admin, err := h.assuranceVisibleNamespaces(r, t)
+	var policies []store.BackupAssurancePolicy
+	if !auth.IsAdmin(t.user) {
+		var err error
+		if policies, err = t.st.ListPolicies(r.Context(), t.clusterID); err != nil {
+			h.assuranceFail(w, r, err, "failed to list backup assurance exceptions")
+			return
+		}
+	}
+	visible, admin, err := h.assuranceVisibleNamespaces(r, t, policies)
 	if err != nil {
 		h.assuranceFail(w, r, err, "failed to check access")
 		return
@@ -535,30 +577,19 @@ func (h *Handler) HandleListAssuranceExceptions(w http.ResponseWriter, r *http.R
 	// anything the query admitted; if it ever did, the total is recounted
 	// from what is returned rather than reporting a count for unseen rows.
 	views := make([]AssuranceExceptionView, 0, len(rows))
-	var schedules map[string]string
-	var schedulesKnown, schedulesRead, dropped bool
+	var schedules *assuranceScheduleSet
+	dropped := false
 	for _, e := range rows {
 		if !exceptionVisible(e, admin, visible) {
 			dropped = true
 			continue
 		}
-		v := h.projectException(e, admin)
+		v := projectException(e, admin)
 		if e.SubjectKind == store.ScopeSchedule {
-			if !schedulesRead {
-				schedules, schedulesKnown = h.assuranceSchedules(r.Context())
-				schedulesRead = true
+			if schedules == nil {
+				schedules = h.assuranceSchedules(r.Context())
 			}
-			status := assuranceScheduleUnknown
-			if schedulesKnown {
-				status = assuranceScheduleNotFound
-				if uid, ok := schedules[e.SubjectNamespace+"/"+e.SubjectName]; ok && (e.SubjectUID == "" || uid == e.SubjectUID) {
-					status = assuranceScheduleFound
-				}
-			}
-			v.SubjectStatus = &status
-			if status == assuranceScheduleNotFound {
-				v.SubjectNote = assuranceScheduleNotFoundNote
-			}
+			v.SubjectStatus, v.SubjectNote = schedules.existence(e.SubjectNamespace, e.SubjectName, e.SubjectUID)
 		}
 		views = append(views, v)
 	}
@@ -601,7 +632,7 @@ func parseExceptionQuery(r *http.Request) (store.AssuranceExceptionQuery, string
 
 // projectException builds the wire view, projecting detail through the
 // allow-list.
-func (h *Handler) projectException(e store.BackupAssuranceException, admin bool) AssuranceExceptionView {
+func projectException(e store.BackupAssuranceException, admin bool) AssuranceExceptionView {
 	v := AssuranceExceptionView{
 		ID:       e.ID.String(),
 		PolicyID: e.PolicyID.String(),
@@ -618,7 +649,12 @@ func (h *Handler) projectException(e store.BackupAssuranceException, admin bool)
 		LastSuccessAt:    e.LastSuccessAt,
 		Detail:           projectDetail(e.Detail, admin),
 	}
-	if !v.Detail.ExpectedRunKnown {
+	// The expected run only bears on the freshness conditions; on a failed,
+	// paused, location or collection exception "not computable" would claim
+	// an evaluation that never happened. Namespace and cluster scope keep the
+	// note on overdue: they have no cron, so the overdue verdict fell back to
+	// max age + grace, which is exactly what the note tells the reader (§5).
+	if !v.Detail.ExpectedRunKnown && (e.Condition == store.ConditionOverdue || e.Condition == store.ConditionNeverRun) {
 		v.ExpectedRunNote = assuranceExpectedRunUnknownTip
 	}
 	return v
@@ -638,455 +674,4 @@ func projectDetail(raw []byte, admin bool) AssuranceDetailView {
 		d.StorageLocation, d.BSLMessage, d.FailureReason = "", "", ""
 	}
 	return d
-}
-
-// ---------------------------------------------------------------------------
-// Policies (admin)
-// ---------------------------------------------------------------------------
-
-// HandleListAssurancePolicies returns every policy for the local cluster,
-// with whether each schedule-scope policy's schedule still exists.
-func (h *Handler) HandleListAssurancePolicies(w http.ResponseWriter, r *http.Request) {
-	t, ok := h.assuranceGate(w, r)
-	if !ok {
-		return
-	}
-	policies, err := t.st.ListPolicies(r.Context(), t.clusterID)
-	if err != nil {
-		h.assuranceFail(w, r, err, "failed to list backup assurance policies")
-		return
-	}
-
-	var schedules map[string]string
-	var known bool
-	if slices.ContainsFunc(policies, func(p store.BackupAssurancePolicy) bool { return p.ScopeKind == store.ScopeSchedule }) {
-		schedules, known = h.assuranceSchedules(r.Context())
-	}
-	views := make([]AssurancePolicyView, 0, len(policies))
-	for _, p := range policies {
-		views = append(views, policyView(p, schedules, known))
-	}
-	httputil.WriteJSON(w, http.StatusOK, api.Response{Data: views, Metadata: &api.Metadata{Total: len(views)}})
-}
-
-// policyView builds the wire view. schedules/known come from
-// assuranceSchedules; pass nil,false when existence was not read.
-func policyView(p store.BackupAssurancePolicy, schedules map[string]string, known bool) AssurancePolicyView {
-	v := AssurancePolicyView{
-		ID:             p.ID.String(),
-		ScopeKind:      string(p.ScopeKind),
-		ScopeNamespace: p.ScopeNamespace,
-		ScopeName:      p.ScopeName,
-		MaxAgeSeconds:  int64(p.MaxAge / time.Second),
-		GraceSeconds:   int64(p.Grace / time.Second),
-		TreatPartialAs: p.TreatPartialAs,
-		AlertOnPaused:  p.AlertOnPaused,
-		Enabled:        p.Enabled,
-		CreatedBy:      p.CreatedBy,
-		CreatedAt:      p.CreatedAt,
-		UpdatedBy:      p.UpdatedBy,
-		UpdatedAt:      p.UpdatedAt,
-		Revision:       p.Revision,
-	}
-	if p.ScopeKind == store.ScopeSchedule {
-		status := assuranceScheduleUnknown
-		if known {
-			status = assuranceScheduleNotFound
-			if _, ok := schedules[p.ScopeNamespace+"/"+p.ScopeName]; ok {
-				status = assuranceScheduleFound
-			}
-		}
-		v.ScheduleStatus = &status
-		if status == assuranceScheduleNotFound {
-			v.ScheduleNote = assuranceScheduleNotFoundNote
-		}
-	}
-	return v
-}
-
-// assuranceFieldError names one invalid field of a policy write.
-type assuranceFieldError struct {
-	Field   string `json:"field"`
-	Message string `json:"message"`
-}
-
-func writeAssuranceFieldErrors(w http.ResponseWriter, errs []assuranceFieldError) {
-	httputil.WriteErrorWithReason(w, http.StatusBadRequest,
-		"invalid policy: "+errs[0].Field+" "+errs[0].Message, "invalid_policy",
-		map[string]any{"fieldErrors": errs})
-}
-
-// assurancePolicyCreateRequest is the POST body. Pointers distinguish an
-// omitted field (defaulted) from a zero one (validated).
-type assurancePolicyCreateRequest struct {
-	ScopeKind      string  `json:"scopeKind"`
-	ScopeNamespace string  `json:"scopeNamespace"`
-	ScopeName      string  `json:"scopeName"`
-	MaxAgeSeconds  *int64  `json:"maxAgeSeconds"`
-	GraceSeconds   *int64  `json:"graceSeconds"`
-	TreatPartialAs *string `json:"treatPartialAs"`
-	AlertOnPaused  *bool   `json:"alertOnPaused"`
-	Enabled        *bool   `json:"enabled"`
-}
-
-// assurancePolicyUpdateRequest is the PUT body. Scope is immutable: the
-// scope fields are accepted only when they repeat the stored scope, so a
-// client echoing the policy back works and a client trying to move it gets
-// a clear refusal instead of a silent no-op. Omitted thresholds keep their
-// stored value.
-type assurancePolicyUpdateRequest struct {
-	Revision       *int64  `json:"revision"`
-	ScopeKind      *string `json:"scopeKind"`
-	ScopeNamespace *string `json:"scopeNamespace"`
-	ScopeName      *string `json:"scopeName"`
-	MaxAgeSeconds  *int64  `json:"maxAgeSeconds"`
-	GraceSeconds   *int64  `json:"graceSeconds"`
-	TreatPartialAs *string `json:"treatPartialAs"`
-	AlertOnPaused  *bool   `json:"alertOnPaused"`
-	Enabled        *bool   `json:"enabled"`
-}
-
-// decodeAssuranceBody decodes a bounded JSON body, rejecting unknown fields
-// and trailing data.
-func decodeAssuranceBody(w http.ResponseWriter, r *http.Request, dst any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, assurancePolicyBodyLimit))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		httputil.WriteErrorWithReason(w, http.StatusBadRequest, "invalid request body", "invalid_body", nil)
-		return false
-	}
-	if dec.More() {
-		httputil.WriteErrorWithReason(w, http.StatusBadRequest, "invalid request body", "invalid_body", nil)
-		return false
-	}
-	return true
-}
-
-// validateScope checks a create request's scope.
-func validateScope(kind, ns, name string) []assuranceFieldError {
-	var errs []assuranceFieldError
-	checkNS := func(required bool) {
-		switch {
-		case ns == "" && required:
-			errs = append(errs, assuranceFieldError{"scopeNamespace", "is required"})
-		case ns != "" && !validateDNSLabel(ns):
-			errs = append(errs, assuranceFieldError{"scopeNamespace", "must be a valid namespace name"})
-		}
-	}
-	switch store.AssuranceScopeKind(kind) {
-	case store.ScopeSchedule:
-		checkNS(true)
-		switch {
-		case name == "":
-			errs = append(errs, assuranceFieldError{"scopeName", "is required for schedule scope"})
-		case !resources.ValidateK8sName(name):
-			errs = append(errs, assuranceFieldError{"scopeName", "must be a valid schedule name"})
-		}
-	case store.ScopeNamespace:
-		checkNS(true)
-		if name != "" {
-			errs = append(errs, assuranceFieldError{"scopeName", "must be empty for namespace scope"})
-		}
-	case store.ScopeCluster:
-		if ns != "" {
-			errs = append(errs, assuranceFieldError{"scopeNamespace", "must be empty for cluster scope"})
-		}
-		if name != "" {
-			errs = append(errs, assuranceFieldError{"scopeName", "must be empty for cluster scope"})
-		}
-	default:
-		errs = append(errs, assuranceFieldError{"scopeKind", `must be "schedule", "namespace" or "cluster"`})
-	}
-	return errs
-}
-
-// validateThresholds checks the mutable fields of a policy. A nil maxAge is
-// reported as missing. The floors mirror the migration's CHECKs so the
-// caller learns which field is wrong rather than receiving a constraint name.
-func validateThresholds(maxAge *int64, grace int64, treatPartialAs string) []assuranceFieldError {
-	var errs []assuranceFieldError
-	minAge := int64(store.AssuranceMinMaxAge / time.Second)
-	switch {
-	case maxAge == nil:
-		errs = append(errs, assuranceFieldError{"maxAgeSeconds", "is required"})
-	case *maxAge < minAge:
-		errs = append(errs, assuranceFieldError{"maxAgeSeconds", fmt.Sprintf("must be at least %d", minAge)})
-	case *maxAge > math.MaxInt32:
-		errs = append(errs, assuranceFieldError{"maxAgeSeconds", fmt.Sprintf("must be at most %d", math.MaxInt32)})
-	}
-	switch {
-	case grace < 0:
-		errs = append(errs, assuranceFieldError{"graceSeconds", "must not be negative"})
-	case grace > math.MaxInt32:
-		errs = append(errs, assuranceFieldError{"graceSeconds", fmt.Sprintf("must be at most %d", math.MaxInt32)})
-	}
-	switch treatPartialAs {
-	case store.AssuranceTreatPartialAsSuccess, store.AssuranceTreatPartialAsFailure:
-	default:
-		errs = append(errs, assuranceFieldError{"treatPartialAs", `must be "success" or "failure"`})
-	}
-	return errs
-}
-
-// HandleCreateAssurancePolicy creates a policy. Defaults: grace 3600 s,
-// treatPartialAs "failure", alertOnPaused and enabled true.
-func (h *Handler) HandleCreateAssurancePolicy(w http.ResponseWriter, r *http.Request) {
-	t, ok := h.assuranceGate(w, r)
-	if !ok {
-		return
-	}
-	var req assurancePolicyCreateRequest
-	if !decodeAssuranceBody(w, r, &req) {
-		return
-	}
-
-	grace := int64(assuranceDefaultGrace / time.Second)
-	if req.GraceSeconds != nil {
-		grace = *req.GraceSeconds
-	}
-	treat := store.AssuranceTreatPartialAsFailure
-	if req.TreatPartialAs != nil {
-		treat = *req.TreatPartialAs
-	}
-	errs := append(validateScope(req.ScopeKind, req.ScopeNamespace, req.ScopeName),
-		validateThresholds(req.MaxAgeSeconds, grace, treat)...)
-	if len(errs) > 0 {
-		writeAssuranceFieldErrors(w, errs)
-		return
-	}
-
-	p := store.BackupAssurancePolicy{
-		ID:             uuid.New(),
-		ClusterID:      t.clusterID,
-		ScopeKind:      store.AssuranceScopeKind(req.ScopeKind),
-		ScopeNamespace: req.ScopeNamespace,
-		ScopeName:      req.ScopeName,
-		MaxAge:         time.Duration(*req.MaxAgeSeconds) * time.Second,
-		Grace:          time.Duration(grace) * time.Second,
-		TreatPartialAs: treat,
-		AlertOnPaused:  boolOr(req.AlertOnPaused, true),
-		Enabled:        boolOr(req.Enabled, true),
-		CreatedBy:      t.user.Username,
-	}
-	if err := t.st.InsertPolicy(r.Context(), p); err != nil {
-		h.auditAssurance(r, t.user, audit.ActionCreate, p, audit.ResultFailure, "")
-		h.writePolicyStoreError(w, r, err, "failed to create backup assurance policy")
-		return
-	}
-	h.auditAssurance(r, t.user, audit.ActionCreate, p, audit.ResultSuccess, "")
-
-	created, err := t.st.GetPolicy(r.Context(), t.clusterID, p.ID)
-	if err != nil {
-		h.assuranceFail(w, r, err, "policy created but could not be read back")
-		return
-	}
-	httputil.WriteJSON(w, http.StatusCreated, api.Response{Data: h.policyViewWithSchedule(r.Context(), *created)})
-}
-
-// HandleUpdateAssurancePolicy changes a policy's thresholds and switches.
-// The body must carry the revision the client read; a stale one is 409.
-func (h *Handler) HandleUpdateAssurancePolicy(w http.ResponseWriter, r *http.Request) {
-	t, ok := h.assuranceGate(w, r)
-	if !ok {
-		return
-	}
-	id, ok := assurancePolicyID(w, r)
-	if !ok {
-		return
-	}
-	var req assurancePolicyUpdateRequest
-	if !decodeAssuranceBody(w, r, &req) {
-		return
-	}
-	if req.Revision == nil {
-		writeAssuranceFieldErrors(w, []assuranceFieldError{{"revision", "is required"}})
-		return
-	}
-
-	current, err := t.st.GetPolicy(r.Context(), t.clusterID, id)
-	if err != nil {
-		h.writePolicyStoreError(w, r, err, "failed to read backup assurance policy")
-		return
-	}
-	if scopeChanged(req.ScopeKind, string(current.ScopeKind)) ||
-		scopeChanged(req.ScopeNamespace, current.ScopeNamespace) ||
-		scopeChanged(req.ScopeName, current.ScopeName) {
-		httputil.WriteErrorWithReason(w, http.StatusBadRequest,
-			"a policy's scope cannot be changed; create a new policy for a different scope", "scope_immutable", nil)
-		return
-	}
-
-	next := *current
-	maxAge := int64(current.MaxAge / time.Second)
-	if req.MaxAgeSeconds != nil {
-		maxAge = *req.MaxAgeSeconds
-	}
-	grace := int64(current.Grace / time.Second)
-	if req.GraceSeconds != nil {
-		grace = *req.GraceSeconds
-	}
-	if req.TreatPartialAs != nil {
-		next.TreatPartialAs = *req.TreatPartialAs
-	}
-	if errs := validateThresholds(&maxAge, grace, next.TreatPartialAs); len(errs) > 0 {
-		writeAssuranceFieldErrors(w, errs)
-		return
-	}
-	next.MaxAge = time.Duration(maxAge) * time.Second
-	next.Grace = time.Duration(grace) * time.Second
-	next.AlertOnPaused = boolOr(req.AlertOnPaused, current.AlertOnPaused)
-	next.Enabled = boolOr(req.Enabled, current.Enabled)
-	next.Revision = *req.Revision
-	next.UpdatedBy = t.user.Username
-
-	if err := t.st.UpdatePolicy(r.Context(), next); err != nil {
-		h.auditAssurance(r, t.user, audit.ActionUpdate, next, audit.ResultFailure, "")
-		h.writePolicyStoreError(w, r, err, "failed to update backup assurance policy")
-		return
-	}
-	h.auditAssurance(r, t.user, audit.ActionUpdate, next, audit.ResultSuccess, "")
-
-	updated, err := t.st.GetPolicy(r.Context(), t.clusterID, id)
-	if err != nil {
-		h.assuranceFail(w, r, err, "policy updated but could not be read back")
-		return
-	}
-	httputil.WriteData(w, h.policyViewWithSchedule(r.Context(), *updated))
-}
-
-// HandleDeleteAssurancePolicy deletes a policy and, by cascade, every
-// exception it opened, open or resolved, with their delivery intents. That
-// discards history, so the request must say so explicitly with
-// ?confirm=true; without it the answer is 400 confirmation_required carrying
-// the number of open exceptions the delete would discard.
-func (h *Handler) HandleDeleteAssurancePolicy(w http.ResponseWriter, r *http.Request) {
-	t, ok := h.assuranceGate(w, r)
-	if !ok {
-		return
-	}
-	id, ok := assurancePolicyID(w, r)
-	if !ok {
-		return
-	}
-	current, err := t.st.GetPolicy(r.Context(), t.clusterID, id)
-	if err != nil {
-		h.writePolicyStoreError(w, r, err, "failed to read backup assurance policy")
-		return
-	}
-	open, err := t.st.ListOpenExceptions(r.Context(), t.clusterID)
-	if err != nil {
-		h.assuranceFail(w, r, err, "failed to read backup assurance exceptions")
-		return
-	}
-	openForPolicy := 0
-	for _, e := range open {
-		if e.PolicyID == id {
-			openForPolicy++
-		}
-	}
-
-	if r.URL.Query().Get("confirm") != "true" {
-		httputil.WriteErrorWithReason(w, http.StatusBadRequest,
-			"deleting a policy discards every exception it opened, open and resolved; repeat the request with confirm=true",
-			"confirmation_required", map[string]any{"openExceptions": openForPolicy})
-		return
-	}
-
-	detail := fmt.Sprintf("cascaded exceptions (open at delete: %d)", openForPolicy)
-	if err := t.st.DeletePolicy(r.Context(), t.clusterID, id); err != nil {
-		h.auditAssurance(r, t.user, audit.ActionDelete, *current, audit.ResultFailure, detail)
-		h.writePolicyStoreError(w, r, err, "failed to delete backup assurance policy")
-		return
-	}
-	h.auditAssurance(r, t.user, audit.ActionDelete, *current, audit.ResultSuccess, detail)
-	httputil.WriteData(w, map[string]any{"id": id.String(), "deleted": true, "discardedOpenExceptions": openForPolicy})
-}
-
-// policyViewWithSchedule is policyView with schedule existence read now.
-func (h *Handler) policyViewWithSchedule(ctx context.Context, p store.BackupAssurancePolicy) AssurancePolicyView {
-	if p.ScopeKind != store.ScopeSchedule {
-		return policyView(p, nil, false)
-	}
-	schedules, known := h.assuranceSchedules(ctx)
-	return policyView(p, schedules, known)
-}
-
-// assurancePolicyID parses {id}. resources.ValidateURLParams covers only
-// {name}/{namespace}, so the id is checked here: anything that is not a
-// UUID is 400 before the store sees it.
-func assurancePolicyID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	raw := chi.URLParam(r, "id")
-	id, err := uuid.Parse(raw)
-	// uuid.Parse also accepts the urn: and braced forms; insist on the
-	// canonical 36-character form so one policy has one URL.
-	if err != nil || len(raw) != 36 || id == uuid.Nil {
-		httputil.WriteErrorWithReason(w, http.StatusBadRequest, "policy id must be a UUID", "invalid_id", nil)
-		return uuid.Nil, false
-	}
-	return id, true
-}
-
-// scopeChanged reports whether an update names a scope field that differs
-// from the stored value.
-func scopeChanged(sent *string, stored string) bool {
-	return sent != nil && *sent != stored
-}
-
-func boolOr(p *bool, def bool) bool {
-	if p == nil {
-		return def
-	}
-	return *p
-}
-
-// writePolicyStoreError maps store sentinels onto responses. Anything else
-// is logged and answered without its text (CWE-209).
-func (h *Handler) writePolicyStoreError(w http.ResponseWriter, r *http.Request, err error, msg string) {
-	switch {
-	case errors.Is(err, store.ErrAssurancePolicyNotFound):
-		httputil.WriteErrorWithReason(w, http.StatusNotFound, "backup assurance policy not found", "policy_not_found", nil)
-	case errors.Is(err, store.ErrAssurancePolicyExists):
-		httputil.WriteErrorWithReason(w, http.StatusConflict,
-			"a policy already exists for this scope", "policy_exists", nil)
-	case errors.Is(err, store.ErrAssuranceRevisionConflict):
-		httputil.WriteErrorWithReason(w, http.StatusConflict,
-			"the policy was changed by someone else; reload it and try again", "revision_conflict", nil)
-	case errors.Is(err, store.ErrAssurancePolicyInvalid):
-		// The handler validates first; this is a schema CHECK the handler
-		// did not anticipate. Say which request is wrong, not which
-		// constraint fired.
-		h.Logger.Warn("backup assurance: policy rejected by the store", "error", err)
-		httputil.WriteErrorWithReason(w, http.StatusBadRequest, "invalid policy", "invalid_policy", nil)
-	default:
-		h.assuranceFail(w, r, err, msg)
-	}
-}
-
-// auditAssurance records a policy write. ResourceName is the policy id (the
-// only unique name a namespace- or cluster-scope policy has); the scope goes
-// in Detail.
-func (h *Handler) auditAssurance(r *http.Request, user *auth.User, action audit.Action, p store.BackupAssurancePolicy, result audit.Result, extra string) {
-	if h.AuditLogger == nil {
-		return
-	}
-	scope := string(p.ScopeKind)
-	if target := strings.Trim(p.ScopeNamespace+"/"+p.ScopeName, "/"); target != "" {
-		scope += " " + target
-	}
-	detail := "scope=" + scope
-	if extra != "" {
-		detail += "; " + extra
-	}
-	_ = h.AuditLogger.Log(r.Context(), audit.Entry{
-		Timestamp:         time.Now(),
-		ClusterID:         middleware.ClusterIDFromContext(r.Context()),
-		User:              user.Username,
-		SourceIP:          r.RemoteAddr,
-		Action:            action,
-		ResourceKind:      assuranceAuditKind,
-		ResourceNamespace: p.ScopeNamespace,
-		ResourceName:      p.ID.String(),
-		Result:            result,
-		Detail:            detail,
-	})
 }

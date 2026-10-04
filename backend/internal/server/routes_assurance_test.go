@@ -13,10 +13,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/velero"
 )
@@ -83,6 +86,88 @@ func TestAssuranceRoutes_ExposeNoMutatingClusterOperation(t *testing.T) {
 			if strings.Contains(path, forbidden) {
 				t.Errorf("%s names %q; an assurance route must not reach a Velero object", have, forbidden)
 			}
+		}
+	}
+}
+
+// assuranceFullServer builds the production server through New, so requests
+// pass the real /api/v1 middleware stack (Auth, CSRF, ClusterContext, rate
+// limiting), with a DB-less velero handler and a YAML write limiter of rate.
+func assuranceFullServer(t *testing.T, rate int) (*Server, string) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tm := auth.NewTokenManager([]byte("test-signing-key-minimum-32-bytes"))
+	registry := auth.NewProviderRegistry()
+	srv := New(Deps{
+		Config: &config.Config{
+			Dev:       true,
+			ClusterID: "test-cluster",
+			Server: config.ServerConfig{
+				Port:            8080,
+				RequestTimeout:  config.DefaultRequestTimeout,
+				ShutdownTimeout: config.DefaultShutdownTimeout,
+			},
+			Log: config.LogConfig{Level: "error", Format: "json"},
+		},
+		Logger:          logger,
+		TokenManager:    tm,
+		AuthRegistry:    registry,
+		OIDCStateStore:  auth.NewOIDCStateStore(),
+		Sessions:        auth.NewSessionStore(),
+		AuditLogger:     audit.NewSlogLogger(logger),
+		RateLimiter:     middleware.NewRateLimiter(),
+		YAMLRateLimiter: middleware.NewRateLimiterWithRate(rate, time.Minute),
+		ReadyFn:         func() bool { return true },
+		VeleroHandler:   &velero.Handler{Logger: logger},
+	})
+	tok, err := tm.IssueAccessToken(&auth.User{ID: "admin", Username: "admin", KubernetesUsername: "admin", Roles: []string{"admin"}})
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+	return srv, tok
+}
+
+// TestAssuranceRoutes_FullChainEnforcesCSRFAndRateLimit sends policy writes
+// through the production router: without X-Requested-With the enclosing
+// group refuses them, and past the YAML write limiter's budget they are 429
+// before the handler runs.
+func TestAssuranceRoutes_FullChainEnforcesCSRFAndRateLimit(t *testing.T) {
+	writes := []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/velero/assurance/policies"},
+		{http.MethodPut, "/api/v1/velero/assurance/policies/0f6a0000-0000-4000-8000-000000000001"},
+		{http.MethodDelete, "/api/v1/velero/assurance/policies/0f6a0000-0000-4000-8000-000000000001?confirm=true"},
+	}
+	send := func(srv *Server, tok, method, path string, csrf bool) int {
+		req := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		if csrf {
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		}
+		rec := httptest.NewRecorder()
+		srv.Router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for _, wr := range writes {
+		t.Run(wr.method, func(t *testing.T) {
+			srv, tok := assuranceFullServer(t, 1)
+			if code := send(srv, tok, wr.method, wr.path, false); code != http.StatusForbidden {
+				t.Fatalf("without X-Requested-With: status %d, want 403", code)
+			}
+			if code := send(srv, tok, wr.method, wr.path, true); code != http.StatusServiceUnavailable {
+				t.Fatalf("first write: status %d, want 503 from the DB-less handler", code)
+			}
+			if code := send(srv, tok, wr.method, wr.path, true); code != http.StatusTooManyRequests {
+				t.Fatalf("second write: status %d, want 429 from the write limiter", code)
+			}
+		})
+	}
+
+	// Reads are not rate-limited by the write limiter.
+	srv, tok := assuranceFullServer(t, 1)
+	for range 3 {
+		if code := send(srv, tok, http.MethodGet, "/api/v1/velero/assurance/status", false); code != http.StatusServiceUnavailable {
+			t.Fatalf("status read: %d, want 503 every time", code)
 		}
 	}
 }
