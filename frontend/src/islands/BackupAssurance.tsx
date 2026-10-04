@@ -67,7 +67,12 @@ import { timeAgo } from "@/lib/timeAgo.ts";
 import type { VeleroStatus } from "@/lib/velero-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
-const BASE = "/v1/velero/assurance";
+// Full literals, one per mounted route: e2e/tests/api-routes.spec.ts reads
+// every quoted "/v1/..." literal and asserts the backend mounts it, so each
+// real endpoint stays route-checked. Never reintroduce a bare base path.
+const STATUS_URL = "/v1/velero/assurance/status";
+const EXCEPTIONS_URL = "/v1/velero/assurance/exceptions";
+const POLICIES_URL = "/v1/velero/assurance/policies";
 
 const ROOT_CLASS = "flex flex-col gap-5 p-6";
 const ROOT_TEST_ID = "backup-assurance";
@@ -940,7 +945,7 @@ export default function BackupAssurance() {
         offset: String(exOffset.value),
       });
       const res = await apiGet<AssuranceException[]>(
-        `${BASE}/exceptions?${qs.toString()}`,
+        `${EXCEPTIONS_URL}?${qs.toString()}`,
       );
       if (ticket !== exTicket.current) return;
       const rows = Array.isArray(res.data) ? res.data : [];
@@ -970,7 +975,7 @@ export default function BackupAssurance() {
   async function loadPolicies(): Promise<void> {
     const ticket = ++policyTicket.current;
     try {
-      const res = await apiGet<AssurancePolicy[]>(`${BASE}/policies`);
+      const res = await apiGet<AssurancePolicy[]>(POLICIES_URL);
       if (ticket !== policyTicket.current) return;
       policies.value = Array.isArray(res.data) ? res.data : [];
       policiesFailure.value = null;
@@ -985,7 +990,7 @@ export default function BackupAssurance() {
     const ticket = ++statusTicket.current;
     loading.value = true;
     const [statusRes, veleroRes] = await Promise.allSettled([
-      apiGet<AssuranceStatus>(`${BASE}/status`),
+      apiGet<AssuranceStatus>(STATUS_URL),
       apiGet<VeleroStatus>("/v1/velero/status"),
     ]);
     if (ticket !== statusTicket.current) return;
@@ -1112,7 +1117,7 @@ export default function BackupAssurance() {
           alertOnPaused: f.alertOnPaused,
           enabled: f.enabled,
         };
-        await apiPost<AssurancePolicy>(`${BASE}/policies`, body);
+        await apiPost<AssurancePolicy>(POLICIES_URL, body);
         notice.value =
           "Policy created. It is evaluated on the collector's next pass, within about a minute.";
       } else {
@@ -1125,7 +1130,7 @@ export default function BackupAssurance() {
           alertOnPaused: f.alertOnPaused,
           enabled: f.enabled,
         };
-        await apiPut<AssurancePolicy>(`${BASE}/policies/${p.id}`, body);
+        await apiPut<AssurancePolicy>(`${POLICIES_URL}/${p.id}`, body);
         notice.value = "Policy saved.";
       }
       closeEditor();
@@ -1191,7 +1196,7 @@ export default function BackupAssurance() {
     deleteError.value = null;
     notice.value = null;
     try {
-      await api<AssurancePolicyDeleted>(`${BASE}/policies/${p.id}`, {
+      await api<AssurancePolicyDeleted>(`${POLICIES_URL}/${p.id}`, {
         method: "DELETE",
       });
       // A server that deleted without confirmation would be a contract
@@ -1221,7 +1226,7 @@ export default function BackupAssurance() {
     deleteError.value = null;
     try {
       const res = await api<AssurancePolicyDeleted>(
-        `${BASE}/policies/${target.policy.id}?confirm=true`,
+        `${POLICIES_URL}/${target.policy.id}?confirm=true`,
         { method: "DELETE" },
       );
       const n = res.data?.discardedOpenExceptions ?? target.openExceptions;
