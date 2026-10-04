@@ -28,17 +28,22 @@ const verifyRetryAfterSeconds = 5
 
 // VerifyOnce performs exactly one live read per verifiable object through dyn
 // (the caller's own impersonated client, already routed to the receipt's
-// cluster) and persists the resulting verdict. It is called from a request
-// goroutine and starts no background work, so no user credential outlives the
-// request that supplied it. There is no watcher and no retry loop: the client
-// polls while the result says verifying.
+// cluster) and, when opts.Persist is set, persists the resulting verdict. It
+// is called from a request goroutine and starts no background work, so no
+// user credential outlives the request that supplied it. There is no watcher
+// and no retry loop: the client polls while the result says verifying.
 //
 // Rules (plan D6):
 //
 //   - a receipt whose verification is already final returns the stored verdict
-//     untouched: it is frozen, no read is made;
+//     untouched: it is frozen, no read is made, Persist or not;
 //   - a receipt that has not completed returns pending without reading;
-//   - objects whose apply failed are skipped, never verified;
+//   - objects whose apply failed are skipped, never verified, EXCEPT those
+//     whose failure is indeterminate (the request was cut off and the server
+//     may have committed it): those are verified like a success;
+//   - an object with no recorded UID is inconclusive/identity_unknown without
+//     a read: a live object cannot be bound to the one that was applied (R1),
+//     and no live UID is stamped as evidence;
 //   - an unsupported kind is inconclusive/kind_not_supported, never a pass;
 //   - not found is fail/not_found; a different UID is
 //     inconclusive/target_recreated; forbidden is inconclusive/read_forbidden;
@@ -49,10 +54,14 @@ const verifyRetryAfterSeconds = 5
 //     the window -> verifying (retry in 5s); all pass -> verified; otherwise
 //     (nothing to check, or a terminal inconclusive) -> inconclusive.
 //
-// A persist that is refused because the stored verdict is already final (the
-// row was reconciled, or a concurrent poll finished first) returns that stored
-// verdict rather than an error.
-func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dynamic.Interface) (*VerificationResult, error) {
+// Persistence: a final verdict is written only if the row's verdict is still
+// open when re-read just before the write, and a write the store refuses
+// because the stored verdict is already final (the row was reconciled, or a
+// concurrent poll finished first) returns that stored verdict rather than an
+// error. Either way the first final verdict wins. With Persist false the
+// computed result is returned and nothing is written; that is how a grantee
+// or admin reads a live evaluation without replacing the owner's verdict.
+func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dynamic.Interface, opts VerifyOptions) (*VerificationResult, error) {
 	if !s.Available() {
 		return nil, &StoreUnavailableError{Step: "verification", Err: errors.New("no receipt store configured")}
 	}
@@ -72,7 +81,7 @@ func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dy
 	now := s.now()
 	checks := make([]CheckResult, 0, len(r.Objects))
 	for _, o := range r.Objects {
-		if o.Action == ActionFailed {
+		if !verifiable(o) {
 			continue
 		}
 		checks = append(checks, s.verifyObject(ctx, dyn, r.ClusterID, o, now))
@@ -85,7 +94,26 @@ func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dy
 		}
 	}
 	state := aggregateVerification(checks)
+	res := &VerificationResult{State: state, Checks: checks}
+	if state == store.VerifyVerifying {
+		res.RetryAfterSeconds = verifyRetryAfterSeconds
+	}
+	if !opts.Persist {
+		return res, nil
+	}
 
+	if state.IsFinal() {
+		// First final verdict wins. The store allows a final-to-final replace,
+		// so check the row just before writing; the store's own guard covers
+		// the non-final-over-final case below.
+		current, err := s.receipts.Get(ctx, r.ID)
+		if err != nil {
+			return nil, &StoreUnavailableError{Step: "verification", Err: err}
+		}
+		if current != nil && current.VerificationState.IsFinal() {
+			return storedVerdict(current), nil
+		}
+	}
 	payload, err := json.Marshal(checks)
 	if err != nil {
 		return nil, fmt.Errorf("encode verification checks: %w", err)
@@ -100,12 +128,13 @@ func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dy
 		}
 		return nil, &StoreUnavailableError{Step: "verification", Err: err}
 	}
-
-	res := &VerificationResult{State: state, Checks: checks}
-	if state == store.VerifyVerifying {
-		res.RetryAfterSeconds = verifyRetryAfterSeconds
-	}
 	return res, nil
+}
+
+// verifiable reports whether a recorded outcome says anything may exist on
+// the cluster: a success, or a failure the API server may have committed.
+func verifiable(o store.ReceiptObject) bool {
+	return o.Action != ActionFailed || o.ErrorClass == ErrorClassIndeterminate
 }
 
 // verifyObject does the one live read for o and evaluates it.
@@ -121,6 +150,10 @@ func (s *Service) verifyObject(ctx context.Context, dyn dynamic.Interface, clust
 		c := unsupportedKind(src, now)
 		c.Detail = "no resource mapping was recorded for this object"
 		return c
+	}
+	if o.UID == "" {
+		return newCheck(src, now, CheckInconclusive, ReasonIdentityUnknown, diagnostics.SeverityInfo,
+			"the receipt holds no identity for this object, so a live read cannot be bound to what was applied", "")
 	}
 
 	gvr := schema.GroupVersionResource{Group: o.Group, Version: o.Version, Resource: o.Resource}
@@ -141,13 +174,23 @@ func (s *Service) verifyObject(ctx context.Context, dyn dynamic.Interface, clust
 			"reading the object failed; its state could not be verified", "")
 	}
 	liveUID := string(live.GetUID())
-	if o.UID != "" && liveUID != "" && liveUID != o.UID {
+	if liveUID != "" && liveUID != o.UID {
 		c := newCheck(src, now, CheckInconclusive, ReasonTargetRecreated, diagnostics.SeverityWarning,
 			"a different object now exists under this name; the receipt's evidence does not apply to it", "")
 		c.Evidence = map[string]string{o.Kind + "/" + o.Name: liveUID}
 		return c
 	}
 	return CheckRollout(live, src, now)
+}
+
+// workloadPredicates is the single source of truth for which kinds have a
+// rollout postcondition and what it is. A kind absent here is unsupported;
+// CheckRollout also treats an empty predicate list as unsupported, so adding
+// a kind without predicates cannot produce a pass.
+var workloadPredicates = map[string]func(*unstructured.Unstructured) []predicate{
+	"Deployment":  deploymentPredicates,
+	"StatefulSet": statefulSetPredicates,
+	"DaemonSet":   daemonSetPredicates,
 }
 
 // supportedWorkload reports whether CheckRollout defines a postcondition for
@@ -157,11 +200,8 @@ func supportedWorkload(group, kind string) bool {
 	if group != "apps" {
 		return false
 	}
-	switch kind {
-	case "Deployment", "StatefulSet", "DaemonSet":
-		return true
-	}
-	return false
+	_, ok := workloadPredicates[kind]
+	return ok
 }
 
 func unsupportedKind(src SourceRef, now time.Time) CheckResult {
@@ -245,21 +285,30 @@ func storedVerdict(r *store.ChangeReceipt) *VerificationResult {
 }
 
 // CheckRollout evaluates the rollout postcondition for one live workload
-// object (plan D6). Pure: no I/O, so it is table-tested for every predicate in
-// both polarities.
+// object (plan D6, tightened to kubectl's `rollout status` clauses so a
+// rollout is complete only when no pod of a previous revision is left). Pure:
+// no I/O, so it is table-tested for every predicate in both polarities.
 //
 //	apps/v1 Deployment:  observedGeneration >= generation,
 //	                     updatedReplicas == spec.replicas,
-//	                     availableReplicas >= spec.replicas,
+//	                     status.replicas == updatedReplicas   (no old-RS pods),
+//	                     availableReplicas >= updatedReplicas,
 //	                     condition Available == True
 //	apps/v1 StatefulSet: observedGeneration >= generation,
+//	                     status.replicas == spec.replicas,
 //	                     updatedReplicas == spec.replicas,
 //	                     readyReplicas >= spec.replicas,
 //	                     currentRevision == updateRevision
 //	apps/v1 DaemonSet:   observedGeneration >= generation,
 //	                     updatedNumberScheduled == desiredNumberScheduled,
+//	                     currentNumberScheduled == desiredNumberScheduled,
+//	                     numberAvailable >= desiredNumberScheduled,
 //	                     numberReady >= desiredNumberScheduled,
 //	                     numberUnavailable == 0
+//
+// Known limit, shared with kubectl: a DaemonSet rolling out with maxSurge > 0
+// exposes no status field that counts surge pods, so a node whose old pod is
+// still available while the new one is not can satisfy these clauses.
 //
 // Any other kind, or one of these kinds outside the apps group, is
 // CheckInconclusive with Reason "kind_not_supported": a kind the check does
@@ -290,15 +339,9 @@ func CheckRollout(obj *unstructured.Unstructured, src SourceRef, now time.Time) 
 	if !supportedWorkload(gvk.Group, gvk.Kind) {
 		return unsupportedKind(src, now)
 	}
-
-	var preds []predicate
-	switch gvk.Kind {
-	case "Deployment":
-		preds = deploymentPredicates(obj)
-	case "StatefulSet":
-		preds = statefulSetPredicates(obj)
-	case "DaemonSet":
-		preds = daemonSetPredicates(obj)
+	preds := workloadPredicates[gvk.Kind](obj)
+	if len(preds) == 0 {
+		return unsupportedKind(src, now)
 	}
 
 	var observed, failing []string
@@ -331,13 +374,15 @@ func deploymentPredicates(obj *unstructured.Unstructured) []predicate {
 	gen := obj.GetGeneration()
 	og := statusInt(obj, "observedGeneration")
 	replicas := specReplicas(obj)
+	total := statusInt(obj, "replicas")
 	updated := statusInt(obj, "updatedReplicas")
 	available := statusInt(obj, "availableReplicas")
 	availCond := conditionStatus(obj, "Available")
 	return []predicate{
 		{og >= gen, fmt.Sprintf("observedGeneration %d >= generation %d", og, gen)},
 		{updated == replicas, fmt.Sprintf("updatedReplicas %d == replicas %d", updated, replicas)},
-		{available >= replicas, fmt.Sprintf("availableReplicas %d >= replicas %d", available, replicas)},
+		{total == updated, fmt.Sprintf("status.replicas %d == updatedReplicas %d", total, updated)},
+		{available >= updated, fmt.Sprintf("availableReplicas %d >= updatedReplicas %d", available, updated)},
 		{availCond == "True", fmt.Sprintf("condition Available=%s", orUnset(availCond))},
 	}
 }
@@ -346,12 +391,14 @@ func statefulSetPredicates(obj *unstructured.Unstructured) []predicate {
 	gen := obj.GetGeneration()
 	og := statusInt(obj, "observedGeneration")
 	replicas := specReplicas(obj)
+	total := statusInt(obj, "replicas")
 	updated := statusInt(obj, "updatedReplicas")
 	ready := statusInt(obj, "readyReplicas")
 	current := statusString(obj, "currentRevision")
 	update := statusString(obj, "updateRevision")
 	return []predicate{
 		{og >= gen, fmt.Sprintf("observedGeneration %d >= generation %d", og, gen)},
+		{total == replicas, fmt.Sprintf("status.replicas %d == replicas %d", total, replicas)},
 		{updated == replicas, fmt.Sprintf("updatedReplicas %d == replicas %d", updated, replicas)},
 		{ready >= replicas, fmt.Sprintf("readyReplicas %d >= replicas %d", ready, replicas)},
 		{current == update, fmt.Sprintf("currentRevision %s == updateRevision %s", orUnset(current), orUnset(update))},
@@ -362,12 +409,16 @@ func daemonSetPredicates(obj *unstructured.Unstructured) []predicate {
 	gen := obj.GetGeneration()
 	og := statusInt(obj, "observedGeneration")
 	desired := statusInt(obj, "desiredNumberScheduled")
+	current := statusInt(obj, "currentNumberScheduled")
 	updated := statusInt(obj, "updatedNumberScheduled")
+	available := statusInt(obj, "numberAvailable")
 	ready := statusInt(obj, "numberReady")
 	unavailable := statusInt(obj, "numberUnavailable")
 	return []predicate{
 		{og >= gen, fmt.Sprintf("observedGeneration %d >= generation %d", og, gen)},
 		{updated == desired, fmt.Sprintf("updatedNumberScheduled %d == desiredNumberScheduled %d", updated, desired)},
+		{current == desired, fmt.Sprintf("currentNumberScheduled %d == desiredNumberScheduled %d", current, desired)},
+		{available >= desired, fmt.Sprintf("numberAvailable %d >= desiredNumberScheduled %d", available, desired)},
 		{ready >= desired, fmt.Sprintf("numberReady %d >= desiredNumberScheduled %d", ready, desired)},
 		{unavailable == 0, fmt.Sprintf("numberUnavailable %d == 0", unavailable)},
 	}

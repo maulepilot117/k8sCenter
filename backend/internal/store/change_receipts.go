@@ -110,16 +110,22 @@ func (v VerificationState) IsFinal() bool {
 // ReceiptObject is one per-document outcome in change_receipts.objects. It
 // identifies an object and says what happened to it; it never carries content.
 type ReceiptObject struct {
-	Index      int       `json:"index"`
-	Group      string    `json:"group,omitempty"`
-	Version    string    `json:"version,omitempty"`
-	Resource   string    `json:"resource,omitempty"`
-	Kind       string    `json:"kind"`
-	Namespace  string    `json:"namespace,omitempty"`
-	Name       string    `json:"name"`
-	UID        string    `json:"uid,omitempty"`
-	Action     string    `json:"action"`
-	Error      string    `json:"error,omitempty"`
+	Index     int    `json:"index"`
+	Group     string `json:"group,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Resource  string `json:"resource,omitempty"`
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	UID       string `json:"uid,omitempty"`
+	Action    string `json:"action"`
+	Error     string `json:"error,omitempty"`
+	// ErrorClass is the Kubernetes reason class of a failed action
+	// (conflict, forbidden, invalid, not_found, indeterminate, other). It is
+	// what a Secret-bearing receipt keeps instead of Error, and what the
+	// verifier reads to tell "the API server rejected it" from "the request
+	// was cut off and the server may have committed it".
+	ErrorClass string    `json:"errorClass,omitempty"`
 	RecordedAt time.Time `json:"recordedAt"`
 }
 

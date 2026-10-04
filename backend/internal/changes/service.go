@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
@@ -85,6 +86,8 @@ func (s *Service) Available() bool {
 //  1. validate, digest the raw body, detect Secrets; nothing persisted
 //  2. Insert the receipt (state applying)       -> abort 503, nothing applied
 //  3. MarkMutationStarted                       -> abort 503, nothing applied
+//     (the row is finalized as failed on a best-effort basis so the id does
+//     not sit in flight until reconciliation)
 //  4. apply, recording each outcome as it lands -> a recording failure stops
 //     the engine; the rest are reported as never attempted
 //  5. Finalize                                  -> a failure is reported as
@@ -104,10 +107,7 @@ func (s *Service) TrackedApply(ctx context.Context, req TrackedApplyRequest, app
 	if err := validateRequest(req, apply); err != nil {
 		return nil, err
 	}
-	clusterID := req.ClusterID
-	if clusterID == "" {
-		clusterID = "local"
-	}
+	clusterID := k8s.NormalizedClusterID(req.ClusterID)
 	digest := computeDigest(req.RawBody)
 	containsSecret := bundleContainsSecret(req.Docs)
 
@@ -146,6 +146,14 @@ func (s *Service) TrackedApply(ctx context.Context, req TrackedApplyRequest, app
 			Message: "this operation id was already finalized; generate a new operation id",
 		}
 	case err != nil:
+		// Nothing was applied. Close the row as failed so a same-id retry is
+		// told that (a replay of a failed receipt) instead of being told the
+		// operation is in flight until ReconcileOrphans reaps it. Best effort:
+		// if the store is down this fails too and reconciliation takes over.
+		if ferr := s.finalize(ctx, req.OperationID, store.ReceiptFailed); ferr != nil {
+			s.logger.Warn("tracked apply: could not close never-started receipt",
+				"operationId", req.OperationID, "error", ferr)
+		}
 		return nil, &StoreUnavailableError{Step: "mark", Err: err}
 	}
 
@@ -156,7 +164,13 @@ func (s *Service) TrackedApply(ctx context.Context, req TrackedApplyRequest, app
 	}
 	outcome := apply(rec.observe)
 
-	results, notAttempted := assembleResults(req.Docs, outcome.Attempted)
+	// A document the engine never reached is "not applied" either because
+	// recording failed (D5 wording) or because the engine stopped on its own.
+	notReached := NotAttemptedError
+	if rec.err != nil {
+		notReached = NotAppliedError
+	}
+	results, notAttempted := assembleResults(req.Docs, outcome.Attempted, notReached)
 	warnings := []string{}
 	var finalState store.ReceiptState
 	// Recording failed when an append errored, or when the engine attempted
@@ -276,9 +290,19 @@ func (s *Service) resolveExisting(ctx context.Context, req TrackedApplyRequest, 
 }
 
 // replay renders a terminal receipt into the result shape without applying
-// anything. Documents whose outcome the receipt lacks (an interrupted
-// original) come back failed with NotRecordedError so the legacy summary
-// cannot read as success.
+// anything. Documents the receipt has no outcome for are reported failed, and
+// how they are counted depends on what the receipt can prove:
+//
+//   - state unknown (the original was interrupted after the mutation window
+//     opened): the cluster may hold them. They are counted in
+//     tracking.unrecorded with NotRecordedError and class indeterminate.
+//   - any other terminal state (never started, or finalized by a live process
+//     that knew the engine stopped before them): counted in
+//     tracking.notAttempted with NotAttemptedError.
+//
+// Either way the legacy summary reads failed > 0. Error text comes from the
+// receipt, so a Secret-bearing replay carries the sanitized class text where
+// the live response carried the raw message.
 func replay(r *store.ChangeReceipt, req TrackedApplyRequest) *TrackedApplyResult {
 	results := make([]ApplyObservation, len(req.Docs))
 	recorded := make([]bool, len(req.Docs))
@@ -290,24 +314,33 @@ func replay(r *store.ChangeReceipt, req TrackedApplyRequest) *TrackedApplyResult
 		results[o.Index] = ApplyObservation{
 			Index: o.Index, Group: o.Group, Version: o.Version, Resource: o.Resource,
 			Kind: o.Kind, Namespace: o.Namespace, Name: o.Name, UID: o.UID,
-			Action: o.Action, Error: o.Error,
+			Action: o.Action, Error: o.Error, ErrorClass: o.ErrorClass,
 		}
 		recorded[o.Index] = true
 		refs = append(refs, TrackedObjectRef{Index: o.Index, Group: o.Group, Version: o.Version, Resource: o.Resource, UID: o.UID})
 	}
-	notRecorded := 0
+
+	interrupted := r.State == store.ReceiptUnknown
+	holes := 0
 	for i, d := range req.Docs {
 		if recorded[i] {
 			continue
 		}
-		notRecorded++
+		holes++
 		results[i] = ApplyObservation{
 			Index: i, Kind: d.GetKind(), Namespace: d.GetNamespace(), Name: d.GetName(),
-			Action: ActionFailed, Error: NotRecordedError, ErrorClass: ErrorClassOther,
+			Action: ActionFailed, Error: NotAttemptedError, ErrorClass: ErrorClassOther,
+		}
+		if interrupted {
+			results[i].Error, results[i].ErrorClass = NotRecordedError, ErrorClassIndeterminate
 		}
 	}
 
 	warnings := []string{}
+	if interrupted && holes > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"the original apply was interrupted; %d document outcome(s) were not recorded and the cluster may hold them", holes))
+	}
 	if generationChanged(r.ClusterGeneration, req.ClusterGen) {
 		warnings = append(warnings, "target cluster registration changed since this operation ran; the receipt describes the previous registration")
 	}
@@ -319,12 +352,16 @@ func replay(r *store.ChangeReceipt, req TrackedApplyRequest) *TrackedApplyResult
 		ClusterGeneration: r.ClusterGeneration,
 		ContentDigest:     r.ContentDigest,
 		RecordedThrough:   len(refs),
-		NotAttempted:      notRecorded,
 		Replayed:          true,
 		ContainsSecret:    r.ContainsSecret,
 		Objects:           refs,
 		Verification:      VerificationLink{State: r.VerificationState, URL: verificationURL(r.ID)},
 		Warnings:          warnings,
+	}
+	if interrupted {
+		tracking.Unrecorded = holes
+	} else {
+		tracking.NotAttempted = holes
 	}
 	if r.RepairOf != nil {
 		tracking.RepairOf = r.RepairOf.String()
@@ -385,18 +422,26 @@ func (s *Service) recordContext(parent context.Context) (context.Context, contex
 // receiptObjectFor converts an engine observation into the stored outcome.
 // For a Secret-bearing bundle the error text is replaced by its class plus a
 // fixed message: admission and validation messages echo submitted values, and
-// the store is the one place a Secret value must never reach.
+// the store is the one place a Secret value must never reach. The class is
+// always kept: the verifier reads it.
 func receiptObjectFor(obs ApplyObservation, containsSecret bool, now time.Time) store.ReceiptObject {
 	o := store.ReceiptObject{
 		Index: obs.Index, Group: obs.Group, Version: obs.Version, Resource: obs.Resource,
 		Kind: obs.Kind, Namespace: obs.Namespace, Name: obs.Name, UID: obs.UID,
 		Action: obs.Action, RecordedAt: now.UTC(),
 	}
-	if obs.Action != ActionFailed || obs.Error == "" {
+	if obs.Action != ActionFailed {
+		return o
+	}
+	o.ErrorClass = obs.ErrorClass
+	if o.ErrorClass == "" {
+		o.ErrorClass = ErrorClassOther
+	}
+	if obs.Error == "" {
 		return o
 	}
 	if containsSecret || isSecretKind(obs.Kind) {
-		o.Error = sanitizedError(obs.ErrorClass)
+		o.Error = sanitizedError(o.ErrorClass)
 	} else {
 		o.Error = truncate(obs.Error, maxStoredErrorLen)
 	}
@@ -413,8 +458,11 @@ func sanitizedError(class string) string {
 
 // assembleResults lays the engine's attempted outcomes over the request's
 // documents by index. Every document without an outcome is reported failed
-// with NotAppliedError (plan D5) and counted as notAttempted.
-func assembleResults(docs []*unstructured.Unstructured, attempted []ApplyObservation) ([]ApplyObservation, int) {
+// with notReached as its error text (plan D5) and counted as notAttempted.
+// Out-of-range and duplicate indices from the engine are dropped, which
+// leaves their documents reported as not attempted rather than trusting a
+// second outcome for the same document.
+func assembleResults(docs []*unstructured.Unstructured, attempted []ApplyObservation, notReached string) ([]ApplyObservation, int) {
 	results := make([]ApplyObservation, len(docs))
 	seen := make([]bool, len(docs))
 	for _, o := range attempted {
@@ -432,7 +480,7 @@ func assembleResults(docs []*unstructured.Unstructured, attempted []ApplyObserva
 		notAttempted++
 		results[i] = ApplyObservation{
 			Index: i, Kind: d.GetKind(), Namespace: d.GetNamespace(), Name: d.GetName(),
-			Action: ActionFailed, Error: NotAppliedError, ErrorClass: ErrorClassOther,
+			Action: ActionFailed, Error: notReached, ErrorClass: ErrorClassOther,
 		}
 	}
 	return results, notAttempted
@@ -462,7 +510,12 @@ func stateFor(results []ApplyObservation) store.ReceiptState {
 }
 
 // computeDigest is the receipt's only trace of the request body:
-// "sha256:" + hex over the exact submitted bytes.
+// "sha256:" + hex over the exact submitted bytes (the store's documented
+// format). It is deliberately unkeyed and is not a guessing oracle for Secret
+// values: a tracked apply returns it only to the owner who just submitted
+// byte-identical content, and the read path (U29a) renders a receipt only to
+// its owner, an explicit grantee or an admin, applying the Q1 Secret filtering
+// to what it shows.
 func computeDigest(raw []byte) string {
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:])

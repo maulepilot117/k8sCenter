@@ -31,6 +31,7 @@ type deploymentSpec struct {
 	name, ns, uid                string
 	generation, observedGen      int64
 	replicas, updated, available int64
+	statusReplicas               int64  // status.replicas: pods across ALL ReplicaSets
 	availableCond                string // "True", "False", "" (absent)
 }
 
@@ -44,6 +45,7 @@ func deploymentObj(d deploymentSpec) *unstructured.Unstructured {
 		"spec": map[string]any{"replicas": d.replicas},
 		"status": map[string]any{
 			"observedGeneration": d.observedGen,
+			"replicas":           d.statusReplicas,
 			"updatedReplicas":    d.updated,
 			"availableReplicas":  d.available,
 		},
@@ -59,13 +61,14 @@ func deploymentObj(d deploymentSpec) *unstructured.Unstructured {
 
 func readyDeployment(name, uid string) deploymentSpec {
 	return deploymentSpec{name: name, ns: "prod", uid: uid, generation: 4, observedGen: 4,
-		replicas: 3, updated: 3, available: 3, availableCond: "True"}
+		replicas: 3, statusReplicas: 3, updated: 3, available: 3, availableCond: "True"}
 }
 
 type statefulSetSpec struct {
 	name, ns, uid            string
 	generation, observedGen  int64
 	replicas, updated, ready int64
+	statusReplicas           int64
 	currentRev, updateRev    string
 }
 
@@ -79,6 +82,7 @@ func statefulSetObj(s statefulSetSpec) *unstructured.Unstructured {
 		"spec": map[string]any{"replicas": s.replicas},
 		"status": map[string]any{
 			"observedGeneration": s.observedGen,
+			"replicas":           s.statusReplicas,
 			"updatedReplicas":    s.updated,
 			"readyReplicas":      s.ready,
 			"currentRevision":    s.currentRev,
@@ -89,13 +93,14 @@ func statefulSetObj(s statefulSetSpec) *unstructured.Unstructured {
 
 func readyStatefulSet(name, uid string) statefulSetSpec {
 	return statefulSetSpec{name: name, ns: "prod", uid: uid, generation: 2, observedGen: 2,
-		replicas: 3, updated: 3, ready: 3, currentRev: "db-7f8", updateRev: "db-7f8"}
+		replicas: 3, statusReplicas: 3, updated: 3, ready: 3, currentRev: "db-7f8", updateRev: "db-7f8"}
 }
 
 type daemonSetSpec struct {
 	name, ns, uid                        string
 	generation, observedGen              int64
 	desired, updated, ready, unavailable int64
+	current, available                   int64
 }
 
 func daemonSetObj(d daemonSetSpec) *unstructured.Unstructured {
@@ -108,7 +113,9 @@ func daemonSetObj(d daemonSetSpec) *unstructured.Unstructured {
 		"status": map[string]any{
 			"observedGeneration":     d.observedGen,
 			"desiredNumberScheduled": d.desired,
+			"currentNumberScheduled": d.current,
 			"updatedNumberScheduled": d.updated,
+			"numberAvailable":        d.available,
 			"numberReady":            d.ready,
 			"numberUnavailable":      d.unavailable,
 		},
@@ -117,7 +124,7 @@ func daemonSetObj(d daemonSetSpec) *unstructured.Unstructured {
 
 func readyDaemonSet(name, uid string) daemonSetSpec {
 	return daemonSetSpec{name: name, ns: "kube-system", uid: uid, generation: 1, observedGen: 1,
-		desired: 5, updated: 5, ready: 5, unavailable: 0}
+		desired: 5, current: 5, updated: 5, available: 5, ready: 5, unavailable: 0}
 }
 
 func configMapObj(name, uid string) *unstructured.Unstructured {
@@ -209,7 +216,7 @@ func TestVerifyOnce_DeploymentReady_Verified(t *testing.T) {
 	r := completedReceipt(fs, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
 	dyn, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +258,7 @@ func TestVerifyOnce_DeploymentStaleObservedGeneration_Verifying(t *testing.T) {
 	d.observedGen = d.generation - 1
 	dyn, _ := fakeDyn(deploymentObj(d))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +288,7 @@ func TestVerifyOnce_StatefulSetRevisionMismatch_Verifying(t *testing.T) {
 	s.updateRev = "db-9a1"
 	dyn, _ := fakeDyn(statefulSetObj(s))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,10 +309,10 @@ func TestVerifyOnce_DaemonSetUnavailable_Verifying(t *testing.T) {
 		recordedObj(0, "apps", "v1", "daemonsets", "DaemonSet", "kube-system", "node-agent", "uid-na"))
 	d := readyDaemonSet("node-agent", "uid-na")
 	d.unavailable = 1
-	d.ready = 4
+	d.ready, d.available = 4, 4
 	dyn, _ := fakeDyn(daemonSetObj(d))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +333,7 @@ func TestVerifyOnce_ConfigMapIsInconclusiveNotPass(t *testing.T) {
 		recordedObj(0, "", "v1", "configmaps", "ConfigMap", "prod", "web-config", "uid-cm"))
 	dyn, gets := fakeDyn(configMapObj("web-config", "uid-cm"))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +361,7 @@ func TestVerifyOnce_MixedSupportedAndUnsupported_NeverVerified(t *testing.T) {
 		recordedObj(1, "", "v1", "configmaps", "ConfigMap", "prod", "web-config", "uid-cm"))
 	dyn, _ := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")), configMapObj("web-config", "uid-cm"))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +379,7 @@ func TestVerifyOnce_TargetDeleted_Fails(t *testing.T) {
 	r := completedReceipt(fs, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
 	dyn, _ := fakeDyn() // nothing live
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +405,7 @@ func TestVerifyOnce_TargetRecreatedNewUID_Inconclusive(t *testing.T) {
 	// A perfectly healthy Deployment with the same name but a different UID.
 	dyn, _ := fakeDyn(deploymentObj(readyDeployment("web", "uid-new")))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +431,7 @@ func TestVerifyOnce_Forbidden_Inconclusive(t *testing.T) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "web", errors.New("rbac denied"))
 	})
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +454,7 @@ func TestVerifyOnce_TransientReadError_RetriesWithinWindow(t *testing.T) {
 		return true, nil, apierrors.NewServiceUnavailable("etcd leader changed")
 	})
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +474,7 @@ func TestVerifyOnce_WindowExpired_Inconclusive(t *testing.T) {
 	stuck.available, stuck.availableCond = 1, "False"
 	dyn, _ := fakeDyn(deploymentObj(stuck), deploymentObj(readyDeployment("api", "uid-api")))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +485,7 @@ func TestVerifyOnce_WindowExpired_Inconclusive(t *testing.T) {
 		t.Fatalf("checks = %+v", res.Checks)
 	}
 	expectCheck(t, res.Checks[0], CheckInconclusive, ReasonWindowExpired)
-	if !strings.Contains(res.Checks[0].Detail, "availableReplicas 1 >= replicas 3") {
+	if !strings.Contains(res.Checks[0].Detail, "availableReplicas 1 >= updatedReplicas 3") {
 		t.Fatalf("the last observation must be kept: %q", res.Checks[0].Detail)
 	}
 	expectCheck(t, res.Checks[1], CheckPass, ReasonRolloutComplete)
@@ -489,7 +496,7 @@ func TestVerifyOnce_WindowExpired_Inconclusive(t *testing.T) {
 
 	// Frozen: a later poll returns the stored verdict without reading.
 	dyn2, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")), deploymentObj(readyDeployment("api", "uid-api")))
-	again, err := svc.VerifyOnce(context.Background(), fs.row(t, r.ID), dyn2)
+	again, err := svc.VerifyOnce(context.Background(), fs.row(t, r.ID), dyn2, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +513,7 @@ func TestVerifyOnce_WindowBoundaryIsInclusive(t *testing.T) {
 	stuck.updated = 2
 	dyn, _ := fakeDyn(deploymentObj(stuck))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,16 +532,16 @@ func TestVerifyOnce_ControllerOverwroteFields_StillReportsObserved(t *testing.T)
 	// postcondition against the live spec.
 	d := readyDeployment("web", "uid-web")
 	d.generation, d.observedGen = 5, 5
-	d.replicas, d.updated, d.available = 5, 5, 4
+	d.replicas, d.statusReplicas, d.updated, d.available = 5, 5, 5, 4
 	dyn, _ := fakeDyn(deploymentObj(d))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := singleCheck(t, res)
 	expectCheck(t, c, CheckWarn, ReasonRolloutInProgress)
-	if !strings.Contains(c.Detail, "availableReplicas 4 >= replicas 5") {
+	if !strings.Contains(c.Detail, "availableReplicas 4 >= updatedReplicas 5") {
 		t.Fatalf("detail must describe what was observed, not what was submitted: %q", c.Detail)
 	}
 	if c.Evidence["Deployment/web"] != "uid-web" {
@@ -556,7 +563,7 @@ func TestVerifyOnce_FailedObjectsAreNotVerified(t *testing.T) {
 	// Both exist live and are healthy; "api" was NOT applied by us.
 	dyn, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")), deploymentObj(readyDeployment("api", "uid-api")))
 
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +592,7 @@ func TestVerifyOnce_NothingVerifiable_Inconclusive(t *testing.T) {
 			r := completedReceipt(fs, state, 10*time.Second, failed)
 			dyn, gets := fakeDyn()
 
-			res, err := svc.VerifyOnce(context.Background(), r, dyn)
+			res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -613,7 +620,7 @@ func TestVerifyOnce_InFlightReceiptIsPendingWithoutReading(t *testing.T) {
 	fs.put(r)
 	dyn, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
 
-	res, err := svc.VerifyOnce(context.Background(), &r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), &r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +643,7 @@ func TestVerifyOnce_FinalVerdictIsFrozen(t *testing.T) {
 		fs.put(*r)
 		dyn, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-web"))) // it came back; the verdict stands
 
-		res, err := svc.VerifyOnce(context.Background(), r, dyn)
+		res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -661,7 +668,7 @@ func TestVerifyOnce_FinalVerdictIsFrozen(t *testing.T) {
 		stuck.updated = 1
 		dyn, _ := fakeDyn(deploymentObj(stuck)) // would compute "verifying"
 
-		res, err := svc.VerifyOnce(context.Background(), &stale, dyn)
+		res, err := svc.VerifyOnce(context.Background(), &stale, dyn, VerifyOptions{Persist: true})
 		if err != nil {
 			t.Fatalf("a frozen verdict is not an error: %v", err)
 		}
@@ -676,7 +683,7 @@ func TestVerifyOnce_FinalVerdictIsFrozen(t *testing.T) {
 		fs.failSetVerification = errors.New("write timeout")
 		dyn, _ := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
 
-		_, err := svc.VerifyOnce(context.Background(), r, dyn)
+		_, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 		mustUnavailable(t, err, "verification")
 	})
 }
@@ -685,15 +692,15 @@ func TestVerifyOnce_InvalidInput(t *testing.T) {
 	fs := newFakeStore()
 	svc := newTestService(fs)
 	dyn, _ := fakeDyn()
-	if _, err := svc.VerifyOnce(context.Background(), nil, dyn); !errors.Is(err, ErrInvalidRequest) {
+	if _, err := svc.VerifyOnce(context.Background(), nil, dyn, VerifyOptions{Persist: true}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("nil receipt: %v", err)
 	}
 	r := completedReceipt(fs, store.ReceiptApplied, time.Second)
-	if _, err := svc.VerifyOnce(context.Background(), r, nil); !errors.Is(err, ErrInvalidRequest) {
+	if _, err := svc.VerifyOnce(context.Background(), r, nil, VerifyOptions{Persist: true}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("nil dyn: %v", err)
 	}
 	var nilStore *store.ChangeReceiptStore
-	if _, err := NewService(nilStore, nil).VerifyOnce(context.Background(), r, dyn); err == nil {
+	if _, err := NewService(nilStore, nil).VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true}); err == nil {
 		t.Fatal("no store must fail closed")
 	}
 }
@@ -714,7 +721,7 @@ func TestVerifyOnce_ClusterScopedObjectReadWithoutNamespace(t *testing.T) {
 		d.ns = ""
 		return true, deploymentObj(d), nil
 	})
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,7 +743,7 @@ func TestVerifyOnce_StartsNoBackgroundGoroutine(t *testing.T) {
 
 	runtime.GC()
 	before := runtime.NumGoroutine()
-	res, err := svc.VerifyOnce(context.Background(), r, dyn)
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -789,16 +796,20 @@ func TestCheckRollout_TableDriven(t *testing.T) {
 		{"deployment observedGeneration ahead is fine", mut(dep, func(d *deploymentSpec) { d.observedGen = 9 }), CheckPass, ReasonRolloutComplete, ""},
 		{"deployment updatedReplicas short", mut(dep, func(d *deploymentSpec) { d.updated = 2 }), CheckWarn, ReasonRolloutInProgress, "updatedReplicas 2 == replicas 3"},
 		{"deployment updatedReplicas over (surge) is not complete", mut(dep, func(d *deploymentSpec) { d.updated = 4 }), CheckWarn, ReasonRolloutInProgress, "updatedReplicas 4 == replicas 3"},
-		{"deployment availableReplicas short", mut(dep, func(d *deploymentSpec) { d.available = 2 }), CheckWarn, ReasonRolloutInProgress, "availableReplicas 2 >= replicas 3"},
+		{"deployment availableReplicas short", mut(dep, func(d *deploymentSpec) { d.available = 2 }), CheckWarn, ReasonRolloutInProgress, "availableReplicas 2 >= updatedReplicas 3"},
 		{"deployment availableReplicas over is fine", mut(dep, func(d *deploymentSpec) { d.available = 4 }), CheckPass, ReasonRolloutComplete, ""},
 		{"deployment Available=False", mut(dep, func(d *deploymentSpec) { d.availableCond = "False" }), CheckWarn, ReasonRolloutInProgress, "condition Available=False"},
 		{"deployment Available absent", mut(dep, func(d *deploymentSpec) { d.availableCond = "" }), CheckWarn, ReasonRolloutInProgress, "condition Available=<unset>"},
+		{"deployment surge: old pod still serving (1 replica)", mut(dep, func(d *deploymentSpec) {
+			d.replicas, d.updated, d.available, d.statusReplicas = 1, 1, 1, 2
+		}), CheckWarn, ReasonRolloutInProgress, "status.replicas 2 == updatedReplicas 1"},
+		{"deployment surge: last step at 3 replicas", mut(dep, func(d *deploymentSpec) { d.statusReplicas = 4 }), CheckWarn, ReasonRolloutInProgress, "status.replicas 4 == updatedReplicas 3"},
 		{"deployment replicas unset defaults to 1", func() *unstructured.Unstructured {
-			u := deploymentObj(deploymentSpec{name: "web", ns: "prod", uid: "u", generation: 1, observedGen: 1, updated: 1, available: 1, availableCond: "True"})
+			u := deploymentObj(deploymentSpec{name: "web", ns: "prod", uid: "u", generation: 1, observedGen: 1, statusReplicas: 1, updated: 1, available: 1, availableCond: "True"})
 			unstructured.RemoveNestedField(u.Object, "spec", "replicas")
 			return u
 		}(), CheckPass, ReasonRolloutComplete, "updatedReplicas 1 == replicas 1"},
-		{"deployment scaled to zero", mut(dep, func(d *deploymentSpec) { d.replicas, d.updated, d.available = 0, 0, 0 }), CheckPass, ReasonRolloutComplete, "replicas 0"},
+		{"deployment scaled to zero", mut(dep, func(d *deploymentSpec) { d.replicas, d.statusReplicas, d.updated, d.available = 0, 0, 0, 0 }), CheckPass, ReasonRolloutComplete, "replicas 0"},
 		{"deployment status empty (never observed)", func() *unstructured.Unstructured {
 			u := deploymentObj(dep)
 			delete(u.Object, "status")
@@ -812,13 +823,17 @@ func TestCheckRollout_TableDriven(t *testing.T) {
 		{"statefulset readyReplicas over is fine", smut(sts, func(s *statefulSetSpec) { s.ready = 4 }), CheckPass, ReasonRolloutComplete, ""},
 		{"statefulset revision mismatch", smut(sts, func(s *statefulSetSpec) { s.updateRev = "db-9" }), CheckWarn, ReasonRolloutInProgress, "currentRevision db-7f8 == updateRevision db-9"},
 		{"statefulset revisions unset", smut(sts, func(s *statefulSetSpec) { s.currentRev, s.updateRev = "", "" }), CheckPass, ReasonRolloutComplete, "<unset> == updateRevision <unset>"},
+		{"statefulset status.replicas short (pod missing)", smut(sts, func(s *statefulSetSpec) { s.statusReplicas = 2 }), CheckWarn, ReasonRolloutInProgress, "status.replicas 2 == replicas 3"},
+		{"statefulset status.replicas over (scale-down pending)", smut(sts, func(s *statefulSetSpec) { s.statusReplicas = 4 }), CheckWarn, ReasonRolloutInProgress, "status.replicas 4 == replicas 3"},
 		// DaemonSet
 		{"daemonset ready", daemonSetObj(ds), CheckPass, ReasonRolloutComplete, "numberUnavailable 0 == 0"},
 		{"daemonset observedGeneration behind", dmut(ds, func(d *daemonSetSpec) { d.observedGen = 0 }), CheckWarn, ReasonRolloutInProgress, "observedGeneration 0 >= generation 1"},
 		{"daemonset updatedNumberScheduled short", dmut(ds, func(d *daemonSetSpec) { d.updated = 4 }), CheckWarn, ReasonRolloutInProgress, "updatedNumberScheduled 4 == desiredNumberScheduled 5"},
 		{"daemonset numberReady short", dmut(ds, func(d *daemonSetSpec) { d.ready = 4 }), CheckWarn, ReasonRolloutInProgress, "numberReady 4 >= desiredNumberScheduled 5"},
 		{"daemonset numberUnavailable nonzero", dmut(ds, func(d *daemonSetSpec) { d.unavailable = 2 }), CheckWarn, ReasonRolloutInProgress, "numberUnavailable 2 == 0"},
-		{"daemonset no nodes desired", dmut(ds, func(d *daemonSetSpec) { d.desired, d.updated, d.ready = 0, 0, 0 }), CheckPass, ReasonRolloutComplete, "desiredNumberScheduled 0"},
+		{"daemonset currentNumberScheduled short", dmut(ds, func(d *daemonSetSpec) { d.current = 4 }), CheckWarn, ReasonRolloutInProgress, "currentNumberScheduled 4 == desiredNumberScheduled 5"},
+		{"daemonset numberAvailable short", dmut(ds, func(d *daemonSetSpec) { d.available = 4 }), CheckWarn, ReasonRolloutInProgress, "numberAvailable 4 >= desiredNumberScheduled 5"},
+		{"daemonset no nodes desired", dmut(ds, func(d *daemonSetSpec) { d.desired, d.current, d.updated, d.available, d.ready = 0, 0, 0, 0, 0 }), CheckPass, ReasonRolloutComplete, "desiredNumberScheduled 0"},
 		// Unsupported
 		{"configmap", configMapObj("c", "u"), CheckInconclusive, ReasonKindNotSupported, ""},
 		{"deployment in a foreign group", func() *unstructured.Unstructured {
@@ -938,5 +953,202 @@ func TestAggregateVerification(t *testing.T) {
 				t.Fatalf("got %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Review follow-ups (PR #565): identity, indeterminate outcomes, persistence
+// ---------------------------------------------------------------------------
+
+func TestVerifyOnce_EmptyRecordedUID_IdentityUnknownWithoutRead(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	r := completedReceipt(fs, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", ""))
+	dyn, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-live")))
+
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := singleCheck(t, res)
+	expectCheck(t, c, CheckInconclusive, ReasonIdentityUnknown)
+	if gets.Load() != 0 {
+		t.Fatalf("an object without a recorded identity must not be read: %d GETs", gets.Load())
+	}
+	if c.Source.UID != "" || len(c.Evidence) != 0 {
+		t.Fatalf("no live UID may be stamped as evidence: source=%+v evidence=%v", c.Source, c.Evidence)
+	}
+	if res.State != store.VerifyInconclusive || res.RetryAfterSeconds != 0 {
+		t.Fatalf("identity_unknown is terminal: %+v", res)
+	}
+}
+
+func TestVerifyOnce_MissingResourceMapping_InconclusiveWithoutRead(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	o := recordedDeployment(0, "web", "uid-web")
+	o.Resource, o.Version = "", ""
+	r := completedReceipt(fs, store.ReceiptApplied, 10*time.Second, o)
+	dyn, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
+
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := singleCheck(t, res)
+	expectCheck(t, c, CheckInconclusive, ReasonKindNotSupported)
+	if !strings.Contains(c.Detail, "no resource mapping") || gets.Load() != 0 {
+		t.Fatalf("detail=%q gets=%d", c.Detail, gets.Load())
+	}
+	if res.State != store.VerifyInconclusive {
+		t.Fatalf("state = %s", res.State)
+	}
+}
+
+func TestVerifyOnce_IndeterminateFailureIsVerified(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	// The PATCH was cut off; the engine recorded the pre-existing object's UID.
+	cut := recordedDeployment(0, "web", "uid-web")
+	cut.Action, cut.Error, cut.ErrorClass = ActionFailed, "context deadline exceeded", ErrorClassIndeterminate
+	// A definite rejection is still skipped.
+	rejected := recordedDeployment(1, "api", "uid-api")
+	rejected.Action, rejected.Error, rejected.ErrorClass = ActionFailed, "forbidden", ErrorClassForbidden
+	r := completedReceipt(fs, store.ReceiptFailed, 10*time.Second, cut, rejected)
+	dyn, gets := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")), deploymentObj(readyDeployment("api", "uid-api")))
+
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Checks) != 1 || res.Checks[0].Source.Name != "web" || gets.Load() != 1 {
+		t.Fatalf("only the indeterminate object is verified: checks=%+v gets=%d", res.Checks, gets.Load())
+	}
+	expectCheck(t, res.Checks[0], CheckPass, ReasonRolloutComplete)
+	if res.State != store.VerifyVerified {
+		t.Fatalf("state = %s", res.State)
+	}
+	// verified never upgrades the apply state.
+	if fs.row(t, r.ID).State != store.ReceiptFailed {
+		t.Fatal("apply state changed")
+	}
+
+	// Cut-off create with no identity: verified as identity_unknown, no read.
+	fs2 := newFakeStore()
+	svc2 := newTestService(fs2)
+	cutCreate := recordedDeployment(0, "new", "")
+	cutCreate.Action, cutCreate.ErrorClass = ActionFailed, ErrorClassIndeterminate
+	r2 := completedReceipt(fs2, store.ReceiptFailed, 10*time.Second, cutCreate)
+	dyn2, gets2 := fakeDyn()
+	res2, err := svc2.VerifyOnce(context.Background(), r2, dyn2, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectCheck(t, singleCheck(t, res2), CheckInconclusive, ReasonIdentityUnknown)
+	if gets2.Load() != 0 {
+		t.Fatal("read performed without identity")
+	}
+}
+
+func TestVerifyOnce_ReadFailedPastWindow_Freezes(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	r := completedReceipt(fs, store.ReceiptApplied, verificationWindow+time.Second, recordedDeployment(0, "web", "uid-web"))
+	dyn, _ := fakeDyn()
+	dyn.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, k8sruntime.Object, error) {
+		return true, nil, apierrors.NewServiceUnavailable("etcd leader changed")
+	})
+
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := singleCheck(t, res)
+	expectCheck(t, c, CheckInconclusive, ReasonWindowExpired)
+	if !strings.Contains(c.Detail, "reading the object failed") {
+		t.Fatalf("last observation must be kept: %q", c.Detail)
+	}
+	if res.State != store.VerifyInconclusive || res.RetryAfterSeconds != 0 || fs.row(t, r.ID).VerifiedAt == nil {
+		t.Fatalf("frozen: %+v", res)
+	}
+}
+
+func TestVerifyOnce_FirstFinalVerdictWins(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	r := completedReceipt(fs, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
+	stale := *r // the snapshot a second, overlapping poll is holding
+
+	// Poll A: the object is gone -> verification_failed (final).
+	gone, _ := fakeDyn()
+	resA, err := svc.VerifyOnce(context.Background(), r, gone, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resA.State != store.VerifyFailed {
+		t.Fatalf("A = %s", resA.State)
+	}
+	// Poll B started before A persisted (stale snapshot says pending) and sees
+	// a healthy same-UID object -> would compute verified (also final). The
+	// store allows final-to-final replaces; the service must not perform one.
+	healthy, _ := fakeDyn(deploymentObj(readyDeployment("web", "uid-web")))
+	resB, err := svc.VerifyOnce(context.Background(), &stale, healthy, VerifyOptions{Persist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resB.State != store.VerifyFailed || len(resB.Checks) != 1 || resB.Checks[0].Reason != ReasonNotFound {
+		t.Fatalf("B must return A's verdict, got %+v", resB)
+	}
+	st, checks := persistedState(t, fs, r.ID)
+	if st != store.VerifyFailed || checks[0].Reason != ReasonNotFound {
+		t.Fatalf("persisted verdict was replaced: %s / %+v", st, checks)
+	}
+}
+
+func TestVerifyOnce_WithoutPersist_EvaluatesAndWritesNothing(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	r := completedReceipt(fs, store.ReceiptApplied, 10*time.Second, recordedDeployment(0, "web", "uid-web"))
+	stuck := readyDeployment("web", "uid-web")
+	stuck.updated = 2
+	dyn, gets := fakeDyn(deploymentObj(stuck))
+
+	res, err := svc.VerifyOnce(context.Background(), r, dyn, VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != store.VerifyVerifying || res.RetryAfterSeconds != verifyRetryAfterSeconds || gets.Load() != 1 {
+		t.Fatalf("a live evaluation was expected: %+v gets=%d", res, gets.Load())
+	}
+	expectCheck(t, singleCheck(t, res), CheckWarn, ReasonRolloutInProgress)
+	if len(fs.calls) != 0 || fs.row(t, r.ID).VerificationState != store.VerifyPending {
+		t.Fatalf("Persist=false must write nothing: calls=%v", fs.calls)
+	}
+	// A final verdict is final for everyone: Persist=false still returns it.
+	done, _ := fakeDyn()
+	if _, err := svc.VerifyOnce(context.Background(), r, done, VerifyOptions{Persist: true}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := svc.VerifyOnce(context.Background(), fs.row(t, r.ID), dyn, VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.State != store.VerifyFailed {
+		t.Fatalf("frozen verdict not returned on a non-persisting read: %+v", again)
+	}
+}
+
+func TestCheckRollout_UnsupportedWhenKindTableHasNoPredicates(t *testing.T) {
+	// The kind table is the single source of truth; a kind registered with no
+	// predicates must still be unsupported, never a vacuous pass.
+	workloadPredicates["ReplicaSet"] = func(*unstructured.Unstructured) []predicate { return nil }
+	defer delete(workloadPredicates, "ReplicaSet")
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1", "kind": "ReplicaSet",
+		"metadata": map[string]any{"name": "rs", "uid": "u"},
+	}}
+	got := CheckRollout(u, SourceRef{}, fixedNow)
+	if got.Status != CheckInconclusive || got.Reason != ReasonKindNotSupported {
+		t.Fatalf("got %s/%s", got.Status, got.Reason)
 	}
 }

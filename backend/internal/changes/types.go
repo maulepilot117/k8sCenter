@@ -30,6 +30,7 @@
 package changes
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -91,6 +92,10 @@ const (
 	// ReasonWindowExpired: the verification window closed before the
 	// postcondition was satisfied. Frozen.
 	ReasonWindowExpired = "window_expired"
+	// ReasonIdentityUnknown: the receipt holds no UID for the object, so a live
+	// read could not be bound to the object that was applied (R1). The object
+	// is not read and no live UID is stamped as evidence. Terminal.
+	ReasonIdentityUnknown = "identity_unknown"
 	// ReasonReadFailed: the live read failed for a reason other than not-found
 	// or forbidden. Retryable while the verification window is open.
 	ReasonReadFailed = diagnostics.ReasonSourceUnavailable
@@ -114,14 +119,20 @@ const (
 	ReasonReceiptStoreUnavailable = "receipt_store_unavailable"
 )
 
-// Error classes recorded for failed objects. They are what a Secret-bearing
-// receipt keeps instead of the raw error text.
+// Error classes recorded for failed objects (store.ReceiptObject.ErrorClass).
+// They are what a Secret-bearing receipt keeps instead of the raw error text,
+// and what the verifier reads to decide whether a failed object may exist.
 const (
 	ErrorClassConflict  = "conflict"
 	ErrorClassForbidden = "forbidden"
 	ErrorClassInvalid   = "invalid"
 	ErrorClassNotFound  = "not_found"
-	ErrorClassOther     = "other"
+	// ErrorClassIndeterminate: the request was cut off (context cancelled or
+	// deadline exceeded, a client- or server-side timeout) and the API server
+	// MAY have committed it. The legacy action stays "failed" for wire
+	// compatibility; VerifyOnce verifies such objects instead of skipping them.
+	ErrorClassIndeterminate = "indeterminate"
+	ErrorClassOther         = "other"
 )
 
 // ClassifyAPIError maps a Kubernetes API error to one of the ErrorClass*
@@ -131,6 +142,9 @@ func ClassifyAPIError(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
+		apierrors.IsTimeout(err), apierrors.IsServerTimeout(err):
+		return ErrorClassIndeterminate
 	case apierrors.IsConflict(err):
 		return ErrorClassConflict
 	case apierrors.IsForbidden(err):
@@ -158,6 +172,11 @@ const (
 // contract: a legacy client sees a failed result, a new client sees
 // tracking.notAttempted.
 const NotAppliedError = "not applied: change recording failed; re-preview and retry"
+
+// NotAttemptedError is the error text of a document the engine never attempted
+// for a reason other than a recording failure (it stopped early, or reported
+// fewer documents than it was given). Also counted in tracking.notAttempted.
+const NotAttemptedError = "not applied: the apply stopped before reaching this document; re-preview and retry"
 
 // NotRecordedError is the error text used when a replayed receipt lacks an
 // outcome for a document: the original apply was interrupted before the
@@ -193,12 +212,15 @@ func (e *OperationConflictError) Extra() map[string]any {
 	return map[string]any{"receiptId": e.ReceiptID.String()}
 }
 
-// StoreUnavailableError is returned when a receipt write or read fails BEFORE
-// any document was applied, so the caller knows the cluster is untouched. Step
-// names the D3 step ("insert", "mark", "read"). Maps to HTTP 503 with reason
-// ReasonReceiptStoreUnavailable. The underlying error is for logs only.
-// Failures after mutation began never surface as this error: they are reported
-// inside the result as state unknown plus a warning.
+// StoreUnavailableError is returned when a receipt store operation fails and
+// nothing else was done as a result. Step names where: "insert", "mark" and
+// "read" come from TrackedApply and guarantee no document was applied by that
+// call; "verification" comes from VerifyOnce, long after the apply, and means
+// the verdict computed in that poll was not persisted (the client re-polls).
+// Maps to HTTP 503 with reason ReasonReceiptStoreUnavailable. The underlying
+// error is for logs only. A TrackedApply store failure AFTER mutation began
+// never surfaces as this error: it is reported inside the result as state
+// unknown plus a warning.
 type StoreUnavailableError struct {
 	Step string
 	Err  error
@@ -324,6 +346,22 @@ func (r *TrackedApplyResult) Counts() ApplyCounts {
 
 // ApplyTracking is the additive tracking block of a tracked apply response
 // (plan D7). The yaml package copies it onto its own wire struct.
+//
+// Three counts describe the documents without a recorded success:
+//
+//   - RecordedThrough: outcomes the receipt holds.
+//   - NotAttempted: documents provably never sent to the cluster (the engine
+//     stopped before reaching them, or the receipt never opened its mutation
+//     window). Safe to re-preview and retry.
+//   - Unrecorded: documents whose outcome the receipt does NOT hold although
+//     the mutation window was open (an interrupted original, replayed from an
+//     `unknown` receipt). The cluster MAY hold them. Never retry blind.
+//
+// A live response only ever sets NotAttempted: the running service knows what
+// the engine did. A replay of an `unknown` receipt only ever sets Unrecorded:
+// the receipt cannot prove what the lost process did after its last record,
+// so it claims "never attempted" for nothing (plan D3: "anything after them
+// is unknown").
 type ApplyTracking struct {
 	OperationID       string             `json:"operationId"`
 	ReceiptURL        string             `json:"receiptUrl"`
@@ -333,6 +371,7 @@ type ApplyTracking struct {
 	ContentDigest     string             `json:"contentDigest"`
 	RecordedThrough   int                `json:"recordedThrough"`
 	NotAttempted      int                `json:"notAttempted"`
+	Unrecorded        int                `json:"unrecorded"`
 	Replayed          bool               `json:"replayed"`
 	ContainsSecret    bool               `json:"containsSecret"`
 	RepairOf          string             `json:"repairOf,omitempty"`
@@ -358,6 +397,16 @@ type VerificationLink struct {
 	URL   string                  `json:"url"`
 }
 
+// VerifyOptions controls one VerifyOnce pass.
+type VerifyOptions struct {
+	// Persist writes the computed verdict to the receipt. The owner's poll sets
+	// it; a grantee's or admin's read of a live evaluation leaves it false so
+	// their (possibly permission-limited) view never replaces the owner's
+	// verdict. A verdict that is already final is returned as stored either
+	// way.
+	Persist bool
+}
+
 // VerificationResult is one VerifyOnce pass. RetryAfterSeconds is non-zero
 // only while State is verifying.
 type VerificationResult struct {
@@ -371,25 +420,24 @@ type VerificationResult struct {
 // and lands with it. TargetGenerationChanged is computed against the
 // generation the caller resolved for the receipt's cluster now.
 type ReceiptView struct {
-	OperationID             string                  `json:"operationId"`
-	ReceiptURL              string                  `json:"receiptUrl"`
-	OwnerUsername           string                  `json:"ownerUsername"`
-	State                   store.ReceiptState      `json:"state"`
-	ClusterID               string                  `json:"clusterId"`
-	ClusterGeneration       string                  `json:"clusterGeneration"`
-	TargetGenerationChanged bool                    `json:"targetGenerationChanged"`
-	ContentDigest           string                  `json:"contentDigest"`
-	DocumentCount           int                     `json:"documentCount"`
-	RecordedThrough         int                     `json:"recordedThrough"`
-	Force                   bool                    `json:"force"`
-	ContainsSecret          bool                    `json:"containsSecret"`
-	RepairOf                string                  `json:"repairOf,omitempty"`
-	Verification            VerificationLink        `json:"verification"`
-	VerificationState       store.VerificationState `json:"verificationState"`
-	CreatedAt               time.Time               `json:"createdAt"`
-	MutationStartedAt       *time.Time              `json:"mutationStartedAt,omitempty"`
-	CompletedAt             *time.Time              `json:"completedAt,omitempty"`
-	VerifiedAt              *time.Time              `json:"verifiedAt,omitempty"`
+	OperationID             string             `json:"operationId"`
+	ReceiptURL              string             `json:"receiptUrl"`
+	OwnerUsername           string             `json:"ownerUsername"`
+	State                   store.ReceiptState `json:"state"`
+	ClusterID               string             `json:"clusterId"`
+	ClusterGeneration       string             `json:"clusterGeneration"`
+	TargetGenerationChanged bool               `json:"targetGenerationChanged"`
+	ContentDigest           string             `json:"contentDigest"`
+	DocumentCount           int                `json:"documentCount"`
+	RecordedThrough         int                `json:"recordedThrough"`
+	Force                   bool               `json:"force"`
+	ContainsSecret          bool               `json:"containsSecret"`
+	RepairOf                string             `json:"repairOf,omitempty"`
+	Verification            VerificationLink   `json:"verification"`
+	CreatedAt               time.Time          `json:"createdAt"`
+	MutationStartedAt       *time.Time         `json:"mutationStartedAt,omitempty"`
+	CompletedAt             *time.Time         `json:"completedAt,omitempty"`
+	VerifiedAt              *time.Time         `json:"verifiedAt,omitempty"`
 }
 
 // NewReceiptView renders r. currentGeneration is the target cluster's
@@ -411,7 +459,6 @@ func NewReceiptView(r *store.ChangeReceipt, currentGeneration string) ReceiptVie
 		Force:             r.Force,
 		ContainsSecret:    r.ContainsSecret,
 		Verification:      VerificationLink{State: r.VerificationState, URL: verificationURL(r.ID)},
-		VerificationState: r.VerificationState,
 		CreatedAt:         r.CreatedAt,
 		MutationStartedAt: r.MutationStartedAt,
 		CompletedAt:       r.CompletedAt,

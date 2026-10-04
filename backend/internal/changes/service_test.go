@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"io"
@@ -16,7 +17,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -435,11 +438,22 @@ func TestTrackedApply_MarkMutationStartedFails_NothingApplied(t *testing.T) {
 		if eng.calls != 0 {
 			t.Fatalf("apply called %d times", eng.calls)
 		}
-		// The row exists with mutation_started_at NULL: reconciliation will
-		// classify it as failed ("never started"), which is the truth.
+		// Nothing was applied, so the row is closed as failed right away (best
+		// effort) instead of sitting in flight until ReconcileOrphans.
 		row := fs.row(t, id)
-		if row.MutationStartedAt != nil || row.CompletedAt != nil || row.State != store.ReceiptApplying {
-			t.Fatalf("row should be an unstamped in-flight intent: %+v", row)
+		if row.MutationStartedAt != nil || row.CompletedAt == nil || row.State != store.ReceiptFailed {
+			t.Fatalf("row should be closed as never-started/failed: %+v", row)
+		}
+		// A same-id retry is told so: a replay of the failed receipt, no apply.
+		res, err := svc.TrackedApply(context.Background(), newRequest(id, threeDocs(), "raw"), eng.apply)
+		if err != nil {
+			t.Fatalf("retry after a closed never-started receipt must replay, got %v", err)
+		}
+		if eng.calls != 0 || !res.Tracking.Replayed || res.Tracking.State != store.ReceiptFailed || res.Tracking.NotAttempted != 3 {
+			t.Fatalf("calls=%d tracking=%+v", eng.calls, res.Tracking)
+		}
+		if res.Results[0].Error != NotAttemptedError {
+			t.Fatalf("never-started documents carry the not-attempted text: %q", res.Results[0].Error)
 		}
 	})
 	t.Run("already final (reconciled between insert and mark)", func(t *testing.T) {
@@ -667,13 +681,18 @@ func TestTrackedApply_Replay_UnknownReceiptFillsMissingOutcomesAsFailed(t *testi
 	if eng.calls != 0 {
 		t.Fatal("apply called on replay of an unknown receipt")
 	}
-	if res.Tracking.State != store.ReceiptUnknown || res.Tracking.NotAttempted != 2 || res.Tracking.RecordedThrough != 1 {
+	// The receipt cannot prove what the lost process did after its last
+	// record, so nothing is claimed "never attempted": the holes are unrecorded.
+	if res.Tracking.State != store.ReceiptUnknown || res.Tracking.Unrecorded != 2 || res.Tracking.NotAttempted != 0 || res.Tracking.RecordedThrough != 1 {
 		t.Fatalf("tracking = %+v", res.Tracking)
 	}
 	for _, i := range []int{1, 2} {
-		if res.Results[i].Action != ActionFailed || res.Results[i].Error != NotRecordedError {
+		if res.Results[i].Action != ActionFailed || res.Results[i].Error != NotRecordedError || res.Results[i].ErrorClass != ErrorClassIndeterminate {
 			t.Fatalf("result %d = %+v", i, res.Results[i])
 		}
+	}
+	if !containsWarning(res.Tracking.Warnings, "cluster may hold them") {
+		t.Fatalf("warnings = %v", res.Tracking.Warnings)
 	}
 	if c := res.Counts(); c.Failed != 2 || c.Total != 3 {
 		t.Fatalf("a legacy client must not read an interrupted apply as success: %+v", c)
@@ -1105,7 +1124,7 @@ func TestApplyTracking_WireShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, k := range []string{"operationId", "receiptUrl", "state", "clusterId", "clusterGeneration", "contentDigest",
-		"recordedThrough", "notAttempted", "replayed", "containsSecret", "repairOf", "objects", "verification", "warnings"} {
+		"recordedThrough", "notAttempted", "unrecorded", "replayed", "containsSecret", "repairOf", "objects", "verification", "warnings"} {
 		if _, ok := m[k]; !ok {
 			t.Fatalf("tracking JSON lacks %q: %s", k, buf)
 		}
@@ -1204,4 +1223,214 @@ func containsWarning(ws []string, substr string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Review follow-ups (PR #565): row read-back, recording guards, classes
+// ---------------------------------------------------------------------------
+
+func TestTrackedApply_InsertedRowCarriesEveryRequestField(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	repair := uuid.New()
+	req := newRequest(uuid.New(), threeDocs(), "raw")
+	req.ClusterID = "" // empty means local, through k8s.NormalizedClusterID
+	req.ClusterGen = "local"
+	req.Force = true
+	req.RepairOf = &repair
+	req.Ownership = []byte(`[{"kind":"Deployment","name":"web","owner":"argocd"}]`)
+
+	res, err := svc.TrackedApply(context.Background(), req, (&fakeEngine{script: threeSuccess()}).apply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := fs.row(t, req.OperationID)
+	if row.OwnerID != testUser.ID || row.OwnerUsername != testUser.Username {
+		t.Fatalf("owner = %q/%q", row.OwnerID, row.OwnerUsername)
+	}
+	if row.ClusterID != "local" || res.Tracking.ClusterID != "local" {
+		t.Fatalf("empty cluster id must normalize to local: row=%q tracking=%q", row.ClusterID, res.Tracking.ClusterID)
+	}
+	if row.ClusterGeneration != "local" || row.DocumentCount != 3 || !row.Force || row.ContainsSecret {
+		t.Fatalf("row = %+v", row)
+	}
+	if row.RepairOf == nil || *row.RepairOf != repair || res.Tracking.RepairOf != repair.String() {
+		t.Fatalf("repairOf not recorded: %+v / %q", row.RepairOf, res.Tracking.RepairOf)
+	}
+	if string(row.Ownership) != string(req.Ownership) {
+		t.Fatalf("ownership = %s", row.Ownership)
+	}
+	if row.ContentDigest != computeDigest([]byte("raw")) || row.State != store.ReceiptApplied || row.VerificationState != store.VerifyPending {
+		t.Fatalf("row = %+v", row)
+	}
+	// Non-local ids pass through untouched.
+	fs2 := newFakeStore()
+	req2 := newRequest(uuid.New(), threeDocs(), "raw")
+	req2.ClusterID = "staging"
+	if _, err := newTestService(fs2).TrackedApply(context.Background(), req2, (&fakeEngine{script: threeSuccess()}).apply); err != nil {
+		t.Fatal(err)
+	}
+	if fs2.row(t, req2.OperationID).ClusterID != "staging" {
+		t.Fatal("remote cluster id altered")
+	}
+}
+
+func TestTrackedApply_RecordingGuards(t *testing.T) {
+	t.Run("engine skipped the observer for an attempted document", func(t *testing.T) {
+		fs := newFakeStore()
+		svc := newTestService(fs)
+		skipping := func(observe ApplyObserverFunc) TrackedApplyOutcome {
+			out := TrackedApplyOutcome{Attempted: threeSuccess()}
+			_ = observe(out.Attempted[0]) // only the first is reported
+			return out
+		}
+		res, err := svc.TrackedApply(context.Background(), newRequest(uuid.New(), threeDocs(), "raw"), skipping)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Tracking.State != store.ReceiptUnknown || res.Tracking.RecordedThrough != 1 {
+			t.Fatalf("an attempted-but-unrecorded outcome must make the receipt unknown: %+v", res.Tracking)
+		}
+		if c := res.Counts(); c.Failed != 0 || c.Total != 3 {
+			t.Fatalf("the engine's results are still reported truthfully: %+v", c)
+		}
+	})
+	t.Run("observer refuses an out-of-range index and the engine stops", func(t *testing.T) {
+		fs := newFakeStore()
+		svc := newTestService(fs)
+		eng := &fakeEngine{script: []ApplyObservation{
+			okObs(0, "Deployment", "prod", "web", ActionConfigured),
+			okObs(7, "Service", "prod", "web", ActionUnchanged), // bogus index
+			okObs(2, "ConfigMap", "prod", "web-config", ActionCreated),
+		}}
+		id := uuid.New()
+		res, err := svc.TrackedApply(context.Background(), newRequest(id, threeDocs(), "raw"), eng.apply)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(fs.row(t, id).Objects) != 1 {
+			t.Fatalf("the bogus outcome must not be recorded: %d objects", len(fs.row(t, id).Objects))
+		}
+		if res.Tracking.State != store.ReceiptUnknown || res.Tracking.NotAttempted != 2 {
+			t.Fatalf("tracking = %+v", res.Tracking)
+		}
+		for _, i := range []int{1, 2} {
+			if res.Results[i].Action != ActionFailed || res.Results[i].Error != NotAppliedError {
+				t.Fatalf("result %d = %+v", i, res.Results[i])
+			}
+		}
+	})
+	t.Run("duplicate index keeps the first outcome", func(t *testing.T) {
+		docs := threeDocs()
+		dup := []ApplyObservation{
+			okObs(0, "Deployment", "prod", "web", ActionConfigured),
+			okObs(1, "Service", "prod", "web", ActionUnchanged),
+			okObs(1, "Service", "prod", "web", ActionCreated), // second report for doc 1
+		}
+		results, notAttempted := assembleResults(docs, dup, NotAttemptedError)
+		if results[1].Action != ActionUnchanged || notAttempted != 1 || results[2].Error != NotAttemptedError {
+			t.Fatalf("results=%+v notAttempted=%d", results, notAttempted)
+		}
+	})
+	t.Run("engine stopped on its own: not-attempted text, state partial", func(t *testing.T) {
+		fs := newFakeStore()
+		svc := newTestService(fs)
+		eng := &fakeEngine{script: threeSuccess()[:1]} // stops after one doc, no recording failure
+		res, err := svc.TrackedApply(context.Background(), newRequest(uuid.New(), threeDocs(), "raw"), eng.apply)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Tracking.State != store.ReceiptPartial || res.Tracking.NotAttempted != 2 {
+			t.Fatalf("tracking = %+v", res.Tracking)
+		}
+		if res.Results[1].Error != NotAttemptedError {
+			t.Fatalf("a stop that is not a recording failure must not claim one: %q", res.Results[1].Error)
+		}
+	})
+}
+
+func TestTrackedApply_ErrorClassIsPersisted(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	eng := &fakeEngine{script: []ApplyObservation{
+		okObs(0, "Deployment", "prod", "web", ActionConfigured),
+		failObs(1, "Service", "prod", "web", "context deadline exceeded", ErrorClassIndeterminate),
+		failObs(2, "ConfigMap", "prod", "web-config", "boom", ""),
+	}}
+	id := uuid.New()
+	if _, err := svc.TrackedApply(context.Background(), newRequest(id, threeDocs(), "raw"), eng.apply); err != nil {
+		t.Fatal(err)
+	}
+	objs := fs.row(t, id).Objects
+	if objs[0].ErrorClass != "" || objs[1].ErrorClass != ErrorClassIndeterminate || objs[2].ErrorClass != ErrorClassOther {
+		t.Fatalf("classes = %q / %q / %q", objs[0].ErrorClass, objs[1].ErrorClass, objs[2].ErrorClass)
+	}
+	if objs[1].Error != "context deadline exceeded" {
+		t.Fatalf("non-secret bundle keeps the text: %q", objs[1].Error)
+	}
+}
+
+func TestClassifyAPIError(t *testing.T) {
+	gr := schema.GroupResource{Group: "apps", Resource: "deployments"}
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"conflict", apierrors.NewConflict(gr, "web", errors.New("x")), ErrorClassConflict},
+		{"forbidden", apierrors.NewForbidden(gr, "web", errors.New("x")), ErrorClassForbidden},
+		{"invalid", apierrors.NewInvalid(schema.GroupKind{Group: "apps", Kind: "Deployment"}, "web", nil), ErrorClassInvalid},
+		{"not found", apierrors.NewNotFound(gr, "web"), ErrorClassNotFound},
+		{"context canceled", context.Canceled, ErrorClassIndeterminate},
+		{"wrapped deadline", fmt.Errorf("patch: %w", context.DeadlineExceeded), ErrorClassIndeterminate},
+		{"api timeout", apierrors.NewTimeoutError("too slow", 5), ErrorClassIndeterminate},
+		{"server timeout", apierrors.NewServerTimeout(gr, "patch", 5), ErrorClassIndeterminate},
+		{"service unavailable", apierrors.NewServiceUnavailable("etcd"), ErrorClassOther},
+		{"plain", errors.New("boom"), ErrorClassOther},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyAPIError(tc.err); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTrackedApply_DuplicateOperationID_RowVanished_Unavailable(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	fs.failInsert = store.ErrReceiptExists // the insert collided, but the row is gone by the time we read it
+	eng := &fakeEngine{script: threeSuccess()}
+
+	_, err := svc.TrackedApply(context.Background(), newRequest(uuid.New(), threeDocs(), "raw"), eng.apply)
+	mustUnavailable(t, err, "read")
+	if eng.calls != 0 {
+		t.Fatal("apply called")
+	}
+}
+
+func TestReceiptView_SingleVerificationState(t *testing.T) {
+	fs := newFakeStore()
+	svc := newTestService(fs)
+	id := uuid.New()
+	if _, err := svc.TrackedApply(context.Background(), newRequest(id, threeDocs(), "raw"), (&fakeEngine{script: threeSuccess()}).apply); err != nil {
+		t.Fatal(err)
+	}
+	buf, err := json.Marshal(NewReceiptView(fs.row(t, id), "local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(buf, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, dup := m["verificationState"]; dup {
+		t.Fatalf("verification state must appear once, under verification.state: %s", buf)
+	}
+	v := m["verification"].(map[string]any)
+	if v["state"] != "pending" || v["url"] != "/v1/changes/"+id.String()+"/verification" {
+		t.Fatalf("verification = %v", v)
+	}
 }
