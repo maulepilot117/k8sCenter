@@ -41,6 +41,7 @@ jobs:
           - { pkg: ./internal/velero/, target: FuzzAssuranceEvaluate }
           - { pkg: ./internal/preferences/, target: FuzzPreferencesValidators }
           - { pkg: ./internal/preferences/, target: FuzzValidateDashboardLayout }
+          - { pkg: ./internal/changes/, target: FuzzCheckRollout }
     name: ${{ matrix.target }}
     defaults:
       run:

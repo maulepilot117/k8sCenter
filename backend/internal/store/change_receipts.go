@@ -110,16 +110,22 @@ func (v VerificationState) IsFinal() bool {
 // ReceiptObject is one per-document outcome in change_receipts.objects. It
 // identifies an object and says what happened to it; it never carries content.
 type ReceiptObject struct {
-	Index      int       `json:"index"`
-	Group      string    `json:"group,omitempty"`
-	Version    string    `json:"version,omitempty"`
-	Resource   string    `json:"resource,omitempty"`
-	Kind       string    `json:"kind"`
-	Namespace  string    `json:"namespace,omitempty"`
-	Name       string    `json:"name"`
-	UID        string    `json:"uid,omitempty"`
-	Action     string    `json:"action"`
-	Error      string    `json:"error,omitempty"`
+	Index     int    `json:"index"`
+	Group     string `json:"group,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Resource  string `json:"resource,omitempty"`
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	UID       string `json:"uid,omitempty"`
+	Action    string `json:"action"`
+	Error     string `json:"error,omitempty"`
+	// ErrorClass is the Kubernetes reason class of a failed action
+	// (conflict, forbidden, invalid, not_found, indeterminate, other). It is
+	// what a Secret-bearing receipt keeps instead of Error, and what the
+	// verifier reads to tell "the API server rejected it" from "the request
+	// was cut off and the server may have committed it".
+	ErrorClass string    `json:"errorClass,omitempty"`
 	RecordedAt time.Time `json:"recordedAt"`
 }
 
@@ -368,13 +374,15 @@ func (s *ChangeReceiptStore) Finalize(ctx context.Context, id uuid.UUID, state R
 // state is an outcome (verified, inconclusive or verification_failed) and left
 // alone for pending/verifying.
 //
-// A receipt whose verification is already final is never reopened: a non-final
-// write (pending or verifying) against a final row returns
-// ErrReceiptAlreadyFinal and changes nothing. That is what stops a slow
-// verifier from overwriting the "inconclusive" that reconciliation recorded.
-// A final-to-final write is allowed and replaces the stored outcome and
-// evidence (a re-verification supersedes the earlier result). Returns
-// ErrReceiptNotFound for an unknown id.
+// A final verdict is never replaced: ANY write (final or not) against a row
+// whose verification_state is already final returns ErrReceiptAlreadyFinal
+// and changes nothing. The guard is in the UPDATE's WHERE clause, so two
+// pollers that both compute a final verdict cannot race it: exactly one write
+// lands and the other is told the row was already final. That is also what
+// stops a slow verifier from overwriting the "inconclusive" that
+// reconciliation recorded. The caller treats ErrReceiptAlreadyFinal as "read
+// the stored verdict back", not as a failure. Returns ErrReceiptNotFound for
+// an unknown id.
 func (s *ChangeReceiptStore) SetVerification(
 	ctx context.Context, id uuid.UUID, state VerificationState, payload json.RawMessage,
 ) error {
@@ -391,8 +399,7 @@ func (s *ChangeReceiptStore) SetVerification(
 		       verification       = $3::jsonb,
 		       verified_at        = CASE WHEN $4::boolean THEN NOW() ELSE verified_at END
 		 WHERE id = $1
-		   AND ($4::boolean
-		        OR verification_state NOT IN ('verified', 'inconclusive', 'verification_failed'))`,
+		   AND verification_state NOT IN ('verified', 'inconclusive', 'verification_failed')`,
 		id, string(state), verification, state.IsFinal())
 	if err != nil {
 		return fmt.Errorf("set change receipt verification: %w", err)
@@ -468,7 +475,10 @@ func (s *ChangeReceiptStore) ListForOwner(
 	}
 	defer rows.Close()
 
-	out := make([]ChangeReceipt, 0, p.PageSize)
+	// No capacity hint: a page is at most ReceiptMaxPageSize rows, so
+	// preallocation buys nothing, and deriving a size from caller input is what
+	// CodeQL go/uncontrolled-allocation-size flags even after a clamp.
+	out := make([]ChangeReceipt, 0)
 	for rows.Next() {
 		r, err := scanReceipt(rows)
 		if err != nil {

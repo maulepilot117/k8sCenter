@@ -364,8 +364,10 @@ What the table stores:
   One row per tracked apply: the owner, the target cluster and its pin
   generation, a "sha256:<hex>" digest of the submitted bundle, the document
   count, and per-object references and outcomes (group/version/resource/
-  kind/namespace/name/uid, action, error). Verification evidence is stored
-  as an opaque JSON array of check results.
+  kind/namespace/name/uid, action, error, errorClass). Verification evidence
+  is stored as an opaque JSON array of check results; a final
+  verification_state is never replaced (SetVerification guards the UPDATE),
+  so the first final verdict wins.
 
 What it emphatically does NOT store:
   No manifest, no spec, no data, no stringData and no rendered YAML, for
