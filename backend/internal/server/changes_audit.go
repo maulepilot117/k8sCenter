@@ -1,9 +1,7 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -22,60 +20,51 @@ type changesReceiptGetter interface {
 	Get(ctx context.Context, id uuid.UUID) (*store.ChangeReceipt, error)
 }
 
-// maxAuditedBody caps how much of the verification response is buffered to read
-// its state. The body is a state plus per-object checks, normally a few KB.
-const maxAuditedBody = 1 << 20
-
-// auditRecorder passes the response through unchanged while keeping the status
-// and a bounded copy of the body.
-type auditRecorder struct {
+// statusRecorder passes the response through unchanged and remembers the status.
+type statusRecorder struct {
 	http.ResponseWriter
 	status int
-	body   bytes.Buffer
 }
 
-func (a *auditRecorder) WriteHeader(code int) {
-	if a.status == 0 {
-		a.status = code
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
 	}
-	a.ResponseWriter.WriteHeader(code)
+	s.ResponseWriter.WriteHeader(code)
 }
 
-func (a *auditRecorder) Write(p []byte) (int, error) {
-	if a.status == 0 {
-		a.status = http.StatusOK
+func (s *statusRecorder) Write(p []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
 	}
-	if room := maxAuditedBody - a.body.Len(); room > 0 {
-		a.body.Write(p[:min(len(p), room)])
-	}
-	return a.ResponseWriter.Write(p)
+	return s.ResponseWriter.Write(p)
 }
 
-func (a *auditRecorder) Unwrap() http.ResponseWriter { return a.ResponseWriter }
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // changesVerificationAudit records one audit entry when GET
-// /changes/{id}/verification turns a receipt whose stored verification was not
-// final into a final verdict.
+// /changes/{id}/verification PERSISTS a final verdict.
 //
 // Why it exists: CLAUDE.md requires audit logging for writes, and this GET
-// persists a verdict for the receipt's owner or an admin (changes plan D6:
+// writes a verdict for the receipt's owner or an admin (changes plan D6:
 // stateless polling, no background watcher). The handler lives in the changes
 // package and carries no audit logger, so the entry is written at the route
 // layer, where the audit logger and the user are both in hand.
 //
-// Rules, chosen so polling never floods the audit table:
-//   - the receipt's stored verification must be non-final BEFORE the handler
-//     runs (one indexed read); a receipt already final is served from storage
-//     and writes nothing, so re-viewing a finished receipt is not audited;
-//   - the response must be a 200 whose state is final (verified, inconclusive or
-//     verification_failed); pending/verifying polls write nothing.
-//
-// An entry is therefore written for the transition, once per final verdict
-// reached by a request. It records the verdict returned to the caller: for a
-// grantee (whose live evaluation is never stored) the detail still names the
-// state they were shown, which is the event worth auditing. A failure to read
-// the receipt, an unparsable id, or a nil dependency passes the request through
+// What counts as "a verdict was written" is read from the store, not inferred
+// from the response: the receipt's stored verification state is read before
+// the handler runs and again after a 200, and an entry is written only when it
+// went from non-final to final (verified, inconclusive or verification_failed).
+// Therefore none of these write an entry: a receipt already final (served from
+// storage), a pending or verifying poll, a grantee's or admin-view live
+// evaluation that the handler does not store, a non-200 response, and any
+// request where either read fails. A failed read passes the request through
 // unaudited rather than failing a verification.
+//
+// The entry names the caller whose request observed the transition. If two
+// requests race, the one whose post-read sees the final state is audited, and
+// a concurrent request that did not itself write may be the one named. The
+// verdict is still written once and the entry's resource and state are exact.
 func changesVerificationAudit(receipts changesReceiptGetter, logger audit.Logger, slogger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if receipts == nil || logger == nil {
@@ -88,38 +77,37 @@ func changesVerificationAudit(receipts changesReceiptGetter, logger audit.Logger
 				next.ServeHTTP(w, r)
 				return
 			}
-			rec, err := receipts.Get(r.Context(), id)
-			if err != nil || rec == nil || rec.VerificationState.IsFinal() {
+			before, err := receipts.Get(r.Context(), id)
+			if err != nil || before == nil || before.VerificationState.IsFinal() {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			rw := &auditRecorder{ResponseWriter: w}
+			rw := &statusRecorder{ResponseWriter: w}
 			next.ServeHTTP(rw, r)
-
 			if rw.status != http.StatusOK {
 				return
 			}
-			var resp struct {
-				Data struct {
-					State store.VerificationState `json:"state"`
-				} `json:"data"`
-			}
-			if json.Unmarshal(rw.body.Bytes(), &resp) != nil || !resp.Data.State.IsFinal() {
+
+			// Re-read on a context that survives the response: the request ctx is
+			// still live here, but the audit must not depend on the client staying
+			// connected after the handler has already written the verdict.
+			after, err := receipts.Get(context.WithoutCancel(r.Context()), id)
+			if err != nil || after == nil || !after.VerificationState.IsFinal() {
 				return
 			}
 			if err := logger.Log(r.Context(), audit.Entry{
 				Timestamp:    time.Now(),
-				ClusterID:    rec.ClusterID,
+				ClusterID:    after.ClusterID,
 				User:         user.Username,
 				SourceIP:     r.RemoteAddr,
 				Action:       audit.ActionChangeVerify,
 				ResourceKind: "ChangeReceipt",
-				ResourceName: rec.ID.String(),
+				ResourceName: after.ID.String(),
 				Result:       audit.ResultSuccess,
-				Detail:       "verification verdict " + string(resp.Data.State) + " (receipt owner " + rec.OwnerUsername + ")",
+				Detail:       "verification verdict " + string(after.VerificationState) + " persisted (receipt owner " + after.OwnerUsername + ")",
 			}); err != nil && slogger != nil {
-				slogger.Warn("changes: verification audit write failed", "receiptId", rec.ID, "error", err)
+				slogger.Warn("changes: verification audit write failed", "receiptId", after.ID, "error", err)
 			}
 		})
 	}
