@@ -169,7 +169,9 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var r fetchResult
+			// Pre-seeded so a recovered panic reads as a failed list, never
+			// an empty one; a body that finishes overwrites it.
+			r := fetchResult{err: k8s.ErrListPanicked}
 			recoverutil.Safe(h.Logger, "gitops argo-fetch", func() {
 				r.apps, r.err = ListArgoApplications(ctx, dynClient)
 			})
@@ -184,10 +186,11 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var r fetchResult
+			// Pre-seeded as for Argo, here and for each inner list.
+			r := fetchResult{err: k8s.ErrListPanicked}
 			recoverutil.Safe(h.Logger, "gitops flux-fetch", func() {
 				var ks, hr []NormalizedApp
-				var ksErr, hrErr error
+				ksErr, hrErr := k8s.ErrListPanicked, k8s.ErrListPanicked
 				var inner sync.WaitGroup
 				inner.Add(2)
 				go func() {
@@ -203,10 +206,13 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 					})
 				}()
 				inner.Wait()
-				if ksErr != nil {
+				switch {
+				case ksErr != nil:
 					r.err = ksErr
-				} else if hrErr != nil {
+				case hrErr != nil:
 					r.err = hrErr
+				default:
+					r.err = nil
 				}
 				r.apps = append(ks, hr...)
 			})
@@ -244,9 +250,12 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		failed:    failed,
 	}
 
-	// Only write cache if no invalidation occurred during fetch.
+	// Only write cache if no invalidation occurred during fetch, and not
+	// when the first caller's context ended mid-fetch: its lists failed for
+	// that caller's reasons, not the cluster's, and caching them would show
+	// every user an empty view for cacheTTL.
 	h.cacheMu.Lock()
-	if h.cacheGen == gen {
+	if h.cacheGen == gen && ctx.Err() == nil {
 		h.cachedData = data
 	}
 	h.cacheMu.Unlock()

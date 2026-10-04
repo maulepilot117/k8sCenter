@@ -251,7 +251,12 @@ func applyVisibility(st *toolState, vis appVisibility, prefix string, visible in
 }
 
 // appliesInCluster reports whether app deploys to the cluster it runs on,
-// the only case in which its record speaks for objects on that cluster.
+// the only case in which its record speaks for objects on that cluster. It
+// accepts only Argo CD's exact in-cluster spellings; any other form of the
+// same address (a port, another case, the .cluster.local name) is treated as
+// another cluster, which can make a verdict unknown but never confirm one.
+// search applies it to the freshly fetched application; orderCandidates to
+// the cached copy, for ordering only.
 func appliesInCluster(app NormalizedApp) bool {
 	if app.Tool == ToolArgoCD {
 		server := strings.TrimSuffix(app.DestinationCluster, "/")
@@ -263,6 +268,10 @@ func appliesInCluster(app NormalizedApp) bool {
 // appDetail is one application's managed resources, or why they are unknown.
 type appDetail struct {
 	resources []ManagedResource
+	// inCluster is appliesInCluster of the application as just fetched, not
+	// of the cached list copy, which can be cacheTTL out of date about a
+	// destination that was retargeted since.
+	inCluster bool
 	forbidden bool
 	failed    bool
 }
@@ -360,7 +369,7 @@ func (r *ownershipRun) search(ctx context.Context, ref ObjectRef, hints objectHi
 		if !namesRef(d.resources, ref) {
 			continue
 		}
-		if !appliesInCluster(app) {
+		if !d.inCluster {
 			st.offClusterClaim = true
 			continue
 		}
@@ -439,6 +448,7 @@ func (r *ownershipRun) detail(ctx context.Context, app NormalizedApp) (appDetail
 	switch {
 	case err == nil:
 		d.resources = detail.Resources
+		d.inCluster = appliesInCluster(detail.App)
 	case ctx.Err() != nil:
 		return appDetail{}, true, ctx.Err()
 	case apierrors.IsNotFound(err):
@@ -465,7 +475,9 @@ func matchesRef(mr ManagedResource, ref ObjectRef) bool {
 // decide applies the KTD10 rule and is its single chokepoint: an application
 // is listed, and a controller confirmed, only when evidence whose
 // Kind.Authoritative() is true names that application for that tool. Hints
-// can only move an unconfirmed verdict between unknown reasons.
+// can only move an unconfirmed verdict between unknown reasons. The
+// in-cluster gate is not repeated here: search enforces it before an
+// off-cluster application's record can become evidence.
 func decide(ref ObjectRef, ev []OwnershipEvidence, apps []OwnedByApp, argo, flux toolState) OwnershipResult {
 	res := OwnershipResult{
 		Object:            ref,

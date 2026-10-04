@@ -152,15 +152,18 @@ func (h *Handler) loadApps(ctx context.Context, user *auth.User) ([]NormalizedAp
 	return snap.apps, coverage, nil
 }
 
-// load returns the request's cluster's GitOps snapshot for the user.
+// load returns the request's cluster's GitOps state for the user, as
+// loadFor does. Callers use it on remote clusters only: they read
+// ApplicationSets and appSources, which the local branch does not fill.
 func (h *Handler) load(ctx context.Context, user *auth.User) (*snapshot, error) {
 	return h.loadFor(ctx, middleware.ClusterIDFromContext(ctx), user)
 }
 
-// loadFor returns clusterID's GitOps state: for the local cluster the
-// service-account cache (unfiltered, so callers RBAC-filter) and the local
-// discoverer; for a remote one the per-identity snapshot. In both, failed
-// names each application list whose apps are missing.
+// loadFor returns clusterID's GitOps state. For a remote cluster that is the
+// full per-identity snapshot. For the local cluster it is applications only
+// — the service-account cache (unfiltered, so callers RBAC-filter) and the
+// local discoverer's status — with no ApplicationSets and no appSources. In
+// both, failed names each application list whose apps are missing.
 func (h *Handler) loadFor(ctx context.Context, clusterID string, user *auth.User) (*snapshot, error) {
 	if k8s.IsLocalClusterID(clusterID) {
 		if h.Discoverer == nil {

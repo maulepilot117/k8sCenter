@@ -320,6 +320,29 @@ func TestResolveOwnership_OffClusterApplicationsCannotConfirm(t *testing.T) {
 		wantNoLeak(t, got, "spoke-kubeconfig")
 	})
 
+	// The cached list is up to cacheTTL old; the destination that decides is
+	// the one on the application as fetched for its status.
+	t.Run("retargeted since the list was cached", func(t *testing.T) {
+		app := argoAppManaging("argocd", "web-app", "https://git.example/web", "prod", webStatusResource())
+		ks := fluxKustomization("flux-system", "apps", "./apps", "prod_web_apps_Deployment")
+		f := newLocalOwnership(t, true, true, resources.NewAlwaysAllowAccessChecker(), lives(liveWeb(nil, nil)), app, ks)
+
+		fresh := withDestination(app.DeepCopy(), "https://spoke.example:6443", "")
+		freshKS := ks.DeepCopy()
+		_ = unstructured.SetNestedField(freshKS.Object, map[string]any{"secretRef": map[string]any{"name": "spoke"}}, "spec", "kubeConfig")
+		if err := f.caller.Tracker().Update(ArgoApplicationGVR, fresh, "argocd"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.caller.Tracker().Update(FluxKustomizationGVR, freshKS, "flux-system"); err != nil {
+			t.Fatal(err)
+		}
+		got := f.resolveOne(t, adminUser, webRef)
+		wantVerdict(t, got, OwnedByNone, ConfidenceUnknown, "argo-destination-unverified")
+		if len(got.Apps) != 0 {
+			t.Errorf("apps = %v, want none", appIDs(got.Apps))
+		}
+	})
+
 	t.Run("an in-cluster owner wins and is read first", func(t *testing.T) {
 		f := newLocalOwnership(t, true, false, resources.NewAlwaysAllowAccessChecker(), lives(liveWeb(nil, nil)),
 			withDestination(argoAppManaging("argocd", "aa-spoke", "https://git.example/spoke", "prod", webStatusResource()), "https://spoke.example:6443", ""),
@@ -673,19 +696,48 @@ func TestResolveOwnership_LocalListFailureIsUnavailable(t *testing.T) {
 	for _, tc := range []struct {
 		name, resource, reason string
 		argo, flux             bool
+		panics                 bool
 	}{
-		{"argo applications", "applications", "argo-unavailable", true, true},
-		{"flux kustomizations", "kustomizations", "flux-unavailable", true, true},
-		{"flux helmreleases", "helmreleases", "flux-unavailable", false, true},
+		{"argo applications", "applications", "argo-unavailable", true, true, false},
+		{"flux kustomizations", "kustomizations", "flux-unavailable", true, true, false},
+		{"flux helmreleases", "helmreleases", "flux-unavailable", false, true, false},
+		// A recovered panic is a failed list, never an empty one.
+		{"argo list panics", "applications", "argo-unavailable", true, true, true},
+		{"flux kustomization list panics", "kustomizations", "flux-unavailable", true, true, true},
+		{"flux helmrelease list panics", "helmreleases", "flux-unavailable", false, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLocalOwnership(t, tc.argo, tc.flux, resources.NewAlwaysAllowAccessChecker(), lives(liveWeb(nil, nil)),
 				argoAppManaging("argocd", "other", "https://git.example/other", "prod"),
 				fluxKustomization("flux-system", "apps", "./apps"))
-			f.sa.PrependReactor("list", tc.resource, failWith(apierrors.NewInternalError(errors.New("boom"))))
+			reaction := failWith(apierrors.NewInternalError(errors.New("boom")))
+			if tc.panics {
+				reaction = func(k8stesting.Action) (bool, runtime.Object, error) { panic("malformed list") }
+			}
+			f.sa.PrependReactor("list", tc.resource, reaction)
 			wantVerdict(t, f.resolveOne(t, adminUser, webRef), OwnedByNone, ConfidenceUnavailable, tc.reason)
 		})
 	}
+
+	t.Run("a fetch whose caller went away is not cached", func(t *testing.T) {
+		f := newLocalOwnership(t, true, false, resources.NewAlwaysAllowAccessChecker(), nil,
+			argoAppManaging("argocd", "other", "https://git.example/other", "prod"))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := f.h.fetchApps(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if f.h.cachedData != nil {
+			t.Fatal("a fetch made under a cancelled context was cached")
+		}
+		apps, err := f.h.fetchApps(context.Background())
+		if err != nil || len(apps) != 1 {
+			t.Fatalf("fetchApps = %v, %v; want the one app", appNames(apps), err)
+		}
+		if f.h.cachedData == nil || countVerb(f.sa, "list", "applications") != 2 {
+			t.Errorf("cached = %v after %d lists, want a cached second fetch", f.h.cachedData != nil, countVerb(f.sa, "list", "applications"))
+		}
+	})
 
 	t.Run("list endpoint still serves the other controller", func(t *testing.T) {
 		f := newLocalOwnership(t, true, true, resources.NewAlwaysAllowAccessChecker(), nil,
@@ -845,6 +897,41 @@ func TestUnconfirmedVerdict(t *testing.T) {
 			confidence, reason := unconfirmedVerdict(tc.hints, tc.argo, tc.flux)
 			if confidence != tc.confidence || reason != tc.reason {
 				t.Errorf("got %s/%s, want %s/%s", confidence, reason, tc.confidence, tc.reason)
+			}
+		})
+	}
+}
+
+// Only Argo CD's exact in-cluster spellings count; every look-alike is
+// treated as another cluster, which can never confirm.
+func TestAppliesInCluster(t *testing.T) {
+	argo := func(server, name string) NormalizedApp {
+		return NormalizedApp{Tool: ToolArgoCD, DestinationCluster: server, DestinationName: name}
+	}
+	for _, tc := range []struct {
+		name string
+		app  NormalizedApp
+		want bool
+	}{
+		{"in-cluster server", argo("https://kubernetes.default.svc", ""), true},
+		{"trailing slash", argo("https://kubernetes.default.svc/", ""), true},
+		{"in-cluster name, no server", argo("", "in-cluster"), true},
+		{"in-cluster server and name", argo("https://kubernetes.default.svc", "in-cluster"), true},
+		{"explicit :443", argo("https://kubernetes.default.svc:443", ""), false},
+		{"uppercase", argo("https://KUBERNETES.default.svc", ""), false},
+		{"cluster.local name", argo("https://kubernetes.default.svc.cluster.local", ""), false},
+		{"http scheme", argo("http://kubernetes.default.svc", ""), false},
+		{"empty destination", argo("", ""), false},
+		{"another server", argo("https://spoke.example:6443", ""), false},
+		{"another server named in-cluster", argo("https://spoke.example:6443", "in-cluster"), false},
+		{"another name", argo("", "spoke"), false},
+		{"name differs in case", argo("", "In-Cluster"), false},
+		{"flux kustomization", NormalizedApp{Tool: ToolFluxCD, Kind: "Kustomization"}, true},
+		{"flux kustomization with a kubeConfig", NormalizedApp{Tool: ToolFluxCD, Kind: "Kustomization", RemoteKubeConfig: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := appliesInCluster(tc.app); got != tc.want {
+				t.Errorf("appliesInCluster = %v, want %v", got, tc.want)
 			}
 		})
 	}
