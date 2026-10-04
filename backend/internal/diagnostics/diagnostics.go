@@ -52,6 +52,23 @@ type DiagnosticTarget struct {
 	Object    runtime.Object
 	Pods      []*corev1.Pod
 	Events    []*corev1.Event
+
+	// Limitations records related resolutions that did not happen, so an empty
+	// Pods means "not observed" rather than "none". Resolve fills it; the rules
+	// ignore it and Normalize reads it.
+	Limitations []Limitation
+}
+
+// Related-resolution kinds a Limitation can name and a rule can depend on.
+const (
+	limitPods        = "pods"
+	limitReplicaSets = "replicasets"
+)
+
+// Limitation names one related resolution Resolve could not perform and why.
+type Limitation struct {
+	Kind   string
+	Reason string // one of the Reason* codes in check_result.go
 }
 
 // RelatedRBAC describes which related-resource resolutions the requesting user
@@ -86,18 +103,29 @@ type ruleEntry struct {
 	name      string
 	severity  Severity
 	appliesTo []string
+	// dependsOn returns the related resolutions (limit* kinds) the rule reads for
+	// this target, beyond the target object itself. A rule that reads only
+	// target.Object leaves it nil.
+	dependsOn func(target *DiagnosticTarget) []string
 	check     CheckFunc
+}
+
+// always is a dependsOn for a rule that reads the same related resolutions
+// whatever the target looks like.
+func always(kinds ...string) func(*DiagnosticTarget) []string {
+	return func(*DiagnosticTarget) []string { return kinds }
 }
 
 // rules is the global registry of diagnostic rules, populated by init() in rules.go.
 var rules []ruleEntry
 
 // registerRule appends a rule to the global registry.
-func registerRule(name string, severity Severity, appliesTo []string, check CheckFunc) {
+func registerRule(name string, severity Severity, appliesTo []string, dependsOn func(*DiagnosticTarget) []string, check CheckFunc) {
 	rules = append(rules, ruleEntry{
 		name:      name,
 		severity:  severity,
 		appliesTo: appliesTo,
+		dependsOn: dependsOn,
 		check:     check,
 	})
 }
@@ -148,7 +176,7 @@ func runSafeCheck(ctx context.Context, rule ruleEntry, target *DiagnosticTarget)
 					RuleName: rule.name,
 					Status:   "fail",
 					Severity: rule.severity,
-					Message:  fmt.Sprintf("Rule %q encountered an internal error", rule.name),
+					Message:  internalErrorMessage(rule.name),
 				}
 			}
 		}()
@@ -166,7 +194,7 @@ func runSafeCheck(ctx context.Context, rule ruleEntry, target *DiagnosticTarget)
 			RuleName: rule.name,
 			Status:   "fail",
 			Severity: rule.severity,
-			Message:  fmt.Sprintf("Rule %q timed out after 5s", rule.name),
+			Message:  timedOutMessage(rule.name),
 		}
 	}
 }
@@ -212,12 +240,24 @@ func Resolve(ctx context.Context, lister topology.ResourceLister, namespace, kin
 	// would traverse. When pod access is denied, target.Pods stays empty and
 	// downstream rules that depend on it (PodImagePullBackOff, etc.) report
 	// nothing rather than leaking pod-derived state.
+	//
+	// Every skipped resolution is recorded in target.Limitations. The rules still
+	// see an empty list (their legacy output is unchanged); Normalize uses the
+	// record to report those results as inconclusive instead of healthy.
 	if related.allowsPods() {
 		pods, err := resolveRelatedPods(ctx, lister, namespace, kind, name, obj, related)
-		if err != nil {
+		switch {
+		case err != nil:
 			slog.Warn("failed to resolve related pods", "kind", kind, "name", name, "error", err)
+			target.Limitations = append(target.Limitations, Limitation{Kind: limitPods, Reason: ReasonSourceUnavailable})
+		case kind == "Deployment" && !related.allowsReplicaSets():
+			// resolveRelatedPods returns no pods for a Deployment whose ReplicaSets
+			// the user cannot list.
+			target.Limitations = append(target.Limitations, Limitation{Kind: limitReplicaSets, Reason: ReasonPermissionDenied})
 		}
 		target.Pods = pods
+	} else {
+		target.Limitations = append(target.Limitations, Limitation{Kind: limitPods, Reason: ReasonPermissionDenied})
 	}
 
 	// Note: ResourceLister does not expose ListEvents, so we skip event population.

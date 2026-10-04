@@ -2167,7 +2167,9 @@ type CheckResult struct {
 	Evidence   map[string]string `json:"evidence,omitempty"` // never raw Secret values
 }
 
-// CheckRollout evaluates the rollout postcondition for one live object.
+// CheckRollout evaluates the rollout postcondition for one live object. It is
+// not part of Release D U20: U28 owns it, in the changes package, built on the
+// types above.
 // MUST return CheckInconclusive with Reason "kind_not_supported" for any kind
 // outside {Deployment, StatefulSet, DaemonSet}; MUST NOT return CheckPass for a
 // kind it does not understand.
@@ -2193,9 +2195,10 @@ func CheckRollout(obj *unstructured.Unstructured, src SourceRef, now time.Time) 
 `CheckResult`, and `CheckRollout` locally in
 `backend/internal/changes/verifier.go` with these exact names, fields, and JSON
 tags, behind the comment quoted in U28 step 4. Release E does **not** block on
-Release D. When U20 lands, the swap is three type aliases plus deleting the local
-`CheckRollout` — no wire change, no migration, because the persisted JSON shape
-was fixed by this contract on day one. The only rule is that whichever plan lands
+Release D. When U20 lands, the swap is three type aliases and the four status
+constants re-exported from `diagnostics` (U20 shipped these exact names);
+`CheckRollout` stays in U28's `changes` package. No wire change, no migration,
+because the persisted JSON shape was fixed by this contract on day one. The only rule is that whichever plan lands
 second adopts the tags above rather than inventing its own; if Release D needs a
 different shape, it must change this section *before* U27 ships, because after
 that the tags are in the database.
@@ -2204,6 +2207,24 @@ Release E does not consume `diagnostics.Result`, `RunDiagnostics`,
 `DiagnosticTarget`, or the unexported rule registry, and does not require U20 to
 change any of them. The existing diagnostics HTTP envelope
 (`{target, results, blastRadius}`) is untouched by this release.
+
+**As shipped by U20** (`backend/internal/diagnostics/check_result.go`). The
+types, constants and JSON keys above are implemented verbatim, and
+`TestCheckResultSatisfiesReleaseEContract` decodes real output through a copy of
+this section's types, so drift fails there. What U20 adds or fixes:
+
+- `CheckResult` also carries `remediation` (omitempty), which this section's
+  decoder ignores.
+- `Evidence` maps `"<Kind>/<Name>"` to the observed UID of that object, empty
+  when no UID was observed. It never holds object content.
+- `Reason` is set on every result: `ok` for a pass, `finding` for a warn or fail
+  the check supports, and for an inconclusive one `permission_denied`,
+  `source_unavailable`, `timed_out` or `internal_error`. U28 adds its own codes
+  (such as `kind_not_supported`); consumers must treat the set as open.
+- `CheckID` is an opaque stable string. Diagnostics checks use
+  `diagnostics/<slug>` and those ids are frozen; `workload.rollout-complete`
+  above is U28's own id and stays as written. Nothing decodes the grammar.
+- Legacy `warn` stays `warn`; it is not folded into `fail`.
 
 
 ---
