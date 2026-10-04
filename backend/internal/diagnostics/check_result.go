@@ -86,7 +86,7 @@ type CheckEvidenceItem struct {
 	Kind     string            `json:"kind"`
 	Name     string            `json:"name"`
 	UID      string            `json:"uid,omitempty"`
-	Observed map[string]string `json:"observed,omitempty"` // bounded, redacted key/value facts
+	Observed map[string]string `json:"observed,omitempty"` // for evidence adapters; Normalize leaves it empty
 }
 
 // CheckResult is the reusable outcome of one diagnostic check, shared by
@@ -174,7 +174,11 @@ func normalizeResult(r Result, src CheckSourceRef, observedAt time.Time, limits 
 		if r.Status != "pass" {
 			c.Status = CheckStatusFail
 		}
-		if reason, limited := limitedBy(ruleDependsOn(r.RuleName), limits); limited && (c.Status == CheckStatusPass || len(r.Links) == 0) {
+		// A pass asserts an absence and a finding with no links cites nothing, so
+		// neither stands when an input the rule reads was never observed. A
+		// finding that links the objects it observed does.
+		lacksObservedEvidence := c.Status == CheckStatusPass || len(r.Links) == 0
+		if reason, limited := limitedBy(ruleDependsOn(r.RuleName), limits); limited && lacksObservedEvidence {
 			c.Status, c.Inconclusive = CheckStatusInconclusive, reason
 		}
 	}
