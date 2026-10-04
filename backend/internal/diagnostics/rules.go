@@ -11,12 +11,18 @@ import (
 )
 
 func init() {
-	registerRule("CrashLoopBackOff", SeverityCritical, []string{"Deployment", "StatefulSet", "DaemonSet", "Pod"}, checkCrashLoop)
-	registerRule("ImagePullBackOff", SeverityCritical, []string{"Deployment", "StatefulSet", "DaemonSet", "Pod"}, checkImagePull)
-	registerRule("PendingPod", SeverityCritical, []string{"Deployment", "StatefulSet", "DaemonSet", "Pod"}, checkPendingPod)
-	registerRule("ReplicaMismatch", SeverityWarning, []string{"Deployment", "StatefulSet", "DaemonSet"}, checkReplicaMismatch)
-	registerRule("ZeroEndpoints", SeverityWarning, []string{"Service"}, checkZeroEndpoints)
-	registerRule("PendingPVC", SeverityWarning, []string{"PersistentVolumeClaim"}, checkPendingPVC)
+	// workloadPods is what a rule reads when it inspects a workload's pods: the
+	// pods themselves, plus the ReplicaSet chain that finds a Deployment's pods.
+	workloadPods := []string{limitPods, limitReplicaSets}
+
+	registerRule("CrashLoopBackOff", SeverityCritical, []string{"Deployment", "StatefulSet", "DaemonSet", "Pod"}, workloadPods, checkCrashLoop)
+	registerRule("ImagePullBackOff", SeverityCritical, []string{"Deployment", "StatefulSet", "DaemonSet", "Pod"}, workloadPods, checkImagePull)
+	registerRule("PendingPod", SeverityCritical, []string{"Deployment", "StatefulSet", "DaemonSet", "Pod"}, workloadPods, checkPendingPod)
+	// ReplicaMismatch compares the workload's own spec and status, never its
+	// pods, so a pod-access limitation does not touch it.
+	registerRule("ReplicaMismatch", SeverityWarning, []string{"Deployment", "StatefulSet", "DaemonSet"}, nil, checkReplicaMismatch)
+	registerRule("ZeroEndpoints", SeverityWarning, []string{"Service"}, []string{limitPods}, checkZeroEndpoints)
+	registerRule("PendingPVC", SeverityWarning, []string{"PersistentVolumeClaim"}, nil, checkPendingPVC)
 }
 
 // checkCrashLoop detects pods stuck in CrashLoopBackOff.

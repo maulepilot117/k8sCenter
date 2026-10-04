@@ -52,6 +52,23 @@ type DiagnosticTarget struct {
 	Object    runtime.Object
 	Pods      []*corev1.Pod
 	Events    []*corev1.Event
+
+	// Limitations records related resolutions that did not happen, so an empty
+	// Pods means "not observed" rather than "none". Resolve fills it; the rules
+	// ignore it and Normalize reads it.
+	Limitations []Limitation
+}
+
+// Related-resolution kinds a Limitation can name and a rule can depend on.
+const (
+	limitPods        = "pods"
+	limitReplicaSets = "replicasets"
+)
+
+// Limitation names one related resolution Resolve could not perform and why.
+type Limitation struct {
+	Kind   string
+	Reason InconclusiveReason
 }
 
 // RelatedRBAC describes which related-resource resolutions the requesting user
@@ -86,6 +103,10 @@ type ruleEntry struct {
 	name      string
 	severity  Severity
 	appliesTo []string
+	// dependsOn lists the related resolutions (limit* kinds) the rule reads
+	// beyond the target object itself. A rule that reads only target.Object
+	// declares none.
+	dependsOn []string
 	check     CheckFunc
 }
 
@@ -93,11 +114,12 @@ type ruleEntry struct {
 var rules []ruleEntry
 
 // registerRule appends a rule to the global registry.
-func registerRule(name string, severity Severity, appliesTo []string, check CheckFunc) {
+func registerRule(name string, severity Severity, appliesTo, dependsOn []string, check CheckFunc) {
 	rules = append(rules, ruleEntry{
 		name:      name,
 		severity:  severity,
 		appliesTo: appliesTo,
+		dependsOn: dependsOn,
 		check:     check,
 	})
 }
@@ -212,12 +234,24 @@ func Resolve(ctx context.Context, lister topology.ResourceLister, namespace, kin
 	// would traverse. When pod access is denied, target.Pods stays empty and
 	// downstream rules that depend on it (PodImagePullBackOff, etc.) report
 	// nothing rather than leaking pod-derived state.
+	//
+	// Every skipped resolution is recorded in target.Limitations. The rules still
+	// see an empty list (their legacy output is unchanged); Normalize uses the
+	// record to report those results as inconclusive instead of healthy.
 	if related.allowsPods() {
 		pods, err := resolveRelatedPods(ctx, lister, namespace, kind, name, obj, related)
-		if err != nil {
+		switch {
+		case err != nil:
 			slog.Warn("failed to resolve related pods", "kind", kind, "name", name, "error", err)
+			target.Limitations = append(target.Limitations, Limitation{Kind: limitPods, Reason: ReasonSourceUnavailable})
+		case kind == "Deployment" && !related.allowsReplicaSets():
+			// resolveRelatedPods returns no pods for a Deployment whose ReplicaSets
+			// the user cannot list.
+			target.Limitations = append(target.Limitations, Limitation{Kind: limitReplicaSets, Reason: ReasonPermissionDenied})
 		}
 		target.Pods = pods
+	} else {
+		target.Limitations = append(target.Limitations, Limitation{Kind: limitPods, Reason: ReasonPermissionDenied})
 	}
 
 	// Note: ResourceLister does not expose ListEvents, so we skip event population.
