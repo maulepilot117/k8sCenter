@@ -12,6 +12,8 @@ export interface VeleroStatus {
 export interface Backup {
   name: string;
   namespace: string;
+  /** metadata.uid; binds assurance evidence to this exact object. */
+  uid?: string;
   phase: string;
   includedNamespaces?: string[];
   excludedNamespaces?: string[];
@@ -57,6 +59,8 @@ export type BackupOutcome = "succeeded" | "failed" | "inProgress" | "unknown";
 export interface Schedule {
   name: string;
   namespace: string;
+  /** metadata.uid; assurance keys a schedule's exceptions on it. */
+  uid?: string;
   phase: string;
   schedule: string;
   paused: boolean;

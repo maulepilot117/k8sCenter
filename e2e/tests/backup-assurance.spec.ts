@@ -1190,3 +1190,94 @@ test.describe("Backup assurance policy editing (stubbed, success paths)", () => 
     await expect(page.getByTestId("assurance-policy-row")).toHaveCount(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Backup overview cross-link (U36b)
+// ---------------------------------------------------------------------------
+
+/**
+ * The overview needs its own list endpoints answered. Registered AFTER
+ * stubAssurance on purpose: Playwright runs the most recently added matching
+ * route first, so these narrow routes win for their paths and the assurance
+ * stub still answers everything else.
+ */
+async function stubOverviewLists(page: Page) {
+  const reply = (path: string, data: unknown) =>
+    page.route(`**/api/v1/velero/${path}`, async (route: Route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data }),
+      });
+    });
+  await reply("backups", []);
+  await reply("restores", []);
+  await reply("schedules", []);
+  await reply("locations", {
+    backupStorageLocations: [],
+    volumeSnapshotLocations: [],
+  });
+}
+
+test.describe("Backup overview assurance cross-link (stubbed)", () => {
+  test("backup overview links to assurance and states freshness is not recoverability", async ({
+    page,
+  }) => {
+    await stubAssurance(page, {
+      "GET /assurance/status": {
+        body: { data: status({ open: counts({ overdue: 2 }) }) },
+      },
+    });
+    await stubOverviewLists(page);
+    await page.goto("/backup");
+    const strip = page.getByTestId("velero-assurance-strip");
+    await expect(strip).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("velero-assurance-open-count")).toHaveText(
+      "2 open exceptions",
+    );
+    await expect(page.getByTestId("velero-assurance-honesty")).toContainText(
+      "Freshness is not demonstrated recoverability.",
+    );
+    await expect(strip.locator('a[href="/backup/assurance"]')).toBeVisible();
+    // The cross-link is read-only: no restore trigger inside the strip.
+    await expect(strip.locator('a[href*="restore"], button')).toHaveCount(0);
+    await expect(strip).not.toContainText(/restore now|start a restore/i);
+  });
+
+  test("a failed collection shows the unknown word, not a count or no backups", async ({
+    page,
+  }) => {
+    await stubAssurance(page, {
+      "GET /assurance/status": {
+        body: { data: status({ collection: "unknown", open: counts() }) },
+      },
+    });
+    await stubOverviewLists(page);
+    await page.goto("/backup");
+    await expect(page.getByTestId("velero-assurance-state")).toHaveText(
+      "State: unknown",
+    );
+    await expect(page.getByTestId("velero-assurance-open-count")).toHaveCount(
+      0,
+    );
+    await expect(page.getByTestId("velero-assurance-strip")).not.toContainText(
+      /no backups/i,
+    );
+  });
+
+  test("a remote-cluster 501 hides the strip silently", async ({ page }) => {
+    await stubAssurance(page, {
+      "GET /assurance/status": errorReply(
+        501,
+        "remote_assurance_unsupported",
+        "local only",
+      ),
+    });
+    await stubOverviewLists(page);
+    await page.goto("/backup");
+    await expect(page.getByText("Backup & Restore").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByTestId("velero-assurance-strip")).toHaveCount(0);
+  });
+});
