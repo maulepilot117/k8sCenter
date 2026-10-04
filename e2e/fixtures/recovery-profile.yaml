@@ -1,0 +1,79 @@
+# INERT FIXTURE. NEVER APPLIED.
+# This file is a declarative description of a recovery rehearsal profile for
+# future preflight validation tests. It is not a Kubernetes manifest and no
+# automated process applies it to any cluster. It lives under e2e/fixtures/,
+# where playwright.config.ts runs only /.*\.setup\.ts/, so Playwright does not
+# execute it.
+#
+# Every value is a PENDING-Q3 placeholder (Q3 is unanswered). The placeholders
+# are deliberately invalid (non-semver versions, non-DNS names, unmapped
+# classes, empty allow-lists) so any future preflight validation rejects this
+# file and it cannot be mistaken for a real profile. Do not "fill in" guesses:
+# values come only from the operator inventory. See
+# docs/plans/recovery-profile-validation.md.
+profileRevision: "PENDING-Q3"
+inert: true
+destination:
+  clusterName: "PENDING-Q3: destination cluster name"
+  apiEndpoint: "PENDING-Q3: destination API endpoint"
+  administeredBy: "PENDING-Q3: who administers the destination"
+  trustBoundary: "PENDING-Q3: why destination is isolated from production"
+versions:
+  destination:
+    kubernetes: "PENDING-Q3"
+    velero: "PENDING-Q3"
+    plugins: ["PENDING-Q3: name and version"]
+    csiDrivers: ["PENDING-Q3: name and version"]
+    snapshotController: "PENDING-Q3"
+  source:
+    kubernetes: "PENDING-Q3"
+    velero: "PENDING-Q3"
+    backupVeleroVersion: "PENDING-Q3"
+    plugins: ["PENDING-Q3: name and version"]
+    csiDrivers: ["PENDING-Q3: name and version"]
+    snapshotController: "PENDING-Q3"
+storageMapping:
+  storageClasses:
+    - source: "PENDING-Q3"
+      destination: "PENDING-Q3"
+  volumeSnapshotClasses:
+    - source: "PENDING-Q3"
+      destination: "PENDING-Q3"
+portabilityAnalysis:
+  summary: "PENDING-Q3: which backed-up resources and volume data are restorable on the destination"
+  evidence: "PENDING-Q3: operator inventory reference or official documentation URL for the installed versions"
+citations: []
+signOff:
+  operator: "PENDING-Q3"
+  reviewer: "PENDING-Q3"
+  date: "PENDING-Q3"
+backupStorageLocation:
+  destinationCanRead: "PENDING-Q3"
+  credentials: "PENDING-Q3"
+  readOnly: "PENDING-Q3"
+resourceAllowList:
+  namespaces: []
+  kinds: []
+  excludedKinds: []
+sideEffectSuppression:
+  - component: "PENDING-Q3"
+    mechanism: "PENDING-Q3"
+validationChecks:
+  - name: "PENDING-Q3"
+    establishes: "PENDING-Q3"
+    doesNotEstablish: "PENDING-Q3"
+    credentials: "PENDING-Q3"
+    allowedNetworkDestinations: []
+dataHandling:
+  productionDataAllowed: "PENDING-Q3"
+  retention: "PENDING-Q3"
+  access: "PENDING-Q3"
+  destruction: "PENDING-Q3"
+  regulatoryConstraints: "PENDING-Q3"
+cleanup:
+  owner: "PENDING-Q3"
+  retentionDecision: "PENDING-Q3"
+  finalizerEscalation: "PENDING-Q3"
+cadenceAndApproval:
+  authorizer: "PENDING-Q3"
+  abortProcedure: "PENDING-Q3"
