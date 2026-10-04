@@ -36,7 +36,7 @@ func (l *limitLister) ListDeployments(context.Context, string) ([]*appsv1.Deploy
 	return l.deployments, nil
 }
 
-func checkByID(t *testing.T, checks []CheckResult, id CheckID) CheckResult {
+func checkByID(t *testing.T, checks []CheckResult, id string) CheckResult {
 	t.Helper()
 	for _, c := range checks {
 		if c.CheckID == id {
@@ -123,7 +123,7 @@ func TestNormalizeMarksPodDeniedChecksInconclusive(t *testing.T) {
 	ctx := context.Background()
 	lister := &countingLister{pods: []*corev1.Pod{testPod(true)}}
 
-	podRules := map[string]CheckID{
+	podRules := map[string]string{
 		"CrashLoopBackOff": "diagnostics/crashloopbackoff",
 		"ImagePullBackOff": "diagnostics/imagepullbackoff",
 		"PendingPod":       "diagnostics/pendingpod",
@@ -142,8 +142,8 @@ func TestNormalizeMarksPodDeniedChecksInconclusive(t *testing.T) {
 				t.Fatalf("legacy %s status = %q, want the frozen false \"pass\"", rule, got)
 			}
 			c := checkByID(t, checks, id)
-			if c.Status != CheckStatusInconclusive || c.Inconclusive != ReasonPermissionDenied {
-				t.Errorf("%s = %s/%s, want inconclusive/permission_denied", id, c.Status, c.Inconclusive)
+			if c.Status != CheckInconclusive || c.Reason != ReasonPermissionDenied {
+				t.Errorf("%s = %s/%s, want inconclusive/permission_denied", id, c.Status, c.Reason)
 			}
 		}
 	})
@@ -156,11 +156,11 @@ func TestNormalizeMarksPodDeniedChecksInconclusive(t *testing.T) {
 		checks := Normalize("local", target, checkNow, RunDiagnostics(ctx, target))
 
 		crash := checkByID(t, checks, "diagnostics/crashloopbackoff")
-		if crash.Status != CheckStatusFail || crash.Inconclusive != "" {
-			t.Errorf("crash-looping pod = %s/%q, want fail with no inconclusive reason", crash.Status, crash.Inconclusive)
+		if crash.Status != CheckFail || crash.Reason != ReasonFinding {
+			t.Errorf("crash-looping pod = %s/%q, want fail/finding", crash.Status, crash.Reason)
 		}
-		for _, id := range []CheckID{"diagnostics/imagepullbackoff", "diagnostics/pendingpod"} {
-			if c := checkByID(t, checks, id); c.Status != CheckStatusPass {
+		for _, id := range []string{"diagnostics/imagepullbackoff", "diagnostics/pendingpod"} {
+			if c := checkByID(t, checks, id); c.Status != CheckPass {
 				t.Errorf("%s = %s, want a conclusive pass when pods were observed", id, c.Status)
 			}
 		}
@@ -188,13 +188,13 @@ func TestNormalizeMarksPodDeniedChecksInconclusive(t *testing.T) {
 				t.Fatalf("legacy %s status = %q, want the frozen false \"pass\"", rule, got)
 			}
 			c := checkByID(t, checks, id)
-			if c.Status != CheckStatusInconclusive || c.Inconclusive != ReasonPermissionDenied {
-				t.Errorf("%s = %s/%s, want inconclusive/permission_denied", id, c.Status, c.Inconclusive)
+			if c.Status != CheckInconclusive || c.Reason != ReasonPermissionDenied {
+				t.Errorf("%s = %s/%s, want inconclusive/permission_denied", id, c.Status, c.Reason)
 			}
 		}
 		// The Deployment has no ready replicas of the one it defaults to.
-		if c := checkByID(t, checks, "diagnostics/replicamismatch"); c.Status != CheckStatusFail || c.Inconclusive != "" {
-			t.Errorf("ReplicaMismatch = %s/%q, want a conclusive fail", c.Status, c.Inconclusive)
+		if c := checkByID(t, checks, "diagnostics/replicamismatch"); c.Status != CheckFail || c.Reason != ReasonFinding {
+			t.Errorf("ReplicaMismatch = %s/%q, want a conclusive fail/finding", c.Status, c.Reason)
 		}
 	})
 }
@@ -217,8 +217,8 @@ func TestNormalizeMarksUnreadablePodsInconclusive(t *testing.T) {
 	checks := Normalize("local", target, checkNow, RunDiagnostics(ctx, target))
 
 	c := checkByID(t, checks, "diagnostics/crashloopbackoff")
-	if c.Status != CheckStatusInconclusive || c.Inconclusive != ReasonSourceUnavailable {
-		t.Fatalf("crashloop with unreadable pods = %s/%s, want inconclusive/source_unavailable", c.Status, c.Inconclusive)
+	if c.Status != CheckInconclusive || c.Reason != ReasonSourceUnavailable {
+		t.Fatalf("crashloop with unreadable pods = %s/%s, want inconclusive/source_unavailable", c.Status, c.Reason)
 	}
 }
 
@@ -298,8 +298,8 @@ func TestNormalizeDowngradesAbsenceFindingUnderLimitation(t *testing.T) {
 			t.Fatalf("legacy ZeroEndpoints = %q, want warn", got)
 		}
 		c := checkByID(t, Normalize("local", target, checkNow, results), "diagnostics/zeroendpoints")
-		if c.Status != CheckStatusFail || c.Inconclusive != "" {
-			t.Errorf("observed-empty ZeroEndpoints = %s/%q, want fail", c.Status, c.Inconclusive)
+		if c.Status != CheckWarn || c.Reason != ReasonFinding {
+			t.Errorf("observed-empty ZeroEndpoints = %s/%q, want warn/finding", c.Status, c.Reason)
 		}
 	})
 
@@ -311,8 +311,8 @@ func TestNormalizeDowngradesAbsenceFindingUnderLimitation(t *testing.T) {
 			t.Fatalf("legacy ZeroEndpoints = %q, want the frozen warn", got)
 		}
 		c := checkByID(t, Normalize("local", &limited, checkNow, results), "diagnostics/zeroendpoints")
-		if c.Status != CheckStatusInconclusive || c.Inconclusive != ReasonPermissionDenied {
-			t.Errorf("unobservable ZeroEndpoints = %s/%q, want inconclusive/permission_denied", c.Status, c.Inconclusive)
+		if c.Status != CheckInconclusive || c.Reason != ReasonPermissionDenied {
+			t.Errorf("unobservable ZeroEndpoints = %s/%q, want inconclusive/permission_denied", c.Status, c.Reason)
 		}
 	})
 
@@ -324,8 +324,8 @@ func TestNormalizeDowngradesAbsenceFindingUnderLimitation(t *testing.T) {
 			Links: []Link{{Label: "web-0", Kind: "Pod", Name: "web-0"}},
 		}}
 		c := Normalize("local", limited, checkNow, in)[0]
-		if c.Status != CheckStatusFail || c.Inconclusive != "" {
-			t.Errorf("evidence-backed failure = %s/%q, want fail", c.Status, c.Inconclusive)
+		if c.Status != CheckFail || c.Reason != ReasonFinding {
+			t.Errorf("evidence-backed failure = %s/%q, want fail/finding", c.Status, c.Reason)
 		}
 	})
 }
@@ -347,8 +347,8 @@ func TestNormalizeLeavesObjectDerivedChecksConclusiveUnderPodDenial(t *testing.T
 			},
 		}
 		checks := Normalize("local", target, checkNow, RunDiagnostics(ctx, target))
-		if c := checkByID(t, checks, "diagnostics/replicamismatch"); c.Status != CheckStatusFail || c.Inconclusive != "" {
-			t.Errorf("ReplicaMismatch = %s/%q, want a conclusive fail", c.Status, c.Inconclusive)
+		if c := checkByID(t, checks, "diagnostics/replicamismatch"); c.Status != CheckWarn || c.Reason != ReasonFinding {
+			t.Errorf("ReplicaMismatch = %s/%q, want a conclusive warn/finding", c.Status, c.Reason)
 		}
 	})
 
@@ -361,7 +361,7 @@ func TestNormalizeLeavesObjectDerivedChecksConclusiveUnderPodDenial(t *testing.T
 			},
 		}
 		checks := Normalize("local", target, checkNow, RunDiagnostics(ctx, target))
-		if c := checkByID(t, checks, "diagnostics/replicamismatch"); c.Status != CheckStatusPass {
+		if c := checkByID(t, checks, "diagnostics/replicamismatch"); c.Status != CheckPass {
 			t.Errorf("healthy ReplicaMismatch = %s, want a conclusive pass", c.Status)
 		}
 	})
@@ -375,8 +375,8 @@ func TestNormalizeLeavesObjectDerivedChecksConclusiveUnderPodDenial(t *testing.T
 			},
 		}
 		checks := Normalize("local", target, checkNow, RunDiagnostics(ctx, target))
-		if c := checkByID(t, checks, "diagnostics/pendingpvc"); c.Status != CheckStatusFail || c.Inconclusive != "" {
-			t.Errorf("PendingPVC = %s/%q, want a conclusive fail", c.Status, c.Inconclusive)
+		if c := checkByID(t, checks, "diagnostics/pendingpvc"); c.Status != CheckWarn || c.Reason != ReasonFinding {
+			t.Errorf("PendingPVC = %s/%q, want a conclusive warn/finding", c.Status, c.Reason)
 		}
 	})
 }
@@ -406,8 +406,8 @@ func TestNormalizeMarksTimedOutCheckInconclusive(t *testing.T) {
 
 	in := []Result{timedOut}
 	checks := Normalize("local", &DiagnosticTarget{Kind: "Pod", Name: "web", Namespace: "team-a"}, checkNow, in)
-	if checks[0].Status != CheckStatusInconclusive || checks[0].Inconclusive != ReasonTimedOut {
-		t.Fatalf("timed-out check = %s/%s, want inconclusive/timed_out", checks[0].Status, checks[0].Inconclusive)
+	if checks[0].Status != CheckInconclusive || checks[0].Reason != ReasonTimedOut {
+		t.Fatalf("timed-out check = %s/%s, want inconclusive/timed_out", checks[0].Status, checks[0].Reason)
 	}
 	if got := Denormalize(checks); !reflect.DeepEqual(got, in) {
 		t.Fatalf("timeout did not round-trip: %#v", got)
@@ -417,8 +417,8 @@ func TestNormalizeMarksTimedOutCheckInconclusive(t *testing.T) {
 func TestNormalizeUnknownLegacyStatusIsInconclusive(t *testing.T) {
 	in := []Result{{RuleName: "CrashLoopBackOff", Status: "mystery", Severity: SeverityCritical, Message: "m"}}
 	c := Normalize("local", &DiagnosticTarget{}, checkNow, in)[0]
-	if c.Status != CheckStatusInconclusive || c.Inconclusive != ReasonSourceUnavailable {
-		t.Fatalf("unknown status = %s/%s, want inconclusive/source_unavailable, never a pass", c.Status, c.Inconclusive)
+	if c.Status != CheckInconclusive || c.Reason != ReasonSourceUnavailable {
+		t.Fatalf("unknown status = %s/%s, want inconclusive/source_unavailable, never a pass", c.Status, c.Reason)
 	}
 	if got := Denormalize([]CheckResult{c}); !reflect.DeepEqual(got, in) {
 		t.Fatalf("unknown status did not round-trip: %#v", got)
@@ -428,7 +428,7 @@ func TestNormalizeUnknownLegacyStatusIsInconclusive(t *testing.T) {
 func TestCheckIDsAreStableAndUnique(t *testing.T) {
 	// A literal, not a copy of the map: this is the frozen wire contract and a
 	// rule rename must not move an id that incidents and receipts persist.
-	want := map[string]CheckID{
+	want := map[string]string{
 		"CrashLoopBackOff": "diagnostics/crashloopbackoff",
 		"ImagePullBackOff": "diagnostics/imagepullbackoff",
 		"PendingPod":       "diagnostics/pendingpod",
@@ -440,13 +440,13 @@ func TestCheckIDsAreStableAndUnique(t *testing.T) {
 		t.Fatalf("checkIDForRule drifted from the frozen contract:\n got  %v\n want %v", checkIDForRule, want)
 	}
 
-	seen := map[CheckID]string{}
+	seen := map[string]string{}
 	for rule, id := range checkIDForRule {
 		if prev, dup := seen[id]; dup {
 			t.Errorf("check id %q is used by both %q and %q", id, prev, rule)
 		}
 		seen[id] = rule
-		if !strings.HasPrefix(string(id), "diagnostics/") {
+		if !strings.HasPrefix(id, "diagnostics/") {
 			t.Errorf("check id %q for %q is missing the producer prefix", id, rule)
 		}
 	}
@@ -465,8 +465,8 @@ func TestNormalizeCarriesSourceIdentity(t *testing.T) {
 	t.Run("object uid and group resource", func(t *testing.T) {
 		target := &DiagnosticTarget{Kind: "Deployment", Name: "web", Namespace: "team-a", Object: deploy}
 		got := Normalize("cluster-7", target, checkNow, in)[0]
-		want := CheckSourceRef{
-			ClusterID: "cluster-7", APIGroup: "apps", Resource: "deployments",
+		want := SourceRef{
+			ClusterID: "cluster-7", Group: "apps", Version: "v1", Resource: "deployments",
 			Kind: "Deployment", Namespace: "team-a", Name: "web", UID: "uid-dep-1",
 		}
 		if got.Source != want {
@@ -492,14 +492,14 @@ func TestNormalizeCarriesSourceIdentity(t *testing.T) {
 		if got.Source.UID != "" {
 			t.Fatalf("Source.UID = %q with no object", got.Source.UID)
 		}
-		if got.Source.Resource != "pods" || got.Source.APIGroup != "" {
+		if got.Source.Resource != "pods" || got.Source.Group != "" || got.Source.Version != "v1" {
 			t.Fatalf("core-group source = %+v", got.Source)
 		}
 	})
 
 	t.Run("unknown kind has no resource", func(t *testing.T) {
 		got := Normalize("c", &DiagnosticTarget{Kind: "Widget", Name: "w"}, checkNow, in)[0]
-		if got.Source.Resource != "" || got.Source.APIGroup != "" {
+		if got.Source.Resource != "" || got.Source.Group != "" || got.Source.Version != "" {
 			t.Fatalf("unknown kind produced %+v", got.Source)
 		}
 	})
@@ -522,12 +522,12 @@ func TestNormalizeEvidenceCarriesObservedPodUIDs(t *testing.T) {
 	}
 
 	first := normalizeCrashLoop("uid-web-1")
-	if len(first.Evidence) != 1 || first.Evidence[0].Name != "web" || first.Evidence[0].UID != "uid-web-1" {
-		t.Fatalf("evidence = %+v, want the observed pod web with uid-web-1", first.Evidence)
+	if want := map[string]string{"Pod/web": "uid-web-1"}; !reflect.DeepEqual(first.Evidence, want) {
+		t.Fatalf("evidence = %v, want %v", first.Evidence, want)
 	}
 	recreated := normalizeCrashLoop("uid-web-2")
-	if len(recreated.Evidence) != 1 || recreated.Evidence[0].UID != "uid-web-2" {
-		t.Fatalf("recreated evidence = %+v, want uid-web-2", recreated.Evidence)
+	if want := map[string]string{"Pod/web": "uid-web-2"}; !reflect.DeepEqual(recreated.Evidence, want) {
+		t.Fatalf("recreated evidence = %v, want %v", recreated.Evidence, want)
 	}
 
 	link := func(kind, name string) []Result {
@@ -539,13 +539,15 @@ func TestNormalizeEvidenceCarriesObservedPodUIDs(t *testing.T) {
 	observed := &DiagnosticTarget{Pods: []*corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "web", UID: "uid-web-1"}}}}
 
 	t.Run("a pod that was not observed gets no uid", func(t *testing.T) {
-		if got := Normalize("local", observed, checkNow, link("Pod", "ghost"))[0].Evidence[0].UID; got != "" {
-			t.Fatalf("uid = %q for a pod the target never listed", got)
+		want := map[string]string{"Pod/ghost": ""}
+		if got := Normalize("local", observed, checkNow, link("Pod", "ghost"))[0].Evidence; !reflect.DeepEqual(got, want) {
+			t.Fatalf("evidence = %v for a pod the target never listed, want %v", got, want)
 		}
 	})
 	t.Run("only pod links take a pod uid", func(t *testing.T) {
-		if got := Normalize("local", observed, checkNow, link("Service", "web"))[0].Evidence[0].UID; got != "" {
-			t.Fatalf("uid = %q on a Service link", got)
+		want := map[string]string{"Service/web": ""}
+		if got := Normalize("local", observed, checkNow, link("Service", "web"))[0].Evidence; !reflect.DeepEqual(got, want) {
+			t.Fatalf("evidence = %v on a Service link, want %v", got, want)
 		}
 	})
 	t.Run("the legacy links are unchanged", func(t *testing.T) {
@@ -556,15 +558,18 @@ func TestNormalizeEvidenceCarriesObservedPodUIDs(t *testing.T) {
 	})
 }
 
-func TestKindAPIGroupCoversEveryDiagnosticKind(t *testing.T) {
+func TestKindGroupVersionCoversEveryDiagnosticKind(t *testing.T) {
 	for kind := range kindToResource {
-		if _, ok := kindAPIGroup[kind]; !ok {
-			t.Errorf("kind %q is diagnosable but has no kindAPIGroup entry", kind)
+		gv, ok := kindGroupVersion[kind]
+		if !ok {
+			t.Errorf("kind %q is diagnosable but has no kindGroupVersion entry", kind)
+		} else if gv.Version == "" {
+			t.Errorf("kind %q has no API version", kind)
 		}
 	}
-	for kind := range kindAPIGroup {
+	for kind := range kindGroupVersion {
 		if _, ok := kindToResource[kind]; !ok {
-			t.Errorf("kindAPIGroup lists %q, which diagnostics cannot resolve", kind)
+			t.Errorf("kindGroupVersion lists %q, which diagnostics cannot resolve", kind)
 		}
 	}
 }
@@ -612,7 +617,7 @@ func TestNormalizeIsNilSafe(t *testing.T) {
 	if len(got) != 1 || got[0].Source.ClusterID != "local" || got[0].Source.Kind != "" {
 		t.Errorf("nil target produced %+v", got)
 	}
-	if got := Normalize("local", &DiagnosticTarget{Limitations: []Limitation{}}, checkNow, in); got[0].Status != CheckStatusPass {
+	if got := Normalize("local", &DiagnosticTarget{Limitations: []Limitation{}}, checkNow, in); got[0].Status != CheckPass {
 		t.Errorf("empty limitations downgraded a pass: %+v", got[0])
 	}
 	if Denormalize(nil) != nil {
@@ -624,40 +629,236 @@ func TestNormalizeIsNilSafe(t *testing.T) {
 // receipts persist this JSON, so a tag change is a data migration.
 func TestCheckResultJSONShape(t *testing.T) {
 	full := CheckResult{
-		CheckID: "diagnostics/crashloopbackoff", Status: CheckStatusInconclusive, Severity: SeverityCritical,
-		Summary: "s", Detail: "d", Remediation: "r",
-		Source: CheckSourceRef{
-			ClusterID: "local", APIGroup: "apps", Resource: "deployments",
+		CheckID: "diagnostics/crashloopbackoff", Status: CheckInconclusive, Severity: SeverityCritical,
+		Reason: ReasonPermissionDenied, Message: "m", Detail: "d", Remediation: "r",
+		Source: SourceRef{
+			ClusterID: "local", Group: "apps", Version: "v1", Resource: "deployments",
 			Kind: "Deployment", Namespace: "team-a", Name: "web", UID: "u",
 		},
-		ObservedAt:   checkNow,
-		Evidence:     []CheckEvidenceItem{{Label: "web-0", Kind: "Pod", Name: "web-0", UID: "pu", Observed: map[string]string{"k": "v"}}},
-		Inconclusive: ReasonPermissionDenied,
-		// The unexported legacy fields must never reach the wire.
-		legacyRuleName: "CrashLoopBackOff", legacyStatus: "pass",
+		ObservedAt: checkNow,
+		Evidence:   map[string]string{"Pod/web-0": "pu"},
+		// The unexported legacy result must never reach the wire.
+		legacy: Result{RuleName: "CrashLoopBackOff", Status: "pass", Message: "legacy-only"},
 	}
 	raw, err := json.Marshal(full)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const want = `{"checkId":"diagnostics/crashloopbackoff","status":"inconclusive","severity":"critical",` +
-		`"summary":"s","detail":"d","remediation":"r",` +
-		`"source":{"clusterId":"local","apiGroup":"apps","resource":"deployments","kind":"Deployment","namespace":"team-a","name":"web","uid":"u"},` +
+		`"reason":"permission_denied","message":"m","detail":"d","remediation":"r",` +
+		`"source":{"clusterId":"local","group":"apps","version":"v1","resource":"deployments","kind":"Deployment","namespace":"team-a","name":"web","uid":"u"},` +
 		`"observedAt":"2026-10-04T12:00:00Z",` +
-		`"evidence":[{"label":"web-0","kind":"Pod","name":"web-0","uid":"pu","observed":{"k":"v"}}],` +
-		`"inconclusive":"permission_denied"}`
+		`"evidence":{"Pod/web-0":"pu"}}`
 	if string(raw) != want {
 		t.Fatalf("wire shape changed:\n got  %s\n want %s", raw, want)
 	}
 
-	minimal, err := json.Marshal(CheckResult{CheckID: "diagnostics/pendingpvc", Status: CheckStatusPass, Severity: SeverityWarning, Summary: "ok", ObservedAt: checkNow})
+	minimal, err := json.Marshal(CheckResult{
+		CheckID: "diagnostics/pendingpvc", Status: CheckPass, Severity: SeverityWarning,
+		Reason: ReasonOK, Message: "ok", ObservedAt: checkNow,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantMin = `{"checkId":"diagnostics/pendingpvc","status":"pass","severity":"warning","summary":"ok",` +
-		`"source":{"clusterId":"","apiGroup":"","resource":"","kind":"","namespace":"","name":""},` +
+	const wantMin = `{"checkId":"diagnostics/pendingpvc","status":"pass","severity":"warning","reason":"ok","message":"ok",` +
+		`"source":{"clusterId":"","resource":"","kind":"","name":""},` +
 		`"observedAt":"2026-10-04T12:00:00Z"}`
 	if string(minimal) != wantMin {
 		t.Fatalf("minimal wire shape changed:\n got  %s\n want %s", minimal, wantMin)
+	}
+}
+
+// The types below mirror, field for field, the "Interface contract with Release D
+// U20" section of docs/plans/2026-09-10-release-e-tracked-changes-impl.md.
+// Release E persists CheckResult in change_receipts.verification and decodes it
+// with exactly these, so CheckResult must stay readable through them.
+type releaseEStatus string
+
+type releaseESourceRef struct {
+	ClusterID string `json:"clusterId"`
+	Group     string `json:"group,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Resource  string `json:"resource"`
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	UID       string `json:"uid,omitempty"`
+}
+
+type releaseECheckResult struct {
+	CheckID    string            `json:"checkId"`
+	Status     releaseEStatus    `json:"status"`
+	Severity   Severity          `json:"severity"`
+	Reason     string            `json:"reason"`
+	Message    string            `json:"message"`
+	Detail     string            `json:"detail,omitempty"`
+	Source     releaseESourceRef `json:"source"`
+	ObservedAt time.Time         `json:"observedAt"`
+	Evidence   map[string]string `json:"evidence,omitempty"`
+}
+
+func TestCheckResultSatisfiesReleaseEContract(t *testing.T) {
+	t.Run("status values", func(t *testing.T) {
+		for got, want := range map[CheckStatus]string{
+			CheckPass: "pass", CheckWarn: "warn", CheckFail: "fail", CheckInconclusive: "inconclusive",
+		} {
+			if string(got) != want {
+				t.Errorf("status constant = %q, want %q", got, want)
+			}
+		}
+	})
+
+	// Every field Release E declares exists here with the same JSON key and the
+	// same Go kind. A rename or a type change fails here before it reaches a
+	// persisted receipt.
+	t.Run("field keys and kinds", func(t *testing.T) {
+		assertCovers := func(t *testing.T, declared, actual reflect.Type) {
+			t.Helper()
+			byTag := map[string]reflect.StructField{}
+			for i := 0; i < actual.NumField(); i++ {
+				f := actual.Field(i)
+				if tag := f.Tag.Get("json"); tag != "" {
+					byTag[tag] = f
+				}
+			}
+			for i := 0; i < declared.NumField(); i++ {
+				d := declared.Field(i)
+				tag := d.Tag.Get("json")
+				got, ok := byTag[tag]
+				if !ok {
+					t.Errorf("Release E declares json:%q (%s) and %s has no such field", tag, d.Name, actual.Name())
+					continue
+				}
+				if got.Type.Kind() != d.Type.Kind() {
+					t.Errorf("json:%q is %s here, %s in Release E's contract", tag, got.Type.Kind(), d.Type.Kind())
+				}
+			}
+		}
+		assertCovers(t, reflect.TypeOf(releaseECheckResult{}), reflect.TypeOf(CheckResult{}))
+		assertCovers(t, reflect.TypeOf(releaseESourceRef{}), reflect.TypeOf(SourceRef{}))
+	})
+
+	// Real output, decoded through Release E's types, loses nothing it declares.
+	t.Run("real results decode", func(t *testing.T) {
+		ctx := context.Background()
+		lister := &countingLister{pods: []*corev1.Pod{testPod(true)}}
+		var checks []CheckResult
+		for _, related := range []*RelatedRBAC{{Pods: true}, {}} {
+			target, err := Resolve(ctx, lister, "team-a", "Pod", "web", related)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checks = append(checks, Normalize("cluster-7", target, checkNow, RunDiagnostics(ctx, target))...)
+		}
+
+		sawStatus := map[CheckStatus]bool{}
+		for _, c := range checks {
+			sawStatus[c.Status] = true
+			raw, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got releaseECheckResult
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("Release E cannot decode %s: %v", raw, err)
+			}
+			want := releaseECheckResult{
+				CheckID: c.CheckID, Status: releaseEStatus(c.Status), Severity: c.Severity,
+				Reason: c.Reason, Message: c.Message, Detail: c.Detail,
+				Source:     releaseESourceRef(c.Source),
+				ObservedAt: c.ObservedAt, Evidence: c.Evidence,
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s decoded through Release E's contract as\n got  %+v\n want %+v", c.CheckID, got, want)
+			}
+		}
+		// The corpus must exercise a conclusive and an inconclusive result.
+		if !sawStatus[CheckFail] || !sawStatus[CheckInconclusive] || !sawStatus[CheckPass] {
+			t.Fatalf("decode corpus is too narrow: %v", sawStatus)
+		}
+	})
+}
+
+func TestNormalizeKeepsWarnDistinctFromFail(t *testing.T) {
+	cases := []struct {
+		legacy     string
+		wantStatus CheckStatus
+		wantReason string
+	}{
+		{"pass", CheckPass, ReasonOK},
+		{"warn", CheckWarn, ReasonFinding},
+		{"fail", CheckFail, ReasonFinding},
+	}
+	for _, c := range cases {
+		t.Run(c.legacy, func(t *testing.T) {
+			in := []Result{{
+				RuleName: "ReplicaMismatch", Status: c.legacy, Severity: SeverityWarning, Message: "m",
+				Links: []Link{{Label: "web-0", Kind: "Pod", Name: "web-0"}},
+			}}
+			got := Normalize("local", &DiagnosticTarget{}, checkNow, in)[0]
+			if got.Status != c.wantStatus || got.Reason != c.wantReason {
+				t.Fatalf("legacy %q = %s/%q, want %s/%q", c.legacy, got.Status, got.Reason, c.wantStatus, c.wantReason)
+			}
+		})
+	}
+}
+
+// TestNormalizeMarksPanickedCheckInconclusive builds the panic result with the
+// real runSafeCheck. A rule that crashed observed nothing about the target, so
+// it must not read as a finding against it.
+func TestNormalizeMarksPanickedCheckInconclusive(t *testing.T) {
+	boom := ruleEntry{
+		name:     "CrashLoopBackOff",
+		severity: SeverityCritical,
+		check:    func(context.Context, *DiagnosticTarget) Result { panic("rule bug") },
+	}
+	target := &DiagnosticTarget{Kind: "Pod", Name: "web", Namespace: "team-a"}
+	panicked := runSafeCheck(context.Background(), boom, target)
+	if panicked.Status != "fail" {
+		t.Fatalf("legacy panic status = %q, want the frozen fail", panicked.Status)
+	}
+
+	in := []Result{panicked}
+	checks := Normalize("local", target, checkNow, in)
+	if checks[0].Status != CheckInconclusive || checks[0].Reason != ReasonInternalError {
+		t.Fatalf("panicked check = %s/%s, want inconclusive/internal_error", checks[0].Status, checks[0].Reason)
+	}
+	if got := Denormalize(checks); !reflect.DeepEqual(got, in) {
+		t.Fatalf("panic did not round-trip: %#v", got)
+	}
+}
+
+// TestLimitedByTakesFirstMatchingLimitation pins the order when more than one
+// limitation hits a rule, so the reason a consumer branches on is deterministic.
+func TestLimitedByTakesFirstMatchingLimitation(t *testing.T) {
+	deps := []string{limitPods, limitReplicaSets}
+	denied := Limitation{Kind: limitPods, Reason: ReasonPermissionDenied}
+	rsDown := Limitation{Kind: limitReplicaSets, Reason: ReasonSourceUnavailable}
+
+	if got, ok := limitedBy(deps, []Limitation{denied, rsDown}); !ok || got != ReasonPermissionDenied {
+		t.Errorf("pods first = %q/%v, want permission_denied", got, ok)
+	}
+	if got, ok := limitedBy(deps, []Limitation{rsDown, denied}); !ok || got != ReasonSourceUnavailable {
+		t.Errorf("replicasets first = %q/%v, want source_unavailable", got, ok)
+	}
+	if _, ok := limitedBy(deps, []Limitation{{Kind: "services", Reason: ReasonPermissionDenied}}); ok {
+		t.Error("a limitation on a resolution the rule does not read still matched")
+	}
+	if _, ok := limitedBy(nil, []Limitation{denied}); ok {
+		t.Error("a rule with no dependencies was limited")
+	}
+}
+
+// TestNormalizeDowngradesPassThatCarriesLinks: a pass is an absence claim, so
+// links on it do not make it observed evidence the way they do on a finding.
+func TestNormalizeDowngradesPassThatCarriesLinks(t *testing.T) {
+	target := &DiagnosticTarget{Limitations: []Limitation{{Kind: limitPods, Reason: ReasonPermissionDenied}}}
+	in := []Result{{
+		RuleName: "CrashLoopBackOff", Status: "pass", Severity: SeverityCritical, Message: "m",
+		Links: []Link{{Label: "web-0", Kind: "Pod", Name: "web-0"}},
+	}}
+	got := Normalize("local", target, checkNow, in)[0]
+	if got.Status != CheckInconclusive || got.Reason != ReasonPermissionDenied {
+		t.Fatalf("pass with links under a limitation = %s/%s, want inconclusive/permission_denied", got.Status, got.Reason)
 	}
 }

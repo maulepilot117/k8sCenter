@@ -68,7 +68,7 @@ const (
 // Limitation names one related resolution Resolve could not perform and why.
 type Limitation struct {
 	Kind   string
-	Reason InconclusiveReason
+	Reason string // one of the Reason* codes in check_result.go
 }
 
 // RelatedRBAC describes which related-resource resolutions the requesting user
@@ -170,7 +170,7 @@ func runSafeCheck(ctx context.Context, rule ruleEntry, target *DiagnosticTarget)
 					RuleName: rule.name,
 					Status:   "fail",
 					Severity: rule.severity,
-					Message:  fmt.Sprintf("Rule %q encountered an internal error", rule.name),
+					Message:  internalErrorMessage(rule.name),
 				}
 			}
 		}()
@@ -188,7 +188,7 @@ func runSafeCheck(ctx context.Context, rule ruleEntry, target *DiagnosticTarget)
 			RuleName: rule.name,
 			Status:   "fail",
 			Severity: rule.severity,
-			Message:  fmt.Sprintf("Rule %q timed out after 5s", rule.name),
+			Message:  timedOutMessage(rule.name),
 		}
 	}
 }
