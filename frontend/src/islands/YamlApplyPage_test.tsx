@@ -373,12 +373,42 @@ let sent: Sent[] = [];
 
 /** Like stubFetch, plus the /v1/changes probe, ownership and a chosen apply reply. */
 function stubTracked(
-  opts: { changes?: Reply; ownership?: Reply; apply?: Reply } = {},
+  opts: {
+    changes?: Reply;
+    /** A function answers each ownership request in turn, possibly late. */
+    ownership?: Reply | ((n: number) => Promise<Reply>);
+    /** "network" rejects the apply as a dropped connection would. */
+    apply?: Reply | "network";
+    /** Overrides the validated documents. */
+    documents?: unknown[];
+  } = {},
 ) {
   sent = [];
   originalFetch = globalThis.fetch;
+  let ownershipCalls = 0;
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    if (url.startsWith("/api/v1/yaml/apply") && opts.apply === "network") {
+      sent.push({ url, method: "POST", body: null });
+      return Promise.reject(new TypeError("Failed to fetch"));
+    }
+    if (
+      url.startsWith("/api/v1/changes/ownership") &&
+      typeof opts.ownership === "function"
+    ) {
+      sent.push({
+        url,
+        method: "POST",
+        body: typeof init?.body === "string" ? init.body : null,
+      });
+      return opts.ownership(ownershipCalls++).then(
+        (reply) =>
+          new Response(JSON.stringify(reply.body), {
+            status: reply.status ?? 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+    }
     const clusterHeader = new Headers(init?.headers).get("X-Cluster-ID");
     sent.push({
       url,
@@ -391,13 +421,18 @@ function stubTracked(
         clusterId: "local",
         capabilities: [row("yaml.validate", "ok"), row("yaml.apply", "ok")],
       });
+    } else if (url.startsWith("/api/v1/clusters/")) {
+      const id = decodeURIComponent(url.slice("/api/v1/clusters/".length));
+      reply = ok({ id, name: `name-of-${id}` });
     } else if (url.startsWith("/api/v1/changes/ownership")) {
-      reply = opts.ownership ?? ok({ clusterId: "local", results: [] });
+      reply =
+        (opts.ownership as Reply | undefined) ??
+        ok({ clusterId: "local", results: [] });
     } else if (url.startsWith("/api/v1/changes")) {
       reply = opts.changes ?? { body: { data: [], metadata: { total: 0 } } };
     } else if (url.startsWith("/api/v1/yaml/validate")) {
       reply = ok({
-        documents: [
+        documents: opts.documents ?? [
           {
             index: 0,
             kind: "ConfigMap",
@@ -411,7 +446,7 @@ function stubTracked(
         targetGeneration: "local",
       });
     } else if (url.startsWith("/api/v1/yaml/apply")) {
-      reply = opts.apply ?? applied(tracking());
+      reply = (opts.apply as Reply | undefined) ?? applied(tracking());
     }
     return Promise.resolve(
       new Response(JSON.stringify(reply.body), {
@@ -623,6 +658,222 @@ test("a repair link never prefills content and travels with the tracked apply", 
     await click(button(root, "Stop repairing"));
     expect(root.textContent).not.toContain("Repairing change");
     expect(location.search).toBe("");
+  } finally {
+    history.replaceState(null, "", "/tools/yaml-apply");
+  }
+});
+
+test("an unconfirmed probe leaves tracking off but available, and says so", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({ changes: refused(500) });
+  const root = await mount();
+  const box = trackingBox(root);
+  expect(box.checked).toBe(false);
+  expect(box.disabled).toBe(false);
+  expect(
+    root.querySelector(`#${box.getAttribute("aria-describedby")}`)?.textContent,
+  ).toContain("Could not confirm that change records are available");
+
+  await act(async () => {
+    box.click();
+  });
+  expect(trackingBox(root).checked).toBe(true);
+  await validateAndApply(root);
+  expect(applyUrl().searchParams.get("trackedOperationId")).toMatch(
+    /^[0-9a-f-]{36}$/,
+  );
+});
+
+test("a store failure that confirmed nothing applied says so, with no receipt link", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({
+    apply: refused(503, "receipt_store_unavailable", {
+      applied: false,
+      retrySameOperationId: false,
+    }),
+  });
+  const root = await mount();
+  await validateAndApply(root);
+  const alert = root.querySelector('[role="alert"]')?.textContent ?? "";
+  expect(alert).toContain("The server confirmed nothing was applied.");
+  expect(root.textContent).not.toContain("If the server recorded this attempt");
+});
+
+test("a store failure that did not confirm the outcome points at the attempt's receipt", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({
+    apply: refused(503, "receipt_store_unavailable", {
+      retrySameOperationId: true,
+    }),
+  });
+  const root = await mount();
+  await validateAndApply(root);
+  const alert = root.querySelector('[role="alert"]')?.textContent ?? "";
+  expect(alert).not.toContain("nothing was applied");
+  expect(alert).toContain("did not confirm whether anything was applied");
+  const sentId = applyUrl().searchParams.get("trackedOperationId");
+  const link = [...root.querySelectorAll("a")].find((a) =>
+    a.textContent?.startsWith("change receipt"),
+  );
+  expect(link?.getAttribute("href")).toBe(`/changes/${sentId}`);
+});
+
+test("a dropped connection points at the attempt's receipt", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({ apply: "network" });
+  const root = await mount();
+  await validateAndApply(root);
+  const sentId = applyUrl().searchParams.get("trackedOperationId");
+  expect(root.textContent).toContain("If the server recorded this attempt");
+  const link = [...root.querySelectorAll("a")].find((a) =>
+    a.textContent?.startsWith("change receipt"),
+  );
+  expect(link?.getAttribute("href")).toBe(`/changes/${sentId}`);
+});
+
+test("a record naming a different operation id is flagged; case alone is not", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  const other = "11111111-2222-4333-8444-555555555555";
+  stubTracked({ apply: applied(tracking({ operationId: other })) });
+  let root = await mount();
+  await validateAndApply(root);
+  expect(root.textContent).toContain(
+    "This record names a different operation id than this apply sent.",
+  );
+  act(() => render(null, root));
+  root.remove();
+  host = null;
+  if (originalFetch) globalThis.fetch = originalFetch;
+
+  // Same id, upper-cased by the server: the same operation.
+  let echoed = "";
+  stubTracked();
+  const inner = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("/api/v1/yaml/apply")) {
+      echoed = (
+        new URL(url, "http://x").searchParams.get("trackedOperationId") ?? ""
+      ).toUpperCase();
+      sent.push({ url, method: "POST", body: null });
+      return Promise.resolve(
+        new Response(
+          JSON.stringify(applied(tracking({ operationId: echoed })).body),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+    return inner(input, init);
+  }) as typeof globalThis.fetch;
+  root = await mount();
+  await validateAndApply(root);
+  expect(echoed).not.toBe("");
+  expect(root.textContent).not.toContain("names a different operation id");
+});
+
+test("a late ownership answer for a superseded preview is discarded", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  let releaseFirst: (r: Reply) => void = () => {};
+  stubTracked({
+    ownership: (n) =>
+      n === 0
+        ? new Promise<Reply>((resolve) => {
+            releaseFirst = resolve;
+          })
+        : Promise.resolve(
+            ok({
+              clusterId: "local",
+              results: [
+                {
+                  ...confirmedOwnership(),
+                  controller: "none",
+                  confidence: "unknown",
+                  reason: "no-evidence",
+                  apps: [],
+                },
+              ],
+            }),
+          ),
+  });
+  const root = await mount();
+  await type(root, CM_YAML);
+  await click(button(root, "Validate"));
+  // A second preview supersedes the first before its ownership answers.
+  await click(button(root, "Validate"));
+  await act(async () => {
+    releaseFirst(ok({ clusterId: "local", results: [confirmedOwnership()] }));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  await flush();
+
+  expect(root.textContent).toContain(
+    "No Argo CD or Flux CD application you can see claims this object.",
+  );
+  expect(root.textContent).not.toContain("argo:argocd:shop");
+  expect(root.textContent).not.toContain("managed by a GitOps controller");
+});
+
+test("a document whose API group cannot be read is shown as not checked", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({
+    documents: [
+      {
+        index: 0,
+        kind: "Deployment",
+        name: "api",
+        namespace: "web",
+        valid: true,
+      },
+    ],
+  });
+  const root = await mount();
+  // The YAML disagrees with what the server validated, so its group is not
+  // trusted; nothing is sent group-less.
+  await type(
+    root,
+    "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: other\n",
+  );
+  await click(button(root, "Validate"));
+  expect(sent.some((s) => s.url === "/api/v1/changes/ownership")).toBe(false);
+  const list = root.querySelector('[aria-label="GitOps ownership"]');
+  expect(list?.textContent).toContain("Not checked");
+  expect(list?.textContent).toContain("Ownership is unknown.");
+  expect(list?.textContent).not.toContain("Not managed");
+});
+
+test("a repair for a change on another cluster warns before validating", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  history.replaceState(
+    null,
+    "",
+    `/tools/yaml-apply?repairOf=${OP_ID}&cluster=remote-a`,
+  );
+  try {
+    stubTracked();
+    const root = await mount();
+    expect(root.textContent).toContain(
+      "The original change was applied to name-of-remote-a",
+    );
+    expect(root.textContent).toContain("you are viewing the local cluster");
+  } finally {
+    history.replaceState(null, "", "/tools/yaml-apply");
+  }
+});
+
+test("a repair on the cluster it came from does not warn", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  history.replaceState(
+    null,
+    "",
+    `/tools/yaml-apply?repairOf=${OP_ID}&cluster=local`,
+  );
+  try {
+    stubTracked();
+    const root = await mount();
+    expect(root.textContent).toContain("Repairing change");
+    expect(root.textContent).not.toContain(
+      "The original change was applied to",
+    );
   } finally {
     history.replaceState(null, "", "/tools/yaml-apply");
   }

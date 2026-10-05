@@ -27,12 +27,88 @@ import type {
   GitOpsTool,
   OwnedByApp,
   OwnershipObjectRef,
+  OwnershipResult,
   OwnershipView,
   ReceiptDetail,
   ReceiptState,
   VerificationState,
 } from "./change-types.ts";
-import type { ValidateDocument } from "./yaml-apply.ts";
+import { LOCAL_CLUSTER_ID } from "./cluster.ts";
+import type { TrackedApplyRefusal, ValidateDocument } from "./yaml-apply.ts";
+
+// --- Shared sentences -----------------------------------------------------
+
+/**
+ * Why change records cannot be read or written: GET/POST under /v1/changes
+ * answered 503. One sentence everywhere, so the cause reads the same on
+ * YAML Apply, the receipt list and a receipt.
+ */
+export const RECORDS_UNAVAILABLE =
+  "Change records are unavailable: the server has no database configured, or it cannot be reached.";
+
+/** GET /v1/changes answered 404: this server has no change-records routes. */
+export const RECORDS_UNSUPPORTED = "This server does not keep change records.";
+
+/** The display name of a receipt's cluster; remote ids are opaque, shown as-is. */
+export function clusterDisplayName(clusterId: string): string {
+  return clusterId === LOCAL_CLUSTER_ID ? "Local cluster" : clusterId;
+}
+
+/** What a redaction count hides; each reads as one sentence. */
+export type HiddenKind = "objects" | "checks" | "ownership" | "apps";
+
+/**
+ * The sentence for `n` items withheld because the reader no longer has
+ * access to them. Empty for `n <= 0`.
+ */
+export function hiddenText(kind: HiddenKind, n: number): string {
+  if (n <= 0) return "";
+  const one = n === 1;
+  switch (kind) {
+    case "objects":
+      return `${n} object${one ? " is" : "s are"} hidden because you no longer have access to ${one ? "it" : "them"}.`;
+    case "checks":
+      return `Details of ${n} check${one ? " are" : "s are"} hidden because you no longer have access to the objects they read.`;
+    case "ownership":
+      return `Ownership of ${n} object${one ? " is" : "s is"} hidden because you no longer have access to ${one ? "it" : "them"}.`;
+    case "apps":
+      return `${n} more claiming application${one ? " is" : "s are"} hidden because you no longer have access to ${one ? "it" : "them"}.`;
+  }
+}
+
+/**
+ * The warning above the editor when GitOps controllers manage previewed
+ * objects, or null when none is confirmed or contested.
+ */
+export function managedSummary(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1
+    ? "1 of these objects is managed by a GitOps controller. Applying here changes the live object; the controller may revert it on its next sync. See GitOps ownership below the editor."
+    : `${count} of these objects are managed by a GitOps controller. Applying here changes the live objects; their controllers may revert them on their next sync. See GitOps ownership below the editor.`;
+}
+
+/**
+ * Operator text for a refused tracked apply. A 503 `receipt_store_unavailable`
+ * only says nothing was applied when the server confirmed it
+ * (`applied: false`); otherwise it says the outcome is unconfirmed.
+ */
+export function trackedRefusalText(refusal: TrackedApplyRefusal): string {
+  if (refusal.reason !== "receipt_store_unavailable") return refusal.message;
+  if (refusal.applied === false) {
+    // retrySameOperationId: true when the record insert or a read failed (the
+    // next Apply reuses this operation id, so it cannot apply twice); false
+    // when marking failed or recording is not configured at all (the next
+    // Apply is a new change).
+    const next =
+      refusal.retrySameOperationId === true
+        ? " Apply again to retry this same change; it will not be applied twice."
+        : refusal.retrySameOperationId === false
+          ? " The next apply starts a new change. Try again shortly, or turn off change tracking to apply without a record."
+          : " Try again shortly, or turn off change tracking to apply without a record.";
+    return `The change record could not be saved. The server confirmed nothing was applied.${next}`;
+  }
+  return "The change record could not be saved, and the server did not confirm whether anything was applied. Check the live objects before applying again.";
+}
 
 /** Badge tone; matches components/ui/glass/StatusBadge `Tone`. */
 export type ChangeTone = "ok" | "warn" | "crit" | "info" | "neutral";
@@ -118,12 +194,15 @@ export function executionExplanation(
 export const DEFAULT_VERIFICATION_POLL_SECONDS = 5;
 
 /** Milliseconds until the next verification poll, honouring `retryAfterSeconds`. */
-export function verificationPollDelayMs(retryAfterSeconds?: number): number {
+export function verificationPollDelayMs(
+  retryAfterSeconds?: number,
+  msPerSecond = 1000,
+): number {
   const s =
     retryAfterSeconds && retryAfterSeconds > 0
       ? retryAfterSeconds
       : DEFAULT_VERIFICATION_POLL_SECONDS;
-  return s * 1000;
+  return s * msPerSecond;
 }
 
 // --- Checks -----------------------------------------------------------------
@@ -231,14 +310,8 @@ export function ownershipCopy(r: OwnershipView): OwnershipCopy {
           suspended.length === 1 ? "it does" : "they do"
         } not reconcile until resumed.`
       : "";
-  const hidden =
-    r.redactedApps && r.redactedApps > 0
-      ? ` ${r.redactedApps} more claiming application${
-          r.redactedApps === 1 ? " is" : "s are"
-        } hidden because you no longer have access to ${
-          r.redactedApps === 1 ? "it" : "them"
-        }.`
-      : "";
+  const hiddenApps = hiddenText("apps", r.redactedApps ?? 0);
+  const hidden = hiddenApps ? ` ${hiddenApps}` : "";
 
   switch (r.confidence) {
     case "confirmed": {
@@ -331,6 +404,12 @@ function unknownOwnershipCopy(reason: string): OwnershipCopy {
       return unknown(
         "This object points at a Flux HelmRelease, which keeps no per-object inventory k8sCenter can check. Ownership is unknown.",
       );
+    case OWNERSHIP_REASON_UNREADABLE:
+      return {
+        tone: "neutral",
+        label: "Not checked",
+        text: "k8sCenter could not read this document's API group, so its ownership was not checked. Ownership is unknown.",
+      };
     case "no-evidence":
       return {
         tone: "neutral",
@@ -363,40 +442,109 @@ export function ownershipFailureText(err: unknown): string {
 }
 
 /**
- * The object refs to resolve ownership for, built from a successful preview.
+ * Reason of a row the client could not send for resolution because the
+ * document's API group could not be read. Client-only; never on the wire.
+ */
+export const OWNERSHIP_REASON_UNREADABLE = "api-version-unreadable";
+
+/** One previewed object: resolved by the server, or not checked at all. */
+export type OwnershipSlot =
+  | { ref: number }
+  | { unreadable: OwnershipObjectRef };
+
+/** What to ask the server, and where each answer goes on screen. */
+export interface OwnershipPlan {
+  /** Refs to send, in request order. */
+  refs: OwnershipObjectRef[];
+  /** One slot per previewed object with an identity, in document order. */
+  slots: OwnershipSlot[];
+}
+
+/**
+ * Plans the ownership request for a successful preview.
  *
  * `/yaml/validate` reports kind, name and namespace per document but not the
- * API group, which ownership matching needs (Argo and Flux both key on
- * group/kind/namespace/name). The group and version come from parsing the
- * same YAML the server just validated, aligned by document index the way the
- * server indexes (empty documents skipped). They are used only when that
- * document's kind and name agree with the server's; otherwise the ref goes
- * without them rather than with a guess. Documents without a name
- * (generateName) are skipped: they have no identity to resolve yet.
+ * API group, which ownership matching needs: Argo and Flux both key on
+ * group/kind/namespace/name, and the resolver reads a missing group as the
+ * core group. The group and version come from parsing the same YAML the
+ * server just validated, one document at a time and aligned by index the way
+ * the server indexes (empty documents skipped). A document whose apiVersion
+ * cannot be read, or whose kind and name disagree with the server's, is NOT
+ * sent group-less (that would be checked as a core-group object and could
+ * read as unmanaged); it becomes an `unreadable` slot shown as unknown.
+ * Only that document is affected. A missing namespace is left for the server
+ * to default by the kind's scope, as the apply does. Documents without a
+ * name (generateName) are skipped: they have no identity to resolve yet.
  */
-export function ownershipRefsFromPreview(
+export function ownershipPlanFromPreview(
   documents: ValidateDocument[],
   yamlText: string,
-): OwnershipObjectRef[] {
+): OwnershipPlan {
   const parsed = parsedApiVersions(yamlText);
-  const refs: OwnershipObjectRef[] = [];
+  const plan: OwnershipPlan = { refs: [], slots: [] };
   for (const d of documents) {
     if (!d.kind || !d.name) continue;
     const ref: OwnershipObjectRef = { kind: d.kind, name: d.name };
     if (d.namespace) ref.namespace = d.namespace;
     const p = parsed[d.index];
-    if (p && p.kind === d.kind && p.name === d.name && p.apiVersion) {
-      const slash = p.apiVersion.indexOf("/");
-      if (slash >= 0) {
-        ref.group = p.apiVersion.slice(0, slash);
-        ref.version = p.apiVersion.slice(slash + 1);
-      } else {
-        ref.version = p.apiVersion;
-      }
+    if (!p || p.kind !== d.kind || p.name !== d.name || !p.apiVersion) {
+      plan.slots.push({ unreadable: ref });
+      continue;
     }
-    refs.push(ref);
+    const slash = p.apiVersion.indexOf("/");
+    if (slash >= 0) {
+      ref.group = p.apiVersion.slice(0, slash);
+      ref.version = p.apiVersion.slice(slash + 1);
+    } else {
+      ref.version = p.apiVersion;
+    }
+    plan.slots.push({ ref: plan.refs.length });
+    plan.refs.push(ref);
   }
-  return refs;
+  return plan;
+}
+
+/** The row shown for an object whose ownership was not checked (see the plan). */
+export function unreadableOwnership(
+  object: OwnershipObjectRef,
+  clusterId: string,
+): OwnershipView {
+  return {
+    object: { clusterId, ...object },
+    controller: "none",
+    confidence: "unknown",
+    reason: OWNERSHIP_REASON_UNREADABLE,
+    identityBasis: "group-kind-namespace-name",
+    uidConfirmed: false,
+    writableGitSource: false,
+    observedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * The rows to show, in document order: the server's answer for each sent ref
+ * (results are in request order), and a "not checked" row for each
+ * unreadable document. Refs beyond `max` were not sent and are counted in
+ * `omitted`.
+ */
+export function assembleOwnership(
+  plan: OwnershipPlan,
+  results: OwnershipResult[],
+  max: number,
+  clusterId: string,
+): { results: OwnershipResult[]; omitted: number } {
+  const rows: OwnershipResult[] = [];
+  let omitted = 0;
+  for (const slot of plan.slots) {
+    if ("unreadable" in slot) {
+      rows.push(unreadableOwnership(slot.unreadable, clusterId));
+    } else if (slot.ref >= max) {
+      omitted++;
+    } else if (results[slot.ref]) {
+      rows.push(results[slot.ref]);
+    }
+  }
+  return { results: rows, omitted };
 }
 
 interface ParsedHead {
@@ -405,24 +553,42 @@ interface ParsedHead {
   name?: string;
 }
 
+/**
+ * The apiVersion, kind and name of each non-empty document, by the server's
+ * document index. A document the browser's parser rejects keeps its index as
+ * an empty entry, so one bad document cannot shift or strip the others.
+ * Duplicate keys are accepted last-wins, as the server's decoder does.
+ */
 function parsedApiVersions(yamlText: string): ParsedHead[] {
+  let docs: ReturnType<typeof parseAllDocuments>;
   try {
-    const out: ParsedHead[] = [];
-    for (const doc of parseAllDocuments(yamlText)) {
-      if ("errors" in doc && doc.errors.length > 0) return [];
-      const v = doc.toJS() as Record<string, unknown> | null;
-      if (!v || typeof v !== "object" || Object.keys(v).length === 0) continue;
-      const meta = v.metadata as Record<string, unknown> | undefined;
-      out.push({
-        apiVersion: typeof v.apiVersion === "string" ? v.apiVersion : undefined,
-        kind: typeof v.kind === "string" ? v.kind : undefined,
-        name: typeof meta?.name === "string" ? meta.name : undefined,
-      });
-    }
-    return out;
+    docs = parseAllDocuments(yamlText, { uniqueKeys: false });
   } catch {
     return [];
   }
+  const out: ParsedHead[] = [];
+  for (const doc of docs) {
+    if (doc.errors.length > 0) {
+      out.push({});
+      continue;
+    }
+    let v: unknown;
+    try {
+      v = doc.toJS();
+    } catch {
+      out.push({});
+      continue;
+    }
+    if (!v || typeof v !== "object" || Object.keys(v).length === 0) continue;
+    const o = v as Record<string, unknown>;
+    const meta = o.metadata as Record<string, unknown> | undefined;
+    out.push({
+      apiVersion: typeof o.apiVersion === "string" ? o.apiVersion : undefined,
+      kind: typeof o.kind === "string" ? o.kind : undefined,
+      name: typeof meta?.name === "string" ? meta.name : undefined,
+    });
+  }
+  return out;
 }
 
 // --- Tracking availability ---------------------------------------------------
@@ -443,15 +609,11 @@ export function trackingAvailabilityFromError(
     if (err.status === 404) {
       return {
         status: "unsupported",
-        reason: "This server does not keep change records.",
+        reason: RECORDS_UNSUPPORTED,
       };
     }
     if (err.status === 503) {
-      return {
-        status: "unavailable",
-        reason:
-          "Change records are unavailable: the server has no database configured, or it cannot be reached.",
-      };
+      return { status: "unavailable", reason: RECORDS_UNAVAILABLE };
     }
   }
   return {
@@ -492,8 +654,15 @@ export function isOperationId(s: string | null | undefined): s is string {
 }
 
 /** The YAML Apply URL that starts a repair of `operationId`. Carries no content. */
-export function repairHref(operationId: string): string {
-  return `/tools/yaml-apply?repairOf=${encodeURIComponent(operationId)}`;
+export function repairHref(operationId: string, clusterId?: string): string {
+  const q = new URLSearchParams({ repairOf: operationId });
+  if (clusterId) q.set("cluster", clusterId);
+  return `/tools/yaml-apply?${q}`;
+}
+
+/** Whether two cluster ids name the same cluster (an empty id is the local one). */
+export function sameCluster(a: string, b: string): boolean {
+  return (a || LOCAL_CLUSTER_ID) === (b || LOCAL_CLUSTER_ID);
 }
 
 /** The web route of one receipt. */

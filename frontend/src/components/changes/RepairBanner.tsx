@@ -1,5 +1,5 @@
 import { Alert } from "@/components/ui/Alert.tsx";
-import { receiptHref, shortId } from "@/lib/change-copy.ts";
+import { receiptHref, sameCluster, shortId } from "@/lib/change-copy.ts";
 import type { RepairState } from "@/lib/change-tracking.ts";
 
 /**
@@ -12,10 +12,16 @@ export function RepairBanner({
   repair,
   tracked,
   onStop,
+  selectedClusterId,
+  clusterLabel,
 }: {
   repair: RepairState;
   tracked: boolean;
   onStop: () => void;
+  /** The cluster a validate on this page would target now. */
+  selectedClusterId: string;
+  /** How the page names a cluster id. */
+  clusterLabel: (id: string) => string;
 }) {
   if (repair.status === "invalid") {
     return (
@@ -28,8 +34,20 @@ export function RepairBanner({
     );
   }
   if (repair.status !== "valid") return null;
+  const elsewhere =
+    repair.clusterId !== undefined &&
+    !sameCluster(repair.clusterId, selectedClusterId);
   return (
-    <div role="status">
+    <div role="status" class="flex flex-col gap-2">
+      {elsewhere && repair.clusterId && (
+        <Alert variant="warning">
+          The original change was applied to{" "}
+          <strong>{clusterLabel(repair.clusterId)}</strong>, but you are viewing{" "}
+          <strong>{clusterLabel(selectedClusterId)}</strong>. A repair validated
+          now applies to {clusterLabel(selectedClusterId)}. Switch clusters
+          before validating to retry on {clusterLabel(repair.clusterId)}.
+        </Alert>
+      )}
       <Alert variant="info" class="flex flex-col gap-2">
         <span>
           <strong>Repairing change {shortId(repair.id)}.</strong> Paste or

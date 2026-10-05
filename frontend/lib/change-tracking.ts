@@ -12,9 +12,10 @@ import { type ReadonlySignal, type Signal, useSignal } from "@preact/signals";
 import { useCallback, useEffect } from "preact/hooks";
 import { listReceipts, resolveOwnership } from "./change-api.ts";
 import {
+  assembleOwnership,
   isOperationId,
   ownershipFailureText,
-  ownershipRefsFromPreview,
+  ownershipPlanFromPreview,
   type TrackingAvailability,
   trackingAvailabilityFromError,
 } from "./change-copy.ts";
@@ -55,7 +56,8 @@ export function useTrackingAvailability(
 /** The `?repairOf=` the page was opened with, if any. */
 export type RepairState =
   | { status: "none" }
-  | { status: "valid"; id: string }
+  /** `clusterId` is the original receipt's cluster, when the link names it. */
+  | { status: "valid"; id: string; clusterId?: string }
   | { status: "invalid" };
 
 /**
@@ -70,11 +72,15 @@ export function useRepairLink(repairOf: Signal<string | null>): {
 } {
   const repair = useSignal<RepairState>({ status: "none" });
   useEffect(() => {
-    const raw = new URLSearchParams(globalThis.location.search).get("repairOf");
+    const params = new URLSearchParams(globalThis.location.search);
+    const raw = params.get("repairOf");
     if (raw === null) return;
     if (isOperationId(raw)) {
       const id = raw.toLowerCase();
-      repair.value = { status: "valid", id };
+      const clusterId = params.get("cluster") || undefined;
+      repair.value = clusterId
+        ? { status: "valid", id, clusterId }
+        : { status: "valid", id };
       repairOf.value = id;
     } else {
       repair.value = { status: "invalid" };
@@ -85,6 +91,7 @@ export function useRepairLink(repairOf: Signal<string | null>): {
     repair.value = { status: "none" };
     const url = new URL(globalThis.location.href);
     url.searchParams.delete("repairOf");
+    url.searchParams.delete("cluster");
     globalThis.history.replaceState(null, "", url);
   }, []);
   return { repair, stopRepair };
@@ -117,14 +124,22 @@ export function useOwnershipPreview(
       ownership.value = { status: "idle" };
       return;
     }
-    const allRefs = ownershipRefsFromPreview(
+    const plan = ownershipPlanFromPreview(
       previewed.documents,
       yamlContent.peek(),
     );
-    const refs = allRefs.slice(0, MAX_OWNERSHIP_REFS);
-    const omitted = allRefs.length - refs.length;
-    if (refs.length === 0) {
+    const rowCluster = serverCluster ?? requestCluster;
+    if (plan.slots.length === 0) {
       ownership.value = { status: "idle" };
+      return;
+    }
+    const refs = plan.refs.slice(0, MAX_OWNERSHIP_REFS);
+    if (refs.length === 0) {
+      // Nothing resolvable: every row is "not checked", without a request.
+      ownership.value = {
+        status: "ready",
+        ...assembleOwnership(plan, [], MAX_OWNERSHIP_REFS, rowCluster),
+      };
       return;
     }
     const controller = new AbortController();
@@ -142,8 +157,12 @@ export function useOwnershipPreview(
         }
         ownership.value = {
           status: "ready",
-          results: res.results ?? [],
-          omitted,
+          ...assembleOwnership(
+            plan,
+            res.results ?? [],
+            MAX_OWNERSHIP_REFS,
+            rowCluster,
+          ),
         };
       })
       .catch((err) => {

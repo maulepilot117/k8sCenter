@@ -1,13 +1,18 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
+import { Alert } from "@/components/ui/Alert.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { getReceipt, getVerification } from "@/lib/change-api.ts";
 import {
   checkReasonText,
   checkStatusBadge,
+  clusterDisplayName,
   executionExplanation,
+  hiddenText,
   isFinalVerification,
+  isOperationId,
+  RECORDS_UNAVAILABLE,
   receiptHref,
   repairEligibility,
   repairHref,
@@ -24,7 +29,6 @@ import type {
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { ChangeStateBadges } from "@/src/components/changes/ChangeStateBadges.tsx";
 import { OwnershipList } from "@/src/components/changes/OwnershipList.tsx";
-import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
 
 /**
  * The durable record of one tracked apply (Release E U31, plan D6/D8).
@@ -45,14 +49,13 @@ const ROOT_CLASS = "flex flex-col gap-5";
 
 type LoadError = { status: number | null; message: string };
 
+const INVALID_ID = "This is not a valid change receipt id.";
+
 function loadErrorFor(err: unknown): LoadError {
   if (err instanceof ApiError) {
     switch (err.status) {
       case 400:
-        return {
-          status: 400,
-          message: "This is not a valid change receipt id.",
-        };
+        return { status: 400, message: INVALID_ID };
       case 404:
         return {
           status: 404,
@@ -60,11 +63,7 @@ function loadErrorFor(err: unknown): LoadError {
             "Change receipt not found. It may not exist, or it may not be shared with you.",
         };
       case 503:
-        return {
-          status: 503,
-          message:
-            "Change receipts are unavailable: the server has no database configured, or it cannot be reached.",
-        };
+        return { status: 503, message: RECORDS_UNAVAILABLE };
     }
     return {
       status: err.status,
@@ -96,10 +95,6 @@ const ACCESS_LABEL: Record<ReceiptAccess, string> = {
   admin: "Visible to you as an administrator",
 };
 
-function clusterName(id: string): string {
-  return id === LOCAL_CLUSTER_ID ? "Local cluster" : id;
-}
-
 function When({ at }: { at?: string }) {
   if (!at) return <span class="text-text-muted">—</span>;
   return (
@@ -109,7 +104,18 @@ function When({ at }: { at?: string }) {
   );
 }
 
-export default function ChangeReceipt({ id }: { id: string }) {
+export default function ChangeReceipt({
+  id,
+  msPerSecond = 1000,
+}: {
+  id: string;
+  /**
+   * Milliseconds per second of poll delay. Tests shrink it so the polling
+   * loop can be driven through several iterations in real time; pages never
+   * pass it.
+   */
+  msPerSecond?: number;
+}) {
   const receipt = useSignal<ReceiptDetail | null>(null);
   const loadError = useSignal<LoadError | null>(null);
   const verification = useSignal<VerificationView | null>(null);
@@ -136,6 +142,13 @@ export default function ChangeReceipt({ id }: { id: string }) {
 
     async function run() {
       verifyError.value = null;
+      // A live view from an earlier cycle must not shadow what this cycle
+      // reads: the stored verdict may have been finalized meanwhile.
+      verification.value = null;
+      if (!isOperationId(id)) {
+        loadError.value = { status: 400, message: INVALID_ID };
+        return;
+      }
       let rec: ReceiptDetail;
       try {
         rec = await getReceipt(id, signal);
@@ -152,7 +165,7 @@ export default function ChangeReceipt({ id }: { id: string }) {
       // until it settles before asking for verification.
       while (rec.state === "applying") {
         polling.value = true;
-        await wait(verificationPollDelayMs());
+        await wait(verificationPollDelayMs(undefined, msPerSecond));
         if (signal.aborted) return;
         try {
           rec = await getReceipt(id, signal);
@@ -201,7 +214,9 @@ export default function ChangeReceipt({ id }: { id: string }) {
           }
           return;
         }
-        await wait(verificationPollDelayMs(view.retryAfterSeconds));
+        await wait(
+          verificationPollDelayMs(view.retryAfterSeconds, msPerSecond),
+        );
         if (signal.aborted) return;
       }
     }
@@ -212,7 +227,7 @@ export default function ChangeReceipt({ id }: { id: string }) {
       if (timer !== undefined) clearTimeout(timer);
       polling.value = false;
     };
-  }, [id, attempt]);
+  }, [id, attempt, msPerSecond]);
 
   const rec = receipt.value;
   const err = loadError.value;
@@ -230,11 +245,8 @@ export default function ChangeReceipt({ id }: { id: string }) {
       </div>
 
       {err && (
-        <div
-          role="alert"
-          class="rounded-md border border-danger bg-danger-dim px-4 py-3 text-sm text-danger"
-        >
-          {err.message}
+        <div role="alert">
+          <Alert variant="error">{err.message}</Alert>
         </div>
       )}
 
@@ -360,9 +372,7 @@ function ReceiptBody({
         <ChecksList checks={checks} />
         {redactedChecks > 0 && (
           <p class="m-0 text-xs text-text-muted">
-            Details of {redactedChecks} check
-            {redactedChecks === 1 ? " are" : "s are"} hidden because you no
-            longer have access to the objects they read.
+            {hiddenText("checks", redactedChecks)}
           </p>
         )}
       </section>
@@ -383,9 +393,7 @@ function ReceiptBody({
         )}
         {rec.redactedOwnership > 0 && (
           <p class="m-0 text-xs text-text-muted">
-            Ownership of {rec.redactedOwnership} object
-            {rec.redactedOwnership === 1 ? " is" : "s is"} hidden because you no
-            longer have access to {rec.redactedOwnership === 1 ? "it" : "them"}.
+            {hiddenText("ownership", rec.redactedOwnership)}
           </p>
         )}
       </section>
@@ -399,7 +407,7 @@ function ReceiptFacts({ receipt: rec }: { receipt: ReceiptDetail }) {
   return (
     <dl class="m-0 grid grid-cols-1 gap-x-6 gap-y-2 rounded-lg border border-border-subtle bg-surface p-4 text-sm sm:grid-cols-[max-content_1fr]">
       <dt class="text-text-muted">Cluster</dt>
-      <dd class="m-0 text-text-primary">{clusterName(rec.clusterId)}</dd>
+      <dd class="m-0 text-text-primary">{clusterDisplayName(rec.clusterId)}</dd>
 
       <dt class="text-text-muted">Cluster registration</dt>
       <dd class="m-0 text-text-primary">
@@ -563,9 +571,7 @@ function ObjectsSection({ receipt: rec }: { receipt: ReceiptDetail }) {
       )}
       {rec.redactedObjects > 0 && (
         <p class="m-0 text-xs text-text-muted">
-          {rec.redactedObjects} object
-          {rec.redactedObjects === 1 ? " is" : "s are"} hidden because you no
-          longer have access to {rec.redactedObjects === 1 ? "it" : "them"}.
+          {hiddenText("objects", rec.redactedObjects)}
         </p>
       )}
     </section>
@@ -648,7 +654,7 @@ function RepairSection({ receipt: rec }: { receipt: ReceiptDetail }) {
             validate and apply the current content as a new change.
           </p>
           <a
-            href={repairHref(rec.operationId)}
+            href={repairHref(rec.operationId, rec.clusterId)}
             class="self-start rounded-md bg-accent px-4 py-2 text-sm font-semibold no-underline"
             style={{ color: "var(--bg-base)" }}
           >

@@ -112,12 +112,14 @@ function check(over: Partial<CheckView> = {}): CheckView {
 }
 
 /**
- * Answers the receipt and verification endpoints. `verification` is a queue:
- * each poll takes the next reply, and the last one repeats.
+ * Answers the receipt and verification endpoints. Both take a queue: each
+ * request takes the next reply, and the last one repeats.
  */
-function stubFetch(get: Reply, verification: Reply[] = []) {
+function stubFetch(get: Reply | Reply[], verification: Reply[] = []) {
   calls = [];
   originalFetch = globalThis.fetch;
+  const gets = Array.isArray(get) ? get : [get];
+  let g = 0;
   let v = 0;
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -126,8 +128,10 @@ function stubFetch(get: Reply, verification: Reply[] = []) {
       status: 599,
       body: { error: { code: 599, message: "unstubbed" } },
     };
-    if (url === `/api/v1/changes/${ID}`) reply = get;
-    else if (url === `/api/v1/changes/${ID}/verification`) {
+    if (url === `/api/v1/changes/${ID}`) {
+      reply = gets[Math.min(g, gets.length - 1)];
+      g++;
+    } else if (url === `/api/v1/changes/${ID}/verification`) {
       reply = verification[Math.min(v, verification.length - 1)] ?? reply;
       v++;
     }
@@ -151,10 +155,19 @@ const flush = () =>
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
   });
 
-async function mount() {
+/**
+ * `msPerSecond` shrinks the poll delay so a test can drive the loop through
+ * several iterations in real time (1 means retryAfterSeconds: 5 waits 5ms).
+ */
+async function mount(msPerSecond?: number) {
   host = document.createElement("div");
   document.body.appendChild(host);
-  act(() => render(<ChangeReceipt id={ID} />, host as HTMLElement));
+  act(() =>
+    render(
+      <ChangeReceipt id={ID} msPerSecond={msPerSecond} />,
+      host as HTMLElement,
+    ),
+  );
   await flush();
   return host;
 }
@@ -344,7 +357,7 @@ test("a redacted check shows only its status and reason", async () => {
   expect(list?.textContent).not.toContain("web/");
 });
 
-test("a partial receipt offers Retry that carries only the receipt id", async () => {
+test("a partial receipt offers Retry that carries only the receipt id and its cluster", async () => {
   stubFetch(
     ok(
       receipt({
@@ -357,7 +370,9 @@ test("a partial receipt offers Retry that carries only the receipt id", async ()
   const retry = [...root.querySelectorAll("a")].find(
     (a) => a.textContent === "Retry failed objects",
   );
-  expect(retry?.getAttribute("href")).toBe(`/tools/yaml-apply?repairOf=${ID}`);
+  expect(retry?.getAttribute("href")).toBe(
+    `/tools/yaml-apply?repairOf=${ID}&cluster=local`,
+  );
 });
 
 test("a Secret-bearing failed receipt offers no reuse and shows no error text", async () => {
@@ -483,7 +498,7 @@ test("load failures each say what happened", async () => {
     if (originalFetch) globalThis.fetch = originalFetch;
   }
   expect(seen[0]).toContain("Change receipt not found");
-  expect(seen[1]).toContain("Change receipts are unavailable");
+  expect(seen[1]).toContain("Change records are unavailable");
   expect(seen[2]).toContain("not a valid change receipt id");
 });
 
@@ -495,4 +510,160 @@ test("a 403 from verification keeps the stored verdict and explains the gate", a
   );
   expect(badgeColors(root).has("Verification pending")).toBe(true);
   expect(verificationCalls()).toHaveLength(1);
+});
+
+// --- Polling across iterations ----------------------------------------------
+//
+// These mount with msPerSecond = 1, so a retryAfterSeconds of N waits N ms of
+// real time: the loop runs its real timers through several iterations.
+
+/** Real time passes in small steps, with renders flushed, until `done`. */
+async function until(done: () => boolean, limitMs = 500): Promise<void> {
+  const deadline = Date.now() + limitMs;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error("condition never held");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 2));
+    });
+  }
+}
+
+const settle = (ms = 40) =>
+  act(async () => {
+    await new Promise((r) => setTimeout(r, ms));
+  });
+
+const verifyingView = (retryAfterSeconds?: number): Reply =>
+  ok({ state: "verifying", checks: [], redactedChecks: 0, retryAfterSeconds });
+
+test("polling continues through verifying replies and stops at the final one", async () => {
+  stubFetch(ok(receipt()), [
+    verifyingView(2),
+    verifyingView(2),
+    ok({
+      state: "verified",
+      checks: [check({ status: "pass", reason: "ok" })],
+      redactedChecks: 0,
+    }),
+  ]);
+  const root = await mount(1);
+  await until(() => verificationCalls().length >= 3);
+  await settle();
+
+  // Three passes, then nothing more: the loop ended at the final state.
+  expect(verificationCalls()).toHaveLength(3);
+  expect(badgeColors(root).get("Verified")).toBe("var(--success)");
+  expect(root.textContent).not.toContain("Checking the live objects");
+});
+
+test("without retryAfterSeconds the default delay applies between passes", async () => {
+  stubFetch(ok(receipt()), [verifyingView(undefined)]);
+  await mount(1);
+  // Default 5s at 1ms per second: a few passes in 60ms, not hundreds.
+  await settle(60);
+  const n = verificationCalls().length;
+  expect(n).toBeGreaterThanOrEqual(2);
+  expect(n).toBeLessThan(20);
+});
+
+test("unmount between passes stops polling for good", async () => {
+  stubFetch(ok(receipt()), [verifyingView(5)]);
+  const root = await mount(1);
+  await until(() => verificationCalls().length >= 2);
+  act(() => render(null, root));
+  const after = verificationCalls().length;
+  await settle(40);
+  expect(verificationCalls()).toHaveLength(after);
+});
+
+test("an applying receipt is re-read until it settles, then verified", async () => {
+  stubFetch(
+    [
+      ok(receipt({ state: "applying" })),
+      ok(receipt({ state: "applying" })),
+      ok(receipt({ state: "applied" })),
+    ],
+    [ok({ state: "inconclusive", checks: [check()], redactedChecks: 0 })],
+  );
+  const root = await mount(1);
+  await until(() => verificationCalls().length >= 1);
+  await settle();
+
+  const reads = calls.map((c) =>
+    c.url.endsWith("/verification") ? "verify" : "read",
+  );
+  // Three reads while applying settles, one verification pass, then the
+  // settled re-read after the final verdict.
+  expect(reads).toEqual(["read", "read", "read", "verify", "read"]);
+  expect(badgeColors(root).has("Applied")).toBe(true);
+});
+
+for (const [status, text] of [
+  [504, "Verification timed out."],
+  [503, "Verification is unavailable right now"],
+  [403, "Live verification needs access"],
+] as const) {
+  test(`a ${status} mid-polling stops the loop and explains itself`, async () => {
+    stubFetch(ok(receipt()), [verifyingView(2), fail(status)]);
+    const root = await mount(1);
+    await until(() => verificationCalls().length >= 2);
+    await settle();
+    expect(verificationCalls()).toHaveLength(2);
+    expect(root.textContent).toContain(text);
+    expect(root.textContent).toContain(
+      "Showing the last recorded verification",
+    );
+  });
+}
+
+test("Check again restarts the cycle and drops the stale live view", async () => {
+  // First cycle: a live "verifying" view, then a 504. Meanwhile the stored
+  // verdict is finalized elsewhere; the second cycle reads it and must show
+  // it rather than the stale "verifying" view.
+  stubFetch(
+    [
+      ok(receipt()),
+      ok(
+        receipt({
+          verification: { state: "verification_failed", url: "" },
+          checks: [check({ status: "fail", reason: "not_found" })],
+        }),
+      ),
+    ],
+    [verifyingView(1), fail(504)],
+  );
+  const root = await mount(1);
+  await until(
+    () => root.textContent?.includes("Verification timed out.") ?? false,
+  );
+  expect(badgeColors(root).has("Verifying")).toBe(true);
+
+  const again = [...root.querySelectorAll("button")].find(
+    (b) => b.textContent === "Check again",
+  );
+  if (!again) throw new Error("no Check again button");
+  await act(async () => {
+    again.click();
+  });
+  await settle();
+
+  expect(calls.filter((c) => c.url === `/api/v1/changes/${ID}`)).toHaveLength(
+    2,
+  );
+  const colors = badgeColors(root);
+  expect(colors.has("Verifying")).toBe(false);
+  expect(colors.get("Verification failed")).toBe("var(--error)");
+  expect(root.textContent).not.toContain("Verification timed out.");
+});
+
+test("a malformed id is reported without calling the API", async () => {
+  stubFetch(ok(receipt()));
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  act(() => render(<ChangeReceipt id="%zz" />, host as HTMLElement));
+  await flush();
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+    "This is not a valid change receipt id.",
+  );
+  expect(calls).toHaveLength(0);
 });

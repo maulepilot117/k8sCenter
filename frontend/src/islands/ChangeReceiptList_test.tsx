@@ -110,6 +110,63 @@ test("a 503 says change records are unavailable, not that there are none", async
   expect(root.textContent).not.toContain("No recorded changes yet.");
 });
 
+test("the pager and rows stay mounted, and focus stays put, while a page loads", async () => {
+  urls = [];
+  originalFetch = globalThis.fetch;
+  let release: () => void = () => {};
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const url = String(input);
+    urls.push(url);
+    const body = (n: number) =>
+      new Response(
+        JSON.stringify({
+          data: [view(n)],
+          metadata: { total: 45, page: n, pageSize: 20 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    if (url.includes("page=2")) {
+      return new Promise<Response>((resolve) => {
+        release = () => resolve(body(2));
+      });
+    }
+    return Promise.resolve(body(1));
+  }) as typeof globalThis.fetch;
+
+  const root = await mount();
+  const next = [...root.querySelectorAll("button")].find(
+    (b) => b.textContent === "Next",
+  ) as HTMLButtonElement;
+  next.focus();
+  await act(async () => {
+    next.click();
+  });
+  await flush();
+
+  // Loading page 2: the same button is still in the document, focused, and
+  // inactive; page 1's rows are still on screen.
+  expect(next.isConnected).toBe(true);
+  expect(document.activeElement).toBe(next);
+  expect(next.getAttribute("aria-disabled")).toBe("true");
+  expect(root.textContent).toContain("Loading page 2…");
+  expect(root.querySelector("tbody")?.textContent).toContain(
+    view(1).operationId.slice(0, 8),
+  );
+  // Pressing it again while loading does nothing.
+  await act(async () => {
+    next.click();
+  });
+  expect(urls.filter((u) => u.includes("page=3"))).toHaveLength(0);
+
+  await act(async () => {
+    release();
+  });
+  await flush();
+  expect(document.activeElement).toBe(next);
+  expect(root.textContent).toContain("Page 2 of 3");
+  expect(next.getAttribute("aria-disabled")).toBe("false");
+});
+
 test("pages forward through the list", async () => {
   stubFetch(200, {
     data: [view(1)],

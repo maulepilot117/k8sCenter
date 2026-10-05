@@ -1,16 +1,26 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { listReceipts, type ReceiptPage } from "@/lib/change-api.ts";
-import { receiptHref, shortId } from "@/lib/change-copy.ts";
+import {
+  clusterDisplayName,
+  RECORDS_UNAVAILABLE,
+  RECORDS_UNSUPPORTED,
+  receiptHref,
+  shortId,
+} from "@/lib/change-copy.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { ChangeStateBadges } from "@/src/components/changes/ChangeStateBadges.tsx";
-import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
 
 /**
  * The caller's own change receipts, newest first (GET /v1/changes). Receipts
  * shared with the caller are reachable by link only and are not listed here,
  * which the page says.
+ *
+ * While another page loads, the last page stays on screen and the pager
+ * stays mounted with its buttons disabled, so the button a keyboard or
+ * screen-reader user pressed keeps focus instead of being destroyed.
  *
  * The root element is identical during SSR and after hydration (the loading
  * state renders on the server), so there is no placeholder root to diverge.
@@ -19,26 +29,49 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
 const ROOT_CLASS = "flex flex-col gap-5";
 const PAGE_SIZE = 20;
 
-type ListState =
-  | { status: "loading" }
-  | { status: "ready"; page: ReceiptPage }
-  | { status: "error"; message: string };
+/**
+ * A pager button that stays focusable while inactive. A real `disabled`
+ * attribute would blur the button the user just pressed (browsers move focus
+ * off a control that becomes disabled), so inactivity is `aria-disabled`
+ * plus a guarded handler.
+ */
+function PagerButton({
+  label,
+  inactive,
+  onActivate,
+}: {
+  label: string;
+  inactive: boolean;
+  onActivate: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-disabled={inactive}
+      onClick={() => {
+        if (!inactive) onActivate();
+      }}
+      class="cursor-pointer rounded-md border border-border-primary bg-transparent px-3 py-1.5 font-medium text-text-secondary aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+    >
+      {label}
+    </button>
+  );
+}
 
 function listErrorText(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.status === 503) {
-      return "Change records are unavailable: the server has no database configured, or it cannot be reached.";
-    }
-    if (err.status === 404) {
-      return "This server does not keep change records.";
-    }
+    if (err.status === 503) return RECORDS_UNAVAILABLE;
+    if (err.status === 404) return RECORDS_UNSUPPORTED;
   }
   return "Could not load your recorded changes.";
 }
 
 export default function ChangeReceiptList() {
   const page = useSignal(1);
-  const state = useSignal<ListState>({ status: "loading" });
+  /** The last page that loaded; kept while the next one loads. */
+  const shown = useSignal<ReceiptPage | null>(null);
+  const loading = useSignal(true);
+  const error = useSignal<string | null>(null);
 
   useEffect(() => {
     document.title = "Recorded changes - k8sCenter";
@@ -50,23 +83,25 @@ export default function ChangeReceiptList() {
   const current = page.value;
   useEffect(() => {
     const controller = new AbortController();
-    state.value = { status: "loading" };
+    loading.value = true;
     listReceipts({ page: current, pageSize: PAGE_SIZE }, controller.signal)
       .then((res) => {
-        if (!controller.signal.aborted)
-          state.value = { status: "ready", page: res };
+        if (controller.signal.aborted) return;
+        shown.value = res;
+        error.value = null;
+        loading.value = false;
       })
       .catch((err) => {
-        if (!controller.signal.aborted) {
-          state.value = { status: "error", message: listErrorText(err) };
-        }
+        if (controller.signal.aborted) return;
+        error.value = listErrorText(err);
+        loading.value = false;
       });
     return () => controller.abort();
   }, [current]);
 
-  const s = state.value;
-  const pages =
-    s.status === "ready" ? Math.max(1, Math.ceil(s.page.total / PAGE_SIZE)) : 1;
+  const data = shown.value;
+  const busy = loading.value;
+  const pages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
   return (
     <div class={ROOT_CLASS}>
@@ -82,22 +117,19 @@ export default function ChangeReceiptList() {
         </p>
       </div>
 
-      {s.status === "loading" && (
+      {busy && !data && (
         <p role="status" class="m-0 text-sm text-text-muted">
           Loading recorded changes…
         </p>
       )}
 
-      {s.status === "error" && (
-        <div
-          role="alert"
-          class="rounded-md border border-danger bg-danger-dim px-4 py-3 text-sm text-danger"
-        >
-          {s.message}
+      {error.value && (
+        <div role="alert">
+          <Alert variant="error">{error.value}</Alert>
         </div>
       )}
 
-      {s.status === "ready" && s.page.total === 0 && (
+      {data && !error.value && data.total === 0 && (
         <p class="m-0 text-sm text-text-secondary">
           No recorded changes yet.{" "}
           <a href="/tools/yaml-apply" class="font-medium text-accent">
@@ -107,8 +139,11 @@ export default function ChangeReceiptList() {
         </p>
       )}
 
-      {s.status === "ready" && s.page.items.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-subtle bg-surface">
+      {data && data.items.length > 0 && (
+        <div
+          aria-busy={busy}
+          class="overflow-x-auto rounded-lg border border-border-subtle bg-surface"
+        >
           <table class="w-full border-collapse text-left text-sm">
             <caption class="sr-only">Your recorded changes</caption>
             <thead>
@@ -131,7 +166,7 @@ export default function ChangeReceiptList() {
               </tr>
             </thead>
             <tbody>
-              {s.page.items.map((r) => (
+              {data.items.map((r) => (
                 <tr key={r.operationId} class="border-t border-border-subtle">
                   <td class="px-3 py-2 align-top">
                     <a
@@ -149,9 +184,7 @@ export default function ChangeReceiptList() {
                     />
                   </td>
                   <td class="px-3 py-2 align-top text-text-secondary">
-                    {r.clusterId === LOCAL_CLUSTER_ID
-                      ? "Local cluster"
-                      : r.clusterId}
+                    {clusterDisplayName(r.clusterId)}
                   </td>
                   <td class="px-3 py-2 align-top text-text-secondary">
                     {r.documentCount}
@@ -168,34 +201,28 @@ export default function ChangeReceiptList() {
         </div>
       )}
 
-      {s.status === "ready" && s.page.total > PAGE_SIZE && (
+      {data && data.total > PAGE_SIZE && (
         <nav
           aria-label="Recorded changes pages"
           class="flex items-center justify-between gap-3 text-sm"
         >
-          <button
-            type="button"
-            disabled={current <= 1}
-            onClick={() => {
+          <PagerButton
+            label="Previous"
+            inactive={busy || current <= 1}
+            onActivate={() => {
               page.value = current - 1;
             }}
-            class="cursor-pointer rounded-md border border-border-primary bg-transparent px-3 py-1.5 font-medium text-text-secondary disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Previous
-          </button>
-          <span class="text-text-muted">
-            Page {current} of {pages}
+          />
+          <span role="status" class="text-text-muted">
+            {busy ? `Loading page ${current}…` : `Page ${current} of ${pages}`}
           </span>
-          <button
-            type="button"
-            disabled={current >= pages}
-            onClick={() => {
+          <PagerButton
+            label="Next"
+            inactive={busy || current >= pages}
+            onActivate={() => {
               page.value = current + 1;
             }}
-            class="cursor-pointer rounded-md border border-border-primary bg-transparent px-3 py-1.5 font-medium text-text-secondary disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Next
-          </button>
+          />
         </nav>
       )}
     </div>

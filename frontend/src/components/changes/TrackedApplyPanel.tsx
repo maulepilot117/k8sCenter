@@ -4,6 +4,7 @@ import {
   shortId,
 } from "@/lib/change-copy.ts";
 import type { ApplyTracking } from "@/lib/change-types.ts";
+import { sameOperationId } from "@/lib/uuid.ts";
 import { ChangeStateBadges } from "./ChangeStateBadges.tsx";
 
 function plural(n: number, one: string, many: string): string {
@@ -23,13 +24,14 @@ function plural(n: number, one: string, many: string): string {
  */
 export function TrackedApplyPanel({
   tracking,
-  requested,
+  sentOperationId,
 }: {
   /** The response's tracking block, when the server returned one. */
   tracking: ApplyTracking | undefined;
-  /** Whether this apply asked to be recorded. */
-  requested: boolean;
+  /** The operation id this apply was sent under; null when untracked. */
+  sentOperationId: string | null;
 }) {
+  const requested = sentOperationId !== null;
   if (!tracking) {
     if (!requested) return null;
     return (
@@ -43,6 +45,12 @@ export function TrackedApplyPanel({
 
   const explanation = executionExplanation(tracking.state);
   const notes: string[] = [];
+  // The server canonicalizes ids, so compare with sameOperationId, never ===.
+  if (requested && !sameOperationId(tracking.operationId, sentOperationId)) {
+    notes.push(
+      "This record names a different operation id than this apply sent. Check the receipt before relying on it.",
+    );
+  }
   if (tracking.replayed) {
     notes.push(
       "This is the recorded outcome of an earlier attempt with the same operation id. Nothing was applied a second time.",

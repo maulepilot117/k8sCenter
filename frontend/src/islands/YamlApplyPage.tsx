@@ -14,7 +14,12 @@ import {
   fetchCapabilities,
 } from "@/lib/capabilities.ts";
 import type { CapabilitiesResponse } from "@/lib/capability-types.ts";
-import { receiptHref } from "@/lib/change-copy.ts";
+import {
+  managedSummary,
+  receiptHref,
+  shortId,
+  trackedRefusalText,
+} from "@/lib/change-copy.ts";
 import {
   managedCount,
   useOwnershipPreview,
@@ -128,10 +133,19 @@ export default function YamlApplyPage() {
 
   // Remote cluster ids are opaque, so name the ones on screen from the
   // registry. Best effort: an id is still an unambiguous label.
+  // The repair link (Release E) is read first: the cluster its receipt names
+  // is one of the clusters this page may have to name.
+  const { repair, stopRepair } = useRepairLink(repairOf);
+  const repairClusterId =
+    repair.value.status === "valid" ? repair.value.clusterId : undefined;
   const pinnedClusterId = pin.value?.target.clusterId;
   useEffect(() => {
     const known = clusterNames.peek();
-    const wanted = [selectedCluster.peek(), pinnedClusterId].filter(
+    const wanted = [
+      selectedCluster.peek(),
+      pinnedClusterId,
+      repairClusterId,
+    ].filter(
       (id): id is string => !!id && id !== LOCAL_CLUSTER_ID && !known.has(id),
     );
     const controller = new AbortController();
@@ -149,13 +163,11 @@ export default function YamlApplyPage() {
         .catch(() => {});
     }
     return () => controller.abort();
-  }, [epoch, pinnedClusterId]);
+  }, [epoch, pinnedClusterId, repairClusterId]);
 
-  // Change tracking (Release E): whether the server can keep a record, the
-  // repair link a receipt may have opened this page with, and who manages
-  // the previewed objects.
+  // Change tracking (Release E): whether the server can keep a record, and
+  // who manages the previewed objects.
   const trackingAvailability = useTrackingAvailability(tracked);
-  const { repair, stopRepair } = useRepairLink(repairOf);
   const ownership = useOwnershipPreview(preview, pin, yamlContent);
 
   const clusterLabel = (id: string) =>
@@ -207,7 +219,20 @@ export default function YamlApplyPage() {
             },
           ]
         : [];
-  const managed = managedCount(ownership.value);
+  const managedText = managedSummary(managedCount(ownership.value));
+  const refusal = trackedRefusal.value;
+  // A tracked apply that failed without a definite refusal (network error,
+  // 5xx), or whose store failure did not confirm nothing was applied, may
+  // have a receipt: point at it rather than leave the operator guessing.
+  const attemptReceiptId =
+    error.value &&
+    !results.value &&
+    lastOperationId.value &&
+    (!refusal ||
+      (refusal.reason === "receipt_store_unavailable" &&
+        refusal.applied !== false))
+      ? lastOperationId.value
+      : null;
   const availability = trackingAvailability.value;
   const trackingDisabled =
     availability.status === "checking" ||
@@ -253,14 +278,16 @@ export default function YamlApplyPage() {
 
       {error.value && (
         <div role="alert">
-          <ErrorBanner message={error.value} />
+          <ErrorBanner
+            message={refusal ? trackedRefusalText(refusal) : error.value}
+          />
         </div>
       )}
 
-      {trackedRefusal.value?.receiptId && (
+      {refusal?.receiptId && (
         <p class="m-0 text-sm">
           <a
-            href={receiptHref(trackedRefusal.value.receiptId)}
+            href={receiptHref(refusal.receiptId)}
             class="font-medium text-accent"
           >
             Open the change receipt of the apply still running
@@ -268,20 +295,31 @@ export default function YamlApplyPage() {
         </p>
       )}
 
+      {attemptReceiptId && (
+        <p class="m-0 text-sm text-text-secondary">
+          If the server recorded this attempt before the error, its receipt
+          shows what was applied:{" "}
+          <a
+            href={receiptHref(attemptReceiptId)}
+            class="font-medium text-accent"
+          >
+            change receipt {shortId(attemptReceiptId)}
+          </a>
+          . It may not exist if the request never reached the server.
+        </p>
+      )}
+
       <RepairBanner
         repair={repair.value}
         tracked={tracked.value}
         onStop={stopRepair}
+        selectedClusterId={selectedCluster.value}
+        clusterLabel={clusterLabel}
       />
 
-      {managed > 0 && !results.value && (
+      {managedText && !results.value && (
         <div role="status">
-          <Alert variant="warning">
-            {managed === 1
-              ? "1 of these objects is managed by a GitOps controller. Applying here changes the live object; the controller may revert it on its next sync."
-              : `${managed} of these objects are managed by a GitOps controller. Applying here changes the live objects; their controllers may revert them on their next sync.`}{" "}
-            See GitOps ownership below the editor.
-          </Alert>
+          <Alert variant="warning">{managedText}</Alert>
         </div>
       )}
 
@@ -481,7 +519,7 @@ export default function YamlApplyPage() {
       {results.value && (
         <TrackedApplyPanel
           tracking={results.value.tracking}
-          requested={lastOperationId.value !== null}
+          sentOperationId={lastOperationId.value}
         />
       )}
       <OwnershipSection state={ownership.value} />

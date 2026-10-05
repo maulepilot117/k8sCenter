@@ -2,7 +2,16 @@
 import ChangeReceipt from "../../islands/ChangeReceipt.tsx";
 import ChromeLayout from "../../layouts/ChromeLayout.astro";
 
-const id = decodeURIComponent(Astro.params.id as string);
+// Whether Astro hands the segment over encoded or already decoded, a stray
+// "%" must not throw here and 500 the page: fall back to the raw value and
+// let the island report an invalid id (the API answers 400 for it).
+const raw = (Astro.params.id as string | undefined) ?? "";
+let id = raw;
+try {
+  id = decodeURIComponent(raw);
+} catch {
+  id = raw;
+}
 ---
 <ChromeLayout>
   <ChangeReceipt client:load id={id} />

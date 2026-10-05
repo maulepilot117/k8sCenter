@@ -1,18 +1,27 @@
 import { expect, test } from "bun:test";
 import { ApiError } from "./api.ts";
 import {
+  assembleOwnership,
   checkReasonText,
+  clusterDisplayName,
   executionBadge,
   executionExplanation,
+  hiddenText,
   isFinalVerification,
   isOperationId,
+  managedSummary,
+  OWNERSHIP_REASON_UNREADABLE,
   ownershipCopy,
   ownershipFailureText,
-  ownershipRefsFromPreview,
+  ownershipPlanFromPreview,
+  RECORDS_UNAVAILABLE,
   receiptHref,
   repairEligibility,
   repairHref,
+  sameCluster,
+  trackedRefusalText,
   trackingAvailabilityFromError,
+  unreadableOwnership,
   verificationBadge,
   verificationPollDelayMs,
   verificationReasons,
@@ -123,6 +132,8 @@ test("poll delay honours retryAfterSeconds and defaults to 5s", () => {
   expect(verificationPollDelayMs(undefined)).toBe(5000);
   expect(verificationPollDelayMs(0)).toBe(5000);
   expect(verificationPollDelayMs(-1)).toBe(5000);
+  expect(verificationPollDelayMs(3, 1)).toBe(3);
+  expect(verificationPollDelayMs(undefined, 2)).toBe(10);
 });
 
 test("check reasons are spelled out; unknown codes are shown verbatim", () => {
@@ -295,7 +306,23 @@ test("a failed ownership request is never worded as unmanaged", () => {
   expect(ownershipFailureText(new Error("network"))).toContain("unknown");
 });
 
-test("ownership refs take the group from the YAML only when the document agrees", () => {
+// --- ownership plan ----------------------------------------------------------
+
+type Doc = Parameters<typeof ownershipPlanFromPreview>[0][number];
+const doc = (
+  index: number,
+  kind: string,
+  name: string,
+  namespace?: string,
+): Doc => ({
+  index,
+  kind,
+  name,
+  valid: true,
+  ...(namespace ? { namespace } : {}),
+});
+
+test("the plan takes each group from the YAML and skips generateName documents", () => {
   const yaml = [
     "apiVersion: apps/v1",
     "kind: Deployment",
@@ -310,27 +337,15 @@ test("ownership refs take the group from the YAML only when the document agrees"
     "kind: Job",
     "metadata: { generateName: run- }",
   ].join("\n");
-  const refs = ownershipRefsFromPreview(
+  const plan = ownershipPlanFromPreview(
     [
-      {
-        index: 0,
-        kind: "Deployment",
-        name: "api",
-        namespace: "web",
-        valid: true,
-      },
-      {
-        index: 1,
-        kind: "ConfigMap",
-        name: "cfg",
-        namespace: "web",
-        valid: true,
-      },
-      { index: 2, kind: "Job", name: "", valid: true },
+      doc(0, "Deployment", "api", "web"),
+      doc(1, "ConfigMap", "cfg", "web"),
+      doc(2, "Job", ""),
     ],
     yaml,
   );
-  expect(refs).toEqual([
+  expect(plan.refs).toEqual([
     {
       kind: "Deployment",
       name: "api",
@@ -340,20 +355,192 @@ test("ownership refs take the group from the YAML only when the document agrees"
     },
     { kind: "ConfigMap", name: "cfg", namespace: "web", version: "v1" },
   ]);
+  expect(plan.slots).toEqual([{ ref: 0 }, { ref: 1 }]);
 });
 
-test("ownership refs drop the guessed group when the YAML is out of step", () => {
-  const refs = ownershipRefsFromPreview(
-    [{ index: 0, kind: "Deployment", name: "api", valid: true }],
+test("a namespace-less manifest is sent without a namespace for the server to default", () => {
+  // The applier puts a namespaced object without metadata.namespace into
+  // "default"; only the server knows the kind's scope, so the client sends
+  // what it knows and never fakes one (a cluster-scoped kind has none).
+  const plan = ownershipPlanFromPreview(
+    [doc(0, "Deployment", "api"), doc(1, "Namespace", "team-a")],
+    "apiVersion: apps/v1\nkind: Deployment\nmetadata: { name: api }\n---\napiVersion: v1\nkind: Namespace\nmetadata: { name: team-a }\n",
+  );
+  expect(plan.refs).toEqual([
+    { kind: "Deployment", name: "api", group: "apps", version: "v1" },
+    { kind: "Namespace", name: "team-a", version: "v1" },
+  ]);
+});
+
+test("a duplicate key is read last-wins, as the server does", () => {
+  const plan = ownershipPlanFromPreview(
+    [doc(0, "Deployment", "api", "web")],
+    "apiVersion: apps/v1\nkind: Deployment\nkind: Deployment\nmetadata: { name: api, namespace: web }\n",
+  );
+  expect(plan.refs[0]?.group).toBe("apps");
+  expect(plan.slots).toEqual([{ ref: 0 }]);
+});
+
+test("one unparseable document loses its group; the others keep theirs", () => {
+  const yaml = [
+    "apiVersion: apps/v1",
+    "kind: Deployment",
+    "metadata: { name: api, namespace: web }",
+    "---",
+    "apiVersion: apps/v1",
+    "kind: StatefulSet",
+    "metadata: { name: db, namespace: web",
+    "---",
+    "apiVersion: apps/v1",
+    "kind: DaemonSet",
+    "metadata: { name: agent, namespace: web }",
+  ].join("\n");
+  const plan = ownershipPlanFromPreview(
+    [
+      doc(0, "Deployment", "api", "web"),
+      doc(1, "StatefulSet", "db", "web"),
+      doc(2, "DaemonSet", "agent", "web"),
+    ],
+    yaml,
+  );
+  expect(plan.refs.map((r) => [r.kind, r.group])).toEqual([
+    ["Deployment", "apps"],
+    ["DaemonSet", "apps"],
+  ]);
+  expect(plan.slots).toEqual([
+    { ref: 0 },
+    {
+      unreadable: {
+        kind: "StatefulSet",
+        name: "db",
+        namespace: "web",
+      },
+    },
+    { ref: 1 },
+  ]);
+});
+
+test("a JSON stream the browser cannot split is not checked rather than sent group-less", () => {
+  const plan = ownershipPlanFromPreview(
+    [doc(0, "Deployment", "a", "web"), doc(1, "Deployment", "b", "web")],
+    '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"a","namespace":"web"}}{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"b","namespace":"web"}}',
+  );
+  // Nothing is sent without its group: a group-less Deployment would be
+  // resolved as a core-group object and could read as unmanaged.
+  for (const ref of plan.refs) expect(ref.group).toBe("apps");
+  expect(plan.slots.filter((s) => "unreadable" in s)).toHaveLength(
+    2 - plan.refs.length,
+  );
+});
+
+test("a document out of step with the server's is not checked", () => {
+  const plan = ownershipPlanFromPreview(
+    [doc(0, "Deployment", "api")],
     "apiVersion: v1\nkind: ConfigMap\nmetadata: { name: other }\n",
   );
-  expect(refs).toEqual([{ kind: "Deployment", name: "api" }]);
+  expect(plan.refs).toEqual([]);
+  expect(plan.slots).toEqual([
+    { unreadable: { kind: "Deployment", name: "api" } },
+  ]);
+});
+
+test("an unreadable row is unknown and never 'Not managed'", () => {
+  const row = unreadableOwnership({ kind: "Deployment", name: "api" }, "local");
+  expect(row.confidence).toBe("unknown");
+  expect(row.writableGitSource).toBe(false);
+  const copy = ownershipCopy(row);
+  expect(copy.label).toBe("Not checked");
+  expect(copy.label).not.toBe("Not managed");
+  expect(copy.text).toContain("Ownership is unknown.");
+});
+
+test("assembleOwnership keeps document order and counts refs past the cap", () => {
+  const plan = {
+    refs: [
+      { kind: "A", name: "a" },
+      { kind: "B", name: "b" },
+      { kind: "C", name: "c" },
+    ],
+    slots: [
+      { ref: 0 },
+      { unreadable: { kind: "X", name: "x" } },
+      { ref: 1 },
+      { ref: 2 },
+    ],
+  };
+  const answer = (kind: string) =>
+    ownership("unknown", "no-evidence", {
+      object: { clusterId: "local", kind, name: kind.toLowerCase() },
+    });
+  const out = assembleOwnership(plan, [answer("A"), answer("B")], 2, "local");
+  expect(out.results.map((r) => r.object.kind)).toEqual(["A", "X", "B"]);
+  expect(out.results[1].reason).toBe(OWNERSHIP_REASON_UNREADABLE);
+  expect(out.omitted).toBe(1);
+});
+
+// --- shared sentences -----------------------------------------------------------
+
+test("hiddenText reads correctly for one and many, and is empty for none", () => {
+  expect(hiddenText("objects", 1)).toBe(
+    "1 object is hidden because you no longer have access to it.",
+  );
+  expect(hiddenText("objects", 2)).toBe(
+    "2 objects are hidden because you no longer have access to them.",
+  );
+  expect(hiddenText("checks", 3)).toContain("Details of 3 checks are hidden");
+  expect(hiddenText("ownership", 1)).toBe(
+    "Ownership of 1 object is hidden because you no longer have access to it.",
+  );
+  expect(hiddenText("apps", 2)).toContain("2 more claiming applications are");
+  expect(hiddenText("objects", 0)).toBe("");
+});
+
+test("managedSummary is null for none and grammatical for one or many", () => {
+  expect(managedSummary(0)).toBeNull();
+  expect(managedSummary(1)).toContain("1 of these objects is managed");
+  expect(managedSummary(1)).toContain("the controller may revert it");
+  expect(managedSummary(3)).toContain("3 of these objects are managed");
+  expect(managedSummary(3)).toContain("their controllers may revert them");
+});
+
+test("a store failure only says nothing was applied when the server confirmed it", () => {
+  const base = {
+    reason: "receipt_store_unavailable" as const,
+    message: "hook text",
+  };
+  expect(trackedRefusalText({ ...base, applied: false })).toContain(
+    "The server confirmed nothing was applied.",
+  );
+  for (const applied of [true, undefined]) {
+    const text = trackedRefusalText({ ...base, applied });
+    expect(text).not.toContain("nothing was applied");
+    expect(text).toContain("did not confirm whether anything was applied");
+  }
   expect(
-    ownershipRefsFromPreview(
-      [{ index: 0, kind: "Deployment", name: "api", valid: true }],
-      "::: not yaml [",
-    ),
-  ).toEqual([{ kind: "Deployment", name: "api" }]);
+    trackedRefusalText({
+      ...base,
+      applied: false,
+      retrySameOperationId: false,
+    }),
+  ).toContain("The next apply starts a new change.");
+  const sameId = trackedRefusalText({
+    ...base,
+    applied: false,
+    retrySameOperationId: true,
+  });
+  expect(sameId).toContain("Apply again to retry this same change");
+  expect(sameId).not.toContain("new change");
+  expect(
+    trackedRefusalText({ reason: "operation_id_reused", message: "verbatim" }),
+  ).toBe("verbatim");
+});
+
+test("cluster helpers name the local cluster and compare ids", () => {
+  expect(clusterDisplayName("local")).toBe("Local cluster");
+  expect(clusterDisplayName("prod-eu")).toBe("prod-eu");
+  expect(sameCluster("", "local")).toBe(true);
+  expect(sameCluster("a", "b")).toBe(false);
+  expect(RECORDS_UNAVAILABLE).toContain("Change records are unavailable");
 });
 
 // --- availability / repair ----------------------------------------------------
@@ -399,8 +586,11 @@ test("repair is offered only for partial or failed receipts without Secrets", ()
   }
 });
 
-test("repair and receipt hrefs carry only the id", () => {
+test("repair and receipt hrefs carry only the id and the receipt's cluster", () => {
   expect(repairHref(ID)).toBe(`/tools/yaml-apply?repairOf=${ID}`);
+  expect(repairHref(ID, "prod eu")).toBe(
+    `/tools/yaml-apply?repairOf=${ID}&cluster=prod+eu`,
+  );
   expect(receiptHref(ID)).toBe(`/changes/${ID}`);
   expect(receiptHref("a/b")).toBe("/changes/a%2Fb");
 });
