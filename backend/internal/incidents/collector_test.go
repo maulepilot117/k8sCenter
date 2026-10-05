@@ -219,18 +219,18 @@ func (f fakeClients) DynamicClientForUser(string, []string) (dynamic.Interface, 
 
 // eventPager makes a typed fake honour Limit and Continue in name order, as
 // the apiserver does (so a naive Limit keeps the OLDEST events), and records
-// every list call's field selector. The namespace's events are read from
-// the tracker and sorted once, on the first call; each page then copies
-// only its own slice (the continue token is the offset), so a page costs
-// O(page) however many events the fixture holds. Fixtures add every event
-// before the first list.
+// every list call's field selector. A namespace's events are read from the
+// tracker and sorted once, on that namespace's first list; each page then
+// copies only its own slice (the continue token is the offset), so a page
+// costs O(page) however many events the fixture holds. The snapshot is
+// frozen at that first list: fixtures add every event before it, and an
+// event added later would not be seen.
 type eventPager struct {
 	mu        sync.Mutex
 	selectors []string
 	pages     int
-	expireAt  int // 1-based page whose continue token has expired (0: never)
-	sorted    []corev1.Event
-	loaded    bool
+	expireAt  int                       // 1-based page whose continue token has expired (0: never)
+	sorted    map[string][]corev1.Event // namespace -> events in name order
 }
 
 func installEventPaging(cs *kfake.Clientset) *eventPager {
@@ -271,20 +271,24 @@ func installEventPaging(cs *kfake.Clientset) *eventPager {
 }
 
 // snapshot returns the namespace's events in name order, reading and
-// sorting the tracker only on the first call.
+// sorting the tracker only on that namespace's first list.
 func (p *eventPager) snapshot(cs *kfake.Clientset, namespace string) ([]corev1.Event, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.loaded {
-		obj, err := cs.Tracker().List(corev1.SchemeGroupVersion.WithResource("events"), corev1.SchemeGroupVersion.WithKind("Event"), namespace)
-		if err != nil {
-			return nil, err
-		}
-		p.sorted = obj.(*corev1.EventList).Items
-		sort.Slice(p.sorted, func(i, j int) bool { return p.sorted[i].Name < p.sorted[j].Name })
-		p.loaded = true
+	if evs, ok := p.sorted[namespace]; ok {
+		return evs, nil
 	}
-	return p.sorted, nil
+	obj, err := cs.Tracker().List(corev1.SchemeGroupVersion.WithResource("events"), corev1.SchemeGroupVersion.WithKind("Event"), namespace)
+	if err != nil {
+		return nil, err
+	}
+	evs := obj.(*corev1.EventList).Items
+	sort.Slice(evs, func(i, j int) bool { return evs[i].Name < evs[j].Name })
+	if p.sorted == nil {
+		p.sorted = make(map[string][]corev1.Event)
+	}
+	p.sorted[namespace] = evs
+	return evs, nil
 }
 
 // countingGets records every dynamic GET the adapters issue.
@@ -328,6 +332,12 @@ func (c deadlineCore) Events(namespace string) typedcorev1.EventInterface {
 type deadlineEventList struct {
 	typedcorev1.EventInterface
 	d *deadlineEvents
+}
+
+func (d *deadlineEvents) listCalls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
 }
 
 func (e deadlineEventList) List(ctx context.Context, opts metav1.ListOptions) (*corev1.EventList, error) {
@@ -516,13 +526,34 @@ func capture(t *testing.T, c *Collector, req CaptureRequest) CaptureReport {
 // ---------------------------------------------------------------------------
 
 func TestCaptureOneSourceTimeoutYieldsPartialAndKeepsOthers(t *testing.T) {
+	// Only "slow" meets the short deadline, by waiting on its context.
+	// "fast" ignores its context, so its result stands however late it
+	// runs. "steady" must get a context of its own: it checks that its
+	// deadline was armed after slow saw slow's deadline pass, which a
+	// context shared with slow (or armed at capture start) cannot satisfy.
+	// It never compares the clock with its own deadline, so a scheduler
+	// stall on a slow runner cannot flip the outcome.
+	slowSaw := make(chan time.Time, 1)
+	slow := stubSource{id: "slow", fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
+		<-ctx.Done()
+		slowSaw <- time.Now()
+		return SourceResult{}, ctx.Err()
+	}}
+	steady := stubSource{id: "steady", fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
+		var sawAt time.Time
+		select {
+		case sawAt = <-slowSaw:
+		default:
+			return SourceResult{}, errors.New("steady ran before slow finished")
+		}
+		if deadline, ok := ctx.Deadline(); !ok || !deadline.After(sawAt) {
+			return SourceResult{}, errors.New("steady was handed a context armed before slow's deadline passed")
+		}
+		return SourceResult{Items: []Evidence{completeItem("b")}, Completeness: CompletenessComplete}, nil
+	}}
 	l := serialLimits()
-	l.SourceTimeout = 40 * time.Millisecond // only "slow" waits for it
-	c := newTestCollector(t, l,
-		completeSource("fast", completeItem("a")),
-		blockingSource("slow"),
-		steadySource("steady", completeItem("b")),
-	)
+	l.SourceTimeout = 40 * time.Millisecond
+	c := newTestCollector(t, l, completeSource("fast", completeItem("a")), slow, steady)
 	rep := capture(t, c, localRequest())
 
 	if rep.Completeness != CompletenessPartial {
@@ -1365,16 +1396,18 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 	})
 	t.Run("source deadline mid-paging keeps what was fetched", func(t *testing.T) {
 		// The deadline is reached by waiting on the source context, never
-		// by racing a timer against the fake, so the outcome is the same on
-		// any runner: exactly the first page is kept and the stop is named.
-		// (On a runner slow enough that the deadline passes before the
-		// second call, the loop's own check stops at the same place.)
+		// by racing a timer against the fake. The deadline is generous so
+		// everything before the stall finishes inside it on any runner, and
+		// the list-call count proves which branch ran: a run the deadline
+		// pre-empted before the stall fails rather than passing through the
+		// other branch.
 		for _, tc := range []struct {
-			name  string
-			stall *deadlineEvents
+			name      string
+			stall     *deadlineEvents
+			wantCalls int
 		}{
-			{"while the next page is in flight", &deadlineEvents{failAt: 2}},
-			{"as the first page arrives", &deadlineEvents{holdPageAt: 1}},
+			{"while the next page is in flight", &deadlineEvents{failAt: 2}, 2},
+			{"as the first page arrives", &deadlineEvents{holdPageAt: 1}, 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				f := newAdapterFixture("100", mk(1000)...)
@@ -1385,8 +1418,11 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 				}
 				src := NewEventsSource(fakeClients{typed: tc.stall, dyn: f.dyn}, nil, resources.NewAlwaysAllowAccessChecker(), r, slog.Default())
 				l := testLimits()
-				l.SourceTimeout = 50 * time.Millisecond
+				l.SourceTimeout = time.Second
 				rep := capture(t, newTestCollector(t, l, src), localRequest(SourceEvents))
+				if n := tc.stall.listCalls(); n != tc.wantCalls {
+					t.Fatalf("event list calls = %d, want %d: the deadline did not land where this case puts it", n, tc.wantCalls)
+				}
 				got := sourceReport(t, rep, SourceEvents)
 				if got.Items != 1 || got.Completeness != CompletenessPartial || got.Detail != detailListStopped {
 					t.Fatalf("events = %+v, want one item, partial for the deadline stop only (not a timeout)", got)
