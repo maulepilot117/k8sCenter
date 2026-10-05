@@ -2,9 +2,9 @@ package diagnostics
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -73,6 +73,16 @@ func TargetResource(kind string) (group, version, resource string, ok bool) {
 	}
 	gv := kindGroupVersion[kind]
 	return gv.Group, gv.Version, resource, true
+}
+
+// RuleDependsOn returns the plural resources ("pods", "replicasets") of the
+// related resolutions the named rule reads for target, beyond the target
+// object itself; nil for a rule that reads only the target, an unregistered
+// name or a nil target. Incident capture scopes a check's evidence to the
+// resource its content derives from with this (Q1: the stored scope must be
+// what the read path re-authorizes).
+func RuleDependsOn(rule string, target *DiagnosticTarget) []string {
+	return ruleDependsOn(rule, target)
 }
 
 // kindNeedsReplicaSets enumerates target kinds whose related-pod resolution
@@ -171,7 +181,7 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// Resolve the target resource and its related pods
 	target, err := Resolve(ctx, h.Lister, namespace, kind, name, related)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ErrTargetNotFound) {
 			httputil.WriteError(w, http.StatusNotFound, err.Error(), "")
 			return
 		}

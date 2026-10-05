@@ -184,8 +184,8 @@ func (l Limits) Validate() error {
 
 // TargetRef names the object a capture is about. Resource is the plural
 // lowercase API resource; Version may be empty when the adapter can resolve
-// it through a REST mapper. UID is optional: when the caller already knows
-// it, the events adapter needs no object read.
+// it through a REST mapper. There is deliberately no UID: identity is only
+// ever taken from a SAR-gated impersonated read, never from the caller.
 type TargetRef struct {
 	APIGroup  string
 	Version   string
@@ -193,7 +193,6 @@ type TargetRef struct {
 	Kind      string
 	Namespace string
 	Name      string
-	UID       string
 }
 
 // CaptureRequest is one capture. Sources names the source ids to run; empty
@@ -277,6 +276,7 @@ type Collector struct {
 	limits  Limits
 	logger  *slog.Logger
 	now     func() time.Time
+	grace   time.Duration // captureGrace; shortened by tests
 }
 
 // NewCollector validates limits and registers sources. Source ids must be
@@ -298,33 +298,52 @@ func NewCollector(sources []Source, limits Limits, logger *slog.Logger) (*Collec
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Collector{sources: sources, limits: limits, logger: logger, now: time.Now}, nil
+	return &Collector{sources: sources, limits: limits, logger: logger, now: time.Now, grace: captureGrace}, nil
 }
 
-// sourceOutcome is one worker's slot. done is false when the worker never
-// wrote its slot, which after Wait means it panicked.
+// sourceOutcome is what one worker sends on its slot channel when its
+// source returns.
 type sourceOutcome struct {
-	done   bool
 	result SourceResult
 	err    error
 	ctxErr error // the source context's error when the worker returned
 }
 
+// captureGrace is how long Capture waits for the workers after the capture
+// deadline before reporting the unfinished ones timed_out and returning
+// without them.
+const captureGrace = 250 * time.Millisecond
+
 // Capture runs the requested sources and returns the report.
 //
 // Rules (plan §3.4): a plain errgroup bounds concurrency; each worker is
-// launched through recoverutil.Go and writes its own slot; a source's
-// failure, timeout or panic is recorded in that slot and never cancels a
-// sibling (the group derives no shared context, so even a recovered panic,
-// which recoverutil.Go surfaces as a returned error, cannot cancel the
-// others); every source gets its own deadline under the whole-capture
-// deadline. Redaction happened inside the adapters, so the per-item byte
-// bound, store validation, in-batch de-duplication and the item count bound
-// are applied here, after collection and before anything is returned.
+// launched through recoverutil.Go and sends its result on its own buffered
+// slot channel; a source's failure, timeout or panic is recorded in that
+// slot and never cancels a sibling (the group derives no shared context, so
+// even a recovered panic, which recoverutil.Go surfaces as a returned error,
+// cannot cancel the others); every source gets its own deadline under the
+// whole-capture deadline. The capture deadline is hard: a source that
+// ignores its context is left behind after a short grace and reported
+// timed_out; its late send lands in the buffered slot nobody reads, so
+// there is no shared write and no lost evidence. Redaction happened inside
+// the adapters, so the per-item byte bound, store validation, in-batch
+// de-duplication and the item count bound are applied here, after
+// collection and before anything is returned; a source whose kept items
+// were cut for size is reported partial.
 //
 // When ctx (the request context, not the capture deadline) is done by the
 // time the sources finish, Capture returns ctx.Err() and an empty report:
 // a cancelled capture gives the caller nothing to persist (rule 6).
+//
+// Stored scope rule (U23a's read filter re-authorizes `get` on each row's
+// stored scope, so this is what makes that gate equal to the capture-time
+// gate): each item is stored under the resource its CONTENT derives from.
+// An event_list is scoped to ("", "events"); a diagnostic_check whose rule
+// reads related pods to ("", "pods"), one that reads only ReplicaSets to
+// ("apps", "replicasets"), one that reads only the target to the target's
+// scope; an object_summary to the target's scope. Kind, name and UID stay
+// the target's for display and provenance. The adapters apply it
+// (sources.go); the collector only normalizes the cluster id.
 func (c *Collector) Capture(ctx context.Context, req CaptureRequest) (CaptureReport, error) {
 	selected, err := c.selectSources(req.Sources)
 	if err != nil {
@@ -343,20 +362,38 @@ func (c *Collector) Capture(ctx context.Context, req CaptureRequest) (CaptureRep
 
 	var g errgroup.Group
 	g.SetLimit(c.limits.MaxConcurrency)
-	outcomes := make([]sourceOutcome, len(selected))
+	slots := make([]chan sourceOutcome, len(selected))
 	for i, src := range selected {
+		slots[i] = make(chan sourceOutcome, 1)
 		recoverutil.Go(&g, c.logger, "incidents capture "+src.ID(), func() error {
 			srcCtx, cancel := context.WithTimeout(captureCtx, c.limits.SourceTimeout)
 			defer cancel()
 			res, err := src.Collect(srcCtx, req)
-			outcomes[i] = sourceOutcome{done: true, result: res, err: err, ctxErr: srcCtx.Err()}
+			slots[i] <- sourceOutcome{result: res, err: err, ctxErr: srcCtx.Err()}
 			return nil
 		})
 	}
-	if err := g.Wait(); err != nil {
-		// Only a recovered panic reaches here; it is already logged with
-		// its stack and is reported below as a failed source.
-		c.logger.Warn("incident capture source panicked", "error", err)
+	// Wait off the request goroutine so the capture deadline can be
+	// enforced against a source that ignores its context. g.Wait only
+	// returns a recovered panic's error; recoverutil.Safe keeps this
+	// goroutine itself from taking the process down.
+	waited := make(chan error, 1)
+	go recoverutil.Safe(c.logger, "incidents capture wait", func() { waited <- g.Wait() })
+	finished := false
+	select {
+	case err := <-waited:
+		finished = true
+		if err != nil {
+			// Already logged with its stack; reported below as a failed source.
+			c.logger.Warn("incident capture source panicked", "error", err)
+		}
+	case <-captureCtx.Done():
+		select {
+		case <-waited:
+			finished = true
+		case <-time.After(c.grace):
+			c.logger.Warn("incident capture deadline passed with sources still running")
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return CaptureReport{}, err
@@ -366,7 +403,13 @@ func (c *Collector) Capture(ctx context.Context, req CaptureRequest) (CaptureRep
 	report := CaptureReport{Completeness: CompletenessComplete, CollectedAt: now, Sources: make([]SourceReport, 0, len(selected))}
 	keys := make(map[string]bool)
 	for i, src := range selected {
-		sr, items := c.finalize(src.ID(), outcomes[i], now, keys)
+		var outcome *sourceOutcome
+		select {
+		case o := <-slots[i]:
+			outcome = &o
+		default:
+		}
+		sr, items := c.finalize(src.ID(), outcome, finished, now, keys)
 		if sr.Completeness != CompletenessComplete {
 			report.Completeness = CompletenessPartial
 		}
@@ -421,6 +464,12 @@ func validateRequest(req CaptureRequest) error {
 	if strings.TrimSpace(req.Target.Resource) == "" || strings.TrimSpace(req.Target.Name) == "" {
 		return fmt.Errorf("%w: a target resource and name are required", ErrInvalidCaptureRequest)
 	}
+	// Node events carry the node name as involvedObject.uid, so the UID
+	// identity every adapter relies on does not hold. Not supported in
+	// Release D.
+	if req.Target.Kind == "Node" || strings.EqualFold(strings.TrimSpace(req.Target.Resource), "nodes") {
+		return fmt.Errorf("%w: node targets are not supported", ErrInvalidCaptureRequest)
+	}
 	return nil
 }
 
@@ -429,17 +478,23 @@ const (
 	detailPanicked     = "source failed unexpectedly"
 	detailFailed       = "source failed"
 	detailTimedOut     = "source did not finish within its time limit"
+	detailCaptureCut   = "source did not finish within the capture deadline"
 	detailOversize     = "one or more items exceeded the per-item size bound and were dropped"
 	detailInvalid      = "one or more items could not be stored and were dropped"
 	detailUnknownState = "source reported an unknown completeness"
 )
 
-// finalize turns one worker's slot into its report and finalized items.
-func (c *Collector) finalize(id string, o sourceOutcome, now time.Time, keys map[string]bool) (SourceReport, []Evidence) {
+// finalize turns one worker's slot into its report and finalized items. A
+// nil outcome means the worker never sent: it panicked when every worker
+// finished, else it was still running at the capture deadline.
+func (c *Collector) finalize(id string, o *sourceOutcome, finished bool, now time.Time, keys map[string]bool) (SourceReport, []Evidence) {
 	sr := SourceReport{ID: id}
 	switch {
-	case !o.done:
+	case o == nil && finished:
 		sr.Completeness, sr.Detail = CompletenessFailed, detailPanicked
+		return sr, nil
+	case o == nil:
+		sr.Completeness, sr.Detail = CompletenessTimedOut, detailCaptureCut
 		return sr, nil
 	case o.err != nil:
 		if errors.Is(o.ctxErr, context.DeadlineExceeded) || errors.Is(o.err, context.DeadlineExceeded) {
@@ -458,7 +513,7 @@ func (c *Collector) finalize(id string, o sourceOutcome, now time.Time, keys map
 		return sr, nil
 	}
 
-	var oversize, invalid bool
+	var oversize, invalid, truncated bool
 	items := make([]Evidence, 0, len(o.result.Items))
 	for _, e := range o.result.Items {
 		e.CollectedAt = now
@@ -486,7 +541,11 @@ func (c *Collector) finalize(id string, o sourceOutcome, now time.Time, keys map
 			continue // the same observation twice in one capture
 		}
 		keys[e.CaptureKey] = true
+		truncated = truncated || e.Redaction.Truncated
 		items = append(items, e)
+	}
+	if truncated {
+		sr.Completeness, sr.Detail = downgrade(sr.Completeness, sr.Detail, detailProjectionTooLarge)
 	}
 	if oversize {
 		sr.Completeness, sr.Detail = downgrade(sr.Completeness, sr.Detail, detailOversize)

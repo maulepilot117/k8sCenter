@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -213,6 +214,12 @@ func statusOrder(status string) int {
 	}
 }
 
+// ErrTargetNotFound is wrapped by Resolve when the target object is absent
+// from the lister. Callers classify absence with errors.Is rather than by
+// the message's wording. Its text keeps the historical "not found" so the
+// message Resolve produces is unchanged.
+var ErrTargetNotFound = errors.New("not found")
+
 // Resolve fetches the target resource and its related pods from the lister.
 //
 // related controls which related-resource resolutions are permitted; pass the
@@ -232,7 +239,7 @@ func Resolve(ctx context.Context, lister topology.ResourceLister, namespace, kin
 		return nil, fmt.Errorf("fetching %s/%s: %w", kind, name, err)
 	}
 	if obj == nil {
-		return nil, fmt.Errorf("%s %q not found in namespace %q", kind, name, namespace)
+		return nil, fmt.Errorf("%s %q %w in namespace %q", kind, name, ErrTargetNotFound, namespace)
 	}
 	target.Object = obj
 

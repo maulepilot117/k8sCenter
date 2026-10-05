@@ -109,6 +109,8 @@ func FuzzEventProjection(f *testing.F) {
 	f.Add("too big for the bound", "Big", "Pod", "web-0", "uid-1", "kubelet", int32(1), uint8(4), uint8(1), true)
 	f.Add("no clock", "Timeless", "Pod", "web-0", "uid-1", "kubelet", int32(0), uint8(1), uint8(0), false)
 	f.Add("", "", "", "", "", "", int32(-1), uint8(0), uint8(7), false)
+	// Sanitizes into the canary: carried by the input, not a leak.
+	f.Add("CANAR\x0eY-e7a1-event-plaintext", "0", "0", "0", "0", "0", int32(1), uint8(1), uint8(0), true)
 
 	f.Fuzz(func(t *testing.T, message, reason, kind, name, uid, component string, count int32, n uint8, boundSel uint8, withTimes bool) {
 		for _, s := range []*string{&message, &reason, &kind, &name, &uid, &component} {
@@ -145,8 +147,10 @@ func FuzzEventProjection(f *testing.F) {
 			}
 		}
 		// The fuzzed strings land in allowlisted fields, so the canary is
-		// only a leak when no input carried it there.
-		inputs := message + reason + kind + name + uid + component
+		// only a leak when no input carried it there. An input that
+		// sanitizes INTO the canary (a control character inside it) also
+		// carried it, so the comparison is on the scrubbed inputs.
+		inputs := fuzzScrub(message + reason + kind + name + uid + component)
 		if !strings.Contains(inputs, fuzzEventCanary) && strings.Contains(string(out.payload), fuzzEventCanary) {
 			t.Fatalf("canary reached the payload: %s", out.payload)
 		}
@@ -231,6 +235,20 @@ func FuzzEventProjection(f *testing.F) {
 
 // fuzzCheckEventText is the text contract: valid UTF-8, no C0/C1 control
 // characters or DEL other than newline and tab, and at most the field bound.
+// fuzzScrub is the oracle's own re-derivation of the text contract's
+// removals (invalid UTF-8 to U+FFFD, control characters other than newline
+// and tab dropped), used only to tell an input that carried the canary from
+// a leak.
+func fuzzScrub(s string) string {
+	s = strings.ToValidUTF8(s, "�")
+	return strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func fuzzCheckEventText(t *testing.T, field, s string) {
 	t.Helper()
 	if !utf8.ValidString(s) {

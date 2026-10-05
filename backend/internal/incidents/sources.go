@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,8 +36,19 @@ import (
 // non-impersonated informer cache without a SAR for it (diagnostics' related
 // pods and ReplicaSets are gated by the same resolution the diagnostics
 // endpoint runs). Denial is reported as forbidden with a fixed detail that
-// names nothing; an undetermined check is failed, never forbidden (Q1 P4).
-// Redaction happens here, before the collector measures anything.
+// names nothing; an undetermined check is failed, never forbidden (Q1 P4);
+// a check or read cut short by the source deadline surfaces the context
+// error so the collector reports timed_out. Redaction happens here, before
+// the collector measures anything.
+//
+// Stored scope rule (the read path re-authorizes `get` on each row's STORED
+// scope, so the scope must be the resource the item's CONTENT derives from,
+// never merely the target it is about): an event_list is scoped to
+// ("", "events"); a diagnostic_check whose rule reads related pods is scoped
+// to ("", "pods"), one that reads only ReplicaSets to ("apps",
+// "replicasets"), one that reads only the target keeps the target scope; an
+// object_summary keeps the target scope. Kind, name and UID stay the
+// target's for display and provenance.
 
 // Source ids.
 const (
@@ -44,8 +57,13 @@ const (
 	SourceEvents      = "events"
 )
 
-// maxEventsPerCapture bounds the impersonated event list.
-const maxEventsPerCapture = 200
+// Event list bounds: the apiserver pages a limited list in key order, so
+// the newest events come last. Up to maxEventPages pages of
+// maxEventsPerCapture are fetched and the newest maxEventsPerCapture kept.
+const (
+	maxEventsPerCapture = 200
+	maxEventPages       = 5
+)
 
 // Fixed, scope-free source details.
 const (
@@ -68,18 +86,22 @@ type ClientProvider interface {
 	DynamicClientForUser(username string, groups []string) (dynamic.Interface, error)
 }
 
-// authorize runs the SAR gate every adapter read goes through. done is true
-// when the caller must return res (denied or undetermined) without reading.
-func authorize(ctx context.Context, ac *resources.AccessChecker, logger *slog.Logger, req CaptureRequest, verb, apiGroup, resource, namespace string) (res SourceResult, done bool) {
+// authorize runs the SAR gate every adapter read goes through. gated is true
+// when the caller must stop without reading: res says why (denied, or
+// undetermined and so failed), or err is the context's when the check was
+// cut short by the deadline.
+func authorize(ctx context.Context, ac *resources.AccessChecker, logger *slog.Logger, req CaptureRequest, verb, apiGroup, resource, namespace string) (res SourceResult, gated bool, err error) {
 	allowed, err := ac.CanAccessGroupResource(ctx, req.ClusterID, req.User.KubernetesUsername, req.User.KubernetesGroups, verb, apiGroup, resource, namespace)
-	if err != nil {
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return SourceResult{}, true, ctx.Err()
+	case err != nil:
 		logger.Warn("incident capture authorization check failed", "verb", verb, "group", apiGroup, "resource", resource, "error", err)
-		return SourceResult{Completeness: CompletenessFailed, Detail: detailAuthzUnavailable}, true
+		return failed(detailAuthzUnavailable), true, nil
+	case !allowed:
+		return SourceResult{Completeness: CompletenessForbidden, Detail: detailForbidden}, true, nil
 	}
-	if !allowed {
-		return SourceResult{Completeness: CompletenessForbidden, Detail: detailForbidden}, true
-	}
-	return SourceResult{}, false
+	return SourceResult{}, false, nil
 }
 
 func failed(detail string) SourceResult {
@@ -94,7 +116,6 @@ func targetSourceRef(req CaptureRequest) SourceRef {
 		Kind:      req.Target.Kind,
 		Namespace: req.Target.Namespace,
 		Name:      req.Target.Name,
-		UID:       req.Target.UID,
 	}
 }
 
@@ -109,6 +130,22 @@ func isSecretTarget(t TargetRef) bool {
 	return t.Kind == "Secret" || isSecretsResource(t.Resource)
 }
 
+// podSpecBearing names the kinds (and resources) whose object can reference
+// a Secret through a pod spec. When such a target cannot be read, its
+// derived items are marked secret-derived rather than assumed clean.
+var podSpecBearing = map[string]bool{
+	"Pod": true, "Deployment": true, "StatefulSet": true, "DaemonSet": true, "ReplicaSet": true,
+	"Job": true, "CronJob": true, "ReplicationController": true,
+	"pods": true, "deployments": true, "statefulsets": true, "daemonsets": true, "replicasets": true,
+	"jobs": true, "cronjobs": true, "replicationcontrollers": true,
+}
+
+// secretDerivedUnknown is the conservative answer for a target that could
+// not be read: a Secret, or anything that could carry a pod spec.
+func secretDerivedUnknown(t TargetRef) bool {
+	return isSecretTarget(t) || podSpecBearing[t.Kind] || podSpecBearing[strings.ToLower(t.Resource)]
+}
+
 // textMeta accumulates sanitization flags for free-text fields.
 type textMeta struct{ sanitized, truncated bool }
 
@@ -117,6 +154,18 @@ func (m *textMeta) text(s string) string {
 	out, changed, truncated := sanitize(s, maxFieldBytes)
 	m.sanitized = m.sanitized || changed
 	m.truncated = m.truncated || truncated
+	return out
+}
+
+// redact sanitizes controller-authored text through the Redactor's
+// RedactText (the per-item bound). A cut is told from a sanitization edit by
+// whether the input still starts with the output.
+func (m *textMeta) redact(r *Redactor, s string) string {
+	out, truncated := r.RedactText(s)
+	m.truncated = m.truncated || truncated
+	if out != s && (!truncated || !strings.HasPrefix(s, out)) {
+		m.sanitized = true
+	}
 	return out
 }
 
@@ -204,6 +253,7 @@ type diagnosticsSource struct {
 // check result. Supported kinds are exactly the kinds diagnostics resolves.
 // The target is SAR-gated for `get`; related pods and ReplicaSets are gated
 // by diagnostics.ResolveRelatedRBAC, as the diagnostics endpoint gates them.
+// Free text (message, detail, remediation) goes through redactor.RedactText.
 func NewDiagnosticsSource(lister topology.ResourceLister, access *resources.AccessChecker, redactor *Redactor, logger *slog.Logger) Source {
 	if logger == nil {
 		logger = slog.Default()
@@ -219,8 +269,8 @@ func (s *diagnosticsSource) Collect(ctx context.Context, req CaptureRequest) (So
 	if !ok {
 		return failed(detailUnsupportedKind), nil
 	}
-	if res, done := authorize(ctx, s.access, s.logger, req, "get", group, resource, t.Namespace); done {
-		return res, nil
+	if res, gated, err := authorize(ctx, s.access, s.logger, req, "get", group, resource, t.Namespace); gated {
+		return res, err
 	}
 	related := diagnostics.ResolveRelatedRBAC(ctx, s.access, s.logger, req.User, req.ClusterID, t.Kind, t.Namespace)
 	target, err := diagnostics.Resolve(ctx, s.lister, t.Namespace, t.Kind, t.Name, related)
@@ -228,7 +278,7 @@ func (s *diagnosticsSource) Collect(ctx context.Context, req CaptureRequest) (So
 		if ctx.Err() != nil {
 			return SourceResult{}, ctx.Err()
 		}
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, diagnostics.ErrTargetNotFound) {
 			return failed(detailNotFound), nil
 		}
 		s.logger.Warn("incident capture diagnostics resolve failed", "error", err)
@@ -250,11 +300,20 @@ func (s *diagnosticsSource) Collect(ctx context.Context, req CaptureRequest) (So
 	}
 
 	items := make([]Evidence, 0, len(checks))
-	for _, ch := range checks {
+	for i, ch := range checks {
 		var tm textMeta
-		ch.Message = tm.text(ch.Message)
-		ch.Detail = tm.text(ch.Detail)
-		ch.Remediation = tm.text(ch.Remediation)
+		ch.Message = tm.redact(s.redactor, ch.Message)
+		ch.Detail = tm.redact(s.redactor, ch.Detail)
+		ch.Remediation = tm.redact(s.redactor, ch.Remediation)
+		// Evidence keys are "<Kind>/<Name>" of observed objects: names are
+		// cluster-authored text and go through the same path.
+		if len(ch.Evidence) > 0 {
+			evidence := make(map[string]string, len(ch.Evidence))
+			for k, v := range ch.Evidence {
+				evidence[tm.redact(s.redactor, k)] = tm.redact(s.redactor, v)
+			}
+			ch.Evidence = evidence
+		}
 		payload, err := json.Marshal(ch)
 		if err != nil {
 			s.logger.Warn("incident capture check result did not marshal", "checkId", ch.CheckID, "error", err)
@@ -264,11 +323,14 @@ func (s *diagnosticsSource) Collect(ctx context.Context, req CaptureRequest) (So
 		tm.apply(&redaction)
 		finishRules(&redaction)
 		observed := ch.ObservedAt
+		// Normalize keeps the order of results, so results[i] is the legacy
+		// Result (with its rule name) this check came from.
+		scopeGroup, scopeResource := checkScope(ch.Source.Group, ch.Source.Resource, diagnostics.RuleDependsOn(results[i].RuleName, target))
 		items = append(items, Evidence{
 			EvidenceKind: EvidenceKindDiagnosticCheck,
 			Mode:         ModeSnapshot,
 			Source: SourceRef{
-				ClusterID: ch.Source.ClusterID, APIGroup: ch.Source.Group, Resource: ch.Source.Resource, Kind: ch.Source.Kind,
+				ClusterID: ch.Source.ClusterID, APIGroup: scopeGroup, Resource: scopeResource, Kind: ch.Source.Kind,
 				Namespace: ch.Source.Namespace, Name: ch.Source.Name, UID: ch.Source.UID, ResourceVersion: resourceVersion,
 			},
 			SourceObservedAt: &observed,
@@ -279,6 +341,18 @@ func (s *diagnosticsSource) Collect(ctx context.Context, req CaptureRequest) (So
 		})
 	}
 	return SourceResult{Items: items, Completeness: CompletenessComplete}, nil
+}
+
+// checkScope is the stored-scope rule for a check (see the file comment):
+// the most restrictive related resource the rule reads, else the target.
+func checkScope(targetGroup, targetResource string, dependsOn []string) (group, resource string) {
+	switch {
+	case slices.Contains(dependsOn, "pods"):
+		return "", "pods"
+	case slices.Contains(dependsOn, "replicasets"):
+		return "apps", "replicasets"
+	}
+	return targetGroup, targetResource
 }
 
 // checkDiscriminator is the capture-key part of a check: its id, status,
@@ -323,8 +397,8 @@ func (s *objectSource) ID() string { return SourceObject }
 
 func (s *objectSource) Collect(ctx context.Context, req CaptureRequest) (SourceResult, error) {
 	t := req.Target
-	if res, done := authorize(ctx, s.access, s.logger, req, "get", t.APIGroup, t.Resource, t.Namespace); done {
-		return res, nil
+	if res, gated, err := authorize(ctx, s.access, s.logger, req, "get", t.APIGroup, t.Resource, t.Namespace); gated {
+		return res, err
 	}
 	obj, res, err := readTarget(ctx, s.clients, s.mapper, s.logger, req)
 	if err != nil {
@@ -379,12 +453,13 @@ type eventsSource struct {
 	logger   *slog.Logger
 }
 
-// NewEventsSource captures the target's events as one event_list snapshot.
-// Events are SAR-gated for `list` and listed through the impersonated typed
-// client (never the informer cache) by involvedObject.uid. The UID comes from
-// the request when the caller knows it, else from a SAR-gated impersonated
-// GET of the target; without one the list falls back to involvedObject
-// name and kind and the item is identity-weak.
+// NewEventsSource captures the target's events as one event_list snapshot
+// scoped to ("", "events"). Events are SAR-gated for `list` and listed
+// through the impersonated typed client (never the informer cache) by
+// involvedObject.uid. The UID is never taken from the caller: it comes from
+// a SAR-gated impersonated GET of the target; when that read is gated or
+// fails the list falls back to involvedObject name and kind, the item is
+// identity-weak, and secret derivation is decided conservatively.
 func NewEventsSource(clients ClientProvider, mapper meta.RESTMapper, access *resources.AccessChecker, redactor *Redactor, logger *slog.Logger) Source {
 	if logger == nil {
 		logger = slog.Default()
@@ -396,25 +471,31 @@ func (s *eventsSource) ID() string { return SourceEvents }
 
 func (s *eventsSource) Collect(ctx context.Context, req CaptureRequest) (SourceResult, error) {
 	t := req.Target
-	if res, done := authorize(ctx, s.access, s.logger, req, "list", "", "events", t.Namespace); done {
-		return res, nil
+	if res, gated, err := authorize(ctx, s.access, s.logger, req, "list", "", "events", t.Namespace); gated {
+		return res, err
 	}
 	src := targetSourceRef(req)
+	src.APIGroup, src.Resource = "", "events"
 	secretDerived := isSecretTarget(t)
-	if src.UID == "" {
-		// A light impersonated GET for the UID, under its own gate. Any
-		// outcome short of a context error leaves the UID empty.
-		if _, denied := authorize(ctx, s.access, s.logger, req, "get", t.APIGroup, t.Resource, t.Namespace); !denied {
-			obj, _, err := readTarget(ctx, s.clients, s.mapper, s.logger, req)
-			if err != nil {
-				return SourceResult{}, err
-			}
-			if obj != nil {
-				src.UID = string(obj.GetUID())
-				src.ResourceVersion = obj.GetResourceVersion()
-				secretDerived = secretDerived || secretDerivedObject(obj.Object, t.Resource)
-			}
+	// A light impersonated GET for the UID, under its own gate. Any outcome
+	// short of a context error leaves the UID empty and the derivation
+	// conservative.
+	var obj *unstructured.Unstructured
+	if _, gated, err := authorize(ctx, s.access, s.logger, req, "get", t.APIGroup, t.Resource, t.Namespace); !gated {
+		var readErr error
+		obj, _, readErr = readTarget(ctx, s.clients, s.mapper, s.logger, req)
+		if readErr != nil {
+			return SourceResult{}, readErr
 		}
+	} else if err != nil {
+		return SourceResult{}, err
+	}
+	if obj != nil {
+		src.UID = string(obj.GetUID())
+		src.ResourceVersion = obj.GetResourceVersion()
+		secretDerived = secretDerived || secretDerivedObject(obj.Object, t.Resource)
+	} else {
+		secretDerived = secretDerived || secretDerivedUnknown(t)
 	}
 
 	cs, err := s.clients.ClientForUser(req.User.KubernetesUsername, req.User.KubernetesGroups)
@@ -426,25 +507,42 @@ func (s *eventsSource) Collect(ctx context.Context, req CaptureRequest) (SourceR
 	if src.UID != "" {
 		selector = fields.OneTermEqualSelector("involvedObject.uid", src.UID)
 	} else {
-		selector = fields.SelectorFromSet(fields.Set{"involvedObject.name": t.Name, "involvedObject.kind": t.Kind})
+		selector = fields.AndSelectors(
+			fields.OneTermEqualSelector("involvedObject.kind", t.Kind),
+			fields.OneTermEqualSelector("involvedObject.name", t.Name),
+		)
 	}
-	list, err := cs.CoreV1().Events(t.Namespace).List(ctx, metav1.ListOptions{FieldSelector: selector.String(), Limit: maxEventsPerCapture})
-	switch {
-	case err == nil:
-	case ctx.Err() != nil:
-		return SourceResult{}, ctx.Err()
-	case apierrors.IsForbidden(err):
-		return SourceResult{Completeness: CompletenessForbidden, Detail: detailForbidden}, nil
-	default:
-		s.logger.Warn("incident capture event list failed", "error", err)
-		return failed(detailListFailed), nil
+	opts := metav1.ListOptions{FieldSelector: selector.String(), Limit: maxEventsPerCapture}
+	var fetched []corev1.Event
+	more := false
+	for page := 0; page < maxEventPages; page++ {
+		list, err := cs.CoreV1().Events(t.Namespace).List(ctx, opts)
+		switch {
+		case err == nil:
+		case ctx.Err() != nil:
+			return SourceResult{}, ctx.Err()
+		case apierrors.IsForbidden(err):
+			return SourceResult{Completeness: CompletenessForbidden, Detail: detailForbidden}, nil
+		default:
+			s.logger.Warn("incident capture event list failed", "error", err)
+			return failed(detailListFailed), nil
+		}
+		fetched = append(fetched, list.Items...)
+		if list.Continue == "" {
+			break
+		}
+		if page == maxEventPages-1 {
+			more = true
+			break
+		}
+		opts.Continue = list.Continue
 	}
 
 	// The server applied the selector; it is re-applied here so a list
 	// that ignores field selectors (a fake, a lenient proxy) can never
 	// attach another object's events to this target.
-	matching := make([]corev1.Event, 0, len(list.Items))
-	for _, ev := range list.Items {
+	matching := make([]corev1.Event, 0, len(fetched))
+	for _, ev := range fetched {
 		if src.UID != "" && string(ev.InvolvedObject.UID) != src.UID {
 			continue
 		}
@@ -453,7 +551,7 @@ func (s *eventsSource) Collect(ctx context.Context, req CaptureRequest) (SourceR
 		}
 		matching = append(matching, ev)
 	}
-	projected := projectEvents(s.redactor, matching, list.Continue != "", secretDerived)
+	projected := projectEvents(s.redactor, matching, more, secretDerived)
 
 	item := Evidence{
 		EvidenceKind:     EvidenceKindEventList,
@@ -472,8 +570,8 @@ func (s *eventsSource) Collect(ctx context.Context, req CaptureRequest) (SourceR
 }
 
 // eventListPayload is the allowlisted event_list shape. Observed is how many
-// events the list returned (at most maxEventsPerCapture); Truncated is true
-// when more existed than were kept, for count or for size.
+// events were kept for projection (at most maxEventsPerCapture, the newest);
+// Truncated is true when more existed than were kept, for count or for size.
 type eventListPayload struct {
 	Events    []eventSummary `json:"events"`
 	Observed  int            `json:"observed"`
@@ -503,20 +601,31 @@ type projectedEvents struct {
 	payload    json.RawMessage
 	meta       RedactionMeta
 	observedAt *time.Time // newest event time, nil when no event carries one
-	digest     string     // capture-key discriminator over every observed event
+	digest     string     // capture-key discriminator over every fetched event
 }
 
 // projectEvents projects events onto the allowlist (type, reason, sanitized
 // message, count, timestamps, involvedObject kind/name/uid, source
-// component), newest first, at most maxEventsPerCapture, and cuts the tail
-// until the payload fits r's byte bound. Every cut is flagged. more says the
-// server had further events beyond the list. The digest covers the (uid,
-// count, time) tuples of every event the list returned, so an unchanged
-// list dedupes whatever the size cut kept.
+// component), newest first, keeping at most the newest maxEventsPerCapture,
+// and cuts the tail until the payload fits r's byte bound. Every cut is
+// flagged. more says the server had further events beyond what was fetched.
+// The digest covers the (uid, name, count, time) tuples of EVERY fetched
+// event, before the count and size cuts, so an unchanged list dedupes
+// whatever the cuts kept and any change anywhere in it is a new
+// observation.
 func projectEvents(r *Redactor, events []corev1.Event, more, secretDerived bool) projectedEvents {
 	sort.SliceStable(events, func(i, j int) bool {
 		return eventObservedAt(&events[i]).After(eventObservedAt(&events[j]))
 	})
+	tuples := make([]string, 0, len(events))
+	for i := range events {
+		ev := &events[i]
+		tuples = append(tuples, string(ev.UID)+"\x00"+ev.Name+"\x00"+itoa(eventCount(ev))+"\x00"+eventObservedAt(ev).UTC().Format(time.RFC3339Nano))
+	}
+	sort.Strings(tuples)
+	digestInput, _ := json.Marshal(tuples)
+	sum := sha256.Sum256(digestInput)
+
 	truncated := more
 	if len(events) > maxEventsPerCapture {
 		events = events[:maxEventsPerCapture]
@@ -525,7 +634,6 @@ func projectEvents(r *Redactor, events []corev1.Event, more, secretDerived bool)
 
 	var tm textMeta
 	var newest time.Time
-	tuples := make([]string, 0, len(events))
 	summaries := make([]eventSummary, 0, len(events))
 	for i := range events {
 		ev := &events[i]
@@ -535,16 +643,11 @@ func projectEvents(r *Redactor, events []corev1.Event, more, secretDerived bool)
 		if ev.InvolvedObject.Kind == "Secret" {
 			secretDerived = true
 		}
-		count := ev.Count
-		if count == 0 && ev.Series != nil {
-			count = ev.Series.Count
-		}
-		tuples = append(tuples, string(ev.UID)+"\x00"+ev.Name+"\x00"+itoa(count)+"\x00"+eventObservedAt(ev).UTC().Format(time.RFC3339Nano))
 		summaries = append(summaries, eventSummary{
 			Type:            tm.text(ev.Type),
 			Reason:          tm.text(ev.Reason),
 			Message:         tm.text(ev.Message),
-			Count:           count,
+			Count:           eventCount(ev),
 			FirstTimestamp:  optionalTime(ev.FirstTimestamp.Time),
 			LastTimestamp:   optionalTime(ev.LastTimestamp.Time),
 			EventTime:       optionalTime(ev.EventTime.Time),
@@ -552,9 +655,6 @@ func projectEvents(r *Redactor, events []corev1.Event, more, secretDerived bool)
 			SourceComponent: tm.text(ev.Source.Component),
 		})
 	}
-	sort.Strings(tuples)
-	digestInput, _ := json.Marshal(tuples)
-	sum := sha256.Sum256(digestInput)
 
 	// A string cut past the field bound is a cut of the observation too:
 	// the payload's flag and the metadata's must agree.
@@ -592,6 +692,15 @@ func projectEvents(r *Redactor, events []corev1.Event, more, secretDerived bool)
 		out.observedAt = &at
 	}
 	return out
+}
+
+// eventCount is the event's count, or its series count for a series event
+// without one.
+func eventCount(ev *corev1.Event) int32 {
+	if ev.Count == 0 && ev.Series != nil {
+		return ev.Series.Count
+	}
+	return ev.Count
 }
 
 // eventObservedAt is the newest of an event's timestamps, zero when it has

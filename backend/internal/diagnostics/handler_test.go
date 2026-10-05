@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -233,4 +234,20 @@ func TestDiagnostics_NotificationTripwireHasTeeth(t *testing.T) {
 		}
 	}()
 	callDiag(t, h, "local", diagPaths["resource"])
+}
+
+// TestResolveNotFoundIsASentinel: an absent target is classified with
+// errors.Is(err, ErrTargetNotFound), never by the message's wording, and the
+// message itself is the historical one the endpoint has always returned.
+func TestResolveNotFoundIsASentinel(t *testing.T) {
+	_, err := Resolve(context.Background(), &countingLister{}, "payments", "Deployment", "web", nil)
+	if !errors.Is(err, ErrTargetNotFound) {
+		t.Fatalf("err = %v, want ErrTargetNotFound", err)
+	}
+	if got, want := err.Error(), `Deployment "web" not found in namespace "payments"`; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+	if errors.Is(errors.New(`Deployment "web" not found in namespace "payments"`), ErrTargetNotFound) {
+		t.Fatal("a same-text error must not classify as the sentinel")
+	}
 }
