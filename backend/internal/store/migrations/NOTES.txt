@@ -470,13 +470,21 @@ Rollback (operator footgun 2):
   Do NOT just deploy the older image. Its startup migration runner sees
   version 24 recorded with no embedded 000024 file and fails with "no
   migration found for version 24" (not "no change"); the backend then starts
-  with no database. The procedure is:
-    1. LEAVE the incident tables in place.
-    2. BEFORE deploying the older image, reset the recorded version:
+  with no database. The procedure is (LEAVE the incident tables in place
+  throughout):
+    1. Stop every backend pod running the new image, e.g. scale the backend
+       Deployment to 0 replicas and wait until none is left. Any new-image
+       pod that (re)starts after step 2 re-applies 000024 on boot and puts
+       the version back to 24.
+    2. Reset the recorded version:
          UPDATE schema_migrations SET version = 23, dirty = false;
        (or, with the golang-migrate CLI, `migrate ... force 23`).
-    3. Deploy the older image. It starts cleanly and never reads the
-       incident tables.
+    3. Deploy the older image and scale back up. It starts cleanly and never
+       reads the incident tables.
+    4. Verify: `SELECT version, dirty FROM schema_migrations;` must read
+       23 | f, and the backend log must not contain "failed to connect to
+       database, falling back to slog audit". If the version reads 24 again,
+       a new-image pod ran in between: repeat from step 1.
   A later roll-forward to an image that includes 000024 re-runs the 000024
   up file over the tables left in place. That is harmless: every statement
   in it is CREATE TABLE / CREATE INDEX ... IF NOT EXISTS (constraints are
