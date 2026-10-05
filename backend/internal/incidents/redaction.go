@@ -119,7 +119,11 @@ func NewRedactor(maxBytes int) (*Redactor, error) {
 // RedactObject projects obj (an unstructured object's content) down to the
 // allowlist, sanitizes and bounds every string that survives, and enforces
 // len(json.Marshal(projection)) <= maxBytes. sourceResource is the plural
-// resource the object was read from ("secrets" marks it Secret-derived).
+// lowercase API resource the object was read from, as SourceRef.Resource
+// carries it ("pods", "deployments", "secrets"); "secrets" selects the
+// Secret projection whether or not the object carries a kind. Surrounding
+// whitespace, case, and a leading "v1/" or "core/" group qualifier are
+// tolerated; nothing else is.
 //
 // Allowlist: apiVersion, kind, metadata.{name,namespace,uid,resourceVersion,
 // creationTimestamp,labels,annotations(allowlisted),ownerReferences
@@ -143,7 +147,10 @@ func NewRedactor(maxBytes int) (*Redactor, error) {
 // is never mutated.
 func (r *Redactor) RedactObject(obj map[string]any, sourceResource string) (map[string]any, RedactionMeta) {
 	p := &projector{bound: maxFieldBytes}
-	isSecret := asString(obj["kind"]) == "Secret"
+	// An object is a Secret when either signal says so: a typed object from
+	// an informer cache has empty TypeMeta, so the source resource must be
+	// enough on its own; kind covers objects whose caller has no resource.
+	isSecret := asString(obj["kind"]) == "Secret" || isSecretsResource(sourceResource)
 	out := p.object(obj, isSecret)
 
 	for {
@@ -161,7 +168,7 @@ func (r *Redactor) RedactObject(obj map[string]any, sourceResource string) (map[
 	meta := RedactionMeta{
 		FieldsRemoved: p.removed,
 		Truncated:     p.truncated,
-		SecretDerived: isSecret || sourceResource == "secrets" || referencesSecret(obj),
+		SecretDerived: isSecret || referencesSecret(obj),
 	}
 	if isSecret {
 		meta.Rules = append(meta.Rules, RuleSecretValues)
@@ -378,7 +385,10 @@ func (p *projector) annotationAllowed(key string) bool {
 }
 
 // stringMap projects a labels/annotations map: allowed keys with string
-// values, sanitized, kept in sorted-key order up to max entries.
+// values, sanitized, kept in sorted-key order up to max entries. Every key
+// is classified (allowlist, type) whatever its position; the cap only stops
+// copying, so RuleLastAppliedConfig, RuleAnnotationAllowlist and
+// FieldsRemoved stay exact past the cap.
 func (p *projector) stringMap(in map[string]any, max int, allowed func(string) bool) map[string]any {
 	keys := make([]string, 0, len(in))
 	for k := range in {
@@ -390,19 +400,31 @@ func (p *projector) stringMap(in map[string]any, max int, allowed func(string) b
 		if allowed != nil && !allowed(k) {
 			continue
 		}
-		v, ok := p.str(in[k])
+		raw, ok := in[k].(string)
 		if !ok {
 			p.drop()
 			continue
 		}
 		if len(out) >= max {
 			p.truncated = true
-			break
+			continue
 		}
+		v, _ := p.str(raw)
 		sk, _ := p.str(k)
 		out[sk] = v
 	}
 	return out
+}
+
+// keep appends element o to out unless the cap is reached, in which case
+// the element was still classified (its removed fields counted) but is not
+// copied and the cut is flagged.
+func (p *projector) keep(out []any, o map[string]any, max int) []any {
+	if len(out) >= max {
+		p.truncated = true
+		return out
+	}
+	return append(out, o)
 }
 
 func (p *projector) ownerReferences(refs []any) []any {
@@ -412,10 +434,6 @@ func (p *projector) ownerReferences(refs []any) []any {
 		if !ok {
 			p.drop()
 			continue
-		}
-		if len(out) >= maxOwnerReferences {
-			p.truncated = true
-			break
 		}
 		o := map[string]any{}
 		p.copyStrings(ref, o, "apiVersion", "kind", "name", "uid")
@@ -427,7 +445,7 @@ func (p *projector) ownerReferences(refs []any) []any {
 			}
 		}
 		p.dropOthers(ref, "apiVersion", "kind", "name", "uid", "controller")
-		out = append(out, o)
+		out = p.keep(out, o, maxOwnerReferences)
 	}
 	return out
 }
@@ -494,14 +512,10 @@ func (p *projector) containers(list []any) []any {
 			p.drop()
 			continue
 		}
-		if len(out) >= maxContainers {
-			p.truncated = true
-			break
-		}
 		o := map[string]any{}
 		p.copyStrings(c, o, "name", "image")
 		p.dropOthers(c, "name", "image")
-		out = append(out, o)
+		out = p.keep(out, o, maxContainers)
 	}
 	return out
 }
@@ -529,14 +543,10 @@ func (p *projector) conditions(list []any) []any {
 			p.drop()
 			continue
 		}
-		if len(out) >= maxConditions {
-			p.truncated = true
-			break
-		}
 		o := map[string]any{}
 		p.copyStrings(c, o, "type", "status", "reason", "message", "lastTransitionTime")
 		p.dropOthers(c, "type", "status", "reason", "message", "lastTransitionTime")
-		out = append(out, o)
+		out = p.keep(out, o, maxConditions)
 	}
 	return out
 }
@@ -682,6 +692,11 @@ func referencesSecret(obj map[string]any) bool {
 			if present(vol, "secret") {
 				return true
 			}
+			for source, field := range volumeSecretFields {
+				if sub, _ := vol[source].(map[string]any); present(sub, field) {
+					return true
+				}
+			}
 			if proj, _ := vol["projected"].(map[string]any); proj != nil {
 				for _, src := range listOfMaps(proj["sources"]) {
 					if present(src, "secret") {
@@ -692,6 +707,25 @@ func referencesSecret(obj map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// volumeSecretFields lists every core/v1 VolumeSource member, other than
+// `secret` and `projected`, whose value names a Secret object, keyed by the
+// volume-source field and giving the field inside it (k8s.io/api v0.37.1
+// VolumeSource; the PersistentVolumeSource variants live on PVs, not pod
+// specs). cephfs.secretFile is a host keyring path, not a Secret, and is
+// deliberately absent; iscsi CHAP flags are bools whose credentials come
+// through iscsi.secretRef.
+var volumeSecretFields = map[string]string{
+	"csi":        "nodePublishSecretRef",
+	"rbd":        "secretRef",
+	"cinder":     "secretRef",
+	"cephfs":     "secretRef",
+	"flexVolume": "secretRef",
+	"iscsi":      "secretRef",
+	"scaleIO":    "secretRef",
+	"storageos":  "secretRef",
+	"azureFile":  "secretName",
 }
 
 // present reports whether m[key] exists with a value that references
@@ -724,6 +758,17 @@ func listOfMaps(v any) []map[string]any {
 		}
 	}
 	return out
+}
+
+// isSecretsResource reports whether a caller-supplied source resource names
+// core/v1 secrets. The contract is the plural lowercase resource; the
+// normalization here only absorbs spellings that cannot mean anything else.
+func isSecretsResource(resource string) bool {
+	switch strings.ToLower(strings.TrimSpace(resource)) {
+	case "secrets", "v1/secrets", "core/secrets", "/secrets":
+		return true
+	}
+	return false
 }
 
 func asString(v any) string {

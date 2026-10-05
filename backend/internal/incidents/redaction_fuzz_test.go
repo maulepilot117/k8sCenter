@@ -109,8 +109,25 @@ func fuzzObject(kindSel uint8, a, b, c string, raw []byte, planted bool) (obj ma
 		"containers": []any{container},
 		"volumes":    []any{map[string]any{"name": a, "projected": map[string]any{"sources": []any{}}}},
 	}
-	if planted && kindSel&0x80 != 0 {
-		podSpec["volumes"] = []any{map[string]any{"name": a, "secret": map[string]any{"secretName": fuzzCanary}}}
+	if planted {
+		// Rotate the planted reference through the volume shapes that name a
+		// Secret: the Secret volume itself, a CSI nodePublishSecretRef, an
+		// rbd secretRef, and an azureFile secretName. Each must mark the
+		// object derived on its own (the env secretKeyRef above is dropped
+		// for these so the volume is the only reference).
+		switch kindSel >> 6 {
+		case 1:
+			podSpec["volumes"] = []any{map[string]any{"name": a, "secret": map[string]any{"secretName": fuzzCanary}}}
+		case 2:
+			container["env"] = []any{map[string]any{"name": "PLAIN", "value": fuzzCanary}}
+			podSpec["volumes"] = []any{map[string]any{"name": a, "csi": map[string]any{"driver": b, "nodePublishSecretRef": map[string]any{"name": fuzzCanary}}}}
+		case 3:
+			container["env"] = []any{map[string]any{"name": "PLAIN", "value": fuzzCanary}}
+			podSpec["volumes"] = []any{
+				map[string]any{"name": a, "rbd": map[string]any{"monitors": []any{b}, "secretRef": map[string]any{"name": fuzzCanary}}},
+				map[string]any{"name": b, "azureFile": map[string]any{"secretName": fuzzCanary, "shareName": c}},
+			}
+		}
 	}
 
 	spec := map[string]any{"replicas": float64(kindSel), "unknown": fuzzCanary, "hidden": map[string]any{c: fuzzCanary}}
@@ -179,7 +196,10 @@ func FuzzIncidentRedaction(f *testing.F) {
 	f.Add(uint8(2), strings.Repeat("\x00", 5000), "ns", "x", []byte(""), uint16(0), false)
 	f.Add(uint8(1), "api", "payments", "api", deploymentYAML, uint16(1), true)
 	f.Add(uint8(2), "api-1", "payments", strings.Repeat("é", 300), podProjectedYAML, uint16(200), false)
-	f.Add(uint8(0x82), "p", "ns", "x", []byte("spec:\n  containers: oops\n  initContainers:\n  - null\n  - env: {}\n"), uint16(0), true)
+	f.Add(uint8(0x42), "p", "ns", "x", []byte("spec:\n  containers: oops\n  initContainers:\n  - null\n  - env: {}\n"), uint16(0), true)
+	f.Add(uint8(0x80), "api-1", "payments", "x", podProjectedYAML, uint16(0), true) // Pod: CSI nodePublishSecretRef is the only reference
+	f.Add(uint8(0xC6), "api-1", "payments", "x", []byte(""), uint16(0), true)       // Pod: rbd secretRef + azureFile secretName
+	f.Add(uint8(0xC5), "api", "payments", "x", deploymentYAML, uint16(0), true)     // Deployment: same, under the workload template
 	f.Add(uint8(6), "k", "v", "z", []byte("spec:\n  template:\n    spec: null\n  jobTemplate: []\n"), uint16(0), true)
 	f.Add(uint8(2), "env", "data", "stringData", []byte(""), uint16(0), false)
 

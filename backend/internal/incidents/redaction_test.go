@@ -170,6 +170,96 @@ func TestRedactSecretByKindAloneIsMetadataOnly(t *testing.T) {
 	}
 }
 
+// A Secret read from a typed informer cache has empty TypeMeta; the source
+// resource alone must select the metadata-only projection (review r1 #2).
+func TestRedactKindlessSecretBySourceResource(t *testing.T) {
+	r := mustRedactor(t, DefaultMaxBytes)
+	for _, source := range []string{"secrets", " Secrets ", "v1/secrets", "core/secrets", "/secrets"} {
+		obj := map[string]any{
+			"metadata":   metadata("db-creds", "payments", nil),
+			"data":       map[string]any{canaryKeyName: canaryValue},
+			"stringData": map[string]any{"token": canaryValue},
+		}
+		out, meta := r.RedactObject(obj, source)
+		js := marshal(t, out)
+		if strings.Contains(js, canaryValue) || strings.Contains(js, canaryKeyName) || strings.Contains(js, "token") {
+			t.Errorf("source %q: payload survived: %s", source, js)
+		}
+		if !meta.SecretDerived || !hasRule(meta, RuleSecretValues) {
+			t.Errorf("source %q: meta = %+v; want SecretDerived with %s", source, meta, RuleSecretValues)
+		}
+		if hasRule(meta, RuleFieldAllowlist) || meta.FieldsRemoved != 2 {
+			t.Errorf("source %q: data/stringData not attributed to secret-values alone: %+v", source, meta)
+		}
+	}
+	// Other spellings are not a Secret source: the caller contract is the
+	// plural lowercase resource, and a kind-less object with a foreign
+	// source takes the generic path.
+	for _, source := range []string{"secret", "Secret", "widgets", "secretsx", "apps/secrets", ""} {
+		_, meta := r.RedactObject(map[string]any{"metadata": metadata("x", "ns", nil)}, source)
+		if meta.SecretDerived || hasRule(meta, RuleSecretValues) {
+			t.Errorf("source %q treated as secrets: %+v", source, meta)
+		}
+	}
+}
+
+// Every key is classified even once the keep cap is reached; only copying
+// stops (review r1 #3).
+func TestRedactAnnotationCapStillClassifiesEveryKey(t *testing.T) {
+	r := mustRedactor(t, DefaultMaxBytes)
+	ann := map[string]any{
+		LastAppliedConfigAnnotation: `{"stringData":{"k":"` + canaryValue + `"}}`, // sorts after kubecenter.io/*
+		"zz.example.com/token":      canaryValue,
+		"zz.example.com/number":     float64(1),
+	}
+	for i := 0; i < 40; i++ {
+		ann["kubecenter.io/"+string(rune('a'+i/26))+string(rune('a'+i%26))] = "v"
+	}
+	obj := map[string]any{"kind": "Pod", "metadata": metadata("p", "ns", map[string]any{"annotations": ann})}
+	out, meta := r.RedactObject(obj, "pods")
+	js := marshal(t, out)
+	if strings.Contains(js, canaryValue) || strings.Contains(js, LastAppliedConfigAnnotation) {
+		t.Fatalf("leak: %s", js)
+	}
+	kept, _ := out["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if len(kept) != maxAnnotations {
+		t.Errorf("kept %d annotations; want %d", len(kept), maxAnnotations)
+	}
+	wantRules := []string{RuleLastAppliedConfig, RuleAnnotationAllowlist, RuleTruncated}
+	if !slices.Equal(meta.Rules, wantRules) {
+		t.Errorf("Rules = %v; want %v", meta.Rules, wantRules)
+	}
+	if meta.FieldsRemoved != 3 || !meta.Truncated {
+		t.Errorf("meta = %+v; want FieldsRemoved=3 (last-applied, zz token, zz number), Truncated", meta)
+	}
+
+	// Labels and list collections follow the same rule: entries past the cap
+	// are not copied but their removed fields are still counted.
+	labels := map[string]any{}
+	for i := 0; i < 70; i++ {
+		labels["l"+string(rune('a'+i/26))+string(rune('a'+i%26))] = "v"
+	}
+	labels["zzz"] = float64(1)
+	conds := make([]any, 0, 40)
+	for i := 0; i < 40; i++ {
+		conds = append(conds, map[string]any{"type": "T", "status": "True", "extra": i})
+	}
+	obj = map[string]any{
+		"kind":     "Pod",
+		"metadata": metadata("p", "ns", map[string]any{"labels": labels}),
+		"status":   map[string]any{"conditions": conds},
+	}
+	out, meta = r.RedactObject(obj, "pods")
+	keptLabels, _ := out["metadata"].(map[string]any)["labels"].(map[string]any)
+	keptConds, _ := out["status"].(map[string]any)["conditions"].([]any)
+	if len(keptLabels) != maxLabels || len(keptConds) != maxConditions {
+		t.Errorf("kept %d labels, %d conditions; want %d, %d", len(keptLabels), len(keptConds), maxLabels, maxConditions)
+	}
+	if meta.FieldsRemoved != 41 || !meta.Truncated {
+		t.Errorf("meta = %+v; want FieldsRemoved=41 (1 non-string label + 40 condition extras), Truncated", meta)
+	}
+}
+
 func TestRedactStripsLastAppliedConfigOnEveryKind(t *testing.T) {
 	r := mustRedactor(t, DefaultMaxBytes)
 	for _, kind := range []string{"Deployment", "ConfigMap", "Widget", ""} {
@@ -283,8 +373,24 @@ func TestRedactMarksSecretDerivedInEveryPodSpecLocation(t *testing.T) {
 			}}}},
 		}}, "cronjobs", true},
 		"source resource secrets": {map[string]any{"kind": "Widget", "metadata": metadata("w", "ns", nil)}, "secrets", true},
-		"kind Secret":             {map[string]any{"kind": "Secret", "metadata": metadata("s", "ns", nil)}, "", true},
-		"plain pod":               {podFixture(map[string]any{"containers": []any{map[string]any{"name": "a", "image": "i"}}}), "pods", false},
+		// Every core/v1 VolumeSource member that names a Secret (k8s.io/api v0.37.1).
+		"volume csi nodePublishSecretRef": {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "csi": map[string]any{"driver": "d", "nodePublishSecretRef": map[string]any{"name": "s"}}}}}), "pods", true},
+		"volume rbd secretRef":            {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "rbd": map[string]any{"secretRef": map[string]any{"name": "s"}}}}}), "pods", true},
+		"volume cinder secretRef":         {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "cinder": map[string]any{"secretRef": map[string]any{"name": "s"}}}}}), "pods", true},
+		"volume cephfs secretRef":         {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "cephfs": map[string]any{"secretRef": map[string]any{"name": "s"}}}}}), "pods", true},
+		"volume flexVolume secretRef":     {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "flexVolume": map[string]any{"secretRef": map[string]any{"name": "s"}}}}}), "pods", true},
+		"volume iscsi secretRef":          {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "iscsi": map[string]any{"chapAuthSession": true, "secretRef": map[string]any{"name": "s"}}}}}), "pods", true},
+		"volume scaleIO secretRef":        {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "scaleIO": map[string]any{"secretRef": map[string]any{"name": "s"}}}}}), "pods", true},
+		"volume storageos secretRef":      {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "storageos": map[string]any{"secretRef": map[string]any{"name": "s"}}}}}), "pods", true},
+		"volume azureFile secretName":     {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "azureFile": map[string]any{"secretName": "s", "shareName": "sh"}}}}), "pods", true},
+		"template volume csi":             {deploymentFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "csi": map[string]any{"nodePublishSecretRef": map[string]any{"name": "s"}}}}}), "deployments", true},
+		// A cephfs secretFile is a host keyring path, not a Secret object; a CSI
+		// volume without a secret ref and a PVC are not references either.
+		"volume cephfs secretFile only": {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "cephfs": map[string]any{"secretFile": "/etc/ceph/key"}}}}), "pods", false},
+		"volume csi without secret":     {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "csi": map[string]any{"driver": "d"}}}}), "pods", false},
+		"volume pvc":                    {podFixture(map[string]any{"volumes": []any{map[string]any{"name": "v", "persistentVolumeClaim": map[string]any{"claimName": "c"}}}}), "pods", false},
+		"kind Secret":                   {map[string]any{"kind": "Secret", "metadata": metadata("s", "ns", nil)}, "", true},
+		"plain pod":                     {podFixture(map[string]any{"containers": []any{map[string]any{"name": "a", "image": "i"}}}), "pods", false},
 		"configMap env only": {podFixture(map[string]any{"containers": []any{map[string]any{"name": "a", "env": []any{
 			map[string]any{"name": "X", "valueFrom": map[string]any{"configMapKeyRef": map[string]any{"name": "cm", "key": "k"}}},
 		}}}}), "pods", false},
