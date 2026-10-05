@@ -37,6 +37,85 @@ var (
 	fuzzOtherSources  = []string{"widgets", "pods", "secret", "apps/secrets"}
 )
 
+// fuzzShape selects which single Secret reference fuzzObject plants when
+// planted is true (names in fuzzShapeNames).
+func fuzzShape(kindSel uint8) int { return int(kindSel >> 4) }
+
+var fuzzShapeNames = []string{
+	"containers.env.secretKeyRef", "volumes.secret", "volumes.csi.nodePublishSecretRef", "volumes.rbd.secretRef",
+	"volumes.azureFile.secretName", "volumes.projected.sources.secret", "imagePullSecrets", "initContainers.envFrom.secretRef",
+	"ephemeralContainers.env.secretKeyRef", "containers.envFrom.secretRef", "volumes.cinder.secretRef", "volumes.cephfs.secretRef",
+	"volumes.flexVolume.secretRef", "volumes.iscsi.secretRef", "volumes.scaleIO.secretRef", "volumes.storageos.secretRef",
+}
+
+// fuzzSoleReferenceSeeds are the seeds whose planted reference is the only
+// thing that can mark the object derived: every entry has a non-secrets
+// source and a non-Secret kind. The shape, kind and source columns are what
+// the author intends; TestFuzzSeedSelectors proves the selector arithmetic
+// produces exactly them, so a wrong selector or a stale comment cannot
+// silently weaken a seed. Every shape appears at least once as a Pod.
+var fuzzSoleReferenceSeeds = []struct {
+	sel    uint8
+	shape  string
+	kind   string
+	source string
+	raw    string
+}{
+	{2, "containers.env.secretKeyRef", "Pod", "widgets", ""},
+	{16, "volumes.secret", "Pod", "pods", ""},
+	{37, "volumes.csi.nodePublishSecretRef", "Pod", "widgets", "apiVersion: v1\nkind: Pod\nspec:\n  volumes:\n  - name: tls\n    secret:\n      secretName: leaked\n"}, // raw volumes are discarded
+	{38, "volumes.csi.nodePublishSecretRef", "CronJob", "widgets", ""},
+	{58, "volumes.rbd.secretRef", "Pod", "apps/secrets", ""},
+	{50, "volumes.rbd.secretRef", "Deployment", "widgets", ""},
+	{65, "volumes.azureFile.secretName", "Pod", "pods", ""},
+	{71, "volumes.azureFile.secretName", "Deployment", "apps/secrets", ""},
+	{86, "volumes.projected.sources.secret", "Pod", "widgets", ""},
+	{100, "imagePullSecrets", "Pod", "pods", ""},
+	{121, "initContainers.envFrom.secretRef", "Pod", "widgets", ""},
+	{128, "ephemeralContainers.env.secretKeyRef", "Pod", "secret", ""},
+	{134, "ephemeralContainers.env.secretKeyRef", "Deployment", "widgets", ""},
+	{149, "containers.envFrom.secretRef", "Pod", "pods", ""},
+	{163, "volumes.cinder.secretRef", "Pod", "secret", ""},
+	{184, "volumes.cephfs.secretRef", "Pod", "pods", ""},
+	{205, "volumes.flexVolume.secretRef", "Pod", "widgets", ""},
+	{212, "volumes.iscsi.secretRef", "Pod", "secret", ""},
+	{211, "volumes.iscsi.secretRef", "Deployment", "secret", ""},
+	{226, "volumes.scaleIO.secretRef", "Pod", "apps/secrets", ""},
+	{247, "volumes.storageos.secretRef", "Pod", "secret", ""},
+}
+
+// TestFuzzSeedSelectors pins the arithmetic behind fuzzSoleReferenceSeeds
+// and the kind-less / secrets-source seeds used by FuzzIncidentRedaction.
+func TestFuzzSeedSelectors(t *testing.T) {
+	seen := map[string]bool{}
+	for _, s := range fuzzSoleReferenceSeeds {
+		shape := fuzzShapeNames[fuzzShape(s.sel)]
+		kind := fuzzKinds[int(s.sel)%len(fuzzKinds)]
+		source := fuzzSourceFor(s.sel)
+		if shape != s.shape || kind != s.kind || source != s.source {
+			t.Errorf("seed %d: computes to shape=%q kind=%q source=%q; table says %q %q %q", s.sel, shape, kind, source, s.shape, s.kind, s.source)
+		}
+		if fuzzIsSecretsSource(source) || kind == "Secret" {
+			t.Errorf("seed %d: not a sole-reference seed (kind=%q source=%q)", s.sel, kind, source)
+		}
+		if kind == "Pod" {
+			seen[shape] = true
+		}
+	}
+	for _, name := range fuzzShapeNames {
+		if !seen[name] {
+			t.Errorf("shape %q has no Pod sole-reference seed", name)
+		}
+	}
+	// Kind-less and secrets-source seeds, as FuzzIncidentRedaction adds them.
+	for sel, want := range map[uint8][2]string{27: {"", " Secrets "}, 34: {"", "apps/secrets"}, 3: {"CronJob", " Secrets "}, 66: {"CronJob", "v1/secrets"}} {
+		kind := fuzzKinds[int(sel)%len(fuzzKinds)]
+		if source := fuzzSourceFor(sel); kind != want[0] || source != want[1] {
+			t.Errorf("seed %d: kind=%q source=%q; want %q %q", sel, kind, source, want[0], want[1])
+		}
+	}
+}
+
 func fuzzSourceFor(kindSel uint8) string {
 	if kindSel%3 == 0 {
 		return fuzzSecretSources[int(kindSel/3)%len(fuzzSecretSources)]
@@ -130,29 +209,48 @@ func fuzzObject(kindSel uint8, a, b, c string, raw []byte, planted bool) (obj ma
 		"volumes":    []any{map[string]any{"name": a, "projected": map[string]any{"sources": []any{}}}},
 	}
 	if planted {
-		// Exactly one Secret reference is planted, selected by the top three
-		// bits of kindSel, so each shape is the sole deciding reference and a
-		// detection gap for that shape fails the oracle.
+		// Exactly one Secret reference is planted, selected by fuzzShape, so
+		// each shape is the sole deciding reference and a detection gap for
+		// that shape fails the oracle. The raw-spec merge above never writes
+		// the pod-spec locations, so nothing else can reference a Secret.
 		secretRef = true
-		switch kindSel >> 5 {
-		case 0: // env[].valueFrom.secretKeyRef
-			container["env"] = append(container["env"].([]any), map[string]any{"name": c, "valueFrom": map[string]any{
-				"secretKeyRef": map[string]any{"name": a, "key": fuzzCanaryKey},
-			}})
+		keyRefEnv := map[string]any{"name": c, "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": a, "key": fuzzCanaryKey}}}
+		secretRefVolume := func(source string) []any {
+			return []any{map[string]any{"name": a, source: map[string]any{"secretRef": map[string]any{"name": fuzzCanary}}}}
+		}
+		switch fuzzShape(kindSel) {
+		case 0: // containers[].env[].valueFrom.secretKeyRef
+			container["env"] = append(container["env"].([]any), keyRefEnv)
 		case 1: // volumes[].secret
 			podSpec["volumes"] = []any{map[string]any{"name": a, "secret": map[string]any{"secretName": fuzzCanary}}}
 		case 2: // volumes[].csi.nodePublishSecretRef
 			podSpec["volumes"] = []any{map[string]any{"name": a, "csi": map[string]any{"driver": b, "nodePublishSecretRef": map[string]any{"name": fuzzCanary}}}}
 		case 3: // volumes[].rbd.secretRef
-			podSpec["volumes"] = []any{map[string]any{"name": a, "rbd": map[string]any{"monitors": []any{b}, "secretRef": map[string]any{"name": fuzzCanary}}}}
+			podSpec["volumes"] = secretRefVolume("rbd")
 		case 4: // volumes[].azureFile.secretName
 			podSpec["volumes"] = []any{map[string]any{"name": a, "azureFile": map[string]any{"secretName": fuzzCanary, "shareName": c}}}
 		case 5: // volumes[].projected.sources[].secret
 			podSpec["volumes"] = []any{map[string]any{"name": a, "projected": map[string]any{"sources": []any{map[string]any{"secret": map[string]any{"name": fuzzCanary}}}}}}
 		case 6: // imagePullSecrets
 			podSpec["imagePullSecrets"] = []any{map[string]any{"name": fuzzCanary}}
-		case 7: // envFrom[].secretRef on an init container
+		case 7: // initContainers[].envFrom[].secretRef
 			podSpec["initContainers"] = []any{map[string]any{"name": c, "image": b, "envFrom": []any{map[string]any{"secretRef": map[string]any{"name": fuzzCanary}}}}}
+		case 8: // ephemeralContainers[].env[].valueFrom.secretKeyRef
+			podSpec["ephemeralContainers"] = []any{map[string]any{"name": c, "image": b, "env": []any{keyRefEnv}}}
+		case 9: // containers[].envFrom[].secretRef
+			container["envFrom"] = []any{map[string]any{"secretRef": map[string]any{"name": fuzzCanary}}}
+		case 10:
+			podSpec["volumes"] = secretRefVolume("cinder")
+		case 11:
+			podSpec["volumes"] = secretRefVolume("cephfs")
+		case 12:
+			podSpec["volumes"] = secretRefVolume("flexVolume")
+		case 13:
+			podSpec["volumes"] = secretRefVolume("iscsi")
+		case 14:
+			podSpec["volumes"] = secretRefVolume("scaleIO")
+		case 15:
+			podSpec["volumes"] = secretRefVolume("storageos")
 		}
 	}
 
@@ -234,26 +332,18 @@ func FuzzIncidentRedaction(f *testing.F) {
 	f.Add(uint8(2), strings.Repeat("\x00", 5000), "ns", "x", []byte(""), uint16(0), false)
 	f.Add(uint8(1), "api", "payments", "api", deploymentYAML, uint16(1), true)
 	f.Add(uint8(2), "api-1", "payments", strings.Repeat("é", 300), podProjectedYAML, uint16(200), false)
-	f.Add(uint8(0x42), "p", "ns", "x", []byte("spec:\n  replicas: oops\n  selector: [1]\n"), uint16(0), true)
+	f.Add(uint8(66), "p", "ns", "x", []byte("spec:\n  replicas: oops\n  selector: [1]\n"), uint16(0), true) // CronJob with source v1/secrets
 
-	// Sole-reference seeds. kindSel>>5 picks the planted shape, kindSel%7
-	// the kind, and kindSel%3 != 0 selects a non-secrets source, so the
-	// planted volume field is the only thing that can mark the object
-	// derived. Arithmetic is spelled out so a wrong selector is visible.
-	f.Add(uint8(0x25), "api-1", "payments", "x", []byte(""), uint16(0), true)       // 37: shape 1 secret volume; 37%7=2 Pod; 37%3=1 widgets
-	f.Add(uint8(0x41), "api-1", "payments", "x", podProjectedYAML, uint16(0), true) // 65: shape 2 csi.nodePublishSecretRef; 65%7=2 Pod; 65%3=2 pods
-	f.Add(uint8(0x64), "api-1", "payments", "x", []byte(""), uint16(0), true)       // 100: shape 3 rbd.secretRef; 100%7=2 Pod; 100%3=1 pods
-	f.Add(uint8(0x80), "api-1", "payments", "x", []byte(""), uint16(0), true)       // 128: shape 4 azureFile.secretName; 128%7=2 Pod; 128%3=2 "secret" (singular, not a Secret source)
-	f.Add(uint8(0xA3), "api-1", "payments", "x", []byte(""), uint16(0), true)       // 163: shape 5 projected secret source; 163%7=2 Pod; 163%3=1 "secret"
-	f.Add(uint8(0xCD), "api-1", "payments", "x", []byte(""), uint16(0), true)       // 205: shape 6 imagePullSecrets; 205%7=2 Pod; 205%3=1 widgets
-	f.Add(uint8(0xE2), "api-1", "payments", "x", []byte(""), uint16(0), true)       // 226: shape 7 initContainer envFrom.secretRef; 226%7=2 Pod; 226%3=1 apps/secrets
-	f.Add(uint8(0x6A), "api", "payments", "x", deploymentYAML, uint16(0), true)     // 106: shape 3 rbd under spec.template; 106%7=1 Deployment; 106%3=1
-	f.Add(uint8(0x86), "api", "payments", "x", deploymentYAML, uint16(0), true)     // 134: shape 4 azureFile under spec.template; 134%7=1 Deployment; 134%3=2
-	f.Add(uint8(0x49), "nightly", "batch", "x", []byte(""), uint16(0), true)        // 73: shape 2 csi under spec.jobTemplate; 73%7=3 CronJob; 73%3=1
-	// Kind-less Secret selected by source alone: 27%7=6 (kind ""), 27%3=0 → " Secrets ".
+	// Sole-reference seeds: one per table row; TestFuzzSeedSelectors proves
+	// each row's shape, kind and source.
+	for _, s := range fuzzSoleReferenceSeeds {
+		f.Add(s.sel, "api-1", "payments", "x", []byte(s.raw), uint16(0), true)
+	}
+	// Kind-less Secret selected by source alone (27 → " Secrets ").
 	f.Add(uint8(27), "db-creds", "payments", "x", []byte(""), uint16(0), false)
-	// Non-secrets source with nothing planted: SecretDerived must be false.
-	f.Add(uint8(0x22), "api-1", "payments", "x", []byte(""), uint16(0), false) // 34: 34%7=6 kind ""; 34%3=1 pods
+	// Kind-less object with a non-secrets source (34 → "apps/secrets") and
+	// nothing planted: SecretDerived must be false.
+	f.Add(uint8(34), "api-1", "payments", "x", []byte(""), uint16(0), false)
 	f.Add(uint8(6), "k", "v", "z", []byte("spec:\n  template:\n    spec: null\n  jobTemplate: []\n"), uint16(0), true)
 	f.Add(uint8(2), "env", "data", "stringData", []byte(""), uint16(0), false)
 
@@ -355,7 +445,7 @@ func FuzzIncidentRedaction(f *testing.F) {
 		// does (the generator plants at most one reference and overwrites
 		// metadata and spec, so a raw shape cannot smuggle one in).
 		if wantDerived := secretRef || isSecretObj; meta.SecretDerived != wantDerived {
-			t.Fatalf("SecretDerived=%v, want %v (planted=%v shape=%d kind=%q source=%q)", meta.SecretDerived, wantDerived, secretRef, kindSel>>5, kind, source)
+			t.Fatalf("SecretDerived=%v, want %v (planted=%v shape=%s kind=%q source=%q)", meta.SecretDerived, wantDerived, secretRef, fuzzShapeNames[fuzzShape(kindSel)], kind, source)
 		}
 
 		// Envelope truthfulness and determinism.
