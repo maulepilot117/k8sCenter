@@ -43,6 +43,7 @@ jobs:
           - { pkg: ./internal/preferences/, target: FuzzValidateDashboardLayout }
           - { pkg: ./internal/changes/, target: FuzzCheckRollout }
           - { pkg: ./internal/changes/, target: FuzzReceiptRedaction }
+          - { pkg: ./internal/incidents/, target: FuzzIncidentRedaction }
     name: ${{ matrix.target }}
     defaults:
       run:
