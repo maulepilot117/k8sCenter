@@ -2,10 +2,8 @@ package store
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -257,49 +255,34 @@ type IncidentCursor struct {
 	ID        uuid.UUID
 }
 
-// Cursor decode bounds: the longest valid cursor ("<17 digits>:<36-char uuid>")
-// is well under maxIncidentCursorBytes decoded, and the timestamp bound
-// (2100-01-01T00:00:00Z) keeps a forged value from overflowing time.UnixMicro.
-const (
-	maxIncidentCursorBytes  = 80
-	maxIncidentCursorMicros = int64(4102444800000000)
-)
+// maxIncidentCursorBytes caps the decoded cursor: the longest valid one
+// ("<16 digits>:<36-char uuid>") is well under it. The timestamp bound is the
+// shared maxCursorMicros.
+const maxIncidentCursorBytes = 80
 
-// EncodeIncidentCursor renders a cursor as unpadded base64url over
-// "<created_at unix microseconds>:<id>". Microseconds match TIMESTAMPTZ
-// resolution, so a round trip reproduces the stored value exactly.
+// EncodeIncidentCursor renders a cursor in the shared keyset form
+// (encodeMicrosCursor) over "<created_at unix microseconds>:<id>".
 //
 // The cursor is deliberately not signed: it carries no authority. ListVisible
 // pins the caller's identity in its WHERE clause, so a forged cursor can only
 // move the caller's window among incidents they can already list.
 func EncodeIncidentCursor(c IncidentCursor) string {
-	raw := strconv.FormatInt(c.CreatedAt.UnixMicro(), 10) + ":" + c.ID.String()
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+	return encodeMicrosCursor(c.CreatedAt, c.ID.String())
 }
 
-// DecodeIncidentCursor parses a cursor produced by EncodeIncidentCursor. Every
-// malformed input returns ErrInvalidIncidentCursor.
+// DecodeIncidentCursor parses a cursor produced by EncodeIncidentCursor. The
+// id must be a non-nil UUID in canonical lowercase form. Every malformed input
+// returns ErrInvalidIncidentCursor.
 func DecodeIncidentCursor(s string) (IncidentCursor, error) {
-	if s == "" || base64.RawURLEncoding.DecodedLen(len(s)) > maxIncidentCursorBytes {
-		return IncidentCursor{}, ErrInvalidIncidentCursor
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil || !utf8.Valid(raw) {
-		return IncidentCursor{}, ErrInvalidIncidentCursor
-	}
-	microsText, idText, ok := strings.Cut(string(raw), ":")
-	if !ok || strings.Contains(idText, ":") {
-		return IncidentCursor{}, ErrInvalidIncidentCursor
-	}
-	micros, err := strconv.ParseInt(microsText, 10, 64)
-	if err != nil || micros < 0 || micros > maxIncidentCursorMicros {
+	at, idText, ok := decodeMicrosCursor(s, maxIncidentCursorBytes)
+	if !ok {
 		return IncidentCursor{}, ErrInvalidIncidentCursor
 	}
 	id, err := uuid.Parse(idText)
 	if err != nil || id == uuid.Nil || id.String() != idText {
 		return IncidentCursor{}, ErrInvalidIncidentCursor
 	}
-	return IncidentCursor{CreatedAt: time.UnixMicro(micros).UTC(), ID: id}, nil
+	return IncidentCursor{CreatedAt: at, ID: id}, nil
 }
 
 // ---------------------------------------------------------------------------

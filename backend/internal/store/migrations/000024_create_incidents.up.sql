@@ -3,6 +3,10 @@
 -- re-checks the caller's CURRENT Kubernetes authorization for each evidence
 -- item's stored scope (a grant alone never suffices). 30-day configurable
 -- retention. Stricter gating for Secret-derived evidence.
+-- Every statement must stay re-runnable (CREATE ... IF NOT EXISTS with
+-- constraints inline, COMMENT ON): the NOTES.txt (000024) rollback procedure
+-- resets the recorded version to 23 and relies on a later roll-forward
+-- re-running this file over the tables it left in place.
 
 CREATE TABLE IF NOT EXISTS incidents (
     id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),

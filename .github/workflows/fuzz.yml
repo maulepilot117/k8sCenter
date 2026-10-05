@@ -35,6 +35,7 @@ jobs:
           - { pkg: ./internal/externalsecrets/, target: FuzzExternalSecretsNormalizers }
           - { pkg: ./internal/externalsecrets/, target: FuzzESOHistoryProjection }
           - { pkg: ./internal/store/, target: FuzzDecodeESOHistoryCursor }
+          - { pkg: ./internal/store/, target: FuzzDecodeIncidentCursor }
           - { pkg: ./internal/gateway/, target: FuzzGatewayNormalizers }
           - { pkg: ./internal/gitops/, target: FuzzOwnershipEvidence }
           - { pkg: ./internal/velero/, target: FuzzVeleroParsers }

@@ -26,10 +26,15 @@ import (
 	"io/fs"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -378,6 +383,39 @@ func TestMigration000024_UpAndDownAreWellFormed(t *testing.T) {
 	}
 	if want := []string{"000024_create_incidents.up.sql"}; !reflect.DeepEqual(creators, want) {
 		t.Errorf("migrations creating incidents = %v; want %v", creators, want)
+	}
+}
+
+// TestMigration000024_EveryUpStatementIsRerunnable pins what the NOTES.txt
+// (000024) rollback procedure relies on: after the recorded version is reset
+// to 23, a roll-forward re-runs this file over the existing tables, so each
+// statement must be a no-op the second time.
+func TestMigration000024_EveryUpStatementIsRerunnable(t *testing.T) {
+	var body []string
+	for _, line := range strings.Split(incidentMigration(t, "up"), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+			body = append(body, line)
+		}
+	}
+	allowed := []string{
+		"CREATE TABLE IF NOT EXISTS ",
+		"CREATE INDEX IF NOT EXISTS ",
+		"CREATE UNIQUE INDEX IF NOT EXISTS ",
+		"COMMENT ON TABLE ",
+	}
+	statements := 0
+	for _, stmt := range strings.Split(strings.Join(body, "\n"), ";\n") {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		statements++
+		if !slices.ContainsFunc(allowed, func(p string) bool { return strings.HasPrefix(stmt, p) }) {
+			t.Errorf("000024 statement is not re-runnable: %.80q", stmt)
+		}
+	}
+	if statements < len(incidentTables)*2 {
+		t.Fatalf("parsed only %d statements from the 000024 up file; the splitter is broken", statements)
 	}
 }
 
@@ -803,18 +841,34 @@ func TestIncidentStore_NoteMutationsCannotCrossIncidents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Give noteB a revision history through its own incident, so the
+	// cross-incident revision read below has something it could leak.
+	if _, err := s.UpdateNote(ctx, incidentB, noteB.ID, owner, "v2", 1); err != nil {
+		t.Fatalf("UpdateNote through B: %v", err)
+	}
 
 	// The note's own author, authorized on A, addresses B's note through A.
-	if _, err := s.UpdateNote(ctx, incidentA, noteB.ID, owner, "via A", 1); !errors.Is(err, ErrNoteNotFound) {
+	if _, err := s.UpdateNote(ctx, incidentA, noteB.ID, owner, "via A", 2); !errors.Is(err, ErrNoteNotFound) {
 		t.Errorf("UpdateNote through the wrong incident = %v; want ErrNoteNotFound", err)
 	}
 	if err := s.DeleteNote(ctx, incidentA, noteB.ID, owner); !errors.Is(err, ErrNoteNotFound) {
 		t.Errorf("DeleteNote through the wrong incident = %v; want ErrNoteNotFound", err)
 	}
-	if _, err := s.ListNoteRevisions(ctx, incidentA, noteB.ID); err != nil {
+	viaA, err := s.ListNoteRevisions(ctx, incidentA, noteB.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if n := countRows(t, pool, `SELECT COUNT(*) FROM incident_notes WHERE id = $1 AND body = 'B''s note' AND revision = 1`, noteB.ID); n != 1 {
+	if len(viaA) != 0 {
+		t.Errorf("ListNoteRevisions through incident A returned %d of B's revisions; want 0", len(viaA))
+	}
+	viaB, err := s.ListNoteRevisions(ctx, incidentB, noteB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(viaB) != 1 || viaB[0].Body != "B's note" {
+		t.Errorf("ListNoteRevisions through incident B = %+v; want the one prior body", viaB)
+	}
+	if n := countRows(t, pool, `SELECT COUNT(*) FROM incident_notes WHERE id = $1 AND body = 'v2' AND revision = 2`, noteB.ID); n != 1 {
 		t.Error("B's note was modified through incident A")
 	}
 	if _, err := s.UpdateNote(ctx, incidentB, uuid.New(), owner, "x", 1); !errors.Is(err, ErrNoteNotFound) {
@@ -1210,5 +1264,253 @@ func TestMigration000024_RoundTripLeavesOtherTablesIntact(t *testing.T) {
 	// Re-applying after a rollback works (the down leaves nothing behind).
 	if err := m.Migrate(24); err != nil {
 		t.Fatalf("re-applying 000024 after rollback: %v", err)
+	}
+}
+
+// olderBinaryMigrator returns a migrator whose embedded source stops at
+// maxVersion, which is what the runner inside an older backend image sees,
+// pointed at the same database as pool.
+func olderBinaryMigrator(t *testing.T, pool *pgxpool.Pool, maxVersion uint64) *migrate.Migrate {
+	t.Helper()
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	truncated := fstest.MapFS{}
+	for _, e := range entries {
+		seq, _, ok := strings.Cut(e.Name(), "_")
+		if !ok || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		v, err := strconv.ParseUint(seq, 10, 64)
+		if err != nil || v > maxVersion {
+			continue
+		}
+		b, err := fs.ReadFile(migrationsFS, "migrations/"+e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		truncated["migrations/"+e.Name()] = &fstest.MapFile{Data: b}
+	}
+	source, err := iofs.New(truncated, "migrations")
+	if err != nil {
+		t.Fatalf("creating truncated migration source: %v", err)
+	}
+	m, err := migrate.NewWithSourceInstance("iofs", source, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("creating older-binary migrator: %v", err)
+	}
+	t.Cleanup(func() { m.Close() })
+	return m
+}
+
+// TestMigration000024_DocumentedRollbackKeepsDataAndRollsForward walks the
+// NOTES.txt (000024) rollback procedure on a scratch database: an older
+// binary's runner refuses a database recorded at 24; after the documented
+// version reset it starts cleanly with the incident tables left in place; and
+// a later roll-forward re-runs 000024 over the existing tables without error
+// or data loss (every statement in the up file is re-runnable).
+func TestMigration000024_DocumentedRollbackKeepsDataAndRollsForward(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+
+	if err := m.Migrate(24); err != nil {
+		t.Fatalf("migrating to 000024: %v", err)
+	}
+	s := NewIncidentStore(pool)
+	id, err := s.Create(ctx, IncidentRow{OwnerID: "o", Title: "kept", WindowStart: time.Now(), RetentionDaysAtCapture: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	note, err := s.CreateNote(ctx, id, "o", "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateNote(ctx, id, note.ID, "o", "n2", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// The failure the procedure exists to avoid: an image built before 000024
+	// cannot run its migrations against a database recorded at version 24.
+	older := olderBinaryMigrator(t, pool, 23)
+	if err := older.Up(); err == nil || errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("older runner against version 24 = %v; want a hard error (the reason for the documented reset)", err)
+	}
+
+	// The documented step, run before deploying the older image.
+	if _, err := pool.Exec(ctx, `UPDATE schema_migrations SET version = 23, dirty = false`); err != nil {
+		t.Fatal(err)
+	}
+	if err := older.Up(); !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("older runner after the version reset = %v; want ErrNoChange (a clean start)", err)
+	}
+	for _, table := range incidentTables {
+		if !tableExists(t, pool, table) {
+			t.Errorf("table %s was removed by the rollback procedure; it must be left in place", table)
+		}
+	}
+
+	// Roll forward with the current binary's runner: 000024 runs again over
+	// the tables it already created.
+	if err := m.Migrate(24); err != nil {
+		t.Fatalf("roll-forward re-running 000024 over existing tables: %v", err)
+	}
+	version, dirty, err := m.Version()
+	if err != nil || dirty || version != 24 {
+		t.Fatalf("after roll-forward version=%d dirty=%v err=%v; want 24, clean", version, dirty, err)
+	}
+	got, err := s.Get(ctx, id)
+	if err != nil || got == nil || got.Title != "kept" {
+		t.Fatalf("incident after rollback and roll-forward = (%+v, %v); want it intact", got, err)
+	}
+	revs, err := s.ListNoteRevisions(ctx, id, note.ID)
+	if err != nil || len(revs) != 1 || revs[0].Body != "n1" {
+		t.Fatalf("note history after rollback and roll-forward = (%+v, %v); want the one prior body", revs, err)
+	}
+	for _, idx := range incidentIndexes {
+		if !indexExists(t, pool, idx) {
+			t.Errorf("index %s missing after roll-forward", idx)
+		}
+	}
+}
+
+// noteLockRendezvous holds the first UpdateNote transaction that reads the
+// note row until a second transaction has also read it (or a timeout passes),
+// so two editors overlap deterministically. It keys on the read itself, not on
+// FOR UPDATE, so it still synchronizes if the lock clause is removed.
+type noteLockRendezvous struct {
+	mu     sync.Mutex
+	reads  int
+	second chan struct{}
+}
+
+func (r *noteLockRendezvous) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (r *noteLockRendezvous) TraceQueryEnd(_ context.Context, _ *pgx.Conn, d pgx.TraceQueryEndData) {
+	if d.Err != nil || !strings.Contains(d.CommandTag.String(), "SELECT") {
+		return
+	}
+	r.mu.Lock()
+	r.reads++
+	n := r.reads
+	r.mu.Unlock()
+	switch n {
+	case 1:
+		select {
+		case <-r.second:
+		case <-time.After(750 * time.Millisecond):
+		}
+	case 2:
+		close(r.second)
+	}
+}
+
+func TestIncidentStore_ConcurrentUpdateNoteYieldsOneWinnerOneConflict(t *testing.T) {
+	setup := testDB(t)
+	s := NewIncidentStore(setup)
+	owner := testOwnerID(t)
+	incident := mustCreateIncident(t, s, newIncident(owner, "t"))
+	note, err := s.CreateNote(t.Context(), incident, owner, "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The traced pool is used only by the two racing edits, so its SELECTs
+	// are exactly their note reads.
+	rv := &noteLockRendezvous{second: make(chan struct{})}
+	raced := NewIncidentStore(testDBWithOptions(t, 4, func(c *pgxpool.Config) { c.ConnConfig.Tracer = rv }))
+
+	var (
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+		results = make([]error, 2)
+	)
+	for i := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, results[i] = raced.UpdateNote(t.Context(), incident, note.ID, owner, "edit "+strconv.Itoa(i), 1)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	var wins, conflicts int
+	for _, err := range results {
+		var conflict *NoteRevisionConflictError
+		switch {
+		case err == nil:
+			wins++
+		case errors.As(err, &conflict) && conflict.Current == 2:
+			conflicts++
+		default:
+			t.Errorf("racing UpdateNote returned %v; want success or a revision conflict at current 2", err)
+		}
+	}
+	if wins != 1 || conflicts != 1 {
+		t.Fatalf("wins=%d conflicts=%d; want exactly one of each", wins, conflicts)
+	}
+	revs, err := s.ListNoteRevisions(t.Context(), incident, note.ID)
+	if err != nil || len(revs) != 1 || revs[0].Body != "v1" {
+		t.Errorf("revisions = (%+v, %v); want exactly the v1 body", revs, err)
+	}
+}
+
+func TestIncidentStore_CleanupHonoursRetentionDays(t *testing.T) {
+	s, pool := newIncidentStore(t)
+	ctx := t.Context()
+	owner := testOwnerID(t)
+	forty := mustCreateIncident(t, s, newIncident(owner, "40 days"))
+	inside := mustCreateIncident(t, s, newIncident(owner, "29 days"))
+	for id, age := range map[uuid.UUID]string{forty: "40 days", inside: "29 days"} {
+		if _, err := pool.Exec(ctx, `UPDATE incidents SET created_at = NOW() - $2::interval WHERE id = $1`, id, age); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := s.Cleanup(ctx, 60); err != nil {
+		t.Fatal(err)
+	}
+	mustGetIncident(t, s, forty)
+	mustGetIncident(t, s, inside)
+
+	if _, err := s.Cleanup(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get(ctx, forty); got != nil || err != nil {
+		t.Errorf("40-day-old incident after a 30-day sweep = (%v, %v); want deleted", got, err)
+	}
+	mustGetIncident(t, s, inside)
+	if err := s.Delete(ctx, inside, owner); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIncidentStore_ListVisibleFullFinalPageEndsWithEmptyPage(t *testing.T) {
+	s, _ := newIncidentStore(t)
+	ctx := t.Context()
+	owner := testOwnerID(t)
+	for i := range 4 {
+		mustCreateIncident(t, s, newIncident(owner, "row "+strconv.Itoa(i)))
+	}
+
+	first, cursor, err := s.ListVisible(ctx, owner, 2, "")
+	if err != nil || len(first) != 2 || cursor == "" {
+		t.Fatalf("page 1 = %d rows, cursor %q, err %v; want 2 rows and a cursor", len(first), cursor, err)
+	}
+	second, cursor, err := s.ListVisible(ctx, owner, 2, cursor)
+	if err != nil || len(second) != 2 || cursor == "" {
+		t.Fatalf("page 2 = %d rows, cursor %q, err %v; want 2 rows and a cursor (a full page may have more)", len(second), cursor, err)
+	}
+	third, cursor, err := s.ListVisible(ctx, owner, 2, cursor)
+	if err != nil || len(third) != 0 || cursor != "" {
+		t.Fatalf("page 3 = %d rows, cursor %q, err %v; want an empty page and no cursor", len(third), cursor, err)
+	}
+	if ids := incidentIDs(append(first, second...)); len(slices.Compact(slices.SortedFunc(slices.Values(ids),
+		func(x, y uuid.UUID) int { return strings.Compare(x.String(), y.String()) }))) != 4 {
+		t.Errorf("pages 1 and 2 = %v; want 4 distinct incidents", ids)
 	}
 }

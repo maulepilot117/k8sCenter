@@ -451,7 +451,8 @@ owner_id is not a local_users foreign key:
   hold auth.User.ID (provider-qualified TEXT, the nc_reads.user_id
   precedent). Deleting a local user does NOT delete their incidents, notes or
   grants; those rows stay until the incident is deleted or expires. The
-  inspection query below finds incidents still owned by a removed account.
+  per-owner inspection query below lists incidents per owner so a removed
+  account's rows can be identified.
 
 Retention (operator footgun 1):
   Retention is configured by KUBECENTER_INCIDENTS_RETENTIONDAYS (wired by
@@ -466,13 +467,36 @@ Retention (operator footgun 1):
   object it describes, or revoking someone's access never deletes it.
 
 Rollback (operator footgun 2):
-  To roll the backend back, deploy the older image and LEAVE these tables in
-  place; a binary older than 000024 never reads them. Running the down
-  migration destroys every incident, its evidence, notes, note revisions and
-  grants. There is no export-on-rollback path: anything worth keeping must be
-  exported through the application before the down file is run.
+  Do NOT just deploy the older image. Its startup migration runner sees
+  version 24 recorded with no embedded 000024 file and fails with "no
+  migration found for version 24" (not "no change"); the backend then starts
+  with no database. The procedure is:
+    1. LEAVE the incident tables in place.
+    2. BEFORE deploying the older image, reset the recorded version:
+         UPDATE schema_migrations SET version = 23, dirty = false;
+       (or, with the golang-migrate CLI, `migrate ... force 23`).
+    3. Deploy the older image. It starts cleanly and never reads the
+       incident tables.
+  A later roll-forward to an image that includes 000024 re-runs the 000024
+  up file over the tables left in place. That is harmless: every statement
+  in it is CREATE TABLE / CREATE INDEX ... IF NOT EXISTS (constraints are
+  inline, so they are skipped with their table) or COMMENT ON, which is
+  idempotent; existing rows are kept.
+  TestMigration000024_DocumentedRollbackKeepsDataAndRollsForward walks this
+  procedure end to end.
+
+  Running the down migration instead destroys every incident, its evidence,
+  notes, note revisions and grants. There is no export-on-rollback path and,
+  until the incident export endpoint ships (Release D U23b), no export path
+  at all.
 
 Inspect incidents:
-  SELECT id, owner_id, cluster_id, created_at, evidence_count, evidence_bytes
-    FROM incidents
-   ORDER BY created_at;
+  Per owner (identifies a removed account's rows):
+    SELECT owner_id, COUNT(*), MIN(created_at), MAX(created_at)
+      FROM incidents
+     GROUP BY owner_id
+     ORDER BY owner_id;
+  Per incident:
+    SELECT id, owner_id, cluster_id, created_at, evidence_count, evidence_bytes
+      FROM incidents
+     ORDER BY created_at;
