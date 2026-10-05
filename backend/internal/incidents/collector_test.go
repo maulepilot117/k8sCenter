@@ -32,6 +32,7 @@ import (
 	dynfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	kfake "k8s.io/client-go/kubernetes/fake"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -91,22 +92,18 @@ func blockingSource(id string) Source {
 	}}
 }
 
-// steadySource finishes after d unless ctx is already over or ends first,
-// in which case it fails: it is the sibling that must survive another
+// steadySource completes unless it is handed a context that is already
+// over, in which case it fails: it is the sibling that must survive another
 // source's trouble. Queued behind that source under MaxConcurrency 1, it
 // starts after the trouble happened, so a group whose context a failure
-// cancelled would hand it a dead context.
-func steadySource(id string, d time.Duration, items ...Evidence) Source {
+// cancelled (or a source context shared with the trouble) would hand it a
+// dead context. It does no timed work, so a slow runner cannot flip it.
+func steadySource(id string, items ...Evidence) Source {
 	return stubSource{id: id, fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
 		if err := ctx.Err(); err != nil {
 			return SourceResult{}, fmt.Errorf("steady source started cancelled: %w", err)
 		}
-		select {
-		case <-time.After(d):
-			return SourceResult{Items: items, Completeness: CompletenessComplete}, nil
-		case <-ctx.Done():
-			return SourceResult{}, fmt.Errorf("steady source interrupted: %w", ctx.Err())
-		}
+		return SourceResult{Items: items, Completeness: CompletenessComplete}, nil
 	}}
 }
 
@@ -117,11 +114,50 @@ func serialLimits() Limits {
 	return l
 }
 
+// testLimits gives every source a deadline no test runner can reach, so a
+// test that asserts what a source fetched (a page count, the newest event)
+// never depends on how fast the runner is (go test -race on a loaded CI
+// host is several times slower than a local run). A test about a deadline
+// sets its own short timeout and drives the expiry deterministically: a
+// source that waits on its context, or a sleep that starts after the
+// deadline was armed and outlasts it.
 func testLimits() Limits {
 	l := DefaultLimits()
-	l.SourceTimeout = 40 * time.Millisecond
-	l.CaptureTimeout = 3 * time.Second
+	l.SourceTimeout = 30 * time.Second
+	l.CaptureTimeout = time.Minute
 	return l
+}
+
+// captureTimeoutCut is the capture deadline for tests that need it to pass
+// while a context-ignoring source is stuck. It is short enough to keep the
+// tests quick and long enough that a source which returns at once has
+// reported before it on any runner.
+const captureTimeoutCut = 250 * time.Millisecond
+
+// captureWithin runs Capture and fails the test if it has not returned
+// within d: the hard-deadline tests would otherwise hang until the package
+// timeout when the deadline is not enforced.
+func captureWithin(t *testing.T, c *Collector, req CaptureRequest, d time.Duration) CaptureReport {
+	t.Helper()
+	type result struct {
+		rep CaptureReport
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		rep, err := c.Capture(context.Background(), req)
+		done <- result{rep, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Capture: %v", r.err)
+		}
+		return r.rep
+	case <-time.After(d):
+		t.Fatalf("Capture did not return within %s: the capture deadline is not enforced", d)
+		return CaptureReport{}
+	}
 }
 
 func newTestCollector(t *testing.T, limits Limits, sources ...Source) *Collector {
@@ -183,13 +219,18 @@ func (f fakeClients) DynamicClientForUser(string, []string) (dynamic.Interface, 
 
 // eventPager makes a typed fake honour Limit and Continue in name order, as
 // the apiserver does (so a naive Limit keeps the OLDEST events), and records
-// every list call's field selector.
+// every list call's field selector. A namespace's events are read from the
+// tracker and sorted once, on that namespace's first list; each page then
+// copies only its own slice (the continue token is the offset), so a page
+// costs O(page) however many events the fixture holds. The snapshot is
+// frozen at that first list: fixtures add every event before it, and an
+// event added later would not be seen.
 type eventPager struct {
 	mu        sync.Mutex
 	selectors []string
 	pages     int
-	expireAt  int           // 1-based page whose continue token has expired (0: never)
-	delay     time.Duration // per-page latency
+	expireAt  int                       // 1-based page whose continue token has expired (0: never)
+	sorted    map[string][]corev1.Event // namespace -> events in name order
 }
 
 func installEventPaging(cs *kfake.Clientset) *eventPager {
@@ -199,18 +240,15 @@ func installEventPaging(cs *kfake.Clientset) *eventPager {
 		p.mu.Lock()
 		p.selectors = append(p.selectors, la.ListOptions.FieldSelector)
 		p.pages++
-		page, expireAt, delay := p.pages, p.expireAt, p.delay
+		page, expireAt := p.pages, p.expireAt
 		p.mu.Unlock()
-		time.Sleep(delay)
 		if expireAt > 0 && page == expireAt {
 			return true, nil, apierrors.NewResourceExpired("The provided continue parameter is too old")
 		}
-		obj, err := cs.Tracker().List(corev1.SchemeGroupVersion.WithResource("events"), corev1.SchemeGroupVersion.WithKind("Event"), la.GetNamespace())
+		all, err := p.snapshot(cs, la.GetNamespace())
 		if err != nil {
 			return true, nil, err
 		}
-		all := obj.(*corev1.EventList).Items
-		sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
 		offset := 0
 		if la.ListOptions.Continue != "" {
 			offset, _ = strconv.Atoi(la.ListOptions.Continue)
@@ -220,13 +258,37 @@ func installEventPaging(cs *kfake.Clientset) *eventPager {
 			limit = len(all)
 		}
 		end := min(offset+limit, len(all))
-		out := &corev1.EventList{Items: all[offset:end]}
+		out := &corev1.EventList{Items: make([]corev1.Event, 0, end-offset)}
+		for i := offset; i < end; i++ {
+			out.Items = append(out.Items, *all[i].DeepCopy())
+		}
 		if end < len(all) {
 			out.Continue = strconv.Itoa(end)
 		}
 		return true, out, nil
 	})
 	return p
+}
+
+// snapshot returns the namespace's events in name order, reading and
+// sorting the tracker only on that namespace's first list.
+func (p *eventPager) snapshot(cs *kfake.Clientset, namespace string) ([]corev1.Event, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if evs, ok := p.sorted[namespace]; ok {
+		return evs, nil
+	}
+	obj, err := cs.Tracker().List(corev1.SchemeGroupVersion.WithResource("events"), corev1.SchemeGroupVersion.WithKind("Event"), namespace)
+	if err != nil {
+		return nil, err
+	}
+	evs := obj.(*corev1.EventList).Items
+	sort.Slice(evs, func(i, j int) bool { return evs[i].Name < evs[j].Name })
+	if p.sorted == nil {
+		p.sorted = make(map[string][]corev1.Event)
+	}
+	p.sorted[namespace] = evs
+	return evs, nil
 }
 
 // countingGets records every dynamic GET the adapters issue.
@@ -237,6 +299,61 @@ func countingGets(dyn *dynfake.FakeDynamicClient) *atomic.Int32 {
 		return false, nil, nil
 	})
 	return &n
+}
+
+// deadlineEvents wraps a clientset so one event list call (1-based) meets
+// its context's end the way a real client does, with no wall-clock race:
+// failAt waits for the context to end and fails with its error (the
+// apiserver was still answering when the deadline hit); holdPageAt fetches
+// its page and returns it only once the context has ended (the page arrived
+// as the deadline hit). Calls after the deadline reach the fake unchanged.
+type deadlineEvents struct {
+	kubernetes.Interface
+	failAt     int
+	holdPageAt int
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (d *deadlineEvents) CoreV1() typedcorev1.CoreV1Interface {
+	return deadlineCore{CoreV1Interface: d.Interface.CoreV1(), d: d}
+}
+
+type deadlineCore struct {
+	typedcorev1.CoreV1Interface
+	d *deadlineEvents
+}
+
+func (c deadlineCore) Events(namespace string) typedcorev1.EventInterface {
+	return deadlineEventList{EventInterface: c.CoreV1Interface.Events(namespace), d: c.d}
+}
+
+type deadlineEventList struct {
+	typedcorev1.EventInterface
+	d *deadlineEvents
+}
+
+func (d *deadlineEvents) listCalls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
+func (e deadlineEventList) List(ctx context.Context, opts metav1.ListOptions) (*corev1.EventList, error) {
+	e.d.mu.Lock()
+	e.d.calls++
+	call := e.d.calls
+	e.d.mu.Unlock()
+	if call == e.d.failAt {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	list, err := e.EventInterface.List(ctx, opts)
+	if call == e.d.holdPageAt {
+		<-ctx.Done()
+	}
+	return list, err
 }
 
 // sarAccessChecker is a real AccessChecker whose SARs are answered by decide
@@ -409,11 +526,34 @@ func capture(t *testing.T, c *Collector, req CaptureRequest) CaptureReport {
 // ---------------------------------------------------------------------------
 
 func TestCaptureOneSourceTimeoutYieldsPartialAndKeepsOthers(t *testing.T) {
-	c := newTestCollector(t, serialLimits(),
-		completeSource("fast", completeItem("a")),
-		blockingSource("slow"),
-		steadySource("steady", 5*time.Millisecond, completeItem("b")),
-	)
+	// Only "slow" meets the short deadline, by waiting on its context.
+	// "fast" ignores its context, so its result stands however late it
+	// runs. "steady" must get a context of its own: it checks that its
+	// deadline was armed after slow saw slow's deadline pass, which a
+	// context shared with slow (or armed at capture start) cannot satisfy.
+	// It never compares the clock with its own deadline, so a scheduler
+	// stall on a slow runner cannot flip the outcome.
+	slowSaw := make(chan time.Time, 1)
+	slow := stubSource{id: "slow", fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
+		<-ctx.Done()
+		slowSaw <- time.Now()
+		return SourceResult{}, ctx.Err()
+	}}
+	steady := stubSource{id: "steady", fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
+		var sawAt time.Time
+		select {
+		case sawAt = <-slowSaw:
+		default:
+			return SourceResult{}, errors.New("steady ran before slow finished")
+		}
+		if deadline, ok := ctx.Deadline(); !ok || !deadline.After(sawAt) {
+			return SourceResult{}, errors.New("steady was handed a context armed before slow's deadline passed")
+		}
+		return SourceResult{Items: []Evidence{completeItem("b")}, Completeness: CompletenessComplete}, nil
+	}}
+	l := serialLimits()
+	l.SourceTimeout = 40 * time.Millisecond
+	c := newTestCollector(t, l, completeSource("fast", completeItem("a")), slow, steady)
 	rep := capture(t, c, localRequest())
 
 	if rep.Completeness != CompletenessPartial {
@@ -437,7 +577,7 @@ func TestCaptureOneSourceFailureNeverCancelsSiblings(t *testing.T) {
 		stubSource{id: "broken", fn: func(context.Context, CaptureRequest) (SourceResult, error) {
 			return SourceResult{}, errors.New("apiserver said no for " + testName)
 		}},
-		steadySource("steady", 5*time.Millisecond, completeItem("b")),
+		steadySource("steady", completeItem("b")),
 	)
 	rep := capture(t, c, localRequest())
 	if got := sourceReport(t, rep, "broken"); got.Completeness != CompletenessFailed || strings.Contains(got.Detail, testName) {
@@ -455,7 +595,7 @@ func TestCaptureOneSourcePanicIsRecoveredAndReportedFailed(t *testing.T) {
 			m["x"] = 1 // nil map write: a real adapter bug shape
 			return SourceResult{}, nil
 		}},
-		steadySource("steady", 5*time.Millisecond, completeItem("b")),
+		steadySource("steady", completeItem("b")),
 	)
 	rep := capture(t, c, localRequest())
 	if got := sourceReport(t, rep, "boom"); got.Completeness != CompletenessFailed {
@@ -1221,9 +1361,7 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 	})
 	t.Run("hard page ceiling flags more", func(t *testing.T) {
 		f := newAdapterFixture("100", mk(5200)...)
-		l := testLimits()
-		l.SourceTimeout = 10 * time.Second // the fake re-sorts 5200 objects per page
-		rep := capture(t, newTestCollector(t, l, f.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceEvents))
+		rep := capture(t, newTestCollector(t, testLimits(), f.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceEvents))
 		ev := itemsOfKind(rep.Items, EvidenceKindEventList, "")[0]
 		if f.pager.pages != 25 || !ev.Redaction.Truncated || ev.SourceObservedAt == nil || !ev.SourceObservedAt.Equal(now.Add(4999*time.Second)) {
 			t.Errorf("pages=%d truncated=%v observedAt=%v; want 25 pages, truncated, newest fetched event", f.pager.pages, ev.Redaction.Truncated, ev.SourceObservedAt)
@@ -1257,21 +1395,46 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 		}
 	})
 	t.Run("source deadline mid-paging keeps what was fetched", func(t *testing.T) {
-		f := newAdapterFixture("100", mk(1000)...)
-		f.pager.delay = 60 * time.Millisecond
-		l := testLimits()
-		l.SourceTimeout = 100 * time.Millisecond
-		rep := capture(t, newTestCollector(t, l, f.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceEvents))
-		got := sourceReport(t, rep, SourceEvents)
-		if got.Items != 1 || got.Completeness != CompletenessPartial {
-			t.Fatalf("events = %+v, want one (flagged) item, not a timeout", got)
-		}
-		ev := itemsOfKind(rep.Items, EvidenceKindEventList, "")[0]
-		if !ev.Redaction.Truncated || f.pager.pages >= 5 || f.pager.pages < 1 {
-			t.Errorf("truncated=%v pages=%d; want a flagged cut after fewer than all pages", ev.Redaction.Truncated, f.pager.pages)
-		}
-		if !strings.HasPrefix(got.Detail, detailListStopped) || strings.Contains(got.Detail, detailProjectionTooLarge) || ev.CompletenessDetail != got.Detail {
-			t.Errorf("details = %q / %q, want the deadline stop named and no size cut", got.Detail, ev.CompletenessDetail)
+		// The deadline is reached by waiting on the source context, never
+		// by racing a timer against the fake. The deadline is generous so
+		// everything before the stall finishes inside it on any runner, and
+		// the list-call count proves which branch ran: a run the deadline
+		// pre-empted before the stall fails rather than passing through the
+		// other branch.
+		for _, tc := range []struct {
+			name      string
+			stall     *deadlineEvents
+			wantCalls int
+		}{
+			{"while the next page is in flight", &deadlineEvents{failAt: 2}, 2},
+			{"as the first page arrives", &deadlineEvents{holdPageAt: 1}, 1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := newAdapterFixture("100", mk(1000)...)
+				tc.stall.Interface = f.typed
+				r, err := NewRedactor(DefaultMaxBytes)
+				if err != nil {
+					t.Fatal(err)
+				}
+				src := NewEventsSource(fakeClients{typed: tc.stall, dyn: f.dyn}, nil, resources.NewAlwaysAllowAccessChecker(), r, slog.Default())
+				l := testLimits()
+				l.SourceTimeout = time.Second
+				rep := capture(t, newTestCollector(t, l, src), localRequest(SourceEvents))
+				if n := tc.stall.listCalls(); n != tc.wantCalls {
+					t.Fatalf("event list calls = %d, want %d: the deadline did not land where this case puts it", n, tc.wantCalls)
+				}
+				got := sourceReport(t, rep, SourceEvents)
+				if got.Items != 1 || got.Completeness != CompletenessPartial || got.Detail != detailListStopped {
+					t.Fatalf("events = %+v, want one item, partial for the deadline stop only (not a timeout)", got)
+				}
+				ev := itemsOfKind(rep.Items, EvidenceKindEventList, "")[0]
+				if ev.CompletenessDetail != got.Detail || !ev.Redaction.Truncated {
+					t.Errorf("item = %q truncated=%v, want the deadline stop, flagged", ev.CompletenessDetail, ev.Redaction.Truncated)
+				}
+				if f.pager.pages != 1 || ev.SourceObservedAt == nil || !ev.SourceObservedAt.Equal(now.Add(199*time.Second)) {
+					t.Errorf("pages=%d observedAt=%v; want the first page only, its newest event", f.pager.pages, ev.SourceObservedAt)
+				}
+			})
 		}
 	})
 	t.Run("digest covers every fetched event", func(t *testing.T) {
@@ -1446,9 +1609,14 @@ func TestObjectSourceResolvesVersionThroughTheMapper(t *testing.T) {
 }
 
 func TestSARCutShortByTheSourceDeadlineIsTimedOut(t *testing.T) {
+	// Every SAR starts after its source's deadline was armed and sleeps
+	// three times past it, so the deadline has always passed when it
+	// answers, however slow the runner.
 	slow := sarAccessChecker(func(string, string, string) (bool, error) { return false, errors.New("too late") }, 120*time.Millisecond)
 	f := newAdapterFixture("100")
-	rep := capture(t, newTestCollector(t, testLimits(), f.sources(t, slow, DefaultMaxBytes)...), localRequest())
+	l := testLimits()
+	l.SourceTimeout = 40 * time.Millisecond
+	rep := capture(t, newTestCollector(t, l, f.sources(t, slow, DefaultMaxBytes)...), localRequest())
 	for _, s := range rep.Sources {
 		if s.Completeness != CompletenessTimedOut || s.Detail != detailTimedOut {
 			t.Errorf("%s = %+v, want timed_out (the deadline, not the check, decided)", s.ID, s)
@@ -1493,8 +1661,8 @@ func TestCaptureDeadlineIsHardAgainstAContextIgnoringSource(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	l := testLimits()
-	l.CaptureTimeout = 40 * time.Millisecond
-	l.SourceTimeout = 40 * time.Millisecond
+	l.CaptureTimeout = captureTimeoutCut
+	l.SourceTimeout = captureTimeoutCut
 	c := newTestCollector(t, l,
 		completeSource("fast", completeItem("a")),
 		stubSource{id: "stuck", fn: func(context.Context, CaptureRequest) (SourceResult, error) {
@@ -1503,11 +1671,7 @@ func TestCaptureDeadlineIsHardAgainstAContextIgnoringSource(t *testing.T) {
 		}},
 	)
 	c.grace = 20 * time.Millisecond
-	start := time.Now()
-	rep := capture(t, c, localRequest())
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("Capture took %s: the capture deadline is not enforced", elapsed)
-	}
+	rep := captureWithin(t, c, localRequest(), 10*time.Second)
 	if got := sourceReport(t, rep, "stuck"); got.Completeness != CompletenessTimedOut || got.Detail != detailCaptureCut || got.Items != 0 {
 		t.Errorf("stuck = %+v", got)
 	}
@@ -1541,7 +1705,7 @@ func TestCaptureRunsSourcesInParallelUpToTheLimit(t *testing.T) {
 	}
 	l := testLimits()
 	l.MaxConcurrency = limit
-	l.SourceTimeout = time.Second
+	l.SourceTimeout = 10 * time.Second // the barrier's bound, reached only when the limit is not honoured
 	rep := capture(t, newTestCollector(t, l, sources...), localRequest())
 	if peak.Load() != limit || rep.Completeness != CompletenessComplete {
 		t.Fatalf("peak = %d, completeness = %q; want %d sources running together", peak.Load(), rep.Completeness, limit)
@@ -1722,11 +1886,7 @@ func TestCaptureDeadlineHoldsWhenTheLimitQueuesSources(t *testing.T) {
 		completeSource("healthy-2", completeItem("b")),
 	)
 	c.grace = 20 * time.Millisecond
-	start := time.Now()
-	rep := capture(t, c, localRequest())
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("Capture took %s: the launch loop blocked the request goroutine", elapsed)
-	}
+	rep := captureWithin(t, c, localRequest(), 10*time.Second)
 	if got := sourceReport(t, rep, "stuck"); got.Completeness != CompletenessTimedOut || got.Detail != detailCaptureCut {
 		t.Errorf("stuck = %+v", got)
 	}
@@ -1747,8 +1907,8 @@ func TestCapturePanicIsFailedEvenWhenTheDeadlineCutsTheWait(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	l := testLimits()
-	l.CaptureTimeout = 40 * time.Millisecond
-	l.SourceTimeout = 40 * time.Millisecond
+	l.CaptureTimeout = captureTimeoutCut
+	l.SourceTimeout = captureTimeoutCut
 	c := newTestCollector(t, l,
 		stubSource{id: "boom", fn: func(context.Context, CaptureRequest) (SourceResult, error) {
 			panic("adapter bug")
@@ -1756,7 +1916,7 @@ func TestCapturePanicIsFailedEvenWhenTheDeadlineCutsTheWait(t *testing.T) {
 		stuckSource("stuck", release),
 	)
 	c.grace = 20 * time.Millisecond
-	rep := capture(t, c, localRequest())
+	rep := captureWithin(t, c, localRequest(), 10*time.Second)
 	if got := sourceReport(t, rep, "boom"); got.Completeness != CompletenessFailed || got.Detail != detailPanicked {
 		t.Errorf("boom = %+v, want failed (a recorded panic, not a cut)", got)
 	}
@@ -1955,8 +2115,7 @@ func TestCaptureSkippedQueuedSourcesAreTimedOutNotPanicked(t *testing.T) {
 
 func TestCapturePanicAfterTheDeadlineIsStillRecorded(t *testing.T) {
 	l := testLimits()
-	l.CaptureTimeout = 40 * time.Millisecond
-	l.SourceTimeout = time.Second
+	l.CaptureTimeout = captureTimeoutCut
 	c := newTestCollector(t, l,
 		stubSource{id: "late-boom", fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
 			<-ctx.Done() // the capture deadline
@@ -1964,7 +2123,11 @@ func TestCapturePanicAfterTheDeadlineIsStillRecorded(t *testing.T) {
 		}},
 		completeSource("fine", completeItem("a")),
 	)
-	rep := capture(t, c, localRequest())
+	// The group ends as soon as late-boom has panicked, so a long grace
+	// costs nothing here; it only removes the race between the panic's
+	// record and the end of the grace on a slow runner.
+	c.grace = 10 * time.Second
+	rep := captureWithin(t, c, localRequest(), 20*time.Second)
 	if got := sourceReport(t, rep, "late-boom"); got.Completeness != CompletenessFailed || got.Detail != detailPanicked {
 		t.Errorf("late-boom = %+v, want failed (a panic after entry is recorded, deadline or not)", got)
 	}
