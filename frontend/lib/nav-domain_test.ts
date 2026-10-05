@@ -34,3 +34,17 @@ test("getActiveDomain: /workloads/pods -> workloads", () => {
 test("getActiveDomain: / -> overview", () => {
   expect(getActiveDomain("/")).toBe("overview");
 });
+
+// The change receipts live outside /tools but are listed in its nav group, so
+// a receipt page keeps the Tools menu open rather than an empty rail.
+test("getActiveDomain: /changes and a receipt -> tools", () => {
+  expect(getActiveDomain("/changes")).toBe("tools");
+  expect(getActiveDomain("/changes/6f1d3c52-4b1e-4f0a-9c53-0d7a2b8e1f64")).toBe(
+    "tools",
+  );
+});
+
+// A path that merely starts with the same letters is not the receipts page.
+test("getActiveDomain: /changesets is not claimed by the receipts entry", () => {
+  expect(getActiveDomain("/changesets")).toBeNull();
+});

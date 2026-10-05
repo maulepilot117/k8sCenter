@@ -31,6 +31,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
@@ -97,6 +98,10 @@ const (
 	// store outage. 100k pages at the maximum page size is 20M receipts,
 	// well past the 30-day retention.
 	maxListPage = 100_000
+	// defaultNamespace is where the applier puts a namespaced object whose
+	// manifest names no namespace (yaml/applier.go); ownership resolution
+	// defaults the same way so it checks the object the apply would write.
+	defaultNamespace = "default"
 )
 
 // localGeneration is the generation TargetSchemaFor reports for the local
@@ -684,6 +689,15 @@ func (h *Handler) HandleResolveOwnership(w http.ResponseWriter, r *http.Request)
 			if m, err := target.Mapper.RESTMapping(schema.GroupKind{Group: o.Group, Kind: o.Kind}, versions...); err == nil {
 				ref.Resource = m.Resource.Resource
 				ref.Version = m.Resource.Version
+				// Mirror the applier (yaml/applier.go): a namespaced object
+				// whose manifest omits metadata.namespace is applied to
+				// "default", so that is the object whose ownership matters.
+				// Left empty, the exact-namespace inventory match and the
+				// live hint read would both miss it and the object would
+				// read as unmanaged.
+				if ref.Namespace == "" && m.Scope != nil && m.Scope.Name() == meta.RESTScopeNameNamespace {
+					ref.Namespace = defaultNamespace
+				}
 			}
 		}
 		refs = append(refs, ref)

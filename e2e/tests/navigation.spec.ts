@@ -43,6 +43,7 @@ const NAV_ITEMS = [
   "/alerting/rules",
   "/alerting/settings",
   "/tools/yaml-apply",
+  "/changes",
   "/tools/storageclass-wizard",
   "/admin/validatingwebhooks",
   "/admin/mutatingwebhooks",

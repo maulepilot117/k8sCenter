@@ -14,8 +14,23 @@ import {
   fetchCapabilities,
 } from "@/lib/capabilities.ts";
 import type { CapabilitiesResponse } from "@/lib/capability-types.ts";
+import {
+  managedSummary,
+  receiptHref,
+  shortId,
+  trackedRefusalText,
+} from "@/lib/change-copy.ts";
+import {
+  managedCount,
+  useOwnershipPreview,
+  useRepairLink,
+  useTrackingAvailability,
+} from "@/lib/change-tracking.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { type ApplyResponse, useYamlApply } from "@/lib/yaml-apply.ts";
+import { OwnershipSection } from "@/src/components/changes/OwnershipSection.tsx";
+import { RepairBanner } from "@/src/components/changes/RepairBanner.tsx";
+import { TrackedApplyPanel } from "@/src/components/changes/TrackedApplyPanel.tsx";
 import YamlEditor from "@/src/islands/YamlEditor.tsx";
 import {
   clusterEpoch,
@@ -41,6 +56,8 @@ const PLACEHOLDER_YAML = `# Paste or type your Kubernetes YAML here.
 /** The YAML operations this page performs, in the order it performs them. */
 const PAGE_OPERATIONS = ["yaml.validate", "yaml.apply"] as const;
 
+const TRACKING_NOTE_ID = "yaml-apply-tracking-note";
+
 type CapabilityState =
   | { status: "loading" }
   | { status: "ready"; caps: CapabilitiesResponse }
@@ -54,6 +71,10 @@ interface ClusterRecord {
 
 export default function YamlApplyPage() {
   const forceConflicts = useSignal(false);
+  // Change tracking starts off and is switched on only once GET /v1/changes
+  // proves the server can keep the record (see the probe below).
+  const tracked = useSignal(false);
+  const repairOf = useSignal<string | null>(null);
   const {
     yamlContent,
     applying,
@@ -66,9 +87,14 @@ export default function YamlApplyPage() {
     clearPin,
     handleValidate,
     handleApply,
+    lastOperationId,
+    attemptOutcomeUnknown,
+    trackedRefusal,
   } = useYamlApply(PLACEHOLDER_YAML, {
     forceConflicts,
     pinApplyToPreview: true,
+    tracked,
+    repairOf,
   });
   const capability = useSignal<CapabilityState>({ status: "loading" });
   const clusterNames = useSignal<ReadonlyMap<string, string>>(new Map());
@@ -108,10 +134,19 @@ export default function YamlApplyPage() {
 
   // Remote cluster ids are opaque, so name the ones on screen from the
   // registry. Best effort: an id is still an unambiguous label.
+  // The repair link (Release E) is read first: the cluster its receipt names
+  // is one of the clusters this page may have to name.
+  const { repair, stopRepair } = useRepairLink(repairOf);
+  const repairClusterId =
+    repair.value.status === "valid" ? repair.value.clusterId : undefined;
   const pinnedClusterId = pin.value?.target.clusterId;
   useEffect(() => {
     const known = clusterNames.peek();
-    const wanted = [selectedCluster.peek(), pinnedClusterId].filter(
+    const wanted = [
+      selectedCluster.peek(),
+      pinnedClusterId,
+      repairClusterId,
+    ].filter(
       (id): id is string => !!id && id !== LOCAL_CLUSTER_ID && !known.has(id),
     );
     const controller = new AbortController();
@@ -129,7 +164,12 @@ export default function YamlApplyPage() {
         .catch(() => {});
     }
     return () => controller.abort();
-  }, [epoch, pinnedClusterId]);
+  }, [epoch, pinnedClusterId, repairClusterId]);
+
+  // Change tracking (Release E): whether the server can keep a record, and
+  // who manages the previewed objects.
+  const trackingAvailability = useTrackingAvailability(tracked);
+  const ownership = useOwnershipPreview(preview, pin, yamlContent);
 
   const clusterLabel = (id: string) =>
     id === LOCAL_CLUSTER_ID
@@ -180,6 +220,27 @@ export default function YamlApplyPage() {
             },
           ]
         : [];
+  const managedText = managedSummary(managedCount(ownership.value));
+  const refusal = trackedRefusal.value;
+  // Only a tracked apply whose failure may still have changed the cluster
+  // (the hook decides: an unknown outcome, or a store failure that does not
+  // rule it out) points at its receipt. Definite refusals do not, and a
+  // later Validate or Apply press clears it.
+  const attemptReceiptId =
+    attemptOutcomeUnknown.value && !results.value
+      ? lastOperationId.value
+      : null;
+  const availability = trackingAvailability.value;
+  const trackingDisabled =
+    availability.status === "checking" ||
+    availability.status === "unsupported" ||
+    availability.status === "unavailable";
+  const trackingNote =
+    availability.status === "unsupported" ||
+    availability.status === "unavailable" ||
+    availability.status === "unconfirmed"
+      ? availability.reason
+      : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
@@ -212,7 +273,52 @@ export default function YamlApplyPage() {
         <CapabilityNotice key={n.message} notice={n} />
       ))}
 
-      {error.value && <ErrorBanner message={error.value} />}
+      {error.value && (
+        <div role="alert">
+          <ErrorBanner
+            message={refusal ? trackedRefusalText(refusal) : error.value}
+          />
+        </div>
+      )}
+
+      {refusal?.receiptId && (
+        <p class="m-0 text-sm">
+          <a
+            href={receiptHref(refusal.receiptId)}
+            class="font-medium text-accent"
+          >
+            Open the change receipt of the apply still running
+          </a>
+        </p>
+      )}
+
+      {attemptReceiptId && (
+        <p class="m-0 text-sm text-text-secondary">
+          This attempt may have changed the cluster. If the server recorded it,
+          its receipt shows what was applied:{" "}
+          <a
+            href={receiptHref(attemptReceiptId)}
+            class="font-medium text-accent"
+          >
+            change receipt {shortId(attemptReceiptId)}
+          </a>
+          . It may not exist if the request never reached the server.
+        </p>
+      )}
+
+      <RepairBanner
+        repair={repair.value}
+        tracked={tracked.value}
+        onStop={stopRepair}
+        selectedClusterId={selectedCluster.value}
+        clusterLabel={clusterLabel}
+      />
+
+      {managedText && !results.value && (
+        <div role="status">
+          <Alert variant="warning">{managedText}</Alert>
+        </div>
+      )}
 
       {pin.value && pinStale.value && (
         <div role="status">
@@ -248,7 +354,14 @@ export default function YamlApplyPage() {
           flexWrap: "wrap",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            flexWrap: "wrap",
+          }}
+        >
           <button
             type="button"
             onClick={handleFileUpload}
@@ -276,6 +389,25 @@ export default function YamlApplyPage() {
               style={{ accentColor: "var(--accent)" }}
             />
             Force conflicts
+          </label>
+          <label
+            class={`flex items-center gap-1.5 text-[13px] text-text-muted ${
+              trackingDisabled
+                ? "cursor-not-allowed opacity-60"
+                : "cursor-pointer"
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={tracked.value}
+              disabled={trackingDisabled || isWorking}
+              aria-describedby={trackingNote ? TRACKING_NOTE_ID : undefined}
+              onChange={(e) => {
+                tracked.value = (e.target as HTMLInputElement).checked;
+              }}
+              class="accent-accent"
+            />
+            Keep a record of this change
           </label>
         </div>
         <div
@@ -333,6 +465,12 @@ export default function YamlApplyPage() {
         </div>
       </div>
 
+      {trackingNote && (
+        <p id={TRACKING_NOTE_ID} class="-mt-3 mb-0 text-xs text-text-muted">
+          {trackingNote}
+        </p>
+      )}
+
       {/* Editor — SOLID surface, keep as-is */}
       <div
         style={{
@@ -375,6 +513,13 @@ export default function YamlApplyPage() {
         <ValidationResults response={preview.value} />
       )}
       {results.value && <ApplyResults response={results.value} />}
+      {results.value && (
+        <TrackedApplyPanel
+          tracking={results.value.tracking}
+          sentOperationId={lastOperationId.value}
+        />
+      )}
+      <OwnershipSection state={ownership.value} />
     </div>
   );
 }

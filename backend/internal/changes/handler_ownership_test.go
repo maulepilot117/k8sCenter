@@ -235,6 +235,36 @@ func TestHandleResolveOwnership_ResolvesRefsThroughTargetMapper(t *testing.T) {
 	}
 }
 
+// A manifest that omits metadata.namespace is applied to "default" when its
+// kind is namespaced, so ownership must be resolved for default/<name>.
+// Resolving it as namespace "" would miss the exact-namespace inventory
+// match and report a controller-owned object as unmanaged. A cluster-scoped
+// kind stays without a namespace, an explicit namespace is never replaced,
+// and a kind the mapper cannot resolve is passed through untouched.
+func TestHandleResolveOwnership_DefaultsNamespaceLikeTheApplier(t *testing.T) {
+	hs := newHarness(t)
+	body := `{"objects":[
+		{"group":"apps","version":"v1","kind":"Deployment","name":"web"},
+		{"group":"apps","version":"v1","kind":"Deployment","namespace":"prod","name":"api"},
+		{"version":"v1","kind":"Namespace","name":"team-a"},
+		{"group":"example.io","version":"v1","kind":"Widget","name":"w"}]}`
+
+	w := hs.ownership(t, adminUser, "local", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	refs := hs.resolver.refs
+	if len(refs) != 4 {
+		t.Fatalf("refs = %+v", refs)
+	}
+	want := []string{"default", "prod", "", ""}
+	for i, ns := range want {
+		if refs[i].Namespace != ns {
+			t.Errorf("refs[%d] (%s) namespace = %q, want %q", i, refs[i].Kind, refs[i].Namespace, ns)
+		}
+	}
+}
+
 func TestHandleResolveOwnership_ForbiddenAppLeaksNoRepoURL(t *testing.T) {
 	hs := newHarness(t)
 	// What gitops answers when the caller may not list Applications: a

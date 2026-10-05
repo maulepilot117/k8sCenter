@@ -178,11 +178,18 @@ export interface UseYamlApplyReturn {
   clearPin: () => void;
   /**
    * The operation id the last apply attempt was sent under, or null when it
-   * was untracked (or no apply has run). Stays set after a failure that left
-   * the outcome unknown, because it is also the id the next press of Apply
-   * will reuse.
+   * was untracked, no apply has run, or a later Validate or Apply press
+   * started over. It describes only that last attempt; the id a retry will
+   * reuse is kept separately.
    */
   lastOperationId: ReadonlySignal<string | null>;
+  /**
+   * Whether the last tracked apply failed in a way that may still have
+   * changed the cluster under `lastOperationId` (see attemptMayHaveApplied),
+   * so its receipt is worth pointing at. False after any definite refusal,
+   * and reset by Validate and by each Apply press.
+   */
+  attemptOutcomeUnknown: ReadonlySignal<boolean>;
   /**
    * The typed reason the server refused the last tracked apply (409 id
    * reasons, 503 receipt store), or null. `error` carries the same refusal as
@@ -310,6 +317,27 @@ export function isIndeterminateApplyFailure(err: unknown): boolean {
   return err.status === 409 && err.reason === "operation_in_flight";
 }
 
+/**
+ * Whether a failed tracked apply may have changed the cluster under its
+ * operation id, so its receipt is worth pointing at. True for an unknown
+ * outcome (no response, a 5xx) and for a store failure that does not rule
+ * it out: `applied: false` covers only this request, so with
+ * `retrySameOperationId: true` an earlier send of the same id may have
+ * applied. False for every definite refusal (a pin mismatch, 4xx) and for
+ * `operation_in_flight`, which carries its own receipt link.
+ */
+export function attemptMayHaveApplied(
+  err: unknown,
+  refusal: TrackedApplyRefusal | null,
+): boolean {
+  if (refusal?.reason === "receipt_store_unavailable") {
+    return refusal.applied !== false || refusal.retrySameOperationId === true;
+  }
+  if (refusal) return false;
+  if (err instanceof ApiError && err.status === 409) return false;
+  return isIndeterminateApplyFailure(err);
+}
+
 function normalizeClusterId(id: string | undefined): string {
   return id || LOCAL_CLUSTER_ID;
 }
@@ -348,6 +376,7 @@ export function useYamlApply(
   const preview = useSignal<ValidateResponse | null>(null);
   const pin = useSignal<YamlApplyPin | null>(null);
   const lastOperationId = useSignal<string | null>(null);
+  const attemptOutcomeUnknown = useSignal(false);
   const trackedRefusal = useSignal<TrackedApplyRefusal | null>(null);
   // The attempt a retry would continue: its id plus the request it was minted
   // for. Reused only while the request is unchanged, so an id never travels
@@ -403,6 +432,10 @@ export function useYamlApply(
     preview.value = null;
     pin.value = null;
     trackedRefusal.value = null;
+    // A new preview starts over: the last apply's outcome no longer describes
+    // what is on screen. (The retry id itself lives in pendingAttempt.)
+    lastOperationId.value = null;
+    attemptOutcomeUnknown.value = false;
     try {
       const res = await apiPostRaw<ValidateResponse>(
         "/v1/yaml/validate",
@@ -441,6 +474,10 @@ export function useYamlApply(
 
   const handleApply = useCallback(async () => {
     if (applying.value || validating.value) return;
+    // A new press starts a new answer: nothing from the previous attempt
+    // describes it, even when it is refused before it is sent.
+    lastOperationId.value = null;
+    attemptOutcomeUnknown.value = false;
     const pinned = pin.peek();
     if (options.pinApplyToPreview && !pinned) {
       error.value =
@@ -533,12 +570,13 @@ export function useYamlApply(
       // A definite answer ends the attempt; only an unknown outcome keeps its
       // id for the retry. A 503 receipt_store_unavailable says whether the id
       // may be reused: the server's `retrySameOperationId` decides when it is
-      // present (false: the insert or mark step failed, the id may be spent
-      // and nothing was applied, so mint a new one; true: a read failed over
-      // an earlier attempt that may have applied, so keep it). Without that
-      // flag, a 503 on a FRESH id is definite (no earlier send exists, so a
-      // retry would only replay a failed receipt or report it in flight),
-      // while on a REUSED id the id stays.
+      // present (true: the record insert or a receipt read failed, so the id
+      // is kept and a retry continues the same operation; false: marking the
+      // receipt failed or no receipt store is configured, the id may be
+      // spent, so mint a new one). In every case `applied: false` speaks only
+      // for THIS request. Without the flag, a 503 on a FRESH id is definite
+      // (no earlier send exists, so a retry would only replay a failed
+      // receipt or report it in flight), while on a REUSED id the id stays.
       let releaseStoreFailure = false;
       if (trackedFailure?.reason === "receipt_store_unavailable") {
         releaseStoreFailure =
@@ -549,6 +587,9 @@ export function useYamlApply(
       if (!isIndeterminateApplyFailure(err) || releaseStoreFailure) {
         releaseAttempt();
       }
+      attemptOutcomeUnknown.value =
+        lastOperationId.peek() !== null &&
+        attemptMayHaveApplied(err, trackedFailure);
       if (trackedFailure) {
         trackedRefusal.value = trackedFailure;
         error.value = trackedFailure.message;
@@ -579,6 +620,7 @@ export function useYamlApply(
     pinStale,
     clearPin,
     lastOperationId,
+    attemptOutcomeUnknown,
     trackedRefusal,
   };
 }

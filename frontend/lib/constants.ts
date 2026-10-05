@@ -582,6 +582,7 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
         header: "Tools",
         items: [
           { label: "YAML Apply", href: "/tools/yaml-apply" },
+          { label: "Recorded Changes", href: "/changes" },
           { label: "StorageClass Wizard", href: "/tools/storageclass-wizard" },
         ],
       },
