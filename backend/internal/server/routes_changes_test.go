@@ -20,11 +20,14 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/changes"
 	"github.com/kubecenter/kubecenter/internal/config"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	yamlpkg "github.com/kubecenter/kubecenter/internal/yaml"
 )
@@ -346,5 +349,36 @@ func TestNew_ChangesServicePropagation(t *testing.T) {
 	srv, _ = changesFullServer(t, nil, nil, nil, func(d *Deps) { d.ChangesService = svc })
 	if srv.ChangesService != svc {
 		t.Errorf("ChangesService not propagated from Deps")
+	}
+}
+
+// TestNew_YAMLHandlerReceivesChangesService pins U30a's wiring: the yaml
+// handler server.New builds is handed Deps.ChangesService as is, so a nil
+// service stays nil (tracked apply answers 503) and a configured one is the
+// one tracked applies run through.
+func TestNew_YAMLHandlerReceivesChangesService(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// Construction only: nothing here dials the address.
+	cs, err := kubernetes.NewForConfig(&rest.Config{Host: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatalf("kubernetes.NewForConfig: %v", err)
+	}
+	withK8s := func(d *Deps) {
+		d.K8sClient = k8s.NewTestClientFactoryWithDynamic(cs, nil)
+		d.Informers = k8s.NewInformerManager(cs, nil, logger)
+	}
+
+	srv, _ := changesFullServer(t, nil, nil, nil, withK8s)
+	if srv.YAMLHandler == nil {
+		t.Fatal("YAMLHandler not built with k8s dependencies present")
+	}
+	if srv.YAMLHandler.Changes != nil {
+		t.Errorf("YAMLHandler.Changes = %v with none in Deps; want nil", srv.YAMLHandler.Changes)
+	}
+
+	svc := changes.NewService(nil, logger)
+	srv, _ = changesFullServer(t, nil, nil, nil, withK8s, func(d *Deps) { d.ChangesService = svc })
+	if srv.YAMLHandler.Changes != svc {
+		t.Errorf("YAMLHandler.Changes = %p; want Deps.ChangesService %p", srv.YAMLHandler.Changes, svc)
 	}
 }

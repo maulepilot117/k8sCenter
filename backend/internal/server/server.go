@@ -237,6 +237,7 @@ func New(deps Deps) *Server {
 			ClusterRouter: deps.ClusterRouter,
 			AuditLogger:   deps.AuditLogger,
 			Logger:        deps.Logger,
+			Changes:       deps.ChangesService,
 		}
 		s.WizardHandler = &wizard.Handler{
 			Logger: deps.Logger,
