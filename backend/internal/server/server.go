@@ -17,6 +17,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/externalsecrets"
 	"github.com/kubecenter/kubecenter/internal/gateway"
 	"github.com/kubecenter/kubecenter/internal/gitops"
+	"github.com/kubecenter/kubecenter/internal/incidents"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/limits"
@@ -62,6 +63,7 @@ type Server struct {
 	RateLimiter        *middleware.RateLimiter
 	YAMLRateLimiter    *middleware.RateLimiter
 	ChangesRateLimiter *middleware.RateLimiter
+	IncidentsRateLimiter *middleware.RateLimiter
 	ResourceHandler    *resources.Handler
 	YAMLHandler        *yamlpkg.Handler
 	WizardHandler      *wizard.Handler
@@ -76,6 +78,7 @@ type Server struct {
 	GitOpsHandler      *gitops.Handler
 	ChangesHandler     *changes.Handler
 	ChangesService     *changes.Service
+	IncidentsHandler   *incidents.Handler
 	FluxNotifHandler   *notification.Handler
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
@@ -115,6 +118,7 @@ type Deps struct {
 	RateLimiter        *middleware.RateLimiter
 	YAMLRateLimiter    *middleware.RateLimiter
 	ChangesRateLimiter *middleware.RateLimiter
+	IncidentsRateLimiter *middleware.RateLimiter
 	Hub                *websocket.Hub
 	MonitoringHandler  *monitoring.Handler
 	LokiHandler        *loki.Handler
@@ -127,6 +131,7 @@ type Deps struct {
 	GitOpsHandler      *gitops.Handler
 	ChangesHandler     *changes.Handler
 	ChangesService     *changes.Service
+	IncidentsHandler   *incidents.Handler
 	FluxNotifHandler   *notification.Handler
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
@@ -168,6 +173,7 @@ func New(deps Deps) *Server {
 		RateLimiter:     deps.RateLimiter,
 		YAMLRateLimiter: deps.YAMLRateLimiter,
 		ChangesRateLimiter: deps.ChangesRateLimiter,
+		IncidentsRateLimiter: deps.IncidentsRateLimiter,
 		Hub:             deps.Hub,
 		ready:           deps.ReadyFn,
 		dbPing:          deps.DBPing,
@@ -299,6 +305,13 @@ func New(deps Deps) *Server {
 		s.ChangesHandler = deps.ChangesHandler
 	}
 	s.ChangesService = deps.ChangesService
+
+	// Incidents handler (Release D). main.go constructs it unconditionally,
+	// with nil stores when there is no database, so the routes always
+	// register and a no-DB deployment answers 503 rather than 404.
+	if deps.IncidentsHandler != nil {
+		s.IncidentsHandler = deps.IncidentsHandler
+	}
 
 	// Notification handler
 	if deps.FluxNotifHandler != nil {
