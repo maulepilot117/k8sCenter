@@ -1001,6 +1001,50 @@ func TestSlowAccessCheckIsBoundedPerRequest(t *testing.T) {
 	}
 }
 
+func TestAccessBudgetIsDerivedFromTheHandlerTimeout(t *testing.T) {
+	// Companion to the test above, which ends the PARENT context: this one
+	// leaves the parent alone and proves newScopeMemo derives its own
+	// context with context.WithTimeout(ctx, h.accessTimeout). A nanosecond
+	// budget expires on its own; the fake checker blocks until its ctx is
+	// done, so without the derivation it would block forever. A watchdog
+	// turns that into a failure instead of a hang. The first check may or
+	// may not be issued (the timer and the first decide race, which is
+	// fine either way), so the count is bounded, not exact.
+	hs := newHarness(t)
+	hs.h.accessTimeout = time.Nanosecond
+	hs.access.blockUntilDone = true
+	id := hs.seed(t, alice)
+	hs.addRows(
+		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "payments", "a"),
+		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "billing", "b"),
+	)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- hs.get(t, alice, id) }()
+	var w *httptest.ResponseRecorder
+	select {
+	case w = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("request never returned: the access budget is not derived from h.accessTimeout")
+	}
+	wantStatus(t, w, http.StatusOK)
+	d := data(t, w)
+	wh := withheldOf(t, d)
+	if len(wh) != 2 {
+		t.Fatalf("withheld = %v, want every row", wh)
+	}
+	for _, m := range wh {
+		if m["withheldReason"] != WithheldAuthorizationCheckUnavailable {
+			t.Fatalf("withheld = %v", wh)
+		}
+	}
+	if v, h := counts(t, d); v != 0 || h != 2 {
+		t.Fatalf("counts = (%d, %d)", v, h)
+	}
+	if len(hs.access.calls) > 1 {
+		t.Fatalf("%d checks issued under an expired budget, want at most 1", len(hs.access.calls))
+	}
+}
+
 func TestDeletedSourceObjectStillGovernedByScopeAuthorization(t *testing.T) {
 	// P8: the filter never consults the live object. A row whose source is
 	// gone is withheld or shown purely on the stored scope.
