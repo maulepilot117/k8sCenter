@@ -38,13 +38,16 @@ const verifyRetryAfterSeconds = 5
 //   - a receipt whose verification is already final returns the stored verdict
 //     untouched: it is frozen, no read is made, Persist or not;
 //   - a receipt that has not completed returns pending without reading;
-//   - every document index in 0..DocumentCount-1 yields exactly one check. A
-//     document with no recorded outcome (an interrupted original) is
-//     inconclusive/outcome_unrecorded without a read, so such a receipt can
-//     never aggregate to verified;
-//   - objects whose apply failed are skipped, never verified, EXCEPT those
-//     whose failure is indeterminate (the request was cut off and the server
-//     may have committed it): those are verified like a success;
+//   - each recorded object that may exist on the cluster (a success, or a
+//     failure classed indeterminate) yields exactly one check, and each
+//     document index in 0..DocumentCount-1 with no recorded outcome (an
+//     interrupted original) yields one inconclusive/outcome_unrecorded check
+//     without a read, so such a receipt can never aggregate to verified;
+//   - objects whose apply definitely failed are skipped, never verified (they
+//     are not on the cluster, and the receipt's execution state still reports
+//     the failure), EXCEPT those whose failure is indeterminate (the request
+//     was cut off and the server may have committed it): those are verified
+//     like a success;
 //   - an object with no recorded UID is inconclusive/identity_unknown without
 //     a read: a live object cannot be bound to the one that was applied (R1),
 //     and no live UID is stamped as evidence;

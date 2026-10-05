@@ -39,8 +39,8 @@ changes were verified by deploying them.
 That was survivable while the schema grew one table at a time. It stops being survivable
 now: the current schema is **15 tables**, and the queued release plans
 (`docs/plans/2026-09-10-release-{a,b,c,d,e,f}-*-impl.md`) introduce **twelve more** —
-`user_preferences` (A), five `incident*` tables (D), two `change_receipt*` tables (E), and
-four `backup_assurance_*` tables (F). Releases B and C add none: Release C introduces no
+`user_preferences` (A), five `incident*` tables (D), two `change_receipt*` tables (E, real
+since migration 000023), and four `backup_assurance_*` tables (F, real since 000022). Releases B and C add none: Release C introduces no
 table at all, and the `eso_sync_history` DDL in Release B is the *existing* 000011 table
 quoted as "Current ... verbatim", not a new one. Every one of them needs tests that do a **real migration
 round trip**: a fake or an in-memory shim proves nothing about a partial unique index, an
@@ -249,11 +249,12 @@ and the `TEXT`/`UUID` primary keys on `local_users`, `auth_providers`, `nc_chann
 `nc_notifications`, `nc_rules`). That accounts for all 15 current tables: 3 owner-column,
 4 cluster-id, 7 natural-key, plus `app_settings`.
 
-The twelve queued tables fall in the same scheme, with one addition. `incidents` and
-`change_receipts` carry `owner_id TEXT NOT NULL`; `incident_evidence` adds a `cluster_id`;
+The twelve tables (the Release E and F ones are real now, as described below; the
+`incident*` ones are still queued) fall in the same scheme, with one addition.
+`incidents` and `change_receipts` (real since 000023) carry `owner_id TEXT NOT NULL`; `incident_evidence` adds a `cluster_id`;
 `incident_notes` has a UUID primary key. The remaining three — `incident_note_revisions`
 (`PRIMARY KEY (note_id, revision)`), `incident_grants` (`(incident_id, grantee_id)`) and
-`change_receipt_grants` (`(receipt_id, grantee_id)`) — are **derived-key children**: they
+`change_receipt_grants` (`(receipt_id, grantee_id)`, real since 000023) — are **derived-key children**: they
 key on a parent row the test itself created, so they inherit that parent's uniqueness and
 need no scoping column of their own. None of the twelve is a singleton.
 
@@ -287,6 +288,44 @@ that wants to clean up can delete its own policy rows and the exceptions and del
 with them, but the harness still registers no teardown. The open-row partial index and the
 `(exception_id, transition)` index are the correctness guarantees under test, so exercise
 them against the real database, never a fake.
+
+**Release E's two tables (migration `000023_create_change_receipts.up.sql`) are now real
+and neither is a singleton, but `change_receipts` has two table-global operations you must
+not assume away.**
+
+| Table | Uniqueness | Scoping key for tests |
+|-------|-----------|-----------------------|
+| `change_receipts` | `id UUID PRIMARY KEY` (the client-supplied operation id) | owner (`owner_id TEXT NOT NULL`); mint the id with `uuid.New()` |
+| `change_receipt_grants` | `PRIMARY KEY (receipt_id, grantee_id)`; `ON DELETE CASCADE` to `change_receipts` | derived-key child: keyed on a receipt the test created |
+
+Scope every row by `testOwnerID(t)` and filter every read by it, as everywhere else. The
+difference from the other tables is two store methods that act on the whole table rather
+than on one owner's rows:
+
+- **`ReconcileOrphans(ctx, olderThan)`** closes every `applying` row older than the bound,
+  whoever owns it, and a test cannot make it owner-scoped. A test makes its own row
+  reapable by **backdating that row's `created_at`** (`backdateReceipt` in
+  `change_receipts_test.go`) rather than by waiting, and asserts only on its own rows. The
+  returned count is table-global, so assert a lower bound (`n >= 2`), never equality.
+  Backdate immediately before the call: a sweep running in a sibling suite may close any
+  row that is already old enough, so do not backdate early and then expect the row to
+  still be `applying`.
+- **`Cleanup(ctx, retentionDays)`** deletes every row older than the retention, whoever
+  owns it. A test backdates only its own row past the retention, then asserts that row is
+  gone, that its own fresh row survived, and that its grant rows cascaded. It asserts the
+  number of rows deleted only as a lower bound.
+
+The age bound on `ReconcileOrphans` is also what keeps the rest of the suite safe: a row
+younger than `ReceiptOrphanGrace` is never touched, so a suite that does not backdate is
+unaffected by a sweep in a sibling test. The end-to-end suite for the tracked-apply path
+(`backend/internal/yaml/tracked_apply_db_test.go`) is in a different package, so it carries
+its own copy of the gate (same variables, same skip and require rules) and the same owner
+scoping.
+
+What is worth running against the real database, because a fake cannot prove it: the
+guarded `UPDATE ... WHERE completed_at IS NULL` returning `ErrReceiptAlreadyFinal`, the
+atomic first-final-wins `SetVerification`, the duplicate id mapped to `ErrReceiptExists`,
+and the append-only `objects` prefix. See `docs/solutions/tracked-apply-durable-intent.md`.
 
 `backend/internal/store/migrations/NOTES.txt:86-115` carries the same rule from the migrations side, ending with
 the forward-looking instruction: *"If you add a new table, prefer giving it an owner or
@@ -508,3 +547,4 @@ things the gate can skip.
 |----|------|
 | #414 | `backend/internal/store/testdb_test.go` — env-gated harness (`testDB`, `testOwnerID`, once-per-process migration via `store.New`), hermetic + gated test split, and the `postgres:17-alpine` service plus both env vars in `.github/workflows/ci.yml`. First test file in the package. |
 | #419 | Corrected the isolation contract after review of #414: residue is harmless only where every uniqueness constraint includes a test-controlled column. Audited the current schema and the five queued persistence releases; `app_settings` is the sole exception. Recorded the rule in `testdb_test.go:36-61` and `backend/internal/store/migrations/NOTES.txt:86-115`. The review's second cited example (`eso_bulk_refresh_jobs`) did not hold. No code change — the advisory-lock helper is specified, not built, because it would have had zero consumers. |
+| #563 | Release E U27: `change_receipts` and `change_receipt_grants` (migration `000023`) are real. Neither is a singleton; the two table-global store operations (`ReconcileOrphans`, `Cleanup`) are tested by backdating only the test's own rows and asserting only lower bounds on counts. The plan had accepted manual smoke steps for these; the harness made them automated tests. #569 added `yaml/tracked_apply_db_test.go`, which carries its own copy of the gate in a second package. |

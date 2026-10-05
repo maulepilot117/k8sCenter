@@ -95,7 +95,7 @@ Pure/hermetic unit tests are always-on and unaffected by the gate.
 | G | `add_dashboard_layout_kind` |
 | B | `scope_eso_history` (index-only; no column change, no backfill) |
 | D | `create_incidents` |
-| E | `create_change_receipts` |
+| E | `create_change_receipts` — **applied as `000023`** (planned as `000021`; by merge time `000019`–`000022` were taken by G, B, the notification resource-uid fix, and F) |
 | F | `create_backup_assurance` |
 | C | none |
 
@@ -179,16 +179,43 @@ Release B               U13 → U14a → U14b → U15 → U16 → U17 → U18 �
 Release C (remainder)   U9a → U9b → U10 → U10i*** → U11b → U11c → U12*
 Release F               U32 → U32b → U33 → U34a → U34b → U34c → U35 → U36 → U36b → U37**   [done]
                         PRs #548–#559 + U37 docs PR (template only; Q3 pending, rehearsal execution gated)
-U20                     pulled forward from Release D
-Release E               U26 → U27 → U28 → U29a → U29b → U30a → U30b → U31
+U20                     pulled forward from Release D                         [done]
+                        PR #562
+Release E               U26 → U27 → U28 → U29a → U29b → U30a → U30b → U31   [done]
+                        PRs #563–#570 (see "Release E — as shipped" below)
 Release D (remainder)   U21a → U21b → U22a → U22b → U23a → U23b → U24a → U24b → U24c → U25a → U25b
 
 Release G / P5          29 catalog widgets, ~7 units — interleaved as waves   [done]
                         between the releases above; no ordering dependency
 ```
 
-**Next (2026-10-04):** with Release F done, U20 is next, then Release E, per
-the order above.
+**Next (2026-10-05):** U20 and Release E are done. Next is the Release D
+remainder, starting at U21a and running U21a → U21b → U22a → U22b → U23a →
+U23b → U24a → U24b → U24c → U25a → U25b.
+
+### Release E — as shipped (2026-10-05)
+
+Release E is fully merged, PRs #563–#570 (#570 landed last, as c96c6a93): #563 U27 (receipt store), #564 U26 (ownership
+evidence), #565 U28 (changes service), #566 U29a (HTTP handlers), #567 U29b
+(wiring), #568 U30b (frontend contract), #569 U30a (opt-in tracked apply), #570
+U31 (UI and e2e). The units merged in the order U27, U26, U28, U29a, U29b, U30b,
+U30a, U31, not the sequence the plan listed. Per-unit deviations are recorded in
+the "As shipped" section of `2026-09-10-release-e-tracked-changes-impl.md`.
+
+Open items carried out of Release E:
+
+- **Flaky test, Release F code.** `TestAssurance_TwoServicesOneStoreProduceOneExceptionAndOneDelivery`
+  failed once in CI: two concurrent ticks persisted two notifications. This is
+  likely a real dedup race in the assurance delivery path, not a test artifact.
+  Not investigated here; it belongs to Release F follow-up work.
+- **Homelab smoke of tracked apply is not done.** The protocol is covered by unit
+  tests and by `backend/internal/yaml/tracked_apply_db_test.go` against
+  PostgreSQL, but no tracked apply has been run against the homelab cluster
+  through the deployed UI. CLAUDE.md requires that smoke test before merging
+  backend or frontend changes that are in scope.
+- **Mobile parity for receipts is deferred.** The Flutter app does not send
+  `trackedOperationId` or read `/changes`. The additive response means existing
+  mobile apply code is unaffected.
 
 ### Correction (2026-09-13): C/U7-U8-U11a pulled forward, Release G inserted
 

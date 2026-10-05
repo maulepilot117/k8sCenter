@@ -2349,3 +2349,311 @@ respect the existing cluster-pinning invariants in `CLAUDE.md`.
    JSON tags above are final before U27 merges.
 4. **U30a / R-6** — confirm Release C's U9 merge slot relative to U30a.
 
+
+---
+
+## As shipped (2026-10-05)
+
+Release E is done. The plan body above is unchanged and records what was
+intended; this section records what merged and where it differs. Code references
+are to `main` after #570 (merged as c96c6a93).
+
+### Units
+
+| Unit | PR | What merged |
+|---|---|---|
+| U27 | #563 | Migration `000023_create_change_receipts` and `store.ChangeReceiptStore` (`backend/internal/store/change_receipts.go`). |
+| U26 | #564 | `gitops.ResolveOwnership` (`backend/internal/gitops/ownership.go`) and `FuzzOwnershipEvidence`. |
+| U28 | #565 | `changes.Service.TrackedApply`, `VerifyOnce`, `CheckRollout`, `ClassifyAPIError`, and `FuzzCheckRollout`. |
+| U29a | #566 | `changes.Handler` (list, get, verification, ownership) and the Q1 read policy in `redaction.go`, with `FuzzReceiptRedaction`. |
+| U29b | #567 | Routes, DI in `main.go`, the per-user limiter, the retention and reconcile loop, verification audit, and the `changes.receipts` capability row. |
+| U30b | #568 | Frontend contract types, the `tracked` option on `useYamlApply`, and the `change-api` client. |
+| U30a | #569 | Opt-in `POST /yaml/apply?trackedOperationId=` with an additive `data.tracking` block. |
+| U31 | #570 | Ownership preview, the tracked-apply panel, the `/changes` list page and receipt detail page, and e2e. |
+
+The units merged in the order U27, U26, U28, U29a, U29b, U30b, U30a, U31, not
+the order the plan lists them in.
+
+### Deviations from the plan
+
+#### Schema and store (U27, #563)
+
+- **Migration number.** The plan reserved `000021`. By merge time `000019` to
+  `000022` were taken (dashboard layout kind, ESO history scope, notification
+  resource uid, backup assurance), so the file is `000023`. This follows the
+  Execution Order's G4 rule that the merging unit takes the next free number.
+- **DB behaviours are tested, not smoke-tested.** The plan accepted manual smoke
+  steps for duplicate-id insert, append-prefix-after-crash, the reconcile split
+  and the migration round trip (R-4). The env-gated harness from U0
+  (`KUBECENTER_TEST_DATABASE_URL`, a hard failure in CI under
+  `KUBECENTER_TEST_REQUIRE_DATABASE`) existed by then, so
+  `store/change_receipts_test.go` and `yaml/tracked_apply_db_test.go` run these
+  against PostgreSQL. Pure tests (enum drift against the embedded SQL, input
+  rejection before SQL) stay always-on.
+- **Cluster generation.** `change_receipts.cluster_generation` holds
+  `TargetSchema.Generation` as the YAML handler resolved it: the literal `local`
+  for the local cluster, the cluster record's `created_at` for a remote one. The
+  plan said `clusters.updated_at`. This is the value the Release C target pin
+  uses, so the receipt and the pin agree about what counts as re-registration.
+- **`ReconcileOrphans` is age-bounded and touches only `applying` rows.** The
+  plan's version took no age and closed every non-terminal receipt at boot. The
+  shipped signature is `ReconcileOrphans(ctx, olderThan)`; the sweeper passes
+  `store.ReceiptOrphanGrace` (10 minutes). It closes rows with
+  `state = 'applying'`, `completed_at IS NULL` and `created_at` older than the
+  bound: `failed` when `mutation_started_at` is null, `unknown` when it is set,
+  with `verification_state = 'inconclusive'`. A `previewed` row is never reaped
+  here (retention removes it). The bound exists because a rolling update runs the
+  old and new pod together, and an unbounded boot-time reconcile would close the
+  old pod's live apply. The remaining assumption is that no apply runs longer than
+  the grace.
+- **Reconcile runs at boot and every 10 minutes.** The plan had one boot-time
+  call plus an hourly retention sweep. `cmd/kubecenter/receipt_sweep.go` runs one
+  30-second-bounded reconcile before the listener starts. A background loop then
+  runs retention once straight away, and every `ReceiptOrphanGrace` after that
+  runs reconcile and then cleanup. Each pass goes through `recoverutil.Tick`.
+  Cleanup is not given the 30-second bound; it keeps the store's own five-minute
+  bound. Retention is `KUBECENTER_CHANGES_RECEIPTRETENTIONDAYS` (default 30); a
+  value below 1 is replaced with the default and logged.
+- **`SetVerification` never replaces a final verdict.** The guard is in the
+  UPDATE (`verification_state NOT IN ('verified','inconclusive','verification_failed')`),
+  so the first final write wins atomically. A refused write returns
+  `ErrReceiptAlreadyFinal`, and callers read the stored verdict back. This also
+  stops a slow verifier from overwriting the `inconclusive` that reconciliation
+  recorded.
+- **Guarded writes say why they refused.** `MarkMutationStarted`, `AppendObject`
+  and `Finalize` are guarded on `completed_at IS NULL` and return
+  `ErrReceiptAlreadyFinal` (row exists and is terminal) or `ErrReceiptNotFound`,
+  so the applier stops instead of writing to a reaped row.
+
+#### Ownership evidence (U26, #564)
+
+- **Only in-cluster controllers confirm.** An Argo CD Application confirms
+  ownership only when its destination is the in-cluster server or the
+  `in-cluster` name. A Flux Kustomization confirms only without
+  `spec.kubeConfig`. An application that names the object but applies elsewhere
+  cannot confirm it, because its record describes another cluster's object of the
+  same name. These produce `argo-destination-unverified` and
+  `flux-remote-kubeconfig` at confidence `unknown`.
+- **Reason vocabulary.** Reasons that differ from the plan's examples:
+  `partial-visibility` (the caller can list some applications but not all),
+  `no-controller-installed` (replaces `argo-not-installed`; confidence
+  `unavailable`), `argo-destination-unverified` and `flux-remote-kubeconfig`.
+  `argo-unavailable` and `flux-unavailable` cover a failed list, detail GET or
+  access check.
+- **Flux owner-label hint.** The `kustomize.toolkit.fluxcd.io/{name,namespace}`
+  and `helm.toolkit.fluxcd.io/{name,namespace}` labels are a hint kind,
+  `flux-owner-label`. Like the other hints it narrows which applications are read
+  first and never confirms.
+- **Unchanged from the plan:** only `argo-status-resource` and
+  `flux-inventory-entry` are authoritative; `identityBasis` is
+  `group-kind-namespace-name` with `uidConfirmed: false`; `writableGitSource` is
+  always false; the detail-fetch bound is 25 and exhausting it reports
+  `search-bound-exhausted`.
+
+#### Changes service and verification (U28, #565)
+
+- **Verifier signature.** `VerifyOnce(ctx, receipt, dyn, VerifyOptions{Persist})`.
+  The plan had no options. Persistence is by the receipt **owner** only. A grantee
+  or admin gets a live evaluation under their own identity that is not stored, so
+  a reader whose Kubernetes identity cannot read the workload cannot freeze the
+  owner's receipt as `inconclusive`. `VerificationResult.Persisted` is true only
+  when this call's write landed a final verdict.
+- **Checks per recorded object, plus one per unrecorded index.** Each recorded
+  object that may exist (a success, or an `indeterminate` failure) yields one
+  check. Each index in `0..DocumentCount-1` with no recorded outcome yields an
+  `inconclusive/outcome_unrecorded` check without a read, so a receipt that lost
+  outcomes can never aggregate to `verified`. A document that definitely failed is
+  skipped: it is not on the cluster, and the receipt's execution state stays
+  `partial` or `failed`.
+- **Added reason codes.** `identity_unknown` (the receipt holds no UID, so a live
+  read cannot be bound to the applied object; no read is made),
+  `outcome_unrecorded`, and `strategy_not_supported`. A failed live read uses
+  diagnostics' `source_unavailable` and is retryable inside the window. The plan's
+  `target_recreated`, `read_forbidden`, `not_found`, `kind_not_supported` and
+  `window_expired` are unchanged.
+- **Postconditions are kubectl's `rollout status` clauses**, tighter than the
+  plan's table. A Deployment also requires `status.replicas == updatedReplicas`
+  (no old ReplicaSet pods) and `availableReplicas >= updatedReplicas`. A
+  StatefulSet requires `status.replicas == spec.replicas`; with `partition > 0`
+  the clause is `updatedReplicas >= replicas - partition` and the revisions may
+  differ. A DaemonSet also checks `currentNumberScheduled` and `numberAvailable`.
+  `OnDelete` update strategies (StatefulSet, DaemonSet) are
+  `inconclusive/strategy_not_supported` at once rather than holding the window
+  open.
+- **`ClassifyAPIError` is an allowlist with an `indeterminate` default.** Only a
+  Status with code 400, 401, 403, 404, 405, 409, 415, 422 or 429 is a definite
+  rejection (`invalid`, `forbidden`, `not_found`, `conflict`, or `other`).
+  Everything else is `indeterminate`: a cancelled context, a timeout, a connection
+  reset, a 500, a 504, any error with no Status, and **503**. client-go turns any
+  non-Status body into a generic 503, so a mesh or load balancer can answer 503
+  after the PATCH was forwarded. An indeterminate object is verified like a
+  success; a definitively failed one is skipped. Only the PATCH's error is
+  classified; a failed pre-PATCH GET mutated nothing.
+- **`ApplyTracking.unrecorded`.** The plan had `notAttempted` only. A replay of an
+  `unknown` receipt cannot prove what the lost process did after its last record,
+  so its holes are counted in `unrecorded` (error `NotRecordedError`, class
+  `indeterminate`) and `notAttempted` stays 0. A live response and a replay of any
+  other terminal receipt count holes in `notAttempted`.
+- **Observer contract.** The engine calls the observer once per attempted
+  document in strictly increasing index order and stops when it returns an error.
+  The recorder treats an out-of-range, duplicate or out-of-order index as a
+  recording failure, and the receipt then finalizes `unknown`.
+- **Receipt writes after the cluster was touched** run on a context detached from
+  request cancellation, bounded at 5 seconds.
+
+#### HTTP handlers (U29a, #566)
+
+- **404, not 403.** A receipt the caller may not read is answered like one that
+  does not exist, so ids cannot be enumerated. The envelope gate is owner or
+  admin first, then an explicit grant (grants are read only when the first check
+  fails).
+- **Per-object read-time redaction, fail-closed.** Each object is shown only if
+  the caller currently holds `get` on its resource in its namespace on the
+  receipt's own cluster. A hidden object keeps only its index and a reason
+  (`forbidden` or `secret-filtered`). An access-check error is a denial, and after
+  one error the rest of that request's uncached checks are denials too. An object
+  with no recorded resource cannot be re-authorized and is hidden. For a Secret,
+  `get` on core `secrets` in its namespace is required first.
+- **Secret-bearing receipts.** `contentDigest` is blank for everyone but the
+  owner, because an unsalted digest of a bundle whose Secret rows are filtered is
+  an offline confirmation oracle. The stored per-object error text for such a
+  bundle is replaced with its class plus a fixed message at write time.
+- **Ownership is redacted too.** An entry is shown only when its object is
+  visible. Within it, confirming applications the caller can no longer `get` are
+  removed and counted in `redactedApps`; the controller, confidence and reason are
+  recomputed from the applications that remain, so a hidden application's tool is
+  not disclosed through `both`.
+- **Remote receipts.** Live access to a remote receipt's cluster needs the admin
+  role. A non-admin still reads a stored final verdict, redacted. A non-final
+  verification for a non-admin on a remote receipt is a 403 from that gate, not a
+  receipt permission failure.
+
+#### Wiring (U29b, #567)
+
+- **Per-user rate limiter.** `/changes/*` has its own limiter keyed per
+  authenticated user (`middleware.RateLimitByUser`), not per IP: behind the
+  frontend BFF every browser request shares the pod's address. The budget is 60
+  requests per minute in production and 600 in dev (`changesRateLimit` in
+  `cmd/kubecenter/ratelimits.go`), derived from the 12 requests per minute a
+  5-second verification poll costs per open receipt. It is separate from the YAML
+  limiter so polling cannot starve `/yaml/apply`.
+- **Verification audit.** `Handler.SetVerificationAudit` installs a hook that is
+  called once per verdict the owner's request persisted
+  (`VerificationResult.Persisted`). `server.ChangesVerificationAudit` writes one
+  `change_verify` audit entry for it. A live evaluation by another reader, a
+  stored verdict read back, a lost write race and the reconciler's verdict write
+  none.
+- **Capability row.** `changes.receipts` is `LocalSupported: true`,
+  `RemoteSupported: true`, with the matching README row and frontend capability
+  id.
+- **Registration.** The routes and the service exist only when PostgreSQL is
+  configured. With no database `/changes/*` is not mounted and a tracked apply
+  answers 503.
+
+#### Tracked apply (U30a, #569) and its client (U30b, #568)
+
+- **Remote clusters are supported; there is no 501.** The plan expected a 501 on
+  remote targets until Release C's U9. U9 landed first, so tracked apply uses the
+  per-target mapper and works on any registered cluster. The planned
+  `TestHandleApply_RemoteClusterStill501UntilU9` marker was not needed.
+- **Presence opts in.** `trackedOperationId` present but empty or malformed is a
+  400, never a silent untracked apply. Ids are accepted in either letter case and
+  canonicalized to lowercase everywhere.
+- **Step-aware 503 `receipt_store_unavailable`.** Every case carries
+  `extra.applied = false` and `extra.retrySameOperationId`. A failed `insert` and
+  a failed `read` set it true: an insert failure can be a retry of a send that
+  already applied, and a new id could apply twice, while reusing the id is always
+  safe. A failed `mark` sets it false because the row was finalized `failed` and
+  the id is spent. A missing store sets it false because there is no receipt to
+  retry against.
+- **Context stop.** An observed apply checks the request context before each
+  document and again immediately before each PATCH. Documents not sent after a
+  hang-up or the BFF's 30-second cap are reported failed with `NotAttemptedError`
+  and are never observed, so the receipt records them as not attempted. A PATCH
+  that was issued and then cut off is `indeterminate`.
+- **Audit.** A live tracked apply writes the same per-result entries as an
+  untracked one, with ` op=<id>` appended to `Detail`. A replay writes none. A 409
+  idempotency refusal is audited once.
+- **Untracked path.** Byte-identical to before, golden-tested. `ApplyDocuments`
+  keeps its signature and delegates to `ApplyDocumentsObserved`.
+- **The frontend runs on Bun and Astro, not Fresh.** The plan's U30b and U31 file
+  paths assumed the Fresh tree, which was removed in the Astro migration. Islands
+  live under `frontend/src/islands/`, shared logic under `frontend/lib/`.
+- **Operation-id lifecycle** (`frontend/lib/yaml-apply.ts`): each user-initiated
+  tracked apply mints an id with `uuidv4()` (`frontend/lib/uuid.ts`). The id is
+  reused only when the previous attempt's outcome is unknown (no response, any
+  5xx, or 409 `operation_in_flight`) and the request is unchanged. The request key
+  covers force, pin, repairOf, cluster id, current user id and the YAML text.
+- **`uuidv4` falls back to `getRandomValues`.** `crypto.randomUUID` does not exist
+  on the HTTP-only homelab. The fallback never uses `Math.random`.
+- **Pending id in `sessionStorage`**, under `kubecenter:pending-apply:` plus the
+  SHA-256 of the request key, so a remount or reload continues the attempt. The
+  key itself is never stored, because it contains the manifest. The SHA-256 is a
+  synchronous JS implementation because `crypto.subtle` is also missing on HTTP.
+  Entries expire after 10 minutes (matching the reconcile grace) and are cleared
+  on logout.
+
+#### UI (U31, #570)
+
+- **Scope.** Ownership preview before apply, a tracked-apply panel on the YAML
+  apply page, a receipt detail page at `/changes/[id]`, and a `/changes` list page
+  (the plan did not specify a list page), linked from Tools navigation and the
+  command palette. Playwright coverage is in `e2e/tests/change-receipts.spec.ts`.
+- **Namespace defaulting is server-side.** `HandleResolveOwnership` resolves the
+  kind through the target cluster's RESTMapper, and when the kind is namespaced and
+  the request names no namespace it uses `default`, the namespace the applier
+  writes to. The ownership check therefore looks at the object the apply would
+  change; left empty, the inventory match and the live hint read would miss it and
+  the object would read as unmanaged. The client does not guess a namespace.
+- **Per-document parse; an unreadable group is "Not checked".** `/yaml/validate`
+  does not report the API group, which ownership matching needs. The client parses
+  the previewed YAML one document at a time, aligned to the server's indexes, to
+  get group and version (`ownershipPlanFromPreview` in
+  `frontend/lib/change-copy.ts`). A document whose `apiVersion` cannot be read, or
+  whose kind and name disagree with the server's, is not sent group-less (that
+  would be checked as a core-group object and could read as unmanaged). It becomes
+  a client-only row with reason `api-version-unreadable`, shown as "Not checked".
+  Only that document is affected. A document without a name (`generateName`) is
+  skipped.
+- **503 copy is keyed on `applied` and `retrySameOperationId`.** When the server
+  confirmed `applied: false`, the page says "Nothing was applied by this request."
+  With `retrySameOperationId: true` it adds that an earlier attempt under the same
+  operation id may already have applied and to check its change receipt; with
+  `false` it says the next apply starts a new change. Without `applied: false` it
+  says the outcome is unconfirmed and to check the live objects.
+- **Attempt-receipt link only when the attempt may have applied.**
+  `attemptMayHaveApplied` is true for no response, a 5xx, and a store 503 that does
+  not rule it out (`applied` not false, or `retrySameOperationId` true). It is
+  false for a definite refusal, a 409, and `operation_in_flight` (which carries its
+  own receipt link). `useYamlApply` exposes it as `attemptOutcomeUnknown`, and the
+  YAML apply page links the attempt's receipt only while it is true and there are
+  no results. `lastOperationId` and `attemptOutcomeUnknown` reset on Validate and
+  on each Apply press; the id a retry reuses is kept separately.
+- **The receipts list pager is labelled from the page on screen.** `shown` holds
+  the last page that loaded and its number, so a failed load cannot relabel the
+  old rows. A failed request reads "Could not load page N of M" with the
+  requested page, and pressing the pager button for that page retries it.
+- **e2e.** Waits race the page's error banner (`expectOrPageError`), so a 429 or
+  other error fails with the on-screen cause instead of a bare timeout. The
+  cross-user isolation test retries 429s from the shared auth bucket with backoff
+  (honouring `Retry-After`) and fails if the bucket never clears, rather than
+  skipping.
+
+### Open items and risks, as resolved
+
+| Plan item | Outcome |
+|---|---|
+| R-4 / open item 1: no PostgreSQL test harness | **Resolved.** The harness (U0, env-gated) exists and the DB behaviours are automated. `docs/solutions/postgres-test-harness-conventions.md` records the `change_receipts` tables and the table-global sweep caveat. |
+| R-6 / open item 4: U9 ordering | **Resolved.** U9 landed before U30a. There is no 501 marker test. |
+| R-7 / open item 3: U20 tag drift | **Resolved.** U20 shipped in #562 before U27. `changes` aliases `diagnostics.CheckResult`, `CheckStatus`, `SourceRef` and `Severity`, so the persisted JSON is exactly diagnostics' shape. |
+| R-3: `ReconcileOrphans` is single-replica only | **Narrowed.** The 10-minute age bound removes the rolling-update hazard. What remains is the assumption that no apply runs longer than the bound; leader election is still the real fix for a scaled-out backend. |
+| R-8 / open item 2: `change_receipt_grants` has no write API | **Still open.** The table shipped in `000023` and the read path honours existing rows, but nothing creates grants. Grant creation is expected with Release D's incident-sharing surface; otherwise drop the table in a later migration. |
+| R-9: later documents reported `failed` after a mid-bundle stop | **Holds as planned.** `tracking.notAttempted` and `tracking.unrecorded` distinguish the cases. |
+| R-10: verification is client-polled | **Holds as planned.** A receipt nobody polls stays `pending`, and one polled and then abandoned stays `verifying`, until the next read; the reconciler writes `inconclusive` only for rows still `applying`. |
+| R-1, R-2, R-5, R-11, R-12 | Unchanged. |
+
+### Not done
+
+- No tracked apply has been run against the homelab through the deployed UI.
+- Mobile does not send `trackedOperationId` or read `/changes`.
+- Receipts have no grant-creation API (see R-8 above).
