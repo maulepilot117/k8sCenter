@@ -1921,3 +1921,54 @@ func TestCaptureNeverStartsQueuedSourcesAfterReturning(t *testing.T) {
 		t.Fatalf("%d queued source(s) started after Capture returned", n)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Re-review round 4
+// ---------------------------------------------------------------------------
+
+func TestCaptureSkippedQueuedSourcesAreTimedOutNotPanicked(t *testing.T) {
+	l := testLimits()
+	l.MaxConcurrency = 1
+	l.CaptureTimeout = 40 * time.Millisecond
+	l.SourceTimeout = time.Second // the capture deadline, not the source's, ends the first source
+	// The first source honours its context, so the group finishes inside
+	// the grace: the queued sources were skipped, not left running, and
+	// their empty slots must still read as "never observed", not "panicked".
+	c := newTestCollector(t, l,
+		blockingSource("polite"),
+		completeSource("q1", completeItem("a")),
+		completeSource("q2", completeItem("b")),
+	)
+	rep := capture(t, c, localRequest())
+	if got := sourceReport(t, rep, "polite"); got.Completeness != CompletenessTimedOut {
+		t.Errorf("polite = %+v, want timed_out", got)
+	}
+	for _, id := range []string{"q1", "q2"} {
+		if got := sourceReport(t, rep, id); got.Completeness != CompletenessTimedOut || got.Detail != detailCaptureCut {
+			t.Errorf("%s = %+v, want timed_out with the capture-deadline detail (never a panic)", id, got)
+		}
+	}
+	if rep.Completeness != CompletenessPartial || len(rep.Items) != 0 {
+		t.Errorf("report = %q with %d items", rep.Completeness, len(rep.Items))
+	}
+}
+
+func TestCapturePanicAfterTheDeadlineIsStillRecorded(t *testing.T) {
+	l := testLimits()
+	l.CaptureTimeout = 40 * time.Millisecond
+	l.SourceTimeout = time.Second
+	c := newTestCollector(t, l,
+		stubSource{id: "late-boom", fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
+			<-ctx.Done() // the capture deadline
+			panic("adapter bug after the deadline")
+		}},
+		completeSource("fine", completeItem("a")),
+	)
+	rep := capture(t, c, localRequest())
+	if got := sourceReport(t, rep, "late-boom"); got.Completeness != CompletenessFailed || got.Detail != detailPanicked {
+		t.Errorf("late-boom = %+v, want failed (a panic after entry is recorded, deadline or not)", got)
+	}
+	if got := sourceReport(t, rep, "fine"); got.Completeness != CompletenessComplete || got.Items != 1 {
+		t.Errorf("fine = %+v", got)
+	}
+}

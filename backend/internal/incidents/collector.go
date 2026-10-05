@@ -450,7 +450,7 @@ func (c *Collector) Capture(ctx context.Context, req CaptureRequest) (CaptureRep
 			outcome = &o
 		default:
 		}
-		sr, items := c.finalize(src.ID(), outcome, finished, now, keys)
+		sr, items := c.finalize(src.ID(), outcome, finished && captureCtx.Err() == nil, now, keys)
 		if sr.Completeness != CompletenessComplete {
 			report.Completeness = CompletenessPartial
 		}
@@ -526,15 +526,17 @@ const (
 )
 
 // finalize turns one worker's slot into its report and finalized items. A
-// panicked outcome is failed. A nil outcome means the worker never sent:
-// it was still running, or never launched behind the concurrency limit,
-// when the capture deadline cut the wait, and is reported timed_out either
-// way (nothing of it was observed); after a completed wait a nil slot
-// cannot happen and is treated as a failure.
-func (c *Collector) finalize(id string, o *sourceOutcome, finished bool, now time.Time, keys map[string]bool) (SourceReport, []Evidence) {
+// panicked outcome is failed (the worker's deferred send records a panic
+// whether or not the deadline has passed). A nil outcome means the worker
+// never sent: once the capture deadline has passed it was still running,
+// or was never launched (skipped behind the concurrency limit), and is
+// reported timed_out either way, since nothing of it was observed. intact
+// says the group finished with the deadline still unexpired; only then is
+// a nil slot impossible and treated as a failure.
+func (c *Collector) finalize(id string, o *sourceOutcome, intact bool, now time.Time, keys map[string]bool) (SourceReport, []Evidence) {
 	sr := SourceReport{ID: id}
 	switch {
-	case o != nil && o.panicked, o == nil && finished:
+	case o != nil && o.panicked, o == nil && intact:
 		sr.Completeness, sr.Detail = CompletenessFailed, detailPanicked
 		return sr, nil
 	case o == nil:
