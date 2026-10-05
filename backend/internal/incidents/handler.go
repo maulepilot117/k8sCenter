@@ -126,7 +126,7 @@ type incidentStore interface {
 	Create(ctx context.Context, r store.IncidentRow) (uuid.UUID, error)
 	Get(ctx context.Context, id uuid.UUID) (*store.IncidentRow, error)
 	ListVisible(ctx context.Context, userID string, limit int, cursor string) ([]store.IncidentRow, string, error)
-	Update(ctx context.Context, id uuid.UUID, ownerID, title, summary, status string) error
+	Update(ctx context.Context, id uuid.UUID, ownerID string, title, summary, status *string) error
 	Delete(ctx context.Context, id uuid.UUID, ownerID string) error
 	CreateNote(ctx context.Context, incidentID uuid.UUID, authorID, body string) (store.IncidentNoteRow, error)
 	ListNotes(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]store.IncidentNoteRow, string, error)
@@ -324,7 +324,12 @@ type scopeDecision struct {
 // exactly one attempt; an error on one scope says nothing about another, so
 // nothing short-circuits on it. What bounds the request is ctx, which the
 // handler derives with accessCheckTimeout: once it is done, every uncached
-// scope is unavailable without a call.
+// scope is unavailable without a call. That is deliberately fail-closed:
+// the AccessChecker's own 60s cache might have answered some of those
+// scopes without a round trip, but the memo cannot tell a cached scope
+// from one that would dial, and a budget that has already run out must not
+// be spent on finding out. The caller sees authorization_check_unavailable
+// (retryable), never a guess.
 type scopeMemo struct {
 	ctx       context.Context
 	access    accessChecker
@@ -830,20 +835,13 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	title, summary, status := c.row.Title, c.row.Summary, c.row.Status
-	if req.Title != nil {
-		title = *req.Title
-	}
-	if req.Summary != nil {
-		summary = *req.Summary
-	}
-	if req.Status != nil {
-		status = *req.Status
-	}
+	// The pointers go straight to the store: an omitted field is merged by
+	// COALESCE in the UPDATE, never from this request's (possibly stale)
+	// read, so interleaved partial updates keep each other's fields.
 	ctx := r.Context()
 	id := c.row.ID
 	detail := "incident " + id.String()
-	if err := h.incidents.Update(ctx, id, user.ID, title, summary, status); err != nil {
+	if err := h.incidents.Update(ctx, id, user.ID, req.Title, req.Summary, req.Status); err != nil {
 		h.auditLog(r, user, ActionIncidentUpdate, audit.ResultFailure, c.row.ClusterID, "incident", detail)
 		h.writeStoreFailure(w, "update incident", err)
 		return
@@ -855,14 +853,25 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("incident %s not readable after update", id)
 	}
 	if err != nil {
+		// Best-known view: the row as read before the write with this
+		// request's fields applied (a concurrent partial update's fields
+		// may be missing from it; the stored row is right).
 		h.logger.Warn("incident updated but could not be read back; answering from the known row", "incidentId", id, "error", err)
 		known := *c.row
-		known.Title, known.Summary, known.Status = title, summary, status
+		if req.Title != nil {
+			known.Title = *req.Title
+		}
+		if req.Summary != nil {
+			known.Summary = *req.Summary
+		}
+		if req.Status != nil {
+			known.Status = *req.Status
+		}
 		switch {
-		case status == store.IncidentStatusClosed && known.ClosedAt == nil:
+		case known.Status == store.IncidentStatusClosed && known.ClosedAt == nil:
 			now := time.Now().UTC()
 			known.ClosedAt = &now
-		case status != store.IncidentStatusClosed:
+		case known.Status != store.IncidentStatusClosed:
 			known.ClosedAt = nil
 		}
 		row = &known

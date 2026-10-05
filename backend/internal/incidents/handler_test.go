@@ -51,6 +51,11 @@ type fakeStore struct {
 	getFails          int
 	// afterListVisible runs between ListVisible and the role lookups.
 	afterListVisible func()
+	// beforeUpdate runs once inside the next Update, before its write.
+	beforeUpdate func()
+	// blockAccessUntilDone makes the recording access checker block until
+	// its ctx is done (deterministic budget expiry, no wall clock).
+	blockAccessUntilDone bool
 	// deadlines records whether each store call's context carried a deadline.
 	deadlines []bool
 	clock     time.Time
@@ -179,22 +184,48 @@ func (f *fakeStore) ownershipMiss(id uuid.UUID) error {
 	return store.ErrNotOwner
 }
 
-func (f *fakeStore) Update(ctx context.Context, id uuid.UUID, ownerID, title, summary, status string) error {
+// Update mirrors the store's COALESCE semantics: a nil field keeps the
+// column; closed_at follows the resulting status. beforeUpdate runs after
+// validation and before the write, so a test can interleave another write.
+func (f *fakeStore) Update(ctx context.Context, id uuid.UUID, ownerID string, title, summary, status *string) error {
 	if err := f.enter(ctx, "Update"); err != nil {
 		return err
 	}
-	for _, v := range []error{store.ValidateIncidentTitle(title), store.ValidateIncidentSummary(summary), store.ValidateIncidentStatus(status)} {
-		if v != nil {
-			return v
+	if title != nil {
+		if err := store.ValidateIncidentTitle(*title); err != nil {
+			return err
 		}
+	}
+	if summary != nil {
+		if err := store.ValidateIncidentSummary(*summary); err != nil {
+			return err
+		}
+	}
+	if status != nil {
+		if err := store.ValidateIncidentStatus(*status); err != nil {
+			return err
+		}
+	}
+	if f.beforeUpdate != nil {
+		hook := f.beforeUpdate
+		f.beforeUpdate = nil
+		hook()
 	}
 	r, ok := f.incidents[id]
 	if !ok || r.OwnerID != ownerID {
 		return f.ownershipMiss(id)
 	}
-	r.Title, r.Summary, r.Status = title, summary, status
+	if title != nil {
+		r.Title = *title
+	}
+	if summary != nil {
+		r.Summary = *summary
+	}
+	if status != nil {
+		r.Status = *status
+	}
 	r.UpdatedAt = f.tick()
-	if status == store.IncidentStatusClosed {
+	if r.Status == store.IncidentStatusClosed {
 		if r.ClosedAt == nil {
 			t := r.UpdatedAt
 			r.ClosedAt = &t
@@ -430,8 +461,10 @@ type fakeAccess struct {
 	allow  func(clusterID, group, resource, namespace string) bool
 	err    error
 	errFor func(accessCall) error
-	delay  time.Duration
-	calls  []accessCall
+	// blockUntilDone makes every check wait for ctx to end and return its
+	// error: a stalled cluster, without a wall-clock delay.
+	blockUntilDone bool
+	calls          []accessCall
 }
 
 func allowAll(string, string, string, string) bool { return true }
@@ -442,12 +475,9 @@ func (f *fakeAccess) CanAccessGroupResource(ctx context.Context, clusterID, _ st
 	}
 	call := accessCall{clusterID, apiGroup, resource, namespace}
 	f.calls = append(f.calls, call)
-	if f.delay > 0 {
-		select {
-		case <-time.After(f.delay):
-		case <-ctx.Done():
-			return false, fmt.Errorf("SelfSubjectAccessReview: %w", ctx.Err())
-		}
+	if f.blockUntilDone {
+		<-ctx.Done()
+		return false, fmt.Errorf("SelfSubjectAccessReview: %w", ctx.Err())
 	}
 	if f.err != nil {
 		return false, f.err
@@ -925,20 +955,19 @@ func TestCheckErrorIsIsolatedToItsScope(t *testing.T) {
 func TestSlowAccessCheckIsBoundedPerRequest(t *testing.T) {
 	// A stalled cluster must yield per-row authorization_check_unavailable
 	// within the handler's access budget, not a whole-request timeout.
+	// Deterministic: the budget is one nanosecond, so it has expired by the
+	// time the first check runs, and the fake checker blocks until that
+	// expiry rather than sleeping; no wall-clock assumption is made.
 	hs := newHarness(t)
-	hs.h.accessTimeout = 30 * time.Millisecond
-	hs.access.delay = 5 * time.Second
+	hs.h.accessTimeout = time.Nanosecond
+	hs.access.blockUntilDone = true
 	id := hs.seed(t, alice)
 	hs.addRows(
 		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "payments", "a"),
 		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "billing", "b"),
 		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "search", "c"),
 	)
-	start := time.Now()
 	w := hs.get(t, alice, id)
-	if took := time.Since(start); took > 2*time.Second {
-		t.Fatalf("request took %s; the access budget did not bound it", took)
-	}
 	wantStatus(t, w, http.StatusOK)
 	d := data(t, w)
 	wh := withheldOf(t, d)
@@ -1615,6 +1644,62 @@ func TestPartialUpdateKeepsOmittedFields(t *testing.T) {
 	wantStatus(t, w, http.StatusOK)
 	if hs.st.incidents[id].Summary != "" || hs.st.incidents[id].Title != "renamed" {
 		t.Fatalf("stored row = %+v", hs.st.incidents[id])
+	}
+}
+
+func TestInterleavedPartialUpdatesKeepBothFields(t *testing.T) {
+	// Two owners' sessions read the same row; the title-only PUT's write is
+	// interleaved with a summary-only write. The merge is the store's
+	// (COALESCE), not the handler's stale read, so both survive.
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	wantStatus(t, hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"summary":"s0","status":"closed"}`}), http.StatusOK)
+	hs.st.beforeUpdate = func() {
+		if err := hs.st.Update(context.Background(), id, alice.ID, nil, ptrTo("summary from the other session"), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"title":"title from this session"}`})
+	wantStatus(t, w, http.StatusOK)
+	inc := data(t, w)["incident"].(map[string]any)
+	if inc["title"] != "title from this session" || inc["summary"] != "summary from the other session" || inc["status"] != "closed" {
+		t.Fatalf("after interleaved partial PUTs: %v", inc)
+	}
+	row := hs.st.incidents[id]
+	if row.Title != "title from this session" || row.Summary != "summary from the other session" || row.Status != "closed" || row.ClosedAt == nil {
+		t.Fatalf("stored row = %+v", row)
+	}
+}
+
+func ptrTo(s string) *string { return &s }
+
+func TestCountsReadFailureIs503OnDetailButNotOnWriteEcho(t *testing.T) {
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	hs.st.failOp["ListScopeRowsByIncident"] = errors.New("pg: scope read failed")
+
+	w := hs.get(t, alice, id)
+	wantStatus(t, w, http.StatusServiceUnavailable)
+	if strings.Contains(w.Body.String(), `"counts"`) {
+		t.Fatalf("detail answered with counts on a failed count read: %s", w.Body.String())
+	}
+
+	w = hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"title":"renamed"}`})
+	wantStatus(t, w, http.StatusOK)
+	if _, has := data(t, w)["counts"]; has {
+		t.Fatalf("update echo carries counts after a failed count read: %s", w.Body.String())
+	}
+	if data(t, w)["incident"].(map[string]any)["title"] != "renamed" {
+		t.Fatalf("update echo = %s", w.Body.String())
+	}
+	w = hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: `{"title":"t","windowStart":"2026-10-05T11:00:00Z"}`})
+	wantStatus(t, w, http.StatusCreated)
+	if _, has := data(t, w)["counts"]; has {
+		t.Fatalf("create echo carries counts after a failed count read: %s", w.Body.String())
+	}
+	want := []string{string(ActionIncidentUpdate) + ":success", string(ActionIncidentCreate) + ":success"}
+	if got := hs.audit.actions(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("audit = %v, want %v", got, want)
 	}
 }
 

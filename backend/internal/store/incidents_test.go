@@ -196,13 +196,13 @@ func TestIncidentStore_RejectsInvalidInputBeforeSQL(t *testing.T) {
 	}
 
 	id := uuid.New()
-	if err := s.Update(ctx, id, "o", "t", "", "resolved"); !errors.Is(err, ErrIncidentInvalid) {
+	if err := s.Update(ctx, id, "o", ptr("t"), ptr(""), ptr("resolved")); !errors.Is(err, ErrIncidentInvalid) {
 		t.Errorf("Update with bad status = %v; want ErrIncidentInvalid", err)
 	}
-	if err := s.Update(ctx, id, "o", "", "", IncidentStatusOpen); !errors.Is(err, ErrIncidentInvalid) {
+	if err := s.Update(ctx, id, "o", ptr(""), ptr(""), ptr(IncidentStatusOpen)); !errors.Is(err, ErrIncidentInvalid) {
 		t.Errorf("Update with empty title = %v; want ErrIncidentInvalid", err)
 	}
-	if err := s.Update(ctx, id, "", "t", "", IncidentStatusOpen); !errors.Is(err, ErrIncidentInvalid) {
+	if err := s.Update(ctx, id, "", ptr("t"), ptr(""), ptr(IncidentStatusOpen)); !errors.Is(err, ErrIncidentInvalid) {
 		t.Errorf("Update with empty owner = %v; want ErrIncidentInvalid", err)
 	}
 	if err := s.Delete(ctx, id, ""); !errors.Is(err, ErrIncidentInvalid) {
@@ -567,7 +567,7 @@ func TestIncidentStore_OwnerBoundary(t *testing.T) {
 	a, b := testOwnerID(t), testOwnerID(t)
 	id := mustCreateIncident(t, s, newIncident(a, "a's incident"))
 
-	if err := s.Update(ctx, id, b, "hijacked", "", IncidentStatusClosed); !errors.Is(err, ErrNotOwner) {
+	if err := s.Update(ctx, id, b, ptr("hijacked"), ptr(""), ptr(IncidentStatusClosed)); !errors.Is(err, ErrNotOwner) {
 		t.Errorf("B's Update = %v; want ErrNotOwner", err)
 	}
 	if err := s.Delete(ctx, id, b); !errors.Is(err, ErrNotOwner) {
@@ -594,7 +594,7 @@ func TestIncidentStore_OwnerBoundary(t *testing.T) {
 	}
 
 	missing := uuid.New()
-	if err := s.Update(ctx, missing, a, "t", "", IncidentStatusOpen); !errors.Is(err, ErrIncidentNotFound) {
+	if err := s.Update(ctx, missing, a, ptr("t"), ptr(""), ptr(IncidentStatusOpen)); !errors.Is(err, ErrIncidentNotFound) {
 		t.Errorf("Update(missing) = %v; want ErrIncidentNotFound", err)
 	}
 	if err := s.Delete(ctx, missing, a); !errors.Is(err, ErrIncidentNotFound) {
@@ -616,7 +616,7 @@ func TestIncidentStore_UpdateClosesAndReopens(t *testing.T) {
 	id := mustCreateIncident(t, s, newIncident(owner, "t"))
 	before := mustGetIncident(t, s, id)
 
-	if err := s.Update(ctx, id, owner, "renamed", "new summary", IncidentStatusClosed); err != nil {
+	if err := s.Update(ctx, id, owner, ptr("renamed"), ptr("new summary"), ptr(IncidentStatusClosed)); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	closed := mustGetIncident(t, s, id)
@@ -631,18 +631,78 @@ func TestIncidentStore_UpdateClosesAndReopens(t *testing.T) {
 	}
 
 	// Editing a closed incident keeps the original close time.
-	if err := s.Update(ctx, id, owner, "renamed again", "", IncidentStatusClosed); err != nil {
+	if err := s.Update(ctx, id, owner, ptr("renamed again"), ptr(""), ptr(IncidentStatusClosed)); err != nil {
 		t.Fatalf("edit while closed: %v", err)
 	}
 	if again := mustGetIncident(t, s, id); again.ClosedAt == nil || !again.ClosedAt.Equal(*closed.ClosedAt) {
 		t.Errorf("closed_at moved from %v to %v on an edit that kept it closed", closed.ClosedAt, again.ClosedAt)
 	}
 
-	if err := s.Update(ctx, id, owner, "renamed", "", IncidentStatusOpen); err != nil {
+	if err := s.Update(ctx, id, owner, ptr("renamed"), ptr(""), ptr(IncidentStatusOpen)); err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	if reopened := mustGetIncident(t, s, id); reopened.Status != IncidentStatusOpen || reopened.ClosedAt != nil {
 		t.Errorf("after reopen status=%q closed_at=%v; want open and nil", reopened.Status, reopened.ClosedAt)
+	}
+}
+
+// ptr is a literal's address, for the nullable Update fields.
+func ptr(s string) *string { return &s }
+
+// TestIncidentStore_PartialUpdatesMergeInSQL: a nil field keeps the column
+// (COALESCE in the UPDATE), so two partial updates that interleave never
+// revert each other, and the closed_at rule follows the RESULTING status.
+func TestIncidentStore_PartialUpdatesMergeInSQL(t *testing.T) {
+	s, _ := newIncidentStore(t)
+	ctx := t.Context()
+	owner := testOwnerID(t)
+	id := mustCreateIncident(t, s, newIncident(owner, "original"))
+
+	// Two editors each read the same row, then write one field each.
+	if err := s.Update(ctx, id, owner, ptr("renamed"), nil, nil); err != nil {
+		t.Fatalf("title-only: %v", err)
+	}
+	if err := s.Update(ctx, id, owner, nil, ptr("new summary"), nil); err != nil {
+		t.Fatalf("summary-only: %v", err)
+	}
+	got := mustGetIncident(t, s, id)
+	if got.Title != "renamed" || got.Summary != "new summary" || got.Status != IncidentStatusOpen || got.ClosedAt != nil {
+		t.Fatalf("after interleaved partial updates = %+v; want both fields kept", got)
+	}
+
+	// Closing with status only keeps title and summary; a later nil-status
+	// edit keeps it closed with the original close time.
+	if err := s.Update(ctx, id, owner, nil, nil, ptr(IncidentStatusClosed)); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	closed := mustGetIncident(t, s, id)
+	if closed.Status != IncidentStatusClosed || closed.ClosedAt == nil || closed.Title != "renamed" || closed.Summary != "new summary" {
+		t.Fatalf("after close = %+v", closed)
+	}
+	if err := s.Update(ctx, id, owner, ptr("renamed twice"), nil, nil); err != nil {
+		t.Fatalf("edit while closed: %v", err)
+	}
+	again := mustGetIncident(t, s, id)
+	if again.Status != IncidentStatusClosed || again.ClosedAt == nil || !again.ClosedAt.Equal(*closed.ClosedAt) || again.Title != "renamed twice" {
+		t.Fatalf("nil-status edit on a closed incident = %+v; want still closed at %v", again, closed.ClosedAt)
+	}
+	// Reopening with status only clears closed_at.
+	if err := s.Update(ctx, id, owner, nil, nil, ptr(IncidentStatusOpen)); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if re := mustGetIncident(t, s, id); re.Status != IncidentStatusOpen || re.ClosedAt != nil || re.Title != "renamed twice" {
+		t.Fatalf("after reopen = %+v", re)
+	}
+	// All nil: nothing to validate, nothing changes but updated_at.
+	if err := s.Update(ctx, id, owner, nil, nil, nil); err != nil {
+		t.Fatalf("empty update: %v", err)
+	}
+	// A nil field is not validated; a non-nil one still is.
+	if err := s.Update(ctx, id, owner, ptr(""), nil, nil); !errors.Is(err, ErrIncidentInvalid) {
+		t.Fatalf("empty title = %v; want ErrIncidentInvalid", err)
+	}
+	if err := s.Update(ctx, id, owner, nil, nil, ptr("resolved")); !errors.Is(err, ErrIncidentInvalid) {
+		t.Fatalf("bad status = %v; want ErrIncidentInvalid", err)
 	}
 }
 
@@ -670,7 +730,7 @@ func TestIncidentStore_ListVisibleIncludesGrantedIncident(t *testing.T) {
 		t.Errorf("collaborator sees %v; want exactly the granted %s", incidentIDs(rows), shared)
 	}
 	// A grant conveys no ownership: the collaborator still cannot mutate it.
-	if err := s.Update(ctx, shared, collaborator, "x", "", IncidentStatusOpen); !errors.Is(err, ErrNotOwner) {
+	if err := s.Update(ctx, shared, collaborator, ptr("x"), ptr(""), ptr(IncidentStatusOpen)); !errors.Is(err, ErrNotOwner) {
 		t.Errorf("collaborator Update = %v; want ErrNotOwner", err)
 	}
 	if err := s.Delete(ctx, shared, collaborator); !errors.Is(err, ErrNotOwner) {

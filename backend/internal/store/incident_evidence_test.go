@@ -666,14 +666,14 @@ func TestInsertBatchOwnerStatusAndExistenceGates(t *testing.T) {
 	}
 	requireConsistent(t, readEvidenceTotals(t, pool, incident), 0, 0, 0)
 
-	if err := is.Update(t.Context(), incident, owner, "gates", "", IncidentStatusClosed); err != nil {
+	if err := is.Update(t.Context(), incident, owner, nil, nil, ptr(IncidentStatusClosed)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := es.InsertBatch(t.Context(), incident, owner, row, ceilingLimits); !errors.Is(err, ErrIncidentClosed) {
 		t.Errorf("closed incident = %v; want ErrIncidentClosed", err)
 	}
 	requireConsistent(t, readEvidenceTotals(t, pool, incident), 0, 0, 0)
-	if err := is.Update(t.Context(), incident, owner, "gates", "", IncidentStatusOpen); err != nil {
+	if err := is.Update(t.Context(), incident, owner, nil, nil, ptr(IncidentStatusOpen)); err != nil {
 		t.Fatal(err)
 	}
 	if n := mustInsert(t, es, incident, owner, ceilingLimits, row...); n != 1 {
@@ -961,7 +961,7 @@ func TestInsertBatchErrorPrecedence(t *testing.T) {
 	intruder := owner + "-intruder"
 	open := mustCreateIncident(t, is, newIncident(owner, "open"))
 	closed := mustCreateIncident(t, is, newIncident(owner, "closed"))
-	if err := is.Update(t.Context(), closed, owner, "closed", "", IncidentStatusClosed); err != nil {
+	if err := is.Update(t.Context(), closed, owner, nil, nil, ptr(IncidentStatusClosed)); err != nil {
 		t.Fatal(err)
 	}
 	small := EvidenceLimits{MaxItemBytes: 50, MaxIncidentBytes: 30, MaxItems: 1, MaxScopes: 1}

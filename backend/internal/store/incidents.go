@@ -503,31 +503,41 @@ func (s *IncidentStore) ListVisible(ctx context.Context, userID string, limit in
 	return out, next, nil
 }
 
-// Update replaces the title, summary and status of an incident owned by
-// ownerID, and bumps updated_at. Closing stamps closed_at (an edit to an
-// already-closed incident keeps its original close time); reopening clears it.
-// The owner is in the WHERE clause, so a non-owner can never write. Returns
-// ErrIncidentNotFound for a missing id and ErrNotOwner when it exists under
-// another owner.
-func (s *IncidentStore) Update(ctx context.Context, id uuid.UUID, ownerID, title, summary, status string) error {
+// Update sets the title, summary and/or status of an incident owned by
+// ownerID and bumps updated_at. A nil field keeps its column: the merge is
+// COALESCE in the UPDATE itself, so two partial updates that interleave
+// (one editor's title, another's summary) never revert each other the way a
+// handler-side read-modify-write would. closed_at follows the RESULTING
+// status: closing stamps it (an edit to an already-closed incident keeps its
+// original close time); reopening clears it. A non-nil field is validated; a
+// nil one is not. The owner is in the WHERE clause, so a non-owner can never
+// write. Returns ErrIncidentNotFound for a missing id and ErrNotOwner when
+// it exists under another owner.
+func (s *IncidentStore) Update(ctx context.Context, id uuid.UUID, ownerID string, title, summary, status *string) error {
 	if err := requireIdentity("owner id", ownerID); err != nil {
 		return err
 	}
-	if err := ValidateIncidentTitle(title); err != nil {
-		return err
+	if title != nil {
+		if err := ValidateIncidentTitle(*title); err != nil {
+			return err
+		}
 	}
-	if err := ValidateIncidentSummary(summary); err != nil {
-		return err
+	if summary != nil {
+		if err := ValidateIncidentSummary(*summary); err != nil {
+			return err
+		}
 	}
-	if err := ValidateIncidentStatus(status); err != nil {
-		return err
+	if status != nil {
+		if err := ValidateIncidentStatus(*status); err != nil {
+			return err
+		}
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE incidents
-		   SET title      = $3,
-		       summary    = $4,
-		       status     = $5,
-		       closed_at  = CASE WHEN $5 = 'closed' THEN COALESCE(closed_at, NOW()) ELSE NULL END,
+		   SET title      = COALESCE($3, title),
+		       summary    = COALESCE($4, summary),
+		       status     = COALESCE($5, status),
+		       closed_at  = CASE WHEN COALESCE($5, status) = 'closed' THEN COALESCE(closed_at, NOW()) ELSE NULL END,
 		       updated_at = NOW()
 		 WHERE id = $1 AND owner_id = $2`,
 		id, ownerID, title, summary, status)
@@ -641,6 +651,13 @@ const (
 // exists, so a page that ends on the last note never costs an extra request.
 // The schema does not bound notes per incident; every note is reachable by
 // paging.
+//
+// Ordering caveat: created_at is the INSERT's NOW(), which is the start of
+// its transaction. A note whose transaction commits late (it waited on a
+// lock) can therefore land BEHIND a cursor a forward pager has already
+// passed, and that pager will not see it until it restarts from the first
+// page. Accepted for Release D (notes are rare, and a reload shows them); a
+// monotonic BIGSERIAL ordering column would close it and needs a migration.
 func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]IncidentNoteRow, string, error) {
 	limit = clampIncidentPageSize(limit)
 	var (
