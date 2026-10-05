@@ -62,6 +62,19 @@ var kindToResource = map[string]string{
 	"PersistentVolumeClaim": "persistentvolumeclaims",
 }
 
+// TargetResource returns the API group, version and plural resource of a
+// kind diagnostics can resolve, and false for any other kind. It is the
+// exported view of kindToResource for callers (incident capture) that must
+// SAR-gate a target with the same identity diagnostics use.
+func TargetResource(kind string) (group, version, resource string, ok bool) {
+	resource, ok = kindToResource[kind]
+	if !ok {
+		return "", "", "", false
+	}
+	gv := kindGroupVersion[kind]
+	return gv.Group, gv.Version, resource, true
+}
+
 // kindNeedsReplicaSets enumerates target kinds whose related-pod resolution
 // walks through ReplicaSets. P3-3 security audit 2026-05-22: when the user
 // can't list ReplicaSets, we must skip the chain rather than leak owner data.
@@ -282,21 +295,32 @@ func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request)
 // worse than a temporarily reduced result set. P3-3 review-fix REL-003 / adv-5
 // (security audit 2026-05-22).
 func (h *Handler) resolveRelatedRBAC(ctx context.Context, user *auth.User, clusterID, kind, namespace string) *RelatedRBAC {
+	return ResolveRelatedRBAC(ctx, h.AccessChecker, h.Logger, user, clusterID, kind, namespace)
+}
+
+// ResolveRelatedRBAC is resolveRelatedRBAC for callers outside the HTTP
+// handler (incident capture runs the same resolution so its diagnostic
+// evidence is gated exactly as the diagnostics endpoint is). A nil logger
+// falls back to slog.Default().
+func ResolveRelatedRBAC(ctx context.Context, ac *resources.AccessChecker, logger *slog.Logger, user *auth.User, clusterID, kind, namespace string) *RelatedRBAC {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	related := &RelatedRBAC{}
 
 	if kindNeedsPods[kind] {
-		allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", namespace)
+		allowed, err := ac.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", namespace)
 		if err != nil {
-			h.Logger.Warn("related-pod RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
+			logger.Warn("related-pod RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
 		} else {
 			related.Pods = allowed
 		}
 	}
 
 	if kindNeedsReplicaSets[kind] {
-		allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "replicasets", namespace)
+		allowed, err := ac.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "replicasets", namespace)
 		if err != nil {
-			h.Logger.Warn("related-replicaset RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
+			logger.Warn("related-replicaset RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
 		} else {
 			related.ReplicaSets = allowed
 		}

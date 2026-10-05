@@ -48,6 +48,7 @@ jobs:
           - { pkg: ./internal/changes/, target: FuzzCheckRollout }
           - { pkg: ./internal/changes/, target: FuzzReceiptRedaction }
           - { pkg: ./internal/incidents/, target: FuzzIncidentRedaction }
+          - { pkg: ./internal/incidents/, target: FuzzEventProjection }
     name: ${{ matrix.target }}
     defaults:
       run:
