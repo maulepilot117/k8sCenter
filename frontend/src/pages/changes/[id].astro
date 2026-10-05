@@ -1,0 +1,9 @@
+---
+import ChangeReceipt from "../../islands/ChangeReceipt.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+
+const id = decodeURIComponent(Astro.params.id as string);
+---
+<ChromeLayout>
+  <ChangeReceipt client:load id={id} />
+</ChromeLayout>
