@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { uuidv4 } from "./uuid.ts";
+import { sameOperationId, uuidv4 } from "./uuid.ts";
 
 const V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -20,6 +20,26 @@ test("uses randomUUID when the runtime has it", () => {
     getRandomValues: <T extends ArrayBufferView | null>(a: T): T => a,
   };
   expect(uuidv4(c)).toBe("11111111-2222-4333-8444-555555555555");
+});
+
+test("randomUUID output is lowercased", () => {
+  const c = {
+    randomUUID: () => "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE" as const,
+    getRandomValues: <T extends ArrayBufferView | null>(a: T): T => a,
+  };
+  expect(uuidv4(c)).toBe("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+});
+
+test("sameOperationId ignores case and rejects blanks", () => {
+  const id = "6f1d3c52-4b1e-4f0a-9c53-0d7a2b8e1f64";
+  expect(sameOperationId(id, id.toUpperCase())).toBe(true);
+  expect(sameOperationId(id.toUpperCase(), id)).toBe(true);
+  expect(sameOperationId(id, "0b6a8d21-77c4-4d5e-8a30-5e1c9f2b4d07")).toBe(
+    false,
+  );
+  expect(sameOperationId(id, null)).toBe(false);
+  expect(sameOperationId(undefined, id)).toBe(false);
+  expect(sameOperationId("", "")).toBe(false);
 });
 
 test("the default source yields a v4 UUID", () => {

@@ -4,16 +4,17 @@ import { signal } from "@preact/signals";
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import { ApiError, setAccessToken } from "./api.ts";
+import { fetchCurrentUser, logout } from "./auth.ts";
 import type {
   ApplyTracking,
   TrackedApplyRefusalReason,
 } from "./change-types.ts";
 import { switchCluster, UNKNOWN_GENERATION } from "./cluster.ts";
+import { PENDING_ATTEMPT_TTL_MS } from "./pending-apply.ts";
 import {
   type ApplyResponse,
   buildApplyQuery,
   isIndeterminateApplyFailure,
-  PENDING_ATTEMPT_TTL_MS,
   trackedApplyRefusal,
   type UseYamlApplyOptions,
   type UseYamlApplyReturn,
@@ -82,6 +83,48 @@ afterEach(() => {
   // next test.
   globalThis.sessionStorage.clear();
 });
+
+/** Answers every request with `payload` for the duration of `fn`. */
+async function withFetch(payload: unknown, fn: () => Promise<unknown>) {
+  const prev = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )) as unknown as typeof globalThis.fetch;
+  try {
+    await fn();
+  } finally {
+    globalThis.fetch = prev;
+  }
+}
+
+/** Loads `id` as the signed-in user, as /auth/me does after login. */
+async function signIn(id: string) {
+  await withFetch(
+    {
+      data: {
+        user: {
+          id,
+          username: id,
+          provider: "local",
+          kubernetesUsername: id,
+          kubernetesGroups: [],
+          roles: [],
+        },
+        rbac: {},
+      },
+    },
+    () => fetchCurrentUser(),
+  );
+}
+
+/** Logs out, which also forgets every pending apply id. */
+async function signOut() {
+  await withFetch({}, () => logout());
+}
 
 /** Unmounts the mounted hook, as a navigation or remount would. */
 function unmount() {
@@ -1004,6 +1047,115 @@ test("a 503 receipt_store_unavailable on a reused id keeps it", async () => {
 
   expect(operationIdOf(second)).toBe(operationIdOf(first));
   expect(operationIdOf(third)).toBe(operationIdOf(first));
+});
+
+test("retrySameOperationId=false releases the id, even on a reused one", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await runDropped(hook.handleApply);
+  const second = await run(
+    hook.handleApply,
+    503,
+    refusal(503, "receipt_store_unavailable", {
+      applied: false,
+      retrySameOperationId: false,
+    }),
+  );
+  const third = await run(hook.handleApply, 200, applied);
+
+  expect(hook.trackedRefusal.value).toBeNull(); // cleared by the third attempt
+  expect(operationIdOf(second)).toBe(operationIdOf(first));
+  expect(operationIdOf(third)).not.toBe(operationIdOf(first));
+});
+
+test("retrySameOperationId=true keeps the id, even on a fresh one", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await run(
+    hook.handleApply,
+    503,
+    refusal(503, "receipt_store_unavailable", {
+      applied: false,
+      retrySameOperationId: true,
+    }),
+  );
+  expect(hook.trackedRefusal.value?.retrySameOperationId).toBe(true);
+  expect(hook.trackedRefusal.value?.applied).toBe(false);
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).toBe(operationIdOf(first));
+});
+
+test("a store failure without the flag falls back to first-send versus retry", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  await run(hook.handleApply, 503, refusal(503, "receipt_store_unavailable"));
+  expect(hook.trackedRefusal.value?.retrySameOperationId).toBeUndefined();
+  expect(hook.trackedRefusal.value?.applied).toBeUndefined();
+});
+
+test("a non-boolean retrySameOperationId is ignored", () => {
+  const err = new ApiError(503, 503, "x", {
+    error: {
+      reason: "receipt_store_unavailable",
+      extra: { retrySameOperationId: "false", applied: 0 },
+    },
+  });
+  const refusalOf = trackedApplyRefusal(err);
+  expect(refusalOf?.retrySameOperationId).toBeUndefined();
+  expect(refusalOf?.applied).toBeUndefined();
+});
+
+test("the same request from another user does not reuse the id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  try {
+    await signIn("user-1");
+    const first = await runDropped(hook.handleApply);
+    unmount();
+    await signIn("user-2");
+    const second = mount("kind: ConfigMap", { tracked: signal(true) });
+    const next = await run(second.handleApply, 200, applied);
+
+    expect(operationIdOf(next)).not.toBe(operationIdOf(first));
+    unmount();
+    await signIn("user-1");
+    const third = mount("kind: ConfigMap", { tracked: signal(true) });
+    const back = await run(third.handleApply, 200, applied);
+    expect(operationIdOf(back)).toBe(operationIdOf(first));
+  } finally {
+    await signOut();
+  }
+});
+
+test("logging out forgets a pending id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  try {
+    await signIn("user-1");
+    const first = await runDropped(hook.handleApply);
+    unmount();
+    await signOut();
+    // Logout resets the cluster; restore it so only the pending id differs.
+    switchCluster("cluster-a", "gen-a");
+    await signIn("user-1");
+    const second = mount("kind: ConfigMap", { tracked: signal(true) });
+    const next = await run(second.handleApply, 200, applied);
+
+    expect(operationIdOf(next)).not.toBe(operationIdOf(first));
+  } finally {
+    await signOut();
+  }
 });
 
 test("other 5xx on a fresh id keep it", async () => {

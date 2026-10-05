@@ -24,7 +24,8 @@ export function uuidv4(c: UuidCrypto | undefined = globalThis.crypto): string {
   if (!c || typeof c.getRandomValues !== "function") {
     throw new Error("No secure random source is available to generate an id");
   }
-  if (typeof c.randomUUID === "function") return c.randomUUID();
+  // Lowercase: the server canonicalizes operation ids to lowercase.
+  if (typeof c.randomUUID === "function") return c.randomUUID().toLowerCase();
 
   const b = c.getRandomValues(new Uint8Array(16));
   b[6] = (b[6] & 0x0f) | 0x40;
@@ -37,4 +38,20 @@ export function uuidv4(c: UuidCrypto | undefined = globalThis.crypto): string {
     hex.slice(8, 10).join(""),
     hex.slice(10, 16).join(""),
   ].join("-");
+}
+
+/**
+ * Whether two operation ids name the same operation. The server canonicalizes
+ * ids to lowercase, so an id we sent may come back differently cased from how
+ * we wrote it; compare with this, never `===`.
+ */
+export function sameOperationId(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  return (
+    Boolean(a) &&
+    Boolean(b) &&
+    (a as string).toLowerCase() === (b as string).toLowerCase()
+  );
 }

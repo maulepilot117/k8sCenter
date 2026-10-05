@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { ApiError, errorExtra, setAccessToken } from "./api.ts";
+import { ApiError, errorExtra, errorExtraFlag, setAccessToken } from "./api.ts";
 import {
   buildReceiptListQuery,
   getReceipt,
@@ -263,6 +263,20 @@ test("errors surface through ApiError.reason and errorExtra", async () => {
   expect((err as ApiError).status).toBe(409);
   expect((err as ApiError).reason).toBe("operation_in_flight");
   expect(errorExtra(err as ApiError, "receiptId")).toBe(ID);
+});
+
+test("errorExtraFlag returns booleans only", () => {
+  const err = new ApiError(503, 503, "x", {
+    error: {
+      extra: { yes: true, no: false, text: "true", num: 1, missing: undefined },
+    },
+  });
+  expect(errorExtraFlag(err, "yes")).toBe(true);
+  expect(errorExtraFlag(err, "no")).toBe(false);
+  expect(errorExtraFlag(err, "text")).toBeUndefined();
+  expect(errorExtraFlag(err, "num")).toBeUndefined();
+  expect(errorExtraFlag(err, "absent")).toBeUndefined();
+  expect(errorExtraFlag(new ApiError(500, 500), "yes")).toBeUndefined();
 });
 
 test("a receipt the caller may not read is a plain 404", async () => {
