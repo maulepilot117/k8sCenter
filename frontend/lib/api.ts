@@ -95,6 +95,18 @@ export function errorExtra(err: ApiError, key: string): string | undefined {
 }
 
 /**
+ * Boolean counterpart of `errorExtra`: returns the extra only when it is a
+ * JSON boolean, else undefined. (`errorExtra` returns only strings.)
+ */
+export function errorExtraFlag(
+  err: ApiError,
+  key: string,
+): boolean | undefined {
+  const v = err.body?.error?.extra?.[key];
+  return typeof v === "boolean" ? v : undefined;
+}
+
+/**
  * How long a token refresh may take before it is abandoned.
  *
  * `refreshPromise` is a module-global singleton: every caller that takes a

@@ -25,7 +25,12 @@ import {
   useSignalEffect,
 } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
-import { ApiError, apiPostRaw, errorExtra } from "./api.ts";
+import { ApiError, apiPostRaw, errorExtra, errorExtraFlag } from "./api.ts";
+import { currentUserId } from "./auth.ts";
+import type {
+  ApplyTracking,
+  TrackedApplyRefusalReason,
+} from "./change-types.ts";
 import {
   type ClusterTarget,
   clusterEpoch,
@@ -35,13 +40,26 @@ import {
   selectedClusterGeneration,
   UNKNOWN_GENERATION,
 } from "./cluster.ts";
+import {
+  clearStoredAttempt,
+  PENDING_ATTEMPT_TTL_MS,
+  type PendingAttempt,
+  readStoredAttempt,
+  writeStoredAttempt,
+} from "./pending-apply.ts";
+import { uuidv4 } from "./uuid.ts";
 
 export interface ApplyResult {
   index: number;
   kind: string;
   name: string;
   namespace?: string;
-  /** "created" | "configured" | "unchanged" | "failed" */
+  /**
+   * "created" | "configured" | "unchanged" | "failed". Kept a bare string:
+   * narrowing it to `ApplyAction` (the union receipt views use) breaks
+   * existing code that builds an ApplyResult from a string, such as
+   * `secretstore-template-nav_test.ts`. Narrow it when those writers do.
+   */
   action: string;
   error?: string;
 }
@@ -55,6 +73,13 @@ export interface ApplyResponse {
     unchanged: number;
     failed: number;
   };
+  /**
+   * Present only when the request opted in with `?trackedOperationId=`.
+   * Absent for every legacy caller, so the untracked contract is unchanged.
+   * The shared hook does not render it; consumers that do (the change
+   * receipt UI) read it from `result`.
+   */
+  tracking?: ApplyTracking;
 }
 
 /** One document's dry-run verdict from `/yaml/validate`. */
@@ -104,6 +129,31 @@ export interface UseYamlApplyOptions {
    * so existing consumers keep their unpinned apply.
    */
   pinApplyToPreview?: boolean;
+  /**
+   * Opt in to a tracked apply. While `true`, `handleApply` sends
+   * `?trackedOperationId=<uuid>` and the server records a change receipt.
+   * Each user-initiated apply mints a fresh UUIDv4 via `uuidv4()` (which
+   * works on an HTTP-only deployment, where `crypto.randomUUID` does not
+   * exist); a retry of the SAME attempt (the request was cut off, or the
+   * server answered 5xx, and the operator presses Apply again with unchanged
+   * content, force, pin, repairOf and target cluster) reuses the stored id so
+   * the server can replay the outcome instead of applying twice. Absent or
+   * `false` leaves the request exactly as it was before tracking existed.
+   *
+   * An unknown-outcome id is also kept in sessionStorage, keyed by a hash of
+   * the request, so a remount, reload or page navigation in the same tab
+   * continues the attempt. It stays reusable for `PENDING_ATTEMPT_TTL_MS`
+   * and is cleared on success or a definite refusal. Where storage is
+   * unavailable only the in-memory copy exists, and a remount forgets it:
+   * check the receipt list before applying again after such an interruption.
+   */
+  tracked?: Signal<boolean>;
+  /**
+   * Operation id of the receipt this apply repairs, sent as `?repairOf=`.
+   * Recorded server-side as a link only; it grants nothing. Ignored unless
+   * the apply is tracked.
+   */
+  repairOf?: Signal<string | null>;
 }
 
 export interface UseYamlApplyReturn {
@@ -126,6 +176,138 @@ export interface UseYamlApplyReturn {
   pinStale: ReadonlySignal<boolean>;
   /** Forgets the preview and its pin; a pinned apply then needs a new one. */
   clearPin: () => void;
+  /**
+   * The operation id the last apply attempt was sent under, or null when it
+   * was untracked (or no apply has run). Stays set after a failure that left
+   * the outcome unknown, because it is also the id the next press of Apply
+   * will reuse.
+   */
+  lastOperationId: ReadonlySignal<string | null>;
+  /**
+   * The typed reason the server refused the last tracked apply (409 id
+   * reasons, 503 receipt store), or null. `error` carries the same refusal as
+   * operator-facing text.
+   */
+  trackedRefusal: ReadonlySignal<TrackedApplyRefusal | null>;
+}
+
+/** The pin parameters an apply echoes back to the server. */
+export interface ApplyQueryPin {
+  targetCluster: string;
+  targetGeneration: string;
+}
+
+/** Everything that shapes the `/yaml/apply` query string. */
+export interface ApplyQueryInput {
+  force?: boolean;
+  /** Release C target pin; both parameters travel together. */
+  pin?: ApplyQueryPin | null;
+  /** UUIDv4 idempotency key of a tracked apply. */
+  trackedOperationId?: string | null;
+  /** Receipt this apply repairs. Emitted only together with `trackedOperationId`. */
+  repairOf?: string | null;
+}
+
+/**
+ * Builds the apply query string: `""` when nothing is set, otherwise `?` plus
+ * the parameters in a fixed order (force, targetCluster, targetGeneration,
+ * trackedOperationId, repairOf), so equal inputs always produce equal URLs.
+ * With no tracking and no `repairOf` it is byte-identical to what the hook
+ * built before tracking existed.
+ */
+export function buildApplyQuery(input: ApplyQueryInput = {}): string {
+  const query = new URLSearchParams();
+  if (input.force) query.set("force", "true");
+  if (input.pin) {
+    query.set("targetCluster", input.pin.targetCluster);
+    query.set("targetGeneration", input.pin.targetGeneration);
+  }
+  if (input.trackedOperationId) {
+    query.set("trackedOperationId", input.trackedOperationId);
+    if (input.repairOf) query.set("repairOf", input.repairOf);
+  }
+  return query.size > 0 ? `?${query}` : "";
+}
+
+/** A tracked apply the server refused, in terms the operator can act on. */
+export interface TrackedApplyRefusal {
+  reason: TrackedApplyRefusalReason;
+  /** Operator-facing text. */
+  message: string;
+  /** For `operation_in_flight`: the receipt to poll instead of resubmitting. */
+  receiptId?: string;
+  /**
+   * For `receipt_store_unavailable`, the server's `extra.applied`: false means
+   * nothing was applied. Absent when the server did not say.
+   */
+  applied?: boolean;
+  /**
+   * For `receipt_store_unavailable`, the server's
+   * `extra.retrySameOperationId`: true means a retry must keep the operation
+   * id, false means the id may be spent and a new one must be minted. Absent
+   * when the server did not say.
+   */
+  retrySameOperationId?: boolean;
+}
+
+/**
+ * Maps a tracked apply's 409 id refusals and its 503 `receipt_store_unavailable`
+ * to a typed refusal. Returns null for any other failure (including a pin
+ * refusal, which `pinRefusalMessage` owns). Reads only `ApiError.reason` and
+ * `errorExtra`; never the raw body.
+ */
+export function trackedApplyRefusal(err: unknown): TrackedApplyRefusal | null {
+  if (!(err instanceof ApiError)) return null;
+  if (err.status === 503 && err.reason === "receipt_store_unavailable") {
+    const applied = errorExtraFlag(err, "applied");
+    const retrySameOperationId = errorExtraFlag(err, "retrySameOperationId");
+    return {
+      reason: "receipt_store_unavailable",
+      message:
+        "The change record could not be saved, so nothing was applied. Try again shortly, or turn off change tracking to apply without a record.",
+      ...(applied === undefined ? {} : { applied }),
+      ...(retrySameOperationId === undefined ? {} : { retrySameOperationId }),
+    };
+  }
+  if (err.status !== 409) return null;
+  switch (err.reason) {
+    case "operation_id_conflict":
+      return {
+        reason: "operation_id_conflict",
+        message:
+          "This apply could not be recorded because its operation id is already in use. Nothing was applied. Apply again to start a new change.",
+      };
+    case "operation_in_flight": {
+      const receiptId = errorExtra(err, "receiptId");
+      return {
+        reason: "operation_in_flight",
+        message:
+          "This apply is still running. Check its change receipt instead of applying again.",
+        ...(receiptId ? { receiptId } : {}),
+      };
+    }
+    case "operation_id_reused":
+      return {
+        reason: "operation_id_reused",
+        message:
+          "This operation id was already used for different content or a different cluster. Nothing was applied by this request. Validate again and apply as a new change.",
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether a failed apply left its outcome unknown, so pressing Apply again is
+ * a retry of the same attempt and must reuse the operation id. True for a
+ * request that got no response (network error, bad body), any 5xx, and a 409
+ * `operation_in_flight` (the same attempt, still running). Every other
+ * failure is a definite answer; the next apply is a new attempt.
+ */
+export function isIndeterminateApplyFailure(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return true;
+  if (err.status >= 500) return true;
+  return err.status === 409 && err.reason === "operation_in_flight";
 }
 
 function normalizeClusterId(id: string | undefined): string {
@@ -165,6 +347,13 @@ export function useYamlApply(
   const result = useSignal<ApplyResponse | null>(null);
   const preview = useSignal<ValidateResponse | null>(null);
   const pin = useSignal<YamlApplyPin | null>(null);
+  const lastOperationId = useSignal<string | null>(null);
+  const trackedRefusal = useSignal<TrackedApplyRefusal | null>(null);
+  // The attempt a retry would continue: its id plus the request it was minted
+  // for. Reused only while the request is unchanged, so an id never travels
+  // with different content (the server refuses that as operation_id_reused).
+  // Mirrored to sessionStorage so a remount or reload can continue it.
+  const pendingAttempt = useRef<PendingAttempt | null>(null);
   const validateAbort = useRef<{
     controller: AbortController;
     issuedEpoch: number;
@@ -213,6 +402,7 @@ export function useYamlApply(
     result.value = null;
     preview.value = null;
     pin.value = null;
+    trackedRefusal.value = null;
     try {
       const res = await apiPostRaw<ValidateResponse>(
         "/v1/yaml/validate",
@@ -260,27 +450,109 @@ export function useYamlApply(
     applying.value = true;
     error.value = null;
     result.value = null;
+    trackedRefusal.value = null;
+    // Read once: the retry key and the request body must be the same text.
+    const yaml = yamlContent.value;
+    // Whether this send continues an earlier attempt's id (a retry) rather
+    // than minting its own.
+    let reusedId = false;
+    // Identifies the request for retry purposes; set once it is built.
+    let requestKey: string | null = null;
+    // Ends the attempt: a retry mints a new id from here on.
+    const releaseAttempt = () => {
+      pendingAttempt.current = null;
+      if (requestKey !== null) clearStoredAttempt(requestKey);
+    };
     try {
-      const query = new URLSearchParams();
-      if (options.forceConflicts?.value) query.set("force", "true");
-      if (options.pinApplyToPreview && pinned) {
-        query.set("targetCluster", pinned.targetCluster);
-        query.set("targetGeneration", pinned.targetGeneration);
+      const baseQuery: ApplyQueryInput = {
+        force: Boolean(options.forceConflicts?.value),
+        pin:
+          options.pinApplyToPreview && pinned
+            ? {
+                targetCluster: pinned.targetCluster,
+                targetGeneration: pinned.targetGeneration,
+              }
+            : null,
+        repairOf: options.repairOf?.value ?? null,
+      };
+      // The cluster is decided once, here: it keys the retry and is the
+      // X-Cluster-ID, so the two cannot diverge.
+      const clusterId =
+        options.pinApplyToPreview && pinned
+          ? pinned.target.clusterId
+          : selectedCluster.peek();
+      // Every input the request carries, and who is sending it, so an id
+      // never travels to a different identity. repairOf is listed explicitly
+      // because buildApplyQuery only emits it beside a tracked id.
+      requestKey = JSON.stringify([
+        baseQuery.force,
+        baseQuery.pin,
+        baseQuery.repairOf,
+        clusterId,
+        currentUserId(),
+        yaml,
+      ]);
+      let trackedOperationId: string | null = null;
+      if (options.tracked?.value) {
+        const now = Date.now();
+        const mem = pendingAttempt.current;
+        const pending =
+          mem !== null &&
+          mem.requestKey === requestKey &&
+          now - mem.at < PENDING_ATTEMPT_TTL_MS
+            ? mem
+            : readStoredAttempt(requestKey, now);
+        reusedId = pending !== null;
+        const attempt: PendingAttempt = pending ?? {
+          id: uuidv4(),
+          requestKey,
+          at: now,
+        };
+        trackedOperationId = attempt.id;
+        pendingAttempt.current = attempt;
+        writeStoredAttempt(attempt);
+      } else {
+        // Untracked: any unknown-outcome tracked attempt for this request is
+        // superseded.
+        releaseAttempt();
       }
-      const queryStr = query.size > 0 ? `?${query}` : "";
+      lastOperationId.value = trackedOperationId;
+      const queryStr = buildApplyQuery({ ...baseQuery, trackedOperationId });
       const res = await apiPostRaw<ApplyResponse>(
         `/v1/yaml/apply${queryStr}`,
-        yamlContent.value,
+        yaml,
         "text/yaml",
-        options.pinApplyToPreview && pinned
-          ? { clusterId: pinned.target.clusterId }
-          : undefined,
+        { clusterId },
       );
+      releaseAttempt();
       result.value = res.data;
       options.onApplySuccess?.(res.data);
     } catch (err) {
       const refusal = pinRefusalMessage(err);
-      if (refusal) {
+      const trackedFailure = trackedApplyRefusal(err);
+      // A definite answer ends the attempt; only an unknown outcome keeps its
+      // id for the retry. A 503 receipt_store_unavailable says whether the id
+      // may be reused: the server's `retrySameOperationId` decides when it is
+      // present (false: the insert or mark step failed, the id may be spent
+      // and nothing was applied, so mint a new one; true: a read failed over
+      // an earlier attempt that may have applied, so keep it). Without that
+      // flag, a 503 on a FRESH id is definite (no earlier send exists, so a
+      // retry would only replay a failed receipt or report it in flight),
+      // while on a REUSED id the id stays.
+      let releaseStoreFailure = false;
+      if (trackedFailure?.reason === "receipt_store_unavailable") {
+        releaseStoreFailure =
+          trackedFailure.retrySameOperationId !== undefined
+            ? !trackedFailure.retrySameOperationId
+            : !reusedId;
+      }
+      if (!isIndeterminateApplyFailure(err) || releaseStoreFailure) {
+        releaseAttempt();
+      }
+      if (trackedFailure) {
+        trackedRefusal.value = trackedFailure;
+        error.value = trackedFailure.message;
+      } else if (refusal) {
         // A refused pin can never succeed on retry. Drop it so the only way
         // forward is a fresh preview against the cluster actually targeted.
         pin.value = null;
@@ -306,5 +578,7 @@ export function useYamlApply(
     pin,
     pinStale,
     clearPin,
+    lastOperationId,
+    trackedRefusal,
   };
 }

@@ -12,6 +12,7 @@ import {
 } from "@/lib/cluster.ts";
 import type { RBACSummary, UserInfo } from "@/lib/k8s-types.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
+import { clearPendingApplies } from "@/lib/pending-apply.ts";
 
 /** Reactive user state. */
 const userSignal = signal<UserInfo | null>(null);
@@ -83,6 +84,14 @@ export async function handleOIDCCallback(): Promise<boolean> {
 }
 
 /**
+ * The signed-in user's id, or null when no user is loaded. A plain read for
+ * code outside a component (it does not subscribe).
+ */
+export function currentUserId(): string | null {
+  return userSignal.peek()?.id ?? null;
+}
+
+/**
  * Log out — invalidate refresh token, clear local state.
  */
 export async function logout(): Promise<void> {
@@ -94,6 +103,8 @@ export async function logout(): Promise<void> {
   setAccessToken(null);
   userSignal.value = null;
   rbacSignal.value = null;
+  // An unknown-outcome apply id belongs to the session that minted it.
+  clearPendingApplies();
   // The selected cluster is persisted per browser profile, not per session,
   // so without this the next identity on this machine inherits the previous
   // operator's target -- and if they are not an admin, every request 403s.
