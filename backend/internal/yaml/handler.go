@@ -169,9 +169,7 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !h.Changes.Available() {
-			httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable,
-				"tracked apply requires a database; nothing was applied. Retry without trackedOperationId to apply untracked.",
-				changes.ReasonReceiptStoreUnavailable, nil)
+			writeRecordingUnavailable(w, false)
 			return
 		}
 		tracked = &tp
@@ -262,10 +260,12 @@ func parseTrackedParams(w http.ResponseWriter, q url.Values) (trackedParams, boo
 	return tp, true
 }
 
-// parseUUIDv4 accepts only the canonical 36-character form of a version 4
-// UUID. uuid.Parse alone also takes braced, urn: and dashless spellings;
-// refusing them keeps the id a client sends the one it reads back as
-// tracking.operationId (which is always lowercase).
+// parseUUIDv4 accepts only the 36-character 8-4-4-4-12 form of a version 4
+// UUID (uuid.Parse alone also takes braced, urn: and dashless spellings).
+// Letter case is accepted and canonicalized: from here on the operation is
+// identified by the parsed uuid.UUID, so the receipt id, tracking.operationId,
+// receiptUrl and the audit "op=" all carry its lowercase String() form, and
+// an uppercase and a lowercase spelling of one id are the same operation.
 func parseUUIDv4(s string) (uuid.UUID, bool) {
 	if len(s) != 36 {
 		return uuid.Nil, false
@@ -336,6 +336,22 @@ func changeObservation(obs ApplyObservation) changes.ApplyObservation {
 // Secrets: the live response carries the engine's error text unchanged, as
 // the untracked path does; the service stores only a digest, references and
 // (for a Secret-bearing bundle) sanitized error classes.
+//
+// Reading the result: results and summary describe what was applied, and
+// tracking describes what was recorded. They can legitimately disagree in
+// emphasis: when recording fails on the last document, or finalization fails,
+// summary.failed can be 0 while tracking.state is unknown with a warning. A
+// replay's error text comes from the receipt (sanitized for Secret bundles,
+// truncated otherwise). Tracked clients key off action and tracking, never
+// results[].error prose or summary alone.
+//
+// Which component owns "documents never sent are reported failed": the
+// service (changes.assembleResults) builds the tracked response. The engine's
+// own fill-in in ApplyDocumentsObserved is what keeps that exported function's
+// summary.total == len(docs) contract for any caller, and uses the same
+// constants under the same rule (NotAppliedError after a recording failure,
+// NotAttemptedError after the request context ended); tracked_apply_test.go
+// pins that the two agree.
 func (h *Handler) applyTracked(w http.ResponseWriter, r *http.Request, user *auth.User, target *k8s.TargetSchema,
 	engine changes.ApplyFunc, req changes.TrackedApplyRequest,
 ) {
@@ -370,6 +386,37 @@ func (h *Handler) applyTracked(w http.ResponseWriter, r *http.Request, user *aut
 	httputil.WriteData(w, resp)
 }
 
+// storeStepRead is changes.StoreUnavailableError.Step for a failure reading
+// the existing receipt after an operation id collided (a retry).
+const storeStepRead = "read"
+
+// writeRecordingUnavailable answers a tracked apply that could not be
+// recorded. Nothing was applied in every case, and extra says so explicitly
+// ("applied": false) so clients need not parse the message. Whether the
+// operation id is still usable depends on where recording failed, carried as
+// extra.retrySameOperationId:
+//
+//   - false: there is no receipt store, or Insert or MarkMutationStarted
+//     failed. The id may be spent: an Insert may have committed before its
+//     error, and a failed mark finalizes the new row as failed, so a same-id
+//     retry would only replay that failure. Start a new attempt (new id) or
+//     apply untracked. This is the 503 that answers a FIRST send.
+//   - true: reading the existing receipt failed while resolving an id
+//     collision, i.e. on a retry. The original may have been applied; minting
+//     a new id here risks the duplicate apply D4 exists to prevent, so retry
+//     with the SAME id.
+//
+// This matches the web client rule (U30b): release the id on a 503 that
+// answers a first send, keep it on a retry.
+func writeRecordingUnavailable(w http.ResponseWriter, retrySameOperationID bool) {
+	message := "change recording is unavailable; nothing was applied. Start a new attempt or apply without tracking"
+	if retrySameOperationID {
+		message = "could not read the existing record for this operation; retry with the same operation id"
+	}
+	httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, message, changes.ReasonReceiptStoreUnavailable,
+		map[string]any{"applied": false, "retrySameOperationId": retrySameOperationID})
+}
+
 // writeTrackedApplyError maps TrackedApply's typed errors. Every one of them
 // means no document was applied by this request.
 func (h *Handler) writeTrackedApplyError(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID, opID string, err error) {
@@ -381,9 +428,7 @@ func (h *Handler) writeTrackedApplyError(w http.ResponseWriter, r *http.Request,
 		httputil.WriteErrorWithReason(w, http.StatusConflict, conflict.Message, conflict.Reason, conflict.Extra())
 	case errors.As(err, &unavailable):
 		h.Logger.Error("tracked apply: receipt store unavailable", "operationId", opID, "step", unavailable.Step, "error", err)
-		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable,
-			"change receipt store unavailable; nothing was applied. Retry, or retry without trackedOperationId to apply untracked.",
-			changes.ReasonReceiptStoreUnavailable, nil)
+		writeRecordingUnavailable(w, unavailable.Step == storeStepRead)
 	case errors.Is(err, changes.ErrInvalidRequest):
 		httputil.WriteError(w, http.StatusBadRequest, "invalid tracked apply request", err.Error())
 	default:

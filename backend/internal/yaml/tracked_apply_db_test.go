@@ -66,6 +66,41 @@ func testDatabaseRequired(lookup func(string) (string, bool)) bool {
 	}
 }
 
+// The gate's own truthiness rules are tested without the gate, so a broken
+// predicate cannot hide behind the skip it controls.
+func TestTestDatabaseRequired_Truthiness(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		set   bool
+		want  bool
+	}{
+		{"unset", "", false, false},
+		{"empty", "", true, false},
+		{"zero", "0", true, false},
+		{"false", "false", true, false},
+		{"FALSE padded", "  FALSE ", true, false},
+		{"no", "no", true, false},
+		{"one", "1", true, true},
+		{"true", "true", true, true},
+		{"yes", "yes", true, true},
+		{"typo", "flase", true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := func(key string) (string, bool) {
+				if key != testDatabaseRequireEnv {
+					t.Fatalf("looked up %q; want %q", key, testDatabaseRequireEnv)
+				}
+				return tc.value, tc.set
+			}
+			if got := testDatabaseRequired(lookup); got != tc.want {
+				t.Errorf("testDatabaseRequired(%q, set=%v) = %v; want %v", tc.value, tc.set, got, tc.want)
+			}
+		})
+	}
+}
+
 // openTestDB opens a new pool over the migrated test database (migrations run
 // through the production entry point), or skips the calling test when none is
 // configured. Each call is its own pool, so a test may close one mid-apply.
@@ -607,6 +642,9 @@ func TestHandleApplyDB_InterruptedMidBundle_ReportsUnknownAndNeverReplays(t *tes
 	}
 
 	// Reconcile exactly as boot does, after the row ages past the grace.
+	// Harness convention 4: only this test's own row is backdated, and only
+	// this row is asserted on (the sweep's count is table-global and is not
+	// read). Other suites' rows younger than the grace are never touched.
 	if _, err := inspector.Pool.Exec(context.Background(),
 		`UPDATE change_receipts SET created_at = created_at - make_interval(secs => $2) WHERE id = $1`,
 		opID, (2 * store.ReceiptOrphanGrace).Seconds()); err != nil {
@@ -631,6 +669,94 @@ func TestHandleApplyDB_InterruptedMidBundle_ReportsUnknownAndNeverReplays(t *tes
 		if r := replayed.Results[i]; r.Action != "failed" || r.Error != changes.NotRecordedError {
 			t.Errorf("replayed results[%d] = %+v; want failed %q", i, r, changes.NotRecordedError)
 		}
+	}
+}
+
+// --- Request context ending mid-bundle ------------------------------------------
+
+// The client hangs up (or the BFF's 30s cap cuts the request) right after
+// document 0's PATCH. Document 0's outcome is still recorded and the receipt
+// still finalized — the receipt writes run detached from the request context —
+// and documents 1..2, never sent, are reported and recorded as not attempted,
+// never as indeterminate. A later same-id retry replays exactly that.
+func TestHandleApplyDB_ContextCancelledMidBundle_UnsentDocsNotAttempted(t *testing.T) {
+	e := newTrackedEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelOnPatch(e.remoteDyn, "a", cancel, nil)
+	body := bundle(widgetDoc("a"), widgetDoc("b"), widgetDoc("c"))
+	opID := uuid.New()
+
+	r := httptest.NewRequest(http.MethodPost, applyURL(trackedQuery(opID.String())), strings.NewReader(body))
+	r = r.WithContext(middleware.WithClusterID(auth.ContextWithUser(ctx, e.user), remoteClusterID))
+	live := decodeTracked(t, serve(e.handler.HandleApply, r))
+
+	if got := patchCount(e.remoteDyn); got != 1 {
+		t.Fatalf("patches = %d; want 1 — nothing may be sent after the request ended", got)
+	}
+	if live.Results[0].Action != "created" {
+		t.Errorf("results[0] = %+v; want the sent document's outcome", live.Results[0])
+	}
+	for _, i := range []int{1, 2} {
+		if r := live.Results[i]; r.Action != "failed" || r.Error != changes.NotAttemptedError {
+			t.Errorf("results[%d] = %+v; want failed %q", i, r, changes.NotAttemptedError)
+		}
+	}
+	tr := live.Tracking
+	if tr.State != store.ReceiptPartial || tr.RecordedThrough != 1 || tr.NotAttempted != 2 || tr.Unrecorded != 0 || len(tr.Warnings) != 0 {
+		t.Errorf("tracking = %+v; want partial, 1 recorded, 2 not attempted, no warnings", tr)
+	}
+
+	// Recorded and finalized although the request context was already done.
+	row := e.receipt(t, opID)
+	if row.State != store.ReceiptPartial || row.CompletedAt == nil || len(row.Objects) != 1 {
+		t.Fatalf("receipt = %+v; want partial, completed, 1 recorded object", row)
+	}
+	for _, o := range row.Objects {
+		if o.ErrorClass == changes.ErrorClassIndeterminate {
+			t.Errorf("receipt object %+v is indeterminate; nothing unsent may be", o)
+		}
+	}
+
+	replayed := decodeTracked(t, e.applyTracked(opID, remoteClusterID, body))
+	if !replayed.Tracking.Replayed || replayed.Tracking.NotAttempted != 2 || replayed.Tracking.Unrecorded != 0 {
+		t.Errorf("replay tracking = %+v; want replayed with 2 not attempted", replayed.Tracking)
+	}
+	if got := patchCount(e.remoteDyn); got != 1 {
+		t.Errorf("patches after replay = %d; want still 1", got)
+	}
+}
+
+// --- Operation id canonicalization ------------------------------------------------
+
+// An uppercase id is the same operation as its lowercase form: everything
+// that names it carries the canonical lowercase spelling, and a lowercase
+// retry replays it.
+func TestHandleApplyDB_UppercaseOperationIDIsCanonicalized(t *testing.T) {
+	e := newTrackedEnv(t)
+	opID := uuid.New()
+	lower := opID.String()
+	body := widgetDoc("a")
+
+	first := decodeTracked(t, e.applyAs(e.user, remoteClusterID, trackedQuery(strings.ToUpper(lower)), body))
+	if first.Tracking.OperationID != lower || first.Tracking.ReceiptURL != "/v1/changes/"+lower {
+		t.Errorf("tracking id/url = %q %q; want the lowercase canonical form %q", first.Tracking.OperationID, first.Tracking.ReceiptURL, lower)
+	}
+	if row := e.receipt(t, opID); row == nil {
+		t.Fatal("no receipt under the canonical id")
+	}
+	for _, a := range e.audit.snapshot() {
+		if !strings.HasSuffix(a.Detail, " op="+lower) {
+			t.Errorf("audit detail %q; want it to end with op=%s", a.Detail, lower)
+		}
+	}
+
+	retry := decodeTracked(t, e.applyTracked(opID, remoteClusterID, body))
+	if !retry.Tracking.Replayed || retry.Tracking.OperationID != lower {
+		t.Errorf("lowercase retry tracking = %+v; want a replay of the same operation", retry.Tracking)
+	}
+	if got := patchCount(e.remoteDyn); got != 1 {
+		t.Errorf("patches = %d; want 1", got)
 	}
 }
 

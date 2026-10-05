@@ -82,6 +82,10 @@ type ApplyObservation struct {
 	// only when that PATCH failed. A failure before the PATCH (mapping, the
 	// pre-PATCH GET, marshaling) mutated nothing and is left unclassified.
 	ErrorClass string
+
+	// notSent marks a document abandoned because ctx was done before its PATCH
+	// was issued. Only the observed loop acts on it.
+	notSent bool
 }
 
 // ApplyObserver is called once per attempted document, in document order,
@@ -90,6 +94,16 @@ type ApplyObservation struct {
 // reported as failed with changes.NotAppliedError rather than omitted, so
 // summary.total still equals len(docs) and summary.failed > 0 for legacy
 // clients that compute success from it (plan D5).
+//
+// An observed apply also stops when ctx is done (the client hung up, or the
+// BFF's 30s proxy cap cut the request). ctx is checked before each document
+// and again immediately before each PATCH, and a document abandoned at either
+// point is never observed: it and every later document are reported failed
+// with changes.NotAttemptedError, which is the truth. Only a PATCH that was
+// actually issued and then failed on the context or the transport is
+// observed, and classified indeterminate. (A cancellation landing between the
+// final check and the PATCH call is classified indeterminate too: the safe
+// side, since it cannot be told apart from one that reached the server.)
 type ApplyObserver func(ctx context.Context, obs ApplyObservation) error
 
 // ApplyDocuments applies a list of parsed Kubernetes objects via server-side
@@ -107,8 +121,8 @@ func ApplyDocuments(
 }
 
 // ApplyDocumentsObserved is ApplyDocuments plus a per-document observer. A
-// nil observer observes nothing, which is exactly ApplyDocuments. See
-// ApplyObserver for the stop contract.
+// nil observer observes nothing and does not stop early, which is exactly
+// ApplyDocuments. See ApplyObserver for the stop contract.
 func ApplyDocumentsObserved(
 	ctx context.Context,
 	dynClient dynamic.Interface,
@@ -121,34 +135,54 @@ func ApplyDocumentsObserved(
 	resp := &ApplyResponse{
 		Results: make([]ApplyResult, 0, len(docs)),
 	}
+	observed := observe != nil
 
-	stopped := false
+	// stopText is the error every document from the stop point on carries;
+	// empty while the apply is running.
+	stopText := ""
 	for i, obj := range docs {
-		if stopped {
-			resp.add(ApplyResult{
-				Index:     i,
-				Kind:      obj.GetKind(),
-				Name:      obj.GetName(),
-				Namespace: obj.GetNamespace(),
-				Action:    "failed",
-				Error:     changes.NotAppliedError,
-			})
+		if stopText == "" && observed && ctx.Err() != nil {
+			logger.Info("yaml apply stopped: request context done",
+				"index", i, "notAttempted", len(docs)-i, "error", ctx.Err())
+			stopText = changes.NotAttemptedError
+		}
+		if stopText != "" {
+			resp.add(notAppliedResult(i, obj, stopText))
 			continue
 		}
-		obs := applyOne(ctx, dynClient, mapper, obj, i, force, logger)
+		obs := applyOne(ctx, dynClient, mapper, obj, i, force, observed, logger)
+		if observed && obs.notSent {
+			logger.Info("yaml apply stopped: request context done before PATCH",
+				"index", i, "notAttempted", len(docs)-i, "error", ctx.Err())
+			stopText = changes.NotAttemptedError
+			resp.add(notAppliedResult(i, obj, stopText))
+			continue
+		}
 		resp.add(obs.Result)
-		if observe == nil {
+		if !observed {
 			continue
 		}
 		if err := observe(ctx, obs); err != nil {
 			logger.Warn("yaml apply stopped: observer failed",
 				"index", i, "notAttempted", len(docs)-i-1, "error", err)
-			stopped = true
+			stopText = changes.NotAppliedError
 		}
 	}
 	resp.Summary.Total = len(resp.Results)
 
 	return resp
+}
+
+// notAppliedResult reports a document the apply never sent to the cluster.
+func notAppliedResult(index int, obj *unstructured.Unstructured, text string) ApplyResult {
+	return ApplyResult{
+		Index:     index,
+		Kind:      obj.GetKind(),
+		Name:      obj.GetName(),
+		Namespace: obj.GetNamespace(),
+		Action:    "failed",
+		Error:     text,
+	}
 }
 
 // restMappingRetryBackoff is the wait before RESTMapping retry attempt+1:
@@ -159,6 +193,10 @@ var restMappingRetryBackoff = func(attempt int) time.Duration {
 
 // applyOne applies a single unstructured object via server-side apply and
 // reports its result together with the mapping, UID and PATCH error class.
+//
+// abandonOnCancel (set for observed applies) makes it re-check ctx
+// immediately before the PATCH and, when ctx is done, return without issuing
+// it, marked notSent. Unset, the PATCH is issued exactly as it always was.
 func applyOne(
 	ctx context.Context,
 	dynClient dynamic.Interface,
@@ -166,6 +204,7 @@ func applyOne(
 	obj *unstructured.Unstructured,
 	index int,
 	force bool,
+	abandonOnCancel bool,
 	logger *slog.Logger,
 ) ApplyObservation {
 	obs := ApplyObservation{Result: ApplyResult{
@@ -197,6 +236,7 @@ func applyOne(
 		case <-ctx.Done():
 			result.Action = "failed"
 			result.Error = fmt.Sprintf("context cancelled waiting for CRD %s", gvk.String())
+			obs.notSent = true
 			return obs
 		case <-time.After(restMappingRetryBackoff(attempt)):
 		}
@@ -243,6 +283,16 @@ func applyOne(
 	if force {
 		forceVal := true
 		opts.Force = &forceVal
+	}
+
+	// An observed apply never issues a PATCH on a context that is already
+	// done: the request it would answer has ended, and a PATCH that cannot be
+	// sent must not be recorded as one that may have been (indeterminate).
+	if abandonOnCancel && ctx.Err() != nil {
+		result.Action = "failed"
+		result.Error = changes.NotAttemptedError
+		obs.notSent = true
+		return obs
 	}
 
 	// Apply via SSA PATCH
