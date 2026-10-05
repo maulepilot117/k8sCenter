@@ -62,7 +62,8 @@ const verifyRetryAfterSeconds = 5
 //
 // Persistence: the store never replaces a final verdict (the guard is in its
 // UPDATE), so the first final verdict wins atomically; a refused write returns
-// the stored verdict rather than an error. With Persist false the computed
+// the stored verdict rather than an error (VerificationResult.Persisted is
+// true only when this call's write landed a final verdict). With Persist false the computed
 // result is returned and nothing is written; that is how a grantee or admin
 // reads a live evaluation without replacing the owner's verdict.
 func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dynamic.Interface, opts VerifyOptions) (*VerificationResult, error) {
@@ -128,6 +129,9 @@ func (s *Service) VerifyOnce(ctx context.Context, r *store.ChangeReceipt, dyn dy
 		}
 		return nil, &StoreUnavailableError{Step: "verification", Err: err}
 	}
+	// The write landed (a refused one returned above). Only a final state is a
+	// verdict worth auditing; verifying is progress, not an outcome.
+	res.Persisted = state.IsFinal()
 	return res, nil
 }
 

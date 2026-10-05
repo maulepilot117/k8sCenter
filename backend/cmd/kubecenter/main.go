@@ -919,14 +919,13 @@ func main() {
 	// a non-nil interface and would panic instead of answering 503.
 	var changesService *changes.Service
 	var changesHandler *changes.Handler
-	var changesReceipts *appstore.ChangeReceiptStore
 	var changesDone chan struct{}
 	if dbPool != nil {
 		receiptStore := appstore.NewChangeReceiptStore(dbPool)
-		changesReceipts = receiptStore
 		changesService = changes.NewService(receiptStore, logger)
 		changesHandler = changes.NewHandler(changesService, receiptStore, gitopsHandler,
 			clusterRouter, accessChecker, logger)
+		changesHandler.SetVerificationAudit(server.ChangesVerificationAudit(auditLogger, logger))
 
 		// Startup runs one bounded reconcile (receiptSweeper.reconcileOnBoot) so
 		// the listener is never delayed by retention work; the first retention
@@ -1010,7 +1009,6 @@ func main() {
 		GitOpsHandler:          gitopsHandler,
 		ChangesHandler:         changesHandler,
 		ChangesService:         changesService,
-		ChangesReceipts:        changesReceipts,
 		FluxNotifHandler:       fluxNotifHandler,
 		NotifCenterHandler:     notifCenterHandler,
 		NotifCenterService:     notifService,

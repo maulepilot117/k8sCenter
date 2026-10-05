@@ -14,16 +14,17 @@ import (
 )
 
 type fakeReceiptStore struct {
-	mu           sync.Mutex
-	calls        []string
-	graces       []time.Duration
-	retention    []int
-	reconcileErr error
-	cleanupErr   error
-	blockUntil   bool // block both calls until their context ends
-	panicOn      string
-	reconciled   chan struct{}
-	cleaned      chan struct{}
+	mu              sync.Mutex
+	calls           []string
+	graces          []time.Duration
+	retention       []int
+	reconcileErr    error
+	cleanupErr      error
+	blockUntil      bool // block reconcile until its context ends
+	cleanupDeadline []bool
+	panicOn         string
+	reconciled      chan struct{}
+	cleaned         chan struct{}
 }
 
 func newFakeReceiptStore() *fakeReceiptStore {
@@ -52,6 +53,8 @@ func (f *fakeReceiptStore) ReconcileOrphans(ctx context.Context, olderThan time.
 func (f *fakeReceiptStore) Cleanup(ctx context.Context, retentionDays int) (int64, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "cleanup")
+	_, has := ctx.Deadline()
+	f.cleanupDeadline = append(f.cleanupDeadline, has)
 	f.retention = append(f.retention, retentionDays)
 	err := f.cleanupErr
 	f.mu.Unlock()
@@ -184,6 +187,11 @@ func TestReceiptSweeper_RunLoop(t *testing.T) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	for _, has := range f.cleanupDeadline {
+		if has {
+			t.Error("Cleanup got a caller-side deadline; it must use its own 5-minute bound so a large DELETE is not cut at 30s")
+		}
+	}
 	for _, d := range f.retention {
 		if d != 21 {
 			t.Errorf("retention days reaching the store = %d; want 21", d)

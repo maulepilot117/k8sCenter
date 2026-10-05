@@ -615,6 +615,9 @@ func (s *Server) registerChangesRoutes(ar chi.Router) {
 	// When main.go does not pass one the group still gets its own limiter at
 	// the production budget, never the YAML or auth bucket: silently sharing
 	// those would let receipt polling starve /yaml/apply with no test failing.
+	// This fallback is for tests and misconfiguration only: it has no cleanup
+	// goroutine (its buckets are never swept) and no audit logger (its 429s are
+	// not recorded), unlike the limiter main.go builds.
 	rl := s.ChangesRateLimiter
 	if rl == nil {
 		if s.Logger != nil {
@@ -631,14 +634,7 @@ func (s *Server) registerChangesRoutes(ar chi.Router) {
 		cr.Get("/", h.HandleList)
 		cr.Post("/ownership", h.HandleResolveOwnership)
 		cr.Get("/{id}", h.HandleGet)
-		// The audit middleware needs {id} and the user, so it is mounted inline on
-		// the route (after routing and after the group's Auth), not on the group.
-		var receipts changesReceiptGetter
-		if s.ChangesReceipts != nil {
-			receipts = s.ChangesReceipts
-		}
-		cr.With(changesVerificationAudit(receipts, s.AuditLogger, s.Logger)).
-			Get("/{id}/verification", h.HandleVerification)
+		cr.Get("/{id}/verification", h.HandleVerification)
 	})
 }
 

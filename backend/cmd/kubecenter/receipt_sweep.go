@@ -10,10 +10,11 @@ import (
 	appstore "github.com/kubecenter/kubecenter/internal/store"
 )
 
-// receiptSweepCallTimeout bounds every database call the receipt sweeper makes,
-// including the boot reconcile that runs before the HTTP listener. The store's
-// own Cleanup bound is five minutes, far past the backend startupProbe budget
-// (about a minute), so the caller must impose the short one.
+// receiptSweepCallTimeout bounds the reconcile call, including the boot
+// reconcile that runs before the HTTP listener, which must finish well inside
+// the backend startupProbe budget (about a minute). Cleanup is deliberately not
+// given this bound: it runs only in the background, and a large retention
+// DELETE on a big table legitimately needs the store's own five-minute bound.
 const receiptSweepCallTimeout = 30 * time.Second
 
 // receiptSweepStore is the two store methods the sweeper drives, so a test can
@@ -73,11 +74,11 @@ func (w *receiptSweeper) reconcile(ctx context.Context) {
 	}
 }
 
-// cleanup prunes receipts past retention under the per-call bound.
+// cleanup prunes receipts past retention. Background only; see receiptSweepCallTimeout.
 func (w *receiptSweeper) cleanup(ctx context.Context) {
-	cctx, cancel := context.WithTimeout(ctx, w.callTimeout)
-	defer cancel()
-	if n, err := w.store.Cleanup(cctx, w.retentionDays); err != nil {
+	// No caller-side timeout: Cleanup bounds itself (cleanupTimeout), and a
+	// shorter cut here would abort a large DELETE every pass and never prune.
+	if n, err := w.store.Cleanup(ctx, w.retentionDays); err != nil {
 		w.logger.Warn("changes: receipt retention sweep failed", "error", err)
 	} else if n > 0 {
 		w.logger.Info("changes: receipts pruned", "count", n, "retentionDays", w.retentionDays)
