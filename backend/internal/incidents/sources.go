@@ -57,12 +57,16 @@ const (
 	SourceEvents      = "events"
 )
 
-// Event list bounds: the apiserver pages a limited list in key order, so
-// the newest events come last. Up to maxEventPages pages of
-// maxEventsPerCapture are fetched and the newest maxEventsPerCapture kept.
+// Event list bounds. The apiserver pages a field-selected list in NAME
+// order, and event names carry random suffixes, so name order says nothing
+// about time: the newest matching event can sit on any page. The adapter
+// therefore pages through the whole selection while the source deadline
+// allows, up to maxEventPages pages of maxEventsPerCapture, keeping only a
+// rolling window of the newest maxEventsPerCapture in memory. Stopping at
+// the ceiling or the deadline flags the list truncated.
 const (
 	maxEventsPerCapture = 200
-	maxEventPages       = 5
+	maxEventPages       = 25
 )
 
 // Fixed, scope-free source details.
@@ -76,6 +80,7 @@ const (
 	detailResolveFailed      = "diagnostics could not resolve the target"
 	detailReadFailed         = "target could not be read"
 	detailListFailed         = "events could not be listed"
+	detailListInterrupted    = "event listing was interrupted; older events may be missing"
 	detailProjectionTooLarge = "the projection was cut to fit the per-item size bound"
 )
 
@@ -513,46 +518,67 @@ func (s *eventsSource) Collect(ctx context.Context, req CaptureRequest) (SourceR
 		)
 	}
 	opts := metav1.ListOptions{FieldSelector: selector.String(), Limit: maxEventsPerCapture}
-	var fetched []corev1.Event
-	more := false
-	for page := 0; page < maxEventPages; page++ {
+	var (
+		window      []corev1.Event // the newest maxEventsPerCapture seen so far
+		tuples      []string       // digest input over every matching event fetched
+		matched     int            // matching events fetched, before the window cut
+		more        bool           // stopped at the ceiling or the deadline
+		interrupted bool           // the continue token expired mid-paging
+		pages       int
+	)
+	for pages < maxEventPages {
+		if pages > 0 && ctx.Err() != nil {
+			more = true // out of time; what was fetched stands
+			break
+		}
 		list, err := cs.CoreV1().Events(t.Namespace).List(ctx, opts)
 		switch {
 		case err == nil:
+		case pages > 0 && ctx.Err() != nil:
+			more = true
 		case ctx.Err() != nil:
 			return SourceResult{}, ctx.Err()
+		case pages > 0 && apierrors.IsResourceExpired(err):
+			interrupted = true
 		case apierrors.IsForbidden(err):
 			return SourceResult{Completeness: CompletenessForbidden, Detail: detailForbidden}, nil
 		default:
 			s.logger.Warn("incident capture event list failed", "error", err)
 			return failed(detailListFailed), nil
 		}
-		fetched = append(fetched, list.Items...)
+		if err != nil {
+			break
+		}
+		pages++
+		// The server applied the selector; it is re-applied here so a list
+		// that ignores field selectors (a fake, a lenient proxy) can never
+		// attach another object's events to this target.
+		for i := range list.Items {
+			ev := &list.Items[i]
+			if src.UID != "" && string(ev.InvolvedObject.UID) != src.UID {
+				continue
+			}
+			if src.UID == "" && (ev.InvolvedObject.Name != t.Name || ev.InvolvedObject.Kind != t.Kind) {
+				continue
+			}
+			tuples = append(tuples, eventTuple(ev))
+			window = append(window, *ev)
+			matched++
+		}
+		window = newestEvents(window, maxEventsPerCapture)
 		if list.Continue == "" {
 			break
 		}
-		if page == maxEventPages-1 {
+		if pages == maxEventPages {
 			more = true
 			break
 		}
 		opts.Continue = list.Continue
 	}
 
-	// The server applied the selector; it is re-applied here so a list
-	// that ignores field selectors (a fake, a lenient proxy) can never
-	// attach another object's events to this target.
-	matching := make([]corev1.Event, 0, len(fetched))
-	for _, ev := range fetched {
-		if src.UID != "" && string(ev.InvolvedObject.UID) != src.UID {
-			continue
-		}
-		if src.UID == "" && (ev.InvolvedObject.Name != t.Name || ev.InvolvedObject.Kind != t.Kind) {
-			continue
-		}
-		matching = append(matching, ev)
-	}
-	projected := projectEvents(s.redactor, matching, more, secretDerived)
-
+	// The window cut is a cut of the observation like any other.
+	cut := more || interrupted || matched > maxEventsPerCapture
+	projected := projectEvents(s.redactor, window, tuples, cut, secretDerived)
 	item := Evidence{
 		EvidenceKind:     EvidenceKindEventList,
 		Mode:             ModeSnapshot,
@@ -563,10 +589,34 @@ func (s *eventsSource) Collect(ctx context.Context, req CaptureRequest) (SourceR
 		Payload:          projected.payload,
 		discriminator:    []string{projected.digest},
 	}
+	res := SourceResult{Items: []Evidence{item}, Completeness: CompletenessComplete}
 	if projected.meta.Truncated {
 		item.Completeness, item.CompletenessDetail = CompletenessPartial, detailProjectionTooLarge
+		res.Items[0] = item
 	}
-	return SourceResult{Items: []Evidence{item}, Completeness: CompletenessComplete}, nil
+	if interrupted {
+		res.Completeness, res.Detail = CompletenessPartial, detailListInterrupted
+	}
+	return res, nil
+}
+
+// newestEvents keeps the newest n events by event time, newest first. The
+// sort is stable, so events without a timestamp keep their arrival order
+// at the tail.
+func newestEvents(events []corev1.Event, n int) []corev1.Event {
+	sort.SliceStable(events, func(i, j int) bool {
+		return eventObservedAt(&events[i]).After(eventObservedAt(&events[j]))
+	})
+	if len(events) > n {
+		return events[:n]
+	}
+	return events
+}
+
+// eventTuple is one event's contribution to the capture-key digest: its
+// identity, count and time.
+func eventTuple(ev *corev1.Event) string {
+	return string(ev.UID) + "\x00" + ev.Name + "\x00" + itoa(eventCount(ev)) + "\x00" + eventObservedAt(ev).UTC().Format(time.RFC3339Nano)
 }
 
 // eventListPayload is the allowlisted event_list shape. Observed is how many
@@ -608,20 +658,20 @@ type projectedEvents struct {
 // message, count, timestamps, involvedObject kind/name/uid, source
 // component), newest first, keeping at most the newest maxEventsPerCapture,
 // and cuts the tail until the payload fits r's byte bound. Every cut is
-// flagged. more says the server had further events beyond what was fetched.
-// The digest covers the (uid, name, count, time) tuples of EVERY fetched
-// event, before the count and size cuts, so an unchanged list dedupes
-// whatever the cuts kept and any change anywhere in it is a new
-// observation.
-func projectEvents(r *Redactor, events []corev1.Event, more, secretDerived bool) projectedEvents {
-	sort.SliceStable(events, func(i, j int) bool {
-		return eventObservedAt(&events[i]).After(eventObservedAt(&events[j]))
-	})
-	tuples := make([]string, 0, len(events))
-	for i := range events {
-		ev := &events[i]
-		tuples = append(tuples, string(ev.UID)+"\x00"+ev.Name+"\x00"+itoa(eventCount(ev))+"\x00"+eventObservedAt(ev).UTC().Format(time.RFC3339Nano))
+// flagged. more says further events existed beyond what was fetched (the
+// page ceiling, the deadline, or an interrupted listing). tuples is the
+// digest input over EVERY fetched event (eventTuple), before any cut, so an
+// unchanged list dedupes whatever the cuts kept and any change anywhere in
+// it is a new observation; nil derives it from events.
+func projectEvents(r *Redactor, events []corev1.Event, tuples []string, more, secretDerived bool) projectedEvents {
+	events = newestEvents(events, len(events))
+	if tuples == nil {
+		tuples = make([]string, 0, len(events))
+		for i := range events {
+			tuples = append(tuples, eventTuple(&events[i]))
+		}
 	}
+	tuples = append([]string(nil), tuples...)
 	sort.Strings(tuples)
 	digestInput, _ := json.Marshal(tuples)
 	sum := sha256.Sum256(digestInput)

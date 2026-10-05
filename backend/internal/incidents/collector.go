@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -302,11 +303,12 @@ func NewCollector(sources []Source, limits Limits, logger *slog.Logger) (*Collec
 }
 
 // sourceOutcome is what one worker sends on its slot channel when its
-// source returns.
+// source returns or panics.
 type sourceOutcome struct {
-	result SourceResult
-	err    error
-	ctxErr error // the source context's error when the worker returned
+	panicked bool
+	result   SourceResult
+	err      error
+	ctxErr   error // the source context's error when the worker returned
 }
 
 // captureGrace is how long Capture waits for the workers after the capture
@@ -344,6 +346,14 @@ const captureGrace = 250 * time.Millisecond
 // scope; an object_summary to the target's scope. Kind, name and UID stay
 // the target's for display and provenance. The adapters apply it
 // (sources.go); the collector only normalizes the cluster id.
+//
+// Consequence for the read path (U23a): a pods- or replicasets-scoped
+// diagnostic row still names the TARGET (its kind, name and UID), so
+// reading it must require `get` on the target's resource AS WELL as on the
+// stored scope, or a pods-only viewer could learn which Deployments exist
+// and what state they are in. RequiredReadScopes derives both scopes from
+// a stored row (the target's from its source kind through
+// diagnostics.TargetResource) and fails closed on a kind it cannot map.
 func (c *Collector) Capture(ctx context.Context, req CaptureRequest) (CaptureReport, error) {
 	selected, err := c.selectSources(req.Sources)
 	if err != nil {
@@ -360,25 +370,43 @@ func (c *Collector) Capture(ctx context.Context, req CaptureRequest) (CaptureRep
 	captureCtx, cancel := context.WithTimeout(ctx, c.limits.CaptureTimeout)
 	defer cancel()
 
-	var g errgroup.Group
-	g.SetLimit(c.limits.MaxConcurrency)
 	slots := make([]chan sourceOutcome, len(selected))
-	for i, src := range selected {
+	for i := range selected {
 		slots[i] = make(chan sourceOutcome, 1)
-		recoverutil.Go(&g, c.logger, "incidents capture "+src.ID(), func() error {
-			srcCtx, cancel := context.WithTimeout(captureCtx, c.limits.SourceTimeout)
-			defer cancel()
-			res, err := src.Collect(srcCtx, req)
-			slots[i] <- sourceOutcome{result: res, err: err, ctxErr: srcCtx.Err()}
-			return nil
-		})
 	}
-	// Wait off the request goroutine so the capture deadline can be
-	// enforced against a source that ignores its context. g.Wait only
+	// Launch and wait off the request goroutine: under SetLimit, g.Go
+	// blocks the launcher while the group is full, so a source that ignores
+	// its context would otherwise hold the request past the capture
+	// deadline from inside the launch loop. The request goroutine only
+	// selects on the group finishing or the deadline plus grace. g.Wait only
 	// returns a recovered panic's error; recoverutil.Safe keeps this
 	// goroutine itself from taking the process down.
 	waited := make(chan error, 1)
-	go recoverutil.Safe(c.logger, "incidents capture wait", func() { waited <- g.Wait() })
+	go recoverutil.Safe(c.logger, "incidents capture launch", func() {
+		var g errgroup.Group
+		g.SetLimit(c.limits.MaxConcurrency)
+		for i, src := range selected {
+			recoverutil.Go(&g, c.logger, "incidents capture "+src.ID(), func() error {
+				// A panic unwinds through this deferred send before
+				// recoverutil.Go recovers it, so the slot records the
+				// panic instead of staying empty (an empty slot at the
+				// deadline means "still running or never launched").
+				sent := false
+				defer func() {
+					if !sent {
+						slots[i] <- sourceOutcome{panicked: true}
+					}
+				}()
+				srcCtx, cancel := context.WithTimeout(captureCtx, c.limits.SourceTimeout)
+				defer cancel()
+				res, err := src.Collect(srcCtx, req)
+				slots[i] <- sourceOutcome{result: res, err: err, ctxErr: srcCtx.Err()}
+				sent = true
+				return nil
+			})
+		}
+		waited <- g.Wait()
+	})
 	finished := false
 	select {
 	case err := <-waited:
@@ -392,7 +420,7 @@ func (c *Collector) Capture(ctx context.Context, req CaptureRequest) (CaptureRep
 		case <-waited:
 			finished = true
 		case <-time.After(c.grace):
-			c.logger.Warn("incident capture deadline passed with sources still running")
+			c.logger.Warn("incident capture deadline passed with sources still running or queued")
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -485,12 +513,15 @@ const (
 )
 
 // finalize turns one worker's slot into its report and finalized items. A
-// nil outcome means the worker never sent: it panicked when every worker
-// finished, else it was still running at the capture deadline.
+// panicked outcome is failed. A nil outcome means the worker never sent:
+// it was still running, or never launched behind the concurrency limit,
+// when the capture deadline cut the wait, and is reported timed_out either
+// way (nothing of it was observed); after a completed wait a nil slot
+// cannot happen and is treated as a failure.
 func (c *Collector) finalize(id string, o *sourceOutcome, finished bool, now time.Time, keys map[string]bool) (SourceReport, []Evidence) {
 	sr := SourceReport{ID: id}
 	switch {
-	case o == nil && finished:
+	case o != nil && o.panicked, o == nil && finished:
 		sr.Completeness, sr.Detail = CompletenessFailed, detailPanicked
 		return sr, nil
 	case o == nil:
@@ -631,6 +662,32 @@ func (e Evidence) Row() (store.IncidentEvidenceRow, error) {
 		CaptureKey:         e.CaptureKey,
 	}, nil
 }
+
+// RequiredReadScopes returns every scope a reader must hold `get` on to
+// see the row: its stored scope, plus, for a diagnostic_check stored under
+// a related resource (pods, replicasets), the target's own scope derived
+// from the row's source kind through diagnostics.TargetResource. A
+// diagnostic row whose source kind cannot be mapped is an error: the read
+// path must withhold it rather than guess. Scopes are deduplicated.
+func RequiredReadScopes(row store.IncidentEvidenceRow) ([]store.EvidenceScope, error) {
+	stored := store.EvidenceScope{ClusterID: row.ClusterID, APIGroup: row.APIGroup, Resource: row.Resource, Namespace: row.Namespace}
+	if row.EvidenceKind != EvidenceKindDiagnosticCheck {
+		return []store.EvidenceScope{stored}, nil
+	}
+	group, _, resource, ok := diagnostics.TargetResource(row.SourceKind)
+	if !ok {
+		return nil, fmt.Errorf("%w: diagnostic evidence names an unmappable target kind", ErrUnmappableTargetKind)
+	}
+	target := store.EvidenceScope{ClusterID: row.ClusterID, APIGroup: group, Resource: resource, Namespace: row.Namespace}
+	if target == stored {
+		return []store.EvidenceScope{stored}, nil
+	}
+	return []store.EvidenceScope{stored, target}, nil
+}
+
+// ErrUnmappableTargetKind: a diagnostic row's source kind is not one
+// diagnostics can resolve, so its target scope cannot be derived.
+var ErrUnmappableTargetKind = errors.New("incidents: unmappable target kind")
 
 // EvidenceRows maps a report's items for InsertBatch.
 func EvidenceRows(items []Evidence) ([]store.IncidentEvidenceRow, error) {

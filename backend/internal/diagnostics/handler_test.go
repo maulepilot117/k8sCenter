@@ -251,3 +251,26 @@ func TestResolveNotFoundIsASentinel(t *testing.T) {
 		t.Fatal("a same-text error must not classify as the sentinel")
 	}
 }
+
+// TestDiagnostics_MissingTargetIs404WithTheHistoricalMessage pins the
+// endpoint's contract for an absent target after the sentinel change: 404,
+// and the message text byte-for-byte as it has always been.
+func TestDiagnostics_MissingTargetIs404WithTheHistoricalMessage(t *testing.T) {
+	h := newDiagHandler(&countingLister{}, false)
+	w := callDiag(t, h, "local", "/diagnostics/team-a/Pod/ghost")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if want := `Pod "ghost" not found in namespace "team-a"`; body.Error.Code != 404 || body.Error.Message != want {
+		t.Fatalf("error = %+v, want code 404 message %q", body.Error, want)
+	}
+}

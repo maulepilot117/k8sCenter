@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -186,6 +188,8 @@ type eventPager struct {
 	mu        sync.Mutex
 	selectors []string
 	pages     int
+	expireAt  int           // 1-based page whose continue token has expired (0: never)
+	delay     time.Duration // per-page latency
 }
 
 func installEventPaging(cs *kfake.Clientset) *eventPager {
@@ -195,7 +199,12 @@ func installEventPaging(cs *kfake.Clientset) *eventPager {
 		p.mu.Lock()
 		p.selectors = append(p.selectors, la.ListOptions.FieldSelector)
 		p.pages++
+		page, expireAt, delay := p.pages, p.expireAt, p.delay
 		p.mu.Unlock()
+		time.Sleep(delay)
+		if expireAt > 0 && page == expireAt {
+			return true, nil, apierrors.NewResourceExpired("The provided continue parameter is too old")
+		}
 		obj, err := cs.Tracker().List(corev1.SchemeGroupVersion.WithResource("events"), corev1.SchemeGroupVersion.WithKind("Event"), la.GetNamespace())
 		if err != nil {
 			return true, nil, err
@@ -255,6 +264,7 @@ type fakeLister struct {
 	deployments []*appsv1.Deployment
 	replicaSets []*appsv1.ReplicaSet
 	pods        []*corev1.Pod
+	err         error // returned by ListDeployments when set
 }
 
 func (l *fakeLister) ListPods(context.Context, string) ([]*corev1.Pod, error) { return l.pods, nil }
@@ -262,7 +272,7 @@ func (l *fakeLister) ListServices(context.Context, string) ([]*corev1.Service, e
 	return nil, nil
 }
 func (l *fakeLister) ListDeployments(context.Context, string) ([]*appsv1.Deployment, error) {
-	return l.deployments, nil
+	return l.deployments, l.err
 }
 func (l *fakeLister) ListReplicaSets(context.Context, string) ([]*appsv1.ReplicaSet, error) {
 	return l.replicaSets, nil
@@ -1190,12 +1200,63 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 			t.Errorf("field selector = %q", f.pager.selectors[0])
 		}
 	})
-	t.Run("page ceiling flags more", func(t *testing.T) {
+	t.Run("newest beyond the fifth page is still found", func(t *testing.T) {
+		// Name order is not time order: here the newest event has the
+		// highest name, so it sits on the sixth page.
 		f := newAdapterFixture("100", mk(1200)...)
 		rep := capture(t, newTestCollector(t, testLimits(), f.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceEvents))
 		ev := itemsOfKind(rep.Items, EvidenceKindEventList, "")[0]
-		if f.pager.pages != 5 || !ev.Redaction.Truncated || ev.SourceObservedAt == nil || !ev.SourceObservedAt.Equal(now.Add(999*time.Second)) {
-			t.Errorf("pages=%d truncated=%v observedAt=%v; want 5 pages, truncated, newest fetched event", f.pager.pages, ev.Redaction.Truncated, ev.SourceObservedAt)
+		if f.pager.pages != 6 || !ev.Redaction.Truncated || ev.SourceObservedAt == nil || !ev.SourceObservedAt.Equal(now.Add(1199*time.Second)) {
+			t.Errorf("pages=%d truncated=%v observedAt=%v; want 6 pages, truncated (count), the true newest event", f.pager.pages, ev.Redaction.Truncated, ev.SourceObservedAt)
+		}
+		if got := sourceReport(t, rep, SourceEvents); got.Completeness != CompletenessPartial || got.Detail != detailProjectionTooLarge {
+			t.Errorf("events = %+v, want partial for the count cut only", got)
+		}
+	})
+	t.Run("hard page ceiling flags more", func(t *testing.T) {
+		f := newAdapterFixture("100", mk(5200)...)
+		l := testLimits()
+		l.SourceTimeout = 10 * time.Second // the fake re-sorts 5200 objects per page
+		rep := capture(t, newTestCollector(t, l, f.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceEvents))
+		ev := itemsOfKind(rep.Items, EvidenceKindEventList, "")[0]
+		if f.pager.pages != 25 || !ev.Redaction.Truncated || ev.SourceObservedAt == nil || !ev.SourceObservedAt.Equal(now.Add(4999*time.Second)) {
+			t.Errorf("pages=%d truncated=%v observedAt=%v; want 25 pages, truncated, newest fetched event", f.pager.pages, ev.Redaction.Truncated, ev.SourceObservedAt)
+		}
+	})
+	t.Run("expired continue token keeps what was fetched and is partial", func(t *testing.T) {
+		f := newAdapterFixture("100", mk(450)...)
+		f.pager.expireAt = 2
+		rep := capture(t, newTestCollector(t, testLimits(), f.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceEvents))
+		got := sourceReport(t, rep, SourceEvents)
+		if got.Completeness != CompletenessPartial || !strings.Contains(got.Detail, detailListInterrupted) || got.Items != 1 {
+			t.Fatalf("events = %+v, want partial with the interrupted detail and its item", got)
+		}
+		ev := itemsOfKind(rep.Items, EvidenceKindEventList, "")[0]
+		if !ev.Redaction.Truncated || ev.SourceObservedAt == nil || !ev.SourceObservedAt.Equal(now.Add(199*time.Second)) {
+			t.Errorf("item = truncated %v observedAt %v; want the first page's newest, flagged", ev.Redaction.Truncated, ev.SourceObservedAt)
+		}
+		if f.pager.expireAt = 1; true {
+			g := newAdapterFixture("100", mk(10)...)
+			g.pager.expireAt = 1
+			rep := capture(t, newTestCollector(t, testLimits(), g.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceEvents))
+			if got := sourceReport(t, rep, SourceEvents); got.Completeness != CompletenessFailed || got.Detail != detailListFailed {
+				t.Errorf("first-page expiry = %+v, want failed (nothing was fetched)", got)
+			}
+		}
+	})
+	t.Run("source deadline mid-paging keeps what was fetched", func(t *testing.T) {
+		f := newAdapterFixture("100", mk(1000)...)
+		f.pager.delay = 60 * time.Millisecond
+		l := testLimits()
+		l.SourceTimeout = 100 * time.Millisecond
+		rep := capture(t, newTestCollector(t, l, f.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceEvents))
+		got := sourceReport(t, rep, SourceEvents)
+		if got.Items != 1 || got.Completeness != CompletenessPartial {
+			t.Fatalf("events = %+v, want one (flagged) item, not a timeout", got)
+		}
+		ev := itemsOfKind(rep.Items, EvidenceKindEventList, "")[0]
+		if !ev.Redaction.Truncated || f.pager.pages >= 5 || f.pager.pages < 1 {
+			t.Errorf("truncated=%v pages=%d; want a flagged cut after fewer than all pages", ev.Redaction.Truncated, f.pager.pages)
 		}
 	})
 	t.Run("digest covers every fetched event", func(t *testing.T) {
@@ -1204,11 +1265,11 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 		for i := range 250 {
 			base = append(base, *targetEvent(fmt.Sprintf("e%04d", i), "Spam", "m", int32(i), now.Add(time.Duration(i)*time.Second)))
 		}
-		same := projectEvents(r, append([]corev1.Event(nil), base...), false, false)
-		again := projectEvents(r, append([]corev1.Event(nil), base...), false, false)
+		same := projectEvents(r, append([]corev1.Event(nil), base...), nil, false, false)
+		again := projectEvents(r, append([]corev1.Event(nil), base...), nil, false, false)
 		changed := append([]corev1.Event(nil), base...)
 		changed[0].Count = 99 // the oldest event, outside the kept 200
-		other := projectEvents(r, changed, false, false)
+		other := projectEvents(r, changed, nil, false, false)
 		if same.digest != again.digest || same.digest == other.digest {
 			t.Errorf("digest same=%s again=%s other=%s", same.digest, again.digest, other.digest)
 		}
@@ -1615,5 +1676,189 @@ func TestWithheldEvidenceCarriesNoScope(t *testing.T) {
 	}
 	if len(m) != 0 {
 		t.Errorf("withheld shape carries extra fields: %v", m)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Re-review round 2
+// ---------------------------------------------------------------------------
+
+// stuckSource ignores its context and blocks until release is closed.
+func stuckSource(id string, release chan struct{}) Source {
+	return stubSource{id: id, fn: func(context.Context, CaptureRequest) (SourceResult, error) {
+		<-release
+		return SourceResult{Items: []Evidence{completeItem("late-" + id)}, Completeness: CompletenessComplete}, nil
+	}}
+}
+
+func TestCaptureDeadlineHoldsWhenTheLimitQueuesSources(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	l := testLimits()
+	l.MaxConcurrency = 1
+	l.CaptureTimeout = 40 * time.Millisecond
+	l.SourceTimeout = 40 * time.Millisecond
+	// The context-ignoring source is registered FIRST, so under a limit of
+	// one it holds the only slot and the healthy sources never launch
+	// before the deadline.
+	c := newTestCollector(t, l,
+		stuckSource("stuck", release),
+		completeSource("healthy-1", completeItem("a")),
+		completeSource("healthy-2", completeItem("b")),
+	)
+	c.grace = 20 * time.Millisecond
+	start := time.Now()
+	rep := capture(t, c, localRequest())
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Capture took %s: the launch loop blocked the request goroutine", elapsed)
+	}
+	if got := sourceReport(t, rep, "stuck"); got.Completeness != CompletenessTimedOut || got.Detail != detailCaptureCut {
+		t.Errorf("stuck = %+v", got)
+	}
+	// Never-launched sources are reported timed_out as well: nothing of
+	// them was observed before the capture deadline, which is the honest
+	// state (not failed, not forbidden).
+	for _, id := range []string{"healthy-1", "healthy-2"} {
+		if got := sourceReport(t, rep, id); got.Completeness != CompletenessTimedOut || got.Detail != detailCaptureCut || got.Items != 0 {
+			t.Errorf("%s = %+v, want timed_out with the capture-deadline detail", id, got)
+		}
+	}
+	if rep.Completeness != CompletenessPartial || len(rep.Items) != 0 {
+		t.Errorf("report = %q with %d items", rep.Completeness, len(rep.Items))
+	}
+}
+
+func TestCapturePanicIsFailedEvenWhenTheDeadlineCutsTheWait(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	l := testLimits()
+	l.CaptureTimeout = 40 * time.Millisecond
+	l.SourceTimeout = 40 * time.Millisecond
+	c := newTestCollector(t, l,
+		stubSource{id: "boom", fn: func(context.Context, CaptureRequest) (SourceResult, error) {
+			panic("adapter bug")
+		}},
+		stuckSource("stuck", release),
+	)
+	c.grace = 20 * time.Millisecond
+	rep := capture(t, c, localRequest())
+	if got := sourceReport(t, rep, "boom"); got.Completeness != CompletenessFailed || got.Detail != detailPanicked {
+		t.Errorf("boom = %+v, want failed (a recorded panic, not a cut)", got)
+	}
+	if got := sourceReport(t, rep, "stuck"); got.Completeness != CompletenessTimedOut || got.Detail != detailCaptureCut {
+		t.Errorf("stuck = %+v, want timed_out", got)
+	}
+}
+
+func TestDiagnosticsResolveFailuresAreClassified(t *testing.T) {
+	allow := resources.NewAlwaysAllowAccessChecker()
+	t.Run("absent target is the not-found sentinel", func(t *testing.T) {
+		f := &adapterFixture{lister: &fakeLister{}, typed: kfake.NewSimpleClientset(), dyn: dynfake.NewSimpleDynamicClient(runtime.NewScheme())}
+		rep := capture(t, newTestCollector(t, testLimits(), f.sources(t, allow, DefaultMaxBytes)...), localRequest(SourceDiagnostics))
+		if got := sourceReport(t, rep, SourceDiagnostics); got.Completeness != CompletenessFailed || got.Detail != detailNotFound {
+			t.Errorf("diagnostics = %+v", got)
+		}
+	})
+	t.Run("lister error is a resolve failure, even when its text says not found", func(t *testing.T) {
+		f := &adapterFixture{lister: &fakeLister{err: errors.New("informer not found in cache for " + testName)}, typed: kfake.NewSimpleClientset(), dyn: dynfake.NewSimpleDynamicClient(runtime.NewScheme())}
+		rep := capture(t, newTestCollector(t, testLimits(), f.sources(t, allow, DefaultMaxBytes)...), localRequest(SourceDiagnostics))
+		if got := sourceReport(t, rep, SourceDiagnostics); got.Completeness != CompletenessFailed || got.Detail != detailResolveFailed {
+			t.Errorf("diagnostics = %+v", got)
+		}
+	})
+}
+
+func TestCheckScopePerRegisteredRule(t *testing.T) {
+	selectorSvc := &diagnostics.DiagnosticTarget{Kind: "Service", Object: &corev1.Service{Spec: corev1.ServiceSpec{Selector: map[string]string{"app": "web"}}}}
+	headlessSvc := &diagnostics.DiagnosticTarget{Kind: "Service", Object: &corev1.Service{}}
+	cases := []struct {
+		rule   string
+		kind   string
+		target *diagnostics.DiagnosticTarget
+		want   string // "<group>/<resource>"
+	}{
+		{"CrashLoopBackOff", "Deployment", &diagnostics.DiagnosticTarget{Kind: "Deployment"}, "/pods"},
+		{"CrashLoopBackOff", "Pod", &diagnostics.DiagnosticTarget{Kind: "Pod"}, "/pods"},
+		{"CrashLoopBackOff", "StatefulSet", &diagnostics.DiagnosticTarget{Kind: "StatefulSet"}, "/pods"},
+		{"CrashLoopBackOff", "DaemonSet", &diagnostics.DiagnosticTarget{Kind: "DaemonSet"}, "/pods"},
+		{"ImagePullBackOff", "Deployment", &diagnostics.DiagnosticTarget{Kind: "Deployment"}, "/pods"},
+		{"PendingPod", "StatefulSet", &diagnostics.DiagnosticTarget{Kind: "StatefulSet"}, "/pods"},
+		{"ReplicaMismatch", "Deployment", &diagnostics.DiagnosticTarget{Kind: "Deployment"}, "apps/deployments"},
+		{"ReplicaMismatch", "StatefulSet", &diagnostics.DiagnosticTarget{Kind: "StatefulSet"}, "apps/statefulsets"},
+		{"ReplicaMismatch", "DaemonSet", &diagnostics.DiagnosticTarget{Kind: "DaemonSet"}, "apps/daemonsets"},
+		{"ZeroEndpoints", "Service", selectorSvc, "/pods"},
+		{"ZeroEndpoints", "Service", headlessSvc, "/services"},
+		{"PendingPVC", "PersistentVolumeClaim", &diagnostics.DiagnosticTarget{Kind: "PersistentVolumeClaim"}, "/persistentvolumeclaims"},
+		{"NoSuchRule", "Deployment", &diagnostics.DiagnosticTarget{Kind: "Deployment"}, "apps/deployments"},
+	}
+	for _, tc := range cases {
+		group, _, resource, ok := diagnostics.TargetResource(tc.kind)
+		if !ok {
+			t.Fatalf("%s is not a diagnostics kind", tc.kind)
+		}
+		deps := diagnostics.RuleDependsOn(tc.rule, tc.target)
+		g, r := checkScope(group, resource, deps)
+		if got := g + "/" + r; got != tc.want {
+			t.Errorf("%s on %s: scope %q, want %q (deps %v)", tc.rule, tc.kind, got, tc.want, deps)
+		}
+		// No registered rule reads ReplicaSets without also reading pods, so
+		// the replicasets-only branch of checkScope is unreachable today;
+		// this pins that a future rule changing it is noticed.
+		if slices.Contains(deps, "replicasets") && !slices.Contains(deps, "pods") {
+			t.Errorf("%s reads replicasets without pods: the replicasets-only scope is now live, review its reader gate", tc.rule)
+		}
+	}
+	if g, r := checkScope("apps", "deployments", []string{"replicasets"}); g != "apps" || r != "replicasets" {
+		t.Errorf("replicasets-only branch = %s/%s", g, r)
+	}
+}
+
+func TestRequiredReadScopesAddsTheTargetForRelatedScopedChecks(t *testing.T) {
+	base := store.IncidentEvidenceRow{ClusterID: "local", Namespace: testNS, SourceKind: "Deployment"}
+	podsRow := base
+	podsRow.EvidenceKind, podsRow.APIGroup, podsRow.Resource = EvidenceKindDiagnosticCheck, "", "pods"
+	got, err := RequiredReadScopes(podsRow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []store.EvidenceScope{
+		{ClusterID: "local", APIGroup: "", Resource: "pods", Namespace: testNS},
+		{ClusterID: "local", APIGroup: "apps", Resource: "deployments", Namespace: testNS},
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("pods-scoped check scopes = %+v, want %+v", got, want)
+	}
+
+	targetRow := base
+	targetRow.EvidenceKind, targetRow.APIGroup, targetRow.Resource = EvidenceKindDiagnosticCheck, "apps", "deployments"
+	if got, err := RequiredReadScopes(targetRow); err != nil || len(got) != 1 || got[0] != want[1] {
+		t.Errorf("target-scoped check scopes = %+v (%v)", got, err)
+	}
+
+	eventsRow := base
+	eventsRow.EvidenceKind, eventsRow.APIGroup, eventsRow.Resource = EvidenceKindEventList, "", "events"
+	if got, err := RequiredReadScopes(eventsRow); err != nil || len(got) != 1 || got[0].Resource != "events" {
+		t.Errorf("event_list scopes = %+v (%v): only the stored scope", got, err)
+	}
+
+	unknown := podsRow
+	unknown.SourceKind = "Widget"
+	if _, err := RequiredReadScopes(unknown); !errors.Is(err, ErrUnmappableTargetKind) {
+		t.Errorf("unmappable kind err = %v", err)
+	}
+
+	// End to end: every diagnostic row the collector produces maps.
+	f := newAdapterFixture("100")
+	crashLoopFixture(f, testName+"-rs-x")
+	rep := capture(t, newTestCollector(t, testLimits(), f.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceDiagnostics))
+	for _, it := range rep.Items {
+		row, _ := it.Row()
+		scopes, err := RequiredReadScopes(row)
+		if err != nil {
+			t.Errorf("%s: %v", checkID(t, it), err)
+		}
+		if row.Resource == "pods" && len(scopes) != 2 {
+			t.Errorf("%s: pods-scoped row needs the target scope too, got %+v", checkID(t, it), scopes)
+		}
 	}
 }

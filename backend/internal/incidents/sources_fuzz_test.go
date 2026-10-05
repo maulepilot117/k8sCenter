@@ -111,6 +111,9 @@ func FuzzEventProjection(f *testing.F) {
 	f.Add("", "", "", "", "", "", int32(-1), uint8(0), uint8(7), false)
 	// Sanitizes into the canary: carried by the input, not a leak.
 	f.Add("CANAR\x0eY-e7a1-event-plaintext", "0", "0", "0", "0", "0", int32(1), uint8(1), uint8(0), true)
+	// Over the field bound only before control characters are removed:
+	// not a cut.
+	f.Add(strings.Repeat("m", fuzzEventFieldBound-3)+"\x00\x00\x04\x00", "Spam", "Deployment", "web", "uid-2", "controller", int32(3), uint8(2), uint8(0), true)
 
 	f.Fuzz(func(t *testing.T, message, reason, kind, name, uid, component string, count int32, n uint8, boundSel uint8, withTimes bool) {
 		for _, s := range []*string{&message, &reason, &kind, &name, &uid, &component} {
@@ -129,7 +132,7 @@ func FuzzEventProjection(f *testing.F) {
 		}
 		observed := len(events)
 
-		out := projectEvents(r, events, false, false) // oracle A: returns
+		out := projectEvents(r, events, nil, false, false) // oracle A: returns
 
 		// Oracle B.
 		if len(out.payload) > bound {
@@ -198,8 +201,11 @@ func FuzzEventProjection(f *testing.F) {
 		cutForCount := observed > fuzzEventMaxEvents
 		cutForSize := len(list) < min(observed, fuzzEventMaxEvents)
 		cutString := false
+		// Sanitization (invalid UTF-8 replaced, control characters
+		// removed) happens before the bound, so the cut is judged on the
+		// scrubbed string.
 		for _, s := range []string{message, reason, kind, name, uid, component} {
-			if len(strings.ToValidUTF8(s, "�")) > fuzzEventFieldBound {
+			if len(fuzzScrub(s)) > fuzzEventFieldBound {
 				cutString = true
 			}
 		}
