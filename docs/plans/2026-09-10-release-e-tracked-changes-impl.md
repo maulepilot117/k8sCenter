@@ -2356,8 +2356,7 @@ respect the existing cluster-pinning invariants in `CLAUDE.md`.
 
 Release E is done. The plan body above is unchanged and records what was
 intended; this section records what merged and where it differs. Code references
-are to `main` after #569 unless stated. #570 (U31) was still open when this was
-written, and its entries describe the PR as opened.
+are to `main` after #570 (merged as c96c6a93).
 
 ### Units
 
@@ -2600,10 +2599,45 @@ the order the plan lists them in.
   apply page, a receipt detail page at `/changes/[id]`, and a `/changes` list page
   (the plan did not specify a list page), linked from Tools navigation and the
   command palette. Playwright coverage is in `e2e/tests/change-receipts.spec.ts`.
-- **Ownership namespace default.** `HandleResolveOwnership` defaults a namespaced
-  object whose manifest omits `metadata.namespace` to `default`, the namespace the
-  applier writes to, so the ownership check looks at the object the apply would
-  change.
+- **Namespace defaulting is server-side.** `HandleResolveOwnership` resolves the
+  kind through the target cluster's RESTMapper, and when the kind is namespaced and
+  the request names no namespace it uses `default`, the namespace the applier
+  writes to. The ownership check therefore looks at the object the apply would
+  change; left empty, the inventory match and the live hint read would miss it and
+  the object would read as unmanaged. The client does not guess a namespace.
+- **Per-document parse; an unreadable group is "Not checked".** `/yaml/validate`
+  does not report the API group, which ownership matching needs. The client parses
+  the previewed YAML one document at a time, aligned to the server's indexes, to
+  get group and version (`ownershipPlanFromPreview` in
+  `frontend/lib/change-copy.ts`). A document whose `apiVersion` cannot be read, or
+  whose kind and name disagree with the server's, is not sent group-less (that
+  would be checked as a core-group object and could read as unmanaged). It becomes
+  a client-only row with reason `api-version-unreadable`, shown as "Not checked".
+  Only that document is affected. A document without a name (`generateName`) is
+  skipped.
+- **503 copy is keyed on `applied` and `retrySameOperationId`.** When the server
+  confirmed `applied: false`, the page says "Nothing was applied by this request."
+  With `retrySameOperationId: true` it adds that an earlier attempt under the same
+  operation id may already have applied and to check its change receipt; with
+  `false` it says the next apply starts a new change. Without `applied: false` it
+  says the outcome is unconfirmed and to check the live objects.
+- **Attempt-receipt link only when the attempt may have applied.**
+  `attemptMayHaveApplied` is true for no response, a 5xx, and a store 503 that does
+  not rule it out (`applied` not false, or `retrySameOperationId` true). It is
+  false for a definite refusal, a 409, and `operation_in_flight` (which carries its
+  own receipt link). `useYamlApply` exposes it as `attemptOutcomeUnknown`, and the
+  YAML apply page links the attempt's receipt only while it is true and there are
+  no results. `lastOperationId` and `attemptOutcomeUnknown` reset on Validate and
+  on each Apply press; the id a retry reuses is kept separately.
+- **The receipts list pager is labelled from the page on screen.** `shown` holds
+  the last page that loaded and its number, so a failed load cannot relabel the
+  old rows. A failed request reads "Could not load page N of M" with the
+  requested page, and pressing the pager button for that page retries it.
+- **e2e.** Waits race the page's error banner (`expectOrPageError`), so a 429 or
+  other error fails with the on-screen cause instead of a bare timeout. The
+  cross-user isolation test retries 429s from the shared auth bucket with backoff
+  (honouring `Retry-After`) and fails if the bucket never clears, rather than
+  skipping.
 
 ### Open items and risks, as resolved
 

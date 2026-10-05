@@ -195,7 +195,7 @@ U23b → U24a → U24b → U24c → U25a → U25b.
 
 ### Release E — as shipped (2026-10-05)
 
-Release E merged as PRs #563–#570: #563 U27 (receipt store), #564 U26 (ownership
+Release E is fully merged, PRs #563–#570 (#570 landed last, as c96c6a93): #563 U27 (receipt store), #564 U26 (ownership
 evidence), #565 U28 (changes service), #566 U29a (HTTP handlers), #567 U29b
 (wiring), #568 U30b (frontend contract), #569 U30a (opt-in tracked apply), #570
 U31 (UI and e2e). The units merged in the order U27, U26, U28, U29a, U29b, U30b,
