@@ -571,9 +571,9 @@ func TestHandleApply_InvalidOperationID_Returns400(t *testing.T) {
 }
 
 // assertRecordingUnavailable checks the tracked 503 contract: reason
-// receipt_store_unavailable, extra.applied false, and the step-dependent
-// retrySameOperationId hint.
-func assertRecordingUnavailable(t *testing.T, w *httptest.ResponseRecorder, retrySame bool) {
+// receipt_store_unavailable, extra.applied false, the step-dependent
+// retrySameOperationId hint, and a message saying what to do.
+func assertRecordingUnavailable(t *testing.T, w *httptest.ResponseRecorder, retrySame bool, wantPhrase string) {
 	t.Helper()
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d; want 503, body=%s", w.Code, w.Body.String())
@@ -585,11 +585,7 @@ func assertRecordingUnavailable(t *testing.T, w *httptest.ResponseRecorder, retr
 	if e.Extra["applied"] != false || e.Extra["retrySameOperationId"] != retrySame {
 		t.Errorf("extra = %v; want applied=false, retrySameOperationId=%v", e.Extra, retrySame)
 	}
-	wantPhrase := "Start a new attempt"
-	if retrySame {
-		wantPhrase = "retry with the same operation id"
-	}
-	if !strings.Contains(e.Message, wantPhrase) {
+	if !strings.Contains(strings.ToLower(e.Message), strings.ToLower(wantPhrase)) {
 		t.Errorf("message = %q; want it to say %q", e.Message, wantPhrase)
 	}
 }
@@ -612,16 +608,20 @@ func unreachableReceiptService(t *testing.T) *changes.Service {
 }
 
 // D3 step 2's precondition and step 2 itself: with no receipt store, or one
-// whose insert fails, a tracked request is refused with nothing applied, and
-// the operation id is NOT to be reused (it may be spent).
+// whose insert fails, a tracked request is refused with nothing applied.
+// Without a store the id is irrelevant (apply untracked). An insert failure
+// keeps the id: it may answer a retry of a send that already applied, so a
+// new id could apply twice, while reusing the id is always safe.
 func TestHandleApply_ChangesUnavailable_Returns503AndAppliesNothing(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		svc  func(*testing.T) *changes.Service
+		name       string
+		svc        func(*testing.T) *changes.Service
+		retrySame  bool
+		wantPhrase string
 	}{
-		{"nil service", func(*testing.T) *changes.Service { return nil }},
-		{"service without a store", func(*testing.T) *changes.Service { return changes.NewService(nil, discardLogger) }},
-		{"insert fails", unreachableReceiptService},
+		{"nil service", func(*testing.T) *changes.Service { return nil }, false, "apply without tracking"},
+		{"service without a store", func(*testing.T) *changes.Service { return changes.NewService(nil, discardLogger) }, false, "apply without tracking"},
+		{"insert fails", unreachableReceiptService, true, "retry with the same operation id"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fx := newFixture(t, nil, nil)
@@ -635,7 +635,7 @@ func TestHandleApply_ChangesUnavailable_Returns503AndAppliesNothing(t *testing.T
 			user := &auth.User{ID: "u-503", Username: "alice", KubernetesUsername: "alice"}
 			r = r.WithContext(middleware.WithClusterID(auth.ContextWithUser(r.Context(), user), remoteClusterID))
 			w := serve(fx.handler.HandleApply, r)
-			assertRecordingUnavailable(t, w, false)
+			assertRecordingUnavailable(t, w, tc.retrySame, tc.wantPhrase)
 			if got := patchCount(fx.remoteDyn); got != 0 {
 				t.Errorf("patches = %d; want 0", got)
 			}
@@ -673,13 +673,17 @@ func TestHandleApply_TrackedInvalidRequest_Returns400AndAppliesNothing(t *testin
 }
 
 // Every TrackedApply error class maps to its documented status, reason and
-// extra, and only an idempotency refusal is audited. The read step (an id
-// collision whose existing receipt could not be read) is the one 503 that
-// tells the client to keep the id. The default branch is unreachable through
-// the real service (every error it returns is typed), so the mapping is
-// driven directly.
+// extra, and only an idempotency refusal is audited. Of the store 503s, only
+// "mark" (a row this request inserted and the service finalized as failed)
+// tells the client to drop the id; "insert" and "read" can answer a retry of
+// a send that already applied, so they keep it, and an unknown step defaults
+// to the conservative false. The default branch is unreachable through the
+// real service (every error it returns is typed), so the mapping is driven
+// directly.
 func TestWriteTrackedApplyError_MapsEveryClass(t *testing.T) {
 	receipt := uuid.New()
+	keep := map[string]any{"applied": false, "retrySameOperationId": true}
+	drop := map[string]any{"applied": false, "retrySameOperationId": false}
 	cases := []struct {
 		name       string
 		err        error
@@ -687,23 +691,26 @@ func TestWriteTrackedApplyError_MapsEveryClass(t *testing.T) {
 		wantReason string
 		wantExtra  map[string]any
 		wantAudit  string
+		wantPhrase string
 	}{
 		{"id of another owner", &changes.OperationConflictError{Reason: changes.ReasonOperationIDConflict, Message: "in use"},
-			http.StatusConflict, changes.ReasonOperationIDConflict, nil, changes.ReasonOperationIDConflict + " op=OP"},
+			http.StatusConflict, changes.ReasonOperationIDConflict, nil, changes.ReasonOperationIDConflict + " op=OP", "in use"},
 		{"in flight", &changes.OperationConflictError{Reason: changes.ReasonOperationInFlight, Message: "poll", ReceiptID: receipt},
-			http.StatusConflict, changes.ReasonOperationInFlight, map[string]any{"receiptId": receipt.String()}, changes.ReasonOperationInFlight + " op=OP"},
+			http.StatusConflict, changes.ReasonOperationInFlight, map[string]any{"receiptId": receipt.String()}, changes.ReasonOperationInFlight + " op=OP", "poll"},
 		{"reused", &changes.OperationConflictError{Reason: changes.ReasonOperationIDReused, Message: "new id"},
-			http.StatusConflict, changes.ReasonOperationIDReused, nil, changes.ReasonOperationIDReused + " op=OP"},
+			http.StatusConflict, changes.ReasonOperationIDReused, nil, changes.ReasonOperationIDReused + " op=OP", "new id"},
 		{"store insert", &changes.StoreUnavailableError{Step: "insert", Err: errors.New("dial")},
-			http.StatusServiceUnavailable, changes.ReasonReceiptStoreUnavailable, map[string]any{"applied": false, "retrySameOperationId": false}, ""},
+			http.StatusServiceUnavailable, changes.ReasonReceiptStoreUnavailable, keep, "", "retry with the same operation id"},
 		{"store mark", &changes.StoreUnavailableError{Step: "mark", Err: errors.New("dial")},
-			http.StatusServiceUnavailable, changes.ReasonReceiptStoreUnavailable, map[string]any{"applied": false, "retrySameOperationId": false}, ""},
+			http.StatusServiceUnavailable, changes.ReasonReceiptStoreUnavailable, drop, "", "start a new attempt"},
 		{"store read", &changes.StoreUnavailableError{Step: "read", Err: errors.New("dial")},
-			http.StatusServiceUnavailable, changes.ReasonReceiptStoreUnavailable, map[string]any{"applied": false, "retrySameOperationId": true}, ""},
+			http.StatusServiceUnavailable, changes.ReasonReceiptStoreUnavailable, keep, "", "retry with the same operation id"},
+		{"store, unknown step", &changes.StoreUnavailableError{Step: "verification", Err: errors.New("dial")},
+			http.StatusServiceUnavailable, changes.ReasonReceiptStoreUnavailable, drop, "", "start a new attempt"},
 		{"invalid request", fmt.Errorf("%w: no documents", changes.ErrInvalidRequest),
-			http.StatusBadRequest, "", nil, ""},
+			http.StatusBadRequest, "", nil, "", "invalid tracked apply request"},
 		{"anything else", errors.New("boom"),
-			http.StatusInternalServerError, "", nil, ""},
+			http.StatusInternalServerError, "", nil, "", "tracked apply failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -719,6 +726,9 @@ func TestWriteTrackedApplyError_MapsEveryClass(t *testing.T) {
 			e := decodeError(t, w).Error
 			if e.Reason != tc.wantReason || !reflect.DeepEqual(e.Extra, tc.wantExtra) {
 				t.Errorf("reason/extra = %q %v; want %q %v", e.Reason, e.Extra, tc.wantReason, tc.wantExtra)
+			}
+			if !strings.Contains(strings.ToLower(e.Message), tc.wantPhrase) {
+				t.Errorf("message = %q; want it to say %q", e.Message, tc.wantPhrase)
 			}
 			if tc.wantStatus == http.StatusInternalServerError && strings.Contains(w.Body.String(), "boom") {
 				t.Errorf("500 body leaks the internal error: %s", w.Body.String())

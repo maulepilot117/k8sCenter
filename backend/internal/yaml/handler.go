@@ -169,7 +169,7 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !h.Changes.Available() {
-			writeRecordingUnavailable(w, false)
+			writeRecordingUnavailable(w, recordingStepNoStore)
 			return
 		}
 		tracked = &tp
@@ -386,35 +386,48 @@ func (h *Handler) applyTracked(w http.ResponseWriter, r *http.Request, user *aut
 	httputil.WriteData(w, resp)
 }
 
-// storeStepRead is changes.StoreUnavailableError.Step for a failure reading
-// the existing receipt after an operation id collided (a retry).
-const storeStepRead = "read"
+// recordingStepNoStore is the pseudo-step writeRecordingUnavailable is given
+// when there is no receipt store at all (the Available() pre-check). The
+// other steps are changes.StoreUnavailableError.Step values.
+const recordingStepNoStore = ""
 
 // writeRecordingUnavailable answers a tracked apply that could not be
-// recorded. Nothing was applied in every case, and extra says so explicitly
-// ("applied": false) so clients need not parse the message. Whether the
-// operation id is still usable depends on where recording failed, carried as
-// extra.retrySameOperationId:
+// recorded. Nothing was applied by THIS request in every case, and extra says
+// so explicitly ("applied": false) so clients need not parse the message.
+// Whether the client should keep the operation id is carried as
+// extra.retrySameOperationId and depends on where recording failed:
 //
-//   - false: there is no receipt store, or Insert or MarkMutationStarted
-//     failed. The id may be spent: an Insert may have committed before its
-//     error, and a failed mark finalizes the new row as failed, so a same-id
-//     retry would only replay that failure. Start a new attempt (new id) or
-//     apply untracked. This is the 503 that answers a FIRST send.
-//   - true: reading the existing receipt failed while resolving an id
-//     collision, i.e. on a retry. The original may have been applied; minting
-//     a new id here risks the duplicate apply D4 exists to prevent, so retry
-//     with the SAME id.
-//
-// This matches the web client rule (U30b): release the id on a 503 that
-// answers a first send, keep it on a retry.
-func writeRecordingUnavailable(w http.ResponseWriter, retrySameOperationID bool) {
-	message := "change recording is unavailable; nothing was applied. Start a new attempt or apply without tracking"
-	if retrySameOperationID {
+//   - "insert" -> true. Insert reports a collision only on an actual
+//     unique violation, so an unreachable or timed-out database surfaces here
+//     even when this request is a RETRY of a send that already applied.
+//     Reusing the id is always safe: if the insert never committed, the retry
+//     proceeds normally; if it did, the retry is told the operation is in
+//     flight and then replays it. A new id could apply twice.
+//   - "read" -> true. Reading the existing receipt failed while resolving an
+//     id collision, i.e. on a retry; the original may have been applied.
+//   - "mark" -> false. The row was inserted by this very request (a mark
+//     failure cannot happen on a retry, which collides at insert) and is
+//     finalized as failed, so the id is spent: a same-id retry would only
+//     replay that failure. Start a new attempt or apply untracked.
+//   - no store -> false. Tracking is not configured; the id is irrelevant.
+//     Apply without tracking.
+func writeRecordingUnavailable(w http.ResponseWriter, step string) {
+	var message string
+	var retrySame bool
+	switch step {
+	case "insert":
+		message = "change recording is unavailable; nothing was applied by this request. Retry with the same operation id or apply without tracking"
+		retrySame = true
+	case "read":
 		message = "could not read the existing record for this operation; retry with the same operation id"
+		retrySame = true
+	case recordingStepNoStore:
+		message = "change recording is not configured; nothing was applied. Apply without tracking"
+	default: // "mark", or any step this handler does not know: never reuse
+		message = "change recording is unavailable; nothing was applied. Start a new attempt or apply without tracking"
 	}
 	httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, message, changes.ReasonReceiptStoreUnavailable,
-		map[string]any{"applied": false, "retrySameOperationId": retrySameOperationID})
+		map[string]any{"applied": false, "retrySameOperationId": retrySame})
 }
 
 // writeTrackedApplyError maps TrackedApply's typed errors. Every one of them
@@ -428,7 +441,7 @@ func (h *Handler) writeTrackedApplyError(w http.ResponseWriter, r *http.Request,
 		httputil.WriteErrorWithReason(w, http.StatusConflict, conflict.Message, conflict.Reason, conflict.Extra())
 	case errors.As(err, &unavailable):
 		h.Logger.Error("tracked apply: receipt store unavailable", "operationId", opID, "step", unavailable.Step, "error", err)
-		writeRecordingUnavailable(w, unavailable.Step == storeStepRead)
+		writeRecordingUnavailable(w, unavailable.Step)
 	case errors.Is(err, changes.ErrInvalidRequest):
 		httputil.WriteError(w, http.StatusBadRequest, "invalid tracked apply request", err.Error())
 	default:
