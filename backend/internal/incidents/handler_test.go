@@ -464,7 +464,11 @@ type fakeAccess struct {
 	// blockUntilDone makes every check wait for ctx to end and return its
 	// error: a stalled cluster, without a wall-clock delay.
 	blockUntilDone bool
-	calls          []accessCall
+	// onFirstCall runs once, inside the first check, before any wait: a
+	// test uses it to end the request so the budget is spent at a point it
+	// controls rather than on a timer.
+	onFirstCall func()
+	calls       []accessCall
 }
 
 func allowAll(string, string, string, string) bool { return true }
@@ -475,6 +479,11 @@ func (f *fakeAccess) CanAccessGroupResource(ctx context.Context, clusterID, _ st
 	}
 	call := accessCall{clusterID, apiGroup, resource, namespace}
 	f.calls = append(f.calls, call)
+	if f.onFirstCall != nil {
+		hook := f.onFirstCall
+		f.onFirstCall = nil
+		hook()
+	}
 	if f.blockUntilDone {
 		<-ctx.Done()
 		return false, fmt.Errorf("SelfSubjectAccessReview: %w", ctx.Err())
@@ -955,11 +964,15 @@ func TestCheckErrorIsIsolatedToItsScope(t *testing.T) {
 func TestSlowAccessCheckIsBoundedPerRequest(t *testing.T) {
 	// A stalled cluster must yield per-row authorization_check_unavailable
 	// within the handler's access budget, not a whole-request timeout.
-	// Deterministic: the budget is one nanosecond, so it has expired by the
-	// time the first check runs, and the fake checker blocks until that
-	// expiry rather than sleeping; no wall-clock assumption is made.
+	// Deterministic: the budget is derived from the request context, and
+	// the fake checker ends that context inside the FIRST check (then
+	// blocks until it is done, as a stalled cluster would). No timer is
+	// involved, so the first check is always issued and every later scope
+	// is always refused without a call, whatever the runner's load.
 	hs := newHarness(t)
-	hs.h.accessTimeout = time.Nanosecond
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	hs.access.onFirstCall = cancel
 	hs.access.blockUntilDone = true
 	id := hs.seed(t, alice)
 	hs.addRows(
@@ -967,7 +980,7 @@ func TestSlowAccessCheckIsBoundedPerRequest(t *testing.T) {
 		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "billing", "b"),
 		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "search", "c"),
 	)
-	w := hs.get(t, alice, id)
+	w := hs.do(t, hs.h.HandleGet, http.MethodGet, request{user: alice, incidentID: id.String(), ctx: ctx})
 	wantStatus(t, w, http.StatusOK)
 	d := data(t, w)
 	wh := withheldOf(t, d)
