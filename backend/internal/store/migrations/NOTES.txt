@@ -425,3 +425,86 @@ Rollback:
   containing the /changes handler returns 503 rather than crashing once the
   tables are gone; until it lands there is no handler to roll back. Roll the
   binary back first or together.
+
+------------------------------------------------------------------------
+000024_create_incidents (Release D incidents, U21a, 2026-10-05)
+------------------------------------------------------------------------
+
+Creates five new tables: incidents, incident_evidence, incident_notes,
+incident_note_revisions and incident_grants. Purely additive: no existing
+table, column, index or row is touched. (The plan reserved 000020; 000020
+through 000023 were taken by the time this landed.) U21a ships the store for
+incidents and notes; evidence and grant writes arrive in U21b on top of this
+same schema, so the evidence and grant tables stay empty until then.
+
+What it stores:
+  An incident record (owner, cluster, title, summary, open/closed status,
+  investigation window, evidence counters, and the retention in force when
+  it was created, retention_days_at_capture). Notes are the only mutable
+  content: every edit bumps incident_notes.revision and copies the prior
+  body into incident_note_revisions in the same transaction, so note history
+  is append-only. Every child table cascades from incidents (ON DELETE
+  CASCADE).
+
+owner_id is not a local_users foreign key:
+  incidents.owner_id, incident_notes.author_id and incident_grants.grantee_id
+  hold auth.User.ID (provider-qualified TEXT, the nc_reads.user_id
+  precedent). Deleting a local user does NOT delete their incidents, notes or
+  grants; those rows stay until the incident is deleted or expires. The
+  per-owner inspection query below lists incidents per owner so a removed
+  account's rows can be identified.
+
+Retention (operator footgun 1):
+  Retention is configured by KUBECENTER_INCIDENTS_RETENTIONDAYS (wired by
+  U25a; default 30, clamped to [1, 3650]). The sweep deletes whole incidents
+  by created_at using the CURRENTLY configured value, not the value stored in
+  retention_days_at_capture (that column is a forensic record only).
+    - Lowering the value retroactively deletes, on the next sweep, every
+      incident older than the new window, including ones created under a
+      longer policy.
+    - Raising it does NOT resurrect incidents that were already deleted.
+  Retention is time-based only: closing an incident, deleting the Kubernetes
+  object it describes, or revoking someone's access never deletes it.
+
+Rollback (operator footgun 2):
+  Do NOT just deploy the older image. Its startup migration runner sees
+  version 24 recorded with no embedded 000024 file and fails with "no
+  migration found for version 24" (not "no change"); the backend then starts
+  with no database. The procedure is (LEAVE the incident tables in place
+  throughout):
+    1. Stop every backend pod running the new image, e.g. scale the backend
+       Deployment to 0 replicas and wait until none is left. Any new-image
+       pod that (re)starts after step 2 re-applies 000024 on boot and puts
+       the version back to 24.
+    2. Reset the recorded version:
+         UPDATE schema_migrations SET version = 23, dirty = false;
+       (or, with the golang-migrate CLI, `migrate ... force 23`).
+    3. Deploy the older image and scale back up. It starts cleanly and never
+       reads the incident tables.
+    4. Verify: `SELECT version, dirty FROM schema_migrations;` must read
+       23 | f, and the backend log must not contain "failed to connect to
+       database, falling back to slog audit". If the version reads 24 again,
+       a new-image pod ran in between: repeat from step 1.
+  A later roll-forward to an image that includes 000024 re-runs the 000024
+  up file over the tables left in place. That is harmless: every statement
+  in it is CREATE TABLE / CREATE INDEX ... IF NOT EXISTS (constraints are
+  inline, so they are skipped with their table) or COMMENT ON, which is
+  idempotent; existing rows are kept.
+  TestMigration000024_DocumentedRollbackKeepsDataAndRollsForward walks this
+  procedure end to end.
+
+  Running the down migration instead destroys every incident, its evidence,
+  notes, note revisions and grants. There is no export-on-rollback path and,
+  until the incident export endpoint ships (Release D U23b), no export path
+  at all.
+
+Inspect incidents:
+  Per owner (identifies a removed account's rows):
+    SELECT owner_id, COUNT(*), MIN(created_at), MAX(created_at)
+      FROM incidents
+     GROUP BY owner_id
+     ORDER BY owner_id;
+  Per incident:
+    SELECT id, owner_id, cluster_id, created_at, evidence_count, evidence_bytes
+      FROM incidents
+     ORDER BY created_at;

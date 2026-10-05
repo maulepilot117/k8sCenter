@@ -142,8 +142,44 @@ type ESOHistoryPage struct {
 // value from overflowing time.UnixMicro into a nonsense instant.
 const (
 	maxESOHistoryCursorBytes  = 64
-	maxESOHistoryCursorMicros = int64(4102444800000000)
+	maxESOHistoryCursorMicros = maxCursorMicros
 )
+
+// maxCursorMicros (2100-01-01T00:00:00Z in Unix microseconds) bounds the
+// timestamp of every keyset cursor in this package.
+const maxCursorMicros = int64(4102444800000000)
+
+// encodeMicrosCursor renders the shared keyset cursor form, unpadded base64url
+// over "<unix microseconds>:<id>". Microseconds match PostgreSQL's TIMESTAMPTZ
+// resolution, so a round trip reproduces the stored value exactly. Each cursor
+// type supplies its own id text.
+func encodeMicrosCursor(at time.Time, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(at.UnixMicro(), 10) + ":" + id))
+}
+
+// decodeMicrosCursor is the shared front half of every keyset cursor decoder:
+// it enforces the decoded-size cap, base64url, UTF-8, exactly one ':' and the
+// [0, maxCursorMicros] timestamp bound, and returns the timestamp and the
+// unparsed id text. ok is false for any malformed input; the caller maps that
+// to its own sentinel and parses the id itself.
+func decodeMicrosCursor(s string, maxDecodedBytes int) (at time.Time, idText string, ok bool) {
+	if s == "" || base64.RawURLEncoding.DecodedLen(len(s)) > maxDecodedBytes {
+		return time.Time{}, "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil || !utf8.Valid(raw) {
+		return time.Time{}, "", false
+	}
+	microsText, idText, found := strings.Cut(string(raw), ":")
+	if !found || strings.Contains(idText, ":") {
+		return time.Time{}, "", false
+	}
+	micros, err := strconv.ParseInt(microsText, 10, 64)
+	if err != nil || micros < 0 || micros > maxCursorMicros {
+		return time.Time{}, "", false
+	}
+	return time.UnixMicro(micros).UTC(), idText, true
+}
 
 // EncodeESOHistoryCursor renders a cursor as unpadded base64url over
 // "<attempt_at unix microseconds>:<id>". Microseconds match PostgreSQL's
@@ -156,33 +192,21 @@ const (
 // it cannot reach another cluster or another object. Signing it would add key
 // management without moving any boundary.
 func EncodeESOHistoryCursor(c ESOHistoryCursor) string {
-	raw := strconv.FormatInt(c.AttemptAt.UnixMicro(), 10) + ":" + strconv.FormatInt(c.ID, 10)
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+	return encodeMicrosCursor(c.AttemptAt, strconv.FormatInt(c.ID, 10))
 }
 
 // DecodeESOHistoryCursor parses a cursor produced by EncodeESOHistoryCursor.
 // Every malformed input returns ErrInvalidESOHistoryCursor.
 func DecodeESOHistoryCursor(s string) (ESOHistoryCursor, error) {
-	if s == "" || base64.RawURLEncoding.DecodedLen(len(s)) > maxESOHistoryCursorBytes {
-		return ESOHistoryCursor{}, ErrInvalidESOHistoryCursor
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil || !utf8.Valid(raw) {
-		return ESOHistoryCursor{}, ErrInvalidESOHistoryCursor
-	}
-	microsText, idText, ok := strings.Cut(string(raw), ":")
-	if !ok || strings.Contains(idText, ":") {
-		return ESOHistoryCursor{}, ErrInvalidESOHistoryCursor
-	}
-	micros, err := strconv.ParseInt(microsText, 10, 64)
-	if err != nil || micros < 0 || micros > maxESOHistoryCursorMicros {
+	at, idText, ok := decodeMicrosCursor(s, maxESOHistoryCursorBytes)
+	if !ok {
 		return ESOHistoryCursor{}, ErrInvalidESOHistoryCursor
 	}
 	id, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || id < 1 {
 		return ESOHistoryCursor{}, ErrInvalidESOHistoryCursor
 	}
-	return ESOHistoryCursor{AttemptAt: time.UnixMicro(micros).UTC(), ID: id}, nil
+	return ESOHistoryCursor{AttemptAt: at, ID: id}, nil
 }
 
 // The two page queries QueryPage chooses between. They are two fixed SQL texts
