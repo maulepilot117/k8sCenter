@@ -41,9 +41,11 @@ input a pass or a failure, as distinct from the generator that produces those in
 Rather than inventing an oracle per target, the project reuses a small lettered set and
 describes each target by which ones it asserts: **A**, crash-safety, the function never
 panics on any input; **B**, parser invariants, parse and format round-trip and output is
-always well-formed; **C**, enforcement, no input slips past a guard; **D**, leak-masking, a
-secret value never survives into output. One target may assert more than one, and some
-shapes admit only one — a normalizer is crash-safety only, because it is not invertible.
+always well-formed, including within any declared size bound; **C**, enforcement, no input
+slips past a guard; **D**, leak-masking, a secret value never survives into output; **T**,
+truncation honesty, any cut of the input is flagged in the output and nothing is reported
+cut when nothing was. One target may assert more than one, and some shapes admit only one
+— a normalizer is crash-safety only, because it is not invertible.
 
 The oracle determines what a seed corpus must contain. A seed set that passes even against
 deliberately broken code proves nothing, so seeds are validated by mutation: remove the
