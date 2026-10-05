@@ -13,6 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+
+	"github.com/kubecenter/kubecenter/internal/changes"
 )
 
 // FieldManager is the server-side apply field manager name for KubeCenter.
@@ -38,10 +40,57 @@ type ApplySummary struct {
 }
 
 // ApplyResponse is the response envelope for a multi-document apply.
+//
+// Tracking is set only for a tracked apply (?trackedOperationId=). It is a
+// pointer with omitempty so an untracked response serializes to exactly
+// {"results","summary"}, byte-identical to the format every legacy client
+// (web, mobile, wizards) parses. tracked_apply_test.go enforces this.
 type ApplyResponse struct {
-	Results []ApplyResult `json:"results"`
-	Summary ApplySummary  `json:"summary"`
+	Results  []ApplyResult          `json:"results"`
+	Summary  ApplySummary           `json:"summary"`
+	Tracking *changes.ApplyTracking `json:"tracking,omitempty"`
 }
+
+// add appends one result and counts it in the summary.
+func (r *ApplyResponse) add(result ApplyResult) {
+	r.Results = append(r.Results, result)
+	switch result.Action {
+	case "created":
+		r.Summary.Created++
+	case "configured":
+		r.Summary.Configured++
+	case "unchanged":
+		r.Summary.Unchanged++
+	case "failed":
+		r.Summary.Failed++
+	}
+}
+
+// ApplyObservation is one document's outcome with the detail a change
+// receipt records and ApplyResult deliberately keeps off the legacy wire.
+type ApplyObservation struct {
+	// Result is exactly the ApplyResult reported for the document.
+	Result ApplyResult
+	// Mapping is the resolved REST mapping; nil when GVK resolution failed.
+	Mapping *meta.RESTMapping
+	// UID identifies the object the outcome is about: the applied object's UID
+	// on success; on a failed PATCH, the UID the pre-PATCH GET saw, so an
+	// indeterminate outcome can be verified against the object that existed
+	// (empty when there was none, or when the GET itself failed).
+	UID types.UID
+	// ErrorClass is changes.ClassifyAPIError of the SSA PATCH's error, set
+	// only when that PATCH failed. A failure before the PATCH (mapping, the
+	// pre-PATCH GET, marshaling) mutated nothing and is left unclassified.
+	ErrorClass string
+}
+
+// ApplyObserver is called once per attempted document, in document order,
+// before the next document is attempted. Returning an error STOPS the apply:
+// no further document is sent to the cluster, and each remaining document is
+// reported as failed with changes.NotAppliedError rather than omitted, so
+// summary.total still equals len(docs) and summary.failed > 0 for legacy
+// clients that compute success from it (plan D5).
+type ApplyObserver func(ctx context.Context, obs ApplyObservation) error
 
 // ApplyDocuments applies a list of parsed Kubernetes objects via server-side
 // apply. Each document is applied independently (best-effort). Results are
@@ -54,22 +103,47 @@ func ApplyDocuments(
 	force bool,
 	logger *slog.Logger,
 ) *ApplyResponse {
+	return ApplyDocumentsObserved(ctx, dynClient, mapper, docs, force, logger, nil)
+}
+
+// ApplyDocumentsObserved is ApplyDocuments plus a per-document observer. A
+// nil observer observes nothing, which is exactly ApplyDocuments. See
+// ApplyObserver for the stop contract.
+func ApplyDocumentsObserved(
+	ctx context.Context,
+	dynClient dynamic.Interface,
+	mapper meta.RESTMapper,
+	docs []*unstructured.Unstructured,
+	force bool,
+	logger *slog.Logger,
+	observe ApplyObserver,
+) *ApplyResponse {
 	resp := &ApplyResponse{
 		Results: make([]ApplyResult, 0, len(docs)),
 	}
 
+	stopped := false
 	for i, obj := range docs {
-		result := applyOne(ctx, dynClient, mapper, obj, i, force, logger)
-		resp.Results = append(resp.Results, result)
-		switch result.Action {
-		case "created":
-			resp.Summary.Created++
-		case "configured":
-			resp.Summary.Configured++
-		case "unchanged":
-			resp.Summary.Unchanged++
-		case "failed":
-			resp.Summary.Failed++
+		if stopped {
+			resp.add(ApplyResult{
+				Index:     i,
+				Kind:      obj.GetKind(),
+				Name:      obj.GetName(),
+				Namespace: obj.GetNamespace(),
+				Action:    "failed",
+				Error:     changes.NotAppliedError,
+			})
+			continue
+		}
+		obs := applyOne(ctx, dynClient, mapper, obj, i, force, logger)
+		resp.add(obs.Result)
+		if observe == nil {
+			continue
+		}
+		if err := observe(ctx, obs); err != nil {
+			logger.Warn("yaml apply stopped: observer failed",
+				"index", i, "notAttempted", len(docs)-i-1, "error", err)
+			stopped = true
 		}
 	}
 	resp.Summary.Total = len(resp.Results)
@@ -83,7 +157,8 @@ var restMappingRetryBackoff = func(attempt int) time.Duration {
 	return time.Duration(500*(1<<attempt)) * time.Millisecond
 }
 
-// applyOne applies a single unstructured object via server-side apply.
+// applyOne applies a single unstructured object via server-side apply and
+// reports its result together with the mapping, UID and PATCH error class.
 func applyOne(
 	ctx context.Context,
 	dynClient dynamic.Interface,
@@ -92,13 +167,14 @@ func applyOne(
 	index int,
 	force bool,
 	logger *slog.Logger,
-) ApplyResult {
-	result := ApplyResult{
+) ApplyObservation {
+	obs := ApplyObservation{Result: ApplyResult{
 		Index:     index,
 		Kind:      obj.GetKind(),
 		Name:      obj.GetName(),
 		Namespace: obj.GetNamespace(),
-	}
+	}}
+	result := &obs.Result
 
 	// Resolve GVK → GVR, with retry for newly-registered CRDs (e.g. Gatekeeper
 	// ConstraintTemplates that create CRDs on apply). The DeferredDiscoveryRESTMapper
@@ -114,17 +190,18 @@ func applyOne(
 		if attempt == 2 {
 			result.Action = "failed"
 			result.Error = fmt.Sprintf("unknown resource type %s: %v", gvk.String(), mapErr)
-			return result
+			return obs
 		}
 		logger.Info("waiting for CRD discovery", "gvk", gvk.String(), "attempt", attempt+1)
 		select {
 		case <-ctx.Done():
 			result.Action = "failed"
 			result.Error = fmt.Sprintf("context cancelled waiting for CRD %s", gvk.String())
-			return result
+			return obs
 		case <-time.After(restMappingRetryBackoff(attempt)):
 		}
 	}
+	obs.Mapping = mapping
 
 	// Get the appropriate resource interface (namespaced or cluster-scoped)
 	var dr dynamic.ResourceInterface
@@ -146,13 +223,17 @@ func applyOne(
 	// Check if resource exists (for action detection)
 	existing, getErr := dr.Get(ctx, obj.GetName(), metav1.GetOptions{})
 	isNew := apierrors.IsNotFound(getErr)
+	var priorUID types.UID
+	if getErr == nil && existing != nil {
+		priorUID = existing.GetUID()
+	}
 
 	// Serialize to JSON for the patch payload
 	data, err := json.Marshal(obj.Object)
 	if err != nil {
 		result.Action = "failed"
 		result.Error = fmt.Sprintf("marshaling object: %v", err)
-		return result
+		return obs
 	}
 
 	// Build patch options
@@ -168,6 +249,8 @@ func applyOne(
 	applied, err := dr.Patch(ctx, obj.GetName(), types.ApplyPatchType, data, opts)
 	if err != nil {
 		result.Action = "failed"
+		obs.UID = priorUID
+		obs.ErrorClass = changes.ClassifyAPIError(err)
 		if apierrors.IsConflict(err) {
 			result.Error = fmt.Sprintf("field ownership conflict: %v. Use force to override.", err)
 		} else if apierrors.IsForbidden(err) {
@@ -177,7 +260,7 @@ func applyOne(
 		} else {
 			result.Error = err.Error()
 		}
-		return result
+		return obs
 	}
 
 	// Determine action: created, configured, or unchanged
@@ -188,6 +271,7 @@ func applyOne(
 	} else {
 		result.Action = "configured"
 	}
+	obs.UID = applied.GetUID()
 
 	logger.Info("yaml apply",
 		"action", result.Action,
@@ -196,7 +280,7 @@ func applyOne(
 		"namespace", result.Namespace,
 	)
 
-	return result
+	return obs
 }
 
 // extractValidationMessage extracts a user-friendly validation error message
