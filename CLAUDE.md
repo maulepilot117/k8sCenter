@@ -169,6 +169,8 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Resource actions: `POST /resources/:kind/:ns/:name/{scale,restart,rollback,suspend,trigger}`
 - Wizard previews: `POST /wizards/:type/preview`
 - YAML tools: `POST /yaml/{validate,apply,diff,export}`
+- YAML tracked apply: `POST /yaml/apply?trackedOperationId=<uuidv4>[&repairOf=<uuidv4>]` opts in to a durable change receipt and adds `data.tracking` (additive; without the parameter the response is unchanged). Protocol and pitfalls: `docs/solutions/tracked-apply-durable-intent.md`
+- Changes: `GET /changes`, `GET /changes/{id}`, `GET /changes/{id}/verification`, `POST /changes/ownership` (owner/grant/admin read gate, per-object read-time redaction; PostgreSQL required; per-user rate limit)
 - Monitoring: `GET /monitoring/{status,query,query_range,dashboards}`, `GET /monitoring/grafana/proxy/*`
 - Logs (Loki): `GET /logs/{status,query,labels,labels/:name/values,volume}` (RBAC namespace-scoped)
 - Topology: `GET /topology/{namespace}[?overlay=mesh]` (RBAC-gated, with optional Istio/Linkerd mesh edge overlay)
