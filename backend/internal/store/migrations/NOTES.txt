@@ -425,3 +425,54 @@ Rollback:
   containing the /changes handler returns 503 rather than crashing once the
   tables are gone; until it lands there is no handler to roll back. Roll the
   binary back first or together.
+
+------------------------------------------------------------------------
+000024_create_incidents (Release D incidents, U21a, 2026-10-05)
+------------------------------------------------------------------------
+
+Creates five new tables: incidents, incident_evidence, incident_notes,
+incident_note_revisions and incident_grants. Purely additive: no existing
+table, column, index or row is touched. (The plan reserved 000020; 000020
+through 000023 were taken by the time this landed.) U21a ships the store for
+incidents and notes; evidence and grant writes arrive in U21b on top of this
+same schema, so the evidence and grant tables stay empty until then.
+
+What it stores:
+  An incident record (owner, cluster, title, summary, open/closed status,
+  investigation window, evidence counters, and the retention in force when
+  it was created, retention_days_at_capture). Notes are the only mutable
+  content: every edit bumps incident_notes.revision and copies the prior
+  body into incident_note_revisions in the same transaction, so note history
+  is append-only. Every child table cascades from incidents (ON DELETE
+  CASCADE).
+
+owner_id is not a local_users foreign key:
+  incidents.owner_id, incident_notes.author_id and incident_grants.grantee_id
+  hold auth.User.ID (provider-qualified TEXT, the nc_reads.user_id
+  precedent). Deleting a local user does NOT delete their incidents, notes or
+  grants; those rows stay until the incident is deleted or expires. The
+  inspection query below finds incidents still owned by a removed account.
+
+Retention (operator footgun 1):
+  Retention is configured by KUBECENTER_INCIDENTS_RETENTIONDAYS (wired by
+  U25a; default 30, clamped to [1, 3650]). The sweep deletes whole incidents
+  by created_at using the CURRENTLY configured value, not the value stored in
+  retention_days_at_capture (that column is a forensic record only).
+    - Lowering the value retroactively deletes, on the next sweep, every
+      incident older than the new window, including ones created under a
+      longer policy.
+    - Raising it does NOT resurrect incidents that were already deleted.
+  Retention is time-based only: closing an incident, deleting the Kubernetes
+  object it describes, or revoking someone's access never deletes it.
+
+Rollback (operator footgun 2):
+  To roll the backend back, deploy the older image and LEAVE these tables in
+  place; a binary older than 000024 never reads them. Running the down
+  migration destroys every incident, its evidence, notes, note revisions and
+  grants. There is no export-on-rollback path: anything worth keeping must be
+  exported through the application before the down file is run.
+
+Inspect incidents:
+  SELECT id, owner_id, cluster_id, created_at, evidence_count, evidence_bytes
+    FROM incidents
+   ORDER BY created_at;
