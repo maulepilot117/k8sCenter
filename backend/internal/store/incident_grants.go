@@ -227,6 +227,40 @@ func (s *IncidentGrantStore) ListGrants(ctx context.Context, incidentID uuid.UUI
 	return out, nil
 }
 
+// GrantsFor returns userID's grants on the named incidents, keyed by incident
+// id, in one query; incidents without a grant for userID are absent. An
+// empty id list returns an empty map without a query. The list endpoint
+// resolves a page's collaborator roles with this rather than one GetGrant
+// per row.
+func (s *IncidentGrantStore) GrantsFor(ctx context.Context, userID string, incidentIDs []uuid.UUID) (map[uuid.UUID]IncidentGrantRow, error) {
+	if err := requireIdentity("user id", userID); err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]IncidentGrantRow, len(incidentIDs))
+	if len(incidentIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+grantColumns+`
+		  FROM incident_grants
+		 WHERE grantee_id = $1 AND incident_id = ANY($2)`, userID, incidentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list incident_grants for grantee: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		g, err := scanGrant(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan incident_grants: %w", err)
+		}
+		out[g.IncidentID] = g
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate incident_grants: %w", err)
+	}
+	return out, nil
+}
+
 // GetGrant returns userID's grant on an incident, or (nil, nil) when there is
 // none. A database fault is (nil, err), never "no grant".
 func (s *IncidentGrantStore) GetGrant(ctx context.Context, incidentID uuid.UUID, userID string) (*IncidentGrantRow, error) {

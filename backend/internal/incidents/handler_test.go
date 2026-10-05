@@ -42,8 +42,17 @@ type fakeStore struct {
 	grants    map[uuid.UUID]map[string]store.IncidentGrantRow
 	evidence  map[uuid.UUID][]store.IncidentEvidenceRow
 	notes     map[uuid.UUID][]store.IncidentNoteRow
-	failWith  error // when set, every call fails with it
-	busy      bool  // note writes return store.ErrIncidentBusy
+	failWith  error            // when set, every call fails with it
+	failOp    map[string]error // per-operation failure, by method name
+	busy      bool             // note writes return store.ErrIncidentBusy
+	// failGetAfterWrite makes Get fail once after the next Create/Update
+	// commits, to exercise the read-back path.
+	failGetAfterWrite bool
+	getFails          int
+	// afterListVisible runs between ListVisible and the role lookups.
+	afterListVisible func()
+	// deadlines records whether each store call's context carried a deadline.
+	deadlines []bool
 	clock     time.Time
 }
 
@@ -53,6 +62,7 @@ func newFakeStore() *fakeStore {
 		grants:    map[uuid.UUID]map[string]store.IncidentGrantRow{},
 		evidence:  map[uuid.UUID][]store.IncidentEvidenceRow{},
 		notes:     map[uuid.UUID][]store.IncidentNoteRow{},
+		failOp:    map[string]error{},
 		clock:     fixedNow,
 	}
 }
@@ -62,9 +72,19 @@ func (f *fakeStore) tick() time.Time {
 	return f.clock
 }
 
-func (f *fakeStore) Create(_ context.Context, r store.IncidentRow) (uuid.UUID, error) {
+// enter records the call's context and returns the forced failure, if any.
+func (f *fakeStore) enter(ctx context.Context, op string) error {
+	_, has := ctx.Deadline()
+	f.deadlines = append(f.deadlines, has)
 	if f.failWith != nil {
-		return uuid.Nil, f.failWith
+		return f.failWith
+	}
+	return f.failOp[op]
+}
+
+func (f *fakeStore) Create(ctx context.Context, r store.IncidentRow) (uuid.UUID, error) {
+	if err := f.enter(ctx, "Create"); err != nil {
+		return uuid.Nil, err
 	}
 	if r.OwnerID == "" {
 		return uuid.Nil, fmt.Errorf("%w: owner id is required", store.ErrIncidentInvalid)
@@ -85,12 +105,19 @@ func (f *fakeStore) Create(_ context.Context, r store.IncidentRow) (uuid.UUID, e
 	r.CreatedAt = f.tick()
 	r.UpdatedAt = r.CreatedAt
 	f.incidents[r.ID] = r
+	if f.failGetAfterWrite {
+		f.getFails = 1
+	}
 	return r.ID, nil
 }
 
-func (f *fakeStore) Get(_ context.Context, id uuid.UUID) (*store.IncidentRow, error) {
-	if f.failWith != nil {
-		return nil, f.failWith
+func (f *fakeStore) Get(ctx context.Context, id uuid.UUID) (*store.IncidentRow, error) {
+	if err := f.enter(ctx, "Get"); err != nil {
+		return nil, err
+	}
+	if f.getFails > 0 {
+		f.getFails--
+		return nil, errors.New("pg: read-back failed")
 	}
 	r, ok := f.incidents[id]
 	if !ok {
@@ -99,9 +126,9 @@ func (f *fakeStore) Get(_ context.Context, id uuid.UUID) (*store.IncidentRow, er
 	return &r, nil
 }
 
-func (f *fakeStore) ListVisible(_ context.Context, userID string, limit int, cursor string) ([]store.IncidentRow, string, error) {
-	if f.failWith != nil {
-		return nil, "", f.failWith
+func (f *fakeStore) ListVisible(ctx context.Context, userID string, limit int, cursor string) ([]store.IncidentRow, string, error) {
+	if err := f.enter(ctx, "ListVisible"); err != nil {
+		return nil, "", err
 	}
 	if limit < 1 {
 		limit = store.IncidentDefaultPageSize
@@ -139,6 +166,9 @@ func (f *fakeStore) ListVisible(_ context.Context, userID string, limit int, cur
 		last := rows[len(rows)-1]
 		next = store.EncodeIncidentCursor(store.IncidentCursor{CreatedAt: last.CreatedAt, ID: last.ID})
 	}
+	if f.afterListVisible != nil {
+		f.afterListVisible()
+	}
 	return rows, next, nil
 }
 
@@ -149,9 +179,9 @@ func (f *fakeStore) ownershipMiss(id uuid.UUID) error {
 	return store.ErrNotOwner
 }
 
-func (f *fakeStore) Update(_ context.Context, id uuid.UUID, ownerID, title, summary, status string) error {
-	if f.failWith != nil {
-		return f.failWith
+func (f *fakeStore) Update(ctx context.Context, id uuid.UUID, ownerID, title, summary, status string) error {
+	if err := f.enter(ctx, "Update"); err != nil {
+		return err
 	}
 	for _, v := range []error{store.ValidateIncidentTitle(title), store.ValidateIncidentSummary(summary), store.ValidateIncidentStatus(status)} {
 		if v != nil {
@@ -173,12 +203,15 @@ func (f *fakeStore) Update(_ context.Context, id uuid.UUID, ownerID, title, summ
 		r.ClosedAt = nil
 	}
 	f.incidents[id] = r
+	if f.failGetAfterWrite {
+		f.getFails = 1
+	}
 	return nil
 }
 
-func (f *fakeStore) Delete(_ context.Context, id uuid.UUID, ownerID string) error {
-	if f.failWith != nil {
-		return f.failWith
+func (f *fakeStore) Delete(ctx context.Context, id uuid.UUID, ownerID string) error {
+	if err := f.enter(ctx, "Delete"); err != nil {
+		return err
 	}
 	r, ok := f.incidents[id]
 	if !ok || r.OwnerID != ownerID {
@@ -191,9 +224,9 @@ func (f *fakeStore) Delete(_ context.Context, id uuid.UUID, ownerID string) erro
 	return nil
 }
 
-func (f *fakeStore) CreateNote(_ context.Context, incidentID uuid.UUID, authorID, body string) (store.IncidentNoteRow, error) {
-	if f.failWith != nil {
-		return store.IncidentNoteRow{}, f.failWith
+func (f *fakeStore) CreateNote(ctx context.Context, incidentID uuid.UUID, authorID, body string) (store.IncidentNoteRow, error) {
+	if err := f.enter(ctx, "CreateNote"); err != nil {
+		return store.IncidentNoteRow{}, err
 	}
 	if f.busy {
 		return store.IncidentNoteRow{}, store.ErrIncidentBusy
@@ -210,15 +243,38 @@ func (f *fakeStore) CreateNote(_ context.Context, incidentID uuid.UUID, authorID
 	return n, nil
 }
 
-func (f *fakeStore) ListNotes(_ context.Context, incidentID uuid.UUID) ([]store.IncidentNoteRow, error) {
-	if f.failWith != nil {
-		return nil, f.failWith
+func (f *fakeStore) ListNotes(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]store.IncidentNoteRow, string, error) {
+	if err := f.enter(ctx, "ListNotes"); err != nil {
+		return nil, "", err
 	}
-	out := append([]store.IncidentNoteRow(nil), f.notes[incidentID]...)
-	if len(out) > store.IncidentMaxNotesListed {
-		out = out[:store.IncidentMaxNotesListed]
+	switch {
+	case limit < 1:
+		limit = store.IncidentDefaultPageSize
+	case limit > store.IncidentMaxPageSize:
+		limit = store.IncidentMaxPageSize
 	}
-	return out, nil
+	var after *store.IncidentNoteCursor
+	if cursor != "" {
+		c, err := store.DecodeIncidentNoteCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		after = &c
+	}
+	out := make([]store.IncidentNoteRow, 0)
+	for _, n := range f.notes[incidentID] { // stored oldest first
+		if after != nil && !(n.CreatedAt.After(after.CreatedAt) || (n.CreatedAt.Equal(after.CreatedAt) && n.ID.String() > after.ID.String())) {
+			continue
+		}
+		out = append(out, n)
+	}
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = store.EncodeIncidentNoteCursor(store.IncidentNoteCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	}
+	return out, next, nil
 }
 
 func (f *fakeStore) findNote(incidentID, noteID uuid.UUID, authorID string) (int, error) {
@@ -234,9 +290,9 @@ func (f *fakeStore) findNote(incidentID, noteID uuid.UUID, authorID string) (int
 	return -1, store.ErrNoteNotFound
 }
 
-func (f *fakeStore) UpdateNote(_ context.Context, incidentID, noteID uuid.UUID, authorID, body string, expectedRevision int) (store.IncidentNoteRow, error) {
-	if f.failWith != nil {
-		return store.IncidentNoteRow{}, f.failWith
+func (f *fakeStore) UpdateNote(ctx context.Context, incidentID, noteID uuid.UUID, authorID, body string, expectedRevision int) (store.IncidentNoteRow, error) {
+	if err := f.enter(ctx, "UpdateNote"); err != nil {
+		return store.IncidentNoteRow{}, err
 	}
 	if f.busy {
 		return store.IncidentNoteRow{}, store.ErrIncidentBusy
@@ -262,9 +318,9 @@ func (f *fakeStore) UpdateNote(_ context.Context, incidentID, noteID uuid.UUID, 
 	return n, nil
 }
 
-func (f *fakeStore) DeleteNote(_ context.Context, incidentID, noteID uuid.UUID, authorID string) error {
-	if f.failWith != nil {
-		return f.failWith
+func (f *fakeStore) DeleteNote(ctx context.Context, incidentID, noteID uuid.UUID, authorID string) error {
+	if err := f.enter(ctx, "DeleteNote"); err != nil {
+		return err
 	}
 	if f.busy {
 		return store.ErrIncidentBusy
@@ -277,9 +333,20 @@ func (f *fakeStore) DeleteNote(_ context.Context, incidentID, noteID uuid.UUID, 
 	return nil
 }
 
-func (f *fakeStore) ListByIncident(_ context.Context, incidentID uuid.UUID, limit int, cursor string) ([]store.IncidentEvidenceRow, string, error) {
-	if f.failWith != nil {
-		return nil, "", f.failWith
+func (f *fakeStore) sortedEvidence(incidentID uuid.UUID) []store.IncidentEvidenceRow {
+	rows := append([]store.IncidentEvidenceRow(nil), f.evidence[incidentID]...)
+	sort.Slice(rows, func(i, j int) bool {
+		if !rows[i].CollectedAt.Equal(rows[j].CollectedAt) {
+			return rows[i].CollectedAt.After(rows[j].CollectedAt)
+		}
+		return rows[i].ID.String() > rows[j].ID.String()
+	})
+	return rows
+}
+
+func (f *fakeStore) ListByIncident(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]store.IncidentEvidenceRow, string, error) {
+	if err := f.enter(ctx, "ListByIncident"); err != nil {
+		return nil, "", err
 	}
 	switch {
 	case limit < 1:
@@ -296,18 +363,12 @@ func (f *fakeStore) ListByIncident(_ context.Context, incidentID uuid.UUID, limi
 		after = &c
 	}
 	rows := make([]store.IncidentEvidenceRow, 0)
-	for _, r := range f.evidence[incidentID] {
+	for _, r := range f.sortedEvidence(incidentID) {
 		if after != nil && !(r.CollectedAt.Before(after.CollectedAt) || (r.CollectedAt.Equal(after.CollectedAt) && r.ID.String() < after.ID.String())) {
 			continue
 		}
 		rows = append(rows, r)
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if !rows[i].CollectedAt.Equal(rows[j].CollectedAt) {
-			return rows[i].CollectedAt.After(rows[j].CollectedAt)
-		}
-		return rows[i].ID.String() > rows[j].ID.String()
-	})
 	if len(rows) > limit {
 		rows = rows[:limit]
 	}
@@ -319,9 +380,25 @@ func (f *fakeStore) ListByIncident(_ context.Context, incidentID uuid.UUID, limi
 	return rows, next, nil
 }
 
-func (f *fakeStore) GetGrant(_ context.Context, incidentID uuid.UUID, userID string) (*store.IncidentGrantRow, error) {
-	if f.failWith != nil {
-		return nil, f.failWith
+// ListScopeRowsByIncident mirrors the store: only the authorization columns.
+func (f *fakeStore) ListScopeRowsByIncident(ctx context.Context, incidentID uuid.UUID) ([]store.IncidentEvidenceRow, error) {
+	if err := f.enter(ctx, "ListScopeRowsByIncident"); err != nil {
+		return nil, err
+	}
+	out := make([]store.IncidentEvidenceRow, 0)
+	for _, r := range f.sortedEvidence(incidentID) {
+		out = append(out, store.IncidentEvidenceRow{
+			ID: r.ID, IncidentID: r.IncidentID, EvidenceKind: r.EvidenceKind, Mode: r.Mode, ClusterID: r.ClusterID,
+			APIGroup: r.APIGroup, Resource: r.Resource, SourceKind: r.SourceKind, Namespace: r.Namespace,
+			SecretDerived: r.SecretDerived, CollectedAt: r.CollectedAt,
+		})
+	}
+	return out, nil
+}
+
+func (f *fakeStore) GetGrant(ctx context.Context, incidentID uuid.UUID, userID string) (*store.IncidentGrantRow, error) {
+	if err := f.enter(ctx, "GetGrant"); err != nil {
+		return nil, err
 	}
 	g, ok := f.grants[incidentID][userID]
 	if !ok {
@@ -330,26 +407,55 @@ func (f *fakeStore) GetGrant(_ context.Context, incidentID uuid.UUID, userID str
 	return &g, nil
 }
 
+func (f *fakeStore) GrantsFor(ctx context.Context, userID string, ids []uuid.UUID) (map[uuid.UUID]store.IncidentGrantRow, error) {
+	if err := f.enter(ctx, "GrantsFor"); err != nil {
+		return nil, err
+	}
+	out := map[uuid.UUID]store.IncidentGrantRow{}
+	for _, id := range ids {
+		if g, ok := f.grants[id][userID]; ok {
+			out[id] = g
+		}
+	}
+	return out, nil
+}
+
 // accessCall is one recorded CanAccessGroupResource call.
 type accessCall struct{ clusterID, group, resource, namespace string }
 
 // fakeAccess answers `get` checks from a predicate that also sees the cluster
-// id, and records every call.
+// id, and records every call. errFor fails individual scopes; delay makes a
+// check stall while honouring the context like the real checker.
 type fakeAccess struct {
-	allow func(clusterID, group, resource, namespace string) bool
-	err   error
-	calls []accessCall
+	allow  func(clusterID, group, resource, namespace string) bool
+	err    error
+	errFor func(accessCall) error
+	delay  time.Duration
+	calls  []accessCall
 }
 
 func allowAll(string, string, string, string) bool { return true }
 
-func (f *fakeAccess) CanAccessGroupResource(_ context.Context, clusterID, _ string, _ []string, verb, apiGroup, resource, namespace string) (bool, error) {
+func (f *fakeAccess) CanAccessGroupResource(ctx context.Context, clusterID, _ string, _ []string, verb, apiGroup, resource, namespace string) (bool, error) {
 	if verb != "get" {
 		panic("incident evidence filtering must check get, got " + verb)
 	}
-	f.calls = append(f.calls, accessCall{clusterID, apiGroup, resource, namespace})
+	call := accessCall{clusterID, apiGroup, resource, namespace}
+	f.calls = append(f.calls, call)
+	if f.delay > 0 {
+		select {
+		case <-time.After(f.delay):
+		case <-ctx.Done():
+			return false, fmt.Errorf("SelfSubjectAccessReview: %w", ctx.Err())
+		}
+	}
 	if f.err != nil {
 		return false, f.err
+	}
+	if f.errFor != nil {
+		if err := f.errFor(call); err != nil {
+			return false, err
+		}
 	}
 	return f.allow(clusterID, apiGroup, resource, namespace), nil
 }
@@ -444,6 +550,7 @@ type request struct {
 	noteID     string
 	query      string
 	body       string
+	ctx        context.Context
 }
 
 func (hs *harness) do(t *testing.T, handler http.HandlerFunc, method string, req request) *httptest.ResponseRecorder {
@@ -452,7 +559,11 @@ func (hs *harness) do(t *testing.T, handler http.HandlerFunc, method string, req
 	if req.body != "" {
 		body = strings.NewReader(req.body)
 	}
-	r := httptest.NewRequestWithContext(t.Context(), method, "/incidents"+req.query, body)
+	ctx := req.ctx
+	if ctx == nil {
+		ctx = t.Context()
+	}
+	r := httptest.NewRequestWithContext(ctx, method, "/incidents"+req.query, body)
 	rctx := chi.NewRouteContext()
 	if req.incidentID != "" {
 		rctx.URLParams.Add("incidentID", req.incidentID)
@@ -460,7 +571,7 @@ func (hs *harness) do(t *testing.T, handler http.HandlerFunc, method string, req
 	if req.noteID != "" {
 		rctx.URLParams.Add("noteID", req.noteID)
 	}
-	ctx := context.WithValue(r.Context(), chi.RouteCtxKey, rctx)
+	ctx = context.WithValue(r.Context(), chi.RouteCtxKey, rctx)
 	if req.user != nil {
 		ctx = auth.ContextWithUser(ctx, req.user)
 	}
@@ -545,9 +656,30 @@ func counts(t *testing.T, d map[string]any) (visible, withheld int) {
 	t.Helper()
 	c, _ := d["counts"].(map[string]any)
 	if c == nil {
-		t.Fatalf("no counts in detail: %v", d)
+		t.Fatalf("no counts in response: %v", d)
 	}
 	return int(c["visible"].(float64)), int(c["withheld"].(float64))
+}
+
+// noRawTotals fails when any object in the response carries a raw store
+// total (U23a review P1: evidence_bytes, evidence_count and scope_count
+// reveal what a caller cannot see).
+func noRawTotals(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	for _, key := range []string{`"evidenceBytes"`, `"evidenceCount"`, `"scopeCount"`} {
+		if strings.Contains(w.Body.String(), key) {
+			t.Fatalf("response carries raw store total %s: %s", key, w.Body.String())
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // ---------------------------------------------------------------------------
@@ -716,15 +848,6 @@ func TestSourcePermissionChangeWithholdsItemWithoutMetadataLeak(t *testing.T) {
 	}
 }
 
-func mustJSON(t *testing.T, v any) []byte {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
-}
-
 func TestSARErrorWithholdsAsCheckUnavailableNotForbidden(t *testing.T) {
 	hs := newHarness(t)
 	id := hs.seed(t, alice)
@@ -738,6 +861,101 @@ func TestSARErrorWithholdsAsCheckUnavailableNotForbidden(t *testing.T) {
 	}
 	if n := len(list(d["evidence"])); n != 0 {
 		t.Fatalf("%d items visible on a failed check, want 0 (fail closed)", n)
+	}
+}
+
+func TestDefiniteDenialWinsOverCheckErrorForTheSameRow(t *testing.T) {
+	// A secret-derived row needs two scopes. The pods check errors, the
+	// secrets check definitely denies: the row is forbidden, not
+	// "unavailable", because no retry could ever make it readable.
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	r := hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "payments", "api")
+	r.SecretDerived = true
+	hs.addRows(r)
+	hs.access.errFor = func(c accessCall) error {
+		if c.resource == "pods" {
+			return errors.New("webhook down")
+		}
+		return nil
+	}
+	hs.access.allow = func(_, _, resource, _ string) bool { return resource != "secrets" }
+
+	d := data(t, hs.get(t, alice, id))
+	wh := withheldOf(t, d)
+	if len(wh) != 1 || wh[0]["withheldReason"] != WithheldForbidden {
+		t.Fatalf("withheld = %v, want forbidden (a denial outranks an error)", wh)
+	}
+	if len(hs.access.calls) != 2 {
+		t.Fatalf("calls = %v, want both scopes checked", hs.access.calls)
+	}
+}
+
+func TestCheckErrorIsIsolatedToItsScope(t *testing.T) {
+	// One scope's check failing does not withhold rows on other scopes, on
+	// the same cluster or another: every scope gets its own attempt.
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	broken := hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "payments", "api")
+	fine := hs.row(id, EvidenceKindObjectSummary, "apps", "deployments", "Deployment", "payments", "api")
+	remote := hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "payments", "api-remote")
+	remote.ClusterID = "remote-1"
+	hs.addRows(broken, fine, remote)
+	hs.access.errFor = func(c accessCall) error {
+		if c.clusterID == "local" && c.resource == "pods" {
+			return errors.New("webhook down")
+		}
+		return nil
+	}
+
+	d := data(t, hs.get(t, alice, id))
+	ev := list(d["evidence"])
+	if len(ev) != 2 {
+		t.Fatalf("visible = %v, want the deployments row and the remote row", ev)
+	}
+	wh := withheldOf(t, d)
+	if len(wh) != 1 || wh[0]["id"] != broken.ID.String() || wh[0]["withheldReason"] != WithheldAuthorizationCheckUnavailable {
+		t.Fatalf("withheld = %v", wh)
+	}
+	if len(hs.access.calls) != 3 {
+		t.Fatalf("calls = %v, want one per scope", hs.access.calls)
+	}
+}
+
+func TestSlowAccessCheckIsBoundedPerRequest(t *testing.T) {
+	// A stalled cluster must yield per-row authorization_check_unavailable
+	// within the handler's access budget, not a whole-request timeout.
+	hs := newHarness(t)
+	hs.h.accessTimeout = 30 * time.Millisecond
+	hs.access.delay = 5 * time.Second
+	id := hs.seed(t, alice)
+	hs.addRows(
+		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "payments", "a"),
+		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "billing", "b"),
+		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "search", "c"),
+	)
+	start := time.Now()
+	w := hs.get(t, alice, id)
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("request took %s; the access budget did not bound it", took)
+	}
+	wantStatus(t, w, http.StatusOK)
+	d := data(t, w)
+	wh := withheldOf(t, d)
+	if len(wh) != 3 {
+		t.Fatalf("withheld = %v, want every row", wh)
+	}
+	for _, m := range wh {
+		if m["withheldReason"] != WithheldAuthorizationCheckUnavailable {
+			t.Fatalf("withheld = %v", wh)
+		}
+	}
+	if v, h := counts(t, d); v != 0 || h != 3 {
+		t.Fatalf("counts = (%d, %d)", v, h)
+	}
+	// Once the budget is spent no further check is even attempted.
+	if len(hs.access.calls) != 1 {
+		t.Fatalf("%d checks issued after the budget expired, want 1", len(hs.access.calls))
 	}
 }
 
@@ -909,24 +1127,65 @@ func TestUnmappableDiagnosticKindIsWithheldAsUnavailable(t *testing.T) {
 	}
 }
 
-func TestCountsMatchFilteredItems(t *testing.T) {
+// ---------------------------------------------------------------------------
+// Counts (P10)
+// ---------------------------------------------------------------------------
+
+func TestCountsAreWholeIncidentAndExcludeWithheld(t *testing.T) {
 	hs := newHarness(t)
 	id := hs.seed(t, alice)
+	hs.grant(id, bob, false)
 	hs.addRows(
 		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "payments", "a"),
 		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "payments", "b"),
 		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "billing", "c"),
+		hs.row(id, EvidenceKindObjectSummary, "", "pods", "Pod", "billing", "d"),
 	)
-	hs.access.allow = func(_, _, _, ns string) bool { return ns == "payments" }
-	w := hs.get(t, alice, id)
-	d := data(t, w)
-	v, h := counts(t, d)
-	if v != len(list(d["evidence"])) || h != len(list(d["withheld"])) || v != 2 || h != 1 {
-		t.Fatalf("counts (%d, %d) do not match items (%d visible, %d withheld)", v, h, len(list(d["evidence"])), len(list(d["withheld"])))
+	// Raw store totals exist and must never surface.
+	inc := hs.st.incidents[id]
+	inc.EvidenceBytes, inc.EvidenceCount, inc.ScopeCount = 123456, 4, 2
+	hs.st.incidents[id] = inc
+
+	// The collaborator may read payments only; the owner may read billing
+	// only (ownership is not a bypass). Counts cover the whole incident even
+	// when the page is smaller.
+	for _, tc := range []struct {
+		user *auth.User
+		ns   string
+	}{{bob, "payments"}, {alice, "billing"}} {
+		hs.access.allow = func(_, _, _, ns string) bool { return ns == tc.ns }
+		w := hs.do(t, hs.h.HandleGet, http.MethodGet, request{user: tc.user, incidentID: id.String(), query: "?limit=1"})
+		wantStatus(t, w, http.StatusOK)
+		noRawTotals(t, w)
+		d := data(t, w)
+		v, h := counts(t, d)
+		if v != 2 || h != 2 {
+			t.Fatalf("%s: counts = (%d, %d), want whole-incident (2, 2)", tc.user.Username, v, h)
+		}
+		if n := len(list(d["evidence"])) + len(list(d["withheld"])); n != 1 {
+			t.Fatalf("%s: page has %d items, want 1 (limit)", tc.user.Username, n)
+		}
+		meta := decode(t, w)["metadata"].(map[string]any)
+		if int(meta["total"].(float64)) != 2 {
+			t.Fatalf("%s: metadata.total = %v, want the whole-incident visible count 2", tc.user.Username, meta["total"])
+		}
 	}
-	meta := decode(t, w)["metadata"].(map[string]any)
-	if int(meta["total"].(float64)) != 2 {
-		t.Fatalf("metadata.total = %v, want the visible count 2 (P10)", meta["total"])
+	// No raw totals on the list, create or update echo either.
+	hs.access.allow = allowAll
+	w := hs.do(t, hs.h.HandleList, http.MethodGet, request{user: alice})
+	wantStatus(t, w, http.StatusOK)
+	noRawTotals(t, w)
+	w = hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"title":"renamed"}`})
+	wantStatus(t, w, http.StatusOK)
+	noRawTotals(t, w)
+	if v, h := counts(t, data(t, w)); v != 4 || h != 0 {
+		t.Fatalf("update echo counts = (%d, %d), want (4, 0)", v, h)
+	}
+	w = hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: `{"title":"t","windowStart":"2026-10-05T11:00:00Z"}`})
+	wantStatus(t, w, http.StatusCreated)
+	noRawTotals(t, w)
+	if v, h := counts(t, data(t, w)); v != 0 || h != 0 {
+		t.Fatalf("create echo counts = (%d, %d), want (0, 0)", v, h)
 	}
 }
 
@@ -954,6 +1213,9 @@ func TestEvidencePaginationAppliesTheSameFilter(t *testing.T) {
 			seenVisible++
 		}
 		seenWithheld += len(withheldOf(t, d))
+		if v, h := counts(t, d); v != 2 || h != 2 {
+			t.Fatalf("page %d counts = (%d, %d), want whole-incident (2, 2) on every page", page, v, h)
+		}
 		meta := decode(t, w)["metadata"].(map[string]any)
 		next, _ := meta["continue"].(string)
 		if next == "" {
@@ -982,6 +1244,8 @@ func TestScopeDeduplicationIssuesOneSARPerScope(t *testing.T) {
 		hs.row(id, EvidenceKindDiagnosticCheck, "", "pods", "Pod", "payments", "d0"),
 		hs.row(id, EvidenceKindDiagnosticCheck, "", "pods", "Deployment", "payments", "d1"),
 	)
+	// The detail read counts the whole incident AND filters the page with
+	// one memo: still one check per scope.
 	wantStatus(t, hs.get(t, alice, id), http.StatusOK)
 	want := map[accessCall]bool{
 		{"local", "", "pods", "payments"}:            true,
@@ -1072,6 +1336,32 @@ func TestListOwnerRowsCarryOwnerRole(t *testing.T) {
 	items := list(decode(t, w)["data"])
 	if len(items) != 1 || items[0].(map[string]any)["role"] != "owner" || items[0].(map[string]any)["canAnnotate"] != true {
 		t.Fatalf("items = %v", items)
+	}
+}
+
+func TestListResolvesCollaboratorRolesInOneQueryAndDropsRevokedRows(t *testing.T) {
+	hs := newHarness(t)
+	a := hs.seed(t, alice)
+	b := hs.seed(t, alice)
+	hs.grant(a, bob, true)
+	hs.grant(b, bob, false)
+	// b's grant is revoked between the list read and the role lookup.
+	hs.st.afterListVisible = func() { hs.revoke(b, bob) }
+	hs.st.deadlines = nil
+
+	w := hs.do(t, hs.h.HandleList, http.MethodGet, request{user: bob})
+	wantStatus(t, w, http.StatusOK)
+	items := list(decode(t, w)["data"])
+	if len(items) != 1 || items[0].(map[string]any)["id"] != a.String() || items[0].(map[string]any)["canAnnotate"] != true {
+		t.Fatalf("items = %v, want only a (annotate)", items)
+	}
+	if total := decode(t, w)["metadata"].(map[string]any)["total"]; total != float64(1) {
+		t.Fatalf("metadata.total = %v, want 1", total)
+	}
+	// One grant lookup for the page, not one per row: ListVisible + GrantsFor
+	// are the only store calls.
+	if n := len(hs.st.deadlines); n != 2 {
+		t.Fatalf("%d store calls for a two-row page, want 2 (ListVisible + GrantsFor)", n)
 	}
 }
 
@@ -1171,21 +1461,56 @@ func TestNoteRevisionConflictReturns409WithReason(t *testing.T) {
 	}
 }
 
-func TestListNotesReportsTruncationAtTheStoreCap(t *testing.T) {
+func TestListNotesPagesSoEveryNoteIsReachable(t *testing.T) {
 	hs := newHarness(t)
 	id := hs.seed(t, alice)
-	for i := 0; i < store.IncidentMaxNotesListed+1; i++ {
-		if _, err := hs.st.CreateNote(context.Background(), id, alice.ID, "n"); err != nil {
+	const n = 501
+	for i := 0; i < n; i++ {
+		if _, err := hs.st.CreateNote(context.Background(), id, alice.ID, fmt.Sprintf("note %d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	w := hs.do(t, hs.h.HandleListNotes, http.MethodGet, request{user: alice, incidentID: id.String()})
-	wantStatus(t, w, http.StatusOK)
-	body := decode(t, w)
-	meta := body["metadata"].(map[string]any)
-	if len(list(body["data"])) != store.IncidentMaxNotesListed || meta["truncated"] != true {
-		t.Fatalf("got %d notes, metadata %v", len(list(body["data"])), meta)
+	seen := 0
+	cursor := ""
+	pages := 0
+	for {
+		w := hs.do(t, hs.h.HandleListNotes, http.MethodGet, request{user: alice, incidentID: id.String(), query: "?limit=200&continue=" + cursor})
+		wantStatus(t, w, http.StatusOK)
+		body := decode(t, w)
+		items := list(body["data"])
+		meta := body["metadata"].(map[string]any)
+		if int(meta["total"].(float64)) != len(items) {
+			t.Fatalf("metadata.total = %v for %d notes on the page", meta["total"], len(items))
+		}
+		for _, it := range items {
+			if want := fmt.Sprintf("note %d", seen); it.(map[string]any)["body"] != want {
+				t.Fatalf("note at position %d = %v, want %q (oldest first, none skipped)", seen, it, want)
+			}
+			seen++
+		}
+		pages++
+		next, _ := meta["continue"].(string)
+		if next == "" {
+			break
+		}
+		cursor = next
+		if pages > 10 {
+			t.Fatal("cursor never ended")
+		}
 	}
+	if seen != n || pages != 3 {
+		t.Fatalf("reached %d notes over %d pages, want %d over 3", seen, pages, n)
+	}
+	// Exactly a page's worth yields no cursor.
+	hs.st.notes[id] = hs.st.notes[id][:200]
+	w := hs.do(t, hs.h.HandleListNotes, http.MethodGet, request{user: alice, incidentID: id.String(), query: "?limit=200"})
+	wantStatus(t, w, http.StatusOK)
+	meta := decode(t, w)["metadata"].(map[string]any)
+	if next, _ := meta["continue"].(string); next != "" {
+		t.Fatalf("a page ending on the last note carried a cursor %q", next)
+	}
+	w = hs.do(t, hs.h.HandleListNotes, http.MethodGet, request{user: alice, incidentID: id.String(), query: "?continue=garbage"})
+	wantStatus(t, w, http.StatusBadRequest)
 }
 
 // ---------------------------------------------------------------------------
@@ -1197,7 +1522,7 @@ func TestCreateTakesOwnerFromSessionAndPinsLocalCluster(t *testing.T) {
 	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, cluster: "remote-1",
 		body: `{"ownerId":"local:mallory","clusterId":"remote-1","title":"api errors","summary":"5xx spike","windowStart":"2026-10-05T11:00:00Z"}`})
 	wantStatus(t, w, http.StatusCreated)
-	inc := data(t, w)
+	inc := data(t, w)["incident"].(map[string]any)
 	if inc["ownerId"] != alice.ID || inc["clusterId"] != "local" || inc["role"] != "owner" || inc["status"] != "open" {
 		t.Fatalf("created = %v", inc)
 	}
@@ -1228,12 +1553,37 @@ func TestCreateValidationErrorsAre400WithStoreMessage(t *testing.T) {
 	}
 }
 
+func TestOversizedBodyIs413AndBadLimitIs400(t *testing.T) {
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	huge := `{"title":"t","summary":"` + strings.Repeat("x", maxBodyBytes) + `","windowStart":"2026-10-05T11:00:00Z"}`
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: huge})
+	wantStatus(t, w, http.StatusRequestEntityTooLarge)
+	if len(hs.st.incidents) != 1 {
+		t.Fatal("an oversized create was stored")
+	}
+	for _, q := range []string{"?limit=abc", "?limit=1.5", "?limit="} {
+		w = hs.do(t, hs.h.HandleGet, http.MethodGet, request{user: alice, incidentID: id.String(), query: q})
+		if q == "?limit=" {
+			wantStatus(t, w, http.StatusOK) // absent is the default
+			continue
+		}
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", q, w.Code)
+		}
+		w = hs.do(t, hs.h.HandleList, http.MethodGet, request{user: alice, query: q})
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("list %s: status = %d, want 400", q, w.Code)
+		}
+	}
+}
+
 func TestUpdateAndDeleteByOwner(t *testing.T) {
 	hs := newHarness(t)
 	id := hs.seed(t, alice)
 	w := hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"title":"renamed","summary":"done","status":"closed"}`})
 	wantStatus(t, w, http.StatusOK)
-	inc := data(t, w)
+	inc := data(t, w)["incident"].(map[string]any)
 	if inc["title"] != "renamed" || inc["status"] != "closed" || inc["closedAt"] == nil {
 		t.Fatalf("updated = %v", inc)
 	}
@@ -1244,11 +1594,62 @@ func TestUpdateAndDeleteByOwner(t *testing.T) {
 	wantStatus(t, hs.get(t, alice, id), http.StatusNotFound)
 }
 
+func TestPartialUpdateKeepsOmittedFields(t *testing.T) {
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	w := hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"title":"t","summary":"the summary","status":"closed"}`})
+	wantStatus(t, w, http.StatusOK)
+
+	w = hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"title":"renamed"}`})
+	wantStatus(t, w, http.StatusOK)
+	inc := data(t, w)["incident"].(map[string]any)
+	if inc["title"] != "renamed" || inc["summary"] != "the summary" || inc["status"] != "closed" {
+		t.Fatalf("after title-only PUT: %v (summary and status must be kept)", inc)
+	}
+	row := hs.st.incidents[id]
+	if row.Summary != "the summary" || row.Status != "closed" {
+		t.Fatalf("stored row = %+v", row)
+	}
+	// An explicit empty summary does clear it.
+	w = hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"summary":""}`})
+	wantStatus(t, w, http.StatusOK)
+	if hs.st.incidents[id].Summary != "" || hs.st.incidents[id].Title != "renamed" {
+		t.Fatalf("stored row = %+v", hs.st.incidents[id])
+	}
+}
+
+func TestCommittedWriteIsSuccessAndAuditedWhenReadBackFails(t *testing.T) {
+	hs := newHarness(t)
+	hs.st.failGetAfterWrite = true
+
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: `{"title":"t","summary":"s","windowStart":"2026-10-05T11:00:00Z"}`})
+	wantStatus(t, w, http.StatusCreated)
+	inc := data(t, w)["incident"].(map[string]any)
+	if inc["id"] == "" || inc["title"] != "t" || inc["summary"] != "s" || inc["ownerId"] != alice.ID || inc["status"] != "open" {
+		t.Fatalf("created (read-back failed) = %v", inc)
+	}
+	id := uuid.MustParse(inc["id"].(string))
+	if _, ok := hs.st.incidents[id]; !ok {
+		t.Fatal("the committed incident is missing")
+	}
+
+	w = hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"title":"renamed","status":"closed"}`})
+	wantStatus(t, w, http.StatusOK)
+	inc = data(t, w)["incident"].(map[string]any)
+	if inc["title"] != "renamed" || inc["status"] != "closed" || inc["summary"] != "s" || inc["closedAt"] == nil {
+		t.Fatalf("updated (read-back failed) = %v", inc)
+	}
+	want := []string{string(ActionIncidentCreate) + ":success", string(ActionIncidentUpdate) + ":success"}
+	if got := hs.audit.actions(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("audit = %v, want %v (a committed write is audited whatever the read-back did)", got, want)
+	}
+}
+
 func TestWriteOperationsAreAudited(t *testing.T) {
 	hs := newHarness(t)
 	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: `{"title":"t","windowStart":"2026-10-05T11:00:00Z"}`})
 	wantStatus(t, w, http.StatusCreated)
-	id := data(t, w)["id"].(string)
+	id := data(t, w)["incident"].(map[string]any)["id"].(string)
 	wantStatus(t, hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id, body: `{"title":"t2","status":"open"}`}), http.StatusOK)
 	w = hs.do(t, hs.h.HandleCreateNote, http.MethodPost, request{user: alice, incidentID: id, body: `{"body":"secret-ish note body"}`})
 	wantStatus(t, w, http.StatusCreated)
@@ -1281,6 +1682,32 @@ func TestWriteOperationsAreAudited(t *testing.T) {
 	}
 }
 
+func TestFailedWritesAreAuditedAsFailures(t *testing.T) {
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	note, _ := hs.st.CreateNote(context.Background(), id, alice.ID, "n")
+	hs.st.failOp["Update"] = errors.New("pg: write failed")
+	hs.st.failOp["Delete"] = errors.New("pg: write failed")
+	hs.st.failOp["CreateNote"] = errors.New("pg: write failed")
+	hs.st.failOp["UpdateNote"] = errors.New("pg: write failed")
+	hs.st.failOp["DeleteNote"] = errors.New("pg: write failed")
+
+	wantStatus(t, hs.do(t, hs.h.HandleUpdate, http.MethodPut, request{user: alice, incidentID: id.String(), body: `{"title":"x"}`}), http.StatusServiceUnavailable)
+	wantStatus(t, hs.do(t, hs.h.HandleDelete, http.MethodDelete, request{user: alice, incidentID: id.String()}), http.StatusServiceUnavailable)
+	wantStatus(t, hs.do(t, hs.h.HandleCreateNote, http.MethodPost, request{user: alice, incidentID: id.String(), body: `{"body":"x"}`}), http.StatusServiceUnavailable)
+	wantStatus(t, hs.do(t, hs.h.HandleUpdateNote, http.MethodPut, request{user: alice, incidentID: id.String(), noteID: note.ID.String(), body: `{"body":"x","revision":1}`}), http.StatusServiceUnavailable)
+	wantStatus(t, hs.do(t, hs.h.HandleDeleteNote, http.MethodDelete, request{user: alice, incidentID: id.String(), noteID: note.ID.String()}), http.StatusServiceUnavailable)
+
+	want := []string{
+		string(ActionIncidentUpdate) + ":failure", string(ActionIncidentDelete) + ":failure",
+		string(ActionIncidentNoteCreate) + ":failure", string(ActionIncidentNoteUpdate) + ":failure",
+		string(ActionIncidentNoteDelete) + ":failure",
+	}
+	if got := hs.audit.actions(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("audit actions = %v, want %v", got, want)
+	}
+}
+
 func TestIncidentBusyIs503WithRetryAfter(t *testing.T) {
 	hs := newHarness(t)
 	id := hs.seed(t, alice)
@@ -1304,13 +1731,33 @@ func TestStoreFaultIs503NotNotFound(t *testing.T) {
 	}
 }
 
+func TestRequestContextReachesTheStore(t *testing.T) {
+	// The request context carries the server's deadline; every store call
+	// must receive it (never context.Background()).
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	hs.st.deadlines = nil
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	wantStatus(t, hs.do(t, hs.h.HandleGet, http.MethodGet, request{user: alice, incidentID: id.String(), ctx: ctx}), http.StatusOK)
+	wantStatus(t, hs.do(t, hs.h.HandleCreateNote, http.MethodPost, request{user: alice, incidentID: id.String(), body: `{"body":"x"}`, ctx: ctx}), http.StatusCreated)
+	if len(hs.st.deadlines) < 4 {
+		t.Fatalf("only %d store calls recorded", len(hs.st.deadlines))
+	}
+	for i, has := range hs.st.deadlines {
+		if !has {
+			t.Fatalf("store call %d received a context without the request deadline", i)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Gates (C4, C6, baseline)
 // ---------------------------------------------------------------------------
 
 func TestNoDatabaseReturns503WithReason(t *testing.T) {
 	hs := newHarness(t)
-	hs.h = NewHandler(nil, nil, nil, nil, nil, hs.audit, DefaultLimits(), nil)
+	hs.h = NewHandler(nil, nil, nil, nil, hs.audit, nil)
 	id := uuid.New()
 	for name, call := range map[string]func() *httptest.ResponseRecorder{
 		"list": func() *httptest.ResponseRecorder {
@@ -1392,11 +1839,11 @@ func TestUnauthenticatedRequestReturns401(t *testing.T) {
 func TestNewHandlerKeepsNilStoresUntyped(t *testing.T) {
 	// A nil *store.IncidentStore must not become a non-nil interface that
 	// panics on first use instead of answering 503.
-	h := NewHandler(nil, nil, nil, nil, nil, nil, DefaultLimits(), nil)
+	h := NewHandler(nil, nil, nil, nil, nil, nil)
 	if h.incidents != nil || h.evidence != nil || h.grants != nil || h.access != nil {
 		t.Fatal("typed nil leaked into an interface field")
 	}
-	if h.retentionDays != DefaultRetentionDays {
-		t.Fatalf("retentionDays = %d", h.retentionDays)
+	if h.retentionDays != DefaultRetentionDays || h.accessTimeout != accessCheckTimeout {
+		t.Fatalf("defaults = (%d, %s)", h.retentionDays, h.accessTimeout)
 	}
 }

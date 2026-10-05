@@ -775,7 +775,7 @@ func TestIncidentStore_NoteRevisionConflictReportsCurrentAndKeepsHistory(t *test
 		t.Fatalf("conflict = %+v; want Current 2", conflict)
 	}
 
-	notes, err := s.ListNotes(ctx, incident)
+	notes, _, err := s.ListNotes(ctx, incident, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,7 +822,7 @@ func TestIncidentStore_NoteRevisionHistoryIsAppendOnly(t *testing.T) {
 	if want := []string{"v1", "v2", "v3"}; !slices.Equal(got, want) {
 		t.Errorf("revision bodies = %v; want %v (every prior body, oldest first)", got, want)
 	}
-	notes, err := s.ListNotes(ctx, incident)
+	notes, _, err := s.ListNotes(ctx, incident, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -938,28 +938,93 @@ func TestIncidentStore_CreateNoteOnMissingIncident(t *testing.T) {
 	}
 }
 
-func TestIncidentStore_ListNotesIsOldestFirstAndCapped(t *testing.T) {
+// TestIncidentStore_ListNotesPagesOldestFirstAndExactly: notes page by
+// (created_at, id) ascending with a keyset cursor, so every note is reachable
+// however many there are (U23a review: the former 500 cap left later notes
+// written but unlistable). The cursor is exact: a page that ends on the last
+// note carries no cursor, and a cursor is only issued when a further note
+// exists.
+func TestIncidentStore_ListNotesPagesOldestFirstAndExactly(t *testing.T) {
 	s, pool := newIncidentStore(t)
 	ctx := t.Context()
 	owner := testOwnerID(t)
 	incident := mustCreateIncident(t, s, newIncident(owner, "t"))
 
-	// Bulk-insert past the cap with raw SQL; created_at ascends with n.
+	// 501 notes, created_at ascending with n, and a timestamp tie at the end
+	// so the id tiebreak is exercised.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO incident_notes (incident_id, author_id, body, created_at)
-		SELECT $1, $2, 'note ' || n, NOW() - (1000 - n) * INTERVAL '1 second'
-		  FROM generate_series(1, $3::int) AS n`, incident, owner, IncidentMaxNotesListed+5); err != nil {
+		SELECT $1, $2, 'note ' || n, NOW() - (1000 - LEAST(n, 500)) * INTERVAL '1 second'
+		  FROM generate_series(1, 501) AS n`, incident, owner); err != nil {
 		t.Fatal(err)
 	}
-	notes, err := s.ListNotes(ctx, incident)
-	if err != nil {
+
+	var all []IncidentNoteRow
+	cursor := ""
+	pages := 0
+	for {
+		page, next, err := s.ListNotes(ctx, incident, IncidentMaxPageSize, cursor)
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		pages++
+		all = append(all, page...)
+		if next == "" {
+			break
+		}
+		if len(page) != IncidentMaxPageSize {
+			t.Fatalf("page %d has %d notes with a cursor; a cursor means a full page", pages, len(page))
+		}
+		cursor = next
+		if pages > 10 {
+			t.Fatal("cursor never ended")
+		}
+	}
+	if len(all) != 501 || pages != 3 {
+		t.Fatalf("paged %d notes over %d pages; want all 501 over 3 pages of %d", len(all), pages, IncidentMaxPageSize)
+	}
+	if all[0].Body != "note 1" || all[498].Body != "note 499" {
+		t.Errorf("first/499th = %q/%q; want oldest first", all[0].Body, all[498].Body)
+	}
+	// The tied pair comes last, in id order.
+	if tied := all[499].Body + "," + all[500].Body; tied != "note 500,note 501" && tied != "note 501,note 500" {
+		t.Errorf("tied tail = %q; want notes 500 and 501", tied)
+	}
+	seen := map[uuid.UUID]bool{}
+	for i, n := range all {
+		if seen[n.ID] {
+			t.Fatalf("note %s listed twice (position %d)", n.ID, i)
+		}
+		seen[n.ID] = true
+		if i > 0 && (n.CreatedAt.Before(all[i-1].CreatedAt) || (n.CreatedAt.Equal(all[i-1].CreatedAt) && n.ID.String() <= all[i-1].ID.String())) {
+			t.Fatalf("position %d is out of (created_at, id) order", i)
+		}
+	}
+
+	// Exactly a page's worth: no cursor, because nothing follows.
+	if _, err := pool.Exec(ctx, `DELETE FROM incident_notes WHERE incident_id = $1 AND body IN ('note 501')`, incident); err != nil {
 		t.Fatal(err)
 	}
-	if len(notes) != IncidentMaxNotesListed {
-		t.Fatalf("ListNotes returned %d; want the cap %d", len(notes), IncidentMaxNotesListed)
+	_, next, err := s.ListNotes(ctx, incident, 200, "")
+	if err != nil || next == "" {
+		t.Fatalf("first of 500 at 200: next=%q err=%v; want a cursor", next, err)
 	}
-	if notes[0].Body != "note 1" || notes[len(notes)-1].Body != "note 500" {
-		t.Errorf("first/last = %q/%q; want the oldest 500, oldest first", notes[0].Body, notes[len(notes)-1].Body)
+	for i := 0; i < 2; i++ {
+		_, next, err = s.ListNotes(ctx, incident, 200, next)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if next != "" {
+		t.Fatalf("page ending on the 500th note carried a cursor %q; want none", next)
+	}
+	// Short page.
+	page, next, err := s.ListNotes(ctx, incident, 0, "")
+	if err != nil || len(page) != IncidentDefaultPageSize || next == "" {
+		t.Fatalf("default page = (%d, %q, %v); want %d notes and a cursor", len(page), next, err, IncidentDefaultPageSize)
+	}
+	if _, _, err := s.ListNotes(ctx, incident, 0, "not-a-cursor"); !errors.Is(err, ErrInvalidNoteCursor) {
+		t.Fatalf("bad cursor = %v; want ErrInvalidNoteCursor", err)
 	}
 }
 

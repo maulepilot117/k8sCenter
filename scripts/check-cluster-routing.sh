@@ -70,7 +70,7 @@ TAB="$(printf '\t')"
 # wires per-request k8s calls. F#14 added server / alerting / gateway /
 # notification / storage / velero — each one had at least one direct
 # .ClientForUser call that the previous list missed.
-HANDLER_DIRS="backend/internal/yaml backend/internal/k8s backend/internal/certmanager backend/internal/networking backend/internal/servicemesh backend/internal/gitops backend/internal/policy backend/internal/externalsecrets backend/internal/monitoring backend/internal/loki backend/internal/topology backend/internal/server backend/internal/alerting backend/internal/gateway backend/internal/notification backend/internal/storage backend/internal/velero backend/internal/changes"
+HANDLER_DIRS="backend/internal/yaml backend/internal/k8s backend/internal/certmanager backend/internal/networking backend/internal/servicemesh backend/internal/gitops backend/internal/policy backend/internal/externalsecrets backend/internal/monitoring backend/internal/loki backend/internal/topology backend/internal/server backend/internal/alerting backend/internal/gateway backend/internal/notification backend/internal/storage backend/internal/velero backend/internal/changes backend/internal/incidents"
 
 # File paths (relative to ROOT, prefix-matched) whose direct calls are
 # architecturally legitimate and therefore exempt from the lint:

@@ -952,10 +952,8 @@ func main() {
 	// constructed unconditionally; its store fields stay nil when no database
 	// is configured, and every /incidents endpoint then answers 503
 	// incident_persistence_unavailable rather than disappearing behind a 404
-	// (R3, correction C4). Limits are the Release D defaults until U25a makes
-	// them configurable (A-6); the collector's sources read the LOCAL cluster
-	// only, because Release D capture is local-only (A-12), which is why the
-	// local RESTMapper is the right schema here.
+	// (R3, correction C4). The evidence collector is wired by U23b with the
+	// capture endpoint that uses it.
 	var incidentStore *appstore.IncidentStore
 	var incidentEvidenceStore *appstore.IncidentEvidenceStore
 	var incidentGrantStore *appstore.IncidentGrantStore
@@ -964,25 +962,8 @@ func main() {
 		incidentEvidenceStore = appstore.NewIncidentEvidenceStore(dbPool)
 		incidentGrantStore = appstore.NewIncidentGrantStore(dbPool)
 	}
-	incidentLimits := incidents.DefaultLimits()
-	incidentRedactor, err := incidents.NewRedactor(incidentLimits.MaxItemBytes)
-	if err != nil {
-		logger.Error("failed to build incident redactor", "error", err)
-		os.Exit(1)
-	}
-	incidentMapper := k8sClient.RESTMapper()
-	incidentCollector, err := incidents.NewCollector([]incidents.Source{
-		incidents.NewDiagnosticsSource(topoLister, accessChecker, incidentRedactor, logger),
-		incidents.NewObjectSource(k8sClient, incidentMapper, accessChecker, incidentRedactor, logger),
-		incidents.NewEventsSource(k8sClient, incidentMapper, accessChecker, incidentRedactor, logger),
-	}, incidentLimits, logger)
-	if err != nil {
-		logger.Error("failed to build incident collector", "error", err)
-		os.Exit(1)
-	}
 	incidentsHandler := incidents.NewHandler(
-		incidentStore, incidentEvidenceStore, incidentGrantStore,
-		incidentCollector, accessChecker, auditLogger, incidentLimits, logger,
+		incidentStore, incidentEvidenceStore, incidentGrantStore, accessChecker, auditLogger, logger,
 	)
 
 	// Gateway API integration

@@ -16,6 +16,13 @@ package incidents
 //     never the request header, and withholds a row as `forbidden` (denied)
 //     or `authorization_check_unavailable` (the check itself failed; never
 //     folded into forbidden, unlike Release E receipts).
+//   - counts (P10): the store's raw evidence_bytes, evidence_count and
+//     scope_count are never returned. They describe what the caller may not
+//     see. Every representation of the record carries instead the counts of
+//     evidence the CALLER may read, computed over the whole incident through
+//     the same filter; byte totals are not exposed at all (a per-caller
+//     visible-bytes sum has no consumer and would be one more number to
+//     reason about).
 //
 // Routes (registered in server/routes.go, always, so a deployment without
 // PostgreSQL answers 503 incident_persistence_unavailable rather than chi's
@@ -30,6 +37,12 @@ package incidents
 //	POST   /api/v1/incidents/{incidentID}/notes            HandleCreateNote
 //	PUT    /api/v1/incidents/{incidentID}/notes/{noteID}   HandleUpdateNote
 //	DELETE /api/v1/incidents/{incidentID}/notes/{noteID}   HandleDeleteNote
+//
+// metadata.total means, per endpoint: on the list, the incidents on this
+// page (every listed incident is visible by definition); on the detail
+// read, the whole-incident count of evidence the caller may read (the
+// evidence array is one page of it, continued by metadata.continue); on the
+// notes list, the notes on this page.
 //
 // Capture, grants and export are U23b.
 
@@ -89,6 +102,14 @@ const (
 	// maxBodyBytes bounds every request body: the largest field is a note
 	// body of 20000 characters.
 	maxBodyBytes = 256 << 10
+	// accessCheckTimeout is the budget for ALL access checks of one request.
+	// A cold read of an incident at the scope cap costs at most 20 checks
+	// plus the secrets checks; a stalled cluster makes the checks fail
+	// within this budget and the rows read as
+	// authorization_check_unavailable, instead of the server's request
+	// timeout cutting the whole response. It sits under the 30s BFF proxy
+	// cap and the 60s request timeout.
+	accessCheckTimeout = 15 * time.Second
 )
 
 // Role is how the caller qualified to see an incident (P1).
@@ -108,17 +129,19 @@ type incidentStore interface {
 	Update(ctx context.Context, id uuid.UUID, ownerID, title, summary, status string) error
 	Delete(ctx context.Context, id uuid.UUID, ownerID string) error
 	CreateNote(ctx context.Context, incidentID uuid.UUID, authorID, body string) (store.IncidentNoteRow, error)
-	ListNotes(ctx context.Context, incidentID uuid.UUID) ([]store.IncidentNoteRow, error)
+	ListNotes(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]store.IncidentNoteRow, string, error)
 	UpdateNote(ctx context.Context, incidentID, noteID uuid.UUID, authorID, body string, expectedRevision int) (store.IncidentNoteRow, error)
 	DeleteNote(ctx context.Context, incidentID, noteID uuid.UUID, authorID string) error
 }
 
 type evidenceStore interface {
 	ListByIncident(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]store.IncidentEvidenceRow, string, error)
+	ListScopeRowsByIncident(ctx context.Context, incidentID uuid.UUID) ([]store.IncidentEvidenceRow, error)
 }
 
 type grantStore interface {
 	GetGrant(ctx context.Context, incidentID uuid.UUID, userID string) (*store.IncidentGrantRow, error)
+	GrantsFor(ctx context.Context, userID string, incidentIDs []uuid.UUID) (map[uuid.UUID]store.IncidentGrantRow, error)
 }
 
 // accessChecker is the one *resources.AccessChecker method FilterEvidence
@@ -134,12 +157,12 @@ type Handler struct {
 	incidents incidentStore // nil when no database
 	evidence  evidenceStore // nil when no database
 	grants    grantStore    // nil when no database
-	collector *Collector    // used by U23b's capture endpoint
 	access    accessChecker
 	audit     audit.Logger
-	limits    Limits
 	// retentionDays is stamped on each new incident (retention_days_at_capture).
 	retentionDays int
+	// accessTimeout is accessCheckTimeout; a field so tests can shorten it.
+	accessTimeout time.Duration
 	logger        *slog.Logger
 }
 
@@ -148,8 +171,8 @@ type Handler struct {
 // checker withholds every evidence item as authorization_check_unavailable.
 // A nil audit logger audits nothing.
 func NewHandler(incidents *store.IncidentStore, evidence *store.IncidentEvidenceStore, grants *store.IncidentGrantStore,
-	collector *Collector, access *resources.AccessChecker, auditLogger audit.Logger, limits Limits, logger *slog.Logger) *Handler {
-	h := &Handler{collector: collector, audit: auditLogger, limits: limits, retentionDays: DefaultRetentionDays, logger: logger}
+	access *resources.AccessChecker, auditLogger audit.Logger, logger *slog.Logger) *Handler {
+	h := &Handler{audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout, logger: logger}
 	// Assign only non-nil pointers so a nil *store.X never becomes a
 	// non-nil interface that panics on first use instead of answering 503.
 	if incidents != nil {
@@ -177,7 +200,7 @@ func newHandlerWith(incidents incidentStore, evidence evidenceStore, grants gran
 		logger = slog.Default()
 	}
 	return &Handler{incidents: incidents, evidence: evidence, grants: grants, access: access,
-		audit: auditLogger, limits: DefaultLimits(), retentionDays: DefaultRetentionDays, logger: logger}
+		audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout, logger: logger}
 }
 
 // SetRetentionDays sets the retention stamped on new incidents. It is the
@@ -192,6 +215,8 @@ func (h *Handler) SetRetentionDays(days int) {
 
 // IncidentView is the incident record as the API returns it. Role and
 // CanAnnotate are the CALLER's standing on it, so the UI can gate controls.
+// It deliberately carries none of the store's evidence totals (P10): those
+// are in EvidenceCounts, computed per caller.
 type IncidentView struct {
 	ID            string     `json:"id"`
 	OwnerID       string     `json:"ownerId"`
@@ -201,9 +226,6 @@ type IncidentView struct {
 	Status        string     `json:"status"`
 	WindowStart   time.Time  `json:"windowStart"`
 	WindowEnd     *time.Time `json:"windowEnd,omitempty"`
-	EvidenceBytes int64      `json:"evidenceBytes"`
-	EvidenceCount int        `json:"evidenceCount"`
-	ScopeCount    int        `json:"scopeCount"`
 	RetentionDays int        `json:"retentionDays"`
 	CreatedAt     time.Time  `json:"createdAt"`
 	UpdatedAt     time.Time  `json:"updatedAt"`
@@ -212,22 +234,30 @@ type IncidentView struct {
 	CanAnnotate   bool       `json:"canAnnotate"`
 }
 
-// IncidentDetail is the GET /incidents/{id} response: the record, one page of
-// evidence the caller may read, placeholders for the page's withheld items,
-// and counts of both. Metadata.Total is the visible count and
-// Metadata.Continue the cursor for the next evidence page.
-type IncidentDetail struct {
-	Incident IncidentView       `json:"incident"`
-	Evidence []Evidence         `json:"evidence"`
-	Withheld []WithheldEvidence `json:"withheld"`
-	Counts   EvidenceCounts     `json:"counts"`
-}
-
-// EvidenceCounts are per page: what the caller may read and what was
-// withheld (P10). Neither says anything about a withheld item's scope.
+// EvidenceCounts are whole-incident counts for the CALLER: what they may
+// read now and what is withheld from them (P10). Neither says anything about
+// a withheld item's scope.
 type EvidenceCounts struct {
 	Visible  int `json:"visible"`
 	Withheld int `json:"withheld"`
+}
+
+// IncidentSummary is the POST /incidents and PUT /incidents/{id} response:
+// the record and the caller's counts. Counts is nil only when the counting
+// read failed after a committed write (the write is still reported).
+type IncidentSummary struct {
+	Incident IncidentView    `json:"incident"`
+	Counts   *EvidenceCounts `json:"counts,omitempty"`
+}
+
+// IncidentDetail is the GET /incidents/{id} response: the record, the
+// caller's whole-incident counts, and one page of evidence the caller may
+// read with placeholders for the page's withheld items.
+type IncidentDetail struct {
+	Incident IncidentView       `json:"incident"`
+	Counts   EvidenceCounts     `json:"counts"`
+	Evidence []Evidence         `json:"evidence"`
+	Withheld []WithheldEvidence `json:"withheld"`
 }
 
 // NoteView is a note as the API returns it.
@@ -251,12 +281,12 @@ type createIncidentRequest struct {
 	WindowEnd   *time.Time `json:"windowEnd,omitempty"`
 }
 
-// updateIncidentRequest is the PUT /incidents/{id} body. An empty status
-// keeps the current one.
+// updateIncidentRequest is the PUT /incidents/{id} body. A field left out
+// keeps its current value; an explicit empty string is a value.
 type updateIncidentRequest struct {
-	Title   string `json:"title"`
-	Summary string `json:"summary"`
-	Status  string `json:"status"`
+	Title   *string `json:"title"`
+	Summary *string `json:"summary"`
+	Status  *string `json:"status"`
 }
 
 // noteRequest is the body of a note create (Body) or update (Body plus the
@@ -269,8 +299,7 @@ type noteRequest struct {
 func incidentView(r *store.IncidentRow, role Role, canAnnotate bool) IncidentView {
 	return IncidentView{
 		ID: r.ID.String(), OwnerID: r.OwnerID, ClusterID: r.ClusterID, Title: r.Title, Summary: r.Summary,
-		Status: r.Status, WindowStart: r.WindowStart, WindowEnd: r.WindowEnd, EvidenceBytes: r.EvidenceBytes,
-		EvidenceCount: r.EvidenceCount, ScopeCount: r.ScopeCount, RetentionDays: r.RetentionDaysAtCapture,
+		Status: r.Status, WindowStart: r.WindowStart, WindowEnd: r.WindowEnd, RetentionDays: r.RetentionDaysAtCapture,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, ClosedAt: r.ClosedAt, Role: role, CanAnnotate: canAnnotate,
 	}
 }
@@ -290,19 +319,27 @@ type scopeDecision struct {
 	unavailable bool // the check itself failed; never a denial
 }
 
-// scopeMemo memoizes `get` decisions per scope for ONE FilterEvidence call
-// (R-1: no cross-request cache beyond the AccessChecker's own 60s). After a
-// check fails on a cluster, every later uncached scope on that cluster is
-// unavailable without another call: an unreachable cluster costs one failed
-// dial per request, and the rows are still reported as unchecked, not as
-// forbidden.
+// scopeMemo memoizes `get` decisions per scope for ONE request (R-1: no
+// cross-request cache beyond the AccessChecker's own 60s). Every scope gets
+// exactly one attempt; an error on one scope says nothing about another, so
+// nothing short-circuits on it. What bounds the request is ctx, which the
+// handler derives with accessCheckTimeout: once it is done, every uncached
+// scope is unavailable without a call.
 type scopeMemo struct {
-	ctx     context.Context
-	access  accessChecker
-	user    *auth.User
-	logger  *slog.Logger
-	cache   map[store.EvidenceScope]scopeDecision
-	errored map[string]bool // cluster id → a check failed there
+	ctx       context.Context
+	access    accessChecker
+	user      *auth.User
+	logger    *slog.Logger
+	cache     map[store.EvidenceScope]scopeDecision
+	exhausted bool // logged once
+}
+
+// newScopeMemo starts a memo under the request's access budget. The returned
+// cancel releases the budget; the caller defers it.
+func (h *Handler) newScopeMemo(ctx context.Context, u *auth.User) (*scopeMemo, context.CancelFunc) {
+	bctx, cancel := context.WithTimeout(ctx, h.accessTimeout)
+	return &scopeMemo{ctx: bctx, access: h.access, user: u, logger: h.logger,
+		cache: map[store.EvidenceScope]scopeDecision{}}, cancel
 }
 
 func (m *scopeMemo) decide(sc store.EvidenceScope) scopeDecision {
@@ -311,14 +348,20 @@ func (m *scopeMemo) decide(sc store.EvidenceScope) scopeDecision {
 	}
 	var d scopeDecision
 	switch {
-	case m.access == nil, m.errored[sc.ClusterID]:
+	case m.access == nil:
+		d.unavailable = true
+	case m.ctx.Err() != nil:
+		if !m.exhausted {
+			m.exhausted = true
+			m.logger.Warn("incident evidence access budget exhausted; withholding every unchecked scope as authorization_check_unavailable",
+				"user", m.user.ID, "error", m.ctx.Err())
+		}
 		d.unavailable = true
 	default:
 		// The STORED cluster, never the request header (P6).
 		allowed, err := m.access.CanAccessGroupResource(m.ctx, sc.ClusterID,
 			m.user.KubernetesUsername, m.user.KubernetesGroups, "get", sc.APIGroup, sc.Resource, sc.Namespace)
 		if err != nil {
-			m.errored[sc.ClusterID] = true
 			d.unavailable = true
 			m.logger.Warn("incident evidence access check failed; withholding as authorization_check_unavailable",
 				"cluster", sc.ClusterID, "user", m.user.ID, "group", sc.APIGroup, "resource", sc.Resource,
@@ -334,8 +377,9 @@ func (m *scopeMemo) decide(sc store.EvidenceScope) scopeDecision {
 // readDecision returns "" when the caller may read the row, otherwise the
 // withheld reason. Every required scope is evaluated (memoized, so at most
 // one check per distinct scope per request): a definite denial on any scope
-// is `forbidden` whatever the others said; otherwise a failed check on any
-// scope is `authorization_check_unavailable`.
+// is `forbidden` whatever the others said, because no retry could change
+// it; otherwise a failed check on any scope is
+// `authorization_check_unavailable`.
 func (m *scopeMemo) readDecision(row store.IncidentEvidenceRow) string {
 	// Stored scope plus, for a diagnostic row stored under a related
 	// resource, the target's own resource (R-l). Event rows were gated at
@@ -367,25 +411,14 @@ func (m *scopeMemo) readDecision(row store.IncidentEvidenceRow) string {
 	return ""
 }
 
-// FilterEvidence is the ONLY authorization filter for evidence (Q1 P10):
-// every representation of evidence calls it. It partitions rows into the
-// items u may read now and placeholders for the rest, both in input order.
-// The decision is the caller's CURRENT authorization (P4, P7) for each
-// row's stored scope on the row's stored cluster (P6); the live object is
-// never consulted, so its deletion changes nothing (P8). A placeholder
-// carries only id, evidenceKind, collectedAt, withheld and withheldReason.
-// An undecodable stored row is an error (a server fault, not a policy
-// outcome).
-func (h *Handler) FilterEvidence(ctx context.Context, u *auth.User, rows []store.IncidentEvidenceRow) ([]Evidence, []WithheldEvidence, error) {
-	if h.access == nil && len(rows) > 0 {
-		h.logger.Warn("incidents have no access checker; withholding every evidence item")
-	}
-	memo := &scopeMemo{ctx: ctx, access: h.access, user: u, logger: h.logger,
-		cache: map[store.EvidenceScope]scopeDecision{}, errored: map[string]bool{}}
+// filter partitions rows into the items the caller may read and placeholders
+// for the rest, both in input order. An undecodable stored row is an error (a
+// server fault, not a policy outcome).
+func (m *scopeMemo) filter(rows []store.IncidentEvidenceRow) ([]Evidence, []WithheldEvidence, error) {
 	visible := make([]Evidence, 0, len(rows))
 	withheld := make([]WithheldEvidence, 0)
 	for _, row := range rows {
-		if reason := memo.readDecision(row); reason != "" {
+		if reason := m.readDecision(row); reason != "" {
 			withheld = append(withheld, WithheldEvidence{
 				ID: row.ID.String(), EvidenceKind: row.EvidenceKind, CollectedAt: row.CollectedAt,
 				Withheld: true, WithheldReason: reason,
@@ -399,6 +432,57 @@ func (h *Handler) FilterEvidence(ctx context.Context, u *auth.User, rows []store
 		visible = append(visible, e)
 	}
 	return visible, withheld, nil
+}
+
+// count applies the same decision to scope-only rows and returns only
+// numbers.
+func (m *scopeMemo) count(rows []store.IncidentEvidenceRow) EvidenceCounts {
+	var c EvidenceCounts
+	for _, row := range rows {
+		if m.readDecision(row) == "" {
+			c.Visible++
+		} else {
+			c.Withheld++
+		}
+	}
+	return c
+}
+
+// FilterEvidence is the ONLY authorization filter for evidence (Q1 P10):
+// every representation of evidence calls it (the detail read shares its
+// memo with the whole-incident count through the same decision). It
+// partitions rows into the items u may read now and placeholders for the
+// rest, both in input order. The decision is the caller's CURRENT
+// authorization (P4, P7) for each row's stored scope on the row's stored
+// cluster (P6); the live object is never consulted, so its deletion changes
+// nothing (P8). A placeholder carries only id, evidenceKind, collectedAt,
+// withheld and withheldReason.
+func (h *Handler) FilterEvidence(ctx context.Context, u *auth.User, rows []store.IncidentEvidenceRow) ([]Evidence, []WithheldEvidence, error) {
+	memo, cancel := h.newScopeMemo(ctx, u)
+	defer cancel()
+	return memo.filter(rows)
+}
+
+// countEvidence computes the caller's whole-incident counts through memo.
+func (h *Handler) countEvidence(ctx context.Context, memo *scopeMemo, incidentID uuid.UUID) (EvidenceCounts, error) {
+	rows, err := h.evidence.ListScopeRowsByIncident(ctx, incidentID)
+	if err != nil {
+		return EvidenceCounts{}, err
+	}
+	return memo.count(rows), nil
+}
+
+// countsBestEffort is countEvidence for the echo of a committed write: a
+// failure is logged and reported as unknown (nil), never as a failed write.
+func (h *Handler) countsBestEffort(ctx context.Context, u *auth.User, incidentID uuid.UUID) *EvidenceCounts {
+	memo, cancel := h.newScopeMemo(ctx, u)
+	defer cancel()
+	c, err := h.countEvidence(ctx, memo, incidentID)
+	if err != nil {
+		h.logger.Warn("incident evidence counts unavailable after write", "incidentId", incidentID, "error", err)
+		return nil
+	}
+	return &c
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +592,7 @@ func (h *Handler) writeStoreFailure(w http.ResponseWriter, op string, err error)
 		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, "incident is busy; retry shortly", ReasonIncidentBusy, nil)
 	case errors.Is(err, store.ErrIncidentInvalid):
 		httputil.WriteError(w, http.StatusBadRequest, "invalid incident input", err.Error())
-	case errors.Is(err, store.ErrInvalidIncidentCursor), errors.Is(err, store.ErrInvalidEvidenceCursor):
+	case errors.Is(err, store.ErrInvalidIncidentCursor), errors.Is(err, store.ErrInvalidEvidenceCursor), errors.Is(err, store.ErrInvalidNoteCursor):
 		httputil.WriteError(w, http.StatusBadRequest, "invalid continue cursor", "")
 	case errors.Is(err, store.ErrIncidentNotFound):
 		h.writeNotFound(w)
@@ -580,9 +664,11 @@ func (h *Handler) auditLog(r *http.Request, u *auth.User, action audit.Action, r
 // ---------------------------------------------------------------------------
 
 // HandleList returns the incidents the caller owns or holds a grant on,
-// newest first, with the caller's role on each. Metadata.Total is the count
-// on this page; every listed incident is visible by definition (P1), and a
-// grant revoked between the list read and the role lookup drops the row.
+// newest first, with the caller's role on each; collaborator roles are
+// resolved with one grant query for the page. A grant revoked between the
+// list read and that query drops the row (it is no longer visible, P7).
+// Rows carry no evidence counts: those cost a scope read per incident and
+// are on the detail read.
 // GET /api/v1/incidents?limit=&continue=
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.begin(w, r)
@@ -599,6 +685,19 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		h.writeStoreFailure(w, "list incidents", err)
 		return
 	}
+	shared := make([]uuid.UUID, 0)
+	for i := range rows {
+		if rows[i].OwnerID != user.ID {
+			shared = append(shared, rows[i].ID)
+		}
+	}
+	grants := map[uuid.UUID]store.IncidentGrantRow{}
+	if len(shared) > 0 {
+		if grants, err = h.grants.GrantsFor(ctx, user.ID, shared); err != nil {
+			h.writeStoreFailure(w, "read incident grants", err)
+			return
+		}
+	}
 	items := make([]IncidentView, 0, len(rows))
 	for i := range rows {
 		row := &rows[i]
@@ -606,15 +705,9 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 			items = append(items, incidentView(row, RoleOwner, true))
 			continue
 		}
-		grant, err := h.grants.GetGrant(ctx, row.ID, user.ID)
-		if err != nil {
-			h.writeStoreFailure(w, "read incident grant", err)
-			return
+		if grant, ok := grants[row.ID]; ok {
+			items = append(items, incidentView(row, RoleCollaborator, grant.CanAnnotate))
 		}
-		if grant == nil {
-			continue
-		}
-		items = append(items, incidentView(row, RoleCollaborator, grant.CanAnnotate))
 	}
 	httputil.WriteJSON(w, http.StatusOK, api.Response{
 		Data:     items,
@@ -624,7 +717,9 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 // HandleCreate opens an incident owned by the caller on the local cluster
 // (Release D capture is local-only). The body's title, summary and window
-// are validated by the store; its retention is the configured default.
+// are validated by the store; its retention is the configured default. The
+// write is audited as soon as it commits; if the read-back then fails the
+// response is still 201, built from the id and the request.
 // POST /api/v1/incidents
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.begin(w, r)
@@ -636,31 +731,38 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	id, err := h.incidents.Create(ctx, store.IncidentRow{
+	intended := store.IncidentRow{
 		OwnerID: user.ID, ClusterID: k8s.LocalClusterID, Title: req.Title, Summary: req.Summary,
 		WindowStart: req.WindowStart, WindowEnd: req.WindowEnd, RetentionDaysAtCapture: h.retentionDays,
-	})
+	}
+	id, err := h.incidents.Create(ctx, intended)
 	if err != nil {
 		h.auditLog(r, user, ActionIncidentCreate, audit.ResultFailure, k8s.LocalClusterID, "incident", "")
 		h.writeStoreFailure(w, "create incident", err)
 		return
 	}
+	h.auditLog(r, user, ActionIncidentCreate, audit.ResultSuccess, k8s.LocalClusterID, "incident", "incident "+id.String())
+
 	row, err := h.incidents.Get(ctx, id)
 	if err == nil && row == nil {
-		err = fmt.Errorf("incident %s vanished after insert", id)
+		err = fmt.Errorf("incident %s not readable after insert", id)
 	}
 	if err != nil {
-		h.writeStoreFailure(w, "read created incident", err)
-		return
+		h.logger.Warn("incident created but could not be read back; answering from the request", "incidentId", id, "error", err)
+		intended.ID = id
+		intended.Status = store.IncidentStatusOpen
+		row = &intended
 	}
-	h.auditLog(r, user, ActionIncidentCreate, audit.ResultSuccess, row.ClusterID, "incident", "incident "+id.String())
-	httputil.WriteJSON(w, http.StatusCreated, api.Response{Data: incidentView(row, RoleOwner, true)})
+	httputil.WriteJSON(w, http.StatusCreated, api.Response{Data: IncidentSummary{
+		Incident: incidentView(row, RoleOwner, true),
+		Counts:   h.countsBestEffort(ctx, user, id),
+	}})
 }
 
-// HandleGet returns the incident record with one page of its evidence,
-// filtered by FilterEvidence. Evidence is read page by page through
-// ListByIncident (never materialized whole), so a 500-item incident costs
-// one bounded read per page.
+// HandleGet returns the incident record, the caller's whole-incident
+// evidence counts, and one page of its evidence filtered by the same
+// decision. Evidence is read page by page through ListByIncident (never
+// materialized whole); the count reads scope columns only.
 // GET /api/v1/incidents/{incidentID}?limit=&continue=
 func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.begin(w, r)
@@ -681,7 +783,14 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		h.writeStoreFailure(w, "list incident evidence", err)
 		return
 	}
-	visible, withheld, err := h.FilterEvidence(ctx, user, rows)
+	memo, cancel := h.newScopeMemo(ctx, user)
+	defer cancel()
+	counts, err := h.countEvidence(ctx, memo, c.row.ID)
+	if err != nil {
+		h.writeStoreFailure(w, "count incident evidence", err)
+		return
+	}
+	visible, withheld, err := memo.filter(rows)
 	if err != nil {
 		h.logger.Error("incident evidence could not be decoded", "incidentId", c.row.ID, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "incident evidence unavailable", "")
@@ -690,16 +799,19 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, api.Response{
 		Data: IncidentDetail{
 			Incident: incidentView(c.row, c.role, c.canAnnotate),
+			Counts:   counts,
 			Evidence: visible,
 			Withheld: withheld,
-			Counts:   EvidenceCounts{Visible: len(visible), Withheld: len(withheld)},
 		},
-		Metadata: &api.Metadata{Total: len(visible), Continue: next},
+		Metadata: &api.Metadata{Total: counts.Visible, Continue: next},
 	})
 }
 
 // HandleUpdate replaces the title, summary and status (P3: owner-only; a
-// collaborator gets 403, a stranger 404).
+// collaborator gets 403, a stranger 404). A field left out of the body keeps
+// its current value. The write is audited as soon as it commits; if the
+// read-back then fails the response is still 200, built from the row as it
+// was known plus the fields written.
 // PUT /api/v1/incidents/{incidentID}
 func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.begin(w, r)
@@ -718,27 +830,47 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	if req.Status == "" {
-		req.Status = c.row.Status
+	title, summary, status := c.row.Title, c.row.Summary, c.row.Status
+	if req.Title != nil {
+		title = *req.Title
+	}
+	if req.Summary != nil {
+		summary = *req.Summary
+	}
+	if req.Status != nil {
+		status = *req.Status
 	}
 	ctx := r.Context()
 	id := c.row.ID
 	detail := "incident " + id.String()
-	if err := h.incidents.Update(ctx, id, user.ID, req.Title, req.Summary, req.Status); err != nil {
+	if err := h.incidents.Update(ctx, id, user.ID, title, summary, status); err != nil {
 		h.auditLog(r, user, ActionIncidentUpdate, audit.ResultFailure, c.row.ClusterID, "incident", detail)
 		h.writeStoreFailure(w, "update incident", err)
 		return
 	}
+	h.auditLog(r, user, ActionIncidentUpdate, audit.ResultSuccess, c.row.ClusterID, "incident", detail)
+
 	row, err := h.incidents.Get(ctx, id)
 	if err == nil && row == nil {
-		err = store.ErrIncidentNotFound
+		err = fmt.Errorf("incident %s not readable after update", id)
 	}
 	if err != nil {
-		h.writeStoreFailure(w, "read updated incident", err)
-		return
+		h.logger.Warn("incident updated but could not be read back; answering from the known row", "incidentId", id, "error", err)
+		known := *c.row
+		known.Title, known.Summary, known.Status = title, summary, status
+		switch {
+		case status == store.IncidentStatusClosed && known.ClosedAt == nil:
+			now := time.Now().UTC()
+			known.ClosedAt = &now
+		case status != store.IncidentStatusClosed:
+			known.ClosedAt = nil
+		}
+		row = &known
 	}
-	h.auditLog(r, user, ActionIncidentUpdate, audit.ResultSuccess, row.ClusterID, "incident", detail)
-	httputil.WriteData(w, incidentView(row, RoleOwner, true))
+	httputil.WriteData(w, IncidentSummary{
+		Incident: incidentView(row, RoleOwner, true),
+		Counts:   h.countsBestEffort(ctx, user, id),
+	})
 }
 
 // HandleDelete removes the incident and everything under it (P3:
@@ -773,9 +905,9 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 // store enforces that in SQL).
 // ---------------------------------------------------------------------------
 
-// HandleListNotes returns the incident's notes, oldest first, at most the
-// store's cap; Metadata.Truncated says when the cap was hit.
-// GET /api/v1/incidents/{incidentID}/notes
+// HandleListNotes returns one page of the incident's notes, oldest first;
+// metadata.continue leads to the next page, so every note is reachable.
+// GET /api/v1/incidents/{incidentID}/notes?limit=&continue=
 func (h *Handler) HandleListNotes(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.begin(w, r)
 	if !ok {
@@ -785,7 +917,11 @@ func (h *Handler) HandleListNotes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	notes, err := h.incidents.ListNotes(r.Context(), c.row.ID)
+	limit, cursor, ok := pageQuery(w, r)
+	if !ok {
+		return
+	}
+	notes, next, err := h.incidents.ListNotes(r.Context(), c.row.ID, limit, cursor)
 	if err != nil {
 		h.writeStoreFailure(w, "list incident notes", err)
 		return
@@ -796,7 +932,7 @@ func (h *Handler) HandleListNotes(w http.ResponseWriter, r *http.Request) {
 	}
 	httputil.WriteJSON(w, http.StatusOK, api.Response{
 		Data:     items,
-		Metadata: &api.Metadata{Total: len(items), Truncated: len(items) >= store.IncidentMaxNotesListed},
+		Metadata: &api.Metadata{Total: len(items), Continue: next},
 	})
 }
 

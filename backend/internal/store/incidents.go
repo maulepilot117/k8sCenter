@@ -63,6 +63,9 @@ var (
 	// ErrInvalidIncidentCursor reports a ListVisible cursor that does not
 	// decode. Callers answer it with a 400, never by restarting at page one.
 	ErrInvalidIncidentCursor = errors.New("invalid incident cursor")
+
+	// ErrInvalidNoteCursor reports a ListNotes cursor that does not decode.
+	ErrInvalidNoteCursor = errors.New("invalid incident note cursor")
 )
 
 // NoteRevisionConflictError is returned by UpdateNote when the caller's
@@ -98,14 +101,10 @@ const (
 	IncidentMinRetentionDays = 1
 	IncidentMaxRetentionDays = 3650
 
-	// IncidentDefaultPageSize and IncidentMaxPageSize bound ListVisible, the
-	// same bounds change_receipts and eso_history use.
+	// IncidentDefaultPageSize and IncidentMaxPageSize bound ListVisible and
+	// ListNotes, the same bounds change_receipts and eso_history use.
 	IncidentDefaultPageSize = 50
 	IncidentMaxPageSize     = 200
-
-	// IncidentMaxNotesListed caps ListNotes. The schema does not bound notes
-	// per incident; a read returns at most this many, oldest first.
-	IncidentMaxNotesListed = 500
 )
 
 // IncidentRow is one row in incidents.
@@ -283,6 +282,35 @@ func DecodeIncidentCursor(s string) (IncidentCursor, error) {
 		return IncidentCursor{}, ErrInvalidIncidentCursor
 	}
 	return IncidentCursor{CreatedAt: at, ID: id}, nil
+}
+
+// IncidentNoteCursor is the keyset position after the last row of a
+// ListNotes page: that row's (created_at, id). Notes page oldest first, so
+// the next page starts strictly after it.
+type IncidentNoteCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
+// EncodeIncidentNoteCursor renders a note cursor in the shared keyset form.
+// Unsigned, like the incident cursor: ListNotes pins the incident in its
+// WHERE clause and the caller has already passed the visibility gate.
+func EncodeIncidentNoteCursor(c IncidentNoteCursor) string {
+	return encodeMicrosCursor(c.CreatedAt, c.ID.String())
+}
+
+// DecodeIncidentNoteCursor parses a cursor produced by
+// EncodeIncidentNoteCursor; every malformed input returns ErrInvalidNoteCursor.
+func DecodeIncidentNoteCursor(s string) (IncidentNoteCursor, error) {
+	at, idText, ok := decodeMicrosCursor(s, maxIncidentCursorBytes)
+	if !ok {
+		return IncidentNoteCursor{}, ErrInvalidNoteCursor
+	}
+	id, err := uuid.Parse(idText)
+	if err != nil || id == uuid.Nil || id.String() != idText {
+		return IncidentNoteCursor{}, ErrInvalidNoteCursor
+	}
+	return IncidentNoteCursor{CreatedAt: at, ID: id}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -587,17 +615,49 @@ func (s *IncidentStore) CreateNote(ctx context.Context, incidentID uuid.UUID, au
 	return n, nil
 }
 
-// ListNotes returns an incident's notes, oldest first, capped at
-// IncidentMaxNotesListed. Notes past the cap are not returned.
-func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID) ([]IncidentNoteRow, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+noteColumns+`
+// The two ListNotes page queries (fixed texts, as for ListVisible). Both
+// fetch one row past the page so the returned cursor is exact: it is issued
+// only when a further note exists.
+const (
+	noteFirstPageSQL = `
+		SELECT ` + noteColumns + `
 		  FROM incident_notes
 		 WHERE incident_id = $1
 		 ORDER BY created_at, id
-		 LIMIT $2`, incidentID, IncidentMaxNotesListed)
+		 LIMIT $2`
+
+	noteNextPageSQL = `
+		SELECT ` + noteColumns + `
+		  FROM incident_notes
+		 WHERE incident_id = $1
+		   AND (created_at, id) > ($2::timestamptz, $3::uuid)
+		 ORDER BY created_at, id
+		 LIMIT $4`
+)
+
+// ListNotes returns one page of an incident's notes, oldest first
+// ((created_at, id)), starting after cursor ("" for the first page). limit is
+// clamped like ListVisible. The returned cursor is "" when no further note
+// exists, so a page that ends on the last note never costs an extra request.
+// The schema does not bound notes per incident; every note is reachable by
+// paging.
+func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]IncidentNoteRow, string, error) {
+	limit = clampIncidentPageSize(limit)
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if cursor == "" {
+		rows, err = s.pool.Query(ctx, noteFirstPageSQL, incidentID, limit+1)
+	} else {
+		after, decodeErr := DecodeIncidentNoteCursor(cursor)
+		if decodeErr != nil {
+			return nil, "", decodeErr
+		}
+		rows, err = s.pool.Query(ctx, noteNextPageSQL, incidentID, after.CreatedAt, after.ID, limit+1)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("list incident_notes: %w", err)
+		return nil, "", fmt.Errorf("list incident_notes: %w", err)
 	}
 	defer rows.Close()
 
@@ -605,14 +665,20 @@ func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID) ([]
 	for rows.Next() {
 		n, err := scanNote(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan incident_notes: %w", err)
+			return nil, "", fmt.Errorf("scan incident_notes: %w", err)
 		}
 		out = append(out, n)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate incident_notes: %w", err)
+		return nil, "", fmt.Errorf("iterate incident_notes: %w", err)
 	}
-	return out, nil
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = EncodeIncidentNoteCursor(IncidentNoteCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	}
+	return out, next, nil
 }
 
 // ListNoteRevisions returns the prior bodies of a note, oldest revision first.
