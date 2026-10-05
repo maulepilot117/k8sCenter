@@ -386,7 +386,20 @@ func (c *Collector) Capture(ctx context.Context, req CaptureRequest) (CaptureRep
 		var g errgroup.Group
 		g.SetLimit(c.limits.MaxConcurrency)
 		for i, src := range selected {
+			// Once the capture deadline has passed (or the request was
+			// cancelled) nothing queued behind the limit is started: its
+			// slot stays empty and it is reported timed_out. Without this a
+			// source would still run, unobserved, when a slot frees after
+			// Capture has returned. The loop check spares the enqueue; the
+			// worker's own check covers a g.Go that was already blocked on
+			// the limit when the deadline passed.
+			if captureCtx.Err() != nil {
+				break
+			}
 			recoverutil.Go(&g, c.logger, "incidents capture "+src.ID(), func() error {
+				if captureCtx.Err() != nil {
+					return nil
+				}
 				// A panic unwinds through this deferred send before
 				// recoverutil.Go recovers it, so the slot records the
 				// panic instead of staying empty (an empty slot at the
@@ -544,7 +557,8 @@ func (c *Collector) finalize(id string, o *sourceOutcome, finished bool, now tim
 		return sr, nil
 	}
 
-	var oversize, invalid, truncated bool
+	var oversize, invalid bool
+	var truncated []string // one note per cut item, in item order
 	items := make([]Evidence, 0, len(o.result.Items))
 	for _, e := range o.result.Items {
 		e.CollectedAt = now
@@ -572,11 +586,19 @@ func (c *Collector) finalize(id string, o *sourceOutcome, finished bool, now tim
 			continue // the same observation twice in one capture
 		}
 		keys[e.CaptureKey] = true
-		truncated = truncated || e.Redaction.Truncated
+		if e.Redaction.Truncated {
+			// The item's own detail names the cause when the adapter set
+			// one; a bare truncation flag is a size cut.
+			note := e.CompletenessDetail
+			if note == "" {
+				note = detailProjectionTooLarge
+			}
+			truncated = append(truncated, note)
+		}
 		items = append(items, e)
 	}
-	if truncated {
-		sr.Completeness, sr.Detail = downgrade(sr.Completeness, sr.Detail, detailProjectionTooLarge)
+	for _, note := range truncated {
+		sr.Completeness, sr.Detail = downgrade(sr.Completeness, sr.Detail, note)
 	}
 	if oversize {
 		sr.Completeness, sr.Detail = downgrade(sr.Completeness, sr.Detail, detailOversize)

@@ -80,7 +80,9 @@ const (
 	detailResolveFailed      = "diagnostics could not resolve the target"
 	detailReadFailed         = "target could not be read"
 	detailListFailed         = "events could not be listed"
-	detailListInterrupted    = "event listing was interrupted; older events may be missing"
+	detailListInterrupted    = "event listing was interrupted; some events may be missing"
+	detailListStopped        = "event listing stopped before every matching event was fetched; some events may be missing"
+	detailWindowCut          = "only the newest 200 matching events were kept"
 	detailProjectionTooLarge = "the projection was cut to fit the per-item size bound"
 )
 
@@ -576,9 +578,27 @@ func (s *eventsSource) Collect(ctx context.Context, req CaptureRequest) (SourceR
 		opts.Continue = list.Continue
 	}
 
-	// The window cut is a cut of the observation like any other.
-	cut := more || interrupted || matched > maxEventsPerCapture
-	projected := projectEvents(s.redactor, window, tuples, cut, secretDerived)
+	// Every cut is flagged in the redaction metadata; the detail names each
+	// actual cause, in a fixed order, and nothing else. Capture-key note:
+	// the digest covers the fetched events only, so when the listing was
+	// cut by the deadline or an expired token two captures of an unchanged
+	// storm may not dedupe (a different prefix was fetched); the page
+	// ceiling keeps the common case deterministic.
+	windowCut := matched > maxEventsPerCapture
+	projected := projectEvents(s.redactor, window, tuples, more || interrupted || windowCut, secretDerived)
+	var causes []string
+	if interrupted {
+		causes = append(causes, detailListInterrupted)
+	}
+	if more {
+		causes = append(causes, detailListStopped)
+	}
+	if windowCut || projected.countCut {
+		causes = append(causes, detailWindowCut)
+	}
+	if projected.sizeCut {
+		causes = append(causes, detailProjectionTooLarge)
+	}
 	item := Evidence{
 		EvidenceKind:     EvidenceKindEventList,
 		Mode:             ModeSnapshot,
@@ -590,12 +610,10 @@ func (s *eventsSource) Collect(ctx context.Context, req CaptureRequest) (SourceR
 		discriminator:    []string{projected.digest},
 	}
 	res := SourceResult{Items: []Evidence{item}, Completeness: CompletenessComplete}
-	if projected.meta.Truncated {
-		item.Completeness, item.CompletenessDetail = CompletenessPartial, detailProjectionTooLarge
-		res.Items[0] = item
-	}
-	if interrupted {
-		res.Completeness, res.Detail = CompletenessPartial, detailListInterrupted
+	if len(causes) > 0 {
+		detail := strings.Join(causes, "; ")
+		res.Items[0].Completeness, res.Items[0].CompletenessDetail = CompletenessPartial, detail
+		res.Completeness, res.Detail = CompletenessPartial, detail
 	}
 	return res, nil
 }
@@ -652,17 +670,25 @@ type projectedEvents struct {
 	meta       RedactionMeta
 	observedAt *time.Time // newest event time, nil when no event carries one
 	digest     string     // capture-key discriminator over every fetched event
+	countCut   bool       // more than maxEventsPerCapture events were given
+	sizeCut    bool       // a field past its bound, or the size ladder ran
 }
 
 // projectEvents projects events onto the allowlist (type, reason, sanitized
 // message, count, timestamps, involvedObject kind/name/uid, source
 // component), newest first, keeping at most the newest maxEventsPerCapture,
 // and cuts the tail until the payload fits r's byte bound. Every cut is
-// flagged. more says further events existed beyond what was fetched (the
-// page ceiling, the deadline, or an interrupted listing). tuples is the
-// digest input over EVERY fetched event (eventTuple), before any cut, so an
-// unchanged list dedupes whatever the cuts kept and any change anywhere in
-// it is a new observation; nil derives it from events.
+// flagged in the metadata; the result also says which cut was its own
+// (countCut: more than maxEventsPerCapture events were given; sizeCut: a
+// field past its bound or the size ladder) so the caller can name the
+// cause, separately from the incoming more flag, which says further events
+// existed beyond what was fetched (the page ceiling, the deadline, or an
+// interrupted listing). tuples is the digest input over every fetched event
+// (eventTuple), before any cut, so an unchanged list dedupes whatever the
+// cuts kept and any change anywhere in it is a new observation; nil derives
+// it from events. The digest cannot see events that were never fetched: a
+// listing cut by the deadline or an expired token may digest a different
+// prefix next time and not dedupe.
 func projectEvents(r *Redactor, events []corev1.Event, tuples []string, more, secretDerived bool) projectedEvents {
 	events = newestEvents(events, len(events))
 	if tuples == nil {
@@ -677,9 +703,10 @@ func projectEvents(r *Redactor, events []corev1.Event, tuples []string, more, se
 	sum := sha256.Sum256(digestInput)
 
 	truncated := more
+	var countCut, sizeCut bool
 	if len(events) > maxEventsPerCapture {
 		events = events[:maxEventsPerCapture]
-		truncated = true
+		truncated, countCut = true, true
 	}
 
 	var tm textMeta
@@ -709,6 +736,7 @@ func projectEvents(r *Redactor, events []corev1.Event, tuples []string, more, se
 	// A string cut past the field bound is a cut of the observation too:
 	// the payload's flag and the metadata's must agree.
 	truncated = truncated || tm.truncated
+	sizeCut = tm.truncated
 	payload := eventListPayload{Events: summaries, Observed: len(events), Truncated: truncated}
 	var b []byte
 	for {
@@ -718,7 +746,7 @@ func projectEvents(r *Redactor, events []corev1.Event, tuples []string, more, se
 		if err == nil && len(b) <= r.maxBytes {
 			break
 		}
-		truncated = true
+		truncated, sizeCut = true, true
 		if len(payload.Events) == 0 {
 			// Even the empty list does not fit (or did not marshal): the
 			// smallest honest payload.
@@ -736,7 +764,7 @@ func projectEvents(r *Redactor, events []corev1.Event, tuples []string, more, se
 	meta.Truncated = meta.Truncated || truncated
 	finishRules(&meta)
 
-	out := projectedEvents{payload: b, meta: meta, digest: hex.EncodeToString(sum[:])}
+	out := projectedEvents{payload: b, meta: meta, digest: hex.EncodeToString(sum[:]), countCut: countCut, sizeCut: sizeCut}
 	if !newest.IsZero() {
 		at := newest.UTC()
 		out.observedAt = &at

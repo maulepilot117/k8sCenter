@@ -822,8 +822,11 @@ func TestCaptureBoundsHugeEventList(t *testing.T) {
 	if f.pager.pages != 5 {
 		t.Errorf("pages = %d, want 5 (1000 events in pages of 200)", f.pager.pages)
 	}
-	if got := sourceReport(t, rep, SourceEvents); got.Completeness != CompletenessPartial || !strings.Contains(got.Detail, "cut") {
-		t.Errorf("events source = %+v, want partial with a size-cut note", got)
+	if got := sourceReport(t, rep, SourceEvents); got.Completeness != CompletenessPartial || got.Detail != detailWindowCut+"; "+detailProjectionTooLarge {
+		t.Errorf("events source = %+v, want partial naming the window cut and the size cut", got)
+	}
+	if ev.CompletenessDetail != detailWindowCut+"; "+detailProjectionTooLarge || ev.Completeness != CompletenessPartial {
+		t.Errorf("item = %q %q, want the same causes on the item", ev.Completeness, ev.CompletenessDetail)
 	}
 	if rep.Completeness != CompletenessPartial {
 		t.Errorf("capture completeness = %q, want partial when an item was cut", rep.Completeness)
@@ -1199,6 +1202,9 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 		if f.pager.selectors[0] != "involvedObject.uid="+testUID {
 			t.Errorf("field selector = %q", f.pager.selectors[0])
 		}
+		if got := sourceReport(t, rep, SourceEvents); got.Detail != detailWindowCut || ev.CompletenessDetail != detailWindowCut {
+			t.Errorf("details = %q / %q, want the window cut only", got.Detail, ev.CompletenessDetail)
+		}
 	})
 	t.Run("newest beyond the fifth page is still found", func(t *testing.T) {
 		// Name order is not time order: here the newest event has the
@@ -1209,8 +1215,8 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 		if f.pager.pages != 6 || !ev.Redaction.Truncated || ev.SourceObservedAt == nil || !ev.SourceObservedAt.Equal(now.Add(1199*time.Second)) {
 			t.Errorf("pages=%d truncated=%v observedAt=%v; want 6 pages, truncated (count), the true newest event", f.pager.pages, ev.Redaction.Truncated, ev.SourceObservedAt)
 		}
-		if got := sourceReport(t, rep, SourceEvents); got.Completeness != CompletenessPartial || got.Detail != detailProjectionTooLarge {
-			t.Errorf("events = %+v, want partial for the count cut only", got)
+		if got := sourceReport(t, rep, SourceEvents); got.Completeness != CompletenessPartial || got.Detail != detailWindowCut {
+			t.Errorf("events = %+v, want partial for the window cut only", got)
 		}
 	})
 	t.Run("hard page ceiling flags more", func(t *testing.T) {
@@ -1222,16 +1228,22 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 		if f.pager.pages != 25 || !ev.Redaction.Truncated || ev.SourceObservedAt == nil || !ev.SourceObservedAt.Equal(now.Add(4999*time.Second)) {
 			t.Errorf("pages=%d truncated=%v observedAt=%v; want 25 pages, truncated, newest fetched event", f.pager.pages, ev.Redaction.Truncated, ev.SourceObservedAt)
 		}
+		if got := sourceReport(t, rep, SourceEvents); got.Detail != detailListStopped+"; "+detailWindowCut || ev.CompletenessDetail != got.Detail {
+			t.Errorf("details = %q / %q, want the ceiling stop then the window cut", got.Detail, ev.CompletenessDetail)
+		}
 	})
 	t.Run("expired continue token keeps what was fetched and is partial", func(t *testing.T) {
 		f := newAdapterFixture("100", mk(450)...)
 		f.pager.expireAt = 2
 		rep := capture(t, newTestCollector(t, testLimits(), f.sources(t, resources.NewAlwaysAllowAccessChecker(), DefaultMaxBytes)...), localRequest(SourceEvents))
 		got := sourceReport(t, rep, SourceEvents)
-		if got.Completeness != CompletenessPartial || !strings.Contains(got.Detail, detailListInterrupted) || got.Items != 1 {
-			t.Fatalf("events = %+v, want partial with the interrupted detail and its item", got)
+		if got.Completeness != CompletenessPartial || got.Detail != detailListInterrupted || got.Items != 1 {
+			t.Fatalf("events = %+v, want partial with exactly the interrupted detail and its item", got)
 		}
 		ev := itemsOfKind(rep.Items, EvidenceKindEventList, "")[0]
+		if ev.CompletenessDetail != detailListInterrupted || ev.Completeness != CompletenessPartial {
+			t.Errorf("item = %q %q", ev.Completeness, ev.CompletenessDetail)
+		}
 		if !ev.Redaction.Truncated || ev.SourceObservedAt == nil || !ev.SourceObservedAt.Equal(now.Add(199*time.Second)) {
 			t.Errorf("item = truncated %v observedAt %v; want the first page's newest, flagged", ev.Redaction.Truncated, ev.SourceObservedAt)
 		}
@@ -1257,6 +1269,9 @@ func TestEventsPagesThroughContinueAndKeepsTheNewest(t *testing.T) {
 		ev := itemsOfKind(rep.Items, EvidenceKindEventList, "")[0]
 		if !ev.Redaction.Truncated || f.pager.pages >= 5 || f.pager.pages < 1 {
 			t.Errorf("truncated=%v pages=%d; want a flagged cut after fewer than all pages", ev.Redaction.Truncated, f.pager.pages)
+		}
+		if !strings.HasPrefix(got.Detail, detailListStopped) || strings.Contains(got.Detail, detailProjectionTooLarge) || ev.CompletenessDetail != got.Detail {
+			t.Errorf("details = %q / %q, want the deadline stop named and no size cut", got.Detail, ev.CompletenessDetail)
 		}
 	})
 	t.Run("digest covers every fetched event", func(t *testing.T) {
@@ -1860,5 +1875,49 @@ func TestRequiredReadScopesAddsTheTargetForRelatedScopedChecks(t *testing.T) {
 		if row.Resource == "pods" && len(scopes) != 2 {
 			t.Errorf("%s: pods-scoped row needs the target scope too, got %+v", checkID(t, it), scopes)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Re-review round 3
+// ---------------------------------------------------------------------------
+
+func TestEventDetailsNameNoScope(t *testing.T) {
+	for _, d := range []string{detailListInterrupted, detailListStopped, detailWindowCut, detailProjectionTooLarge} {
+		for _, leak := range []string{testNS, testName, "Deployment", "deployments"} {
+			if strings.Contains(d, leak) {
+				t.Errorf("detail %q names %q", d, leak)
+			}
+		}
+	}
+}
+
+func TestCaptureNeverStartsQueuedSourcesAfterReturning(t *testing.T) {
+	release := make(chan struct{})
+	var started atomic.Int32
+	l := testLimits()
+	l.MaxConcurrency = 1
+	l.CaptureTimeout = 40 * time.Millisecond
+	l.SourceTimeout = 40 * time.Millisecond
+	counting := func(id string) Source {
+		return stubSource{id: id, fn: func(context.Context, CaptureRequest) (SourceResult, error) {
+			started.Add(1)
+			return SourceResult{Completeness: CompletenessComplete}, nil
+		}}
+	}
+	c := newTestCollector(t, l, stuckSource("stuck", release), counting("q1"), counting("q2"))
+	c.grace = 20 * time.Millisecond
+	rep := capture(t, c, localRequest())
+	for _, id := range []string{"q1", "q2"} {
+		if got := sourceReport(t, rep, id); got.Completeness != CompletenessTimedOut {
+			t.Errorf("%s = %+v", id, got)
+		}
+	}
+	// Freeing the slot after Capture returned must not start the queued
+	// sources: they would run unobserved, against a dead context.
+	close(release)
+	time.Sleep(60 * time.Millisecond)
+	if n := started.Load(); n != 0 {
+		t.Fatalf("%d queued source(s) started after Capture returned", n)
 	}
 }
