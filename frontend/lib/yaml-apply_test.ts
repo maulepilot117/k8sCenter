@@ -4,9 +4,16 @@ import { signal } from "@preact/signals";
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import { setAccessToken } from "./api.ts";
+import type {
+  ApplyTracking,
+  TrackedApplyRefusalReason,
+} from "./change-types.ts";
 import { switchCluster, UNKNOWN_GENERATION } from "./cluster.ts";
 import {
   type ApplyResponse,
+  buildApplyQuery,
+  isIndeterminateApplyFailure,
+  trackedApplyRefusal,
   type UseYamlApplyOptions,
   type UseYamlApplyReturn,
   useYamlApply,
@@ -31,6 +38,8 @@ interface Call {
   clusterHeader: string | null;
   signal: AbortSignal | null | undefined;
   respond: (status: number, payload: unknown) => void;
+  /** Fails the request the way a dropped connection does. */
+  fail: () => void;
 }
 
 let calls: Call[] = [];
@@ -40,8 +49,9 @@ function stubFetch() {
   calls = [];
   originalFetch = globalThis.fetch;
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) =>
-    new Promise<Response>((resolve) => {
+    new Promise<Response>((resolve, reject) => {
       calls.push({
+        fail: () => reject(new TypeError("Failed to fetch")),
         url: String(input),
         clusterHeader: new Headers(init?.headers).get("X-Cluster-ID"),
         signal: init?.signal,
@@ -428,4 +438,446 @@ test("hook with no options at all applies unpinned", async () => {
 
   expect(call.url).toBe("/api/v1/yaml/apply");
   expect(call.clusterHeader).toBe("cluster-a");
+});
+
+// --- Tracked apply (Release E U30b) ----------------------------------------
+
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+const OP = "6f1d3c52-4b1e-4f0a-9c53-0d7a2b8e1f64";
+const OTHER_OP = "0b6a8d21-77c4-4d5e-8a30-5e1c9f2b4d07";
+
+function trackingFor(operationId: string): ApplyTracking {
+  return {
+    operationId,
+    receiptUrl: `/v1/changes/${operationId}`,
+    state: "applied",
+    clusterId: "local",
+    clusterGeneration: "local",
+    contentDigest: "sha256:abc123",
+    recordedThrough: 1,
+    notAttempted: 0,
+    unrecorded: 0,
+    replayed: false,
+    containsSecret: false,
+    objects: [
+      {
+        index: 0,
+        group: "",
+        version: "v1",
+        resource: "configmaps",
+        uid: "u-1",
+      },
+    ],
+    verification: {
+      state: "pending",
+      url: `/v1/changes/${operationId}/verification`,
+    },
+    warnings: [],
+  };
+}
+
+function appliedTracked(operationId: string): { data: ApplyResponse } {
+  return { data: { ...applied.data, tracking: trackingFor(operationId) } };
+}
+
+function refusal(status: number, reason: string, extra?: unknown) {
+  return {
+    error: { code: status, message: `refused: ${reason}`, reason, extra },
+  };
+}
+
+/** Runs a handler whose single request dies without an answer. */
+async function runDropped(handler: () => Promise<void>): Promise<Call> {
+  const done = handler();
+  await flush();
+  const call = calls[calls.length - 1];
+  call.fail();
+  await done;
+  return call;
+}
+
+function operationIdOf(call: Call): string | null {
+  return new URL(call.url, "http://x").searchParams.get("trackedOperationId");
+}
+
+test("buildApplyQuery: nothing set is the empty string", () => {
+  expect(buildApplyQuery()).toBe("");
+  expect(buildApplyQuery({})).toBe("");
+  expect(
+    buildApplyQuery({
+      force: false,
+      pin: null,
+      trackedOperationId: null,
+      repairOf: null,
+    }),
+  ).toBe("");
+});
+
+test("buildApplyQuery: force only is unchanged legacy behaviour", () => {
+  expect(buildApplyQuery({ force: true })).toBe("?force=true");
+});
+
+test("buildApplyQuery: pin only carries both pin parameters", () => {
+  const pin = { targetCluster: "cluster-a", targetGeneration: "gen-a" };
+  expect(buildApplyQuery({ pin })).toBe(
+    "?targetCluster=cluster-a&targetGeneration=gen-a",
+  );
+  expect(buildApplyQuery({ force: true, pin })).toBe(
+    "?force=true&targetCluster=cluster-a&targetGeneration=gen-a",
+  );
+});
+
+test("buildApplyQuery: tracking only is the opt-in", () => {
+  expect(buildApplyQuery({ trackedOperationId: OP })).toBe(
+    `?trackedOperationId=${OP}`,
+  );
+});
+
+test("buildApplyQuery: every parameter appears in a fixed order", () => {
+  const pin = { targetCluster: "cluster-a", targetGeneration: "gen-a" };
+  const expected = `?force=true&targetCluster=cluster-a&targetGeneration=gen-a&trackedOperationId=${OP}&repairOf=${OTHER_OP}`;
+  // Property order of the input must not leak into the URL.
+  expect(
+    buildApplyQuery({
+      force: true,
+      pin,
+      trackedOperationId: OP,
+      repairOf: OTHER_OP,
+    }),
+  ).toBe(expected);
+  expect(
+    buildApplyQuery({
+      repairOf: OTHER_OP,
+      trackedOperationId: OP,
+      pin,
+      force: true,
+    }),
+  ).toBe(expected);
+});
+
+test("buildApplyQuery: tracked without pin keeps force before the id", () => {
+  expect(buildApplyQuery({ force: true, trackedOperationId: OP })).toBe(
+    `?force=true&trackedOperationId=${OP}`,
+  );
+});
+
+test("buildApplyQuery: repairOf is only sent with a tracked id", () => {
+  expect(buildApplyQuery({ repairOf: OTHER_OP })).toBe("");
+  expect(buildApplyQuery({ trackedOperationId: OP, repairOf: OTHER_OP })).toBe(
+    `?trackedOperationId=${OP}&repairOf=${OTHER_OP}`,
+  );
+});
+
+test("buildApplyQuery: values are percent-encoded", () => {
+  expect(
+    buildApplyQuery({
+      pin: { targetCluster: "a&b", targetGeneration: "2026-01-02T03:04:05Z" },
+    }),
+  ).toBe("?targetCluster=a%26b&targetGeneration=2026-01-02T03%3A04%3A05Z");
+});
+
+test("ApplyResponse parses with and without tracking", () => {
+  const legacy: ApplyResponse = applied.data;
+  expect(legacy.tracking).toBeUndefined();
+
+  const tracked: ApplyResponse = appliedTracked(OP).data;
+  expect(tracked.tracking?.operationId).toBe(OP);
+  expect(tracked.tracking?.verification.state).toBe("pending");
+  expect(tracked.results).toEqual(legacy.results);
+});
+
+test("ApplyResponse tolerates keys it does not know", () => {
+  const wire = {
+    ...appliedTracked(OP).data,
+    futureField: { anything: true },
+  };
+  const parsed: ApplyResponse = wire;
+  expect(parsed.summary.created).toBe(1);
+  expect(parsed.tracking?.state).toBe("applied");
+});
+
+test("tracked absent leaves the request identical to today", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", {
+    forceConflicts: signal(true),
+  });
+
+  const call = await run(hook.handleApply, 200, applied);
+
+  expect(call.url).toBe("/api/v1/yaml/apply?force=true");
+  expect(operationIdOf(call)).toBeNull();
+  expect(hook.lastOperationId.value).toBeNull();
+  expect(hook.result.value?.tracking).toBeUndefined();
+});
+
+test("tracked false is the same as absent", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(false) });
+
+  const call = await run(hook.handleApply, 200, applied);
+
+  expect(call.url).toBe("/api/v1/yaml/apply");
+  expect(hook.lastOperationId.value).toBeNull();
+});
+
+test("tracked apply sends a UUIDv4 id and surfaces the tracking block", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const done = hook.handleApply();
+  await flush();
+  const id = operationIdOf(calls[0]);
+  expect(id).toMatch(UUID_V4);
+  calls[0].respond(200, appliedTracked(id as string));
+  await done;
+
+  expect(hook.lastOperationId.value).toBe(id);
+  expect(hook.result.value?.tracking?.operationId ?? null).toBe(id);
+  expect(hook.error.value).toBeNull();
+});
+
+test("a retry after a dropped connection reuses the operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await runDropped(hook.handleApply);
+  const id = operationIdOf(first);
+  expect(id).toMatch(UUID_V4);
+  expect(hook.error.value).not.toBeNull();
+  expect(hook.lastOperationId.value).toBe(id);
+
+  const retry = await run(hook.handleApply, 200, appliedTracked(id as string));
+  expect(operationIdOf(retry)).toBe(id);
+  expect(retry.url).toBe(first.url);
+});
+
+test("a retry after a 5xx reuses the operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await run(hook.handleApply, 502, { error: { code: 502 } });
+  const retry = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(retry)).toBe(operationIdOf(first));
+});
+
+test("a new apply after a success mints a new operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await run(hook.handleApply, 200, applied);
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(first)).toMatch(UUID_V4);
+  expect(operationIdOf(second)).toMatch(UUID_V4);
+  expect(operationIdOf(second)).not.toBe(operationIdOf(first));
+});
+
+test("a new apply after a definite refusal mints a new operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await run(hook.handleApply, 422, {
+    error: { code: 422, message: "invalid" },
+  });
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).not.toBe(operationIdOf(first));
+});
+
+test("edited content after an unknown outcome mints a new operation id", async () => {
+  // The server refuses an id reused with different content; the client never
+  // sends that combination.
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await runDropped(hook.handleApply);
+  hook.yamlContent.value = "kind: Secret";
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).not.toBe(operationIdOf(first));
+});
+
+test("changed options after an unknown outcome mint a new operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const forceConflicts = signal(false);
+  const hook = mount("kind: ConfigMap", {
+    tracked: signal(true),
+    forceConflicts,
+  });
+
+  const first = await runDropped(hook.handleApply);
+  forceConflicts.value = true;
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).not.toBe(operationIdOf(first));
+  expect(second.url).toContain("force=true");
+});
+
+test("switching tracking off discards the pending id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const tracked = signal(true);
+  const hook = mount("kind: ConfigMap", { tracked });
+
+  const first = await runDropped(hook.handleApply);
+  tracked.value = false;
+  const untracked = await run(hook.handleApply, 200, applied);
+  tracked.value = true;
+  const third = await run(hook.handleApply, 200, applied);
+
+  expect(untracked.url).toBe("/api/v1/yaml/apply");
+  expect(operationIdOf(third)).not.toBe(operationIdOf(first));
+});
+
+test("a tracked apply composes with the target pin and repairOf", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", {
+    pinApplyToPreview: true,
+    tracked: signal(true),
+    forceConflicts: signal(true),
+    repairOf: signal<string | null>(OTHER_OP),
+  });
+
+  await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
+  switchCluster("cluster-b", "gen-b");
+  const call = await run(hook.handleApply, 200, applied);
+
+  const url = new URL(call.url, "http://x");
+  expect([...url.searchParams.keys()]).toEqual([
+    "force",
+    "targetCluster",
+    "targetGeneration",
+    "trackedOperationId",
+    "repairOf",
+  ]);
+  expect(url.searchParams.get("targetCluster")).toBe("cluster-a");
+  expect(url.searchParams.get("targetGeneration")).toBe("gen-a");
+  expect(url.searchParams.get("repairOf")).toBe(OTHER_OP);
+  // X-Cluster-ID still comes from the pin, never the live selection.
+  expect(call.clusterHeader).toBe("cluster-a");
+});
+
+test("repairOf without tracking is not sent", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", {
+    repairOf: signal<string | null>(OTHER_OP),
+  });
+
+  const call = await run(hook.handleApply, 200, applied);
+
+  expect(call.url).toBe("/api/v1/yaml/apply");
+});
+
+test("tracked refusals map each 409 reason and the 503 to a typed error", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const cases: Array<{
+    status: number;
+    reason: TrackedApplyRefusalReason;
+    extra?: Record<string, unknown>;
+    receiptId?: string;
+    text: RegExp;
+  }> = [
+    { status: 409, reason: "operation_id_conflict", text: /already in use/ },
+    {
+      status: 409,
+      reason: "operation_in_flight",
+      extra: { receiptId: OP },
+      receiptId: OP,
+      text: /still running/,
+    },
+    {
+      status: 409,
+      reason: "operation_id_reused",
+      text: /different content or a different cluster/,
+    },
+    {
+      status: 503,
+      reason: "receipt_store_unavailable",
+      text: /nothing was applied/,
+    },
+  ];
+
+  for (const c of cases) {
+    await run(hook.handleApply, c.status, refusal(c.status, c.reason, c.extra));
+    expect(hook.trackedRefusal.value?.reason).toBe(c.reason);
+    expect(hook.trackedRefusal.value?.receiptId).toBe(c.receiptId);
+    expect(hook.error.value).toMatch(c.text);
+    expect(hook.error.value).toBe(hook.trackedRefusal.value?.message ?? null);
+    expect(hook.result.value).toBeNull();
+  }
+});
+
+test("a refusal is cleared by the next attempt", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  await run(hook.handleApply, 409, refusal(409, "operation_id_reused"));
+  expect(hook.trackedRefusal.value).not.toBeNull();
+
+  await run(hook.handleApply, 200, applied);
+  expect(hook.trackedRefusal.value).toBeNull();
+  expect(hook.error.value).toBeNull();
+});
+
+test("operation_in_flight keeps the id; the other refusals release it", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const inflight = await run(
+    hook.handleApply,
+    409,
+    refusal(409, "operation_in_flight", { receiptId: OP }),
+  );
+  const again = await run(
+    hook.handleApply,
+    409,
+    refusal(409, "operation_id_reused"),
+  );
+  expect(operationIdOf(again)).toBe(operationIdOf(inflight));
+
+  const next = await run(hook.handleApply, 200, applied);
+  expect(operationIdOf(next)).not.toBe(operationIdOf(inflight));
+});
+
+test("a pin refusal is still reported as a pin refusal on a tracked apply", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", {
+    pinApplyToPreview: true,
+    tracked: signal(true),
+  });
+
+  await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
+  await run(hook.handleApply, 409, refusal(409, "cluster_generation_mismatch"));
+
+  expect(hook.error.value).toContain("re-registered");
+  expect(hook.trackedRefusal.value).toBeNull();
+  expect(hook.pin.value).toBeNull();
+});
+
+test("the refusal and retry helpers ignore errors that are not tracked refusals", () => {
+  expect(trackedApplyRefusal(new Error("boom"))).toBeNull();
+  expect(trackedApplyRefusal(undefined)).toBeNull();
+  expect(isIndeterminateApplyFailure(new TypeError("Failed to fetch"))).toBe(
+    true,
+  );
 });

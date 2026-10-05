@@ -26,6 +26,10 @@ import {
 } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import { ApiError, apiPostRaw, errorExtra } from "./api.ts";
+import type {
+  ApplyTracking,
+  TrackedApplyRefusalReason,
+} from "./change-types.ts";
 import {
   type ClusterTarget,
   clusterEpoch,
@@ -55,6 +59,13 @@ export interface ApplyResponse {
     unchanged: number;
     failed: number;
   };
+  /**
+   * Present only when the request opted in with `?trackedOperationId=`.
+   * Absent for every legacy caller, so the untracked contract is unchanged.
+   * The shared hook does not render it; consumers that do (the change
+   * receipt UI) read it from `result`.
+   */
+  tracking?: ApplyTracking;
 }
 
 /** One document's dry-run verdict from `/yaml/validate`. */
@@ -104,6 +115,23 @@ export interface UseYamlApplyOptions {
    * so existing consumers keep their unpinned apply.
    */
   pinApplyToPreview?: boolean;
+  /**
+   * Opt in to a tracked apply. While `true`, `handleApply` sends
+   * `?trackedOperationId=<uuid>` and the server records a change receipt.
+   * Each user-initiated apply mints a fresh id via `crypto.randomUUID()`;
+   * a retry of the SAME attempt (the request was cut off, or the server
+   * answered 5xx, and the operator presses Apply again with unchanged content
+   * and options) reuses the stored id so the server can replay the outcome
+   * instead of applying twice. Absent or `false` leaves the request exactly
+   * as it was before tracking existed.
+   */
+  tracked?: Signal<boolean>;
+  /**
+   * Operation id of the receipt this apply repairs, sent as `?repairOf=`.
+   * Recorded server-side as a link only; it grants nothing. Ignored unless
+   * the apply is tracked.
+   */
+  repairOf?: Signal<string | null>;
 }
 
 export interface UseYamlApplyReturn {
@@ -126,6 +154,122 @@ export interface UseYamlApplyReturn {
   pinStale: ReadonlySignal<boolean>;
   /** Forgets the preview and its pin; a pinned apply then needs a new one. */
   clearPin: () => void;
+  /**
+   * The operation id the last apply attempt was sent under, or null when it
+   * was untracked (or no apply has run). Stays set after a failure that left
+   * the outcome unknown, because it is also the id the next press of Apply
+   * will reuse.
+   */
+  lastOperationId: ReadonlySignal<string | null>;
+  /**
+   * The typed reason the server refused the last tracked apply (409 id
+   * reasons, 503 receipt store), or null. `error` carries the same refusal as
+   * operator-facing text.
+   */
+  trackedRefusal: ReadonlySignal<TrackedApplyRefusal | null>;
+}
+
+/** The pin parameters an apply echoes back to the server. */
+export interface ApplyQueryPin {
+  targetCluster: string;
+  targetGeneration: string;
+}
+
+/** Everything that shapes the `/yaml/apply` query string. */
+export interface ApplyQueryInput {
+  force?: boolean;
+  /** Release C target pin; both parameters travel together. */
+  pin?: ApplyQueryPin | null;
+  /** UUIDv4 idempotency key of a tracked apply. */
+  trackedOperationId?: string | null;
+  /** Receipt this apply repairs. Emitted only together with `trackedOperationId`. */
+  repairOf?: string | null;
+}
+
+/**
+ * Builds the apply query string: `""` when nothing is set, otherwise `?` plus
+ * the parameters in a fixed order (force, targetCluster, targetGeneration,
+ * trackedOperationId, repairOf), so equal inputs always produce equal URLs.
+ * With no tracking and no `repairOf` it is byte-identical to what the hook
+ * built before tracking existed.
+ */
+export function buildApplyQuery(input: ApplyQueryInput = {}): string {
+  const query = new URLSearchParams();
+  if (input.force) query.set("force", "true");
+  if (input.pin) {
+    query.set("targetCluster", input.pin.targetCluster);
+    query.set("targetGeneration", input.pin.targetGeneration);
+  }
+  if (input.trackedOperationId) {
+    query.set("trackedOperationId", input.trackedOperationId);
+    if (input.repairOf) query.set("repairOf", input.repairOf);
+  }
+  return query.size > 0 ? `?${query}` : "";
+}
+
+/** A tracked apply the server refused, in terms the operator can act on. */
+export interface TrackedApplyRefusal {
+  reason: TrackedApplyRefusalReason;
+  /** Operator-facing text. */
+  message: string;
+  /** For `operation_in_flight`: the receipt to poll instead of resubmitting. */
+  receiptId?: string;
+}
+
+/**
+ * Maps a tracked apply's 409 id refusals and its 503 `receipt_store_unavailable`
+ * to a typed refusal. Returns null for any other failure (including a pin
+ * refusal, which `pinRefusalMessage` owns). Reads only `ApiError.reason` and
+ * `errorExtra`; never the raw body.
+ */
+export function trackedApplyRefusal(err: unknown): TrackedApplyRefusal | null {
+  if (!(err instanceof ApiError)) return null;
+  if (err.status === 503 && err.reason === "receipt_store_unavailable") {
+    return {
+      reason: "receipt_store_unavailable",
+      message:
+        "The change record could not be saved, so nothing was applied. Try again shortly, or turn off change tracking to apply without a record.",
+    };
+  }
+  if (err.status !== 409) return null;
+  switch (err.reason) {
+    case "operation_id_conflict":
+      return {
+        reason: "operation_id_conflict",
+        message:
+          "This apply could not be recorded because its operation id is already in use. Nothing was applied. Apply again to start a new change.",
+      };
+    case "operation_in_flight": {
+      const receiptId = errorExtra(err, "receiptId");
+      return {
+        reason: "operation_in_flight",
+        message:
+          "This apply is still running. Check its change receipt instead of applying again.",
+        ...(receiptId ? { receiptId } : {}),
+      };
+    }
+    case "operation_id_reused":
+      return {
+        reason: "operation_id_reused",
+        message:
+          "This operation id was already used for different content or a different cluster. Nothing was applied by this request. Validate again and apply as a new change.",
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether a failed apply left its outcome unknown, so pressing Apply again is
+ * a retry of the same attempt and must reuse the operation id. True for a
+ * request that got no response (network error, bad body), any 5xx, and a 409
+ * `operation_in_flight` (the same attempt, still running). Every other
+ * failure is a definite answer; the next apply is a new attempt.
+ */
+export function isIndeterminateApplyFailure(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return true;
+  if (err.status >= 500) return true;
+  return err.status === 409 && err.reason === "operation_in_flight";
 }
 
 function normalizeClusterId(id: string | undefined): string {
@@ -165,6 +309,14 @@ export function useYamlApply(
   const result = useSignal<ApplyResponse | null>(null);
   const preview = useSignal<ValidateResponse | null>(null);
   const pin = useSignal<YamlApplyPin | null>(null);
+  const lastOperationId = useSignal<string | null>(null);
+  const trackedRefusal = useSignal<TrackedApplyRefusal | null>(null);
+  // The attempt a retry would continue: its id plus the request it was minted
+  // for. Reused only while the request is unchanged, so an id never travels
+  // with different content (the server refuses that as operation_id_reused).
+  const pendingAttempt = useRef<{ id: string; requestKey: string } | null>(
+    null,
+  );
   const validateAbort = useRef<{
     controller: AbortController;
     issuedEpoch: number;
@@ -213,6 +365,7 @@ export function useYamlApply(
     result.value = null;
     preview.value = null;
     pin.value = null;
+    trackedRefusal.value = null;
     try {
       const res = await apiPostRaw<ValidateResponse>(
         "/v1/yaml/validate",
@@ -260,14 +413,33 @@ export function useYamlApply(
     applying.value = true;
     error.value = null;
     result.value = null;
+    trackedRefusal.value = null;
     try {
-      const query = new URLSearchParams();
-      if (options.forceConflicts?.value) query.set("force", "true");
-      if (options.pinApplyToPreview && pinned) {
-        query.set("targetCluster", pinned.targetCluster);
-        query.set("targetGeneration", pinned.targetGeneration);
+      const baseQuery: ApplyQueryInput = {
+        force: Boolean(options.forceConflicts?.value),
+        pin:
+          options.pinApplyToPreview && pinned
+            ? {
+                targetCluster: pinned.targetCluster,
+                targetGeneration: pinned.targetGeneration,
+              }
+            : null,
+        repairOf: options.repairOf?.value ?? null,
+      };
+      let trackedOperationId: string | null = null;
+      if (options.tracked?.value) {
+        const requestKey = `${buildApplyQuery(baseQuery)}\n${yamlContent.value}`;
+        const pending = pendingAttempt.current;
+        trackedOperationId =
+          pending && pending.requestKey === requestKey
+            ? pending.id
+            : crypto.randomUUID();
+        pendingAttempt.current = { id: trackedOperationId, requestKey };
+      } else {
+        pendingAttempt.current = null;
       }
-      const queryStr = query.size > 0 ? `?${query}` : "";
+      lastOperationId.value = trackedOperationId;
+      const queryStr = buildApplyQuery({ ...baseQuery, trackedOperationId });
       const res = await apiPostRaw<ApplyResponse>(
         `/v1/yaml/apply${queryStr}`,
         yamlContent.value,
@@ -276,11 +448,19 @@ export function useYamlApply(
           ? { clusterId: pinned.target.clusterId }
           : undefined,
       );
+      pendingAttempt.current = null;
       result.value = res.data;
       options.onApplySuccess?.(res.data);
     } catch (err) {
+      // A definite answer ends the attempt; only an unknown outcome keeps its
+      // id for the retry.
+      if (!isIndeterminateApplyFailure(err)) pendingAttempt.current = null;
       const refusal = pinRefusalMessage(err);
-      if (refusal) {
+      const trackedFailure = trackedApplyRefusal(err);
+      if (trackedFailure) {
+        trackedRefusal.value = trackedFailure;
+        error.value = trackedFailure.message;
+      } else if (refusal) {
         // A refused pin can never succeed on retry. Drop it so the only way
         // forward is a fresh preview against the cluster actually targeted.
         pin.value = null;
@@ -306,5 +486,7 @@ export function useYamlApply(
     pin,
     pinStale,
     clearPin,
+    lastOperationId,
+    trackedRefusal,
   };
 }
