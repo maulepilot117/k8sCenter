@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -56,7 +58,41 @@ var (
 	// ErrInvalidEvidenceCursor reports a ListByIncident cursor that does not
 	// decode. Callers answer it with a 400, never by restarting at page one.
 	ErrInvalidEvidenceCursor = errors.New("invalid evidence cursor")
+
+	// ErrIncidentBusy is returned when a write could not take the incident row
+	// lock within its lock timeout because another transaction held it. It
+	// is retryable; nothing was written.
+	ErrIncidentBusy = errors.New("incident is busy")
 )
+
+// incidentLockTimeout bounds how long InsertBatch and AddGrant wait for the
+// incident row lock, so a stalled holder cannot pin pool connections.
+const incidentLockTimeout = 5 * time.Second
+
+// beginIncidentLockTx begins a transaction whose lock waits give up after
+// lockTimeout (SET LOCAL lock_timeout, scoped to this transaction).
+func beginIncidentLockTx(ctx context.Context, pool *pgxpool.Pool, lockTimeout time.Duration, what string) (pgx.Tx, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin %s tx: %w", what, err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`,
+		strconv.FormatInt(lockTimeout.Milliseconds(), 10)+"ms"); err != nil {
+		rollbackDetached(ctx, tx)
+		return nil, fmt.Errorf("set %s lock timeout: %w", what, err)
+	}
+	return tx, nil
+}
+
+// busyIfLockTimeout maps PostgreSQL's lock_not_available (55P03, raised when
+// lock_timeout expires) to ErrIncidentBusy and passes every other error through.
+func busyIfLockTimeout(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		return ErrIncidentBusy
+	}
+	return err
+}
 
 // The SQL CHECK ceilings in migration 000024. EvidenceLimits may never exceed
 // them: a limit above a ceiling would turn a clean limit error into a CHECK
@@ -237,7 +273,7 @@ func ValidateEvidenceRow(r IncidentEvidenceRow) error {
 	default:
 		return fmt.Errorf("%w: unknown evidence mode %q", ErrIncidentInvalid, r.Mode)
 	}
-	if err := validateEvidenceJSON("redaction", r.Redaction); err != nil {
+	if err := validateEvidenceRedaction(r.Redaction, r.SecretDerived); err != nil {
 		return err
 	}
 	if err := validateIncidentText("completeness detail", r.CompletenessDetail, 0, EvidenceMaxDetailChars); err != nil {
@@ -271,10 +307,33 @@ func ValidateEvidenceRow(r IncidentEvidenceRow) error {
 	return nil
 }
 
+// validateEvidenceRedaction checks the redaction metadata: empty (stored as
+// {}) or a JSON object. The read path's Secret gate (Q1 P11) keys on the
+// secret_derived column, so metadata that says "secretDerived": true (key
+// matched case-insensitively, as encoding/json does) under a false column is
+// refused rather than stored ungated. The column may be stricter than the
+// metadata, never laxer.
+func validateEvidenceRedaction(raw json.RawMessage, secretDerived bool) error {
+	if err := validateEvidenceJSON("redaction", raw); err != nil || len(raw) == 0 {
+		return err
+	}
+	var meta struct {
+		SecretDerived *bool `json:"secretDerived"`
+	}
+	if trimmed := bytes.TrimSpace(raw); trimmed[0] != '{' || json.Unmarshal(raw, &meta) != nil {
+		return fmt.Errorf("%w: redaction must be a JSON object with a boolean secretDerived", ErrIncidentInvalid)
+	}
+	if meta.SecretDerived != nil && *meta.SecretDerived && !secretDerived {
+		return fmt.Errorf("%w: redaction marks the item secret-derived but secret_derived is false", ErrIncidentInvalid)
+	}
+	return nil
+}
+
 // validateEvidenceJSON accepts an empty value (nothing to store) or valid
-// UTF-8 JSON that jsonb can hold. jsonb rejects the \u0000 escape, so any
-// occurrence of that text is refused (conservatively: an escaped backslash
-// followed by "u0000" is refused too).
+// UTF-8 JSON that jsonb can hold. encoding/json accepts two escapes jsonb
+// rejects: \u0000, and a UTF-16 surrogate escape that is not a high surrogate
+// immediately followed by a low one. Both are refused here, so the capture
+// fails as a validation error instead of a driver error mid-transaction.
 func validateEvidenceJSON(field string, raw json.RawMessage) error {
 	if len(raw) == 0 {
 		return nil
@@ -282,10 +341,63 @@ func validateEvidenceJSON(field string, raw json.RawMessage) error {
 	if !utf8.Valid(raw) || !json.Valid(raw) {
 		return fmt.Errorf("%w: %s is not valid UTF-8 JSON", ErrIncidentInvalid, field)
 	}
-	if bytes.Contains(raw, []byte(`\u0000`)) {
-		return fmt.Errorf("%w: %s contains a \\u0000 escape", ErrIncidentInvalid, field)
+	if reason := jsonbEscapeProblem(raw); reason != "" {
+		return fmt.Errorf("%w: %s contains %s", ErrIncidentInvalid, field, reason)
 	}
 	return nil
+}
+
+// jsonbEscapeProblem scans the escapes of valid JSON (a backslash only occurs
+// inside a string, and json.Valid guarantees each escape is complete) and
+// describes the first one jsonb would reject, or returns "". A "\\" escape
+// consumes both bytes, so the literal text \u0000 inside a string (written
+// "\\u0000") is not mistaken for the escape.
+func jsonbEscapeProblem(raw []byte) string {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '\\' {
+			continue
+		}
+		if raw[i+1] != 'u' {
+			i++ // a two-byte escape such as \\ or \"
+			continue
+		}
+		r := hexRune(raw[i+2 : i+6])
+		switch {
+		case r == 0:
+			return `a \u0000 escape`
+		case r >= 0xDC00 && r <= 0xDFFF:
+			return "an unpaired low surrogate escape"
+		case r >= 0xD800 && r <= 0xDBFF:
+			next := i + 6
+			if next+6 > len(raw) || raw[next] != '\\' || raw[next+1] != 'u' {
+				return "an unpaired high surrogate escape"
+			}
+			if lo := hexRune(raw[next+2 : next+6]); lo < 0xDC00 || lo > 0xDFFF {
+				return "an unpaired high surrogate escape"
+			}
+			i = next + 5 // past the low surrogate
+		default:
+			i += 5
+		}
+	}
+	return ""
+}
+
+// hexRune decodes four hex digits that json.Valid has already checked.
+func hexRune(h []byte) rune {
+	var r rune
+	for _, c := range h {
+		r <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			r |= rune(c - '0')
+		case c >= 'a' && c <= 'f':
+			r |= rune(c - 'a' + 10)
+		default:
+			r |= rune(c - 'A' + 10)
+		}
+	}
+	return r
 }
 
 // ---------------------------------------------------------------------------
@@ -331,13 +443,14 @@ func DecodeEvidenceCursor(s string) (EvidenceCursor, error) {
 
 // IncidentEvidenceStore handles append-only persistence for incident_evidence.
 type IncidentEvidenceStore struct {
-	pool *pgxpool.Pool
+	pool        *pgxpool.Pool
+	lockTimeout time.Duration // incidentLockTimeout; tests shorten it
 }
 
 // NewIncidentEvidenceStore creates an evidence store. It never touches the
 // pool, so it is safe to construct with a nil pool.
 func NewIncidentEvidenceStore(pool *pgxpool.Pool) *IncidentEvidenceStore {
-	return &IncidentEvidenceStore{pool: pool}
+	return &IncidentEvidenceStore{pool: pool, lockTimeout: incidentLockTimeout}
 }
 
 const (
@@ -379,12 +492,26 @@ const (
 // payload exceeds limits.MaxItemBytes with an item_bytes *EvidenceLimitError.
 // An empty batch is a no-op returning 0.
 //
-// Then, in one transaction holding the incident row lock: ErrIncidentNotFound,
+// Then, in one transaction holding the incident row lock (waiting at most
+// incidentLockTimeout for it, else ErrIncidentBusy): ErrIncidentNotFound,
 // ErrNotOwner (capture is owner-only, Q1 P3) or ErrIncidentClosed; insert with
-// ON CONFLICT DO NOTHING; recompute distinct scopes from the table; reject with
-// an *EvidenceLimitError (items, then incident_bytes) or a *ScopeLimitError
+// ON CONFLICT DO NOTHING; recompute distinct scopes from the table; reject
 // when the new totals exceed limits, which rolls back every row; otherwise
 // write the new totals and commit. Any failure leaves the incident unchanged.
+//
+// Error precedence, first match wins (U23b maps each to its own status):
+//  1. before SQL: ErrIncidentInvalid (owner id, limits, batch length, rows),
+//     then the item_bytes *EvidenceLimitError;
+//  2. under the lock: ErrIncidentBusy, ErrIncidentNotFound, ErrNotOwner,
+//     ErrIncidentClosed;
+//  3. after the insert: items, then incident_bytes *EvidenceLimitError, then
+//     *ScopeLimitError.
+//
+// Items and bytes are cumulative totals, so a limit lowered below the
+// incident's current total blocks any batch that adds a row. The scope limit
+// only blocks growth of the scope set: a batch whose rows all fall in scopes
+// the incident already has is accepted even when a lowered limit is below the
+// current scope count.
 func (s *IncidentEvidenceStore) InsertBatch(
 	ctx context.Context, incidentID uuid.UUID, ownerID string, rows []IncidentEvidenceRow, limits EvidenceLimits,
 ) (int, error) {
@@ -416,7 +543,8 @@ func (s *IncidentEvidenceStore) InsertBatch(
 	if len(prepared) == 0 {
 		return 0, nil
 	}
-	return s.insertValidated(ctx, incidentID, ownerID, prepared, limits)
+	n, err := s.insertValidated(ctx, incidentID, ownerID, prepared, limits)
+	return n, busyIfLockTimeout(err)
 }
 
 // insertValidated is InsertBatch's transaction. rows must already be
@@ -424,17 +552,11 @@ func (s *IncidentEvidenceStore) InsertBatch(
 func (s *IncidentEvidenceStore) insertValidated(
 	ctx context.Context, incidentID uuid.UUID, ownerID string, rows []IncidentEvidenceRow, limits EvidenceLimits,
 ) (int, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := beginIncidentLockTx(ctx, s.pool, s.lockTimeout, "incident evidence")
 	if err != nil {
-		return 0, fmt.Errorf("begin incident evidence tx: %w", err)
+		return 0, err
 	}
-	// Rollback after Commit is a no-op. Detached from ctx's cancellation so a
-	// cancelled capture still releases the incident lock, but bounded.
-	defer func() {
-		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), incidentRollbackTimeout)
-		defer cancel()
-		_ = tx.Rollback(rbCtx)
-	}()
+	defer rollbackDetached(ctx, tx)
 
 	var (
 		owner, status       string
@@ -463,6 +585,8 @@ func (s *IncidentEvidenceStore) insertValidated(
 		return 0, nil // every row was a duplicate: nothing to account
 	}
 
+	// Items and bytes are cumulative: any growth past the limit is refused,
+	// even when the limit was lowered below the existing total.
 	newCount := curCount + inserted
 	if newCount > limits.MaxItems {
 		return 0, &EvidenceLimitError{
@@ -479,7 +603,11 @@ func (s *IncidentEvidenceStore) insertValidated(
 	if err := tx.QueryRow(ctx, evidenceScopeCountSQL, incidentID).Scan(&newScopes); err != nil {
 		return 0, fmt.Errorf("count incident_evidence scopes: %w", err)
 	}
-	if newScopes > limits.MaxScopes {
+	// The scope cap bounds the access checks one read costs (Q1 P5). A batch
+	// that adds no new scope adds no check, so it is refused only when it grows
+	// the scope set past the limit. curScopes is the scope count before this
+	// insert (incidents.scope_count, maintained under this same lock).
+	if newScopes > limits.MaxScopes && newScopes > curScopes {
 		return 0, &ScopeLimitError{Max: limits.MaxScopes, Current: curScopes, Attempted: newScopes}
 	}
 

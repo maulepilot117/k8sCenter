@@ -70,18 +70,20 @@ func ValidateGranteeID(id string) error {
 
 // IncidentGrantStore handles persistence for incident_grants.
 type IncidentGrantStore struct {
-	pool *pgxpool.Pool
+	pool        *pgxpool.Pool
+	lockTimeout time.Duration // incidentLockTimeout; tests shorten it
 }
 
 // NewIncidentGrantStore creates a grant store. It never touches the pool, so
 // it is safe to construct with a nil pool.
 func NewIncidentGrantStore(pool *pgxpool.Pool) *IncidentGrantStore {
-	return &IncidentGrantStore{pool: pool}
+	return &IncidentGrantStore{pool: pool, lockTimeout: incidentLockTimeout}
 }
 
 // AddGrant gives granteeID a grant on an incident owned by ownerID, or updates
 // can_annotate when the grantee already holds one. In one transaction holding
-// the incident row lock (so concurrent grants cannot overshoot the cap):
+// the incident row lock (so concurrent grants cannot overshoot the cap; a wait
+// past incidentLockTimeout returns the retryable ErrIncidentBusy):
 // ErrIncidentNotFound or ErrNotOwner; a self-grant (granteeID == ownerID) is
 // then a no-op returning nil, since the owner already holds every right;
 // ErrGrantLimit when the grantee is new and the incident already has
@@ -95,15 +97,11 @@ func (s *IncidentGrantStore) AddGrant(ctx context.Context, incidentID uuid.UUID,
 		return err
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := beginIncidentLockTx(ctx, s.pool, s.lockTimeout, "incident grant")
 	if err != nil {
-		return fmt.Errorf("begin incident grant tx: %w", err)
+		return err
 	}
-	defer func() {
-		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), incidentRollbackTimeout)
-		defer cancel()
-		_ = tx.Rollback(rbCtx)
-	}()
+	defer rollbackDetached(ctx, tx)
 
 	var owner string
 	err = tx.QueryRow(ctx, `SELECT owner_id FROM incidents WHERE id = $1 FOR UPDATE`, incidentID).Scan(&owner)
@@ -111,7 +109,7 @@ func (s *IncidentGrantStore) AddGrant(ctx context.Context, incidentID uuid.UUID,
 		return ErrIncidentNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("lock incidents: %w", err)
+		return busyIfLockTimeout(fmt.Errorf("lock incidents: %w", err))
 	}
 	if owner != ownerID {
 		return ErrNotOwner

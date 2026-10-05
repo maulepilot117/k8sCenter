@@ -1,14 +1,13 @@
 package store
 
-// incident_evidence_test.go — coverage for IncidentEvidenceStore and
-// IncidentGrantStore (Release D, U21b).
+// incident_evidence_test.go — coverage for IncidentEvidenceStore (Release D,
+// U21b). Grant tests are in incident_grants_test.go.
 //
 // Pure tests (no database) cover the limit and row validation that runs
-// before any SQL, the evidence cursor codec, grantee validation and the
-// append-only method set. Env-gated tests (testDB, skipped without
+// before any SQL, the evidence cursor codec and the append-only method set. Env-gated tests (testDB, skipped without
 // KUBECENTER_TEST_DATABASE_URL) cover the transactional accounting under the
 // incident row lock, dedup, the owner gates, UID-keyed provenance,
-// pagination, scopes and grants.
+// pagination and scopes.
 //
 // Isolation contract (testdb_test.go): every incident is owned by an id from
 // testOwnerID(t), and every read is scoped by that incident.
@@ -190,6 +189,12 @@ func TestValidateEvidenceRow(t *testing.T) {
 		"NUL in name":             func(r *IncidentEvidenceRow) { r.Name = "a\x00b" },
 		"invalid UTF-8 namespace": func(r *IncidentEvidenceRow) { r.Namespace = "\xff" },
 		"overlong source uid":     func(r *IncidentEvidenceRow) { r.SourceUID = strings.Repeat("u", 1025) },
+		"redaction not an object": func(r *IncidentEvidenceRow) { r.Redaction = json.RawMessage(`["secret-values"]`) },
+		// The read path's Secret gate keys on the column, so a redaction that
+		// says secret-derived must never be stored under secret_derived=false.
+		"secretDerived disagrees": func(r *IncidentEvidenceRow) { r.Redaction = json.RawMessage(`{"secretDerived":true}`) },
+		"secretDerived any case":  func(r *IncidentEvidenceRow) { r.Redaction = json.RawMessage(`{"SecretDerived":true}`) },
+		"lone surrogate payload":  func(r *IncidentEvidenceRow) { r.Payload = json.RawMessage(`{"a":"\ud800"}`) },
 	}
 	for name, m := range bad {
 		r := snapshotRow("k", 64)
@@ -284,52 +289,78 @@ func TestEvidenceCursor_RoundTripAndMalformed(t *testing.T) {
 
 // TestEvidenceHasNoUpdatePath pins P15: evidence is append-only, so the store
 // exposes no per-row mutation at all.
+//
+// It is an exact allowlist: any new exported method, whatever its name, fails
+// here and has to be argued for against P15.
 func TestEvidenceHasNoUpdatePath(t *testing.T) {
 	typ := reflect.TypeFor[*IncidentEvidenceStore]()
-	if typ.NumMethod() == 0 {
-		t.Fatal("IncidentEvidenceStore has no methods; the reflection probe is looking at the wrong type")
-	}
+	got := make([]string, 0, typ.NumMethod())
 	for i := range typ.NumMethod() {
-		name := typ.Method(i).Name
-		for _, verb := range []string{"Update", "Delete", "Set", "Remove", "Modify", "Upsert", "Replace", "Patch", "Edit"} {
-			if strings.HasPrefix(name, verb) {
-				t.Errorf("IncidentEvidenceStore.%s is a mutation path; evidence is append-only (P15)", name)
-			}
-		}
+		got = append(got, typ.Method(i).Name) // exported methods only, sorted by name
+	}
+	want := []string{"DistinctScopes", "InsertBatch", "ListAllByIncident", "ListByIncident", "ListBySourceUID"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("IncidentEvidenceStore exported methods = %v; want exactly %v (evidence is append-only, P15)", got, want)
 	}
 }
 
-func TestValidateGranteeID(t *testing.T) {
-	for _, ok := range []string{"u", "oidc:abc|user@example.com", strings.Repeat("a", 256), "ldap:Zoë"} {
-		if err := ValidateGranteeID(ok); err != nil {
-			t.Errorf("ValidateGranteeID(%q) = %v; want nil", ok, err)
+func TestValidateEvidenceRow_SecretDerivedAgreement(t *testing.T) {
+	r := snapshotRow("k", 64)
+	r.SecretDerived = true
+	r.Redaction = json.RawMessage(`{"secretDerived":true,"rules":["secret-values"]}`)
+	if err := ValidateEvidenceRow(r); err != nil {
+		t.Errorf("agreeing secret-derived row rejected: %v", err)
+	}
+	// The column may be stricter than the redaction metadata.
+	r.Redaction = json.RawMessage(`{"secretDerived":false}`)
+	if err := ValidateEvidenceRow(r); err != nil {
+		t.Errorf("secret_derived=true with secretDerived=false metadata rejected: %v", err)
+	}
+	r.SecretDerived = false
+	for _, ok := range []string{`{}`, `{"secretDerived":false}`, `{"secretDerived":null}`, `{"applied":true}`} {
+		r.Redaction = json.RawMessage(ok)
+		if err := ValidateEvidenceRow(r); err != nil {
+			t.Errorf("redaction %s with secret_derived=false rejected: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", strings.Repeat("a", 257), "a\nb", "a\x00b", "a\tb", "\x7f", "a\u0085b", "\xff"} {
-		if err := ValidateGranteeID(bad); !errors.Is(err, ErrIncidentInvalid) {
-			t.Errorf("ValidateGranteeID(%q) = %v; want ErrIncidentInvalid", bad, err)
-		}
+	r.Redaction = json.RawMessage(`{"secretDerived":"yes"}`)
+	if err := ValidateEvidenceRow(r); !errors.Is(err, ErrIncidentInvalid) {
+		t.Errorf("non-boolean secretDerived = %v; want ErrIncidentInvalid", err)
 	}
 }
 
-func TestGrantStore_RejectsBeforeSQL(t *testing.T) {
-	s := NewIncidentGrantStore(nil)
-	ctx := t.Context()
-	id := uuid.New()
-	if err := s.AddGrant(ctx, id, "", "g", true); !errors.Is(err, ErrIncidentInvalid) {
-		t.Errorf("AddGrant empty owner = %v", err)
+func TestValidateEvidenceJSON_Escapes(t *testing.T) {
+	accept := map[string]string{
+		"escaped backslash then u0000 text": `{"a":"\\u0000"}`,
+		"surrogate pair":                    `{"a":"\ud83d\ude00"}`,
+		"surrogate pair upper hex":          `{"a":"\uD83D\uDE00"}`,
+		"ordinary escapes":                  `{"a":"\n\t\"\/\u00e9\u0001"}`,
+		"key with escape":                   `{"\u00e9":1}`,
+		"raw astral UTF-8":                  `{"a":"😀"}`,
+		"many backslashes":                  `{"a":"\\\\\\u0000"}`,
 	}
-	if err := s.AddGrant(ctx, id, "o", "bad\nid", true); !errors.Is(err, ErrIncidentInvalid) {
-		t.Errorf("AddGrant bad grantee = %v", err)
+	for name, raw := range accept {
+		if err := validateEvidenceJSON("payload", json.RawMessage(raw)); err != nil {
+			t.Errorf("%s (%s): rejected: %v", name, raw, err)
+		}
 	}
-	if err := s.RemoveGrant(ctx, id, "", "g"); !errors.Is(err, ErrIncidentInvalid) {
-		t.Errorf("RemoveGrant empty owner = %v", err)
+	reject := map[string]string{
+		"NUL escape":                     `{"a":"\u0000"}`,
+		"NUL escape after escaped quote": `{"a":"\"\u0000"}`,
+		"NUL escape after 3 backslashes": `{"a":"\\\u0000"}`,
+		"NUL escape in key":              `{"\u0000":1}`,
+		"lone high surrogate":            `{"a":"\ud800"}`,
+		"lone high surrogate then text":  `{"a":"\ud800x"}`,
+		"high then non-low escape":       `{"a":"\ud800\u0041"}`,
+		"high then high":                 `{"a":"\ud800\ud800"}`,
+		"lone low surrogate":             `{"a":"\udc00"}`,
+		"reversed pair":                  `{"a":"\ude00\ud83d"}`,
+		"high then escaped newline":      `{"a":"\ud83d\n"}`,
 	}
-	if err := s.RemoveGrant(ctx, id, "o", ""); !errors.Is(err, ErrIncidentInvalid) {
-		t.Errorf("RemoveGrant empty grantee = %v", err)
-	}
-	if _, err := s.GetGrant(ctx, id, ""); !errors.Is(err, ErrIncidentInvalid) {
-		t.Errorf("GetGrant empty user = %v", err)
+	for name, raw := range reject {
+		if err := validateEvidenceJSON("payload", json.RawMessage(raw)); !errors.Is(err, ErrIncidentInvalid) {
+			t.Errorf("%s (%s): = %v; want ErrIncidentInvalid", name, raw, err)
+		}
 	}
 }
 
@@ -694,27 +725,32 @@ func TestCancellationLeavesNoPartialBatch(t *testing.T) {
 	}
 }
 
-// evidenceLockRendezvous holds the first capture's incident read open until
-// the second capture's read completes, or 750ms pass. With FOR UPDATE the
+// incidentLockRendezvous holds the first writer's incident read open until
+// the second writer's read completes, or 750ms pass. With FOR UPDATE the
 // second read blocks on the row lock, so the first proceeds after the timeout
-// and the two captures serialize. Without the lock both read the same totals
-// and race. It keys on the SELECT text (not the FOR UPDATE clause), so it
-// still synchronizes when the lock clause is removed.
-type evidenceLockRendezvous struct {
+// and the two writers serialize. Without the lock both read the same state
+// and race. It keys on match, a fragment of the SELECT text that excludes
+// the FOR UPDATE clause, so it still synchronizes when the lock is removed.
+type incidentLockRendezvous struct {
+	match  string
 	mu     sync.Mutex
 	reads  int
 	second chan struct{}
 }
 
-type evidenceSQLKey struct{}
-
-func (r *evidenceLockRendezvous) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
-	return context.WithValue(ctx, evidenceSQLKey{}, d.SQL)
+func newIncidentLockRendezvous(match string) *incidentLockRendezvous {
+	return &incidentLockRendezvous{match: match, second: make(chan struct{})}
 }
 
-func (r *evidenceLockRendezvous) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryEndData) {
-	sql, _ := ctx.Value(evidenceSQLKey{}).(string)
-	if d.Err != nil || !strings.Contains(sql, "evidence_bytes, evidence_count, scope_count") {
+type rendezvousSQLKey struct{}
+
+func (r *incidentLockRendezvous) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, rendezvousSQLKey{}, d.SQL)
+}
+
+func (r *incidentLockRendezvous) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryEndData) {
+	sql, _ := ctx.Value(rendezvousSQLKey{}).(string)
+	if d.Err != nil || !strings.Contains(sql, r.match) {
 		return
 	}
 	r.mu.Lock()
@@ -739,7 +775,7 @@ func TestConcurrentInsertBatchNeverExceedsCeiling(t *testing.T) {
 	incident := mustCreateIncident(t, is, newIncident(owner, "race"))
 	limits := EvidenceLimits{MaxItemBytes: 100, MaxIncidentBytes: 150, MaxItems: 50, MaxScopes: 5}
 
-	rv := &evidenceLockRendezvous{second: make(chan struct{})}
+	rv := newIncidentLockRendezvous("evidence_bytes, evidence_count, scope_count")
 	raced := NewIncidentEvidenceStore(testDBWithOptions(t, 4, func(c *pgxpool.Config) { c.ConnConfig.Tracer = rv }))
 
 	var (
@@ -777,6 +813,152 @@ func TestConcurrentInsertBatchNeverExceedsCeiling(t *testing.T) {
 		t.Fatalf("wins=%d limited=%d; want exactly one of each", wins, limited)
 	}
 	requireConsistent(t, readEvidenceTotals(t, setup, incident), 100, 2, 1)
+}
+
+// TestInsertBatchErrorPrecedence pins the documented order, which U23b maps to
+// distinct statuses: pre-SQL validation, then (under the lock) not found, not
+// owner, closed, then (after the insert) items, incident bytes, scopes. Each
+// case violates two adjacent rules at once.
+func TestInsertBatchErrorPrecedence(t *testing.T) {
+	is, es, pool := newEvidenceStores(t)
+	owner := testOwnerID(t)
+	intruder := owner + "-intruder"
+	open := mustCreateIncident(t, is, newIncident(owner, "open"))
+	closed := mustCreateIncident(t, is, newIncident(owner, "closed"))
+	if err := is.Update(t.Context(), closed, owner, "closed", "", IncidentStatusClosed); err != nil {
+		t.Fatal(err)
+	}
+	small := EvidenceLimits{MaxItemBytes: 50, MaxIncidentBytes: 30, MaxItems: 1, MaxScopes: 1}
+	twoScopes := func() []IncidentEvidenceRow {
+		a, b := snapshotRow("p-a", 20), snapshotRow("p-b", 20)
+		b.Namespace = "elsewhere"
+		return []IncidentEvidenceRow{a, b}
+	}
+	invalid := snapshotRow("p-x", 10)
+	invalid.Mode = "copy"
+
+	cases := []struct {
+		name     string
+		incident uuid.UUID
+		actor    string
+		rows     []IncidentEvidenceRow
+		limits   EvidenceLimits
+		check    func(error) bool
+	}{
+		{"invalid row beats missing incident", uuid.New(), owner, []IncidentEvidenceRow{invalid}, small,
+			func(err error) bool { return errors.Is(err, ErrIncidentInvalid) }},
+		{"item size beats not owner", open, intruder, []IncidentEvidenceRow{snapshotRow("p-big", 51)}, small,
+			func(err error) bool { return isLimit(err, EvidenceLimitItemBytes) }},
+		{"not owner beats closed", closed, intruder, []IncidentEvidenceRow{snapshotRow("p-1", 10)}, small,
+			func(err error) bool { return errors.Is(err, ErrNotOwner) }},
+		{"closed beats item count", closed, owner, twoScopes(), small,
+			func(err error) bool { return errors.Is(err, ErrIncidentClosed) }},
+		{"item count beats incident bytes", open, owner, twoScopes(), small,
+			func(err error) bool { return isLimit(err, EvidenceLimitItems) }},
+		{"incident bytes beats scopes", open, owner, twoScopes(),
+			EvidenceLimits{MaxItemBytes: 50, MaxIncidentBytes: 30, MaxItems: 10, MaxScopes: 1},
+			func(err error) bool { return isLimit(err, EvidenceLimitIncidentBytes) }},
+	}
+	for _, c := range cases {
+		_, err := es.InsertBatch(t.Context(), c.incident, c.actor, c.rows, c.limits)
+		if !c.check(err) {
+			t.Errorf("%s: got %v", c.name, err)
+		}
+	}
+	requireConsistent(t, readEvidenceTotals(t, pool, open), 0, 0, 0)
+	requireConsistent(t, readEvidenceTotals(t, pool, closed), 0, 0, 0)
+}
+
+func isLimit(err error, limit string) bool {
+	var le *EvidenceLimitError
+	return errors.As(err, &le) && le.Limit == limit
+}
+
+// TestInsertBatchLoweredLimits: a scope limit lowered below an incident's
+// current scope count still admits evidence in scopes it already has and
+// rejects only growth of the scope set. Item and byte limits are cumulative
+// totals, so a lowered one blocks any growth.
+func TestInsertBatchLoweredLimits(t *testing.T) {
+	is, es, pool := newEvidenceStores(t)
+	owner := testOwnerID(t)
+	incident := mustCreateIncident(t, is, newIncident(owner, "lowered"))
+	seed := make([]IncidentEvidenceRow, 0, 3)
+	for i := range 3 {
+		r := snapshotRow("seed-"+strconv.Itoa(i), 10)
+		r.Namespace = "ns-" + strconv.Itoa(i)
+		seed = append(seed, r)
+	}
+	mustInsert(t, es, incident, owner, ceilingLimits, seed...)
+	requireConsistent(t, readEvidenceTotals(t, pool, incident), 30, 3, 3)
+
+	lowered := ceilingLimits
+	lowered.MaxScopes = 2
+	existing := snapshotRow("existing-scope", 10)
+	existing.Namespace = "ns-1"
+	if n, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{existing}, lowered); err != nil || n != 1 {
+		t.Fatalf("row in an existing scope under a lowered scope limit = (%d, %v); want (1, nil)", n, err)
+	}
+	requireConsistent(t, readEvidenceTotals(t, pool, incident), 40, 4, 3)
+	fresh := snapshotRow("new-scope", 10)
+	fresh.Namespace = "ns-9"
+	_, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{fresh}, lowered)
+	var se *ScopeLimitError
+	if !errors.As(err, &se) || *se != (ScopeLimitError{Max: 2, Current: 3, Attempted: 4}) {
+		t.Fatalf("row in a new scope = %v; want ScopeLimitError{2, 3, 4}", err)
+	}
+	requireConsistent(t, readEvidenceTotals(t, pool, incident), 40, 4, 3)
+
+	loweredItems := ceilingLimits
+	loweredItems.MaxItems = 2
+	if _, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{snapshotRow("more", 10)}, loweredItems); !isLimit(err, EvidenceLimitItems) {
+		t.Errorf("growth under a lowered item limit = %v; want an items limit error", err)
+	}
+	// A fully deduplicated batch is still a no-op under a lowered limit.
+	if n, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{existing}, loweredItems); err != nil || n != 0 {
+		t.Errorf("deduplicated batch under a lowered item limit = (%d, %v); want (0, nil)", n, err)
+	}
+}
+
+// holdIncidentLock takes the incident row lock in a transaction on its own
+// pool and returns a release func; release also runs at cleanup.
+func holdIncidentLock(t *testing.T, incident uuid.UUID) func() {
+	t.Helper()
+	holder := testDB(t)
+	tx, err := holder.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `SELECT 1 FROM incidents WHERE id = $1 FOR UPDATE`, incident); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { _ = tx.Rollback(context.WithoutCancel(t.Context())) }) }
+	t.Cleanup(release)
+	return release
+}
+
+func TestInsertBatchLockTimeoutIsBusy(t *testing.T) {
+	is, es, pool := newEvidenceStores(t)
+	owner := testOwnerID(t)
+	incident := mustCreateIncident(t, is, newIncident(owner, "busy"))
+	if es.lockTimeout != incidentLockTimeout {
+		t.Fatalf("default lock timeout = %s; want incidentLockTimeout", es.lockTimeout)
+	}
+	es.lockTimeout = 200 * time.Millisecond
+	release := holdIncidentLock(t, incident)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := es.InsertBatch(ctx, incident, owner, []IncidentEvidenceRow{snapshotRow("a", 10)}, ceilingLimits)
+	if !errors.Is(err, ErrIncidentBusy) {
+		t.Fatalf("capture behind a held lock = %v after %s; want ErrIncidentBusy", err, time.Since(start))
+	}
+	release()
+	requireConsistent(t, readEvidenceTotals(t, pool, incident), 0, 0, 0)
+	if n := mustInsert(t, es, incident, owner, ceilingLimits, snapshotRow("a", 10)); n != 1 {
+		t.Errorf("capture after release inserted %d; want 1", n)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -862,124 +1044,5 @@ func TestDistinctScopesAreDeduplicatedAndSorted(t *testing.T) {
 	}
 	if empty, err := es.DistinctScopes(t.Context(), uuid.New()); err != nil || len(empty) != 0 {
 		t.Errorf("DistinctScopes of an unknown incident = (%v, %v); want empty", empty, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// DB-backed: grants
-// ---------------------------------------------------------------------------
-
-func newGrantStores(t *testing.T) (*IncidentStore, *IncidentGrantStore, *pgxpool.Pool) {
-	t.Helper()
-	pool := testDB(t)
-	return NewIncidentStore(pool), NewIncidentGrantStore(pool), pool
-}
-
-func TestGrantAddRemoveByNonOwnerFails(t *testing.T) {
-	is, gs, pool := newGrantStores(t)
-	owner := testOwnerID(t)
-	intruder := owner + "-intruder"
-	incident := mustCreateIncident(t, is, newIncident(owner, "grants"))
-	if err := gs.AddGrant(t.Context(), incident, owner, owner+"-g", true); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := gs.AddGrant(t.Context(), incident, intruder, intruder, true); !errors.Is(err, ErrNotOwner) {
-		t.Errorf("intruder self-grant = %v; want ErrNotOwner (never a silent no-op)", err)
-	}
-	if err := gs.AddGrant(t.Context(), incident, intruder, owner+"-x", true); !errors.Is(err, ErrNotOwner) {
-		t.Errorf("intruder grant = %v; want ErrNotOwner", err)
-	}
-	if err := gs.RemoveGrant(t.Context(), incident, intruder, owner+"-g"); !errors.Is(err, ErrNotOwner) {
-		t.Errorf("intruder remove = %v; want ErrNotOwner", err)
-	}
-	// A collaborator is not an owner either.
-	if err := gs.AddGrant(t.Context(), incident, owner+"-g", owner+"-y", true); !errors.Is(err, ErrNotOwner) {
-		t.Errorf("collaborator grant = %v; want ErrNotOwner", err)
-	}
-	if err := gs.AddGrant(t.Context(), uuid.New(), owner, owner+"-g", true); !errors.Is(err, ErrIncidentNotFound) {
-		t.Errorf("grant on missing incident = %v; want ErrIncidentNotFound", err)
-	}
-	if err := gs.RemoveGrant(t.Context(), uuid.New(), owner, owner+"-g"); !errors.Is(err, ErrIncidentNotFound) {
-		t.Errorf("remove on missing incident = %v; want ErrIncidentNotFound", err)
-	}
-	if n := countRows(t, pool, `SELECT COUNT(*) FROM incident_grants WHERE incident_id = $1`, incident); n != 1 {
-		t.Errorf("%d grants; want only the owner's one", n)
-	}
-}
-
-func TestGrantSelfGrantUpsertAndImmediateRemoval(t *testing.T) {
-	is, gs, pool := newGrantStores(t)
-	owner := testOwnerID(t)
-	grantee := owner + "-g"
-	incident := mustCreateIncident(t, is, newIncident(owner, "lifecycle"))
-
-	if err := gs.AddGrant(t.Context(), incident, owner, owner, true); err != nil {
-		t.Errorf("owner self-grant = %v; want nil", err)
-	}
-	if n := countRows(t, pool, `SELECT COUNT(*) FROM incident_grants WHERE incident_id = $1`, incident); n != 0 {
-		t.Errorf("self-grant wrote %d rows; want 0", n)
-	}
-	if g, err := gs.GetGrant(t.Context(), incident, grantee); g != nil || err != nil {
-		t.Errorf("GetGrant before any grant = (%+v, %v); want (nil, nil)", g, err)
-	}
-
-	if err := gs.AddGrant(t.Context(), incident, owner, grantee, false); err != nil {
-		t.Fatal(err)
-	}
-	g, err := gs.GetGrant(t.Context(), incident, grantee)
-	if err != nil || g == nil || g.CanAnnotate || g.GrantedBy != owner || g.IncidentID != incident || g.GranteeID != grantee {
-		t.Fatalf("GetGrant = (%+v, %v); want a read-only grant by the owner", g, err)
-	}
-	if err := gs.AddGrant(t.Context(), incident, owner, grantee, true); err != nil {
-		t.Fatal(err)
-	}
-	if g, _ := gs.GetGrant(t.Context(), incident, grantee); g == nil || !g.CanAnnotate {
-		t.Errorf("re-grant did not raise can_annotate: %+v", g)
-	}
-	list, err := gs.ListGrants(t.Context(), incident)
-	if err != nil || len(list) != 1 || list[0].GranteeID != grantee {
-		t.Errorf("ListGrants = (%+v, %v); want the one grantee", list, err)
-	}
-
-	if err := gs.RemoveGrant(t.Context(), incident, owner, grantee); err != nil {
-		t.Fatal(err)
-	}
-	if g, err := gs.GetGrant(t.Context(), incident, grantee); g != nil || err != nil {
-		t.Errorf("GetGrant right after removal = (%+v, %v); want (nil, nil)", g, err)
-	}
-	if err := gs.RemoveGrant(t.Context(), incident, owner, grantee); !errors.Is(err, ErrGrantNotFound) {
-		t.Errorf("second removal = %v; want ErrGrantNotFound", err)
-	}
-}
-
-func TestGrantCapAndCascade(t *testing.T) {
-	is, gs, pool := newGrantStores(t)
-	owner := testOwnerID(t)
-	incident := mustCreateIncident(t, is, newIncident(owner, "cap"))
-	for i := range IncidentMaxGrants {
-		if err := gs.AddGrant(t.Context(), incident, owner, owner+"-g"+strconv.Itoa(i), true); err != nil {
-			t.Fatalf("grant %d: %v", i, err)
-		}
-	}
-	if err := gs.AddGrant(t.Context(), incident, owner, owner+"-one-too-many", true); !errors.Is(err, ErrGrantLimit) {
-		t.Errorf("grant past the cap = %v; want ErrGrantLimit", err)
-	}
-	// Updating an existing grantee at the cap is not a new grant.
-	if err := gs.AddGrant(t.Context(), incident, owner, owner+"-g0", false); err != nil {
-		t.Errorf("re-grant at the cap = %v; want nil", err)
-	}
-	if n := countRows(t, pool, `SELECT COUNT(*) FROM incident_grants WHERE incident_id = $1`, incident); n != IncidentMaxGrants {
-		t.Errorf("%d grants; want %d", n, IncidentMaxGrants)
-	}
-
-	if err := is.Delete(t.Context(), incident, owner); err != nil {
-		t.Fatal(err)
-	}
-	if n := countRows(t, pool, `SELECT COUNT(*) FROM incident_grants WHERE incident_id = $1`, incident); n != 0 {
-		t.Errorf("%d grants survived the incident delete; want 0", n)
-	}
-	if list, err := gs.ListGrants(t.Context(), incident); err != nil || len(list) != 0 {
-		t.Errorf("ListGrants after delete = (%v, %v)", list, err)
 	}
 }

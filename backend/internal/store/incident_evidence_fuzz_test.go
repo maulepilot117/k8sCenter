@@ -2,14 +2,134 @@ package store
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
+
+// FuzzValidateEvidenceJSON fuzzes the payload/redaction JSON gate, which runs
+// over collector output derived from cluster data before it reaches jsonb.
+//
+//   - Oracle A: validateEvidenceJSON never panics (its escape scanner indexes
+//     raw bytes on the strength of json.Valid).
+//   - Oracle B: every rejection is ErrIncidentInvalid; an accepted non-empty
+//     input is valid UTF-8 JSON.
+//   - Oracle C (differential): acceptance agrees with an independent
+//     reference that tokenizes escapes with a regexp and applies jsonb's rules
+//     (no \u0000; every surrogate escape is a high one immediately followed
+//     by a low one).
+//   - Oracle D: an accepted input decodes to values whose strings and keys
+//     contain no U+0000.
+func FuzzValidateEvidenceJSON(f *testing.F) {
+	for _, s := range []string{
+		`{}`, `[]`, `"x"`, `null`, `{"a":1}`,
+		`{"a":"\u0000"}`,               // NUL escape: rejected
+		`{"a":"\\u0000"}`,              // literal backslash text: accepted
+		`{"a":"\\\u0000"}`,             // escaped backslash, then a NUL escape
+		`{"a":"\ud800"}`,               // lone high surrogate
+		`{"a":"\udc00"}`,               // lone low surrogate
+		`{"a":"\ud83d\ude00"}`,         // valid pair
+		`{"a":"\uD83D\uDE00"}`,         // valid pair, upper hex
+		`{"a":"\ud800\u0041"}`,         // high followed by a non-surrogate escape
+		`{"a":"\ude00\ud83d"}`,         // reversed pair
+		`{"a":"\ud83d\n"}`,             // high followed by a short escape
+		`{"\u0000":1}`,                 // NUL escape in a key
+		"{\"a\":\"\xff\"}",             // invalid UTF-8
+		`{"a":`,                        // truncated
+		`{"a":"\u00`,                   // truncated escape
+		`["\ud83d\ude00\ud83d\ude00"]`, // two pairs
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		err := validateEvidenceJSON("payload", json.RawMessage(raw))
+		if err != nil {
+			if !errors.Is(err, ErrIncidentInvalid) {
+				t.Fatalf("validateEvidenceJSON(%q) = %v; want ErrIncidentInvalid", raw, err)
+			}
+		} else if len(raw) > 0 && (!utf8.Valid(raw) || !json.Valid(raw)) {
+			t.Fatalf("validateEvidenceJSON accepted %q, which is not valid UTF-8 JSON", raw)
+		}
+
+		if len(raw) == 0 || !utf8.Valid(raw) || !json.Valid(raw) {
+			return
+		}
+		if want := referenceJSONBEscapesOK(string(raw)); (err == nil) != want {
+			t.Fatalf("validateEvidenceJSON(%q) accepted=%v; reference says %v", raw, err == nil, want)
+		}
+		if err == nil {
+			var v any
+			if json.Unmarshal(raw, &v) == nil && containsNUL(v) {
+				t.Fatalf("validateEvidenceJSON accepted %q, which decodes to a NUL", raw)
+			}
+		}
+	})
+}
+
+// fuzzJSONEscape matches one JSON string escape. Leftmost, non-overlapping
+// matching consumes "\\" as a unit, so it tokenizes escapes the way a JSON
+// decoder does.
+var fuzzJSONEscape = regexp.MustCompile(`\\(?:u[0-9A-Fa-f]{4}|.)`)
+
+// referenceJSONBEscapesOK reports whether jsonb would accept the escapes of
+// valid JSON s.
+func referenceJSONBEscapesOK(s string) bool {
+	locs := fuzzJSONEscape.FindAllStringIndex(s, -1)
+	for i := 0; i < len(locs); i++ {
+		esc := s[locs[i][0]:locs[i][1]]
+		if len(esc) != 6 {
+			continue
+		}
+		v, _ := strconv.ParseUint(esc[2:], 16, 32)
+		switch {
+		case v == 0:
+			return false
+		case v >= 0xDC00 && v <= 0xDFFF:
+			return false
+		case v >= 0xD800 && v <= 0xDBFF:
+			if i+1 >= len(locs) || locs[i+1][0] != locs[i][1] {
+				return false
+			}
+			next := s[locs[i+1][0]:locs[i+1][1]]
+			if len(next) != 6 {
+				return false
+			}
+			lo, _ := strconv.ParseUint(next[2:], 16, 32)
+			if lo < 0xDC00 || lo > 0xDFFF {
+				return false
+			}
+			i++
+		}
+	}
+	return true
+}
+
+func containsNUL(v any) bool {
+	switch x := v.(type) {
+	case string:
+		return strings.ContainsRune(x, 0)
+	case []any:
+		for _, e := range x {
+			if containsNUL(e) {
+				return true
+			}
+		}
+	case map[string]any:
+		for k, e := range x {
+			if strings.ContainsRune(k, 0) || containsNUL(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // fuzzEvidenceCursorMaxDecodedBytes is re-derived here rather than read from
 // maxEvidenceCursorBytes, so the oracle notices the length guard being removed
