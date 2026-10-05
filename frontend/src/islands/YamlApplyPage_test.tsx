@@ -370,6 +370,8 @@ function confirmedOwnership() {
 }
 
 let sent: Sent[] = [];
+/** While true, a stubTracked `validate` reply answers /yaml/validate. */
+let failValidate = true;
 
 /** Like stubFetch, plus the /v1/changes probe, ownership and a chosen apply reply. */
 function stubTracked(
@@ -381,6 +383,8 @@ function stubTracked(
     apply?: Reply | "network";
     /** Overrides the validated documents. */
     documents?: unknown[];
+    /** Answers validate while `failValidate` is set. */
+    validate?: Reply;
   } = {},
 ) {
   sent = [];
@@ -430,6 +434,12 @@ function stubTracked(
         ok({ clusterId: "local", results: [] });
     } else if (url.startsWith("/api/v1/changes")) {
       reply = opts.changes ?? { body: { data: [], metadata: { total: 0 } } };
+    } else if (
+      url.startsWith("/api/v1/yaml/validate") &&
+      opts.validate &&
+      failValidate
+    ) {
+      reply = opts.validate;
     } else if (url.startsWith("/api/v1/yaml/validate")) {
       reply = ok({
         documents: opts.documents ?? [
@@ -684,7 +694,15 @@ test("an unconfirmed probe leaves tracking off but available, and says so", asyn
   );
 });
 
-test("a store failure that confirmed nothing applied says so, with no receipt link", async () => {
+const ATTEMPT_LINK = "This attempt may have changed the cluster";
+
+function attemptLink(root: HTMLElement): HTMLAnchorElement | undefined {
+  return [...root.querySelectorAll("a")].find((a) =>
+    a.textContent?.startsWith("change receipt"),
+  );
+}
+
+test("a store failure that applied nothing under a fresh id says so, with no receipt link", async () => {
   switchCluster(LOCAL_CLUSTER_ID, "local");
   stubTracked({
     apply: refused(503, "receipt_store_unavailable", {
@@ -695,8 +713,88 @@ test("a store failure that confirmed nothing applied says so, with no receipt li
   const root = await mount();
   await validateAndApply(root);
   const alert = root.querySelector('[role="alert"]')?.textContent ?? "";
-  expect(alert).toContain("The server confirmed nothing was applied.");
-  expect(root.textContent).not.toContain("If the server recorded this attempt");
+  expect(alert).toContain("Nothing was applied by this request.");
+  expect(alert).toContain("The next apply starts a new change.");
+  expect(root.textContent).not.toContain(ATTEMPT_LINK);
+});
+
+test("applied:false with retrySameOperationId still points at the receipt: an earlier send may have applied", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({
+    apply: refused(503, "receipt_store_unavailable", {
+      applied: false,
+      retrySameOperationId: true,
+    }),
+  });
+  const root = await mount();
+  await validateAndApply(root);
+  const alert = root.querySelector('[role="alert"]')?.textContent ?? "";
+  expect(alert).toContain("Nothing was applied by this request.");
+  expect(alert).toContain(
+    "An earlier attempt with this operation id may already have applied",
+  );
+  const sentId = applyUrl().searchParams.get("trackedOperationId");
+  expect(attemptLink(root)?.getAttribute("href")).toBe(`/changes/${sentId}`);
+});
+
+test("a definite refusal (pin mismatch 409) shows no attempt receipt link", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({
+    apply: refused(409, "cluster_pin_mismatch", {
+      pinnedClusterId: "local",
+      requestClusterId: "other",
+    }),
+  });
+  const root = await mount();
+  await validateAndApply(root);
+  expect(root.querySelector('[role="alert"]')?.textContent).toContain(
+    "Apply refused",
+  );
+  expect(root.textContent).not.toContain(ATTEMPT_LINK);
+  expect(attemptLink(root)).toBeUndefined();
+});
+
+for (const status of [400, 403, 413]) {
+  test(`a ${status} refusal shows no attempt receipt link`, async () => {
+    switchCluster(LOCAL_CLUSTER_ID, "local");
+    stubTracked({ apply: refused(status) });
+    const root = await mount();
+    await validateAndApply(root);
+    expect(root.querySelector('[role="alert"]')).not.toBeNull();
+    expect(attemptLink(root)).toBeUndefined();
+  });
+}
+
+test("a later failed validation clears the attempt receipt link", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({ apply: "network", validate: refused(500) });
+  const root = await mount();
+  // Validate succeeds the first time only.
+  await type(root, CM_YAML);
+  failValidate = false;
+  await click(button(root, "Validate"));
+  await click(button(root, "Apply"));
+  expect(attemptLink(root)).toBeDefined();
+
+  failValidate = true;
+  await click(button(root, "Validate"));
+  expect(root.querySelector('[role="alert"]')).not.toBeNull();
+  expect(attemptLink(root)).toBeUndefined();
+  expect(root.textContent).not.toContain(ATTEMPT_LINK);
+});
+
+test("a successful tracked apply then a failed validation shows no attempt link", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({ validate: refused(500) });
+  const root = await mount();
+  await type(root, CM_YAML);
+  failValidate = false;
+  await click(button(root, "Validate"));
+  await click(button(root, "Apply"));
+  failValidate = true;
+  await click(button(root, "Validate"));
+  expect(root.querySelector('[role="alert"]')).not.toBeNull();
+  expect(attemptLink(root)).toBeUndefined();
 });
 
 test("a store failure that did not confirm the outcome points at the attempt's receipt", async () => {
@@ -724,7 +822,7 @@ test("a dropped connection points at the attempt's receipt", async () => {
   const root = await mount();
   await validateAndApply(root);
   const sentId = applyUrl().searchParams.get("trackedOperationId");
-  expect(root.textContent).toContain("If the server recorded this attempt");
+  expect(root.textContent).toContain(ATTEMPT_LINK);
   const link = [...root.querySelectorAll("a")].find((a) =>
     a.textContent?.startsWith("change receipt"),
   );

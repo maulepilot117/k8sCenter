@@ -88,6 +88,7 @@ export default function YamlApplyPage() {
     handleValidate,
     handleApply,
     lastOperationId,
+    attemptOutcomeUnknown,
     trackedRefusal,
   } = useYamlApply(PLACEHOLDER_YAML, {
     forceConflicts,
@@ -221,16 +222,12 @@ export default function YamlApplyPage() {
         : [];
   const managedText = managedSummary(managedCount(ownership.value));
   const refusal = trackedRefusal.value;
-  // A tracked apply that failed without a definite refusal (network error,
-  // 5xx), or whose store failure did not confirm nothing was applied, may
-  // have a receipt: point at it rather than leave the operator guessing.
+  // Only a tracked apply whose failure may still have changed the cluster
+  // (the hook decides: an unknown outcome, or a store failure that does not
+  // rule it out) points at its receipt. Definite refusals do not, and a
+  // later Validate or Apply press clears it.
   const attemptReceiptId =
-    error.value &&
-    !results.value &&
-    lastOperationId.value &&
-    (!refusal ||
-      (refusal.reason === "receipt_store_unavailable" &&
-        refusal.applied !== false))
+    attemptOutcomeUnknown.value && !results.value
       ? lastOperationId.value
       : null;
   const availability = trackingAvailability.value;
@@ -297,8 +294,8 @@ export default function YamlApplyPage() {
 
       {attemptReceiptId && (
         <p class="m-0 text-sm text-text-secondary">
-          If the server recorded this attempt before the error, its receipt
-          shows what was applied:{" "}
+          This attempt may have changed the cluster. If the server recorded it,
+          its receipt shows what was applied:{" "}
           <a
             href={receiptHref(attemptReceiptId)}
             class="font-medium text-accent"

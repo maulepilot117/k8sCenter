@@ -95,17 +95,18 @@ export function managedSummary(count: number): string | null {
 export function trackedRefusalText(refusal: TrackedApplyRefusal): string {
   if (refusal.reason !== "receipt_store_unavailable") return refusal.message;
   if (refusal.applied === false) {
-    // retrySameOperationId: true when the record insert or a read failed (the
-    // next Apply reuses this operation id, so it cannot apply twice); false
-    // when marking failed or recording is not configured at all (the next
-    // Apply is a new change).
+    // applied:false speaks only for THIS request. retrySameOperationId is
+    // true when the record insert or a receipt read failed: the next Apply
+    // reuses this operation id, and an earlier send under it may already
+    // have applied. It is false when marking failed or recording is not
+    // configured at all: the next Apply is a new change.
     const next =
       refusal.retrySameOperationId === true
-        ? " Apply again to retry this same change; it will not be applied twice."
+        ? " An earlier attempt with this operation id may already have applied; check its change receipt. Apply again to retry this same change; it will not be applied twice."
         : refusal.retrySameOperationId === false
           ? " The next apply starts a new change. Try again shortly, or turn off change tracking to apply without a record."
           : " Try again shortly, or turn off change tracking to apply without a record.";
-    return `The change record could not be saved. The server confirmed nothing was applied.${next}`;
+    return `The change record could not be saved. Nothing was applied by this request.${next}`;
   }
   return "The change record could not be saved, and the server did not confirm whether anything was applied. Check the live objects before applying again.";
 }

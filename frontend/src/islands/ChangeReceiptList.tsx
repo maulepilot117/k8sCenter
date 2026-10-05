@@ -67,11 +67,25 @@ function listErrorText(err: unknown): string {
 }
 
 export default function ChangeReceiptList() {
+  /** The page being requested. */
   const page = useSignal(1);
-  /** The last page that loaded; kept while the next one loads. */
-  const shown = useSignal<ReceiptPage | null>(null);
+  /** Bumped to re-request the same page (a retry after an error). */
+  const reload = useSignal(0);
+  /**
+   * The last page that loaded, with the page number it is. Kept while the
+   * next one loads; the pager is always labelled from it, never from the
+   * requested page, so a failed load cannot relabel the old rows.
+   */
+  const shown = useSignal<{ data: ReceiptPage; page: number } | null>(null);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
+
+  // Navigation is relative to the page on screen. Asking for the page
+  // already requested (after it failed) retries it.
+  const goTo = (n: number) => {
+    if (n === page.peek()) reload.value++;
+    else page.value = n;
+  };
 
   useEffect(() => {
     document.title = "Recorded changes - k8sCenter";
@@ -80,14 +94,15 @@ export default function ChangeReceiptList() {
     };
   }, []);
 
-  const current = page.value;
+  const requested = page.value;
+  const attempt = reload.value;
   useEffect(() => {
     const controller = new AbortController();
     loading.value = true;
-    listReceipts({ page: current, pageSize: PAGE_SIZE }, controller.signal)
+    listReceipts({ page: requested, pageSize: PAGE_SIZE }, controller.signal)
       .then((res) => {
         if (controller.signal.aborted) return;
-        shown.value = res;
+        shown.value = { data: res, page: requested };
         error.value = null;
         loading.value = false;
       })
@@ -97,10 +112,12 @@ export default function ChangeReceiptList() {
         loading.value = false;
       });
     return () => controller.abort();
-  }, [current]);
+  }, [requested, attempt]);
 
-  const data = shown.value;
+  const data = shown.value?.data ?? null;
+  const current = shown.value?.page ?? requested;
   const busy = loading.value;
+  const failed = error.value !== null;
   const pages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
   return (
@@ -139,7 +156,7 @@ export default function ChangeReceiptList() {
         </p>
       )}
 
-      {data && data.items.length > 0 && (
+      {data && !failed && data.items.length > 0 && (
         <div
           aria-busy={busy}
           class="overflow-x-auto rounded-lg border border-border-subtle bg-surface"
@@ -209,19 +226,19 @@ export default function ChangeReceiptList() {
           <PagerButton
             label="Previous"
             inactive={busy || current <= 1}
-            onActivate={() => {
-              page.value = current - 1;
-            }}
+            onActivate={() => goTo(current - 1)}
           />
           <span role="status" class="text-text-muted">
-            {busy ? `Loading page ${current}…` : `Page ${current} of ${pages}`}
+            {busy
+              ? `Loading page ${requested}…`
+              : failed
+                ? `Could not load page ${requested} of ${pages}.`
+                : `Page ${current} of ${pages}`}
           </span>
           <PagerButton
             label="Next"
             inactive={busy || current >= pages}
-            onActivate={() => {
-              page.value = current + 1;
-            }}
+            onActivate={() => goTo(current + 1)}
           />
         </nav>
       )}

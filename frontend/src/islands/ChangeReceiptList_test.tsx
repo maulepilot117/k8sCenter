@@ -167,6 +167,65 @@ test("the pager and rows stay mounted, and focus stays put, while a page loads",
   expect(next.getAttribute("aria-disabled")).toBe("false");
 });
 
+test("a failed page load hides the old rows and never relabels them", async () => {
+  urls = [];
+  originalFetch = globalThis.fetch;
+  let failPage2 = true;
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("page=2") && failPage2) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ error: { code: 500, message: "boom" } }),
+          { status: 500, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+    const n = url.includes("page=2") ? 2 : 1;
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          data: [view(n)],
+          metadata: { total: 45, page: n, pageSize: 20 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  }) as typeof globalThis.fetch;
+
+  const root = await mount();
+  const next = () =>
+    [...root.querySelectorAll("button")].find(
+      (b) => b.textContent === "Next",
+    ) as HTMLButtonElement;
+  await act(async () => {
+    next().click();
+  });
+  await flush();
+
+  // Page 1's rows are not presented as page 2, nor shown beside the error.
+  expect(root.querySelector('[role="alert"]')?.textContent).toContain(
+    "Could not load your recorded changes.",
+  );
+  expect(root.querySelector("tbody")).toBeNull();
+  expect(root.textContent).toContain("Could not load page 2 of 3.");
+  expect(root.textContent).not.toContain("Page 2 of 3");
+
+  // Next retries the page that failed.
+  failPage2 = false;
+  await act(async () => {
+    next().click();
+  });
+  await flush();
+  expect(urls.filter((u) => u.includes("page=2"))).toHaveLength(2);
+  expect(root.querySelector('[role="alert"]')).toBeNull();
+  expect(root.textContent).toContain("Page 2 of 3");
+  expect(root.querySelector("tbody")?.textContent).toContain(
+    view(2).operationId.slice(0, 8),
+  );
+});
+
 test("pages forward through the list", async () => {
   stubFetch(200, {
     data: [view(1)],

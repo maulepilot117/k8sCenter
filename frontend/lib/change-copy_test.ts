@@ -503,14 +503,15 @@ test("managedSummary is null for none and grammatical for one or many", () => {
   expect(managedSummary(3)).toContain("their controllers may revert them");
 });
 
-test("a store failure only says nothing was applied when the server confirmed it", () => {
+test("a store failure only says nothing was applied by this request when the server said so", () => {
   const base = {
     reason: "receipt_store_unavailable" as const,
     message: "hook text",
   };
-  expect(trackedRefusalText({ ...base, applied: false })).toContain(
-    "The server confirmed nothing was applied.",
-  );
+  const notApplied = trackedRefusalText({ ...base, applied: false });
+  expect(notApplied).toContain("Nothing was applied by this request.");
+  // applied:false covers this request only; it never claims the operation.
+  expect(notApplied).not.toContain("confirmed nothing");
   for (const applied of [true, undefined]) {
     const text = trackedRefusalText({ ...base, applied });
     expect(text).not.toContain("nothing was applied");
@@ -529,6 +530,9 @@ test("a store failure only says nothing was applied when the server confirmed it
     retrySameOperationId: true,
   });
   expect(sameId).toContain("Apply again to retry this same change");
+  expect(sameId).toContain(
+    "An earlier attempt with this operation id may already have applied",
+  );
   expect(sameId).not.toContain("new change");
   expect(
     trackedRefusalText({ reason: "operation_id_reused", message: "verbatim" }),
