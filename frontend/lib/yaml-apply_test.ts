@@ -3,7 +3,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { signal } from "@preact/signals";
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
-import { setAccessToken } from "./api.ts";
+import { ApiError, setAccessToken } from "./api.ts";
 import type {
   ApplyTracking,
   TrackedApplyRefusalReason,
@@ -13,6 +13,7 @@ import {
   type ApplyResponse,
   buildApplyQuery,
   isIndeterminateApplyFailure,
+  PENDING_ATTEMPT_TTL_MS,
   trackedApplyRefusal,
   type UseYamlApplyOptions,
   type UseYamlApplyReturn,
@@ -77,7 +78,18 @@ afterEach(() => {
     container = null;
   }
   setAccessToken(null);
+  // Unknown-outcome ids persist in sessionStorage; never let one leak into the
+  // next test.
+  globalThis.sessionStorage.clear();
 });
+
+/** Unmounts the mounted hook, as a navigation or remount would. */
+function unmount() {
+  if (!container) return;
+  act(() => render(null, container as HTMLElement));
+  container.remove();
+  container = null;
+}
 
 /** Mounts the hook and returns what it returned on its first render. */
 function mount(
@@ -872,6 +884,293 @@ test("a pin refusal is still reported as a pin refusal on a tracked apply", asyn
   expect(hook.error.value).toContain("re-registered");
   expect(hook.trackedRefusal.value).toBeNull();
   expect(hook.pin.value).toBeNull();
+});
+
+test("a tracked apply still mints a v4 id where crypto.randomUUID is undefined", async () => {
+  // An HTTP-only deployment is not a secure context: randomUUID is missing.
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const c = globalThis.crypto as unknown as { randomUUID?: unknown };
+  c.randomUUID = undefined;
+  try {
+    const call = await run(hook.handleApply, 200, applied);
+    expect(operationIdOf(call)).toMatch(UUID_V4);
+    expect(hook.error.value).toBeNull();
+  } finally {
+    delete c.randomUUID;
+  }
+});
+
+test("a changed repairOf after an unknown outcome mints a new operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const repairOf = signal<string | null>(OTHER_OP);
+  const hook = mount("kind: ConfigMap", { tracked: signal(true), repairOf });
+
+  const first = await runDropped(hook.handleApply);
+  repairOf.value = OP;
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).not.toBe(operationIdOf(first));
+  expect(new URL(second.url, "http://x").searchParams.get("repairOf")).toBe(OP);
+});
+
+test("an unchanged repairOf after an unknown outcome reuses the operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", {
+    tracked: signal(true),
+    repairOf: signal<string | null>(OTHER_OP),
+  });
+
+  const first = await runDropped(hook.handleApply);
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).toBe(operationIdOf(first));
+});
+
+test("an unpinned retry on another cluster mints a new operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await runDropped(hook.handleApply);
+  expect(first.clusterHeader).toBe("cluster-a");
+  switchCluster("cluster-b", "gen-b");
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(second.clusterHeader).toBe("cluster-b");
+  expect(operationIdOf(second)).not.toBe(operationIdOf(first));
+});
+
+test("an unpinned retry on the same cluster reuses the operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await runDropped(hook.handleApply);
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(second.clusterHeader).toBe("cluster-a");
+  expect(operationIdOf(second)).toBe(operationIdOf(first));
+});
+
+test("a fresh preview after an unknown outcome mints a new operation id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", {
+    pinApplyToPreview: true,
+    tracked: signal(true),
+  });
+
+  await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
+  const first = await runDropped(hook.handleApply);
+  await run(hook.handleValidate, 200, preview("cluster-a", "gen-a-second"));
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).not.toBe(operationIdOf(first));
+});
+
+test("a 503 receipt_store_unavailable on a fresh id releases it", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await run(
+    hook.handleApply,
+    503,
+    refusal(503, "receipt_store_unavailable"),
+  );
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).not.toBe(operationIdOf(first));
+});
+
+test("a 503 receipt_store_unavailable on a reused id keeps it", async () => {
+  // The 503 may be the read step failing over an earlier attempt that did
+  // apply; minting a new id then could apply twice.
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await runDropped(hook.handleApply);
+  const second = await run(
+    hook.handleApply,
+    503,
+    refusal(503, "receipt_store_unavailable"),
+  );
+  const third = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).toBe(operationIdOf(first));
+  expect(operationIdOf(third)).toBe(operationIdOf(first));
+});
+
+test("other 5xx on a fresh id keep it", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+
+  const first = await run(hook.handleApply, 503, { error: { code: 503 } });
+  const second = await run(hook.handleApply, 200, applied);
+
+  expect(operationIdOf(second)).toBe(operationIdOf(first));
+});
+
+test("a remount after a dropped response continues the same attempt", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const dropped = await runDropped(first.handleApply);
+  unmount();
+
+  // A new hook instance, as after an Astro navigation or reload.
+  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const retry = await run(second.handleApply, 200, applied);
+
+  expect(operationIdOf(retry)).toBe(operationIdOf(dropped));
+});
+
+test("a remount does not reuse the id for different content", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const dropped = await runDropped(first.handleApply);
+  unmount();
+
+  const second = mount("kind: Secret", { tracked: signal(true) });
+  const next = await run(second.handleApply, 200, applied);
+
+  expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
+});
+
+test("a success clears the persisted id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const dropped = await runDropped(first.handleApply);
+  await run(first.handleApply, 200, applied);
+  unmount();
+
+  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const next = await run(second.handleApply, 200, applied);
+
+  expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
+});
+
+test("a definite refusal clears the persisted id", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const dropped = await runDropped(first.handleApply);
+  await run(first.handleApply, 422, { error: { code: 422, message: "bad" } });
+  unmount();
+
+  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const next = await run(second.handleApply, 200, applied);
+
+  expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
+});
+
+test("an unpinned untracked apply supersedes a persisted tracked attempt", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const tracked = signal(true);
+  const first = mount("kind: ConfigMap", { tracked });
+  const dropped = await runDropped(first.handleApply);
+  tracked.value = false;
+  await run(first.handleApply, 200, applied);
+  unmount();
+
+  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const next = await run(second.handleApply, 200, applied);
+
+  expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
+});
+
+test("a persisted id expires after the reuse window", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const realNow = Date.now;
+  try {
+    const first = mount("kind: ConfigMap", { tracked: signal(true) });
+    const dropped = await runDropped(first.handleApply);
+    unmount();
+
+    Date.now = () => realNow() + PENDING_ATTEMPT_TTL_MS + 1;
+    const second = mount("kind: ConfigMap", { tracked: signal(true) });
+    const next = await run(second.handleApply, 200, applied);
+
+    expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("a corrupt persisted entry is ignored", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const dropped = await runDropped(first.handleApply);
+  unmount();
+  for (let i = 0; i < globalThis.sessionStorage.length; i++) {
+    const key = globalThis.sessionStorage.key(i);
+    if (key) globalThis.sessionStorage.setItem(key, "{not json");
+  }
+
+  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const next = await run(second.handleApply, 200, applied);
+
+  expect(operationIdOf(next)).toMatch(UUID_V4);
+  expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
+});
+
+test("unavailable storage falls back to the in-memory attempt", async () => {
+  switchCluster("cluster-a", "gen-a");
+  stubFetch();
+  // Blocked site data: merely reading `sessionStorage` throws.
+  const real = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    get() {
+      throw new DOMException("storage blocked", "SecurityError");
+    },
+  });
+  try {
+    // Guard the stub itself: it must really make storage throw.
+    expect(() => globalThis.sessionStorage).toThrow("storage blocked");
+    const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+    const first = await runDropped(hook.handleApply);
+    const retry = await run(hook.handleApply, 200, applied);
+    expect(operationIdOf(first)).toMatch(UUID_V4);
+    expect(operationIdOf(retry)).toBe(operationIdOf(first));
+    expect(hook.error.value).toBeNull();
+  } finally {
+    if (real) Object.defineProperty(globalThis, "sessionStorage", real);
+  }
+});
+
+test("isIndeterminateApplyFailure keeps the id for 5xx and in-flight only", () => {
+  const api = (status: number, reason?: string) =>
+    new ApiError(status, status, "x", { error: { reason } });
+
+  for (const status of [500, 502, 503, 504]) {
+    expect(isIndeterminateApplyFailure(api(status))).toBe(true);
+  }
+  expect(isIndeterminateApplyFailure(api(409, "operation_in_flight"))).toBe(
+    true,
+  );
+  for (const reason of [
+    "operation_id_reused",
+    "operation_id_conflict",
+    "cluster_pin_mismatch",
+    undefined,
+  ]) {
+    expect(isIndeterminateApplyFailure(api(409, reason))).toBe(false);
+  }
+  for (const status of [400, 401, 403, 404, 422, 429]) {
+    expect(isIndeterminateApplyFailure(api(status))).toBe(false);
+  }
 });
 
 test("the refusal and retry helpers ignore errors that are not tracked refusals", () => {

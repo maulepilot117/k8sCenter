@@ -39,13 +39,19 @@ import {
   selectedClusterGeneration,
   UNKNOWN_GENERATION,
 } from "./cluster.ts";
+import { uuidv4 } from "./uuid.ts";
 
 export interface ApplyResult {
   index: number;
   kind: string;
   name: string;
   namespace?: string;
-  /** "created" | "configured" | "unchanged" | "failed" */
+  /**
+   * "created" | "configured" | "unchanged" | "failed". Kept a bare string:
+   * narrowing it to `ApplyAction` (the union receipt views use) breaks
+   * existing code that builds an ApplyResult from a string, such as
+   * `secretstore-template-nav_test.ts`. Narrow it when those writers do.
+   */
   action: string;
   error?: string;
 }
@@ -118,12 +124,20 @@ export interface UseYamlApplyOptions {
   /**
    * Opt in to a tracked apply. While `true`, `handleApply` sends
    * `?trackedOperationId=<uuid>` and the server records a change receipt.
-   * Each user-initiated apply mints a fresh id via `crypto.randomUUID()`;
-   * a retry of the SAME attempt (the request was cut off, or the server
-   * answered 5xx, and the operator presses Apply again with unchanged content
-   * and options) reuses the stored id so the server can replay the outcome
-   * instead of applying twice. Absent or `false` leaves the request exactly
-   * as it was before tracking existed.
+   * Each user-initiated apply mints a fresh UUIDv4 via `uuidv4()` (which
+   * works on an HTTP-only deployment, where `crypto.randomUUID` does not
+   * exist); a retry of the SAME attempt (the request was cut off, or the
+   * server answered 5xx, and the operator presses Apply again with unchanged
+   * content, force, pin, repairOf and target cluster) reuses the stored id so
+   * the server can replay the outcome instead of applying twice. Absent or
+   * `false` leaves the request exactly as it was before tracking existed.
+   *
+   * An unknown-outcome id is also kept in sessionStorage, keyed by a hash of
+   * the request, so a remount, reload or page navigation in the same tab
+   * continues the attempt. It stays reusable for `PENDING_ATTEMPT_TTL_MS`
+   * and is cleared on success or a definite refusal. Where storage is
+   * unavailable only the in-memory copy exists, and a remount forgets it:
+   * check the receipt list before applying again after such an interruption.
    */
   tracked?: Signal<boolean>;
   /**
@@ -294,6 +308,98 @@ function pinRefusalMessage(err: unknown): string | null {
 }
 
 /**
+ * An apply whose outcome is unknown, and the request its id was minted for.
+ * `at` is when the id was first sent, so the window it may be reused in is
+ * bounded.
+ */
+interface PendingAttempt {
+  id: string;
+  requestKey: string;
+  at: number;
+}
+
+/**
+ * How long an unknown-outcome id stays reusable. It matches the backend's
+ * orphan-reconciliation grace: past it a receipt left open has been settled,
+ * and re-applying the same content is a deliberate new change, not a retry.
+ */
+export const PENDING_ATTEMPT_TTL_MS = 10 * 60 * 1000;
+
+const PENDING_STORAGE_PREFIX = "kubecenter:pending-apply:";
+
+/** 53-bit string hash (cyrb53): a short, stable storage key for a request. */
+function hashRequestKey(s: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 =
+    Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
+    Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 =
+    Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
+    Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const hash = 4294967296 * (2097151 & h2) + (h1 >>> 0);
+  return `${hash.toString(36)}:${s.length}`;
+}
+
+/**
+ * The unknown-outcome id stored for this request, if one is still within its
+ * window. Every storage access is guarded: with storage unavailable (private
+ * window, blocked site data, SSR) the hook keeps its in-memory behaviour.
+ */
+function readStoredAttempt(
+  requestKey: string,
+  now: number,
+): PendingAttempt | null {
+  const storageKey = PENDING_STORAGE_PREFIX + hashRequestKey(requestKey);
+  try {
+    const raw = globalThis.sessionStorage.getItem(storageKey);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      typeof (parsed as { id?: unknown }).id === "string" &&
+      typeof (parsed as { at?: unknown }).at === "number"
+    ) {
+      const { id, at } = parsed as { id: string; at: number };
+      if (id !== "" && now - at >= 0 && now - at < PENDING_ATTEMPT_TTL_MS) {
+        return { id, requestKey, at };
+      }
+    }
+    globalThis.sessionStorage.removeItem(storageKey);
+  } catch {
+    // Storage unavailable or corrupt: fall back to memory only.
+  }
+  return null;
+}
+
+function writeStoredAttempt(a: PendingAttempt): void {
+  try {
+    globalThis.sessionStorage.setItem(
+      PENDING_STORAGE_PREFIX + hashRequestKey(a.requestKey),
+      JSON.stringify({ id: a.id, at: a.at }),
+    );
+  } catch {
+    // Storage unavailable: the in-memory attempt still covers this mount.
+  }
+}
+
+function clearStoredAttempt(requestKey: string): void {
+  try {
+    globalThis.sessionStorage.removeItem(
+      PENDING_STORAGE_PREFIX + hashRequestKey(requestKey),
+    );
+  } catch {
+    // Storage unavailable: nothing was persisted.
+  }
+}
+
+/**
  * Hook that owns the full validate/apply state machine for a single YAML
  * editor instance. Caller passes the initial YAML; this hook returns signals
  * for editor binding, plus stable handlers wired to the api module.
@@ -314,9 +420,8 @@ export function useYamlApply(
   // The attempt a retry would continue: its id plus the request it was minted
   // for. Reused only while the request is unchanged, so an id never travels
   // with different content (the server refuses that as operation_id_reused).
-  const pendingAttempt = useRef<{ id: string; requestKey: string } | null>(
-    null,
-  );
+  // Mirrored to sessionStorage so a remount or reload can continue it.
+  const pendingAttempt = useRef<PendingAttempt | null>(null);
   const validateAbort = useRef<{
     controller: AbortController;
     issuedEpoch: number;
@@ -414,6 +519,16 @@ export function useYamlApply(
     error.value = null;
     result.value = null;
     trackedRefusal.value = null;
+    // Whether this send continues an earlier attempt's id (a retry) rather
+    // than minting its own.
+    let reusedId = false;
+    // Identifies the request for retry purposes; set once it is built.
+    let requestKey: string | null = null;
+    // Ends the attempt: a retry mints a new id from here on.
+    const releaseAttempt = () => {
+      pendingAttempt.current = null;
+      if (requestKey !== null) clearStoredAttempt(requestKey);
+    };
     try {
       const baseQuery: ApplyQueryInput = {
         force: Boolean(options.forceConflicts?.value),
@@ -426,17 +541,44 @@ export function useYamlApply(
             : null,
         repairOf: options.repairOf?.value ?? null,
       };
+      // The cluster is decided once, here: it keys the retry and is the
+      // X-Cluster-ID, so the two cannot diverge.
+      const clusterId =
+        options.pinApplyToPreview && pinned
+          ? pinned.target.clusterId
+          : selectedCluster.peek();
+      // Every input the request carries. repairOf is listed explicitly
+      // because buildApplyQuery only emits it beside a tracked id.
+      requestKey = JSON.stringify([
+        baseQuery.force,
+        baseQuery.pin,
+        baseQuery.repairOf,
+        clusterId,
+        yamlContent.value,
+      ]);
       let trackedOperationId: string | null = null;
       if (options.tracked?.value) {
-        const requestKey = `${buildApplyQuery(baseQuery)}\n${yamlContent.value}`;
-        const pending = pendingAttempt.current;
-        trackedOperationId =
-          pending && pending.requestKey === requestKey
-            ? pending.id
-            : crypto.randomUUID();
-        pendingAttempt.current = { id: trackedOperationId, requestKey };
+        const now = Date.now();
+        const mem = pendingAttempt.current;
+        const pending =
+          mem !== null &&
+          mem.requestKey === requestKey &&
+          now - mem.at < PENDING_ATTEMPT_TTL_MS
+            ? mem
+            : readStoredAttempt(requestKey, now);
+        reusedId = pending !== null;
+        const attempt: PendingAttempt = pending ?? {
+          id: uuidv4(),
+          requestKey,
+          at: now,
+        };
+        trackedOperationId = attempt.id;
+        pendingAttempt.current = attempt;
+        writeStoredAttempt(attempt);
       } else {
-        pendingAttempt.current = null;
+        // Untracked: any unknown-outcome tracked attempt for this request is
+        // superseded.
+        releaseAttempt();
       }
       lastOperationId.value = trackedOperationId;
       const queryStr = buildApplyQuery({ ...baseQuery, trackedOperationId });
@@ -444,19 +586,26 @@ export function useYamlApply(
         `/v1/yaml/apply${queryStr}`,
         yamlContent.value,
         "text/yaml",
-        options.pinApplyToPreview && pinned
-          ? { clusterId: pinned.target.clusterId }
-          : undefined,
+        { clusterId },
       );
-      pendingAttempt.current = null;
+      releaseAttempt();
       result.value = res.data;
       options.onApplySuccess?.(res.data);
     } catch (err) {
-      // A definite answer ends the attempt; only an unknown outcome keeps its
-      // id for the retry.
-      if (!isIndeterminateApplyFailure(err)) pendingAttempt.current = null;
       const refusal = pinRefusalMessage(err);
       const trackedFailure = trackedApplyRefusal(err);
+      // A definite answer ends the attempt; only an unknown outcome keeps its
+      // id for the retry. A 503 receipt_store_unavailable on a FRESH id is
+      // definite too: the server failed at the insert or mark step and
+      // applied nothing, and no earlier send of that id exists, so a retry
+      // would only replay a failed receipt or report it in flight. On a
+      // REUSED id it is not: the 503 may be the read step failing over an
+      // earlier attempt that did apply, so the id stays.
+      const freshStoreFailure =
+        !reusedId && trackedFailure?.reason === "receipt_store_unavailable";
+      if (!isIndeterminateApplyFailure(err) || freshStoreFailure) {
+        releaseAttempt();
+      }
       if (trackedFailure) {
         trackedRefusal.value = trackedFailure;
         error.value = trackedFailure.message;

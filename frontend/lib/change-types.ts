@@ -7,7 +7,7 @@
  *   - backend/internal/changes/handler.go   (ReceiptDetail, VerificationView, ...)
  *   - backend/internal/changes/redaction.go (ReceiptObjectView, CheckView, ...)
  *   - backend/internal/gitops/types.go      (Ownership*, ObjectRef, OwnedByApp)
- *   - backend/internal/diagnostics          (CheckResult, SourceRef)
+ *   - backend/internal/diagnostics          (SourceRef, check status/severity/reasons)
  *   - backend/internal/store/change_receipts.go (ReceiptState, VerificationState)
  *
  * Enumerations the backend defines as a fixed set are string-literal unions,
@@ -16,6 +16,18 @@
  * reason sets open by contract (a newer server may add one), so those are
  * `Open<Known>` — the known codes autocomplete, an unknown one still type
  * checks and consumers must fall through to a neutral rendering.
+ *
+ * The closed unions are a compile-time contract only. The Go fields are plain
+ * strings with no validation at marshal time, so a constant added on the
+ * server arrives as a value the union does not name until this file is
+ * edited. Give every `switch` over one a `default` that renders neutrally,
+ * and extend the union in the same PR that adds the Go constant.
+ *
+ * The backend's unredacted `diagnostics.CheckResult` and
+ * `changes.VerificationResult` are deliberately NOT mirrored: no endpoint
+ * serves them. Every HTTP response carries `CheckView` and
+ * `VerificationView`, which are redacted per reader, so a caller cannot type
+ * a response with the unredacted shape.
  *
  * Go `time.Time` is an RFC 3339 string on the wire; `*time.Time` with
  * `omitempty` is an optional string. Go slices that the handlers always
@@ -82,7 +94,7 @@ export type CheckStatus = "pass" | "warn" | "fail" | "inconclusive";
 export type CheckSeverity = "critical" | "warning" | "info";
 
 /**
- * Reason codes of a CheckResult: the diagnostics.Reason* set (U20) plus the
+ * Reason codes of a check: the diagnostics.Reason* set (U20) plus the
  * changes.Reason* codes Release E adds. Open by contract.
  */
 export type CheckReason = Open<
@@ -114,20 +126,6 @@ export interface SourceRef {
   namespace?: string;
   name: string;
   uid?: string;
-}
-
-/** CheckResult mirrors diagnostics.CheckResult as persisted on a receipt. */
-export interface CheckResult {
-  checkId: string;
-  status: CheckStatus;
-  severity: CheckSeverity;
-  reason: CheckReason;
-  message: string;
-  detail?: string;
-  remediation?: string;
-  source: SourceRef;
-  observedAt: string;
-  evidence?: Record<string, string>;
 }
 
 /**
@@ -419,13 +417,6 @@ export interface VerificationView {
   checks: CheckView[];
   redactedChecks: number;
   /** Non-zero only while `state` is "verifying". */
-  retryAfterSeconds?: number;
-}
-
-/** VerificationResult mirrors changes.VerificationResult: one unredacted VerifyOnce pass. */
-export interface VerificationResult {
-  state: VerificationState;
-  checks: CheckResult[];
   retryAfterSeconds?: number;
 }
 
