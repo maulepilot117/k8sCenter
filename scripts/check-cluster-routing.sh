@@ -70,7 +70,7 @@ TAB="$(printf '\t')"
 # wires per-request k8s calls. F#14 added server / alerting / gateway /
 # notification / storage / velero — each one had at least one direct
 # .ClientForUser call that the previous list missed.
-HANDLER_DIRS="backend/internal/yaml backend/internal/k8s backend/internal/certmanager backend/internal/networking backend/internal/servicemesh backend/internal/gitops backend/internal/policy backend/internal/externalsecrets backend/internal/monitoring backend/internal/loki backend/internal/topology backend/internal/server backend/internal/alerting backend/internal/gateway backend/internal/notification backend/internal/storage backend/internal/velero"
+HANDLER_DIRS="backend/internal/yaml backend/internal/k8s backend/internal/certmanager backend/internal/networking backend/internal/servicemesh backend/internal/gitops backend/internal/policy backend/internal/externalsecrets backend/internal/monitoring backend/internal/loki backend/internal/topology backend/internal/server backend/internal/alerting backend/internal/gateway backend/internal/notification backend/internal/storage backend/internal/velero backend/internal/changes"
 
 # File paths (relative to ROOT, prefix-matched) whose direct calls are
 # architecturally legitimate and therefore exempt from the lint:
@@ -88,7 +88,7 @@ ALLOWED_PREFIXES="backend/internal/k8s/cluster_router.go backend/internal/k8s/cl
 # direct calls are deliberate local-cluster reads (the CRD-discovery caches
 # in certmanager, gitops, policy and friends, for example) and flagging them
 # would bury the real regressions.
-SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server"
+SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server backend/internal/changes"
 
 # Directories (relative to ROOT) whose feature handlers serve the cluster
 # the request selects (R-8). In these, a service-account, local-schema or
@@ -96,7 +96,7 @@ SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server"
 # / .RESTMapper() / .Informers.) is a violation unless annotated: each remaining local
 # read must say why it is local. A package joins this list in the unit that
 # migrates it.
-REMOTE_ROUTED_DIRS="backend/internal/gateway backend/internal/gitops backend/internal/velero backend/internal/storage backend/internal/notification backend/internal/alerting backend/internal/servicemesh backend/internal/externalsecrets backend/internal/certmanager backend/internal/policy"
+REMOTE_ROUTED_DIRS="backend/internal/gateway backend/internal/gitops backend/internal/velero backend/internal/storage backend/internal/notification backend/internal/alerting backend/internal/servicemesh backend/internal/externalsecrets backend/internal/certmanager backend/internal/policy backend/internal/changes"
 
 # -----------------------------------------------------------------------
 # Helpers
