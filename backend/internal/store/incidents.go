@@ -302,9 +302,19 @@ func NewIncidentStore(pool *pgxpool.Pool) *IncidentStore {
 	return &IncidentStore{pool: pool}
 }
 
-// incidentRollbackTimeout bounds the deferred rollback in UpdateNote and
-// DeleteNote, which runs detached from the caller's cancellation.
+// incidentRollbackTimeout bounds rollbackDetached.
 const incidentRollbackTimeout = 5 * time.Second
+
+// rollbackDetached rolls tx back for a deferred cleanup; after Commit it is a
+// no-op. It runs detached from ctx's cancellation, because a cancelled caller
+// must still release its row locks, but bounded by incidentRollbackTimeout so
+// a wedged connection cannot hold the goroutine. Every incident-store
+// transaction defers it.
+func rollbackDetached(ctx context.Context, tx pgx.Tx) {
+	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), incidentRollbackTimeout)
+	defer cancel()
+	_ = tx.Rollback(rbCtx)
+}
 
 // incidentColumns is the SELECT list every incident reader scans with
 // scanIncident, in scan order.
@@ -719,14 +729,7 @@ func (s *IncidentStore) withNoteLock(
 	if err != nil {
 		return fmt.Errorf("begin incident note tx: %w", err)
 	}
-	// Rollback after Commit is a no-op. It runs detached from ctx's
-	// cancellation (a cancelled caller must still release the lock) but
-	// bounded, so a wedged connection cannot hold the goroutine.
-	defer func() {
-		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), incidentRollbackTimeout)
-		defer cancel()
-		_ = tx.Rollback(rbCtx)
-	}()
+	defer rollbackDetached(ctx, tx)
 
 	var current lockedNote
 	err = tx.QueryRow(ctx, `
