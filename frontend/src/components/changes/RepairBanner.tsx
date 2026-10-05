@@ -1,0 +1,64 @@
+import { Alert } from "@/components/ui/Alert.tsx";
+import { receiptHref, shortId } from "@/lib/change-copy.ts";
+import type { RepairState } from "@/lib/change-tracking.ts";
+
+/**
+ * Shown when YAML Apply was opened from a receipt's "Retry failed objects".
+ * It says plainly that nothing is filled in: the receipt stores no content,
+ * so the operator supplies current manifests and they are applied as a new
+ * change that only links back to the original.
+ */
+export function RepairBanner({
+  repair,
+  tracked,
+  onStop,
+}: {
+  repair: RepairState;
+  tracked: boolean;
+  onStop: () => void;
+}) {
+  if (repair.status === "invalid") {
+    return (
+      <div role="status">
+        <Alert variant="warning">
+          The repair link does not name a valid change, so this apply will not
+          be linked to one.
+        </Alert>
+      </div>
+    );
+  }
+  if (repair.status !== "valid") return null;
+  return (
+    <div role="status">
+      <Alert variant="info" class="flex flex-col gap-2">
+        <span>
+          <strong>Repairing change {shortId(repair.id)}.</strong> Paste or
+          upload the current manifests for the objects you want to retry, then
+          validate and apply them as a new change. Nothing is filled in from the
+          original change: k8sCenter does not store applied content.
+        </span>
+        {!tracked && (
+          <span>
+            The link to the original change is recorded only while “Keep a
+            record of this change” is on.
+          </span>
+        )}
+        <span class="flex flex-wrap items-center gap-4">
+          <a
+            href={receiptHref(repair.id)}
+            class="font-medium text-inherit underline"
+          >
+            Open the original receipt
+          </a>
+          <button
+            type="button"
+            onClick={onStop}
+            class="cursor-pointer border-0 bg-transparent p-0 font-medium text-inherit underline"
+          >
+            Stop repairing
+          </button>
+        </span>
+      </Alert>
+    </div>
+  );
+}
