@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/changes"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
@@ -24,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
 )
 
 // clusterTargeter is the subset of *k8s.ClusterRouter the YAML handlers use.
@@ -42,6 +45,10 @@ type Handler struct {
 	ClusterRouter clusterTargeter
 	AuditLogger   audit.Logger
 	Logger        *slog.Logger
+	// Changes runs tracked applies (?trackedOperationId=). Nil, or a service
+	// without a receipt store, makes a tracked apply answer 503 having applied
+	// nothing; the untracked path never consults it.
+	Changes *changes.Service
 }
 
 // HandleValidate validates YAML against the cluster's schema using dry-run apply.
@@ -123,7 +130,14 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleApply applies YAML via server-side apply.
-// POST /api/v1/yaml/apply?force=true
+// POST /api/v1/yaml/apply?force=true[&trackedOperationId=<uuidv4>[&repairOf=<uuidv4>]]
+//
+// Without trackedOperationId the request takes the legacy path, byte for
+// byte. With it, the apply runs through changes.Service.TrackedApply (plan
+// D3/D4): intent is recorded before the cluster is touched, each outcome as
+// it lands, and a retry under the same id replays the recorded outcome
+// instead of applying again. The response then carries an additive
+// data.tracking block; results and summary keep their legacy meaning.
 func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
@@ -143,6 +157,23 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query()
 	force := query.Get("force") == "true"
+
+	// Opt-in tracked execution. Presence, not value, opts in: an empty or
+	// malformed id is refused rather than silently applied untracked. Input
+	// and availability are both settled before the pin checks and routing, so
+	// a refusal here has touched no cluster.
+	var tracked *trackedParams
+	if query.Has(trackedOperationIDParam) {
+		tp, ok := parseTrackedParams(w, query)
+		if !ok {
+			return
+		}
+		if !h.Changes.Available() {
+			writeRecordingUnavailable(w, recordingStepNoStore)
+			return
+		}
+		tracked = &tp
+	}
 
 	// D4 / AE2 — a pinned apply runs only against the cluster the operator
 	// previewed. The cluster half of the pin is checked before routing, so a
@@ -175,20 +206,267 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 	dynClient := pair.Dynamic
 	mapper := newApplySchemaRefresh(target).mapper()
 
-	resp := ApplyDocuments(r.Context(), dynClient, mapper, docs, force, h.Logger)
+	if tracked != nil {
+		h.applyTracked(w, r, user, target, trackedApplyEngine(r.Context(), dynClient, mapper, docs, force, h.Logger),
+			changes.TrackedApplyRequest{
+				OperationID: tracked.operationID,
+				RepairOf:    tracked.repairOf,
+				User:        user,
+				ClusterID:   target.ClusterID,
+				ClusterGen:  target.Generation,
+				RawBody:     data,
+				Docs:        docs,
+				Force:       force,
+			})
+		return
+	}
 
-	// Audit log each document apply. F#6 — record the per-request cluster ID
-	// from the request context (not a static per-handler value) so the audit
-	// row points at the cluster the apply actually targeted.
-	auditClusterID := target.ClusterID
-	for _, result := range resp.Results {
+	resp := ApplyDocuments(r.Context(), dynClient, mapper, docs, force, h.Logger)
+	h.auditApplyResults(r, user, target.ClusterID, resp.Results, "")
+	httputil.WriteData(w, resp)
+}
+
+// trackedOperationIDParam opts an apply into tracked execution.
+const trackedOperationIDParam = "trackedOperationId"
+
+// repairOfParam links a tracked apply to the receipt it repairs. Recorded
+// only; it grants nothing, and an untracked request ignores it as before.
+const repairOfParam = "repairOf"
+
+type trackedParams struct {
+	operationID uuid.UUID
+	repairOf    *uuid.UUID
+}
+
+// parseTrackedParams validates the tracked-apply query parameters and writes
+// the 400 itself on failure.
+func parseTrackedParams(w http.ResponseWriter, q url.Values) (trackedParams, bool) {
+	opID, ok := parseUUIDv4(q.Get(trackedOperationIDParam))
+	if !ok {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid trackedOperationId",
+			"trackedOperationId must be a UUIDv4 in canonical 8-4-4-4-12 form")
+		return trackedParams{}, false
+	}
+	tp := trackedParams{operationID: opID}
+	if q.Has(repairOfParam) {
+		repairOf, ok := parseUUIDv4(q.Get(repairOfParam))
+		if !ok {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid repairOf",
+				"repairOf must be the UUIDv4 operation id of the receipt being repaired")
+			return trackedParams{}, false
+		}
+		tp.repairOf = &repairOf
+	}
+	return tp, true
+}
+
+// parseUUIDv4 accepts only the 36-character 8-4-4-4-12 form of a version 4
+// UUID (uuid.Parse alone also takes braced, urn: and dashless spellings).
+// Letter case is accepted and canonicalized: from here on the operation is
+// identified by the parsed uuid.UUID, so the receipt id, tracking.operationId,
+// receiptUrl and the audit "op=" all carry its lowercase String() form, and
+// an uppercase and a lowercase spelling of one id are the same operation.
+func parseUUIDv4(s string) (uuid.UUID, bool) {
+	if len(s) != 36 {
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(s)
+	if err != nil || id.Version() != 4 {
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// trackedApplyEngine adapts ApplyDocumentsObserved to changes.ApplyFunc.
+// Every document the engine attempts is reported in Attempted, including one
+// whose recording then fails (it was sent to the cluster); the recorder's
+// error stops the engine. The engine's own ApplyResponse is not used: the
+// service assembles the results from Attempted so the response, the receipt
+// and the not-attempted accounting cannot disagree.
+func trackedApplyEngine(ctx context.Context, dynClient dynamic.Interface, mapper meta.RESTMapper,
+	docs []*unstructured.Unstructured, force bool, logger *slog.Logger,
+) changes.ApplyFunc {
+	return func(record changes.ApplyObserverFunc) changes.TrackedApplyOutcome {
+		var out changes.TrackedApplyOutcome
+		ApplyDocumentsObserved(ctx, dynClient, mapper, docs, force, logger, func(_ context.Context, obs ApplyObservation) error {
+			co := changeObservation(obs)
+			out.Attempted = append(out.Attempted, co)
+			if err := record(co); err != nil {
+				out.Stopped = err
+				return err
+			}
+			return nil
+		})
+		return out
+	}
+}
+
+// changeObservation converts the engine's observation into the changes
+// package's plain-data form.
+func changeObservation(obs ApplyObservation) changes.ApplyObservation {
+	co := changes.ApplyObservation{
+		Index:      obs.Result.Index,
+		Kind:       obs.Result.Kind,
+		Namespace:  obs.Result.Namespace,
+		Name:       obs.Result.Name,
+		UID:        string(obs.UID),
+		Action:     obs.Result.Action,
+		Error:      obs.Result.Error,
+		ErrorClass: obs.ErrorClass,
+	}
+	if obs.Mapping != nil {
+		co.Group = obs.Mapping.Resource.Group
+		co.Version = obs.Mapping.Resource.Version
+		co.Resource = obs.Mapping.Resource.Resource
+	}
+	return co
+}
+
+// applyTracked runs one tracked apply and writes its response.
+//
+// Audit: a live tracked apply writes exactly the entries an untracked one
+// does (one per result, same fields), with the operation id appended to
+// Detail. A replay applied nothing, so it writes no apply entries: the
+// original request already audited every object it touched. An idempotency
+// refusal (409) is audited once, like a pin refusal, because a reused or
+// foreign operation id is what an operator looks for. A 400 or 503 attempted
+// nothing and is not audited, matching the other input and availability
+// refusals on this endpoint.
+//
+// Secrets: the live response carries the engine's error text unchanged, as
+// the untracked path does; the service stores only a digest, references and
+// (for a Secret-bearing bundle) sanitized error classes.
+//
+// Reading the result: results and summary describe what was applied, and
+// tracking describes what was recorded. They can legitimately disagree in
+// emphasis: when recording fails on the last document, or finalization fails,
+// summary.failed can be 0 while tracking.state is unknown with a warning. A
+// replay's error text comes from the receipt (sanitized for Secret bundles,
+// truncated otherwise). Tracked clients key off action and tracking, never
+// results[].error prose or summary alone.
+//
+// Which component owns "documents never sent are reported failed": the
+// service (changes.assembleResults) builds the tracked response. The engine's
+// own fill-in in ApplyDocumentsObserved is what keeps that exported function's
+// summary.total == len(docs) contract for any caller, and uses the same
+// constants under the same rule (NotAppliedError after a recording failure,
+// NotAttemptedError after the request context ended); tracked_apply_test.go
+// pins that the two agree.
+func (h *Handler) applyTracked(w http.ResponseWriter, r *http.Request, user *auth.User, target *k8s.TargetSchema,
+	engine changes.ApplyFunc, req changes.TrackedApplyRequest,
+) {
+	opID := req.OperationID.String()
+	res, err := h.Changes.TrackedApply(r.Context(), req, engine)
+	if err != nil {
+		h.writeTrackedApplyError(w, r, user, target.ClusterID, opID, err)
+		return
+	}
+
+	resp := &ApplyResponse{Results: make([]ApplyResult, 0, len(res.Results))}
+	for _, o := range res.Results {
+		resp.Results = append(resp.Results, ApplyResult{
+			Index:     o.Index,
+			Kind:      o.Kind,
+			Name:      o.Name,
+			Namespace: o.Namespace,
+			Action:    o.Action,
+			Error:     o.Error,
+		})
+	}
+	c := res.Counts()
+	resp.Summary = ApplySummary{
+		Total: c.Total, Created: c.Created, Configured: c.Configured, Unchanged: c.Unchanged, Failed: c.Failed,
+	}
+	tracking := res.Tracking
+	resp.Tracking = &tracking
+
+	if !tracking.Replayed {
+		h.auditApplyResults(r, user, target.ClusterID, resp.Results, opID)
+	}
+	httputil.WriteData(w, resp)
+}
+
+// recordingStepNoStore is the pseudo-step writeRecordingUnavailable is given
+// when there is no receipt store at all (the Available() pre-check). The
+// other steps are changes.StoreUnavailableError.Step values.
+const recordingStepNoStore = ""
+
+// writeRecordingUnavailable answers a tracked apply that could not be
+// recorded. Nothing was applied by THIS request in every case, and extra says
+// so explicitly ("applied": false) so clients need not parse the message.
+// Whether the client should keep the operation id is carried as
+// extra.retrySameOperationId and depends on where recording failed:
+//
+//   - "insert" -> true. Insert reports a collision only on an actual
+//     unique violation, so an unreachable or timed-out database surfaces here
+//     even when this request is a RETRY of a send that already applied.
+//     Reusing the id is always safe: if the insert never committed, the retry
+//     proceeds normally; if it did, the retry is told the operation is in
+//     flight and then replays it. A new id could apply twice.
+//   - "read" -> true. Reading the existing receipt failed while resolving an
+//     id collision, i.e. on a retry; the original may have been applied.
+//   - "mark" -> false. The row was inserted by this very request (a mark
+//     failure cannot happen on a retry, which collides at insert) and is
+//     finalized as failed, so the id is spent: a same-id retry would only
+//     replay that failure. Start a new attempt or apply untracked.
+//   - no store -> false. Tracking is not configured; the id is irrelevant.
+//     Apply without tracking.
+func writeRecordingUnavailable(w http.ResponseWriter, step string) {
+	var message string
+	var retrySame bool
+	switch step {
+	case "insert":
+		message = "change recording is unavailable; nothing was applied by this request. Retry with the same operation id or apply without tracking"
+		retrySame = true
+	case "read":
+		message = "could not read the existing record for this operation; retry with the same operation id"
+		retrySame = true
+	case recordingStepNoStore:
+		message = "change recording is not configured; nothing was applied. Apply without tracking"
+	default: // "mark", or any step this handler does not know: never reuse
+		message = "change recording is unavailable; nothing was applied. Start a new attempt or apply without tracking"
+	}
+	httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, message, changes.ReasonReceiptStoreUnavailable,
+		map[string]any{"applied": false, "retrySameOperationId": retrySame})
+}
+
+// writeTrackedApplyError maps TrackedApply's typed errors. Every one of them
+// means no document was applied by this request.
+func (h *Handler) writeTrackedApplyError(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID, opID string, err error) {
+	var conflict *changes.OperationConflictError
+	var unavailable *changes.StoreUnavailableError
+	switch {
+	case errors.As(err, &conflict):
+		h.auditRefusal(r, user, clusterID, conflict.Reason+" op="+opID)
+		httputil.WriteErrorWithReason(w, http.StatusConflict, conflict.Message, conflict.Reason, conflict.Extra())
+	case errors.As(err, &unavailable):
+		h.Logger.Error("tracked apply: receipt store unavailable", "operationId", opID, "step", unavailable.Step, "error", err)
+		writeRecordingUnavailable(w, unavailable.Step)
+	case errors.Is(err, changes.ErrInvalidRequest):
+		httputil.WriteError(w, http.StatusBadRequest, "invalid tracked apply request", err.Error())
+	default:
+		h.Logger.Error("tracked apply failed", "operationId", opID, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "tracked apply failed", "")
+	}
+}
+
+// auditApplyResults writes one audit entry per applied document. F#6 — the
+// cluster is the request's resolved target, not a static per-handler value,
+// so the row points at the cluster the apply actually targeted. A tracked
+// apply appends its operation id to Detail; every other field is unchanged.
+func (h *Handler) auditApplyResults(r *http.Request, user *auth.User, clusterID string, results []ApplyResult, operationID string) {
+	for _, result := range results {
 		auditResult := audit.ResultSuccess
 		if result.Action == "failed" {
 			auditResult = audit.ResultFailure
 		}
+		detail := result.Action
+		if operationID != "" {
+			detail += " op=" + operationID
+		}
 		h.AuditLogger.Log(r.Context(), audit.Entry{
 			Timestamp:         time.Now(),
-			ClusterID:         auditClusterID,
+			ClusterID:         clusterID,
 			User:              user.Username,
 			SourceIP:          r.RemoteAddr,
 			Action:            audit.ActionApply,
@@ -196,11 +474,9 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 			ResourceNamespace: result.Namespace,
 			ResourceName:      result.Name,
 			Result:            auditResult,
-			Detail:            result.Action,
+			Detail:            detail,
 		})
 	}
-
-	httputil.WriteData(w, resp)
 }
 
 // HandleDiff performs a dry-run apply and returns current vs proposed YAML.
@@ -377,6 +653,13 @@ func parseTargetPin(q url.Values) targetPin {
 // audits the refusal: a refused apply is exactly what an operator looks for
 // in the audit trail, and the 409 alone would leave no record.
 func (h *Handler) refusePin(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID, message, reason string, extra map[string]any) {
+	h.auditRefusal(r, user, clusterID, reason)
+	httputil.WriteErrorWithReason(w, http.StatusConflict, message, reason, extra)
+}
+
+// auditRefusal records one failed apply entry, with no resource, for an apply
+// refused before any document was attempted.
+func (h *Handler) auditRefusal(r *http.Request, user *auth.User, clusterID, detail string) {
 	h.AuditLogger.Log(r.Context(), audit.Entry{
 		Timestamp: time.Now(),
 		ClusterID: k8s.NormalizedClusterID(clusterID),
@@ -384,9 +667,8 @@ func (h *Handler) refusePin(w http.ResponseWriter, r *http.Request, user *auth.U
 		SourceIP:  r.RemoteAddr,
 		Action:    audit.ActionApply,
 		Result:    audit.ResultFailure,
-		Detail:    reason,
+		Detail:    detail,
 	})
-	httputil.WriteErrorWithReason(w, http.StatusConflict, message, reason, extra)
 }
 
 // resolveTarget resolves the client pair and schema for the request's
