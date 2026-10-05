@@ -96,6 +96,49 @@ func TestGrantAddRemoveByNonOwnerFails(t *testing.T) {
 	}
 }
 
+// TestGrantsForReturnsOnlyTheCallersGrantsOnTheListedIncidents: the list
+// endpoint resolves a page's collaborator roles with one query (U23a review:
+// no per-row GetGrant). Only the caller's grants on the named incidents come
+// back; other grantees and unlisted incidents do not.
+func TestGrantsForReturnsOnlyTheCallersGrantsOnTheListedIncidents(t *testing.T) {
+	is, gs, _ := newGrantStores(t)
+	owner := testOwnerID(t)
+	grantee := owner + "-g"
+	a := mustCreateIncident(t, is, newIncident(owner, "a"))
+	b := mustCreateIncident(t, is, newIncident(owner, "b"))
+	c := mustCreateIncident(t, is, newIncident(owner, "c"))
+	ctx := t.Context()
+	if err := gs.AddGrant(ctx, a, owner, grantee, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := gs.AddGrant(ctx, b, owner, grantee, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := gs.AddGrant(ctx, c, owner, grantee, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := gs.AddGrant(ctx, a, owner, owner+"-other", true); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := gs.GrantsFor(ctx, grantee, []uuid.UUID{a, b, uuid.New()})
+	if err != nil {
+		t.Fatalf("GrantsFor: %v", err)
+	}
+	if len(got) != 2 || !got[a].CanAnnotate || got[b].CanAnnotate || got[a].GranteeID != grantee {
+		t.Fatalf("GrantsFor = %+v; want a (annotate) and b (read-only) only", got)
+	}
+	if _, listed := got[c]; listed {
+		t.Fatal("an incident outside the requested ids was returned")
+	}
+	if got, err := gs.GrantsFor(ctx, grantee, nil); err != nil || len(got) != 0 {
+		t.Fatalf("GrantsFor with no ids = (%v, %v); want an empty map and no error", got, err)
+	}
+	if _, err := gs.GrantsFor(ctx, "", []uuid.UUID{a}); !errors.Is(err, ErrIncidentInvalid) {
+		t.Fatalf("GrantsFor empty user = %v; want ErrIncidentInvalid", err)
+	}
+}
+
 func TestGrantSelfGrantUpsertAndImmediateRemoval(t *testing.T) {
 	is, gs, pool := newGrantStores(t)
 	owner := testOwnerID(t)

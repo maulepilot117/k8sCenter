@@ -955,6 +955,46 @@ func (s *IncidentEvidenceStore) ListAllByIncident(ctx context.Context, incidentI
 	return collectEvidence(rows, "incident_evidence")
 }
 
+// scopeRowColumns are the columns the read path's authorization filter
+// needs (identity, kind, scope, source kind, secret flag, collection time)
+// and nothing a caller might not be allowed to see: no name, uid, payload
+// or redaction.
+const scopeRowColumns = `
+	id, incident_id, evidence_kind, mode, cluster_id, api_group, resource, source_kind,
+	namespace, secret_derived, collected_at`
+
+// ListScopeRowsByIncident returns every evidence row of an incident with only
+// scopeRowColumns populated, in ListByIncident order, bounded by
+// EvidenceMaxItemsCeiling. It exists so the read path can count what a
+// caller may see across the whole incident (Q1 P10) without loading up to
+// 10 MiB of payload; the rows are not evidence and must never be returned
+// to a client as such.
+func (s *IncidentEvidenceStore) ListScopeRowsByIncident(ctx context.Context, incidentID uuid.UUID) ([]IncidentEvidenceRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT`+scopeRowColumns+`
+		  FROM incident_evidence
+		 WHERE incident_id = $1
+		 ORDER BY collected_at DESC, id DESC
+		 LIMIT $2`, incidentID, EvidenceMaxItemsCeiling)
+	if err != nil {
+		return nil, fmt.Errorf("list incident_evidence scope rows: %w", err)
+	}
+	defer rows.Close()
+	out := make([]IncidentEvidenceRow, 0)
+	for rows.Next() {
+		var r IncidentEvidenceRow
+		if err := rows.Scan(&r.ID, &r.IncidentID, &r.EvidenceKind, &r.Mode, &r.ClusterID, &r.APIGroup, &r.Resource,
+			&r.SourceKind, &r.Namespace, &r.SecretDerived, &r.CollectedAt); err != nil {
+			return nil, fmt.Errorf("scan incident_evidence scope rows: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate incident_evidence scope rows: %w", err)
+	}
+	return out, nil
+}
+
 // ListBySourceUID returns an incident's evidence captured from one object,
 // identified by (clusterID, sourceUID) — never by namespace and name (Q1 P9),
 // so a recreated object with a reused name matches none of its

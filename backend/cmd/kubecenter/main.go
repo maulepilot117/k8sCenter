@@ -31,6 +31,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/gateway"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/gitprovider"
+	"github.com/kubecenter/kubecenter/internal/incidents"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/limits"
@@ -307,6 +308,16 @@ func main() {
 	changesRateLimiter := middleware.NewRateLimiterWithRate(changesRateLimit(cfg.Dev))
 	changesRateLimiter.StartCleanup(ctx)
 	changesRateLimiter.SetAuditLogger(auditLogger)
+	// Dedicated per-user bucket for /incidents/* (Release D), sized like the
+	// /changes one: a cold incident read costs up to 20 access checks. Dev
+	// gets the same 10x multiplier changesRateLimit applies.
+	incidentsRate := server.DefaultIncidentsRateLimit
+	if cfg.Dev {
+		incidentsRate *= 10
+	}
+	incidentsRateLimiter := middleware.NewRateLimiterWithRate(incidentsRate, time.Minute)
+	incidentsRateLimiter.StartCleanup(ctx)
+	incidentsRateLimiter.SetAuditLogger(auditLogger)
 
 	// Initialize monitoring discoverer and start background discovery
 	monDiscoverer := monitoring.NewDiscoverer(k8sClient, cfg.Monitoring, logger)
@@ -937,6 +948,24 @@ func main() {
 		go sweeper.run(ctx, changesDone)
 	}
 
+	// Persistent incident investigations (Release D). The handler is
+	// constructed unconditionally; its store fields stay nil when no database
+	// is configured, and every /incidents endpoint then answers 503
+	// incident_persistence_unavailable rather than disappearing behind a 404
+	// (R3, correction C4). The evidence collector is wired by U23b with the
+	// capture endpoint that uses it.
+	var incidentStore *appstore.IncidentStore
+	var incidentEvidenceStore *appstore.IncidentEvidenceStore
+	var incidentGrantStore *appstore.IncidentGrantStore
+	if dbPool != nil {
+		incidentStore = appstore.NewIncidentStore(dbPool)
+		incidentEvidenceStore = appstore.NewIncidentEvidenceStore(dbPool)
+		incidentGrantStore = appstore.NewIncidentGrantStore(dbPool)
+	}
+	incidentsHandler := incidents.NewHandler(
+		incidentStore, incidentEvidenceStore, incidentGrantStore, accessChecker, auditLogger, logger,
+	)
+
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
 	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, clusterRouter, remotePresence, logger)
@@ -997,6 +1026,7 @@ func main() {
 		RateLimiter:            rateLimiter,
 		YAMLRateLimiter:        yamlRateLimiter,
 		ChangesRateLimiter:     changesRateLimiter,
+		IncidentsRateLimiter:   incidentsRateLimiter,
 		Hub:                    hub,
 		MonitoringHandler:      monHandler,
 		LokiHandler:            lokiHandler,
@@ -1009,6 +1039,7 @@ func main() {
 		GitOpsHandler:          gitopsHandler,
 		ChangesHandler:         changesHandler,
 		ChangesService:         changesService,
+		IncidentsHandler:       incidentsHandler,
 		FluxNotifHandler:       fluxNotifHandler,
 		NotifCenterHandler:     notifCenterHandler,
 		NotifCenterService:     notifService,

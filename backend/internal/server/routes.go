@@ -204,6 +204,14 @@ func (s *Server) registerRoutes() {
 				s.registerChangesRoutes(ar)
 			}
 
+			// Incident routes (Release D) — registered whenever the handler
+			// exists, which main.go guarantees even without a database, so a
+			// no-DB deployment reports 503 "incident_persistence_unavailable"
+			// rather than a bare 404 (R3, correction C4).
+			if s.IncidentsHandler != nil {
+				s.registerIncidentRoutes(ar)
+			}
+
 			// Security scanning routes — only registered if scanning handler is available
 			if s.ScanningHandler != nil {
 				s.registerScanningRoutes(ar)
@@ -635,6 +643,50 @@ func (s *Server) registerChangesRoutes(ar chi.Router) {
 		cr.Post("/ownership", h.HandleResolveOwnership)
 		cr.Get("/{id}", h.HandleGet)
 		cr.Get("/{id}/verification", h.HandleVerification)
+	})
+}
+
+// DefaultIncidentsRateLimit is the per-user, per-minute budget of the
+// /incidents limiter. main.go uses it for production so the fallback built
+// when no limiter is wired matches. An incident detail read costs one access
+// check per distinct evidence scope (at most 20) on a cold cache, so this
+// matches the /changes budget rather than the wider YAML one.
+const DefaultIncidentsRateLimit = 60
+
+// registerIncidentRoutes mounts the incident record, note and (U23b)
+// capture/grant/export endpoints. Auth, CSRF and ClusterContext are inherited
+// from the enclosing authenticated group; the handlers never use the
+// request's cluster for authorization (the evidence row's stored cluster
+// drives every access check, Q1 P6).
+//
+// {incidentID} and {noteID} are UUIDs, not Kubernetes names, so
+// resources.ValidateURLParams is deliberately not applied; the handlers
+// validate them with uuid.Parse (correction C6).
+func (s *Server) registerIncidentRoutes(ar chi.Router) {
+	h := s.IncidentsHandler
+	// A dedicated per-user bucket like /changes: behind the frontend BFF every
+	// user shares the pod's IP, so a per-IP bucket would be installation-wide.
+	// The fallback is for tests and misconfiguration only (no cleanup
+	// goroutine, no audit logger), never the YAML or auth bucket.
+	rl := s.IncidentsRateLimiter
+	if rl == nil {
+		if s.Logger != nil {
+			s.Logger.Warn("incidents: no dedicated rate limiter wired; using a default per-user limiter")
+		}
+		rl = middleware.NewRateLimiterWithRate(DefaultIncidentsRateLimit, time.Minute)
+	}
+	ar.Route("/incidents", func(ir chi.Router) {
+		ir.Use(middleware.RateLimitByUser(rl, "incidents"))
+
+		ir.Get("/", h.HandleList)
+		ir.Post("/", h.HandleCreate)
+		ir.Get("/{incidentID}", h.HandleGet)
+		ir.Put("/{incidentID}", h.HandleUpdate)
+		ir.Delete("/{incidentID}", h.HandleDelete)
+		ir.Get("/{incidentID}/notes", h.HandleListNotes)
+		ir.Post("/{incidentID}/notes", h.HandleCreateNote)
+		ir.Put("/{incidentID}/notes/{noteID}", h.HandleUpdateNote)
+		ir.Delete("/{incidentID}/notes/{noteID}", h.HandleDeleteNote)
 	})
 }
 

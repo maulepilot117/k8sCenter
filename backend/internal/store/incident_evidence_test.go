@@ -298,9 +298,62 @@ func TestEvidenceHasNoUpdatePath(t *testing.T) {
 	for i := range typ.NumMethod() {
 		got = append(got, typ.Method(i).Name) // exported methods only, sorted by name
 	}
-	want := []string{"DistinctScopes", "InsertBatch", "ListAllByIncident", "ListByIncident", "ListBySourceUID"}
+	want := []string{"DistinctScopes", "InsertBatch", "ListAllByIncident", "ListByIncident", "ListBySourceUID", "ListScopeRowsByIncident"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("IncidentEvidenceStore exported methods = %v; want exactly %v (evidence is append-only, P15)", got, want)
+	}
+}
+
+// TestListScopeRowsByIncidentCarriesAuthorizationColumnsOnly: the read path
+// counts an incident's evidence through the per-scope filter without loading
+// payloads (U23a review: whole-incident counts over up to 500 rows must not
+// read 10 MiB of JSONB). Every column the filter needs is present; payload
+// and redaction are not.
+func TestListScopeRowsByIncidentCarriesAuthorizationColumnsOnly(t *testing.T) {
+	is, es, _ := newEvidenceStores(t)
+	owner := testOwnerID(t)
+	incident := mustCreateIncident(t, is, newIncident(owner, "scope rows"))
+
+	secret := snapshotRow("secret", 4096)
+	secret.SecretDerived = true
+	secret.Redaction = json.RawMessage(`{"secretDerived":true}`)
+	check := snapshotRow("check", 64)
+	check.EvidenceKind = EvidenceKindDiagnosticCheck
+	check.SourceKind = "Deployment"
+	check.APIGroup = ""
+	check.Resource = "pods"
+	check.Namespace = "payments"
+	mustInsert(t, es, incident, owner, ceilingLimits, secret, check, liveLinkRow("link"))
+
+	rows, err := es.ListScopeRowsByIncident(t.Context(), incident)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("ListScopeRowsByIncident = (%d rows, %v); want 3", len(rows), err)
+	}
+	full, err := es.ListAllByIncident(t.Context(), incident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range rows {
+		if r.Payload != nil || r.Redaction != nil || r.PayloadBytes != 0 || r.Name != "" || r.SourceUID != "" {
+			t.Errorf("row %d carries content columns: payload=%d redaction=%d bytes=%d name=%q uid=%q",
+				i, len(r.Payload), len(r.Redaction), r.PayloadBytes, r.Name, r.SourceUID)
+		}
+		if r.ID == uuid.Nil || r.IncidentID != incident || r.ClusterID != "local" || r.CollectedAt.IsZero() || r.EvidenceKind == "" || r.Resource == "" || r.SourceKind == "" {
+			t.Errorf("row %d is missing an authorization column: %+v", i, r)
+		}
+		// Same order and identity as the full listing.
+		if r.ID != full[i].ID || r.SecretDerived != full[i].SecretDerived || r.Namespace != full[i].Namespace || r.APIGroup != full[i].APIGroup {
+			t.Errorf("row %d = %+v; full row = %+v", i, r, full[i])
+		}
+	}
+	var secretRows int
+	for _, r := range rows {
+		if r.SecretDerived {
+			secretRows++
+		}
+	}
+	if secretRows != 1 {
+		t.Errorf("%d secret-derived scope rows; want 1", secretRows)
 	}
 }
 
@@ -613,14 +666,14 @@ func TestInsertBatchOwnerStatusAndExistenceGates(t *testing.T) {
 	}
 	requireConsistent(t, readEvidenceTotals(t, pool, incident), 0, 0, 0)
 
-	if err := is.Update(t.Context(), incident, owner, "gates", "", IncidentStatusClosed); err != nil {
+	if err := is.Update(t.Context(), incident, owner, nil, nil, ptr(IncidentStatusClosed)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := es.InsertBatch(t.Context(), incident, owner, row, ceilingLimits); !errors.Is(err, ErrIncidentClosed) {
 		t.Errorf("closed incident = %v; want ErrIncidentClosed", err)
 	}
 	requireConsistent(t, readEvidenceTotals(t, pool, incident), 0, 0, 0)
-	if err := is.Update(t.Context(), incident, owner, "gates", "", IncidentStatusOpen); err != nil {
+	if err := is.Update(t.Context(), incident, owner, nil, nil, ptr(IncidentStatusOpen)); err != nil {
 		t.Fatal(err)
 	}
 	if n := mustInsert(t, es, incident, owner, ceilingLimits, row...); n != 1 {
@@ -908,7 +961,7 @@ func TestInsertBatchErrorPrecedence(t *testing.T) {
 	intruder := owner + "-intruder"
 	open := mustCreateIncident(t, is, newIncident(owner, "open"))
 	closed := mustCreateIncident(t, is, newIncident(owner, "closed"))
-	if err := is.Update(t.Context(), closed, owner, "closed", "", IncidentStatusClosed); err != nil {
+	if err := is.Update(t.Context(), closed, owner, nil, nil, ptr(IncidentStatusClosed)); err != nil {
 		t.Fatal(err)
 	}
 	small := EvidenceLimits{MaxItemBytes: 50, MaxIncidentBytes: 30, MaxItems: 1, MaxScopes: 1}

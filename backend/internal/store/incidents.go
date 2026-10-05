@@ -63,6 +63,9 @@ var (
 	// ErrInvalidIncidentCursor reports a ListVisible cursor that does not
 	// decode. Callers answer it with a 400, never by restarting at page one.
 	ErrInvalidIncidentCursor = errors.New("invalid incident cursor")
+
+	// ErrInvalidNoteCursor reports a ListNotes cursor that does not decode.
+	ErrInvalidNoteCursor = errors.New("invalid incident note cursor")
 )
 
 // NoteRevisionConflictError is returned by UpdateNote when the caller's
@@ -98,14 +101,10 @@ const (
 	IncidentMinRetentionDays = 1
 	IncidentMaxRetentionDays = 3650
 
-	// IncidentDefaultPageSize and IncidentMaxPageSize bound ListVisible, the
-	// same bounds change_receipts and eso_history use.
+	// IncidentDefaultPageSize and IncidentMaxPageSize bound ListVisible and
+	// ListNotes, the same bounds change_receipts and eso_history use.
 	IncidentDefaultPageSize = 50
 	IncidentMaxPageSize     = 200
-
-	// IncidentMaxNotesListed caps ListNotes. The schema does not bound notes
-	// per incident; a read returns at most this many, oldest first.
-	IncidentMaxNotesListed = 500
 )
 
 // IncidentRow is one row in incidents.
@@ -283,6 +282,35 @@ func DecodeIncidentCursor(s string) (IncidentCursor, error) {
 		return IncidentCursor{}, ErrInvalidIncidentCursor
 	}
 	return IncidentCursor{CreatedAt: at, ID: id}, nil
+}
+
+// IncidentNoteCursor is the keyset position after the last row of a
+// ListNotes page: that row's (created_at, id). Notes page oldest first, so
+// the next page starts strictly after it.
+type IncidentNoteCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
+// EncodeIncidentNoteCursor renders a note cursor in the shared keyset form.
+// Unsigned, like the incident cursor: ListNotes pins the incident in its
+// WHERE clause and the caller has already passed the visibility gate.
+func EncodeIncidentNoteCursor(c IncidentNoteCursor) string {
+	return encodeMicrosCursor(c.CreatedAt, c.ID.String())
+}
+
+// DecodeIncidentNoteCursor parses a cursor produced by
+// EncodeIncidentNoteCursor; every malformed input returns ErrInvalidNoteCursor.
+func DecodeIncidentNoteCursor(s string) (IncidentNoteCursor, error) {
+	at, idText, ok := decodeMicrosCursor(s, maxIncidentCursorBytes)
+	if !ok {
+		return IncidentNoteCursor{}, ErrInvalidNoteCursor
+	}
+	id, err := uuid.Parse(idText)
+	if err != nil || id == uuid.Nil || id.String() != idText {
+		return IncidentNoteCursor{}, ErrInvalidNoteCursor
+	}
+	return IncidentNoteCursor{CreatedAt: at, ID: id}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -475,31 +503,41 @@ func (s *IncidentStore) ListVisible(ctx context.Context, userID string, limit in
 	return out, next, nil
 }
 
-// Update replaces the title, summary and status of an incident owned by
-// ownerID, and bumps updated_at. Closing stamps closed_at (an edit to an
-// already-closed incident keeps its original close time); reopening clears it.
-// The owner is in the WHERE clause, so a non-owner can never write. Returns
-// ErrIncidentNotFound for a missing id and ErrNotOwner when it exists under
-// another owner.
-func (s *IncidentStore) Update(ctx context.Context, id uuid.UUID, ownerID, title, summary, status string) error {
+// Update sets the title, summary and/or status of an incident owned by
+// ownerID and bumps updated_at. A nil field keeps its column: the merge is
+// COALESCE in the UPDATE itself, so two partial updates that interleave
+// (one editor's title, another's summary) never revert each other the way a
+// handler-side read-modify-write would. closed_at follows the RESULTING
+// status: closing stamps it (an edit to an already-closed incident keeps its
+// original close time); reopening clears it. A non-nil field is validated; a
+// nil one is not. The owner is in the WHERE clause, so a non-owner can never
+// write. Returns ErrIncidentNotFound for a missing id and ErrNotOwner when
+// it exists under another owner.
+func (s *IncidentStore) Update(ctx context.Context, id uuid.UUID, ownerID string, title, summary, status *string) error {
 	if err := requireIdentity("owner id", ownerID); err != nil {
 		return err
 	}
-	if err := ValidateIncidentTitle(title); err != nil {
-		return err
+	if title != nil {
+		if err := ValidateIncidentTitle(*title); err != nil {
+			return err
+		}
 	}
-	if err := ValidateIncidentSummary(summary); err != nil {
-		return err
+	if summary != nil {
+		if err := ValidateIncidentSummary(*summary); err != nil {
+			return err
+		}
 	}
-	if err := ValidateIncidentStatus(status); err != nil {
-		return err
+	if status != nil {
+		if err := ValidateIncidentStatus(*status); err != nil {
+			return err
+		}
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE incidents
-		   SET title      = $3,
-		       summary    = $4,
-		       status     = $5,
-		       closed_at  = CASE WHEN $5 = 'closed' THEN COALESCE(closed_at, NOW()) ELSE NULL END,
+		   SET title      = COALESCE($3, title),
+		       summary    = COALESCE($4, summary),
+		       status     = COALESCE($5, status),
+		       closed_at  = CASE WHEN COALESCE($5, status) = 'closed' THEN COALESCE(closed_at, NOW()) ELSE NULL END,
 		       updated_at = NOW()
 		 WHERE id = $1 AND owner_id = $2`,
 		id, ownerID, title, summary, status)
@@ -587,17 +625,56 @@ func (s *IncidentStore) CreateNote(ctx context.Context, incidentID uuid.UUID, au
 	return n, nil
 }
 
-// ListNotes returns an incident's notes, oldest first, capped at
-// IncidentMaxNotesListed. Notes past the cap are not returned.
-func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID) ([]IncidentNoteRow, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+noteColumns+`
+// The two ListNotes page queries (fixed texts, as for ListVisible). Both
+// fetch one row past the page so the returned cursor is exact: it is issued
+// only when a further note exists.
+const (
+	noteFirstPageSQL = `
+		SELECT ` + noteColumns + `
 		  FROM incident_notes
 		 WHERE incident_id = $1
 		 ORDER BY created_at, id
-		 LIMIT $2`, incidentID, IncidentMaxNotesListed)
+		 LIMIT $2`
+
+	noteNextPageSQL = `
+		SELECT ` + noteColumns + `
+		  FROM incident_notes
+		 WHERE incident_id = $1
+		   AND (created_at, id) > ($2::timestamptz, $3::uuid)
+		 ORDER BY created_at, id
+		 LIMIT $4`
+)
+
+// ListNotes returns one page of an incident's notes, oldest first
+// ((created_at, id)), starting after cursor ("" for the first page). limit is
+// clamped like ListVisible. The returned cursor is "" when no further note
+// exists, so a page that ends on the last note never costs an extra request.
+// The schema does not bound notes per incident; every note is reachable by
+// paging.
+//
+// Ordering caveat: created_at is the INSERT's NOW(), which is the start of
+// its transaction. A note whose transaction commits late (it waited on a
+// lock) can therefore land BEHIND a cursor a forward pager has already
+// passed, and that pager will not see it until it restarts from the first
+// page. Accepted for Release D (notes are rare, and a reload shows them); a
+// monotonic BIGSERIAL ordering column would close it and needs a migration.
+func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]IncidentNoteRow, string, error) {
+	limit = clampIncidentPageSize(limit)
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if cursor == "" {
+		rows, err = s.pool.Query(ctx, noteFirstPageSQL, incidentID, limit+1)
+	} else {
+		after, decodeErr := DecodeIncidentNoteCursor(cursor)
+		if decodeErr != nil {
+			return nil, "", decodeErr
+		}
+		rows, err = s.pool.Query(ctx, noteNextPageSQL, incidentID, after.CreatedAt, after.ID, limit+1)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("list incident_notes: %w", err)
+		return nil, "", fmt.Errorf("list incident_notes: %w", err)
 	}
 	defer rows.Close()
 
@@ -605,14 +682,20 @@ func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID) ([]
 	for rows.Next() {
 		n, err := scanNote(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan incident_notes: %w", err)
+			return nil, "", fmt.Errorf("scan incident_notes: %w", err)
 		}
 		out = append(out, n)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate incident_notes: %w", err)
+		return nil, "", fmt.Errorf("iterate incident_notes: %w", err)
 	}
-	return out, nil
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = EncodeIncidentNoteCursor(IncidentNoteCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	}
+	return out, next, nil
 }
 
 // ListNoteRevisions returns the prior bodies of a note, oldest revision first.
