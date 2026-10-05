@@ -2,9 +2,9 @@ package diagnostics
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -60,6 +60,29 @@ var kindToResource = map[string]string{
 	"Pod":                   "pods",
 	"Service":               "services",
 	"PersistentVolumeClaim": "persistentvolumeclaims",
+}
+
+// TargetResource returns the API group, version and plural resource of a
+// kind diagnostics can resolve, and false for any other kind. It is the
+// exported view of kindToResource for callers (incident capture) that must
+// SAR-gate a target with the same identity diagnostics use.
+func TargetResource(kind string) (group, version, resource string, ok bool) {
+	resource, ok = kindToResource[kind]
+	if !ok {
+		return "", "", "", false
+	}
+	gv := kindGroupVersion[kind]
+	return gv.Group, gv.Version, resource, true
+}
+
+// RuleDependsOn returns the plural resources ("pods", "replicasets") of the
+// related resolutions the named rule reads for target, beyond the target
+// object itself; nil for a rule that reads only the target, an unregistered
+// name or a nil target. Incident capture scopes a check's evidence to the
+// resource its content derives from with this (Q1: the stored scope must be
+// what the read path re-authorizes).
+func RuleDependsOn(rule string, target *DiagnosticTarget) []string {
+	return ruleDependsOn(rule, target)
 }
 
 // kindNeedsReplicaSets enumerates target kinds whose related-pod resolution
@@ -158,7 +181,7 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// Resolve the target resource and its related pods
 	target, err := Resolve(ctx, h.Lister, namespace, kind, name, related)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ErrTargetNotFound) {
 			httputil.WriteError(w, http.StatusNotFound, err.Error(), "")
 			return
 		}
@@ -282,21 +305,32 @@ func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request)
 // worse than a temporarily reduced result set. P3-3 review-fix REL-003 / adv-5
 // (security audit 2026-05-22).
 func (h *Handler) resolveRelatedRBAC(ctx context.Context, user *auth.User, clusterID, kind, namespace string) *RelatedRBAC {
+	return ResolveRelatedRBAC(ctx, h.AccessChecker, h.Logger, user, clusterID, kind, namespace)
+}
+
+// ResolveRelatedRBAC is resolveRelatedRBAC for callers outside the HTTP
+// handler (incident capture runs the same resolution so its diagnostic
+// evidence is gated exactly as the diagnostics endpoint is). A nil logger
+// falls back to slog.Default().
+func ResolveRelatedRBAC(ctx context.Context, ac *resources.AccessChecker, logger *slog.Logger, user *auth.User, clusterID, kind, namespace string) *RelatedRBAC {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	related := &RelatedRBAC{}
 
 	if kindNeedsPods[kind] {
-		allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", namespace)
+		allowed, err := ac.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", namespace)
 		if err != nil {
-			h.Logger.Warn("related-pod RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
+			logger.Warn("related-pod RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
 		} else {
 			related.Pods = allowed
 		}
 	}
 
 	if kindNeedsReplicaSets[kind] {
-		allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "replicasets", namespace)
+		allowed, err := ac.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "replicasets", namespace)
 		if err != nil {
-			h.Logger.Warn("related-replicaset RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
+			logger.Warn("related-replicaset RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
 		} else {
 			related.ReplicaSets = allowed
 		}
