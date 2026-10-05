@@ -94,7 +94,7 @@ Pure/hermetic unit tests are always-on and unaffected by the gate.
 | A | `create_user_preferences` — **applied as `000018`** |
 | G | `add_dashboard_layout_kind` |
 | B | `scope_eso_history` (index-only; no column change, no backfill) |
-| D | `create_incidents` |
+| D | `create_incidents` — planned as `000020`; takes `000024` (next free as of 2026-10-05) |
 | E | `create_change_receipts` — **applied as `000023`** (planned as `000021`; by merge time `000019`–`000022` were taken by G, B, the notification resource-uid fix, and F) |
 | F | `create_backup_assurance` |
 | C | none |
@@ -176,7 +176,9 @@ DX                      discoverability fix for shipped Release A surfaces   [do
 C (partial)             U7 → U8 → U11a          pulled forward — see below   [done]
 Release G               D0 → P1 → P2 → P3 → P4  personal dashboard builder   [done]
 Release B               U13 → U14a → U14b → U15 → U16 → U17 → U18 → U19a → U19b   [done]
-Release C (remainder)   U9a → U9b → U10 → U10i*** → U11b → U11c → U12*
+Release C (remainder)   U9a → U9b → U10 → U10i*** → U11b → U11c → U12*   [done]
+                        PRs #493 (U9a), #494 (U9b), #495 (U10), #496 (U10i), #497 (U11b),
+                        #498 (U11c), #499 (U12); #503 is a follow-up fix to U11b's pinning
 Release F               U32 → U32b → U33 → U34a → U34b → U34c → U35 → U36 → U36b → U37**   [done]
                         PRs #548–#559 + U37 docs PR (template only; Q3 pending, rehearsal execution gated)
 U20                     pulled forward from Release D                         [done]
@@ -189,9 +191,12 @@ Release G / P5          29 catalog widgets, ~7 units — interleaved as waves   
                         between the releases above; no ordering dependency
 ```
 
-**Next (2026-10-05):** U20 and Release E are done. Next is the Release D
-remainder, starting at U21a and running U21a → U21b → U22a → U22b → U23a →
-U23b → U24a → U24b → U24c → U25a → U25b.
+**Next (2026-10-05):** U20, Release E and Release C are done. The Release D
+remainder is in progress from 2026-10-05, starting with a plan refresh
+(`## 0. Amendments (2026-10-05)` in `2026-09-10-release-d-incidents-impl.md`,
+which corrects the migration number, commands, paths and config ordering),
+then U21a ∥ U22a, and running on U21a → U21b → U22a → U22b → U23a → U23b →
+U24a → U24b → U24c → U25a → U25b.
 
 ### Release E — as shipped (2026-10-05)
 

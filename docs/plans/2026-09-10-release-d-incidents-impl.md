@@ -3,7 +3,7 @@ title: "Release D — Persistent Incident Investigations — Implementation Plan
 parent_plan: docs/plans/2026-09-10-1315-feat-feature-expansion-plan.md
 release: D
 units: U20–U25
-migration_sequence: 000020
+migration_sequence: 000024
 date: 2026-09-10
 q1_policy: resolved — owner + explicit grant + current-authorization re-check at read time, 30-day retention
 ---
@@ -15,6 +15,97 @@ Covers master-plan requirements **R1, R2, R3, R14, R15, R16, R17**, decisions **
 This document is a plan only. No production code, migrations, or tests were written into the repository while producing it. The only repository write is this file.
 
 **Unit count after splits: 12** (master plan proposed 6). Every unit is one feature branch, one PR, at most five touched files including tests. Split rationale is stated per unit.
+
+---
+
+## 0. Amendments (2026-10-05) — current-tree corrections
+
+Written against `origin/main` at `89e49850` (Release E closed out, PR #571). **These amendments override the original text below.** §1–§7 are kept unedited as the historical record, apart from short "superseded by A-n" pointers where a reader would otherwise be misled. When a unit section and an amendment disagree, the amendment wins. Every claim here was checked against the tree on the date above.
+
+### A-1. Migration number is `000024`, not `000020`
+
+`000020`–`000023` are taken: `000020_scope_eso_history`, `000021_add_nc_notification_resource_uid`, `000022_create_backup_assurance`, `000023_create_change_receipts`. Release D's migration is `000024_create_incidents` (`.up.sql` and `.down.sql` under `backend/internal/store/migrations/`). Every `000020` in §3.1, U21a and §5 means `000024`; the front matter `migration_sequence` is updated to match. G4's rule still stands: confirm the next free number at merge time, renumber before merge if another migration lands first, and never renumber after deployment (`migrate.go` runs plain `m.Up()`).
+
+### A-2. CI has PostgreSQL (U0 shipped); DB-truth tests run in CI
+
+The backend CI job runs a `postgres:17-alpine` service and sets `KUBECENTER_TEST_DATABASE_URL` and `KUBECENTER_TEST_REQUIRE_DATABASE=1` (`.github/workflows/ci.yml`), so a missing database fails CI rather than skipping. The shared harness is `backend/internal/store/testdb_test.go` (`testDB(t)`, `testOwnerID(t)`, `testDBWithMaxConns`). The scratch-database migration helper `migrationScratchDB(t)` is defined in `backend/internal/store/preferences_test.go` and used by `backup_assurance_test.go` and `change_receipts_test.go`.
+
+This supersedes **C5**, **R-2** and **OQ-1**. Rules for U21a/U21b/U25a tests:
+
+- DB-truth tests use `testDB(t)` and isolate by unique per-test owner ids (`testOwnerID(t)`). They never drop or truncate shared tables.
+- The migration round trip runs on a scratch database from `migrationScratchDB(t)`. Precedent: `TestMigration000023_RoundTripLeavesOtherTablesIntact` in `change_receipts_test.go`, plus the `TestMigration000023_UpAndDownAreWellFormed` and `TestMigration000023_DownDropsGrantsBeforeReceipts` file checks.
+- Locally, run store suites with `KUBECENTER_TEST_DATABASE_URL` pointed at a throwaway test database, never the developer's dev database. `-race` is CI-only on the Windows dev host.
+- C5's "split `incidents_test.go` into always-on and `t.Skip` halves" is replaced by this harness, and U24c's e2e is no longer the only real-PostgreSQL proof.
+
+### A-3. Frontend is Bun 1.4 + Astro 7 (Preact islands), not Deno/Fresh
+
+- Replace every `deno task check` / `deno task test` / `deno task build` with `cd frontend && bun run check && bun test && bun run build`. `bun run check` is `biome check ../` + `astro check` + the `server/check-*.ts` guards, repo-wide.
+- Path mapping:
+  - `frontend/islands/X.tsx` → `frontend/src/islands/X.tsx`; island tests are colocated as `X_test.tsx` (for example `ChangeReceiptList_test.tsx`) and run by `bun test`.
+  - `frontend/routes/observability/incidents/index.tsx` → `frontend/src/pages/observability/incidents/index.astro`; `.../incidents/[id].tsx` → `.../incidents/[id].astro`. Precedent: `frontend/src/pages/changes/index.astro` and `[id].astro` (frontmatter imports the island and `ChromeLayout.astro`; the template is `<ChromeLayout><Island client:load /></ChromeLayout>`).
+  - `frontend/lib/*` stayed at `frontend/lib/` (`incident-types.ts`, the new API module and its `_test.ts` live there).
+  - `frontend/routes/observability/investigate.tsx` (the SSR-shell model in U24a) is now `frontend/src/pages/observability/investigate.astro`.
+- Guards a new island or page must pass: `check-island-hydration-directives.ts` (every island call site in a page or layout needs a `client:*` directive; the repo standard is `client:load`) and `check-no-signal-store-in-ssr.ts` (an `.astro` entry point must not reach `lib/api.ts`, `lib/auth.ts` or the signal stores through its import graph except via an island). `check-no-duplicate-lib-state.ts` keeps `frontend/lib/{cluster,ws,namespace}` as one-line re-exports of their `src/lib` twin.
+- The "Tailwind utilities only, no inline styles" rule for new islands is unchanged.
+
+### A-4. API client is a domain module, not an `api.ts` namespace
+
+The current convention is one stateless module per domain, over `api.ts`: `frontend/lib/change-api.ts` (with `change-api_test.ts`), `eso-api.ts`, `mesh-api.ts`. U24a creates `frontend/lib/incident-api.ts` (and `incident-api_test.ts` if it fits the budget) and **leaves `frontend/lib/api.ts` untouched** unless a shared helper is genuinely needed. This supersedes §1.9's "U24 omits `lib/api.ts`" finding (C2), U24a's step 2 (`incidentsApi` appended to `api.ts`) and the `frontend/lib/api.ts` row in §5. Re-derive U24a's file list accordingly (still at most five): `incident-types.ts`, `incident-api.ts`, `src/islands/IncidentList.tsx`, `src/pages/observability/incidents/index.astro`, and at most one test. Read `change-api.ts`'s header before writing: it documents which requests it pins to the local cluster and why, and incident reads (capture is local-only in Release D) need the same explicit decision about `X-Cluster-ID`.
+
+### A-5. U20 shipped (PR #562) with the Release-E-conformed contract
+
+§3.3's sketch is historical. The shipped API is in `backend/internal/diagnostics/check_result.go`; U22b's diagnostics adapter consumes it as follows.
+
+- `func Normalize(clusterID string, target *DiagnosticTarget, observedAt time.Time, results []Result) []CheckResult`. `observedAt` comes from the caller (pass the time `RunDiagnostics` returned). A nil `results` yields nil. Only pass it `Result`s produced by `RunDiagnostics`: a rule absent from `checkIDForRule` gets an empty `CheckID`.
+- `func Denormalize(cs []CheckResult) []Result` is exact only for values `Normalize` produced (the legacy `Result` sits in an unexported field, so a `CheckResult` decoded from JSON denormalizes to zero values).
+- `CheckResult` fields and JSON keys: `checkId`, `status`, `severity`, `reason`, `message`, `detail,omitempty`, `remediation,omitempty`, `source` (a `SourceRef`), `observedAt`, `evidence,omitempty`. `Remediation` is an addition to the Release E contract; Release E's decoder ignores it.
+- `CheckStatus` is `pass`, `warn`, `fail` or `inconclusive`. `Severity` is the existing `critical` / `warning` / `info`.
+- `CheckID` is an opaque string formatted `diagnostics/<slug>` from a frozen map: `diagnostics/crashloopbackoff`, `imagepullbackoff`, `pendingpod`, `replicamismatch`, `zeroendpoints`, `pendingpvc`. Incidents and change receipts persist these ids, so they are a wire contract.
+- `Reason` is **always set**: `ok` (pass), `finding` (warn or fail), `permission_denied`, `source_unavailable`, `timed_out`, `internal_error`. A result downgraded because a related resolution was skipped takes the limitation's reason. Consumers branch on it; a value is never renamed or reused.
+- `SourceRef` is `{clusterId, group?, version?, resource, kind, namespace?, name, uid?}`; `uid` is empty when the object was not read, never invented.
+- Evidence shape: `map[string]string` from `"<Kind>/<Name>"` to the observed UID (empty when not observed), never object content.
+
+### A-6. Config ordering defect: `cfg.Incidents` does not exist until U25a
+
+U23a's `main.go` sketch passes `cfg.Incidents`, but `Config.Incidents` is introduced only in U25a. Resolution:
+
+1. **U22b** defines `incidents.Limits` with `incidents.DefaultLimits()`: 1 MiB per item, 10 MiB per incident, 500 items, 20 scopes, 20 s capture timeout, 5 s per-source timeout, concurrency 4. `NewCollector` and the handler take `incidents.Limits`, not a config type. This replaces the `Config.Incidents.*` field comments in §3.4 and the `cfg.Incidents` arguments in U23a.
+2. **U23a** wires `incidents.DefaultLimits()` in `main.go`.
+3. **U25a** adds `Config.Incidents` (`IncidentsConfig`), converts it to `incidents.Limits`, and **clamps every limit so it can never exceed the SQL CHECK ceilings in the `000024` DDL**: `payload_bytes <= 1048576` (per item), `evidence_bytes <= 10485760` (per incident), `evidence_count <= 500`, `scope_count <= 20`. Without the clamp, an operator who raises `maxincidentbytes` above 10 MiB would make inserts fail on the CHECK instead of capping capture. The clamp logs when it corrects a value. `RetentionDays` keeps its `[1, 3650]` clamp (it matches the `retention_days_at_capture` CHECK). U25a then switches `main.go` from `DefaultLimits()` to the configured values. The timeout and concurrency limits have no SQL ceiling but still need sane lower bounds.
+
+### A-7. Release E precedents to mirror — shape, not policy
+
+Mirror the shape of: the store idiom in `backend/internal/store/change_receipts.go`; the truthful 503 gate and handler layout in `backend/internal/changes/handler.go`; read-time redaction and its fuzz target in `backend/internal/changes/redaction.go` and `redaction_fuzz_test.go`; and the frontend contract, UI and e2e in `frontend/lib/change-*.ts`, `frontend/src/islands/ChangeReceipt*.tsx` and `e2e/tests/change-receipts.spec.ts`.
+
+Policy differences that **must stay** as §2 states them:
+
+- **No admin override (P1).** Receipts let an admin read; incidents are visible only to the owner or an explicit grantee.
+- **Access-check errors are distinct from denial (P4).** An error from the access check surfaces as `authorization_check_unavailable`, never folded into `forbidden` (receipts fold errors into forbidden).
+
+### A-8. E2E
+
+- Specs must live under `e2e/tests/` (guard `frontend/server/check-e2e-specs-in-testdir.ts`).
+- `e2e/playwright.config.ts` now has six projects: `setup`, `chromium`, `route-contract`, `route-inventory`, `dashboard-layout`, `discoverability`. R-11's wall-clock concern applies to any project U24c adds.
+- Before U24c adds `e2e/fixtures/collaborator.setup.ts` and a `collaborator` project, use the second-identity pattern `e2e/tests/change-receipts.spec.ts` already ships ("a second user cannot open another user's receipt (404)"): the admin creates a second local user through `POST /api/v1/users` (`roles: ["viewer"]`, a unique `e2eSecureName` username), logs it in through `/api/v1/auth/login` (through `postWithBackoff`, a helper local to that spec, because of the shared 5/min auth bucket; reuse it by moving it into `e2e/helpers.ts` only if the file budget allows, otherwise copy it), drives API calls with `bearerHeaders(token)` and the UI with `attachAuthInjection(page, token)` (both exported from `e2e/helpers.ts`) in a fresh browser context, and deletes the user in `finally`. Add a setup project only if that pattern demonstrably does not fit. Using it also removes the `playwright.config.ts` edit from U24c's file list.
+
+### A-9. Stale anchors; C6 and C7 still hold
+
+Line-number anchors in §1 and §4 (`main.go L…`, `routes.go L…`, `access.go:111`, `handler.go:297-311`, `externalsecrets/bulk.go:294`) are stale; locate each by symbol. Spot-checked on 2026-10-05:
+
+- **C6 holds.** `resources.ValidateURLParams` (`backend/internal/k8s/resources/handler.go`) validates only the `name` and `namespace` chi params. Incident handlers still `uuid.Parse` `{incidentID}` and return 400.
+- **C7 holds.** In `backend/internal/k8s/resources/access.go`, predicate mode makes `CanAccess` short-circuit to allow and consults the predicate only in `CanAccessGroupResource`. All read-time re-authorization in Release D still goes through `CanAccessGroupResource`.
+
+### A-10. `DiagnosticWorkspace`
+
+It is now `frontend/src/islands/DiagnosticWorkspace.tsx` with `DiagnosticWorkspace_test.tsx`. It is **396 LOC** (the plan's 372 is stale) and **still uses inline `style={{…}}`** (19 occurrences). R-6 and U25b stand: U25b's edit stays additive, and any Tailwind conversion is its own PR with a Step-0 cleanup commit (the file is over 300 LOC, so Agent Directive 1 applies to a structural change).
+
+### A-11. Audit actions
+
+Release E added one constant to `backend/internal/audit/logger.go`: `ActionChangeVerify` (PR #567). Release F added none. R-7's approach (local constants in the incidents package when the five-file budget requires it) remains acceptable; promote them to `logger.go` when a unit has file headroom.
+
+### A-12. Capability rows
+
+Release E added a `changes.receipts` row to `capabilityOperations` in `backend/internal/server/handle_capabilities.go` and a row in README's "Remote cluster support" table; `readme_capability_parity_test.go` keeps the two in step. Incidents need a row: capture is **local-cluster-only** in Release D (remote capture is deferred), so the row declares `LocalSupported: true, RemoteSupported: false`, with a matching README table row. Owner: **U23b**, the unit that ships the capture endpoint, adds both so the capability never claims more than the handlers do. If U23b's file budget is full, U25b owns it. CLAUDE.md requires `capabilityOperations`, the README table and handler behaviour to move together.
 
 ---
 
@@ -166,7 +257,7 @@ Full-tree grep finds no shared redaction package. The only maskers are `resource
 `routes.go` gates every optional handler with `if s.XHandler != nil { s.registerXRoutes(ar) }`. If incidents follow that, a no-DB deployment returns chi's bare 404 for `/api/v1/incidents/{id}` — indistinguishable from "that incident does not exist", which violates R3 and U23's own exit criterion (*"no DB reports unavailable"*). The correct in-repo precedent is `externalsecrets/bulk.go:294`: **routes stay registered; the handler returns `503`.**
   → **Resolution:** `main.go` always constructs `incidents.NewHandler(...)`, passing a possibly-nil store. `routes.go` registers unconditionally on `s.IncidentsHandler != nil` (which is always true). Every handler method begins with a shared `h.requireStore(w)` gate returning `503` + `reason: "incident_persistence_unavailable"`.
 
-**C5 — There is no store-layer test harness, and CI has no PostgreSQL for `go test`.**
+**C5 — There is no store-layer test harness, and CI has no PostgreSQL for `go test`.** *(Superseded by A-2: both now exist.)*
 `backend/internal/store/` has zero test files and `ci.yml` runs `go test ./...` without a database. The master plan's verification row *"Real PostgreSQL migration round trips"* has no automated home today.
   → **Resolution:** `store/incidents_test.go` is split in two halves in one file: (a) pure-function tests (validation, byte accounting arithmetic, capture-key derivation, SQL-parameter construction) that always run; (b) integration tests behind `t.Skip` unless `KUBECENTER_TEST_DATABASE_URL` is set. The real migration round-trip and real persistence assertions are additionally covered by U24c's e2e suite, which *does* run against PostgreSQL 17. `e2e.yml` gets no new service.
 
@@ -247,6 +338,8 @@ Q1 is **resolved**. This section is the authoritative specification. Every AE6 b
 ## 3. Design Decisions
 
 ### 3.1 DDL — migration `000020_create_incidents`
+
+> **Superseded by A-1:** the migration is `000024_create_incidents`. The DDL below is otherwise current.
 
 `backend/internal/store/migrations/000020_create_incidents.up.sql`:
 
@@ -469,6 +562,8 @@ type WithheldEvidence struct {
 **Snapshot vs live link.** Snapshots are the default and the only mode in the first release for `diagnostic_check`, `object_summary`, and `event_list`. `live_link` is defined now (schema + envelope) so that the deferred Loki-excerpt and alert-snapshot adapters can use it without a migration, and so the UI's "retained / live" distinction (R15) is built and tested from day one against at least one live-link item — the incident's own target resource reference is stored as a `live_link` `object_summary` alongside the snapshot, giving the UI a real, testable pair.
 
 ### 3.3 The normalized check-result contract (U20) and its compatibility adapter
+
+> **Superseded by A-5:** U20 shipped (PR #562). The sketch below is historical; read `backend/internal/diagnostics/check_result.go` and A-5 for the real signatures and field set.
 
 New file `backend/internal/diagnostics/check_result.go`. **`Result`, its JSON tags, `CheckFunc`, and `RunDiagnostics`'s signature are frozen — no edits.**
 
@@ -698,7 +793,7 @@ cd backend && go vet ./... && go test ./... -race -count=1
 5. `backend/internal/store/migrations/NOTES.txt` — edit (append a `000020_create_incidents` section)
 
 **Steps:**
-1. Write both migration files exactly as §3.1. **The sequence is `000020`.** Do not renumber; 000018, 000019, 000021, 000022 belong to other tracks.
+1. Write both migration files exactly as §3.1. **The sequence is `000024`** (A-1; this step originally said `000020`, which is taken). Confirm the next free number at merge time; renumber before merge if another migration lands first, never after deployment.
 2. `NOTES.txt` — append a section covering: the destructive-rollback constraint (deploy the older image, leave the tables); the retroactive-retention consequence of lowering `KUBECENTER_INCIDENTS_RETENTIONDAYS` (P13); the inspection query `SELECT id, owner_id, cluster_id, created_at, evidence_count, evidence_bytes FROM incidents ORDER BY created_at;`; and the fact that `owner_id` is `auth.User.ID`, not a `local_users` FK, so deleting a local user does not delete their incidents.
 3. `incidents.go` — mirror `eso_history.go` exactly:
 ```go
@@ -1211,7 +1306,7 @@ bash scripts/check-cluster-routing.sh
 
 **Files (4):**
 1. `frontend/lib/incident-types.ts` — new
-2. `frontend/lib/api.ts` — edit (append `incidentsApi`)
+2. ~~`frontend/lib/api.ts` — edit (append `incidentsApi`)~~ **Superseded by A-3/A-4:** create `frontend/lib/incident-api.ts` instead; paths below map to `frontend/src/islands/` and `frontend/src/pages/` (`index.astro`).
 3. `frontend/islands/IncidentList.tsx` — new
 4. `frontend/routes/observability/incidents/index.tsx` — new
 
@@ -1457,7 +1552,7 @@ U22a ────────────┘                    └→ U25a ─�
 | `backend/internal/server/routes.go` | **U23a** (adds `registerIncidentRoutes` + the cascade entry), **U23b** (extends the same function) | Strictly sequential. U23b rebases on U23a. Both edit the *same function body* — never work them in parallel. |
 | `backend/internal/server/server.go` | **U23a** only | No conflict within Release D. **But**: Release A (U1–U3) and Release F (U32–U36) also add `Deps` fields. The master plan's own warning applies — land Release D's `server.go` edit in one PR and rebase other tracks onto it. |
 | `backend/cmd/kubecenter/main.go` | **U23a** (store + collector + handler construction, `Deps` literal), **U25a** (the `go retainer.RunLoop(ctx)` line inside the block U23a created) | Sequential. U25a's edit is a three-line insertion inside U23a's `if dbPool != nil` region; it cannot be authored before U23a merges. |
-| `backend/internal/store/migrations/` | **U21a** only | **Sequence `000020` is reserved for this plan.** 000018, 000019, 000021, 000022 belong to other tracks. Do not renumber under any circumstance — golang-migrate records applied versions and a renumber after any deployment silently skips the migration (the exact failure documented in `NOTES.txt` for 000016/000017). |
+| `backend/internal/store/migrations/` | **U21a** only | **(A-1: the sequence is now `000024`; `000020`–`000023` are taken.)** Original text: **Sequence `000020` is reserved for this plan.** 000018, 000019, 000021, 000022 belong to other tracks. Do not renumber under any circumstance — golang-migrate records applied versions and a renumber after any deployment silently skips the migration (the exact failure documented in `NOTES.txt` for 000016/000017). |
 | `backend/internal/store/migrations/NOTES.txt` | **U21a** only | Append-only; conflicts with other tracks are trivially resolvable. |
 | `.github/workflows/fuzz.yml` | **U22a** (`FuzzIncidentRedaction` row), **U22b** (`FuzzEventProjection` row) | Sequential, one row each, so each PR stays independently green under the `-list` drift guard. Never add a row for a target that does not yet exist. |
 | `backend/internal/config/config.go`, `defaults.go` | **U25a** only within Release D | Releases A and F also add config sections. Same rebase discipline. |
@@ -1494,7 +1589,7 @@ Explicitly **not** in Release D. Each item names its gate.
 | # | Risk | Impact | Mitigation / owner |
 |---|---|---|---|
 | R-1 | **Read-time SAR cost on a cold cache.** Up to 20 `SelfSubjectAccessReview` POSTs per incident read after 60s of inactivity. | Slow first render; API-server load on large deployments. | P5 caps scopes at 20 and de-duplicates before checking. Instrument sweep/read latency and SAR counts per the master plan's observability section. If it bites, the fix is a per-request memo *within* one request — never a longer cross-request TTL, which would widen the revocation window past 60s. |
-| R-2 | **No store-layer test harness and no PostgreSQL in the backend CI job.** | The DB-truth assertions in U21a/U21b are skipped in CI. | Correction C5: pure tests always run; integration tests skip-guard on `KUBECENTER_TEST_DATABASE_URL`; U24c's e2e covers real persistence against PostgreSQL 17. **Open item:** decide whether to add a `services: postgres` block to `ci.yml`'s backend job. That is a CI-wide change affecting every track and is deliberately **out of scope here** — raise it separately. |
+| R-2 | **No store-layer test harness and no PostgreSQL in the backend CI job.** *(Superseded by A-2: U0 shipped both.)* | The DB-truth assertions in U21a/U21b are skipped in CI. | Correction C5: pure tests always run; integration tests skip-guard on `KUBECENTER_TEST_DATABASE_URL`; U24c's e2e covers real persistence against PostgreSQL 17. **Open item:** decide whether to add a `services: postgres` block to `ci.yml`'s backend job. That is a CI-wide change affecting every track and is deliberately **out of scope here** — raise it separately. |
 | R-3 | **Two-identity e2e cannot prove the revoked-Kubernetes-permission branch** in `kind` (both local users likely map to identical RBAC). | AE6's revocation branch is proven only in Go tests. | Stated explicitly in U24c's steps and PR description. The Go tests using `NewPredicateAccessChecker` are the real proof. Do not overclaim in release notes. |
 | R-4 | **Retroactive retention deletion.** Lowering `KUBECENTER_INCIDENTS_RETENTIONDAYS` deletes incidents on the next sweep. | Silent data loss for an operator who was tuning config. | Documented in `NOTES.txt` (U21a) and in the effective-value startup log line (U25a). **Open item:** should a lowering be gated behind an explicit confirmation flag? Recommend: log at `Warn` when the configured value is lower than the max `retention_days_at_capture` present in the table. |
 | R-5 | **`main.go` is 965 LOC and three Release-D-adjacent tracks all edit it.** | Merge conflicts. | Sequencing table in §5. Keep each unit's `main.go` diff to a contiguous block. |
@@ -1506,7 +1601,7 @@ Explicitly **not** in Release D. Each item names its gate.
 | R-11 | **Adding an e2e project extends CI wall-clock** (`fullyParallel: false`, `workers: 1` in CI). | Slower PR feedback for everyone. | U24c must report the measured delta in its PR. If it is large, scope the `collaborator` project to `testMatch: /incidents\.spec\.ts/` (already planned) so it runs the minimum. |
 
 **Open questions this plan does not answer** (deliberately, they are operator/product inputs, not gaps to fill by assumption):
-- **OQ-1** Should `ci.yml`'s backend job gain a PostgreSQL service? (Cross-track; see R-2.)
+- **OQ-1** Should `ci.yml`'s backend job gain a PostgreSQL service? (Cross-track; see R-2.) *(Resolved by A-2: U0 added it.)*
 - **OQ-2** Should retention lowering require explicit operator confirmation? (See R-4.)
 - **OQ-3** Who owns the `DiagnosticWorkspace.tsx` Tailwind conversion, and when? (See R-6.)
 
