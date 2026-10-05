@@ -179,17 +179,27 @@ func TestRedactKindlessSecretBySourceResource(t *testing.T) {
 			"metadata":   metadata("db-creds", "payments", nil),
 			"data":       map[string]any{canaryKeyName: canaryValue},
 			"stringData": map[string]any{"token": canaryValue},
+			// Allowlisted-looking spec/status must not ride along on a Secret.
+			"spec":   map[string]any{"replicas": float64(1), "containers": []any{map[string]any{"name": "x", "image": "y"}}},
+			"status": map[string]any{"phase": "Bound"},
 		}
 		out, meta := r.RedactObject(obj, source)
 		js := marshal(t, out)
 		if strings.Contains(js, canaryValue) || strings.Contains(js, canaryKeyName) || strings.Contains(js, "token") {
 			t.Errorf("source %q: payload survived: %s", source, js)
 		}
+		for _, k := range []string{"spec", "status"} {
+			if _, ok := out[k]; ok {
+				t.Errorf("source %q: Secret projection carries %q: %s", source, k, js)
+			}
+		}
 		if !meta.SecretDerived || !hasRule(meta, RuleSecretValues) {
 			t.Errorf("source %q: meta = %+v; want SecretDerived with %s", source, meta, RuleSecretValues)
 		}
-		if hasRule(meta, RuleFieldAllowlist) || meta.FieldsRemoved != 2 {
-			t.Errorf("source %q: data/stringData not attributed to secret-values alone: %+v", source, meta)
+		// data and stringData are attributed to secret-values; spec and status
+		// on a Secret are ordinary non-allowlisted fields. Four removals.
+		if !slices.Equal(meta.Rules, []string{RuleSecretValues, RuleFieldAllowlist}) || meta.FieldsRemoved != 4 {
+			t.Errorf("source %q: meta = %+v; want rules [secret-values field-allowlist], FieldsRemoved 4", source, meta)
 		}
 	}
 	// Other spellings are not a Secret source: the caller contract is the
@@ -257,6 +267,37 @@ func TestRedactAnnotationCapStillClassifiesEveryKey(t *testing.T) {
 	}
 	if meta.FieldsRemoved != 41 || !meta.Truncated {
 		t.Errorf("meta = %+v; want FieldsRemoved=41 (1 non-string label + 40 condition extras), Truncated", meta)
+	}
+}
+
+// The list caps (containers 64, ownerReferences 16) keep exactly the cap and
+// still classify every element past it (review r2 #4).
+func TestRedactListCapsStillClassifyEveryElement(t *testing.T) {
+	r := mustRedactor(t, DefaultMaxBytes)
+	containers := make([]any, 0, 70)
+	for i := 0; i < 70; i++ {
+		containers = append(containers, map[string]any{"name": "c", "image": "i", "ports": []any{}})
+	}
+	refs := make([]any, 0, 20)
+	for i := 0; i < 20; i++ {
+		refs = append(refs, map[string]any{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "rs", "uid": "u", "blockOwnerDeletion": true})
+	}
+	obj := map[string]any{
+		"kind":     "Pod",
+		"metadata": metadata("p", "ns", map[string]any{"ownerReferences": refs}),
+		"spec":     map[string]any{"containers": containers},
+	}
+	out, meta := r.RedactObject(obj, "pods")
+	keptC, _ := out["spec"].(map[string]any)["containers"].([]any)
+	keptR, _ := out["metadata"].(map[string]any)["ownerReferences"].([]any)
+	if len(keptC) != maxContainers || len(keptR) != maxOwnerReferences {
+		t.Errorf("kept %d containers, %d ownerReferences; want %d, %d", len(keptC), len(keptR), maxContainers, maxOwnerReferences)
+	}
+	if meta.FieldsRemoved != 90 || !meta.Truncated {
+		t.Errorf("meta = %+v; want FieldsRemoved=90 (70 ports + 20 blockOwnerDeletion), Truncated", meta)
+	}
+	if !slices.Equal(meta.Rules, []string{RuleFieldAllowlist, RuleTruncated}) {
+		t.Errorf("Rules = %v", meta.Rules)
 	}
 }
 
