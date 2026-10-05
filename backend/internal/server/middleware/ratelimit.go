@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
 
@@ -151,11 +152,52 @@ func extractIP(r *http.Request) string {
 // fail silently in the same request goroutine; a slow audit backend would
 // only slow down already-rejected requests, never legitimate ones.
 func RateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
+	return rateLimitKeyed(limiter, extractIP)
+}
+
+// RateLimitByUser is [RateLimit] keyed on the authenticated user instead of the
+// socket IP. In the default install every browser request reaches the backend
+// through the frontend BFF, which does not forward the client address, so a
+// per-IP bucket there is one bucket for the whole installation. Keying on the
+// user gives each person their own budget.
+//
+// It must be mounted AFTER the Auth middleware so the user is in the request
+// context. keyPrefix namespaces the key ("changes" gives "changes:user:..."),
+// keeping it clear of bare-IP keys and other prefixes on a shared limiter. When
+// no user is present (middleware mounted without Auth, a bug) it falls back to
+// the IP so the route is never left unlimited.
+func RateLimitByUser(limiter *RateLimiter, keyPrefix string) func(http.Handler) http.Handler {
+	return rateLimitKeyed(limiter, func(r *http.Request) string {
+		if u, ok := auth.UserFromContext(r.Context()); ok && u != nil {
+			id := u.ID
+			if id == "" {
+				id = u.Username
+			}
+			if id != "" {
+				return keyPrefix + ":user:" + u.Provider + ":" + id
+			}
+		}
+		return extractIP(r)
+	})
+}
+
+// rateLimitedUser names the authenticated user for the 429 audit entry, or ""
+// on a route with no auth in front of it (the login and refresh limiters).
+func rateLimitedUser(r *http.Request) string {
+	if u, ok := auth.UserFromContext(r.Context()); ok && u != nil {
+		return u.Username
+	}
+	return ""
+}
+
+// rateLimitKeyed is the shared 429 path. keyFn picks the bucket key; the audit
+// entry's SourceIP is always the socket IP regardless of the key.
+func rateLimitKeyed(limiter *RateLimiter, keyFn func(*http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := extractIP(r)
 
-			allowed, retryAfter := limiter.Check(ip)
+			allowed, retryAfter := limiter.CheckKey(keyFn(r))
 			if !allowed {
 				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 				w.Header().Set("Content-Type", "application/json")
@@ -174,6 +216,7 @@ func RateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
 					// nothing useful to do about a logging failure.
 					_ = logger.Log(r.Context(), audit.Entry{
 						Timestamp: time.Now(),
+						User:      rateLimitedUser(r),
 						SourceIP:  ip,
 						Action:    audit.ActionRateLimited,
 						Result:    audit.ResultDenied,

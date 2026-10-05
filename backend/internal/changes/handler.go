@@ -114,7 +114,22 @@ type Handler struct {
 	logger   *slog.Logger
 	// clusterTimeout is clusterCallTimeout; a field so tests can shorten it.
 	clusterTimeout time.Duration
+	// verificationAudit, when set, is called by HandleVerification once per
+	// verdict THIS request persisted (VerificationResult.Persisted). See
+	// SetVerificationAudit.
+	verificationAudit VerificationAuditFunc
 }
+
+// VerificationAuditFunc records that a request persisted a final verification
+// verdict for rec. r carries the request context and source address, user is
+// the authenticated caller (the receipt's owner, the only persisting reader),
+// state is the verdict that was written.
+type VerificationAuditFunc func(r *http.Request, user *auth.User, rec *store.ChangeReceipt, state store.VerificationState)
+
+// SetVerificationAudit installs the hook that audits persisted verdicts. It is
+// called after construction, before the handler serves requests, so the
+// constructor keeps its signature. A nil hook (the default) audits nothing.
+func (h *Handler) SetVerificationAudit(fn VerificationAuditFunc) { h.verificationAudit = fn }
 
 // NewHandler builds the handler. receipts and access may be nil; the
 // handlers then answer 503 (no database) and redact every object (no
@@ -443,9 +458,12 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 // the caller's identity on the RECEIPT's cluster and returns the redacted
 // checks. For the owner the pass is VerifyOnce and the verdict is persisted:
 // a GET that writes is intended (plan D6: stateless polling, no background
-// watcher; the write is derived state, not an operator action, so it is not
-// audited). Every other reader gets the same evaluation live and nothing is
-// stored. A receipt whose verification is already final returns the stored
+// watcher). Each verdict the owner's request persists is audited through the
+// hook installed with SetVerificationAudit, once, keyed on
+// VerificationResult.Persisted: a live evaluation by anyone else, a stored
+// verdict read back, a write that lost a race to ErrReceiptAlreadyFinal, and a
+// verdict the orphan reconciler wrote all produce no entry. Every other reader
+// gets the same evaluation live and nothing is stored. A receipt whose verification is already final returns the stored
 // verdict without a verification read; the per-object SARs that redact its
 // checks still run, for every reader.
 //
@@ -489,6 +507,9 @@ func (h *Handler) HandleVerification(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			h.writeVerifyError(w, r, rec.ID, err)
 			return
+		}
+		if res.Persisted && h.verificationAudit != nil {
+			h.verificationAudit(r, user, rec, res.State)
 		}
 	}
 

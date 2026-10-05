@@ -441,6 +441,12 @@ type VerificationResult struct {
 	State             store.VerificationState `json:"state"`
 	Checks            []CheckResult           `json:"checks"`
 	RetryAfterSeconds int                     `json:"retryAfterSeconds,omitempty"`
+	// Persisted is true only when THIS VerifyOnce call's SetVerification landed
+	// a FINAL verdict. It is false for a live evaluation that was not stored,
+	// for a stored verdict read back (already final, or a write that lost the
+	// race and returned ErrReceiptAlreadyFinal), and for non-final states. It
+	// is the signal the verification audit keys on, and never reaches the wire.
+	Persisted bool `json:"-"`
 }
 
 // ReceiptView is the envelope of a receipt as the read endpoints render it.

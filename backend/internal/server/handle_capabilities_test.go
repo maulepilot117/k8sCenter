@@ -260,7 +260,7 @@ var (
 		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply", "dashboard.summary",
 		"node.drain", "gitops.applications", "velero.backups", "storage.snapshots",
 		"storage.classes", "flux.notifications", "alert.rules", "gateway.read", "mesh.routing",
-		"mesh.mtls", "eso.read", "certmanager.certificates", "policy.read",
+		"mesh.mtls", "eso.read", "certmanager.certificates", "policy.read", "changes.receipts",
 	}
 	wantRemoteUnsupported = []string{
 		"resources.counts", "pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",

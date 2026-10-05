@@ -235,3 +235,26 @@ func TestSlogLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestChangesReceiptRetentionDays(t *testing.T) {
+	t.Run("defaults to 30", func(t *testing.T) {
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Changes.ReceiptRetentionDays != 30 {
+			t.Errorf("default ReceiptRetentionDays = %d, want 30", cfg.Changes.ReceiptRetentionDays)
+		}
+	})
+
+	t.Run("env KUBECENTER_CHANGES_RECEIPTRETENTIONDAYS maps to Changes.ReceiptRetentionDays", func(t *testing.T) {
+		t.Setenv("KUBECENTER_CHANGES_RECEIPTRETENTIONDAYS", "7")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Changes.ReceiptRetentionDays != 7 {
+			t.Errorf("ReceiptRetentionDays = %d, want 7", cfg.Changes.ReceiptRetentionDays)
+		}
+	})
+}

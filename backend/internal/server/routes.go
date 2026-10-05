@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
@@ -195,6 +197,11 @@ func (s *Server) registerRoutes() {
 			// GitOps routes — only registered if gitops handler is available
 			if s.GitOpsHandler != nil {
 				s.registerGitOpsRoutes(ar)
+			}
+
+			// Tracked-change routes — only registered if the changes handler is available
+			if s.ChangesHandler != nil {
+				s.registerChangesRoutes(ar)
 			}
 
 			// Security scanning routes — only registered if scanning handler is available
@@ -583,6 +590,51 @@ func (s *Server) registerPolicyRoutes(ar chi.Router) {
 		pr.Get("/violations", h.HandleListViolations)
 		pr.Get("/compliance", h.HandleCompliance)
 		pr.With(middleware.RequireAdmin).Get("/compliance/history", h.HandleComplianceHistory)
+	})
+}
+
+// DefaultChangesRateLimit is the per-user, per-minute budget of the /changes
+// limiter. main.go uses it for production so the fallback built when no limiter
+// is wired matches. The UI polls GET /changes/{id}/verification every 5s (12/min
+// per open receipt) and each poll does a live, impersonated read of the
+// receipt's objects, so this is deliberately not larger: 60/min allows about
+// five receipts open at once for one person.
+const DefaultChangesRateLimit = 60
+
+// registerChangesRoutes mounts the tracked-change receipt endpoints. Auth,
+// CSRF and ClusterContext are inherited from the enclosing authenticated group.
+//
+// {id} is a UUID, not a Kubernetes name, so resources.ValidateURLParams is
+// deliberately not applied; the handlers validate it with uuid.Parse.
+func (s *Server) registerChangesRoutes(ar chi.Router) {
+	h := s.ChangesHandler
+	// A dedicated bucket, not the shared YAML one: the UI polls
+	// /changes/{id}/verification every 5s per open receipt, and that polling
+	// must neither starve /yaml/apply nor be starved by a wizard burst.
+	//
+	// When main.go does not pass one the group still gets its own limiter at
+	// the production budget, never the YAML or auth bucket: silently sharing
+	// those would let receipt polling starve /yaml/apply with no test failing.
+	// This fallback is for tests and misconfiguration only: it has no cleanup
+	// goroutine (its buckets are never swept) and no audit logger (its 429s are
+	// not recorded), unlike the limiter main.go builds.
+	rl := s.ChangesRateLimiter
+	if rl == nil {
+		if s.Logger != nil {
+			s.Logger.Warn("changes: no dedicated rate limiter wired; using a default per-user limiter")
+		}
+		rl = middleware.NewRateLimiterWithRate(DefaultChangesRateLimit, time.Minute)
+	}
+	ar.Route("/changes", func(cr chi.Router) {
+		// Keyed per authenticated user, not per IP: behind the frontend BFF every
+		// user shares the pod's IP, so a per-IP bucket is installation-wide. The
+		// enclosing group runs Auth before this, so the user is in the context.
+		cr.Use(middleware.RateLimitByUser(rl, "changes"))
+
+		cr.Get("/", h.HandleList)
+		cr.Post("/ownership", h.HandleResolveOwnership)
+		cr.Get("/{id}", h.HandleGet)
+		cr.Get("/{id}/verification", h.HandleVerification)
 	})
 }
 

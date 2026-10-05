@@ -585,6 +585,26 @@ var capabilityOperations = []capabilityOp{
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "list", AuthGroup: "velero.io", AuthResource: "schedules",
 	},
+	{
+		// Remote since Release E (U29b): change receipts are rows in this
+		// installation's PostgreSQL, so listing and reading them
+		// (changes/handler.go HandleList, HandleGet) work for any cluster by
+		// their owner. Verification and ownership resolution run against the
+		// cluster the receipt RECORDED, not the request's X-Cluster-ID header:
+		// each resolves its client through ClusterRouter.TargetFor for
+		// rec.ClusterID. Live access to a remote receipt's cluster is
+		// admin-only (middleware.ClusterContext gates a non-local header, and
+		// HandleVerification applies the same rule to the recorded cluster), so
+		// a non-admin still reads a stored final verdict, redacted. Cluster IDs
+		// are random per registration, so a delete-and-re-register mints a new
+		// ID and an old receipt can no longer be verified against the new
+		// cluster. AuthResource configmaps stands in for the objects a receipt
+		// names (the handlers check each recorded object individually); see
+		// yaml.export.
+		ID: "changes.receipts", Label: "Tracked change receipts",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
+	},
 }
 
 // supportedFor returns the static platformSupported value for this
