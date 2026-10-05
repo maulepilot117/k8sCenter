@@ -304,6 +304,25 @@ func TestEvidenceHasNoUpdatePath(t *testing.T) {
 	}
 }
 
+func TestValidateEvidenceRow_RedactionCap(t *testing.T) {
+	// {"p":"…"} padded to exactly n bytes.
+	redaction := func(n int) json.RawMessage {
+		return json.RawMessage(`{"p":"` + strings.Repeat("x", n-8) + `"}`)
+	}
+	r := snapshotRow("k", 64)
+	r.Redaction = redaction(EvidenceMaxRedactionBytes)
+	if err := ValidateEvidenceRow(r); err != nil {
+		t.Errorf("redaction of exactly %d bytes rejected: %v", EvidenceMaxRedactionBytes, err)
+	}
+	r.Redaction = redaction(EvidenceMaxRedactionBytes + 1)
+	if err := ValidateEvidenceRow(r); !errors.Is(err, ErrIncidentInvalid) {
+		t.Errorf("redaction of %d bytes = %v; want ErrIncidentInvalid", EvidenceMaxRedactionBytes+1, err)
+	}
+	if EvidenceMaxRedactionBytes != 4096 {
+		t.Errorf("EvidenceMaxRedactionBytes = %d; the documented cap is 4096", EvidenceMaxRedactionBytes)
+	}
+}
+
 func TestValidateEvidenceRow_SecretDerivedAgreement(t *testing.T) {
 	r := snapshotRow("k", 64)
 	r.SecretDerived = true
@@ -347,6 +366,38 @@ func TestValidateEvidenceRow_SecretDerivedAgreement(t *testing.T) {
 			}
 		}
 	}
+	// Keys compare after JSON unescaping. bs is one backslash, assembled so
+	// that no escape literal appears in this source.
+	bs := string(rune(0x5C))
+	escapedExact := `"secret` + bs + `u0044erived"`   // decodes to secretDerived
+	escapedVariant := `"secret` + bs + `u0064erived"` // decodes to secretderived
+	longS := string(rune(0x17F))                      // folds to "s"
+	escapedLongS := `"` + bs + `u017fecretDerived"`   // decodes to the long-s spelling
+	for _, c := range []struct {
+		name   string
+		doc    string
+		secret bool
+		ok     bool
+	}{
+		{"escaped exact key, true, column true", `{` + escapedExact + `:true}`, true, true},
+		{"escaped exact key, true, column false", `{` + escapedExact + `:true}`, false, false},
+		{"escaped exact key, false, column false", `{` + escapedExact + `:false}`, false, true},
+		{"escaped exact key duplicates the plain one", `{"secretDerived":false,` + escapedExact + `:true}`, true, false},
+		{"escaped case variant", `{` + escapedVariant + `:false}`, true, false},
+		{"non-ASCII fold variant", `{"` + longS + `ecretDerived":false}`, true, false},
+		{"escaped non-ASCII fold variant", `{` + escapedLongS + `:false}`, true, false},
+	} {
+		r.SecretDerived = c.secret
+		r.Redaction = json.RawMessage(c.doc)
+		err := ValidateEvidenceRow(r)
+		if c.ok && err != nil {
+			t.Errorf("%s (%s): rejected: %v", c.name, c.doc, err)
+		}
+		if !c.ok && !errors.Is(err, ErrIncidentInvalid) {
+			t.Errorf("%s (%s): = %v; want ErrIncidentInvalid", c.name, c.doc, err)
+		}
+	}
+
 	// Only the top level is the metadata contract; a nested object may use
 	// any key, and an exact key alongside unrelated keys is fine.
 	r.SecretDerived = false
@@ -1107,10 +1158,10 @@ func TestDistinctScopesAreDeduplicatedAndSorted(t *testing.T) {
 // JSON numbers jsonb cannot hold
 // ---------------------------------------------------------------------------
 
-// jsonbNumberCases are JSON numbers on both sides of PostgreSQL's numeric
-// limits. ok is what PostgreSQL 17 does with them, which
-// TestJSONBNumberCasesMatchPostgreSQL checks against the real server, so the
-// table cannot drift from the database it models.
+// jsonbNumberCases are JSON numbers on both sides of the evidence rendering
+// bounds (position <= 308, scale <= 340, |exponent| <= 400). ok is the
+// validator's verdict. TestJSONBNumberAcceptsArePostgreSQLAccepts checks that
+// the real server stores every number the validator accepts.
 var jsonbNumberCases = []struct {
 	name string
 	num  string
@@ -1119,35 +1170,38 @@ var jsonbNumberCases = []struct {
 	{"small", "123.456", true},
 	{"zero", "0", true},
 	{"negative zero scaled", "-0.0e-5", true},
-	{"large exponent within range", "1e400", true},
-	{"small exponent within range", "1e-400", true},
-	{"largest weight", "1e131071", true},
-	{"largest weight, digit 9", "9e131071", true},
-	{"largest weight, signed exponent", "-1E+131071", true},
-	{"largest weight from a fraction", "0.1e131072", true},
-	{"largest scale", "1e-16383", true},
-	{"zero with a huge positive exponent", "0e999999999", true},
-	{"zero at the exponent bound", "0e1073741823", true},
-	{"zero at the largest scale", "0.0e-16382", true},
-	{"131072 integer digits", "1" + strings.Repeat("0", 131071), true},
-	{"16383 fraction digits", "0." + strings.Repeat("1", 16383), true},
-	{"weight overflow", "1e131072", false},
-	{"weight overflow, digit 10", "10e131071", false},
-	{"weight overflow, wide mantissa", "12345e131068", false},
-	{"weight overflow from a fraction", "0.0001e131076", false},
-	{"weight overflow, 131073 digits", "1" + strings.Repeat("0", 131072), false},
-	{"scale overflow", "1e-16384", false},
-	{"scale overflow from a fraction", "0.000001e-16383", false},
-	{"scale overflow, deep", "1e-100000", false},
-	{"scale overflow, 16384 fraction digits", "0." + strings.Repeat("1", 16384), false},
-	{"scale counts trailing zeros", "1." + strings.Repeat("0", 16384), false},
-	{"zero with a scale overflow", "0e-1000000000", false},
-	{"zero past the scale bound", "0.00e-16382", false},
-	{"exponent past the bound", "0e1073741824", false},
-	{"negative exponent past int32", "0e-2147483648", false},
-	{"negative exponent beyond int64", "1e-99999999999999999999", false},
-	{"huge exponent", "1e1000000000", false},
+	{"largest float64", "1.7976931348623157e308", true},
+	{"most negative float64", "-1.7976931348623157e308", true},
+	{"smallest float64, shortest form", "5e-324", true},
+	{"smallest float64, 17 digits", "4.9406564584124654e-324", true},
+	{"smallest normal float64", "2.2250738585072014e-308", true},
+	{"largest int64", "9223372036854775807", true},
+	{"smallest int64", "-9223372036854775808", true},
+	{"largest position", "1e308", true},
+	{"largest position, digit 9", "9E+308", true},
+	{"largest position from a fraction", "0.1e309", true},
+	{"largest scale", "1e-340", true},
+	{"largest scale from fraction digits", "0." + strings.Repeat("1", 340), true},
+	{"309 integer digits", "1" + strings.Repeat("0", 308), true},
+	{"exponent at the bound, zero", "0e400", true},
+	{"large positive exponent offset by fraction digits", "0." + strings.Repeat("0", 200) + "1e300", true},
+	{"position past the bound", "1e309", false},
+	{"position past the bound, wide mantissa", "12345e305", false},
+	{"position past the bound from a fraction", "0.0001e313", false},
+	{"310 integer digits", "1" + strings.Repeat("0", 309), false},
+	{"scale past the bound", "1e-341", false},
+	{"scale past the bound from a fraction", "0.000001e-335", false},
+	{"341 fraction digits", "0." + strings.Repeat("1", 341), false},
+	{"scale counts trailing zeros", "1." + strings.Repeat("0", 341), false},
+	{"zero past the scale bound", "0.0e-340", false},
+	{"1e400", "1e400", false},
+	{"1e-400", "1e-400", false},
+	{"exponent past the bound, zero", "0e401", false},
+	{"exponent past the negative bound", "1" + strings.Repeat("0", 200) + "e-401", false},
+	{"PostgreSQL storage limit", "1e131071", false},
+	{"zero PostgreSQL rejects", "0e1073741824", false},
 	{"exponent beyond int64", "1e99999999999999999999", false},
+	{"negative exponent beyond int64", "1e-99999999999999999999", false},
 }
 
 func TestValidateEvidenceJSON_Numbers(t *testing.T) {
@@ -1162,33 +1216,97 @@ func TestValidateEvidenceJSON_Numbers(t *testing.T) {
 			}
 		}
 	}
-	// Digits inside a string are text, not a number.
-	if err := validateEvidenceJSON("payload", json.RawMessage(`{"n":"1e131072"}`)); err != nil {
-		t.Errorf("a number-like string was rejected: %v", err)
+	// Digits inside a string are text, not a number, including after an
+	// escaped quote (the walk must skip the escape, not end the string).
+	for _, doc := range []string{`{"n":"1e131072"}`, `{"m":"x\"1e131072"}`, `["\\",1,"\"1e400\""]`} {
+		if err := validateEvidenceJSON("payload", json.RawMessage(doc)); err != nil {
+			t.Errorf("number-like text inside a string %s was rejected: %v", doc, err)
+		}
 	}
 }
 
-// TestJSONBNumberCasesMatchPostgreSQL proves the number table against the real
-// server, and that a capture carrying an out-of-range number fails as a clean
-// validation error rather than a driver error mid-transaction.
-func TestJSONBNumberCasesMatchPostgreSQL(t *testing.T) {
+// TestJSONBNumberAcceptsArePostgreSQLAccepts: the real server stores every
+// number the validator accepts (so an accepted capture never fails with a
+// driver error), and a capture carrying a rejected number fails as a clean
+// validation error with nothing written, including one PostgreSQL would have
+// stored (1e131071).
+func TestJSONBNumberAcceptsArePostgreSQLAccepts(t *testing.T) {
 	is, es, pool := newEvidenceStores(t)
 	for _, c := range jsonbNumberCases {
+		if !c.ok {
+			continue
+		}
 		var ok bool
-		err := pool.QueryRow(t.Context(), `SELECT ('{"n":' || $1 || '}')::jsonb IS NOT NULL`, c.num).Scan(&ok)
-		if dbOK := err == nil; dbOK != c.ok {
-			t.Errorf("%s: PostgreSQL accepted=%v (%v); the table says %v", c.name, dbOK, err, c.ok)
+		if err := pool.QueryRow(t.Context(), `SELECT ('{"n":' || $1 || '}')::jsonb IS NOT NULL`, c.num).Scan(&ok); err != nil {
+			t.Errorf("%s: the validator accepts %.40s but PostgreSQL rejects it: %v", c.name, c.num, err)
 		}
 	}
 
 	owner := testOwnerID(t)
 	incident := mustCreateIncident(t, is, newIncident(owner, "numbers"))
-	r := snapshotRow("huge-number", 8)
-	r.Payload = json.RawMessage(`{"n":1e131072}`)
-	if _, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{r}, ceilingLimits); !errors.Is(err, ErrIncidentInvalid) {
-		t.Errorf("capture with an out-of-range number = %v; want ErrIncidentInvalid", err)
+	for _, num := range []string{"1e131072", "1e131071", "1e309"} {
+		r := snapshotRow("number-"+num, 8)
+		r.Payload = json.RawMessage(`{"n":` + num + `}`)
+		if _, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{r}, ceilingLimits); !errors.Is(err, ErrIncidentInvalid) {
+			t.Errorf("capture with %s = %v; want ErrIncidentInvalid", num, err)
+		}
 	}
 	requireConsistent(t, readEvidenceTotals(t, pool, incident), 0, 0, 0)
+}
+
+// TestJSONBNumberRenderingIsBounded stores the worst-case numbers the
+// validator admits and measures what jsonb renders back: the readback text
+// must stay within 64x payload_bytes, the factor InsertBatch documents.
+func TestJSONBNumberRenderingIsBounded(t *testing.T) {
+	is, es, pool := newEvidenceStores(t)
+	owner := testOwnerID(t)
+	incident := mustCreateIncident(t, is, newIncident(owner, "rendering"))
+	repeat := func(item string, n int) string {
+		return "[" + strings.TrimSuffix(strings.Repeat(item+",", n), ",") + "]"
+	}
+	payloads := map[string]string{
+		"lone largest position": "1e308",
+		"lone negative":         "-1e308",
+		"lone largest scale":    "1e-340",
+		"array of 1e308":        repeat("1e308", 500),
+		"array of 1e-340":       repeat("1e-340", 500),
+		"object":                `{"a":1e308,"b":1e-340,"c":-9E+308}`,
+		"float64 extremes":      repeat("1.7976931348623157e308,5e-324", 100),
+	}
+	rows := make([]IncidentEvidenceRow, 0, len(payloads))
+	for name, p := range payloads {
+		r := snapshotRow(name, 8)
+		r.Payload = json.RawMessage(p)
+		rows = append(rows, r)
+	}
+	mustInsert(t, es, incident, owner, ceilingLimits, rows...)
+
+	got, err := pool.Query(t.Context(), `
+		SELECT capture_key, payload_bytes, length(payload::text)
+		  FROM incident_evidence WHERE incident_id = $1`, incident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+	seen := 0
+	for got.Next() {
+		var (
+			key             string
+			stored, readout int
+		)
+		if err := got.Scan(&key, &stored, &readout); err != nil {
+			t.Fatal(err)
+		}
+		seen++
+		if ratio := float64(readout) / float64(stored); ratio > 64 {
+			t.Errorf("%s: %d submitted bytes read back as %d (%.1fx); the documented bound is 64x", key, stored, readout, ratio)
+		} else {
+			t.Logf("%s: %d -> %d bytes (%.1fx)", key, stored, readout, ratio)
+		}
+	}
+	if seen != len(payloads) {
+		t.Fatalf("read %d rows; want %d", seen, len(payloads))
+	}
 }
 
 // TestInsertBatchLockTimeoutIsTransactionLocal: the lock_timeout InsertBatch

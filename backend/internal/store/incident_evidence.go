@@ -112,6 +112,9 @@ const (
 const (
 	EvidenceMaxDetailChars     = 2000 // completeness_detail CHECK
 	EvidenceMaxCaptureKeyChars = 128
+	// EvidenceMaxRedactionBytes caps the redaction metadata, which is not
+	// counted in payload_bytes or evidence_bytes.
+	EvidenceMaxRedactionBytes = 4096
 	// evidenceMaxIdentityChars bounds the unconstrained TEXT identity columns
 	// (cluster, group, resource, kind, namespace, name, uid, resourceVersion),
 	// far above any Kubernetes limit.
@@ -318,8 +321,12 @@ const redactionSecretDerivedKey = "secretDerived"
 // {}) or a JSON object. The read path's Secret gate (Q1 P11) keys on the
 // secret_derived column, so metadata that says "secretDerived": true under a
 // false column is refused rather than stored ungated. The column may be
-// stricter than the metadata, never laxer.
+// stricter than the metadata, never laxer. It is at most
+// EvidenceMaxRedactionBytes long.
 func validateEvidenceRedaction(raw json.RawMessage, secretDerived bool) error {
+	if len(raw) > EvidenceMaxRedactionBytes {
+		return fmt.Errorf("%w: redaction exceeds %d bytes", ErrIncidentInvalid, EvidenceMaxRedactionBytes)
+	}
 	if err := validateEvidenceJSON("redaction", raw); err != nil || len(raw) == 0 {
 		return err
 	}
@@ -340,6 +347,12 @@ func validateEvidenceRedaction(raw json.RawMessage, secretDerived bool) error {
 // secretDerived must be spelled exactly that way, appear once, and hold a
 // boolean or null; anything else is an error. Nested objects are not part of
 // the metadata contract and are skipped.
+//
+// Keys are compared after JSON unescaping, as both encoding/json and jsonb
+// compare them: a key written with escapes that decodes to exactly
+// "secretDerived" is that key (accepted once, a duplicate of any other
+// spelling of it), and one that decodes to a case variant, including a
+// non-ASCII fold such as a long s, is rejected like the plain variant.
 func redactionMarksSecretDerived(raw []byte) (bool, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
@@ -390,7 +403,8 @@ func validateEvidenceJSON(field string, raw json.RawMessage) error {
 	if reason := jsonbEscapeProblem(raw); reason != "" {
 		return fmt.Errorf("%w: %s contains %s", ErrIncidentInvalid, field, reason)
 	}
-	// encoding/json also accepts numbers PostgreSQL's numeric cannot hold.
+	// Numbers must stay within the rendering bounds (see
+	// evidenceMaxNumberPosition), so readback cannot balloon.
 	if reason := jsonbNumbersProblem(raw); reason != "" {
 		return fmt.Errorf("%w: %s contains %s", ErrIncidentInvalid, field, reason)
 	}
@@ -434,22 +448,35 @@ func isJSONNumberByte(c byte) bool {
 	return (c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-'
 }
 
-// PostgreSQL numeric limits, as numeric_in (PostgreSQL 17) applies them to a
-// jsonb number. TestJSONBNumberCasesMatchPostgreSQL checks the model against
-// a real server.
+// Rendering bounds for evidence numbers. jsonb stores a number as numeric and
+// renders it back in plain notation, never with an exponent: "1e300" is read
+// back as 301 digits. PostgreSQL would store numbers up to ~131072 integer
+// digits, so a storage-limit check alone let a 1 MiB payload read back at
+// gigabyte scale. These bounds instead admit exactly what cluster-derived
+// numbers can be (Kubernetes JSON decodes to int64 or float64) and nothing
+// that renders much longer:
+//   - the most significant digit sits at decimal position at most 308 (the
+//     largest float64, 1.7976931348623157e308; int64 needs 18);
+//   - the display scale (fraction digits minus exponent, floored at 0) is at
+//     most 340 (the smallest float64 written with 17 significant digits,
+//     4.9406564584124654e-324; Go's shortest form 5e-324 needs 324);
+//   - the exponent is within [-400, 400], which every float64 encoding fits
+//     and which keeps a zero such as 0e1073741824 (which PostgreSQL rejects)
+//     out.
+//
+// So one number renders to at most 309 integer and 340 fraction digits. The
+// worst ratio is "1e308" (5 bytes) rendering as 309, about 62x; jsonb's added
+// ", " and ": " spacing cannot raise it, because every number beside a
+// separator costs at least 6 submitted bytes. Readback text is therefore at
+// most 64x payload_bytes (TestJSONBNumberRenderingIsBounded measures it).
 const (
-	jsonbMaxExponent  = 1<<30 - 1 // INT_MAX/2: a larger exponent overflows outright
-	jsonbMaxScale     = 16383     // NUMERIC_DSCALE_MAX: digits after the point
-	jsonbMaxIntDigits = 131072    // (NUMERIC_WEIGHT_MAX+1) * 4 base-10000 digits
+	evidenceMaxNumberPosition = 308
+	evidenceMaxNumberScale    = 340
+	evidenceMaxNumberExponent = 400
 )
 
-// jsonbNumberProblem describes why numeric cannot hold the valid JSON number
-// tok, or returns "":
-//   - an exponent above jsonbMaxExponent (or outside int64) overflows;
-//   - the display scale, fraction digits minus the exponent (floored at 0),
-//     may not exceed jsonbMaxScale, even for zero;
-//   - the most significant nonzero digit's decimal position may not reach
-//     jsonbMaxIntDigits.
+// jsonbNumberProblem describes why the valid JSON number tok is outside the
+// evidence rendering bounds above, or returns "".
 func jsonbNumberProblem(tok []byte) string {
 	s := bytes.TrimPrefix(tok, []byte("-"))
 	mant, expText := s, []byte(nil)
@@ -468,12 +495,10 @@ func jsonbNumberProblem(tok []byte) string {
 		}
 		exp = e
 	}
-	if exp > jsonbMaxExponent {
+	if exp > evidenceMaxNumberExponent || exp < -evidenceMaxNumberExponent {
 		return "a number whose exponent is out of range"
 	}
-	// exp < -jsonbMaxScale already forces the scale past the limit; checking
-	// it first also keeps the subtraction below from overflowing.
-	if exp < -jsonbMaxScale || int64(len(frac))-exp > jsonbMaxScale {
+	if int64(len(frac))-exp > evidenceMaxNumberScale {
 		return "a number with too many digits after the decimal point"
 	}
 	// The first nonzero digit, k digits into intPart followed by frac, sits at
@@ -486,8 +511,8 @@ func jsonbNumberProblem(tok []byte) string {
 			d = frac[k-len(intPart)]
 		}
 		if d != '0' {
-			if int64(len(intPart)-1-k)+exp >= jsonbMaxIntDigits {
-				return "a number too large for numeric"
+			if int64(len(intPart)-1-k)+exp > evidenceMaxNumberPosition {
+				return "a number with too many digits before the decimal point"
 			}
 			break
 		}
@@ -646,8 +671,11 @@ const (
 // authorize the caller against the incident before capturing.
 //
 // payload_bytes, and so evidence_bytes, count the payload bytes as submitted
-// (the collector's compact JSON), not the text jsonb renders on read, which
-// can differ (jsonb normalizes whitespace and key order).
+// (the collector's compact JSON), not the text jsonb renders on read. jsonb
+// normalizes whitespace and key order and re-renders numbers in plain
+// notation, so readback can be longer; the number rendering bounds (see
+// evidenceMaxNumberPosition) keep it within 64x payload_bytes. Redaction
+// metadata is not counted; it is capped at EvidenceMaxRedactionBytes.
 //
 // Then, in one transaction holding the incident row lock (waiting at most
 // incidentLockTimeout for any lock, else ErrIncidentBusy): ErrIncidentNotFound,

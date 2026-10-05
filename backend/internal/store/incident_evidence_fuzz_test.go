@@ -59,7 +59,9 @@ func FuzzValidateEvidenceJSON(f *testing.F) {
 		}
 	}
 	f.Add([]byte(`{"s":"\\",  "n":1e131072}`))
-	f.Add([]byte(`["1e131072", -0.0e-16383, 0e1073741824]`))
+	f.Add([]byte(`["1e131072", -0.0e-340, 0e400]`))
+	f.Add([]byte(`{"m":"x\"1e131072"}`)) // number text after an escaped quote
+	f.Add([]byte(`[1.7976931348623157e308,5e-324,4.9406564584124654e-324,1e309,1e-341]`))
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		err := validateEvidenceJSON("payload", json.RawMessage(raw))
@@ -128,11 +130,13 @@ func referenceJSONBEscapesOK(s string) bool {
 // and exponent.
 var fuzzJSONNumber = regexp.MustCompile(`^-?([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$`)
 
-// referenceJSONBNumbersOK reports whether PostgreSQL's numeric can hold every
-// number in valid JSON raw. It finds numbers with encoding/json's tokenizer
-// (UseNumber keeps their text) and does the arithmetic in math/big, so it
-// shares neither the scanner nor the int64 guards of jsonbNumberProblem. The
-// limits are re-stated, not read from the production constants.
+// referenceJSONBNumbersOK reports whether every number in valid JSON raw is
+// within the evidence rendering bounds (most significant digit at position
+// <= 308, display scale <= 340, |exponent| <= 400). It finds numbers with
+// encoding/json's tokenizer (UseNumber keeps their text) and does the
+// arithmetic in math/big, so it shares neither the scanner nor the int64
+// guards of jsonbNumberProblem. The bounds are re-stated, not read from the
+// production constants.
 func referenceJSONBNumbersOK(raw []byte) bool {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -154,17 +158,17 @@ func referenceJSONBNumbersOK(raw []byte) bool {
 		if m[3] != "" {
 			exp.SetString(m[3], 10)
 		}
-		if exp.Cmp(big.NewInt(1073741823)) > 0 {
+		if new(big.Int).Abs(exp).Cmp(big.NewInt(400)) > 0 {
 			return false
 		}
 		scale := new(big.Int).Sub(big.NewInt(int64(len(fracDigits))), exp)
-		if scale.Cmp(big.NewInt(16383)) > 0 {
+		if scale.Cmp(big.NewInt(340)) > 0 {
 			return false
 		}
 		digits := intDigits + fracDigits
 		if k := strings.IndexFunc(digits, func(r rune) bool { return r != '0' }); k >= 0 {
 			pos := new(big.Int).Add(big.NewInt(int64(len(intDigits)-1-k)), exp)
-			if pos.Cmp(big.NewInt(131072)) >= 0 {
+			if pos.Cmp(big.NewInt(308)) > 0 {
 				return false
 			}
 		}
@@ -189,6 +193,83 @@ func containsNUL(v any) bool {
 		}
 	}
 	return false
+}
+
+// FuzzValidateEvidenceRedaction fuzzes the redaction metadata gate, whose
+// secretDerived scan decides whether a row may be stored with
+// secret_derived=false (the read path's Secret gate keys on that column).
+//
+//   - Oracle A: validateEvidenceRedaction never panics.
+//   - Oracle B: every rejection is ErrIncidentInvalid; an accepted non-empty
+//     input is at most 4096 bytes, passes validateEvidenceJSON and is an object.
+//   - Oracle C: the column may only be stricter: accepted under false implies
+//     accepted under true.
+//   - Oracle D: accepted under false means no reader sees the item as
+//     secret-derived: neither encoding/json's case-insensitive, last-wins
+//     struct decode, nor an exact-key, last-wins map decode (jsonb's view),
+//     nor any case variant of the key in that map holds true.
+//   - Oracle E: accepted under true but not under false only when one of those
+//     readers does see true.
+func FuzzValidateEvidenceRedaction(f *testing.F) {
+	bs := string(rune(0x5C)) // one backslash, assembled so no escape literal appears here
+	for _, s := range []string{
+		``, `{}`, `[]`, `null`, `"x"`, `{"applied":true}`,
+		`{"secretDerived":true}`, `{"secretDerived":false}`, `{"secretDerived":null}`, `{"secretDerived":"yes"}`,
+		`{"secretDerived":true,"SecretDerived":false}`,
+		`{"secretDerived":true,"secretderived":false}`,
+		`{"secretDerived":false,"secretDerived":true}`,
+		`{"nested":{"secretDerived":true}}`,
+		`{"secret` + bs + `u0044erived":true}`,
+		`{"secretDerived":false,"secret` + bs + `u0044erived":true}`,
+		`{"secret` + bs + `u0064erived":true}`,
+		`{"` + string(rune(0x17F)) + `ecretDerived":true}`,
+		`{"` + bs + `u017fecretDerived":true}`,
+		`{"p":"` + strings.Repeat("x", 4089) + `"}`,
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		errFalse := validateEvidenceRedaction(json.RawMessage(raw), false)
+		errTrue := validateEvidenceRedaction(json.RawMessage(raw), true)
+		for _, err := range []error{errFalse, errTrue} {
+			if err != nil && !errors.Is(err, ErrIncidentInvalid) {
+				t.Fatalf("validateEvidenceRedaction(%q) = %v; want ErrIncidentInvalid", raw, err)
+			}
+		}
+		if errFalse == nil && errTrue != nil {
+			t.Fatalf("%q accepted under secret_derived=false but not true", raw)
+		}
+		if errTrue != nil || len(raw) == 0 {
+			return
+		}
+		if len(raw) > 4096 || validateEvidenceJSON("redaction", json.RawMessage(raw)) != nil ||
+			bytes.TrimSpace(raw)[0] != '{' {
+			t.Fatalf("accepted %q, which is oversized, invalid, or not an object", raw)
+		}
+
+		var structView struct {
+			SecretDerived *bool `json:"secretDerived"`
+		}
+		if err := json.Unmarshal(raw, &structView); err != nil {
+			t.Fatalf("accepted %q, which encoding/json cannot decode into the metadata: %v", raw, err)
+		}
+		var mapView map[string]any
+		if err := json.Unmarshal(raw, &mapView); err != nil {
+			t.Fatalf("accepted %q, which does not decode as an object: %v", raw, err)
+		}
+		someReaderSeesTrue := structView.SecretDerived != nil && *structView.SecretDerived
+		for k, v := range mapView {
+			if strings.EqualFold(k, "secretDerived") && v == true {
+				someReaderSeesTrue = true
+			}
+		}
+		if errFalse == nil && someReaderSeesTrue {
+			t.Fatalf("accepted %q under secret_derived=false, but a reader sees secretDerived true", raw)
+		}
+		if errFalse != nil && !someReaderSeesTrue {
+			t.Fatalf("rejected %q only under secret_derived=false (%v), but no reader sees secretDerived true", raw, errFalse)
+		}
+	})
 }
 
 // fuzzEvidenceCursorMaxDecodedBytes is re-derived here rather than read from

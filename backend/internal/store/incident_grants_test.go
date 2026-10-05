@@ -281,3 +281,41 @@ func TestAddGrantUpsertLockWaitIsBusy(t *testing.T) {
 		t.Errorf("grant after the busy re-grant = (%+v, %v); want it unchanged (read-only)", g, err)
 	}
 }
+
+// TestAddGrantLockTimeoutIsTransactionLocal mirrors the InsertBatch test: the
+// lock_timeout AddGrant sets must not leak onto the pooled connection.
+func TestAddGrantLockTimeoutIsTransactionLocal(t *testing.T) {
+	pool := testDBWithMaxConns(t, 1)
+	is, gs := NewIncidentStore(pool), NewIncidentGrantStore(pool)
+	gs.lockTimeout = 200 * time.Millisecond
+	owner := testOwnerID(t)
+	incident := mustCreateIncident(t, is, newIncident(owner, "grant local"))
+
+	show := func() string {
+		t.Helper()
+		var v string
+		if err := pool.QueryRow(t.Context(), `SELECT current_setting('lock_timeout')`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	baseline := show()
+	if baseline == "200ms" {
+		t.Fatalf("baseline lock_timeout is already the test value %q", baseline)
+	}
+	if err := gs.AddGrant(t.Context(), incident, owner, owner+"-g", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := show(); got != baseline {
+		t.Errorf("after a grant, lock_timeout = %q; want the session default %q", got, baseline)
+	}
+
+	release := holdIncidentLock(t, incident)
+	if err := gs.AddGrant(t.Context(), incident, owner, owner+"-h", true); !errors.Is(err, ErrIncidentBusy) {
+		t.Fatalf("grant behind a held lock = %v; want ErrIncidentBusy", err)
+	}
+	release()
+	if got := show(); got != baseline {
+		t.Errorf("after a busy grant, lock_timeout = %q; want the session default %q", got, baseline)
+	}
+}
