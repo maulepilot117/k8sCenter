@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -86,6 +87,8 @@ func beginIncidentLockTx(ctx context.Context, pool *pgxpool.Pool, lockTimeout ti
 
 // busyIfLockTimeout maps PostgreSQL's lock_not_available (55P03, raised when
 // lock_timeout expires) to ErrIncidentBusy and passes every other error through.
+// InsertBatch and AddGrant apply it once, to the result of their whole
+// transaction, so a timeout on any statement in it is reported the same way.
 func busyIfLockTimeout(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
@@ -307,26 +310,69 @@ func ValidateEvidenceRow(r IncidentEvidenceRow) error {
 	return nil
 }
 
+// redactionSecretDerivedKey is the one accepted spelling of the redaction
+// metadata's secret flag.
+const redactionSecretDerivedKey = "secretDerived"
+
 // validateEvidenceRedaction checks the redaction metadata: empty (stored as
 // {}) or a JSON object. The read path's Secret gate (Q1 P11) keys on the
-// secret_derived column, so metadata that says "secretDerived": true (key
-// matched case-insensitively, as encoding/json does) under a false column is
-// refused rather than stored ungated. The column may be stricter than the
-// metadata, never laxer.
+// secret_derived column, so metadata that says "secretDerived": true under a
+// false column is refused rather than stored ungated. The column may be
+// stricter than the metadata, never laxer.
 func validateEvidenceRedaction(raw json.RawMessage, secretDerived bool) error {
 	if err := validateEvidenceJSON("redaction", raw); err != nil || len(raw) == 0 {
 		return err
 	}
-	var meta struct {
-		SecretDerived *bool `json:"secretDerived"`
+	marked, err := redactionMarksSecretDerived(raw)
+	if err != nil {
+		return fmt.Errorf("%w: redaction %v", ErrIncidentInvalid, err)
 	}
-	if trimmed := bytes.TrimSpace(raw); trimmed[0] != '{' || json.Unmarshal(raw, &meta) != nil {
-		return fmt.Errorf("%w: redaction must be a JSON object with a boolean secretDerived", ErrIncidentInvalid)
-	}
-	if meta.SecretDerived != nil && *meta.SecretDerived && !secretDerived {
+	if marked && !secretDerived {
 		return fmt.Errorf("%w: redaction marks the item secret-derived but secret_derived is false", ErrIncidentInvalid)
 	}
 	return nil
+}
+
+// redactionMarksSecretDerived reads the top-level secretDerived flag of valid
+// JSON with a token scan. Readers disagree on ambiguous keys: encoding/json
+// matches keys case-insensitively and keeps the last, jsonb keeps every
+// spelling and the last duplicate. So any top-level key that case-folds to
+// secretDerived must be spelled exactly that way, appear once, and hold a
+// boolean or null; anything else is an error. Nested objects are not part of
+// the metadata contract and are skipped.
+func redactionMarksSecretDerived(raw []byte) (bool, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return false, errors.New("must be a JSON object")
+	}
+	var seen, marked bool
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return false, err
+		}
+		key, _ := tok.(string)
+		if !strings.EqualFold(key, redactionSecretDerivedKey) {
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return false, err
+			}
+			continue
+		}
+		if key != redactionSecretDerivedKey {
+			return false, fmt.Errorf("spells the %s key as %q", redactionSecretDerivedKey, key)
+		}
+		if seen {
+			return false, fmt.Errorf("repeats the %s key", redactionSecretDerivedKey)
+		}
+		seen = true
+		var v *bool
+		if err := dec.Decode(&v); err != nil {
+			return false, fmt.Errorf("%s must be a boolean", redactionSecretDerivedKey)
+		}
+		marked = v != nil && *v
+	}
+	return marked, nil
 }
 
 // validateEvidenceJSON accepts an empty value (nothing to store) or valid
@@ -344,7 +390,109 @@ func validateEvidenceJSON(field string, raw json.RawMessage) error {
 	if reason := jsonbEscapeProblem(raw); reason != "" {
 		return fmt.Errorf("%w: %s contains %s", ErrIncidentInvalid, field, reason)
 	}
+	// encoding/json also accepts numbers PostgreSQL's numeric cannot hold.
+	if reason := jsonbNumbersProblem(raw); reason != "" {
+		return fmt.Errorf("%w: %s contains %s", ErrIncidentInvalid, field, reason)
+	}
 	return nil
+}
+
+// jsonbNumbersProblem walks valid JSON, skipping strings (a backslash inside
+// one escapes the next byte), and checks every number token with
+// jsonbNumberProblem. It returns the first problem, or "".
+func jsonbNumbersProblem(raw []byte) string {
+	inString := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if inString {
+			switch c {
+			case '\\':
+				i++
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch {
+		case c == '"':
+			inString = true
+		case c == '-' || (c >= '0' && c <= '9'):
+			j := i + 1
+			for j < len(raw) && isJSONNumberByte(raw[j]) {
+				j++
+			}
+			if reason := jsonbNumberProblem(raw[i:j]); reason != "" {
+				return reason
+			}
+			i = j - 1
+		}
+	}
+	return ""
+}
+
+func isJSONNumberByte(c byte) bool {
+	return (c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-'
+}
+
+// PostgreSQL numeric limits, as numeric_in (PostgreSQL 17) applies them to a
+// jsonb number. TestJSONBNumberCasesMatchPostgreSQL checks the model against
+// a real server.
+const (
+	jsonbMaxExponent  = 1<<30 - 1 // INT_MAX/2: a larger exponent overflows outright
+	jsonbMaxScale     = 16383     // NUMERIC_DSCALE_MAX: digits after the point
+	jsonbMaxIntDigits = 131072    // (NUMERIC_WEIGHT_MAX+1) * 4 base-10000 digits
+)
+
+// jsonbNumberProblem describes why numeric cannot hold the valid JSON number
+// tok, or returns "":
+//   - an exponent above jsonbMaxExponent (or outside int64) overflows;
+//   - the display scale, fraction digits minus the exponent (floored at 0),
+//     may not exceed jsonbMaxScale, even for zero;
+//   - the most significant nonzero digit's decimal position may not reach
+//     jsonbMaxIntDigits.
+func jsonbNumberProblem(tok []byte) string {
+	s := bytes.TrimPrefix(tok, []byte("-"))
+	mant, expText := s, []byte(nil)
+	if i := bytes.IndexAny(s, "eE"); i >= 0 {
+		mant, expText = s[:i], s[i+1:]
+	}
+	intPart, frac := mant, []byte(nil)
+	if i := bytes.IndexByte(mant, '.'); i >= 0 {
+		intPart, frac = mant[:i], mant[i+1:]
+	}
+	var exp int64
+	if len(expText) > 0 {
+		e, err := strconv.ParseInt(string(expText), 10, 64)
+		if err != nil { // json.Valid leaves only out-of-range exponents here
+			return "a number whose exponent is out of range"
+		}
+		exp = e
+	}
+	if exp > jsonbMaxExponent {
+		return "a number whose exponent is out of range"
+	}
+	// exp < -jsonbMaxScale already forces the scale past the limit; checking
+	// it first also keeps the subtraction below from overflowing.
+	if exp < -jsonbMaxScale || int64(len(frac))-exp > jsonbMaxScale {
+		return "a number with too many digits after the decimal point"
+	}
+	// The first nonzero digit, k digits into intPart followed by frac, sits at
+	// decimal position len(intPart)-1-k+exp. Zero has no such digit.
+	for k := range len(intPart) + len(frac) {
+		var d byte
+		if k < len(intPart) {
+			d = intPart[k]
+		} else {
+			d = frac[k-len(intPart)]
+		}
+		if d != '0' {
+			if int64(len(intPart)-1-k)+exp >= jsonbMaxIntDigits {
+				return "a number too large for numeric"
+			}
+			break
+		}
+	}
+	return ""
 }
 
 // jsonbEscapeProblem scans the escapes of valid JSON (a backslash only occurs
@@ -488,12 +636,21 @@ const (
 // exists for the incident are skipped, not counted, and not an error).
 //
 // Before any SQL it validates ownerID, limits, the batch length (at most
-// EvidenceMaxItemsCeiling rows) and every row, and rejects any row whose
+// EvidenceMaxItemsCeiling rows) and every row, then rejects any row whose
 // payload exceeds limits.MaxItemBytes with an item_bytes *EvidenceLimitError.
-// An empty batch is a no-op returning 0.
+// The two passes are separate, so an invalid row is reported even when an
+// earlier row is oversized.
+//
+// An empty batch returns (0, nil) without taking the lock, reading the
+// incident or checking ownership. It is not an access check: callers (U23b)
+// authorize the caller against the incident before capturing.
+//
+// payload_bytes, and so evidence_bytes, count the payload bytes as submitted
+// (the collector's compact JSON), not the text jsonb renders on read, which
+// can differ (jsonb normalizes whitespace and key order).
 //
 // Then, in one transaction holding the incident row lock (waiting at most
-// incidentLockTimeout for it, else ErrIncidentBusy): ErrIncidentNotFound,
+// incidentLockTimeout for any lock, else ErrIncidentBusy): ErrIncidentNotFound,
 // ErrNotOwner (capture is owner-only, Q1 P3) or ErrIncidentClosed; insert with
 // ON CONFLICT DO NOTHING; recompute distinct scopes from the table; reject
 // when the new totals exceed limits, which rolls back every row; otherwise
@@ -524,11 +681,13 @@ func (s *IncidentEvidenceStore) InsertBatch(
 	if len(rows) > EvidenceMaxItemsCeiling {
 		return 0, fmt.Errorf("%w: a capture holds at most %d items, got %d", ErrIncidentInvalid, EvidenceMaxItemsCeiling, len(rows))
 	}
-	prepared := make([]IncidentEvidenceRow, 0, len(rows))
 	for i, r := range rows {
 		if err := ValidateEvidenceRow(r); err != nil {
 			return 0, fmt.Errorf("evidence item %d: %w", i, err)
 		}
+	}
+	prepared := make([]IncidentEvidenceRow, 0, len(rows))
+	for _, r := range rows {
 		if len(r.Payload) > limits.MaxItemBytes {
 			return 0, &EvidenceLimitError{
 				Limit: EvidenceLimitItemBytes, Max: int64(limits.MaxItemBytes), Attempted: int64(len(r.Payload)),

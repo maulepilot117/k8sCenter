@@ -1,9 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,7 +26,8 @@ import (
 //   - Oracle C (differential): acceptance agrees with an independent
 //     reference that tokenizes escapes with a regexp and applies jsonb's rules
 //     (no \u0000; every surrogate escape is a high one immediately followed
-//     by a low one).
+//     by a low one), and with a second reference that finds numbers with
+//     encoding/json's tokenizer and checks numeric's limits in math/big.
 //   - Oracle D: an accepted input decodes to values whose strings and keys
 //     contain no U+0000.
 func FuzzValidateEvidenceJSON(f *testing.F) {
@@ -48,6 +51,16 @@ func FuzzValidateEvidenceJSON(f *testing.F) {
 	} {
 		f.Add([]byte(s))
 	}
+	// Numbers on both sides of numeric's limits (the jsonbNumberCases table,
+	// checked against PostgreSQL), plus number-like text inside strings.
+	for _, c := range jsonbNumberCases {
+		if len(c.num) < 64 {
+			f.Add([]byte(`{"n":[` + c.num + `,"` + c.num + `"]}`))
+		}
+	}
+	f.Add([]byte(`{"s":"\\",  "n":1e131072}`))
+	f.Add([]byte(`["1e131072", -0.0e-16383, 0e1073741824]`))
+
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		err := validateEvidenceJSON("payload", json.RawMessage(raw))
 		if err != nil {
@@ -61,7 +74,7 @@ func FuzzValidateEvidenceJSON(f *testing.F) {
 		if len(raw) == 0 || !utf8.Valid(raw) || !json.Valid(raw) {
 			return
 		}
-		if want := referenceJSONBEscapesOK(string(raw)); (err == nil) != want {
+		if want := referenceJSONBEscapesOK(string(raw)) && referenceJSONBNumbersOK(raw); (err == nil) != want {
 			t.Fatalf("validateEvidenceJSON(%q) accepted=%v; reference says %v", raw, err == nil, want)
 		}
 		if err == nil {
@@ -109,6 +122,53 @@ func referenceJSONBEscapesOK(s string) bool {
 		}
 	}
 	return true
+}
+
+// fuzzJSONNumber splits a JSON number into integer digits, fraction digits
+// and exponent.
+var fuzzJSONNumber = regexp.MustCompile(`^-?([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$`)
+
+// referenceJSONBNumbersOK reports whether PostgreSQL's numeric can hold every
+// number in valid JSON raw. It finds numbers with encoding/json's tokenizer
+// (UseNumber keeps their text) and does the arithmetic in math/big, so it
+// shares neither the scanner nor the int64 guards of jsonbNumberProblem. The
+// limits are re-stated, not read from the production constants.
+func referenceJSONBNumbersOK(raw []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return true // io.EOF: every token seen
+		}
+		n, ok := tok.(json.Number)
+		if !ok {
+			continue
+		}
+		m := fuzzJSONNumber.FindStringSubmatch(string(n))
+		if m == nil {
+			return false
+		}
+		intDigits, fracDigits := m[1], m[2]
+		exp := new(big.Int)
+		if m[3] != "" {
+			exp.SetString(m[3], 10)
+		}
+		if exp.Cmp(big.NewInt(1073741823)) > 0 {
+			return false
+		}
+		scale := new(big.Int).Sub(big.NewInt(int64(len(fracDigits))), exp)
+		if scale.Cmp(big.NewInt(16383)) > 0 {
+			return false
+		}
+		digits := intDigits + fracDigits
+		if k := strings.IndexFunc(digits, func(r rune) bool { return r != '0' }); k >= 0 {
+			pos := new(big.Int).Add(big.NewInt(int64(len(intDigits)-1-k)), exp)
+			if pos.Cmp(big.NewInt(131072)) >= 0 {
+				return false
+			}
+		}
+	}
 }
 
 func containsNUL(v any) bool {

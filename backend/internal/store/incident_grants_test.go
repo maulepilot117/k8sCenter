@@ -245,3 +245,39 @@ func TestAddGrantLockTimeoutIsBusy(t *testing.T) {
 		t.Errorf("grant after release = %v", err)
 	}
 }
+
+// TestAddGrantUpsertLockWaitIsBusy: the incident lock is free, but the
+// grant row the upsert must update is locked elsewhere (as a concurrent
+// RemoveGrant would hold it). The lock timeout fires on the INSERT, not on the
+// incident read, and must still surface as ErrIncidentBusy.
+func TestAddGrantUpsertLockWaitIsBusy(t *testing.T) {
+	is, gs, _ := newGrantStores(t)
+	owner := testOwnerID(t)
+	grantee := owner + "-g"
+	incident := mustCreateIncident(t, is, newIncident(owner, "grant row busy"))
+	if err := gs.AddGrant(t.Context(), incident, owner, grantee, false); err != nil {
+		t.Fatal(err)
+	}
+	gs.lockTimeout = 200 * time.Millisecond
+
+	holder := testDB(t)
+	tx, err := holder.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(t.Context())) }()
+	if _, err := tx.Exec(t.Context(),
+		`SELECT 1 FROM incident_grants WHERE incident_id = $1 AND grantee_id = $2 FOR UPDATE`, incident, grantee); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if err := gs.AddGrant(ctx, incident, owner, grantee, true); !errors.Is(err, ErrIncidentBusy) {
+		t.Fatalf("re-grant behind a locked grant row = %v; want ErrIncidentBusy", err)
+	}
+	_ = tx.Rollback(t.Context())
+	if g, err := gs.GetGrant(t.Context(), incident, grantee); err != nil || g == nil || g.CanAnnotate {
+		t.Errorf("grant after the busy re-grant = (%+v, %v); want it unchanged (read-only)", g, err)
+	}
+}

@@ -327,6 +327,38 @@ func TestValidateEvidenceRow_SecretDerivedAgreement(t *testing.T) {
 	if err := ValidateEvidenceRow(r); !errors.Is(err, ErrIncidentInvalid) {
 		t.Errorf("non-boolean secretDerived = %v; want ErrIncidentInvalid", err)
 	}
+
+	// encoding/json matches keys case-insensitively with the last one
+	// winning, while jsonb keeps every spelling: any ambiguity is refused,
+	// whichever value the column carries.
+	for _, secret := range []bool{false, true} {
+		r.SecretDerived = secret
+		for _, bad := range []string{
+			`{"secretDerived":true,"SecretDerived":false}`,
+			`{"secretDerived":true,"secretderived":false}`,
+			`{"secretDerived":false,"secretDerived":true}`,
+			`{"SecretDerived":false}`,
+			`{"SECRETDERIVED":true}`,
+			`{"secretDerived":true,"nested":{"x":1},"secretderived":false}`,
+		} {
+			r.Redaction = json.RawMessage(bad)
+			if err := ValidateEvidenceRow(r); !errors.Is(err, ErrIncidentInvalid) {
+				t.Errorf("secret_derived=%v, redaction %s = %v; want ErrIncidentInvalid", secret, bad, err)
+			}
+		}
+	}
+	// Only the top level is the metadata contract; a nested object may use
+	// any key, and an exact key alongside unrelated keys is fine.
+	r.SecretDerived = false
+	for _, ok := range []string{
+		`{"nested":{"secretDerived":true,"SecretDerived":false}}`,
+		`{"rules":["secret-values"],"secretDerived":false,"fieldsRemoved":2}`,
+	} {
+		r.Redaction = json.RawMessage(ok)
+		if err := ValidateEvidenceRow(r); err != nil {
+			t.Errorf("redaction %s rejected: %v", ok, err)
+		}
+	}
 }
 
 func TestValidateEvidenceJSON_Escapes(t *testing.T) {
@@ -847,6 +879,14 @@ func TestInsertBatchErrorPrecedence(t *testing.T) {
 	}{
 		{"invalid row beats missing incident", uuid.New(), owner, []IncidentEvidenceRow{invalid}, small,
 			func(err error) bool { return errors.Is(err, ErrIncidentInvalid) }},
+		// Validation covers every row before any size check: an oversized
+		// valid row 0 does not mask an invalid row 1.
+		{"invalid later row beats oversized earlier row", open, owner,
+			[]IncidentEvidenceRow{snapshotRow("p-big", 51), invalid}, small,
+			func(err error) bool {
+				return errors.Is(err, ErrIncidentInvalid) && !errors.Is(err, ErrEvidenceLimit) &&
+					strings.Contains(err.Error(), "evidence item 1")
+			}},
 		{"item size beats not owner", open, intruder, []IncidentEvidenceRow{snapshotRow("p-big", 51)}, small,
 			func(err error) bool { return isLimit(err, EvidenceLimitItemBytes) }},
 		{"not owner beats closed", closed, intruder, []IncidentEvidenceRow{snapshotRow("p-1", 10)}, small,
@@ -908,13 +948,29 @@ func TestInsertBatchLoweredLimits(t *testing.T) {
 	}
 	requireConsistent(t, readEvidenceTotals(t, pool, incident), 40, 4, 3)
 
+	// A batch mixing existing and new scopes grows the set: rejected whole.
+	again := snapshotRow("existing-again", 10)
+	again.Namespace = "ns-2"
+	_, err = es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{again, fresh}, lowered)
+	if !errors.As(err, &se) || *se != (ScopeLimitError{Max: 2, Current: 3, Attempted: 4}) {
+		t.Fatalf("mixed existing+new scopes = %v; want ScopeLimitError{2, 3, 4}", err)
+	}
+	requireConsistent(t, readEvidenceTotals(t, pool, incident), 40, 4, 3)
+	// Several rows, all in existing scopes: accepted.
+	other := snapshotRow("existing-other", 10)
+	other.Namespace = "ns-0"
+	if n, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{again, other}, lowered); err != nil || n != 2 {
+		t.Fatalf("batch of existing scopes only = (%d, %v); want (2, nil)", n, err)
+	}
+	requireConsistent(t, readEvidenceTotals(t, pool, incident), 60, 6, 3)
+
 	loweredItems := ceilingLimits
 	loweredItems.MaxItems = 2
 	if _, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{snapshotRow("more", 10)}, loweredItems); !isLimit(err, EvidenceLimitItems) {
 		t.Errorf("growth under a lowered item limit = %v; want an items limit error", err)
 	}
 	// A fully deduplicated batch is still a no-op under a lowered limit.
-	if n, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{existing}, loweredItems); err != nil || n != 0 {
+	if n, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{existing, again}, loweredItems); err != nil || n != 0 {
 		t.Errorf("deduplicated batch under a lowered item limit = (%d, %v); want (0, nil)", n, err)
 	}
 }
@@ -1044,5 +1100,130 @@ func TestDistinctScopesAreDeduplicatedAndSorted(t *testing.T) {
 	}
 	if empty, err := es.DistinctScopes(t.Context(), uuid.New()); err != nil || len(empty) != 0 {
 		t.Errorf("DistinctScopes of an unknown incident = (%v, %v); want empty", empty, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JSON numbers jsonb cannot hold
+// ---------------------------------------------------------------------------
+
+// jsonbNumberCases are JSON numbers on both sides of PostgreSQL's numeric
+// limits. ok is what PostgreSQL 17 does with them, which
+// TestJSONBNumberCasesMatchPostgreSQL checks against the real server, so the
+// table cannot drift from the database it models.
+var jsonbNumberCases = []struct {
+	name string
+	num  string
+	ok   bool
+}{
+	{"small", "123.456", true},
+	{"zero", "0", true},
+	{"negative zero scaled", "-0.0e-5", true},
+	{"large exponent within range", "1e400", true},
+	{"small exponent within range", "1e-400", true},
+	{"largest weight", "1e131071", true},
+	{"largest weight, digit 9", "9e131071", true},
+	{"largest weight, signed exponent", "-1E+131071", true},
+	{"largest weight from a fraction", "0.1e131072", true},
+	{"largest scale", "1e-16383", true},
+	{"zero with a huge positive exponent", "0e999999999", true},
+	{"zero at the exponent bound", "0e1073741823", true},
+	{"zero at the largest scale", "0.0e-16382", true},
+	{"131072 integer digits", "1" + strings.Repeat("0", 131071), true},
+	{"16383 fraction digits", "0." + strings.Repeat("1", 16383), true},
+	{"weight overflow", "1e131072", false},
+	{"weight overflow, digit 10", "10e131071", false},
+	{"weight overflow, wide mantissa", "12345e131068", false},
+	{"weight overflow from a fraction", "0.0001e131076", false},
+	{"weight overflow, 131073 digits", "1" + strings.Repeat("0", 131072), false},
+	{"scale overflow", "1e-16384", false},
+	{"scale overflow from a fraction", "0.000001e-16383", false},
+	{"scale overflow, deep", "1e-100000", false},
+	{"scale overflow, 16384 fraction digits", "0." + strings.Repeat("1", 16384), false},
+	{"scale counts trailing zeros", "1." + strings.Repeat("0", 16384), false},
+	{"zero with a scale overflow", "0e-1000000000", false},
+	{"zero past the scale bound", "0.00e-16382", false},
+	{"exponent past the bound", "0e1073741824", false},
+	{"negative exponent past int32", "0e-2147483648", false},
+	{"negative exponent beyond int64", "1e-99999999999999999999", false},
+	{"huge exponent", "1e1000000000", false},
+	{"exponent beyond int64", "1e99999999999999999999", false},
+}
+
+func TestValidateEvidenceJSON_Numbers(t *testing.T) {
+	for _, c := range jsonbNumberCases {
+		for _, doc := range []string{`{"n":` + c.num + `}`, `[1,` + c.num + `]`, c.num} {
+			err := validateEvidenceJSON("payload", json.RawMessage(doc))
+			if c.ok && err != nil {
+				t.Errorf("%s: %.60s rejected: %v", c.name, doc, err)
+			}
+			if !c.ok && !errors.Is(err, ErrIncidentInvalid) {
+				t.Errorf("%s: %.60s = %v; want ErrIncidentInvalid", c.name, doc, err)
+			}
+		}
+	}
+	// Digits inside a string are text, not a number.
+	if err := validateEvidenceJSON("payload", json.RawMessage(`{"n":"1e131072"}`)); err != nil {
+		t.Errorf("a number-like string was rejected: %v", err)
+	}
+}
+
+// TestJSONBNumberCasesMatchPostgreSQL proves the number table against the real
+// server, and that a capture carrying an out-of-range number fails as a clean
+// validation error rather than a driver error mid-transaction.
+func TestJSONBNumberCasesMatchPostgreSQL(t *testing.T) {
+	is, es, pool := newEvidenceStores(t)
+	for _, c := range jsonbNumberCases {
+		var ok bool
+		err := pool.QueryRow(t.Context(), `SELECT ('{"n":' || $1 || '}')::jsonb IS NOT NULL`, c.num).Scan(&ok)
+		if dbOK := err == nil; dbOK != c.ok {
+			t.Errorf("%s: PostgreSQL accepted=%v (%v); the table says %v", c.name, dbOK, err, c.ok)
+		}
+	}
+
+	owner := testOwnerID(t)
+	incident := mustCreateIncident(t, is, newIncident(owner, "numbers"))
+	r := snapshotRow("huge-number", 8)
+	r.Payload = json.RawMessage(`{"n":1e131072}`)
+	if _, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{r}, ceilingLimits); !errors.Is(err, ErrIncidentInvalid) {
+		t.Errorf("capture with an out-of-range number = %v; want ErrIncidentInvalid", err)
+	}
+	requireConsistent(t, readEvidenceTotals(t, pool, incident), 0, 0, 0)
+}
+
+// TestInsertBatchLockTimeoutIsTransactionLocal: the lock_timeout InsertBatch
+// sets must not leak onto the pooled connection. One connection, so every
+// query reuses the one InsertBatch ran on.
+func TestInsertBatchLockTimeoutIsTransactionLocal(t *testing.T) {
+	pool := testDBWithMaxConns(t, 1)
+	is, es := NewIncidentStore(pool), NewIncidentEvidenceStore(pool)
+	es.lockTimeout = 200 * time.Millisecond
+	owner := testOwnerID(t)
+	incident := mustCreateIncident(t, is, newIncident(owner, "local"))
+
+	show := func() string {
+		t.Helper()
+		var v string
+		if err := pool.QueryRow(t.Context(), `SELECT current_setting('lock_timeout')`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	baseline := show()
+	if baseline == "200ms" {
+		t.Fatalf("baseline lock_timeout is already the test value %q", baseline)
+	}
+	mustInsert(t, es, incident, owner, ceilingLimits, snapshotRow("a", 10))
+	if got := show(); got != baseline {
+		t.Errorf("after a capture, lock_timeout = %q; want the session default %q", got, baseline)
+	}
+
+	release := holdIncidentLock(t, incident)
+	if _, err := es.InsertBatch(t.Context(), incident, owner, []IncidentEvidenceRow{snapshotRow("b", 10)}, ceilingLimits); !errors.Is(err, ErrIncidentBusy) {
+		t.Fatalf("capture behind a held lock = %v; want ErrIncidentBusy", err)
+	}
+	release()
+	if got := show(); got != baseline {
+		t.Errorf("after a busy capture, lock_timeout = %q; want the session default %q", got, baseline)
 	}
 }

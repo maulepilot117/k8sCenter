@@ -82,13 +82,16 @@ func NewIncidentGrantStore(pool *pgxpool.Pool) *IncidentGrantStore {
 
 // AddGrant gives granteeID a grant on an incident owned by ownerID, or updates
 // can_annotate when the grantee already holds one. In one transaction holding
-// the incident row lock (so concurrent grants cannot overshoot the cap; a wait
-// past incidentLockTimeout returns the retryable ErrIncidentBusy):
+// the incident row lock (so concurrent grants cannot overshoot the cap):
 // ErrIncidentNotFound or ErrNotOwner; a self-grant (granteeID == ownerID) is
 // then a no-op returning nil, since the owner already holds every right;
 // ErrGrantLimit when the grantee is new and the incident already has
 // IncidentMaxGrants grantees. The INSERT itself selects from incidents with
 // the owner in its WHERE clause.
+//
+// Any lock wait in the transaction past incidentLockTimeout (the incident row,
+// or the grant row a concurrent RemoveGrant holds) returns the retryable
+// ErrIncidentBusy, and nothing is written.
 func (s *IncidentGrantStore) AddGrant(ctx context.Context, incidentID uuid.UUID, ownerID, granteeID string, canAnnotate bool) error {
 	if err := requireIdentity("owner id", ownerID); err != nil {
 		return err
@@ -96,7 +99,11 @@ func (s *IncidentGrantStore) AddGrant(ctx context.Context, incidentID uuid.UUID,
 	if err := ValidateGranteeID(granteeID); err != nil {
 		return err
 	}
+	return busyIfLockTimeout(s.addGrant(ctx, incidentID, ownerID, granteeID, canAnnotate))
+}
 
+// addGrant is AddGrant's transaction; AddGrant maps its lock timeouts.
+func (s *IncidentGrantStore) addGrant(ctx context.Context, incidentID uuid.UUID, ownerID, granteeID string, canAnnotate bool) error {
 	tx, err := beginIncidentLockTx(ctx, s.pool, s.lockTimeout, "incident grant")
 	if err != nil {
 		return err
@@ -109,7 +116,7 @@ func (s *IncidentGrantStore) AddGrant(ctx context.Context, incidentID uuid.UUID,
 		return ErrIncidentNotFound
 	}
 	if err != nil {
-		return busyIfLockTimeout(fmt.Errorf("lock incidents: %w", err))
+		return fmt.Errorf("lock incidents: %w", err)
 	}
 	if owner != ownerID {
 		return ErrNotOwner
