@@ -1,4 +1,4 @@
-import type { Page, Route } from "@playwright/test";
+import type { APIResponse, Locator, Page, Route } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
 import {
   attachAuthInjection,
@@ -36,9 +36,13 @@ import {
 const NS = "e2e-test";
 const PAGE = "/tools/yaml-apply";
 
-/** Honest answers a live ownership check on a cluster without Argo/Flux may give. */
+/**
+ * The one honest answer on the CI kind cluster, which runs neither Argo CD
+ * nor Flux CD. Deliberately exact: "did not respond" or "no evidence" here
+ * would mean discovery regressed, and must fail rather than pass.
+ */
 const NO_CONTROLLER =
-  /No GitOps controller \(Argo CD or Flux CD\) is installed on this cluster\.|did not respond, so ownership could not be checked\.|No Argo CD or Flux CD application you can see claims this object\./;
+  "No GitOps controller (Argo CD or Flux CD) is installed on this cluster.";
 
 const createdConfigMaps: string[] = [];
 
@@ -104,6 +108,37 @@ async function trackedApply(
   return { operationId: tracking.operationId, state: tracking.state };
 }
 
+/**
+ * POSTs, waiting out 429s from the shared 5-per-minute auth bucket with
+ * backoff (honouring Retry-After). Fails loudly if the bucket never clears,
+ * rather than skipping: a skipped isolation test looks like a passing one.
+ */
+async function postWithBackoff(
+  page: Page,
+  url: string,
+  what: string,
+  init: { headers: Record<string, string>; data: unknown },
+): Promise<APIResponse> {
+  const deadline = Date.now() + 130_000;
+  for (let attempt = 1; ; attempt++) {
+    const res = await page.request.post(url, {
+      ...init,
+      failOnStatusCode: false,
+    });
+    if (res.status() !== 429) return res;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `${what}: still rate limited (429) after ${attempt} attempts; the shared auth bucket never cleared, so cross-user isolation was NOT checked`,
+      );
+    }
+    const retryAfter = Number(res.headers()["retry-after"]);
+    const waitS = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter, 30)
+      : Math.min(5 * 2 ** (attempt - 1), 30);
+    await page.waitForTimeout(waitS * 1000);
+  }
+}
+
 async function openYamlApply(page: Page, path = PAGE): Promise<void> {
   // Block the Monaco CDN so the plain textarea fallback renders.
   await page.route("**/esm.sh/monaco-editor**", (route) => route.abort());
@@ -117,15 +152,80 @@ async function fillYaml(page: Page, yaml: string): Promise<void> {
   await expect(textarea).toHaveValue(yaml);
 }
 
+/** The YAML Apply page's error banner (validate, apply or refusal errors). */
+const pageError = (page: Page) => page.getByRole("alert");
+
+/**
+ * Waits for `success`, racing the page's error banner, so a 429 or any other
+ * error fails the test with the on-screen cause instead of a bare timeout
+ * (docs/solutions/yaml-rate-limiter-e2e-flake.md, rule 4).
+ */
+async function expectOrPageError(
+  page: Page,
+  success: Locator,
+  what: string,
+  timeout = 15_000,
+): Promise<void> {
+  const error = pageError(page);
+  await expect(success.or(error).first()).toBeVisible({ timeout });
+  if (!(await success.first().isVisible()) && (await error.first().isVisible())) {
+    throw new Error(
+      `${what}: the page showed an error instead: ${await error.first().innerText()}`,
+    );
+  }
+}
+
 async function validate(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Validate", exact: true }).click();
-  await expect(page.getByText(/resources? validated/)).toBeVisible({
-    timeout: 15_000,
-  });
+  await expectOrPageError(
+    page,
+    page.getByText(/resources? validated/),
+    "validate",
+  );
+}
+
+/** Applies and waits for the change-record panel, naming any error shown. */
+async function applyAndAwaitRecord(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  const record = page.getByRole("region", { name: "Change record" });
+  await expectOrPageError(page, record, "tracked apply");
+  return record;
 }
 
 const trackingBox = (page: Page) =>
   page.getByRole("checkbox", { name: "Keep a record of this change" });
+
+/**
+ * Asserts tracking is on by default. When the /changes probe failed (a 429
+ * on GET /v1/changes, say), the checkbox is off and the page explains why;
+ * that explanation becomes the failure message instead of "not checked".
+ */
+async function expectTrackingOn(page: Page): Promise<void> {
+  const box = trackingBox(page);
+  await expect(box).toBeEnabled({ timeout: 10_000 });
+  if (!(await box.isChecked())) {
+    const note = page.locator("#yaml-apply-tracking-note");
+    const why = (await note.count()) > 0 ? await note.innerText() : "no reason shown";
+    throw new Error(`change tracking is off by default: ${why}`);
+  }
+}
+
+/** Waits for the ownership list, racing the ownership-check failure line. */
+async function ownershipList(page: Page): Promise<Locator> {
+  const list = page.getByRole("list", { name: "GitOps ownership" });
+  const failed = page
+    .getByRole("region", { name: "GitOps ownership" })
+    .getByRole("status");
+  await expect(list.or(failed).first()).toBeVisible({ timeout: 15_000 });
+  if (!(await list.isVisible())) {
+    const text = await failed.first().innerText();
+    if (!/Checking which GitOps controllers/.test(text)) {
+      throw new Error(`ownership check failed: ${text}`);
+    }
+    await expect(list).toBeVisible({ timeout: 15_000 });
+  }
+  return list;
+}
 
 const stateRegion = (page: Page) =>
   page.getByRole("region", { name: "Change state" });
@@ -208,16 +308,13 @@ test.describe("Change receipts (live)", () => {
     createdConfigMaps.push(ok1, ok2);
     try {
       await openYamlApply(page);
-      await expect(trackingBox(page)).toBeChecked();
+      await expectTrackingOn(page);
       await fillYaml(
         page,
         [configMap(ok1), configMap(ok2), configMap(bad, missingNs)].join("\n---\n"),
       );
       await validate(page);
-      await page.getByRole("button", { name: "Apply", exact: true }).click();
-
-      const record = page.getByRole("region", { name: "Change record" });
-      await expect(record).toBeVisible({ timeout: 15_000 });
+      const record = await applyAndAwaitRecord(page);
       await expect(record.getByText("Partially applied", { exact: true })).toBeVisible();
       await record.getByRole("link", { name: /View change receipt/ }).click();
 
@@ -250,13 +347,10 @@ test.describe("Change receipts (live)", () => {
     createdConfigMaps.push(name);
     try {
       await openYamlApply(page);
-      await expect(trackingBox(page)).toBeChecked();
+      await expectTrackingOn(page);
       await fillYaml(page, configMap(name));
       await validate(page);
-      await page.getByRole("button", { name: "Apply", exact: true }).click();
-
-      const record = page.getByRole("region", { name: "Change record" });
-      await expect(record).toBeVisible({ timeout: 15_000 });
+      const record = await applyAndAwaitRecord(page);
       // The apply response carries the stored verification state, which is
       // "pending" until the receipt is first verified.
       await expect(record.getByText("Applied", { exact: true })).toBeVisible();
@@ -291,15 +385,19 @@ test.describe("Change receipts (live)", () => {
       const color = await state
         .getByText("Verification inconclusive", { exact: true })
         .evaluate((el) => getComputedStyle(el).color);
-      const success = await page.evaluate(() => {
-        const probe = document.createElement("span");
-        probe.style.color = "var(--success)";
-        document.body.appendChild(probe);
-        const c = getComputedStyle(probe).color;
-        probe.remove();
-        return c;
-      });
-      expect(color).not.toBe(success);
+      // Exactly the neutral tone: a warn, crit or info colour would be as
+      // wrong as green for "this proves nothing either way".
+      const tone = (cssVar: string) =>
+        page.evaluate((v) => {
+          const probe = document.createElement("span");
+          probe.style.color = `var(${v})`;
+          document.body.appendChild(probe);
+          const c = getComputedStyle(probe).color;
+          probe.remove();
+          return c;
+        }, cssVar);
+      expect(color).toBe(await tone("--text-muted"));
+      expect(color).not.toBe(await tone("--success"));
     } finally {
       await deleteConfigMap(page, name);
     }
@@ -325,7 +423,7 @@ test.describe("Change receipts (live)", () => {
       await page.getByRole("link", { name: "Retry failed objects" }).click();
 
       await expect(page).toHaveURL(
-        new RegExp(`${PAGE}\\?repairOf=${operationId}$`),
+        new RegExp(`${PAGE}\\?repairOf=${operationId}&cluster=local$`),
       );
       await expect(page.getByText(`Repairing change ${operationId.slice(0, 8)}.`)).toBeVisible();
       // Nothing came from the receipt: the editor still holds the placeholder.
@@ -334,11 +432,10 @@ test.describe("Change receipts (live)", () => {
 
       // The operator supplies current content; it is applied as a NEW change
       // that only links back to the original.
-      await expect(trackingBox(page)).toBeChecked();
+      await expectTrackingOn(page);
       await fillYaml(page, configMap(retry));
       await validate(page);
-      await page.getByRole("button", { name: "Apply", exact: true }).click();
-      const record = page.getByRole("region", { name: "Change record" });
+      const record = await applyAndAwaitRecord(page);
       await record.getByRole("link", { name: /View change receipt/ }).click();
       await expect(page).not.toHaveURL(new RegExp(operationId));
       await expect(
@@ -386,9 +483,9 @@ test.describe("Change receipts (live)", () => {
     await openYamlApply(page);
     await fillYaml(page, configMap(e2eName("cm")));
     await validate(page);
-    const list = page.getByRole("list", { name: "GitOps ownership" });
-    await expect(list).toBeVisible({ timeout: 15_000 });
-    await expect(list).toContainText(NO_CONTROLLER);
+    const list = await ownershipList(page);
+    await expect(list.getByRole("listitem")).toHaveCount(1);
+    await expect(list.getByRole("listitem")).toContainText(NO_CONTROLLER);
     await expect(list).not.toContainText("Managed by");
     await expect(
       page.getByText(/managed by a GitOps controller/),
@@ -399,6 +496,10 @@ test.describe("Change receipts (live)", () => {
     page,
     browser,
   }) => {
+    // Never skipped: a 429 from the shared auth bucket is waited out with
+    // backoff, and the test fails loudly if it never clears, so the
+    // cross-user isolation check cannot silently stop running in CI.
+    test.setTimeout(180_000);
     const name = e2eName("cm");
     createdConfigMaps.push(name);
     await page.goto("/");
@@ -407,7 +508,7 @@ test.describe("Change receipts (live)", () => {
 
     const username = e2eSecureName("user");
     const password = `e2e-${crypto.randomUUID()}`;
-    const created = await page.request.post("/api/v1/users", {
+    const created = await postWithBackoff(page, "/api/v1/users", "create the second user", {
       headers,
       data: {
         username,
@@ -416,12 +517,7 @@ test.describe("Change receipts (live)", () => {
         k8sGroups: [],
         roles: ["viewer"],
       },
-      failOnStatusCode: false,
     });
-    if (created.status() === 429) {
-      test.skip(true, "auth rate limiter is saturated; second identity refused");
-      return;
-    }
     if (!created.ok()) {
       throw new Error(
         `creating the second user failed: ${created.status()} ${await created.text()}`,
@@ -429,18 +525,13 @@ test.describe("Change receipts (live)", () => {
     }
     const userId = (await created.json())?.data?.id;
     try {
-      const login = await page.request.post("/api/v1/auth/login", {
+      const login = await postWithBackoff(page, "/api/v1/auth/login", "log in as the second user", {
         headers: {
           "Content-Type": "application/json",
           "X-Requested-With": "XMLHttpRequest",
         },
         data: { username, password },
-        failOnStatusCode: false,
       });
-      if (login.status() === 429) {
-        test.skip(true, "auth rate limiter is saturated; second login refused");
-        return;
-      }
       if (!login.ok()) {
         throw new Error(`second login failed: ${login.status()} ${await login.text()}`);
       }
@@ -616,9 +707,7 @@ test.describe("Change receipts (stubbed states)", () => {
     await openYamlApply(page);
     await fillYaml(page, configMap(e2eName("cm")));
     await validate(page);
-    await page.getByRole("button", { name: "Apply", exact: true }).click();
-
-    const record = page.getByRole("region", { name: "Change record" });
+    const record = await applyAndAwaitRecord(page);
     await expect(record.getByText("Outcome unknown", { exact: true })).toBeVisible();
     await expect(record).toContainText("no one-click retry");
     await expect(record).toContainText("1 document has no recorded outcome");
@@ -691,7 +780,7 @@ test.describe("Change receipts (stubbed states)", () => {
     // A receipt says unavailable, not "not found".
     await page.goto(`/changes/${crypto.randomUUID()}`);
     await expect(page.getByRole("alert")).toContainText(
-      "Change receipts are unavailable",
+      "Change records are unavailable",
     );
     await expect(page.getByText("Change receipt not found")).toHaveCount(0);
   });
