@@ -49,8 +49,8 @@ dead (`frontend/lib/dashboard/placement.ts`). Do not rely on a green e2e run to 
   vetted constant-time implementation.
 - **Never use `Math.random` for an id that is a retry key, an idempotency key or a
   credential.** `Math.random` is acceptable only for cosmetic, non-security uniqueness
-  where a collision is harmless (SVG gradient ids in `GaugeRing.tsx` and
-  `SparklineChart.tsx`, and the widget instance suffix in `placement.ts`, which has its
+  where a collision is harmless (for example the SVG gradient ids in `GaugeRing.tsx`,
+  `SparklineChart.tsx` and `ResourceAreaChart.tsx`, and the widget instance suffix in `placement.ts`, which has its
   own redraw logic). A tracked-apply operation id is the primary key of a receipt and
   the thing that stops a retry from applying twice. The backend checks it with
   `uuid.Parse` plus `Version() == 4`, but a predictable id would still let one session

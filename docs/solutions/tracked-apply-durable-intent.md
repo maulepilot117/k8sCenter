@@ -45,7 +45,8 @@ error. It never stores manifest content.
 1. Validate (UUIDv4 id, authenticated user, at least one document). Digest the raw
    body. Detect Secret documents. Nothing is persisted yet, so a failure here is a 400.
 2. `Insert` the row with state `applying`. A unique violation is the idempotency
-   branch (below). Any other failure is a 503 and nothing was applied.
+   branch (below). `ErrReceiptInvalid` (input the store rejects before any SQL) is a
+   400. Any other failure is a 503 and nothing was applied.
 3. `MarkMutationStarted`. This stamps `mutation_started_at` and is what separates "the
    process died before touching the cluster" (reconciled to `failed`) from "it died
    during the apply" (reconciled to `unknown`).
@@ -64,10 +65,14 @@ cluster gets 409 `operation_id_reused`; a row that is not terminal gets 409
 ### 1. The intent row has to exist before the first PATCH, and the writes that guard it have to be conditional
 
 Writing the receipt after the apply cannot answer "did my apply happen" for the case
-that matters, which is the process dying mid-apply. Every mutation of a row is a
-guarded `UPDATE ... WHERE completed_at IS NULL` (and `MarkMutationStarted` also
-requires `mutation_started_at IS NULL`). When zero rows match, the store distinguishes
-`ErrReceiptNotFound` from `ErrReceiptAlreadyFinal`.
+that matters, which is the process dying mid-apply. `MarkMutationStarted`,
+`AppendObject`, `Finalize` and `ReconcileOrphans` are guarded
+`UPDATE ... WHERE completed_at IS NULL` statements (`MarkMutationStarted` also requires
+`mutation_started_at IS NULL`, and `ReconcileOrphans` also `state = 'applying'` and an
+age bound). `SetVerification` has its own guard, on `verification_state` not already
+being final. `SetOwnership` is unguarded: it stores the preview-time snapshot and
+nothing reads it as a decision. For the guarded single-row writes, zero matching rows
+makes the store distinguish `ErrReceiptNotFound` from `ErrReceiptAlreadyFinal`.
 
 `ErrReceiptAlreadyFinal` is a control signal, not a failure to log and continue:
 
@@ -101,12 +106,19 @@ hangs up mid-bundle must not leave the receipt describing less than what happene
 ### 3. A document that was never sent is `notAttempted`, not `indeterminate`
 
 Two different things look alike from outside. A PATCH that was sent and then cut off
-may have been committed (`indeterminate`). A document the engine never reached (the
-context ended first, or an earlier recording failure stopped the loop) was provably
-not sent. The observed apply loop checks the request context before each document and
-again immediately before each PATCH, and an abandoned document is reported failed with
-`NotAttemptedError` and is **not** observed. Reporting it as indeterminate would make
-the verifier read an object that was never touched and give the receipt a false trail.
+may have been committed (`indeterminate`). A document the engine never reached was
+provably not sent, and there are two ways to not reach one:
+
+- The request context ended. The observed apply loop checks the context before each
+  document and again immediately before each PATCH, and an abandoned document is
+  reported failed with `NotAttemptedError` and is **not** observed.
+- Recording failed. The observer returned an error, so the engine stopped; the rest are
+  reported failed with `NotAppliedError`, and the receipt finalizes `unknown` because
+  the recorded prefix no longer matches what the cluster holds.
+
+Both count in `tracking.notAttempted`. Reporting an unsent document as indeterminate
+would make the verifier read an object that was never touched and give the receipt a
+false trail.
 
 All documents still appear in `results` as `failed`, because legacy clients (the
 mobile wizard controller computes `allSucceeded` as `failed == 0`) would otherwise read
@@ -174,9 +186,12 @@ no user credential outlives its request). Two rules keep that write safe:
 verdict, and the `change_verify` audit entry keys on it, so each persisted verdict is
 audited once and a read-back or lost race is not.
 
-Verification yields one check per document index. A document with no recorded outcome
-is `inconclusive/outcome_unrecorded`, so a receipt that lost outcomes can never
-aggregate to `verified`. A `verified` receipt must mean every document was checked.
+Verification yields one check per recorded object that may exist on the cluster (a
+success, or a failure classed `indeterminate`), plus one `inconclusive/outcome_unrecorded`
+check per document index with no recorded outcome, so a receipt that lost outcomes can
+never aggregate to `verified`. A document that definitely failed is skipped: it is not
+on the cluster, so there is nothing to verify, and the receipt's execution state stays
+`partial` or `failed` whatever the verification state says.
 
 ### 7. Reconcile is age-bounded because a rolling update runs two pods
 

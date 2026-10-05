@@ -39,8 +39,8 @@ changes were verified by deploying them.
 That was survivable while the schema grew one table at a time. It stops being survivable
 now: the current schema is **15 tables**, and the queued release plans
 (`docs/plans/2026-09-10-release-{a,b,c,d,e,f}-*-impl.md`) introduce **twelve more** —
-`user_preferences` (A), five `incident*` tables (D), two `change_receipt*` tables (E), and
-four `backup_assurance_*` tables (F). Releases B and C add none: Release C introduces no
+`user_preferences` (A), five `incident*` tables (D), two `change_receipt*` tables (E, real
+since migration 000023), and four `backup_assurance_*` tables (F, real since 000022). Releases B and C add none: Release C introduces no
 table at all, and the `eso_sync_history` DDL in Release B is the *existing* 000011 table
 quoted as "Current ... verbatim", not a new one. Every one of them needs tests that do a **real migration
 round trip**: a fake or an in-memory shim proves nothing about a partial unique index, an
@@ -249,11 +249,12 @@ and the `TEXT`/`UUID` primary keys on `local_users`, `auth_providers`, `nc_chann
 `nc_notifications`, `nc_rules`). That accounts for all 15 current tables: 3 owner-column,
 4 cluster-id, 7 natural-key, plus `app_settings`.
 
-The twelve queued tables fall in the same scheme, with one addition. `incidents` and
-`change_receipts` carry `owner_id TEXT NOT NULL`; `incident_evidence` adds a `cluster_id`;
+The twelve tables (the Release E and F ones are real now, as described below; the
+`incident*` ones are still queued) fall in the same scheme, with one addition.
+`incidents` and `change_receipts` (real since 000023) carry `owner_id TEXT NOT NULL`; `incident_evidence` adds a `cluster_id`;
 `incident_notes` has a UUID primary key. The remaining three — `incident_note_revisions`
 (`PRIMARY KEY (note_id, revision)`), `incident_grants` (`(incident_id, grantee_id)`) and
-`change_receipt_grants` (`(receipt_id, grantee_id)`) — are **derived-key children**: they
+`change_receipt_grants` (`(receipt_id, grantee_id)`, real since 000023) — are **derived-key children**: they
 key on a parent row the test itself created, so they inherit that parent's uniqueness and
 need no scoping column of their own. None of the twelve is a singleton.
 

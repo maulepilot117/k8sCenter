@@ -2459,10 +2459,13 @@ the order the plan lists them in.
   a reader whose Kubernetes identity cannot read the workload cannot freeze the
   owner's receipt as `inconclusive`. `VerificationResult.Persisted` is true only
   when this call's write landed a final verdict.
-- **One check per document index.** Every index in `0..DocumentCount-1` yields one
-  check. A document with no recorded outcome is `inconclusive/outcome_unrecorded`
-  without a read, so a receipt that lost outcomes can never aggregate to
-  `verified`.
+- **Checks per recorded object, plus one per unrecorded index.** Each recorded
+  object that may exist (a success, or an `indeterminate` failure) yields one
+  check. Each index in `0..DocumentCount-1` with no recorded outcome yields an
+  `inconclusive/outcome_unrecorded` check without a read, so a receipt that lost
+  outcomes can never aggregate to `verified`. A document that definitely failed is
+  skipped: it is not on the cluster, and the receipt's execution state stays
+  `partial` or `failed`.
 - **Added reason codes.** `identity_unknown` (the receipt holds no UID, so a live
   read cannot be bound to the applied object; no read is made),
   `outcome_unrecorded`, and `strategy_not_supported`. A failed live read uses
@@ -2612,7 +2615,7 @@ the order the plan lists them in.
 | R-3: `ReconcileOrphans` is single-replica only | **Narrowed.** The 10-minute age bound removes the rolling-update hazard. What remains is the assumption that no apply runs longer than the bound; leader election is still the real fix for a scaled-out backend. |
 | R-8 / open item 2: `change_receipt_grants` has no write API | **Still open.** The table shipped in `000023` and the read path honours existing rows, but nothing creates grants. Grant creation is expected with Release D's incident-sharing surface; otherwise drop the table in a later migration. |
 | R-9: later documents reported `failed` after a mid-bundle stop | **Holds as planned.** `tracking.notAttempted` and `tracking.unrecorded` distinguish the cases. |
-| R-10: verification is client-polled | **Holds as planned.** A receipt nobody polls stays `pending` until the next read; the reconciler writes `inconclusive` only for rows still `applying`. |
+| R-10: verification is client-polled | **Holds as planned.** A receipt nobody polls stays `pending`, and one polled and then abandoned stays `verifying`, until the next read; the reconciler writes `inconclusive` only for rows still `applying`. |
 | R-1, R-2, R-5, R-11, R-12 | Unchanged. |
 
 ### Not done
