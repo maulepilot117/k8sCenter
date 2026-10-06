@@ -1,5 +1,6 @@
 import {
   type APIRequestContext,
+  type APIResponse,
   type BrowserContext,
   expect,
   type Page,
@@ -316,6 +317,41 @@ export function bearerHeaders(token: string): Record<string, string> {
     "Content-Type": "application/json",
     Authorization: `Bearer ${token}`,
   };
+}
+
+/**
+ * POSTs, waiting out 429s from the shared 5-per-minute auth bucket with
+ * backoff (honouring Retry-After). Fails loudly if the bucket never clears,
+ * rather than skipping: a skipped isolation test looks like a passing one.
+ *
+ * For the requests a second-identity spec makes against that bucket:
+ * creating the user (`POST /api/v1/users`) and logging it in
+ * (`POST /api/v1/auth/login`).
+ */
+export async function postWithBackoff(
+  page: Page,
+  url: string,
+  what: string,
+  init: { headers: Record<string, string>; data: unknown },
+): Promise<APIResponse> {
+  const deadline = Date.now() + 130_000;
+  for (let attempt = 1; ; attempt++) {
+    const res = await page.request.post(url, {
+      ...init,
+      failOnStatusCode: false,
+    });
+    if (res.status() !== 429) return res;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `${what}: still rate limited (429) after ${attempt} attempts; the shared auth bucket never cleared, so cross-user isolation was NOT checked`,
+      );
+    }
+    const retryAfter = Number(res.headers()["retry-after"]);
+    const waitS = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter, 30)
+      : Math.min(5 * 2 ** (attempt - 1), 30);
+    await page.waitForTimeout(waitS * 1000);
+  }
 }
 
 /**

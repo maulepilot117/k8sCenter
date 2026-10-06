@@ -1,4 +1,4 @@
-import type { APIResponse, Locator, Page, Route } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
 import {
   attachAuthInjection,
@@ -6,6 +6,7 @@ import {
   e2eName,
   e2eSecureName,
   getAuthHeaders,
+  postWithBackoff,
 } from "../helpers.ts";
 
 /**
@@ -106,37 +107,6 @@ async function trackedApply(
     throw new Error("tracked apply returned no tracking block (is U30a deployed?)");
   }
   return { operationId: tracking.operationId, state: tracking.state };
-}
-
-/**
- * POSTs, waiting out 429s from the shared 5-per-minute auth bucket with
- * backoff (honouring Retry-After). Fails loudly if the bucket never clears,
- * rather than skipping: a skipped isolation test looks like a passing one.
- */
-async function postWithBackoff(
-  page: Page,
-  url: string,
-  what: string,
-  init: { headers: Record<string, string>; data: unknown },
-): Promise<APIResponse> {
-  const deadline = Date.now() + 130_000;
-  for (let attempt = 1; ; attempt++) {
-    const res = await page.request.post(url, {
-      ...init,
-      failOnStatusCode: false,
-    });
-    if (res.status() !== 429) return res;
-    if (Date.now() > deadline) {
-      throw new Error(
-        `${what}: still rate limited (429) after ${attempt} attempts; the shared auth bucket never cleared, so cross-user isolation was NOT checked`,
-      );
-    }
-    const retryAfter = Number(res.headers()["retry-after"]);
-    const waitS = Number.isFinite(retryAfter) && retryAfter > 0
-      ? Math.min(retryAfter, 30)
-      : Math.min(5 * 2 ** (attempt - 1), 30);
-    await page.waitForTimeout(waitS * 1000);
-  }
 }
 
 async function openYamlApply(page: Page, path = PAGE): Promise<void> {
