@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError } from "@/lib/api.ts";
 import {
@@ -78,7 +78,12 @@ interface Editing {
    * Set by a 409. `current` is the revision the server reported; `reloaded`
    * turns true once a reload has brought the note's current text.
    */
-  conflict: { current?: number; reloaded: boolean } | null;
+  conflict: {
+    current?: number;
+    reloaded: boolean;
+    /** The list request sequence at the 409; only later loads rebind. */
+    afterSeq: number;
+  } | null;
   saving: boolean;
   error: string | null;
 }
@@ -222,6 +227,13 @@ export default function IncidentNotes({
   const deleting = useSignal<string | null>(null);
   const deleteError = useSignal<string | null>(null);
 
+  /**
+   * A note created while a list load was in flight. That load may have read
+   * the thread before the note existed, so the note is reconciled when the
+   * load settles instead of being appended (and then erased) immediately.
+   */
+  const pendingNotes = useRef<NoteView[]>([]);
+
   const { cursor, seq } = request.value;
   useEffect(() => {
     const controller = new AbortController();
@@ -244,12 +256,16 @@ export default function IncidentNotes({
           notes.value = page.items;
         }
         // After a conflict the user asked to see the current text: bind the
-        // editor to what was just loaded, so the next save carries that
-        // revision. Without a conflict the editor keeps the revision it was
-        // opened on, so someone else's later save still surfaces as a 409
-        // instead of being overwritten silently.
+        // editor to what a load issued AFTER the 409 read, so the next save
+        // carries that revision. An older in-flight page may predate the
+        // conflicting save and is ignored for this. Without a conflict the
+        // editor keeps the revision it was opened on, so someone else's
+        // later save still surfaces as a 409 instead of being overwritten.
         const e = editing.peek();
-        const fresh = e?.conflict && page.items.find((n) => n.id === e.noteId);
+        const fresh =
+          e?.conflict &&
+          seq > e.conflict.afterSeq &&
+          page.items.find((n) => n.id === e.noteId);
         if (e?.conflict && fresh && !e.saving) {
           editing.value = {
             ...e,
@@ -261,11 +277,13 @@ export default function IncidentNotes({
         nextCursor.value = page.continue;
         loaded.value = true;
         loading.value = false;
+        settlePendingNote();
       })
       .catch(() => {
         if (controller.signal.aborted) return;
         loadError.value = "Could not load notes.";
         loading.value = false;
+        settlePendingNote();
       });
     return () => controller.abort();
   }, [incidentId, cursor, seq]);
@@ -281,6 +299,35 @@ export default function IncidentNotes({
     if (loading.value || !nextCursor.value) return;
     issue(nextCursor.value);
   };
+  const retryLoad = () => {
+    if (!loading.value) issue(request.peek().cursor);
+  };
+
+  const ADDED_ELSEWHERE =
+    "Note added. It appears at the end of the thread; load more notes to see it.";
+
+  /**
+   * Places a created note: appended when the loaded list is the whole,
+   * settled thread; otherwise the user is told where it went.
+   */
+  const placeNote = (note: NoteView) => {
+    const complete =
+      loaded.peek() && !loadError.peek() && nextCursor.peek() === undefined;
+    if (complete) {
+      notes.value = [...notes.value.filter((n) => n.id !== note.id), note];
+    } else if (!notes.peek().some((n) => n.id === note.id)) {
+      postNotice.value = loaded.peek()
+        ? ADDED_ELSEWHERE
+        : "Note added. Load the notes to see it.";
+    }
+  };
+
+  /** Reconciles notes created during the load that just settled. */
+  function settlePendingNote() {
+    const created = pendingNotes.current;
+    pendingNotes.current = [];
+    for (const note of created) placeNote(note);
+  }
 
   const post = async (e: Event) => {
     e.preventDefault();
@@ -296,12 +343,12 @@ export default function IncidentNotes({
     try {
       const note = await createNote(incidentId, body);
       draft.value = "";
-      if (nextCursor.peek() === undefined) {
-        // The whole thread is loaded, so the newest note goes last.
-        notes.value = [...notes.value.filter((n) => n.id !== note.id), note];
+      if (loading.peek()) {
+        // A load in flight may have read the thread before this note
+        // existed; place it once that load settles.
+        pendingNotes.current.push(note);
       } else {
-        postNotice.value =
-          "Note added. It appears at the end of the thread; load more notes to see it.";
+        placeNote(note);
       }
     } catch (err) {
       postError.value = noteErrorText(err, "added");
@@ -311,6 +358,8 @@ export default function IncidentNotes({
   };
 
   const startEdit = (note: NoteView) => {
+    // A save in flight owns the editor until it settles.
+    if (editing.peek()?.saving) return;
     editing.value = {
       noteId: note.id,
       draft: note.body,
@@ -335,12 +384,16 @@ export default function IncidentNotes({
       return;
     }
     editing.value = { ...e, saving: true, error: null };
+    // The result belongs to this note's editor only; never apply it to
+    // another one.
+    const stillThis = () => editing.peek()?.noteId === e.noteId;
     try {
       const saved = await updateNote(incidentId, e.noteId, e.draft, e.revision);
       notes.value = notes.value.map((n) => (n.id === saved.id ? saved : n));
-      editing.value = null;
+      if (stillThis()) editing.value = null;
     } catch (err) {
-      const current = editing.value ?? e;
+      if (!stillThis()) return;
+      const current = editing.peek() ?? e;
       if (err instanceof ApiError && err.reason === "note_revision_conflict") {
         editing.value = {
           ...current,
@@ -348,6 +401,7 @@ export default function IncidentNotes({
           conflict: {
             current: incidentErrorNumber(err, "currentRevision"),
             reloaded: false,
+            afterSeq: request.peek().seq,
           },
         };
       } else {
@@ -414,8 +468,18 @@ export default function IncidentNotes({
         </p>
       )}
       {loadError.value && (
-        <div role="alert">
-          <Alert variant="error">{loadError.value}</Alert>
+        <div class="flex flex-col items-start gap-2">
+          <div role="alert" class="w-full">
+            <Alert variant="error">{loadError.value}</Alert>
+          </div>
+          <button
+            type="button"
+            aria-disabled={busy}
+            onClick={retryLoad}
+            class={BUTTON_SECONDARY}
+          >
+            Retry
+          </button>
         </div>
       )}
       {loaded.value && notes.value.length === 0 && !editMissing && (
@@ -552,6 +616,7 @@ export default function IncidentNotes({
             rows={3}
             maxLength={INCIDENT_MAX_NOTE_BODY_CHARS}
             value={draft.value}
+            disabled={posting.value}
             onInput={(ev) => {
               draft.value = ev.currentTarget.value;
             }}

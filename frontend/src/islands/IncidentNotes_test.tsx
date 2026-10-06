@@ -383,3 +383,166 @@ test("another author's note offers no edit or delete", async () => {
   expect(labels).not.toContain("Edit");
   expect(labels).not.toContain("Delete");
 });
+
+// --- Review round 2 ---------------------------------------------------------
+
+const submitNew = (root: HTMLElement, text: string) => {
+  type(
+    root.querySelector(`textarea#new-note-${ID}`) as HTMLTextAreaElement,
+    text,
+  );
+  act(() => {
+    root
+      .querySelector("form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+};
+
+test("a note created while the first load is in flight survives that load", async () => {
+  let releaseList: () => void = () => {};
+  stubFetch(
+    (c) =>
+      c.method === "GET" && c.url.includes("/notes")
+        ? new Promise<Response>((resolve) => {
+            // The load read the thread before the note existed.
+            releaseList = () => resolve(json(200, { data: [], metadata: {} }));
+          })
+        : undefined,
+    (c) =>
+      c.method === "POST"
+        ? json(201, { data: note(N1, { body: "written early" }) })
+        : undefined,
+  );
+  const root = await mount();
+  submitNew(root, "written early");
+  await flush();
+  releaseList();
+  await flush();
+  expect(root.querySelector("ol[aria-label='Notes']")?.textContent).toContain(
+    "written early",
+  );
+  expect(root.textContent).not.toContain("No notes yet.");
+});
+
+test("a failed first load offers Retry, and a note posted meanwhile is reported", async () => {
+  let lists = 0;
+  stubFetch(
+    (c) => {
+      if (c.method !== "GET" || !c.url.includes("/notes")) return undefined;
+      lists++;
+      return lists === 1
+        ? json(503, { error: { code: 503, message: "store unavailable" } })
+        : json(200, { data: [note(N1, { body: "after" })], metadata: {} });
+    },
+    (c) =>
+      c.method === "POST"
+        ? json(201, { data: note(N1, { body: "after" }) })
+        : undefined,
+  );
+  const root = await mount();
+  expect(root.textContent).toContain("Could not load notes.");
+  submitNew(root, "after");
+  await flush();
+  expect(root.textContent).toContain("Note added. Load the notes to see it.");
+  expect(root.querySelector("ol[aria-label='Notes']")).toBeNull();
+  await click(root, "Retry");
+  expect(lists).toBe(2);
+  expect(root.querySelector("ol[aria-label='Notes']")?.textContent).toContain(
+    "after",
+  );
+});
+
+test("the new-note textarea is read-only while a post is in flight", async () => {
+  let release: () => void = () => {};
+  stubFetch(
+    listRoute(() => ({ "": { items: [] } })),
+    (c) =>
+      c.method === "POST"
+        ? new Promise<Response>((resolve) => {
+            release = () => resolve(json(201, { data: note(N1) }));
+          })
+        : undefined,
+  );
+  const root = await mount();
+  submitNew(root, "x");
+  await flush();
+  const area = root.querySelector(
+    `textarea#new-note-${ID}`,
+  ) as HTMLTextAreaElement;
+  expect(area.disabled).toBe(true);
+  release();
+  await flush();
+  expect(area.disabled).toBe(false);
+});
+
+test("a stale page issued before the 409 does not rebind the editor's revision", async () => {
+  let releasePage2: () => void = () => {};
+  const puts: Call[] = [];
+  stubFetch(
+    (c) => {
+      if (c.method !== "GET" || !c.url.includes("/notes")) return undefined;
+      if (c.url.includes("continue=p2")) {
+        // Read before the conflicting save: still revision 1.
+        return new Promise<Response>((resolve) => {
+          releasePage2 = () =>
+            resolve(json(200, { data: [note(N1)], metadata: {} }));
+        });
+      }
+      return json(200, { data: [note(N1)], metadata: { continue: "p2" } });
+    },
+    (c) => {
+      if (c.method !== "PUT") return undefined;
+      puts.push(c);
+      return conflict(2);
+    },
+  );
+  const root = await mount();
+  await click(root, "Edit");
+  type(editor(root, N1) as HTMLTextAreaElement, "mine");
+  await click(root, "Load more notes");
+  await click(root, "Save");
+  expect(root.textContent).toContain("Your last loaded copy");
+  releasePage2();
+  await flush();
+  // The old page neither marks the text current nor moves the revision.
+  expect(root.textContent).toContain("Your last loaded copy");
+  await click(root, "Save");
+  expect(JSON.parse(puts[1].body ?? "{}").revision).toBe(1);
+});
+
+test("Edit on another note while a save is pending does not hijack the editor", async () => {
+  let release: () => void = () => {};
+  stubFetch(
+    listRoute(() => ({ "": { items: [note(N1), note(N2)] } })),
+    (c) =>
+      c.method === "PUT"
+        ? new Promise<Response>((resolve) => {
+            release = () =>
+              resolve(
+                json(200, { data: note(N1, { body: "saved", revision: 2 }) }),
+              );
+          })
+        : undefined,
+  );
+  const root = await mount();
+  const edits = () =>
+    [...root.querySelectorAll("button")].filter(
+      (b) => b.textContent === "Edit",
+    );
+  act(() => edits()[0].click());
+  await flush();
+  type(editor(root, N1) as HTMLTextAreaElement, "saved");
+  await click(root, "Save");
+  // N2's Edit while N1's save is pending is refused.
+  act(() => edits()[0].click());
+  await flush();
+  expect(editor(root, N2)).toBeNull();
+  expect(editor(root, N1)?.disabled).toBe(true);
+  release();
+  await flush();
+  expect(editor(root, N1)).toBeNull();
+  // Now N2 can be edited, and nothing from N1's save touches it.
+  act(() => edits()[1].click());
+  await flush();
+  expect(editor(root, N2)?.value).toBe(`body of ${N2}`);
+});
