@@ -93,13 +93,15 @@ type NotificationService struct {
 	store       *Store
 	hub         eventBroadcaster
 	emailSender EmailSender
-	fcm         *FCMClient
-	queue       chan Notification
-	sem         chan struct{} // dispatch semaphore
-	rules       []Rule
-	channels    []Channel
-	mu          sync.RWMutex
-	logger      *slog.Logger
+	// dispatchHook replaces channel dispatch; set only by tests.
+	dispatchHook func(ctx context.Context, ch Channel, n Notification) error
+	fcm          *FCMClient
+	queue        chan Notification
+	sem          chan struct{} // dispatch semaphore
+	rules        []Rule
+	channels     []Channel
+	mu           sync.RWMutex
+	logger       *slog.Logger
 }
 
 // NewService creates a notification service. fcm may be nil — when nil, the
@@ -288,14 +290,20 @@ func (s *NotificationService) dispatchToChannels(ctx context.Context, n Notifica
 			return
 		}
 		go func(ch Channel, n Notification) {
+			// The semaphore release stays OUTSIDE the recovered closure so a
+			// panicking send still frees its slot.
 			defer func() { <-s.sem }()
-			dctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
-			defer cancel()
-			if err := s.dispatch(dctx, ch, n); err != nil {
-				s.logger.Error("dispatch failed",
-					"channel", ch.Name, "type", ch.Type, "error", err)
-				_ = s.store.UpdateChannelError(dctx, ch.ID, err.Error())
-			}
+			// This goroutine is outside chi's recovery and outside the Tick
+			// around dispatchToChannels, so it needs its own recovery.
+			recoverutil.Safe(s.logger, "notifications channel dispatch", func() {
+				dctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
+				defer cancel()
+				if err := s.dispatch(dctx, ch, n); err != nil {
+					s.logger.Error("dispatch failed",
+						"channel", ch.Name, "type", ch.Type, "error", err)
+					_ = s.store.UpdateChannelError(dctx, ch.ID, err.Error())
+				}
+			})
 		}(ch, n)
 	}
 }
@@ -313,6 +321,9 @@ func ruleMatches(rule Rule, n Notification) bool {
 // --- Channel dispatch (switch, no interface) ---
 
 func (s *NotificationService) dispatch(ctx context.Context, ch Channel, n Notification) error {
+	if s.dispatchHook != nil {
+		return s.dispatchHook(ctx, ch, n)
+	}
 	switch ch.Type {
 	case ChannelSlack:
 		return s.sendSlack(ctx, ch, n)

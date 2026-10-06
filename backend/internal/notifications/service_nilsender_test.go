@@ -4,8 +4,40 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestChannelDispatchPanicRecoveredAndSlotReleased(t *testing.T) {
+	svc := NewService(nil, nil, nil, nil, quietLogger())
+	svc.sem = make(chan struct{}, 1) // one slot: a leaked slot would block the second send
+	svc.rules = []Rule{{ID: "r", Enabled: true, ChannelID: "c"}}
+	svc.channels = []Channel{{ID: "c", Name: "c", Type: ChannelSlack}}
+
+	var calls atomic.Int32
+	second := make(chan struct{})
+	svc.dispatchHook = func(context.Context, Channel, Notification) error {
+		if calls.Add(1) == 1 {
+			panic("send exploded")
+		}
+		close(second)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go svc.runDispatcher(ctx)
+
+	svc.queue <- Notification{Title: "one"}
+	svc.queue <- Notification{Title: "two"}
+
+	select {
+	case <-second:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second dispatch never ran: slot leaked or dispatcher stopped")
+	}
+}
 
 // panicSender mimics *alerting.Notifier before the fix: SMTPConfigured
 // dereferences its receiver, so a typed-nil pointer panics.
