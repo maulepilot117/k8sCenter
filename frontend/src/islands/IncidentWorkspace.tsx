@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
@@ -60,7 +60,24 @@ type LoadError = {
   message: string;
 };
 
-function loadErrorFor(err: unknown): LoadError {
+/**
+ * What a failed load means. A failure while paging (`cursor` set) is always
+ * "could not load more": the incident itself loaded, so a 400 there is a bad
+ * cursor, not a bad incident id.
+ */
+function loadErrorFor(err: unknown, cursor: string): LoadError {
+  if (err instanceof ApiError && err.reason === "incident_busy") {
+    return {
+      kind: "retryable",
+      message: busyText("The incident store is busy.", err),
+    };
+  }
+  if (cursor) {
+    return {
+      kind: "retryable",
+      message: "Could not load more evidence. Retry to try that page again.",
+    };
+  }
   if (err instanceof ApiError) {
     if (err.status === 404) {
       return {
@@ -71,12 +88,6 @@ function loadErrorFor(err: unknown): LoadError {
     }
     if (err.status === 400) {
       return { kind: "invalid", message: "This is not a valid incident id." };
-    }
-    if (err.reason === "incident_busy") {
-      return {
-        kind: "retryable",
-        message: busyText("The incident store is busy.", err),
-      };
     }
   }
   return {
@@ -208,9 +219,17 @@ export default function IncidentWorkspace({ id }: { id: string }) {
     };
   }, [title]);
 
+  /**
+   * Counts status changes started. A page load applies the incident record
+   * it read only if no status change started after the load was issued:
+   * otherwise its copy may predate the change and would revert it on screen.
+   */
+  const statusEpoch = useRef(0);
+
   const { cursor, seq } = request.value;
   useEffect(() => {
     const controller = new AbortController();
+    const epoch = statusEpoch.current;
     loading.value = true;
     loadError.value = null;
     const fetchPage = cursor
@@ -227,7 +246,9 @@ export default function IncidentWorkspace({ id }: { id: string }) {
     fetchPage
       .then((r) => {
         if (controller.signal.aborted) return;
-        if (r.incident) incident.value = r.incident;
+        if (r.incident && epoch === statusEpoch.current) {
+          incident.value = r.incident;
+        }
         counts.value = r.page.counts ?? counts.value;
         const fresh = pageItems(r.page);
         if (cursor) {
@@ -247,7 +268,7 @@ export default function IncidentWorkspace({ id }: { id: string }) {
         if (isPersistenceUnavailable(err)) {
           noDatabase.value = true;
         } else {
-          loadError.value = loadErrorFor(err);
+          loadError.value = loadErrorFor(err, cursor);
         }
         loading.value = false;
       });
@@ -268,6 +289,7 @@ export default function IncidentWorkspace({ id }: { id: string }) {
   const reloadFirstPage = () => issue("");
 
   const setStatus = async (status: IncidentStatus) => {
+    statusEpoch.current++;
     statusBusy.value = true;
     statusError.value = null;
     try {
@@ -373,7 +395,7 @@ export default function IncidentWorkspace({ id }: { id: string }) {
                 <Alert variant="error">{err.message}</Alert>
               </div>
             )}
-            {err && !request.value.cursor && (
+            {err && err.kind === "retryable" && (
               <div>
                 <button
                   type="button"

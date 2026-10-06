@@ -32,7 +32,7 @@ interface Call {
   headers: Headers;
   body?: string;
 }
-type Route = (call: Call) => Response | undefined;
+type Route = (call: Call) => Response | Promise<Response> | undefined;
 
 let calls: Call[] = [];
 let host: HTMLElement | null = null;
@@ -372,7 +372,7 @@ test("Load more after a failed page fetches that page again", async () => {
   act(() => loadMore()?.click());
   await flush();
   expect(attempts).toBe(1);
-  expect(root.textContent).toContain("Could not load the incident's evidence.");
+  expect(root.textContent).toContain("Could not load more evidence.");
   act(() => loadMore()?.click());
   await flush();
   expect(attempts).toBe(2);
@@ -538,4 +538,294 @@ test("a capture is pinned to the local cluster and its per-source results are sh
   expect(status).toContain("2 new items recorded");
   expect(status).toContain("Timed out");
   expect(status).toContain("source did not finish within its time limit");
+});
+
+// --- Review round 1: races, owner mutations, messages ------------------------
+
+const findButton = (root: HTMLElement, label: string) =>
+  [...root.querySelectorAll("button")].find((b) => b.textContent === label);
+const clickButton = async (root: HTMLElement, label: string) => {
+  act(() => findButton(root, label)?.click());
+  await flush();
+};
+function setField(root: HTMLElement, id: string, value: string) {
+  const el = root.querySelector(`#${id}`) as HTMLInputElement;
+  act(() => {
+    el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+function submitFormOf(root: HTMLElement, fieldId: string) {
+  act(() => {
+    root
+      .querySelector(`#${fieldId}`)
+      ?.closest("form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+}
+function gate() {
+  let release: (r: Response) => void = () => {};
+  const promise = new Promise<Response>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+const captureOk = () =>
+  json(200, {
+    data: {
+      completeness: "complete",
+      collectedAt: "2026-10-01T10:00:00Z",
+      sources: [],
+      collected: 0,
+      inserted: 0,
+      deduplicated: 0,
+      dropped: 0,
+    },
+  });
+
+test("the owner closes the incident with a PUT of the new status", async () => {
+  stubFetch(routeDetail(), routeNotes(), routeGrants, (c) =>
+    c.method === "PUT"
+      ? json(200, { data: { incident: incident({ status: "closed" }) } })
+      : undefined,
+  );
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  await clickButton(root, "Close incident");
+  const put = calls.find((c) => c.method === "PUT");
+  expect(put?.url).toBe(`/api/v1/incidents/${ID}`);
+  expect(JSON.parse(put?.body ?? "{}")).toEqual({ status: "closed" });
+  expect(findButton(root, "Reopen incident")).toBeDefined();
+  expect(root.textContent).toContain("Reopen it to capture more evidence");
+});
+
+test("a reload that was in flight cannot revert a status change made after it", async () => {
+  const reload = gate();
+  let gets = 0;
+  stubFetch(
+    (c) => {
+      if (c.method !== "GET" || !c.url.startsWith(`/api/v1/incidents/${ID}?`)) {
+        return undefined;
+      }
+      gets++;
+      return gets === 1 ? json(200, { data: detail() }) : reload.promise;
+    },
+    routeNotes(),
+    routeGrants,
+    (c) =>
+      c.method === "POST" && c.url.endsWith("/capture")
+        ? captureOk()
+        : undefined,
+    (c) =>
+      c.method === "PUT"
+        ? json(200, { data: { incident: incident({ status: "closed" }) } })
+        : undefined,
+  );
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  // A capture issues a first-page reload, held open here.
+  setField(root, "capture-namespace", "shop");
+  setField(root, "capture-name", "checkout");
+  submitFormOf(root, "capture-namespace");
+  await flush();
+  expect(gets).toBe(2);
+  await clickButton(root, "Close incident");
+  expect(findButton(root, "Reopen incident")).toBeDefined();
+  // The reload answers with the pre-change record.
+  reload.release(json(200, { data: detail() }));
+  await flush();
+  expect(findButton(root, "Reopen incident")).toBeDefined();
+  expect(findButton(root, "Close incident")).toBeUndefined();
+});
+
+const grant = (granteeId: string, canAnnotate = false) => ({
+  incidentId: ID,
+  granteeId,
+  grantedBy: "alice",
+  canAnnotate,
+  createdAt: "2026-10-01T10:00:00Z",
+});
+
+test("sharing: add with canAnnotate, self-grant no-op, remove, and the grant limit", async () => {
+  let posts = 0;
+  stubFetch(routeDetail(), routeNotes(), routeGrants, (c) => {
+    if (c.method === "POST" && c.url.endsWith("/grants")) {
+      posts++;
+      const body = JSON.parse(c.body ?? "{}");
+      if (body.granteeId === "alice") {
+        return new Response(null, { status: 204 });
+      }
+      if (posts === 3) {
+        return json(409, {
+          error: {
+            code: 409,
+            message: "incident grant limit reached",
+            reason: "grant_limit_reached",
+            extra: { max: 50 },
+          },
+        });
+      }
+      return json(201, { data: grant(body.granteeId, body.canAnnotate) });
+    }
+    if (c.method === "DELETE") return new Response(null, { status: 204 });
+    return undefined;
+  });
+  const root = await mount(<IncidentWorkspace id={ID} />);
+
+  setField(root, "grant-grantee", "bob");
+  const annotate = [...root.querySelectorAll("label")]
+    .find((l) => l.textContent?.trim() === "Can add notes")
+    ?.querySelector("input") as HTMLInputElement;
+  act(() => {
+    annotate.checked = true;
+    annotate.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  submitFormOf(root, "grant-grantee");
+  await flush();
+  const add = calls.filter((c) => c.method === "POST")[0];
+  expect(add.url).toBe(`/api/v1/incidents/${ID}/grants`);
+  expect(JSON.parse(add.body ?? "{}")).toEqual({
+    granteeId: "bob",
+    canAnnotate: true,
+  });
+  expect(root.querySelector("table")?.textContent).toContain("bob");
+
+  setField(root, "grant-grantee", "alice");
+  submitFormOf(root, "grant-grantee");
+  await flush();
+  expect(root.textContent).toContain("That is you");
+
+  setField(root, "grant-grantee", "carol");
+  submitFormOf(root, "grant-grantee");
+  await flush();
+  expect(root.textContent).toContain(
+    "already shared with the maximum number of people (50)",
+  );
+
+  await clickButton(root, "Remove");
+  const del = calls.find((c) => c.method === "DELETE");
+  expect(del?.url).toBe(`/api/v1/incidents/${ID}/grants/bob`);
+  expect(root.querySelector("table")).toBeNull();
+  expect(root.textContent).toContain("Stopped sharing with bob");
+});
+
+test("a grants list issued before an add cannot overwrite the added grant", async () => {
+  const first = gate();
+  let lists = 0;
+  stubFetch(routeDetail(), routeNotes(), (c) => {
+    if (c.method === "GET" && c.url.endsWith("/grants")) {
+      lists++;
+      return lists === 1 ? first.promise : json(200, { data: [grant("bob")] });
+    }
+    if (c.method === "POST" && c.url.endsWith("/grants")) {
+      return json(201, { data: grant("bob") });
+    }
+    return undefined;
+  });
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  setField(root, "grant-grantee", "bob");
+  submitFormOf(root, "grant-grantee");
+  await flush();
+  expect(root.querySelector("table")?.textContent).toContain("bob");
+  // The stale list (read before the add) answers empty.
+  first.release(json(200, { data: [] }));
+  await flush();
+  expect(root.querySelector("table")?.textContent).toContain("bob");
+  expect(lists).toBe(2);
+});
+
+test("a live link whose name now holds a different object reads as replaced", async () => {
+  stubFetch((c) =>
+    c.url === "/api/v1/resources/deployments/shop/checkout"
+      ? json(200, { data: { metadata: { uid: "uid-2" } } })
+      : undefined,
+  );
+  const root = await mount(
+    <IncidentEvidenceTimeline
+      items={[evidence(1, { mode: "live_link", payload: undefined })]}
+    />,
+  );
+  expect(root.textContent).toContain("a different object now has this name");
+  expect(root.querySelector('a[href^="/workloads/"]')).toBeNull();
+});
+
+test("live-link reads run at most six at a time", async () => {
+  const held: Array<() => void> = [];
+  stubFetch((c) =>
+    c.url.startsWith("/api/v1/resources/")
+      ? new Promise<Response>((resolve) => {
+          held.push(() =>
+            resolve(json(200, { data: { metadata: { uid: "uid-1" } } })),
+          );
+        })
+      : undefined,
+  );
+  const items = Array.from({ length: 8 }, (_, i) =>
+    evidence(i, { id: `l${i}`, mode: "live_link", payload: undefined }),
+  );
+  const root = await mount(<IncidentEvidenceTimeline items={items} />);
+  expect(calls).toHaveLength(6);
+  for (const release of held.splice(0)) release();
+  await flush();
+  expect(calls).toHaveLength(8);
+  for (const release of held.splice(0)) release();
+  await flush();
+  expect(root.querySelectorAll('[data-live-state="present"]')).toHaveLength(8);
+});
+
+test("capture messages for a closed incident and the evidence limits", () => {
+  const closed = new ApiError(409, 409, "x", {
+    error: { reason: "incident_closed" },
+  });
+  expect(captureErrorText(closed)).toBe(
+    "This incident is closed. Reopen it to capture evidence.",
+  );
+  const items = new ApiError(413, 413, "x", {
+    error: {
+      reason: "evidence_limit_exceeded",
+      extra: { limit: "items", max: 500, current: 499, attempted: 3 },
+    },
+  });
+  expect(captureErrorText(items)).toContain("evidence limit (items, max 500)");
+  const scopes = new ApiError(409, 409, "x", {
+    error: { reason: "scope_limit_exceeded", extra: { max: 20 } },
+  });
+  expect(captureErrorText(scopes)).toContain("distinct scopes it can (20)");
+});
+
+test("a failed evidence page says it could not load more and offers Retry", async () => {
+  let pages = 0;
+  stubFetch(
+    (c) =>
+      c.method === "GET" && c.url.startsWith(`/api/v1/incidents/${ID}?`)
+        ? json(200, {
+            data: detail({}, [evidence(2)]),
+            metadata: { continue: "c2" },
+          })
+        : undefined,
+    (c) => {
+      if (!c.url.includes("/evidence?")) return undefined;
+      pages++;
+      return pages === 1
+        ? json(400, {
+            error: { code: 400, message: "invalid continue cursor" },
+          })
+        : json(200, {
+            data: {
+              counts: { visible: 2, withheld: 0 },
+              evidence: [evidence(1)],
+              withheld: [],
+            },
+          });
+    },
+    routeNotes(),
+    routeGrants,
+  );
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  await clickButton(root, "Load more");
+  expect(root.textContent).toContain("Could not load more evidence");
+  expect(root.textContent).not.toContain("not a valid incident id");
+  await clickButton(root, "Retry");
+  expect(pages).toBe(2);
+  expect(
+    root.querySelectorAll("ol[aria-label='Evidence timeline'] > li"),
+  ).toHaveLength(2);
 });

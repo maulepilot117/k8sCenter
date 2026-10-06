@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { ApiError } from "@/lib/api.ts";
@@ -23,14 +23,26 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
   const message = useSignal<string | null>(null);
   const error = useSignal<string | null>(null);
   const reloadSeq = useSignal(0);
+  /**
+   * Counts grant changes made here. A list read that was issued before a
+   * change may not include it, so its answer is discarded and the list is
+   * read again rather than overwriting the change on screen.
+   */
+  const changes = useRef(0);
 
   const seq = reloadSeq.value;
   useEffect(() => {
     const controller = new AbortController();
+    const issuedAt = changes.current;
     loadError.value = null;
     listGrants(incidentId, controller.signal)
       .then((g) => {
-        if (!controller.signal.aborted) grants.value = g;
+        if (controller.signal.aborted) return;
+        if (issuedAt !== changes.current) {
+          reloadSeq.value = reloadSeq.peek() + 1;
+          return;
+        }
+        grants.value = g;
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
@@ -49,6 +61,7 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
     message.value = null;
     try {
       message.value = await action();
+      changes.current++;
     } catch (err) {
       error.value = simpleErrorText(err, "The change could not be saved.");
       if (err instanceof ApiError && err.status === 404) {

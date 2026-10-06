@@ -81,6 +81,45 @@ type LiveState =
   | "error"
   | "unchecked";
 
+/** At most this many live-link reads run at once; the rest wait their turn. */
+const LIVE_LINK_CONCURRENCY = 6;
+let liveActive = 0;
+const liveWaiting: Array<() => void> = [];
+
+/**
+ * Runs `read` when one of the LIVE_LINK_CONCURRENCY slots is free, so a long
+ * timeline does not fire one request per live link at once. A read aborted
+ * while still waiting leaves the queue without ever running.
+ */
+function withLiveSlot<T>(
+  signal: AbortSignal,
+  read: () => Promise<T>,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      const i = liveWaiting.indexOf(start);
+      if (i >= 0) liveWaiting.splice(i, 1);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    function start() {
+      signal.removeEventListener("abort", onAbort);
+      liveActive++;
+      read()
+        .then(resolve, reject)
+        .finally(() => {
+          liveActive--;
+          liveWaiting.shift()?.();
+        });
+    }
+    if (liveActive < LIVE_LINK_CONCURRENCY) {
+      start();
+    } else {
+      liveWaiting.push(start);
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
 /**
  * Re-reads a live link's object under the reader's current access. Only the
  * local cluster is resolved: Release D captures there only, and a non-admin
@@ -97,10 +136,12 @@ function LiveLink({ source }: { source: SourceRef }) {
   useEffect(() => {
     if (!target || !local) return;
     const controller = new AbortController();
-    apiGet<{ metadata?: { uid?: string } }>(target.apiPath, {
-      clusterId: source.clusterId,
-      signal: controller.signal,
-    })
+    withLiveSlot(controller.signal, () =>
+      apiGet<{ metadata?: { uid?: string } }>(target.apiPath, {
+        clusterId: source.clusterId,
+        signal: controller.signal,
+      }),
+    )
       .then((res) => {
         if (controller.signal.aborted) return;
         const uid = res.data?.metadata?.uid;
