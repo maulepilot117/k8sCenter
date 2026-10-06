@@ -2,7 +2,6 @@
 import { isIncidentId } from "../../../../lib/incident-types.ts";
 import IncidentWorkspace from "../../../islands/IncidentWorkspace.tsx";
 import ChromeLayout from "../../../layouts/ChromeLayout.astro";
-import ErrorSurface from "../../../layouts/ErrorSurface.astro";
 
 // Whether Astro hands the segment over encoded or already decoded, a stray
 // "%" must not throw here and 500 the page: fall back to the raw value.
@@ -13,11 +12,26 @@ try {
 } catch {
   id = raw;
 }
-// Incident ids are UUIDs. Anything else is a 404 here, before an island
-// could put it into a request path.
+// Incident ids are UUIDs. Anything else gets a not-found state here and no
+// island, so it can never reach a request path. The page still answers 200
+// with its shell, like every detail page for an object that does not exist
+// (e2e/tests/route-inventory.spec.ts holds every dynamic route to that).
 const valid = isIncidentId(id);
-if (!valid) Astro.response.status = 404;
 ---
 <ChromeLayout>
-  {valid ? <IncidentWorkspace client:load id={id} /> : <ErrorSurface status={404} />}
+  {valid ? (
+    <IncidentWorkspace client:load id={id} />
+  ) : (
+    <div class="flex flex-col gap-3">
+      <a
+        href="/observability/incidents"
+        class="rounded-sm text-sm text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50"
+      >
+        Incidents
+      </a>
+      <p role="alert" class="m-0 text-sm text-text-secondary">
+        Incident not found. This is not a valid incident id.
+      </p>
+    </div>
+  )}
 </ChromeLayout>
