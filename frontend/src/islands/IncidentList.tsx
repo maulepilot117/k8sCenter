@@ -9,6 +9,7 @@ import {
   listIncidents,
 } from "@/lib/incident-api.ts";
 import {
+  DEFAULT_INCIDENT_WINDOW_MS,
   INCIDENT_MAX_SUMMARY_CHARS,
   INCIDENT_MAX_TITLE_CHARS,
   type IncidentView,
@@ -47,8 +48,6 @@ import {
 
 const ROOT_CLASS = "flex flex-col gap-5";
 const PAGE_SIZE = 50;
-/** The default investigation window starts this long before "now". */
-const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
 const TITLE_ID = "incident-title";
 
 const incidentHref = (id: string) =>
@@ -128,7 +127,7 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
   const title = useSignal("");
   const summary = useSignal("");
   const windowStart = useSignal(
-    toLocalInput(new Date(Date.now() - DEFAULT_WINDOW_MS)),
+    toLocalInput(new Date(Date.now() - DEFAULT_INCIDENT_WINDOW_MS)),
   );
   const windowEnd = useSignal("");
   const submitting = useSignal(false);

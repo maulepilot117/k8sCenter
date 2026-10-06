@@ -55,6 +55,7 @@ afterEach(() => {
   assignSpy?.mockRestore();
   assignSpy = null;
   setAccessToken(null);
+  globalThis.sessionStorage.clear();
 });
 
 const json = (status: number, body: unknown) => ({ status, body });
@@ -96,13 +97,18 @@ async function settle() {
   }
 }
 
-async function mount(props: {
+interface Props {
   clusterId?: string;
   windowStart?: string;
   kind?: string;
-}) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
+}
+
+/** Renders (or re-renders, with new props) into the current host. */
+async function show(props: Props) {
+  if (!host) {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+  }
   act(() =>
     render(
       <CaptureToIncidentButton
@@ -116,7 +122,17 @@ async function mount(props: {
     ),
   );
   await settle();
-  return host;
+  return host as HTMLElement;
+}
+
+const mount = show;
+
+/** Unmounts the island and drops the host, as a Re-scan or navigation does. */
+function unmount() {
+  if (!host) return;
+  act(() => render(null, host as HTMLElement));
+  host.remove();
+  host = null;
 }
 
 function q(root: HTMLElement, testId: string): HTMLElement {
@@ -424,4 +440,403 @@ test("a kind capture does not support is inactive", async () => {
   const trigger = q(root, "capture-to-incident");
   expect(trigger.getAttribute("aria-disabled")).toBe("true");
   expect(trigger.getAttribute("title")).toContain("ConfigMap");
+});
+
+// --- Review round 1 ---------------------------------------------------------------------
+
+/** A response the test releases by hand. */
+function deferred(reply: { status: number; body: unknown }) {
+  let release: () => void = () => {};
+  const promise = new Promise<{ status: number; body: unknown }>((resolve) => {
+    release = () => resolve(reply);
+  });
+  return { promise, release: () => release() };
+}
+
+const listOf = (items: unknown[], cont?: string) =>
+  json(200, { data: items, metadata: cont ? { continue: cont } : {} });
+const isProbe = (c: Call) =>
+  c.method === "GET" && c.path === "/api/v1/incidents?limit=1";
+const isList = (c: Call) =>
+  c.method === "GET" && c.path.startsWith("/api/v1/incidents?limit=50");
+const TITLE = "Pod/web in team-a";
+const RETRY_LABEL = "Retry capture into the new incident";
+
+test("a remount keeps the created incident: the retry captures into it, never creates again", async () => {
+  let attempt = 0;
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents") return created("inc-r");
+    attempt++;
+    if (attempt === 1) {
+      return json(503, {
+        error: { code: 503, message: "busy", reason: "incident_busy" },
+      });
+    }
+    return captured;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("The incident is busy");
+
+  unmount();
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(RETRY_LABEL);
+  await click(q(root, "capture-to-new-incident"));
+
+  expect(creates()).toHaveLength(1);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/inc-r/capture",
+    "/api/v1/incidents/inc-r/capture",
+  ]);
+  expect(assigned).toEqual(["/observability/incidents/inc-r"]);
+  // A successful capture clears the pending id: the next diagnosis starts fresh.
+  unmount();
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(
+    "Capture into a new incident",
+  );
+});
+
+test("unmounting mid-create neither captures nor navigates, and the remount retries into it", async () => {
+  const held = deferred(created("inc-u"));
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents") return held.promise;
+    return captured;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  act(() => q(root, "capture-to-new-incident").click());
+  await settle();
+  unmount();
+  held.release();
+  await settle();
+  expect(captures()).toHaveLength(0);
+  expect(assigned).toEqual([]);
+
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(RETRY_LABEL);
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(1);
+  expect(captures()[0].path).toBe("/api/v1/incidents/inc-u/capture");
+});
+
+test("a lost create response reuses the one incident created since the click", async () => {
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) {
+      return listOf([
+        incident({
+          id: "older",
+          title: TITLE,
+          createdAt: "2020-01-01T00:00:00Z",
+        }),
+        incident({
+          id: "landed",
+          title: TITLE,
+          createdAt: new Date().toISOString(),
+        }),
+        incident({ id: "other", title: "Something else" }),
+      ]);
+    }
+    if (c.path === "/api/v1/incidents") {
+      return Promise.reject(new TypeError("Failed to fetch"));
+    }
+    if (c.path === "/api/v1/incidents/landed/capture") return captured;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(1);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/landed/capture",
+  ]);
+  expect(assigned).toEqual(["/observability/incidents/landed"]);
+});
+
+test("a lost create with several candidates asks the operator to pick one", async () => {
+  const now = new Date().toISOString();
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) {
+      return listOf([
+        incident({ id: "a", title: TITLE, createdAt: now }),
+        incident({ id: "b", title: TITLE, createdAt: now }),
+      ]);
+    }
+    if (c.path === "/api/v1/incidents") {
+      return json(502, { error: { code: 502, message: "bad gateway" } });
+    }
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("may already have been created");
+  expect(captures()).toHaveLength(0);
+  expect(assigned).toEqual([]);
+  expect(
+    root.querySelectorAll('[data-testid="capture-to-existing-incident"]'),
+  ).toHaveLength(2);
+});
+
+test("a failed create with no candidate lets the retry create afresh", async () => {
+  let attempt = 0;
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents") {
+      attempt++;
+      return attempt === 1
+        ? json(500, { error: { code: 500, message: "boom" } })
+        : created("inc-f");
+    }
+    return captured;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("Capture failed");
+  expect(q(root, "capture-to-new-incident").textContent).toBe(
+    "Capture into a new incident",
+  );
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(2);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/inc-f/capture",
+  ]);
+  expect(assigned).toEqual(["/observability/incidents/inc-f"]);
+});
+
+test("a rejected create (4xx) does not look for a possibly-created incident", async () => {
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents") {
+      return json(400, {
+        error: { code: 400, message: "bad", detail: "title too long" },
+      });
+    }
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  const listsBefore = calls.filter(isList).length;
+  await click(q(root, "capture-to-new-incident"));
+  expect(calls.filter(isList)).toHaveLength(listsBefore);
+  expect(root.textContent).toContain("title too long");
+});
+
+test("a cluster flip mid-load leaves no stuck flag, and the probe re-runs", async () => {
+  const held = deferred(listOf([incident({ id: "mine", title: "Mine" })]));
+  let lists = 0;
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) {
+      lists++;
+      return lists === 1
+        ? held.promise
+        : listOf([incident({ id: "mine", title: "Mine" })]);
+    }
+    if (c.path.endsWith("/capture")) return captured;
+  });
+  let root = await show({});
+  await click(q(root, "capture-to-incident"));
+  expect(root.textContent).toContain("Loading your incidents");
+
+  root = await show({ clusterId: "c-remote" });
+  expect(root.querySelector('[data-testid="capture-to-incident-dialog"]')).toBe(
+    null,
+  );
+  root = await show({});
+  held.release();
+  await settle();
+  expect(calls.filter(isProbe)).toHaveLength(2);
+
+  await click(q(root, "capture-to-incident"));
+  expect(root.textContent).not.toContain("Loading your incidents");
+  const rows = root.querySelectorAll(
+    '[data-testid="capture-to-existing-incident"]',
+  );
+  expect(rows).toHaveLength(1);
+  expect(q(root, "capture-to-new-incident").getAttribute("aria-disabled")).toBe(
+    "false",
+  );
+  await click(rows[0] as HTMLElement);
+  expect(assigned).toEqual(["/observability/incidents/mine"]);
+});
+
+test("the picker pages with the continue token", async () => {
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (c.path === "/api/v1/incidents?limit=50") {
+      return listOf([incident({ id: "p1", title: "Page one" })], "c2");
+    }
+    if (c.path === "/api/v1/incidents?limit=50&continue=c2") {
+      return listOf([incident({ id: "p2", title: "Page two" })]);
+    }
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  const more = [...root.querySelectorAll("button")].find(
+    (b) => b.textContent === "Load more",
+  );
+  expect(more).toBeTruthy();
+  await click(more as HTMLElement);
+  expect(
+    calls.some((c) => c.path === "/api/v1/incidents?limit=50&continue=c2"),
+  ).toBe(true);
+  expect(root.textContent).toContain("Page one");
+  expect(root.textContent).toContain("Page two");
+});
+
+test("a failed picker load says so and Retry recovers", async () => {
+  let attempt = 0;
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) {
+      attempt++;
+      return attempt === 1
+        ? json(500, { error: { code: 500, message: "boom" } })
+        : listOf([incident({ id: "ok", title: "Recovered" })]);
+    }
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(root.textContent).toContain("Could not load your open incidents.");
+  const retry = [...root.querySelectorAll("button")].find(
+    (b) => b.textContent === "Retry",
+  );
+  await click(retry as HTMLElement);
+  expect(root.textContent).not.toContain("Could not load");
+  expect(root.textContent).toContain("Recovered");
+});
+
+test("a picker load that finds no database closes the dialog and deactivates the button", async () => {
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    return json(503, {
+      error: {
+        code: 503,
+        message: "no db",
+        reason: "incident_persistence_unavailable",
+      },
+    });
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(root.querySelector('[data-testid="capture-to-incident-dialog"]')).toBe(
+    null,
+  );
+  expect(q(root, "capture-to-incident").getAttribute("aria-disabled")).toBe(
+    "true",
+  );
+});
+
+const errorCases: [
+  string,
+  { status: number; body: unknown } | "network",
+  string,
+][] = [
+  [
+    "incident_closed",
+    json(409, {
+      error: { code: 409, message: "x", reason: "incident_closed" },
+    }),
+    "That incident is closed",
+  ],
+  [
+    "incident_capture_unavailable",
+    json(503, {
+      error: {
+        code: 503,
+        message: "x",
+        reason: "incident_capture_unavailable",
+      },
+    }),
+    "Evidence capture is not available",
+  ],
+  [
+    "evidence_limit_exceeded",
+    json(413, {
+      error: { code: 413, message: "x", reason: "evidence_limit_exceeded" },
+    }),
+    "exceed the incident's evidence limit",
+  ],
+  [
+    "scope_limit_exceeded with max",
+    json(409, {
+      error: {
+        code: 409,
+        message: "x",
+        reason: "scope_limit_exceeded",
+        extra: { max: 20 },
+      },
+    }),
+    "most distinct scopes it can (20)",
+  ],
+  [
+    "scope_limit_exceeded without max",
+    json(409, {
+      error: { code: 409, message: "x", reason: "scope_limit_exceeded" },
+    }),
+    "most distinct scopes it can. Nothing",
+  ],
+  [
+    "403",
+    json(403, { error: { code: 403, message: "x" } }),
+    "Only the incident owner may capture evidence.",
+  ],
+  [
+    "400 with detail",
+    json(400, { error: { code: 400, message: "x", detail: "kind unknown" } }),
+    "The capture target is invalid: kind unknown.",
+  ],
+  ["non-ApiError", "network", "Capture failed. Try again."],
+];
+
+for (const [label, reply, text] of errorCases) {
+  test(`capture into an existing incident: ${label} is explained and the dialog stays`, async () => {
+    stub((c) => {
+      if (isProbe(c)) return empty;
+      if (isList(c)) return listOf([incident({ id: "e1", title: "Mine" })]);
+      if (c.path === "/api/v1/incidents/e1/capture") {
+        return reply === "network"
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : reply;
+      }
+    });
+    const root = await mount({});
+    await click(q(root, "capture-to-incident"));
+    await click(q(root, "capture-to-existing-incident"));
+    expect(root.textContent).toContain(text);
+    expect(q(root, "capture-to-incident-dialog")).toBeTruthy();
+    expect(assigned).toEqual([]);
+    expect(
+      q(root, "capture-to-existing-incident").getAttribute("aria-disabled"),
+    ).toBe("false");
+  });
+}
+
+test("a double click on an existing incident captures once", async () => {
+  const held = deferred(captured);
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) return listOf([incident({ id: "d1", title: "Mine" })]);
+    if (c.path === "/api/v1/incidents/d1/capture") return held.promise;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  const row = q(root, "capture-to-existing-incident");
+  act(() => {
+    row.click();
+    row.click();
+  });
+  await settle();
+  await click(row);
+  held.release();
+  await settle();
+  expect(captures()).toHaveLength(1);
+  expect(assigned).toEqual(["/observability/incidents/d1"]);
 });

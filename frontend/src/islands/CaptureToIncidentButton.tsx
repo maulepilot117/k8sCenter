@@ -12,9 +12,10 @@ import {
   listIncidents,
 } from "@/lib/incident-api.ts";
 import {
-  type CaptureKind,
+  DEFAULT_INCIDENT_WINDOW_MS,
   INCIDENT_MAX_TITLE_CHARS,
   type IncidentView,
+  isCaptureKind,
 } from "@/lib/incident-types.ts";
 import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
 
@@ -38,18 +39,33 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  * explanation rather than failing on click.
  *
  * A repeated click cannot duplicate anything. Every action is inactive while
- * one is in flight, and an incident this dialog created stays the target of a
- * retried capture, so a capture that failed after its incident was created
- * never creates a second incident. Capture itself is deduplicated server-side
- * by capture key, which is what makes retrying an outcome-unknown capture safe.
+ * one is in flight. An incident this dialog created stays the target of a
+ * retried capture until a capture into it succeeds, so a capture that failed
+ * after its incident was created never creates a second incident. That
+ * pending id outlives the island (sessionStorage, keyed by the target; a
+ * module-scoped Map when storage is unavailable), because a Re-scan remounts
+ * it. Capture itself is deduplicated server-side by capture key, which is
+ * what makes retrying an outcome-unknown capture safe.
+ *
+ * Create is NOT idempotent server-side: a create whose response was lost (a
+ * network error or a 5xx) may still have committed. Before a retry creates
+ * another, the dialog looks for an open incident the caller owns with the same
+ * title created since the click. Exactly one match is reused; several are
+ * reported so the operator picks one from the list. A server-side create
+ * idempotency key is the full fix and is a follow-up.
  *
  * Inactive controls use `aria-disabled` rather than `disabled`, so they stay
  * focusable and their explanatory tooltip stays reachable.
  */
 
-/** The window start used when the diagnosis reported no observation time. */
-const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
 const LIST_PAGE_SIZE = 50;
+/**
+ * How far before the click a possibly-created incident's `createdAt` may be
+ * and still count as this click's: absorbs clock skew between the browser
+ * and the server.
+ */
+const CREATE_MATCH_SLACK_MS = 2 * 60 * 1000;
+const PENDING_STORAGE_PREFIX = "kubecenter.capture-pending:";
 const DIALOG_TITLE_ID = "capture-to-incident-title";
 const REASON_ID = "capture-to-incident-reason";
 
@@ -61,17 +77,70 @@ const BUTTON_PRIMARY =
 const BUTTON_SECONDARY =
   "inline-flex cursor-pointer items-center justify-center rounded-md border border-border-primary bg-transparent px-3 py-1.5 text-sm font-medium text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
 
-const CAPTURE_KINDS: ReadonlySet<string> = new Set<CaptureKind>([
-  "Deployment",
-  "StatefulSet",
-  "DaemonSet",
-  "Pod",
-  "Service",
-  "PersistentVolumeClaim",
-]);
-
 const incidentHref = (id: string) =>
   `/observability/incidents/${encodeURIComponent(id)}`;
+
+// --- Pending created incident ----------------------------------------------------
+
+/**
+ * Fallback for the pending ids when sessionStorage is unavailable (SSR,
+ * blocked storage, a private window that throws). Module-scoped, so it still
+ * survives a remount within the page.
+ */
+const pendingFallback = new Map<string, string>();
+
+const pendingKey = (
+  clusterId: string,
+  namespace: string,
+  kind: string,
+  name: string,
+) => `${clusterId}|${namespace}|${kind}|${name}`;
+
+function readPending(key: string): string | null {
+  try {
+    const v = globalThis.sessionStorage.getItem(PENDING_STORAGE_PREFIX + key);
+    if (v) return v;
+  } catch {
+    // Storage unavailable: the fallback below is the only copy.
+  }
+  return pendingFallback.get(key) ?? null;
+}
+
+function writePending(key: string, id: string): void {
+  try {
+    globalThis.sessionStorage.setItem(PENDING_STORAGE_PREFIX + key, id);
+    pendingFallback.delete(key);
+  } catch {
+    // Storage unavailable or full: the fallback holds it instead.
+    pendingFallback.set(key, id);
+  }
+}
+
+function clearPending(key: string): void {
+  pendingFallback.delete(key);
+  try {
+    globalThis.sessionStorage.removeItem(PENDING_STORAGE_PREFIX + key);
+  } catch {
+    // Storage unavailable: nothing was written there.
+  }
+}
+
+/**
+ * Raised when a create's outcome was lost and several recent incidents could
+ * be the one it made; the operator picks one from the list.
+ */
+class PossibleDuplicateCreate extends Error {}
+
+/**
+ * True when a failed create may still have committed: the response was lost
+ * (a network error) or the server failed after accepting it (5xx). A 4xx,
+ * and the definitive no-database 503, never committed anything.
+ */
+function createOutcomeUnknown(err: unknown): boolean {
+  if (isPersistenceUnavailable(err)) return false;
+  if (err instanceof ApiError) return err.status >= 500;
+  return true;
+}
 
 /**
  * The earliest valid `observedAt` among a diagnosis's checks, as an RFC 3339
@@ -103,11 +172,16 @@ export function resolveWindowStart(
   windowStart: string | undefined,
   now: number,
 ): string {
-  return windowStart ?? new Date(now - DEFAULT_WINDOW_MS).toISOString();
+  return (
+    windowStart ?? new Date(now - DEFAULT_INCIDENT_WINDOW_MS).toISOString()
+  );
 }
 
 /** The message for a failed create or capture. */
 function actionErrorText(err: unknown, clusterId: string): string {
+  if (err instanceof PossibleDuplicateCreate) {
+    return "An incident may already have been created for this diagnosis. Capture into it from the list below instead of creating another.";
+  }
   if (isRemoteCaptureRefusal(err, clusterId)) {
     return "Capture is local-cluster only. Nothing was recorded.";
   }
@@ -161,14 +235,18 @@ export default function CaptureToIncidentButton({
   class: className,
 }: CaptureToIncidentButtonProps) {
   const isLocal = clusterId === "" || clusterId === LOCAL_CLUSTER_ID;
+  const key = pendingKey(clusterId, namespace, kind, name);
   /** Set when the deployment has no database; fixed for the page's life. */
   const noDatabase = useSignal(false);
   const open = useSignal(false);
   /** A create or capture is in flight; every action is inactive meanwhile. */
   const busy = useSignal(false);
   const error = useSignal<string | null>(null);
-  /** An incident this dialog created whose capture has not yet succeeded. */
-  const createdId = useSignal<string | null>(null);
+  /**
+   * Bumped whenever the pending created-incident id is written or cleared, so
+   * the label and link, which read it from storage, re-render.
+   */
+  const pendingVersion = useSignal(0);
 
   const owned = useSignal<IncidentView[]>([]);
   const listCursor = useSignal<string | undefined>(undefined);
@@ -177,33 +255,45 @@ export default function CaptureToIncidentButton({
 
   const triggerRef = useRef<HTMLButtonElement>(null);
   const newButtonRef = useRef<HTMLButtonElement>(null);
-  /** Aborted on unmount: a late reply then neither navigates nor writes state. */
+  /**
+   * Aborted only on unmount: a late reply then neither navigates nor writes
+   * component state. A cluster switch does not abort it, so a flow or list
+   * load in flight across a switch still settles its own flags.
+   */
   const lifetime = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     lifetime.current = controller;
-    if (isLocal) {
-      listIncidents({ limit: 1 }, controller.signal).catch((err) => {
-        if (!controller.signal.aborted && isPersistenceUnavailable(err)) {
-          noDatabase.value = true;
-        }
-      });
+    return () => controller.abort();
+  }, []);
+
+  // The no-database probe, re-run whenever the target becomes local again.
+  // It has its own controller, so a switch away cancels only the probe.
+  useEffect(() => {
+    if (!isLocal) {
+      open.value = false;
+      return;
     }
+    const controller = new AbortController();
+    listIncidents({ limit: 1 }, controller.signal).catch((err) => {
+      if (!controller.signal.aborted && isPersistenceUnavailable(err)) {
+        noDatabase.value = true;
+      }
+    });
     return () => controller.abort();
   }, [isLocal]);
 
-  const isOpen = open.value;
+  const isOpen = open.value && isLocal;
   useEffect(() => {
     if (isOpen) newButtonRef.current?.focus();
   }, [isOpen]);
 
-  const supportedKind = CAPTURE_KINDS.has(kind);
   const inactiveReason = !isLocal
     ? "Capture is local-cluster only. Switch to the local cluster to capture this resource into an incident."
     : noDatabase.value
       ? "This deployment has no database, so incidents cannot be recorded."
-      : !supportedKind
+      : !isCaptureKind(kind)
         ? `${kind || "This kind"} cannot be captured into an incident.`
         : null;
 
@@ -249,21 +339,20 @@ export default function CaptureToIncidentButton({
     triggerRef.current?.focus();
   };
 
-  const target = () => ({
-    namespace,
-    kind: kind as CaptureKind,
-    name,
-  });
-
-  /** Runs one action; a second activation while one is in flight is a no-op. */
-  const run = async (action: (signal?: AbortSignal) => Promise<string>) => {
+  /**
+   * Runs one action; a second activation while one is in flight is a no-op.
+   * The action returns the incident to open, or null to stay put.
+   */
+  const run = async (
+    action: (signal?: AbortSignal) => Promise<string | null>,
+  ) => {
     if (busy.peek()) return;
     busy.value = true;
     error.value = null;
     const signal = lifetime.current?.signal;
     try {
       const id = await action(signal);
-      if (signal?.aborted) return;
+      if (signal?.aborted || !id) return;
       globalThis.location.assign(incidentHref(id));
     } catch (err) {
       if (signal?.aborted) return;
@@ -272,37 +361,88 @@ export default function CaptureToIncidentButton({
     }
   };
 
+  const capture = (id: string, signal?: AbortSignal) => {
+    if (!isCaptureKind(kind)) {
+      throw new Error(`unsupported capture kind ${kind}`);
+    }
+    return captureEvidence(id, clusterId, { namespace, kind, name }, signal);
+  };
+
+  /**
+   * Open incidents the caller owns, titled `title`, created no earlier than
+   * the click (less the skew slack): the candidates for a create whose
+   * response was lost. A failed lookup finds nothing.
+   */
+  const findCreatedSince = async (
+    title: string,
+    clickedAt: number,
+    signal?: AbortSignal,
+  ): Promise<IncidentView[]> => {
+    try {
+      const page = await listIncidents({ limit: LIST_PAGE_SIZE }, signal);
+      return page.items.filter(
+        (i) =>
+          i.role === "owner" &&
+          i.status === "open" &&
+          i.title === title &&
+          Date.parse(i.createdAt) >= clickedAt - CREATE_MATCH_SLACK_MS,
+      );
+    } catch {
+      return [];
+    }
+  };
+
   const captureNew = () =>
     run(async (signal) => {
-      let id = createdId.peek();
+      let id = readPending(key);
       if (!id) {
         const title = `${kind}/${name} in ${namespace}`.slice(
           0,
           INCIDENT_MAX_TITLE_CHARS,
         );
-        const created = await createIncident(
-          {
-            title,
-            summary: `Opened from the diagnosis of ${kind} ${namespace}/${name}.`,
-            windowStart: resolveWindowStart(windowStart, Date.now()),
-          },
-          signal,
-        );
-        id = created.incident.id;
-        createdId.value = id;
+        const clickedAt = Date.now();
+        try {
+          const created = await createIncident(
+            {
+              title,
+              summary: `Opened from the diagnosis of ${kind} ${namespace}/${name}.`,
+              windowStart: resolveWindowStart(windowStart, clickedAt),
+            },
+            signal,
+          );
+          id = created.incident.id;
+        } catch (err) {
+          if (signal?.aborted || !createOutcomeUnknown(err)) throw err;
+          const found = await findCreatedSince(title, clickedAt, signal);
+          if (signal?.aborted) return null;
+          if (found.length > 1) {
+            void loadOwned();
+            throw new PossibleDuplicateCreate();
+          }
+          if (found.length === 0) throw err;
+          id = found[0].id;
+        }
+        // Recorded even when the island has unmounted meanwhile: the incident
+        // exists, and a remounted island must retry into it, not create again.
+        writePending(key, id);
+        if (signal?.aborted) return null;
+        pendingVersion.value++;
       }
-      await captureEvidence(id, clusterId, target(), signal);
+      await capture(id, signal);
+      clearPending(key);
       return id;
     });
 
   const captureExisting = (id: string) =>
     run(async (signal) => {
-      await captureEvidence(id, clusterId, target(), signal);
+      await capture(id, signal);
       return id;
     });
 
   const inFlight = busy.value;
-  const created = createdId.value;
+  // Read after the version so a write or clear re-renders the label and link.
+  void pendingVersion.value;
+  const created = readPending(key);
 
   return (
     <div class={className ? `${ROOT_CLASS} ${className}` : ROOT_CLASS}>

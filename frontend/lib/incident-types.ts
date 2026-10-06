@@ -41,6 +41,13 @@ export const INCIDENT_MAX_GRANTS = 50;
 /** store.IncidentMaxPageSize: the largest `limit` a list honours. */
 export const INCIDENT_MAX_PAGE_SIZE = 200;
 
+/**
+ * The default investigation window starts this long before "now": the "New
+ * incident" form's default, and the fallback when a diagnosis reports no
+ * observation time.
+ */
+export const DEFAULT_INCIDENT_WINDOW_MS = 60 * 60 * 1000;
+
 // --- Enumerations ------------------------------------------------------------
 
 /** store.IncidentStatus* (incidents.status CHECK). */
@@ -73,13 +80,21 @@ export type WithheldReason = "forbidden" | "authorization_check_unavailable";
 export type CaptureSourceId = "diagnostics" | "object" | "events";
 
 /** The kinds capture accepts: exactly the kinds diagnostics resolves. */
-export type CaptureKind =
-  | "Deployment"
-  | "StatefulSet"
-  | "DaemonSet"
-  | "Pod"
-  | "Service"
-  | "PersistentVolumeClaim";
+export const CAPTURE_KINDS = [
+  "Deployment",
+  "StatefulSet",
+  "DaemonSet",
+  "Pod",
+  "Service",
+  "PersistentVolumeClaim",
+] as const;
+
+export type CaptureKind = (typeof CAPTURE_KINDS)[number];
+
+/** True when `kind` is one capture accepts. */
+export function isCaptureKind(kind: string): kind is CaptureKind {
+  return (CAPTURE_KINDS as readonly string[]).includes(kind);
+}
 
 /** incidents.ExportFormat*. There is no HTML export. */
 export type ExportFormat = "json" | "markdown";
