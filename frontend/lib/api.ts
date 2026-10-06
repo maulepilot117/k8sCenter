@@ -63,6 +63,12 @@ export class ApiError extends Error {
   /** Endpoint-specific reason code (e.g. "active_job_exists", "scope_changed"). */
   reason?: string;
 
+  /**
+   * The error response's headers (e.g. `Retry-After`), when the error came
+   * from an HTTP response. Absent for errors raised before or without one.
+   */
+  headers?: Headers;
+
   constructor(
     public status: number,
     public code: number,
@@ -212,6 +218,38 @@ export async function api<T>(
   path: string,
   options: RequestInit & RequestTargeting = {},
 ): Promise<APIResponse<T>> {
+  const res = await send(path, options);
+
+  // 204 No Content has no body — return empty envelope instead of failing on res.json()
+  if (res.status === 204) {
+    return { data: undefined as unknown as T } as APIResponse<T>;
+  }
+
+  return await res.json();
+}
+
+/**
+ * GET a non-envelope response (a file download) through the same transport
+ * as `api()`: bearer token, X-Cluster-ID, the single 401 refresh-and-retry,
+ * and ApiError parsing of an error envelope. A success returns the body as a
+ * Blob with the response headers (e.g. Content-Disposition).
+ */
+export async function apiBlob(
+  path: string,
+  opts?: AbortSignal | RequestTargeting,
+): Promise<{ blob: Blob; headers: Headers; status: number }> {
+  const res = await send(path, { method: "GET", ...targeting(opts) });
+  return { blob: await res.blob(), headers: res.headers, status: res.status };
+}
+
+/**
+ * The shared transport behind `api()` and `apiBlob()`: returns the OK
+ * response, or throws ApiError (with the response's headers) for any other.
+ */
+async function send(
+  path: string,
+  options: RequestInit & RequestTargeting,
+): Promise<Response> {
   const { clusterId, ...init } = options;
   const targetCluster = clusterId ?? selectedCluster.value;
 
@@ -279,20 +317,17 @@ export async function api<T>(
     if (res.status === 403 && on403Callback && !path.startsWith("/v1/auth/")) {
       on403Callback();
     }
-    throw new ApiError(
+    const err = new ApiError(
       res.status,
       errorBody?.error?.code ?? res.status,
       errorBody?.error?.message ?? res.statusText,
       errorBody as { error?: Record<string, unknown> } | undefined,
     );
+    err.headers = res.headers;
+    throw err;
   }
 
-  // 204 No Content has no body — return empty envelope instead of failing on res.json()
-  if (res.status === 204) {
-    return { data: undefined as unknown as T } as APIResponse<T>;
-  }
-
-  return await res.json();
+  return res;
 }
 
 /**

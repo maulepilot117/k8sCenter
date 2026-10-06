@@ -29,21 +29,30 @@
  * Client-only, like `api.ts`.
  */
 
-import { ApiError, apiDelete, apiGet, apiPost, apiPut } from "./api.ts";
+import {
+  ApiError,
+  apiBlob,
+  apiDelete,
+  apiGet,
+  apiPost,
+  apiPut,
+} from "./api.ts";
 import { LOCAL_CLUSTER_ID } from "./cluster.ts";
-import type {
-  CaptureRequest,
-  CaptureResponse,
-  CreateIncidentRequest,
-  EvidencePage,
-  ExportFormat,
-  GrantRequest,
-  GrantView,
-  IncidentDetail,
-  IncidentSummary,
-  IncidentView,
-  NoteView,
-  UpdateIncidentRequest,
+import {
+  type CaptureRequest,
+  type CaptureResponse,
+  type CreateIncidentRequest,
+  type EvidencePage,
+  type ExportFormat,
+  type GrantRequest,
+  type GrantView,
+  type IncidentDetail,
+  type IncidentSummary,
+  type IncidentView,
+  isDotSegment,
+  isIncidentId,
+  type NoteView,
+  type UpdateIncidentRequest,
 } from "./incident-types.ts";
 
 /** Incident records are not bound to the selected cluster; see the module doc. */
@@ -74,7 +83,40 @@ export function buildIncidentPageQuery(params: PageParams = {}): string {
   return query.size > 0 ? `?${query}` : "";
 }
 
-const base = (id: string) => `/v1/incidents/${encodeURIComponent(id)}`;
+/**
+ * Thrown, before any request is made, for an incident or note id that is not
+ * a UUID. The handlers would 400 it anyway; refusing it here means no id can
+ * put `..` or another path segment into a request.
+ */
+export class InvalidIncidentIdError extends Error {
+  constructor(what: "incident" | "note") {
+    super(`invalid ${what} id`);
+    this.name = "InvalidIncidentIdError";
+  }
+}
+
+/**
+ * Thrown, before any request is made, for a grantee id of "." or "..". As
+ * the last path segment of a revoke either would be normalized into another
+ * resource (".." makes it DELETE /incidents/{id}). The server refuses to
+ * create such a grant; this refuses to address one.
+ */
+export class UnsafeGranteeIdError extends Error {
+  constructor() {
+    super("grantee id cannot be used in a request path");
+    this.name = "UnsafeGranteeIdError";
+  }
+}
+
+function base(id: string): string {
+  if (!isIncidentId(id)) throw new InvalidIncidentIdError("incident");
+  return `/v1/incidents/${id}`;
+}
+
+function notePath(id: string, noteId: string): string {
+  if (!isIncidentId(noteId)) throw new InvalidIncidentIdError("note");
+  return `${base(id)}/notes/${noteId}`;
+}
 const pinned = (signal?: AbortSignal) => ({
   clusterId: INCIDENT_CLUSTER,
   signal,
@@ -141,8 +183,11 @@ export async function updateIncident(
 }
 
 /** `DELETE /v1/incidents/{id}` (owner only): removes everything under it. */
-export function deleteIncident(id: string, signal?: AbortSignal) {
-  return apiDelete(base(id), pinned(signal));
+export async function deleteIncident(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await apiDelete(base(id), pinned(signal));
 }
 
 // --- Evidence and capture -------------------------------------------------------
@@ -242,7 +287,7 @@ export async function updateNote(
   signal?: AbortSignal,
 ): Promise<NoteView> {
   const res = await apiPut<NoteView>(
-    `${base(id)}/notes/${encodeURIComponent(noteId)}`,
+    notePath(id, noteId),
     { body, revision },
     pinned(signal),
   );
@@ -250,11 +295,12 @@ export async function updateNote(
 }
 
 /** `DELETE /v1/incidents/{id}/notes/{noteId}` (author only). */
-export function deleteNote(id: string, noteId: string, signal?: AbortSignal) {
-  return apiDelete(
-    `${base(id)}/notes/${encodeURIComponent(noteId)}`,
-    pinned(signal),
-  );
+export async function deleteNote(
+  id: string,
+  noteId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await apiDelete(notePath(id, noteId), pinned(signal));
 }
 
 // --- Grants ------------------------------------------------------------------
@@ -291,12 +337,13 @@ export async function addGrant(
  * are user ids and may contain `/` or `%`, so the segment is percent-encoded;
  * a grantee without a grant is a 404.
  */
-export function removeGrant(
+export async function removeGrant(
   id: string,
   granteeId: string,
   signal?: AbortSignal,
-) {
-  return apiDelete(
+): Promise<void> {
+  if (isDotSegment(granteeId)) throw new UnsafeGranteeIdError();
+  await apiDelete(
     `${base(id)}/grants/${encodeURIComponent(granteeId)}`,
     pinned(signal),
   );
@@ -304,15 +351,39 @@ export function removeGrant(
 
 // --- Export ------------------------------------------------------------------
 
+/** A downloaded export: the file and the name the server gave it. */
+export interface IncidentExport {
+  blob: Blob;
+  filename: string;
+}
+
 /**
- * The browser path of `GET /v1/incidents/{id}/export?format=`. The response
- * is a file (Content-Disposition: attachment), not an API envelope. It is NOT
- * navigable as a plain link: the access token lives in memory and only `api.ts`
- * attaches it, so a download must fetch this path with that header and save
- * the body.
+ * `GET /v1/incidents/{id}/export?format=`: the incident as a file. The
+ * response is not an API envelope and the access token lives in memory, so a
+ * plain link cannot download it; this fetches it through `apiBlob` (bearer
+ * token, 401 refresh-and-retry, ApiError on failure). The filename comes from
+ * Content-Disposition, else `incident-<id>.<ext>`.
+ *
+ * The server sets no header saying the export was truncated (the flag is
+ * inside the JSON body and the Markdown text), so this does not report it.
  */
-export function exportUrl(id: string, format: ExportFormat): string {
-  return `/api${base(id)}/export?format=${encodeURIComponent(format)}`;
+export async function exportIncident(
+  id: string,
+  format: ExportFormat,
+  signal?: AbortSignal,
+): Promise<IncidentExport> {
+  const res = await apiBlob(
+    `${base(id)}/export?format=${encodeURIComponent(format)}`,
+    pinned(signal),
+  );
+  const match = /filename="([^"]+)"/.exec(
+    res.headers.get("Content-Disposition") ?? "",
+  );
+  return {
+    blob: res.blob,
+    filename:
+      match?.[1] ?? `incident-${id}.${format === "markdown" ? "md" : "json"}`,
+  };
 }
 
 // --- Error helpers -------------------------------------------------------------

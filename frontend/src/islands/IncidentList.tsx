@@ -11,10 +11,17 @@ import {
 import {
   INCIDENT_MAX_SUMMARY_CHARS,
   INCIDENT_MAX_TITLE_CHARS,
-  type IncidentStatus,
   type IncidentView,
 } from "@/lib/incident-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import {
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  FIELD,
+  HEADING,
+  LINK,
+  StatusBadge,
+} from "@/src/components/incidents/ui.tsx";
 
 /**
  * The incidents the caller owns or was granted (GET /v1/incidents), newest
@@ -43,11 +50,6 @@ const PAGE_SIZE = 50;
 /** The default investigation window starts this long before "now". */
 const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
 const TITLE_ID = "incident-title";
-
-const BUTTON_PRIMARY =
-  "inline-flex cursor-pointer items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-(--bg-base) focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
-const BUTTON_SECONDARY =
-  "inline-flex cursor-pointer items-center justify-center rounded-md border border-border-primary bg-transparent px-3 py-1.5 text-sm font-medium text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
 
 const incidentHref = (id: string) =>
   `/observability/incidents/${encodeURIComponent(id)}`;
@@ -91,29 +93,6 @@ function createErrorText(err: unknown): string {
     }
   }
   return "Could not create the incident.";
-}
-
-function StatusBadge({ status }: { status: IncidentStatus }) {
-  switch (status) {
-    case "open":
-      return (
-        <span class="inline-flex rounded-full bg-warning-dim px-2 py-0.5 text-xs font-medium text-warning">
-          Open
-        </span>
-      );
-    case "closed":
-      return (
-        <span class="inline-flex rounded-full bg-success-dim px-2 py-0.5 text-xs font-medium text-success">
-          Closed
-        </span>
-      );
-    default:
-      return (
-        <span class="inline-flex rounded-full border border-border-subtle px-2 py-0.5 text-xs font-medium text-text-muted">
-          {String(status)}
-        </span>
-      );
-  }
 }
 
 function RoleBadge({ incident }: { incident: IncidentView }) {
@@ -220,10 +199,7 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
       onSubmit={submit}
       class="flex flex-col gap-4 rounded-lg border border-border-subtle bg-surface p-4"
     >
-      <h2
-        id="new-incident-heading"
-        class="m-0 text-base font-semibold text-text-primary"
-      >
+      <h2 id="new-incident-heading" class={HEADING}>
         New incident
       </h2>
       {error.value && (
@@ -256,7 +232,7 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
           onInput={(e) => {
             summary.value = e.currentTarget.value;
           }}
-          class="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/50"
+          class={FIELD}
         />
       </div>
       <div class="grid gap-4 sm:grid-cols-2">
@@ -517,7 +493,7 @@ export default function IncidentList() {
                   <td class="px-3 py-2 align-top">
                     <a
                       href={incidentHref(incident.id)}
-                      class="rounded-sm font-medium text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50"
+                      class={`font-medium ${LINK}`}
                     >
                       {incident.title}
                     </a>

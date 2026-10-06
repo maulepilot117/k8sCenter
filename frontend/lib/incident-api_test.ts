@@ -12,8 +12,9 @@ import {
   createNote,
   deleteIncident,
   deleteNote,
-  exportUrl,
+  exportIncident,
   getIncident,
+  InvalidIncidentIdError,
   incidentErrorNumber,
   isPersistenceUnavailable,
   isRemoteCaptureRefusal,
@@ -22,16 +23,19 @@ import {
   listIncidents,
   listNotes,
   removeGrant,
+  UnsafeGranteeIdError,
   updateIncident,
   updateNote,
 } from "./incident-api.ts";
-import type {
-  CaptureResponse,
-  EvidenceItem,
-  GrantView,
-  IncidentDetail,
-  IncidentView,
-  NoteView,
+import {
+  type CaptureResponse,
+  type EvidenceItem,
+  type GrantView,
+  type IncidentDetail,
+  type IncidentView,
+  isIncidentId,
+  liveLinkTarget,
+  type NoteView,
 } from "./incident-types.ts";
 
 // The client is a thin typing layer over api.ts, so what is worth pinning is
@@ -282,11 +286,8 @@ test("getIncident pages evidence through the query and returns detail plus curso
     status: 200,
     payload: { data: detail, metadata: { total: 1, continue: "ev2" } },
   });
-  const res = await getIncident(`${ID}/../x`, { limit: 20 });
-  // The id is path-encoded: it cannot climb out of /incidents/{id}.
-  expect(calls[0].url).toBe(
-    `/api/v1/incidents/${encodeURIComponent(`${ID}/../x`)}?limit=20`,
-  );
+  const res = await getIncident(ID, { limit: 20 });
+  expect(calls[0].url).toBe(`/api/v1/incidents/${ID}?limit=20`);
   expect(res.detail).toEqual(detail);
   expect(res.continue).toBe("ev2");
 });
@@ -531,13 +532,96 @@ test("removeGrant percent-encodes a grantee id containing / and %", async () => 
 
 // --- Export ------------------------------------------------------------------
 
-test("exportUrl builds the download path for both formats", () => {
-  expect(exportUrl(ID, "json")).toBe(
-    `/api/v1/incidents/${ID}/export?format=json`,
+test("exportIncident downloads the file pinned to local, with a fallback name", async () => {
+  switchCluster("remote-1", "gen-1");
+  const doc = { schema: "k8scenter.incident/v1", truncated: false };
+  stubFetch({ status: 200, payload: doc });
+  const res = await exportIncident(ID, "json");
+  expect(calls[0].url).toBe(`/api/v1/incidents/${ID}/export?format=json`);
+  expect(calls[0].method).toBe("GET");
+  expect(calls[0].clusterHeader).toBe("local");
+  expect(res.filename).toBe(`incident-${ID}.json`);
+  expect(JSON.parse(await res.blob.text())).toEqual(doc);
+});
+
+test("exportIncident surfaces a rate limit as an ApiError 429", async () => {
+  stubFetch({
+    status: 429,
+    payload: { error: { code: 429, message: "rate limited" } },
+  });
+  const err = await exportIncident(ID, "markdown").catch((e) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect((err as ApiError).status).toBe(429);
+  expect(calls[0].url).toBe(`/api/v1/incidents/${ID}/export?format=markdown`);
+});
+
+// --- Id validation -----------------------------------------------------------
+
+test("isIncidentId accepts UUIDs only (the [id] page's guard)", () => {
+  expect(isIncidentId(ID)).toBe(true);
+  expect(isIncidentId(ID.toUpperCase())).toBe(true);
+  for (const bad of [
+    "",
+    "..",
+    `${ID}/..`,
+    `../${ID}`,
+    `${ID}%2F..`,
+    `${ID} `,
+    "not-a-uuid",
+  ]) {
+    expect(isIncidentId(bad)).toBe(false);
+  }
+});
+
+test("a non-UUID incident or note id is refused before any request", async () => {
+  stubFetch({ status: 200, payload: { data: {} } });
+  for (const run of [
+    () => getIncident(`${ID}/../x`),
+    () => getIncident(".."),
+    () => listEvidence("../../users"),
+    () => deleteIncident(`${ID}%2F..`),
+    () => exportIncident("..", "json"),
+    () => updateNote(ID, "../x", "b", 1),
+    () => deleteNote(ID, ".."),
+  ]) {
+    const err = await run().catch((e) => e);
+    expect(err).toBeInstanceOf(InvalidIncidentIdError);
+  }
+  expect(calls).toHaveLength(0);
+});
+
+test('removeGrant refuses "." and ".." as grantee ids before any request', async () => {
+  stubFetch({ status: 204 });
+  for (const dot of [".", ".."]) {
+    const err = await removeGrant(ID, dot).catch((e) => e);
+    expect(err).toBeInstanceOf(UnsafeGranteeIdError);
+  }
+  expect(calls).toHaveLength(0);
+  // A percent-encoded dot-segment is a literal id, encoded once more.
+  await removeGrant(ID, "%2E%2E");
+  expect(calls[0].url).toBe(`/api/v1/incidents/${ID}/grants/%252E%252E`);
+});
+
+test("liveLinkTarget yields no link for a dot-segment namespace or name", () => {
+  const source = {
+    clusterId: "local",
+    apiGroup: "apps",
+    resource: "deployments",
+    kind: "Deployment",
+    namespace: "shop",
+    name: "checkout",
+  };
+  expect(liveLinkTarget(source)?.apiPath).toBe(
+    "/v1/resources/deployments/shop/checkout",
   );
-  expect(exportUrl(ID, "markdown")).toBe(
-    `/api/v1/incidents/${ID}/export?format=markdown`,
-  );
+  for (const over of [
+    { namespace: ".." },
+    { namespace: "." },
+    { name: ".." },
+    { name: "." },
+  ]) {
+    expect(liveLinkTarget({ ...source, ...over })).toBeNull();
+  }
 });
 
 // --- Error helpers -------------------------------------------------------------

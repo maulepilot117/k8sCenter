@@ -20,9 +20,17 @@ import (
 )
 
 func TestValidateGranteeID(t *testing.T) {
-	for _, ok := range []string{"u", "oidc:abc|user@example.com", strings.Repeat("a", 256), "ldap:Zoë"} {
+	for _, ok := range []string{"u", "oidc:abc|user@example.com", strings.Repeat("a", 256), "ldap:Zoë", "...", ".a", "a..b", "%2E%2E"} {
 		if err := ValidateGranteeID(ok); err != nil {
 			t.Errorf("ValidateGranteeID(%q) = %v; want nil", ok, err)
+		}
+	}
+	// "." and ".." are dot-segments: a client that puts the id into
+	// /incidents/{id}/grants/{granteeId} would have the path normalized to
+	// another resource (".." turns a grant revoke into DELETE /incidents/{id}).
+	for _, dot := range []string{".", ".."} {
+		if err := ValidateGranteeID(dot); !errors.Is(err, ErrIncidentInvalid) {
+			t.Errorf("ValidateGranteeID(%q) = %v; want ErrIncidentInvalid", dot, err)
 		}
 	}
 	for _, bad := range []string{"", strings.Repeat("a", 257), "a\nb", "a\x00b", "a\tb", "\x7f", "a\u0085b", "\xff"} {

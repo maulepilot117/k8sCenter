@@ -435,3 +435,41 @@ func TestExportEnvelopeCoversEveryDocumentField(t *testing.T) {
 		t.Fatalf("ExportDocument JSON fields %v; the streamed envelope writes %v", tags, exportEnvelopeFields)
 	}
 }
+
+// "." and ".." are URL dot-segments: as the {granteeID} of a revoke a client
+// path would normalize to another resource ("/grants/.." is the incident).
+// Neither add nor revoke accepts them, directly or percent-encoded through
+// the router, and nothing is written or removed.
+func TestGrantRejectsDotSegmentGranteeIDs(t *testing.T) {
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	hs.grant(id, bob, false)
+	for _, dot := range []string{".", ".."} {
+		body := fmt.Sprintf(`{"granteeId":%q,"canAnnotate":true}`, dot)
+		w := hs.do(t, hs.h.HandleAddGrant, http.MethodPost, request{user: alice, incidentID: id.String(), body: body})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("add %q: status %d, want 400\n%s", dot, w.Code, w.Body.String())
+		}
+		w = hs.removeGrant(t, alice, id, dot)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("remove %q: status %d, want 400\n%s", dot, w.Code, w.Body.String())
+		}
+	}
+	mux := hs.grantRouter(alice)
+	for _, encoded := range []string{"%2E", "%2E%2E", "%2e%2e"} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/incidents/"+id.String()+"/grants/"+encoded, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("remove via router %q: status %d, want 400\n%s", encoded, w.Code, w.Body.String())
+		}
+	}
+	if got := len(hs.st.grants[id]); got != 1 {
+		t.Fatalf("grants = %d, want only bob's (nothing added or removed)", got)
+	}
+	if _, ok := hs.st.grants[id][bob.ID]; !ok {
+		t.Fatal("bob's grant was removed")
+	}
+	if _, ok := hs.st.incidents[id]; !ok {
+		t.Fatal("the incident was deleted")
+	}
+}
