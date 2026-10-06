@@ -54,6 +54,12 @@ type ChangesConfig struct {
 type IncidentsConfig struct {
 	// RetentionDays is how long incidents are kept (default 30, range 1-3650).
 	RetentionDays int `koanf:"retentiondays"`
+	// RetentionLoweringConfirmed (default false) acknowledges that lowering
+	// RetentionDays deletes existing incidents. When lowering would delete
+	// incidents captured under a longer retention, the first sweep is deferred
+	// one hour (a window to roll the change back) unless this is true. Env:
+	// KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED.
+	RetentionLoweringConfirmed bool `koanf:"retentionloweringconfirmed"`
 	// Evidence limits, each clamped to [minimum, the SQL CHECK ceiling].
 	MaxItemBytes     int `koanf:"maxitembytes"`
 	MaxIncidentBytes int `koanf:"maxincidentbytes"`

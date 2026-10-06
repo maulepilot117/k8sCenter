@@ -26,6 +26,7 @@ func TestIncidentsConfig(t *testing.T) {
 
 	t.Run("every KUBECENTER_INCIDENTS_ env var maps to its field", func(t *testing.T) {
 		t.Setenv("KUBECENTER_INCIDENTS_RETENTIONDAYS", "7")
+		t.Setenv("KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED", "true")
 		t.Setenv("KUBECENTER_INCIDENTS_MAXITEMBYTES", "2048")
 		t.Setenv("KUBECENTER_INCIDENTS_MAXINCIDENTBYTES", "4096")
 		t.Setenv("KUBECENTER_INCIDENTS_MAXITEMS", "11")
@@ -38,7 +39,7 @@ func TestIncidentsConfig(t *testing.T) {
 			t.Fatalf("Load: %v", err)
 		}
 		want := IncidentsConfig{
-			RetentionDays: 7, MaxItemBytes: 2048, MaxIncidentBytes: 4096, MaxItems: 11, MaxScopes: 3,
+			RetentionDays: 7, RetentionLoweringConfirmed: true, MaxItemBytes: 2048, MaxIncidentBytes: 4096, MaxItems: 11, MaxScopes: 3,
 			CaptureTimeout: 45 * time.Second, SourceTimeout: 9 * time.Second, MaxConcurrency: 2,
 		}
 		if cfg.Incidents != want {

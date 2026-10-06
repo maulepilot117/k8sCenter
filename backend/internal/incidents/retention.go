@@ -4,6 +4,7 @@ package incidents
 // resolution (Release D, U25a; Q1 P13/P14).
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"time"
@@ -17,11 +18,16 @@ const (
 	// retentionSweepPeriod is the interval between sweeps after the first.
 	retentionSweepPeriod = time.Hour
 	// retentionCheckTimeout bounds the startup lookup that feeds the
-	// lowered-retention warning. The sweep itself is bounded by the store.
+	// lowered-retention check. The sweep itself is bounded by the store.
 	retentionCheckTimeout = 10 * time.Second
 	// retentionTask labels every recovered panic from the sweep
 	// (task=incidents-retention).
 	retentionTask = "incidents-retention"
+	// loweringGraceWindow is how long the first sweep is deferred when the
+	// configured retention would delete incidents captured under a longer one.
+	// It equals retentionSweepPeriod: the deferred first sweep is simply the
+	// first tick. That is the operator's window to roll the change back.
+	loweringGraceWindow = retentionSweepPeriod
 )
 
 // Operator-facing bounds for the values the store does not itself ceiling.
@@ -36,11 +42,28 @@ const (
 // *store.IncidentStore satisfies it.
 type retentionStore interface {
 	Cleanup(ctx context.Context, retentionDays int) (int64, error)
-	MaxRetentionDaysAtCapture(ctx context.Context) (int, error)
+	RetentionLoweringImpact(ctx context.Context, retentionDays int) (store.RetentionLoweringImpact, error)
 }
 
 // Retainer deletes incidents older than the configured retention: one sweep
-// at start, then one per hour.
+// at start (or one hour after start, see below), then one per hour.
+//
+// Lowering the retention deletes incidents created under a longer one, and a
+// config rollback cannot bring them back. So at start the Retainer counts the
+// incidents the configured value would delete although their own retention
+// would have kept them. When there are any, it logs a Warn with the count and
+// the affected date range and defers the first sweep by loweringGraceWindow,
+// giving the operator one hour to restore the old value. Setting
+// RetentionLoweringConfirmed (KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED)
+// skips the deferral. If the count cannot be read, the first sweep is
+// deferred too (fail safe). Because the count excludes incidents that merely
+// expired under their own retention, it is zero in normal operation and stops
+// being reported once the affected rows are gone, so restarts do not repeat it.
+//
+// Multi-replica skew: every replica sweeps with its OWN configured value. A
+// replica started with a lower value deletes for all of them, and restoring
+// the config afterwards cannot restore what it deleted. Keep the value
+// identical across replicas (docs: migrations/NOTES.txt, 000024).
 //
 // Lifecycle contract: RunLoop is meant to be started with a plain `go`
 // statement and owns no sync.WaitGroup and no counted channel. It returns when
@@ -51,9 +74,10 @@ type retentionStore interface {
 // recoverutil.Tick, so a panic is logged and the loop carries on instead of
 // crashing the process (the loop runs outside chi's recovery middleware).
 type Retainer struct {
-	store         retentionStore
-	retentionDays int
-	logger        *slog.Logger
+	store             retentionStore
+	retentionDays     int
+	loweringConfirmed bool
+	logger            *slog.Logger
 	// newTicker is the test seam for the hourly clock.
 	newTicker func(d time.Duration) (<-chan time.Time, func())
 }
@@ -85,14 +109,31 @@ func NewRetainer(st retentionStore, retentionDays int, logger *slog.Logger) *Ret
 	}
 }
 
-// RunLoop warns if the retention would retroactively delete existing
-// incidents, sweeps immediately, then sweeps hourly until ctx is cancelled.
+// WithLoweringConfirmed records the operator's acknowledgement that lowering
+// retention deletes existing incidents, so the first sweep is not deferred.
+// It returns r for chaining and is safe on a nil Retainer.
+func (r *Retainer) WithLoweringConfirmed(confirmed bool) *Retainer {
+	if r != nil {
+		r.loweringConfirmed = confirmed
+	}
+	return r
+}
+
+// RunLoop checks whether the configured retention would delete incidents
+// captured under a longer one, sweeps immediately (or after the grace window
+// when it would), then sweeps hourly until ctx is cancelled.
 func (r *Retainer) RunLoop(ctx context.Context) {
 	if r == nil || ctx.Err() != nil {
 		return
 	}
-	recoverutil.Tick(ctx, r.logger, retentionTask, r.warnIfLowered)
-	r.sweepOnce(ctx)
+	// Fail safe: a panic in the check leaves deferFirst true.
+	deferFirst := true
+	recoverutil.Tick(ctx, r.logger, retentionTask, func(ctx context.Context) {
+		deferFirst = r.shouldDeferFirstSweep(ctx)
+	})
+	if !deferFirst {
+		r.sweepOnce(ctx)
+	}
 
 	tick, stop := r.newTicker(retentionSweepPeriod)
 	defer stop()
@@ -115,42 +156,56 @@ func (r *Retainer) sweepOnce(ctx context.Context) {
 
 func (r *Retainer) sweep(ctx context.Context) {
 	deleted, err := r.store.Cleanup(ctx, r.retentionDays)
+	// Cleanup deletes in batches and returns what it removed even on failure.
+	if deleted > 0 {
+		r.logger.Info("incident retention sweep deleted expired incidents",
+			"deleted", deleted, "retentionDays", r.retentionDays)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return // shutdown interrupted the sweep; not a failure
 		}
 		r.logger.Error("incident retention sweep failed", "retentionDays", r.retentionDays, "error", err)
-		return
-	}
-	if deleted > 0 {
-		r.logger.Info("incident retention sweep deleted expired incidents",
-			"deleted", deleted, "retentionDays", r.retentionDays)
 	}
 }
 
-// warnIfLowered logs a Warn when an existing incident was captured under a
-// longer retention than the one now configured: Cleanup applies the current
-// value to every row, so lowering it deletes those incidents on the first
-// sweep (Q1 R-4). A failed lookup is not fatal.
-func (r *Retainer) warnIfLowered(ctx context.Context) {
+// shouldDeferFirstSweep reports whether the first sweep must wait one grace
+// window, logging why.
+func (r *Retainer) shouldDeferFirstSweep(ctx context.Context) bool {
 	cctx, cancel := context.WithTimeout(ctx, retentionCheckTimeout)
 	defer cancel()
-	longest, err := r.store.MaxRetentionDaysAtCapture(cctx)
+	impact, err := r.store.RetentionLoweringImpact(cctx, r.retentionDays)
 	if err != nil {
-		r.logger.Warn("incident retention: could not check the longest retention in use", "error", err)
-		return
+		r.logger.Warn("incident retention: could not check whether the configured retention deletes existing incidents; "+
+			"deferring the first sweep",
+			"retentionDays", r.retentionDays, "firstSweepDelay", loweringGraceWindow.String(), "error", err)
+		return !r.loweringConfirmed
 	}
-	if longest > r.retentionDays {
-		r.logger.Warn("configured incident retention is shorter than some existing incidents were captured under; "+
-			"the next sweep deletes incidents older than the configured value",
-			"retentionDays", r.retentionDays, "maxRetentionDaysAtCapture", longest)
+	if impact.Count == 0 {
+		return false
 	}
+	if r.loweringConfirmed {
+		r.logger.Warn("configured incident retention deletes incidents captured under a longer retention; "+
+			"deletion is confirmed by configuration and proceeds now",
+			"retentionDays", r.retentionDays, "affectedIncidents", impact.Count,
+			"oldestCreatedAt", impact.Oldest.UTC().Format(time.RFC3339), "newestCreatedAt", impact.Newest.UTC().Format(time.RFC3339))
+		return false
+	}
+	r.logger.Warn("configured incident retention is shorter than the retention these incidents were captured under; "+
+		"the first sweep is deferred so the change can be rolled back, then deletes them. "+
+		"Set KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED=true to delete immediately",
+		"retentionDays", r.retentionDays, "affectedIncidents", impact.Count,
+		"oldestCreatedAt", impact.Oldest.UTC().Format(time.RFC3339), "newestCreatedAt", impact.Newest.UTC().Format(time.RFC3339),
+		"firstSweepDelay", loweringGraceWindow.String())
+	return true
 }
 
 // Settings is the incident configuration after clamping.
 type Settings struct {
 	RetentionDays int
 	Limits        Limits
+	// RetentionLoweringConfirmed is passed through unchanged.
+	RetentionLoweringConfirmed bool
 }
 
 // ResolveSettings turns the raw configuration into effective settings. Each
@@ -160,36 +215,57 @@ type Settings struct {
 // minimum would turn a typo into "delete after one day" or "capture nothing".
 // A value above its ceiling is clamped to the ceiling, and the evidence limits
 // never exceed the store's SQL CHECK ceilings.
+//
+// After clamping, two cross-field rules hold: MaxIncidentBytes is at least
+// MaxItemBytes (otherwise one maximal item could never be stored), and
+// SourceTimeout is at most CaptureTimeout (a source cannot outlive its
+// capture). A violation is corrected and logged.
 func ResolveSettings(c config.IncidentsConfig, logger *slog.Logger) Settings {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	l := Limits{
+		MaxItemBytes: clamp(logger, "maxItemBytes", c.MaxItemBytes,
+			config.DefaultIncidentsMaxItemBytes, MinMaxBytes, store.EvidenceMaxItemBytesCeiling),
+		MaxIncidentBytes: clamp(logger, "maxIncidentBytes", c.MaxIncidentBytes,
+			config.DefaultIncidentsMaxIncidentBytes, 1, store.EvidenceMaxIncidentBytesCeiling),
+		MaxItems: clamp(logger, "maxItems", c.MaxItems,
+			config.DefaultIncidentsMaxItems, 1, store.EvidenceMaxItemsCeiling),
+		MaxScopes: clamp(logger, "maxScopes", c.MaxScopes,
+			config.DefaultIncidentsMaxScopes, 1, store.EvidenceMaxScopesCeiling),
+		CaptureTimeout: clamp(logger, "captureTimeout", c.CaptureTimeout,
+			config.DefaultIncidentsCaptureTimeout, minTimeout, maxCaptureTimeout),
+		SourceTimeout: clamp(logger, "sourceTimeout", c.SourceTimeout,
+			config.DefaultIncidentsSourceTimeout, minTimeout, maxSourceTimeout),
+		MaxConcurrency: clamp(logger, "maxConcurrency", c.MaxConcurrency,
+			config.DefaultIncidentsMaxConcurrency, 1, maxConcurrencyBound),
+	}
+	if l.MaxIncidentBytes < l.MaxItemBytes {
+		logger.Warn("incidents configuration inconsistent; raising maxIncidentBytes to maxItemBytes",
+			"field", "maxIncidentBytes", "configured", l.MaxIncidentBytes, "effective", l.MaxItemBytes)
+		l.MaxIncidentBytes = l.MaxItemBytes
+	}
+	if l.SourceTimeout > l.CaptureTimeout {
+		logger.Warn("incidents configuration inconsistent; capping sourceTimeout at captureTimeout",
+			"field", "sourceTimeout", "configured", l.SourceTimeout.String(), "effective", l.CaptureTimeout.String())
+		l.SourceTimeout = l.CaptureTimeout
+	}
 	return Settings{
-		RetentionDays: clampInt(logger, "retentionDays", c.RetentionDays,
+		RetentionDays: clamp(logger, "retentionDays", c.RetentionDays,
 			config.DefaultIncidentsRetentionDays, store.IncidentMinRetentionDays, store.IncidentMaxRetentionDays),
-		Limits: Limits{
-			MaxItemBytes: clampInt(logger, "maxItemBytes", c.MaxItemBytes,
-				config.DefaultIncidentsMaxItemBytes, MinMaxBytes, store.EvidenceMaxItemBytesCeiling),
-			MaxIncidentBytes: clampInt(logger, "maxIncidentBytes", c.MaxIncidentBytes,
-				config.DefaultIncidentsMaxIncidentBytes, 1, store.EvidenceMaxIncidentBytesCeiling),
-			MaxItems: clampInt(logger, "maxItems", c.MaxItems,
-				config.DefaultIncidentsMaxItems, 1, store.EvidenceMaxItemsCeiling),
-			MaxScopes: clampInt(logger, "maxScopes", c.MaxScopes,
-				config.DefaultIncidentsMaxScopes, 1, store.EvidenceMaxScopesCeiling),
-			CaptureTimeout: clampDuration(logger, "captureTimeout", c.CaptureTimeout,
-				config.DefaultIncidentsCaptureTimeout, minTimeout, maxCaptureTimeout),
-			SourceTimeout: clampDuration(logger, "sourceTimeout", c.SourceTimeout,
-				config.DefaultIncidentsSourceTimeout, minTimeout, maxSourceTimeout),
-			MaxConcurrency: clampInt(logger, "maxConcurrency", c.MaxConcurrency,
-				config.DefaultIncidentsMaxConcurrency, 1, maxConcurrencyBound),
-		},
+		Limits:                     l,
+		RetentionLoweringConfirmed: c.RetentionLoweringConfirmed,
 	}
 }
 
-func clampInt(logger *slog.Logger, field string, v, def, lo, hi int) int {
+// clamp returns v when it is within [lo, hi]; a value at or below zero becomes
+// def, one below lo becomes lo and one above hi becomes hi. Every change is
+// logged with the field name.
+func clamp[T cmp.Ordered](logger *slog.Logger, field string, v, def, lo, hi T) T {
+	var zero T
 	got := v
 	switch {
-	case v <= 0:
+	case v <= zero:
 		got = def
 	case v < lo:
 		got = lo
@@ -199,23 +275,6 @@ func clampInt(logger *slog.Logger, field string, v, def, lo, hi int) int {
 	if got != v {
 		logger.Warn("incidents configuration out of range; using the effective value",
 			"field", field, "configured", v, "effective", got, "min", lo, "max", hi)
-	}
-	return got
-}
-
-func clampDuration(logger *slog.Logger, field string, v, def, lo, hi time.Duration) time.Duration {
-	got := v
-	switch {
-	case v <= 0:
-		got = def
-	case v < lo:
-		got = lo
-	case v > hi:
-		got = hi
-	}
-	if got != v {
-		logger.Warn("incidents configuration out of range; using the effective value",
-			"field", field, "configured", v.String(), "effective", got.String(), "min", lo.String(), "max", hi.String())
 	}
 	return got
 }

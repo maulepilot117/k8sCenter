@@ -465,6 +465,21 @@ Retention (operator footgun 1):
     - Raising it does NOT resurrect incidents that were already deleted.
   Retention is time-based only: closing an incident, deleting the Kubernetes
   object it describes, or revoking someone's access never deletes it.
+    - Lowering guard (U25a): at start the backend counts incidents the
+      configured value would delete although the retention they were created
+      under (retention_days_at_capture) would have kept them. If there are
+      any it logs a Warn (count and created_at range) and defers the first
+      sweep by one hour, the window to put the old value back. Set
+      KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED=true to sweep at once.
+      Incidents that simply expired under their own retention are not
+      counted, so the warning does not repeat on restart once the affected
+      rows are gone. The sweep deletes in batches of 500, so a large backlog
+      is removed progressively and an interrupted sweep keeps its progress.
+    - Multi-replica skew: every replica sweeps with its OWN configured value.
+      A replica started with a lower value deletes for all of them, and
+      reverting the config afterwards does not restore what it deleted. Roll
+      the retention value out to every replica together; the guard above only
+      protects a replica's own first hour.
 
 Rollback (operator footgun 2):
   Do NOT just deploy the older image. Its startup migration runner sees

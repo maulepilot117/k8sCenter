@@ -1005,7 +1005,8 @@ func main() {
 	if incidentStore != nil {
 		// Plain go statement by design: Retainer.RunLoop owns no WaitGroup or
 		// counted channel and returns on ctx cancel (see its doc comment).
-		go incidents.NewRetainer(incidentStore, incidentSettings.RetentionDays, logger).RunLoop(ctx)
+		go incidents.NewRetainer(incidentStore, incidentSettings.RetentionDays, logger).
+			WithLoweringConfirmed(incidentSettings.RetentionLoweringConfirmed).RunLoop(ctx)
 	}
 
 	// Gateway API integration

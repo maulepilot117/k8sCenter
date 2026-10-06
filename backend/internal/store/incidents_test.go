@@ -1149,21 +1149,119 @@ func TestIncidentStore_CleanupDeletesOnlyExpired(t *testing.T) {
 	}
 }
 
-func TestIncidentStore_MaxRetentionDaysAtCapture(t *testing.T) {
-	s, _ := newIncidentStore(t)
+func TestIncidentStore_CleanupDeletesInBoundedBatches(t *testing.T) {
+	s, pool := newIncidentStore(t)
 	ctx := t.Context()
 	owner := testOwnerID(t)
-	row := newIncident(owner, "long retention")
-	row.RetentionDaysAtCapture = IncidentMaxRetentionDays
-	mustCreateIncident(t, s, row)
-
-	// The table is shared across tests, so assert only that our row is seen.
-	got, err := s.MaxRetentionDaysAtCapture(ctx)
-	if err != nil {
-		t.Fatalf("MaxRetentionDaysAtCapture: %v", err)
+	for i := range 8 {
+		mustCreateIncident(t, s, newIncident(owner, "expired-"+strconv.Itoa(i)))
 	}
-	if got != IncidentMaxRetentionDays {
-		t.Errorf("MaxRetentionDaysAtCapture = %d, want %d", got, IncidentMaxRetentionDays)
+	// Older than any row another test ages, so ORDER BY created_at reaches ours first.
+	if _, err := pool.Exec(ctx, `UPDATE incidents SET created_at = NOW() - INTERVAL '2000 days' WHERE owner_id = $1`, owner); err != nil {
+		t.Fatal(err)
+	}
+	mine := func() int {
+		return countRows(t, pool, `SELECT COUNT(*) FROM incidents WHERE owner_id = $1`, owner)
+	}
+
+	// Stop after the first batch: exactly one batch of 3 is gone, the rest
+	// remain, so a timeout part-way keeps its progress and no statement is
+	// larger than a batch.
+	var sizes []int64
+	total, err := s.cleanupBatched(ctx, 30, 3, func(n int64) bool { sizes = append(sizes, n); return false })
+	if err != nil {
+		t.Fatalf("cleanupBatched: %v", err)
+	}
+	if total != 3 || len(sizes) != 1 || sizes[0] != 3 {
+		t.Fatalf("first batch: total=%d sizes=%v, want exactly one batch of 3", total, sizes)
+	}
+	if got := mine(); got != 5 {
+		t.Fatalf("%d of our incidents remain after one batch of 3, want 5", got)
+	}
+
+	// Run to completion in batches of 3: no batch exceeds 3, and ours all go.
+	sizes = nil
+	total, err = s.cleanupBatched(ctx, 30, 3, func(n int64) bool { sizes = append(sizes, n); return true })
+	if err != nil {
+		t.Fatalf("cleanupBatched: %v", err)
+	}
+	var sum int64
+	for _, n := range sizes {
+		if n > 3 {
+			t.Errorf("batch deleted %d rows, want at most 3", n)
+		}
+		sum += n
+	}
+	if sum != total || total < 5 || len(sizes) < 2 {
+		t.Errorf("total=%d sum=%d sizes=%v, want a multi-batch run deleting at least our 5", total, sum, sizes)
+	}
+	if got := mine(); got != 0 {
+		t.Errorf("%d of our incidents survived the sweep", got)
+	}
+}
+
+func TestIncidentStore_CleanupRejectsBadBatchSize(t *testing.T) {
+	s := NewIncidentStore(nil)
+	if _, err := s.cleanupBatched(t.Context(), 30, 0, nil); err == nil {
+		t.Error("batch size 0 accepted; want an error before any SQL")
+	}
+}
+
+func TestIncidentStore_RetentionLoweringImpact(t *testing.T) {
+	s, pool := newIncidentStore(t)
+	ctx := t.Context()
+	owner := testOwnerID(t)
+	if _, err := s.RetentionLoweringImpact(ctx, 0); err == nil {
+		t.Error("retention 0 accepted; want an error before any SQL")
+	}
+
+	// The table is shared across tests, so assert on deltas and bounds.
+	before, err := s.RetentionLoweringImpact(ctx, 30)
+	if err != nil {
+		t.Fatalf("RetentionLoweringImpact: %v", err)
+	}
+	age := func(title string, capturedUnder int, days int) {
+		row := newIncident(owner, title)
+		row.RetentionDaysAtCapture = capturedUnder
+		id := mustCreateIncident(t, s, row)
+		if _, err := pool.Exec(ctx, `UPDATE incidents SET created_at = NOW() - $2 * INTERVAL '1 day' WHERE id = $1`, id, days); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age("lowered", 90, 60)          // older than 30d, inside its own 90d: counted
+	age("expired normally", 30, 40) // older than its own 30d: not counted
+	age("fresh", 90, 10)            // inside 30d: not counted
+
+	after, err := s.RetentionLoweringImpact(ctx, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Count != before.Count+1 {
+		t.Errorf("Count = %d, want %d (only the lowered incident is new)", after.Count, before.Count+1)
+	}
+	if after.Oldest.IsZero() || after.Newest.IsZero() || after.Oldest.After(after.Newest) {
+		t.Errorf("bounds = %v..%v, want a populated, ordered range", after.Oldest, after.Newest)
+	}
+
+	// Once the sweep has run the warning condition clears: it cannot re-fire.
+	if _, err := s.Cleanup(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := s.RetentionLoweringImpact(ctx, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Count != 0 || !cleared.Oldest.IsZero() || !cleared.Newest.IsZero() {
+		t.Errorf("after the sweep impact = %+v, want zero", cleared)
+	}
+
+	// Empty path: no incident here is ten years old, so nothing is affected.
+	none, err := s.RetentionLoweringImpact(ctx, IncidentMaxRetentionDays)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.Count != 0 || !none.Oldest.IsZero() || !none.Newest.IsZero() {
+		t.Errorf("impact at the maximum retention = %+v, want zero", none)
 	}
 }
 

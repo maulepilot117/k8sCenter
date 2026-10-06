@@ -24,8 +24,8 @@ import (
 type fakeRetentionStore struct {
 	mu          sync.Mutex
 	cleanupDays []int
-	maxCapture  int
-	maxErr      error
+	impact      store.RetentionLoweringImpact
+	impactErr   error
 	// cleanup is called on every sweep; nil means "delete nothing".
 	cleanup func(ctx context.Context, call int, days int) (int64, error)
 	called  chan struct{} // receives one value per Cleanup call
@@ -48,8 +48,8 @@ func (f *fakeRetentionStore) Cleanup(ctx context.Context, days int) (int64, erro
 	return fn(ctx, call, days)
 }
 
-func (f *fakeRetentionStore) MaxRetentionDaysAtCapture(context.Context) (int, error) {
-	return f.maxCapture, f.maxErr
+func (f *fakeRetentionStore) RetentionLoweringImpact(context.Context, int) (store.RetentionLoweringImpact, error) {
+	return f.impact, f.impactErr
 }
 
 func (f *fakeRetentionStore) calls() []int {
@@ -127,6 +127,18 @@ func startLoop(t *testing.T, r *Retainer) (cancel context.CancelFunc, done <-cha
 	return cancel, d
 }
 
+// stopLoop cancels the loop and waits for it to return, so every log record
+// the loop will ever write is flushed before a test reads them.
+func stopLoop(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
+	t.Helper()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunLoop did not stop after cancel")
+	}
+}
+
 func waitCall(t *testing.T, f *fakeRetentionStore) {
 	t.Helper()
 	select {
@@ -184,12 +196,13 @@ func TestRetainer_LogsDeletedCountOnlyWhenPositive(t *testing.T) {
 		return 3, nil
 	}
 	r, ft := newTestRetainer(t, st, 30, lc)
-	startLoop(t, r)
+	cancel, done := startLoop(t, r)
 	waitCall(t, st)
 	ft.ch <- time.Now()
 	waitCall(t, st)
-	ft.ch <- time.Now() // a third tick proves the second sweep's log is flushed
+	ft.ch <- time.Now()
 	waitCall(t, st)
+	stopLoop(t, cancel, done) // the third sweep's log is written after Cleanup returns; wait for it
 
 	var deletedInfo int
 	for _, rec := range lc.records(t) {
@@ -361,7 +374,7 @@ func TestRetainer_NilStoreStartsNoLoop(t *testing.T) {
 func TestRetainer_LogUsesOnlyBoundedStructuredFields(t *testing.T) {
 	lc := &logCapture{}
 	st := newFakeRetentionStore()
-	st.maxCapture = 90
+	st.impact = store.RetentionLoweringImpact{Count: 2, Oldest: time.Now().Add(-50 * 24 * time.Hour), Newest: time.Now().Add(-40 * 24 * time.Hour)}
 	st.cleanup = func(_ context.Context, call, _ int) (int64, error) {
 		switch call {
 		case 1:
@@ -372,19 +385,18 @@ func TestRetainer_LogUsesOnlyBoundedStructuredFields(t *testing.T) {
 		panic("p")
 	}
 	r, ft := newTestRetainer(t, st, 30, lc)
-	startLoop(t, r)
-	waitCall(t, st)
-	ft.ch <- time.Now()
-	waitCall(t, st)
-	ft.ch <- time.Now()
-	waitCall(t, st)
-	ft.ch <- time.Now() // flush the third sweep's panic log
-	waitCall(t, st)
+	cancel, done := startLoop(t, r)
+	<-ft.periods // the first sweep is deferred: no call before the first tick
+	for range 3 {
+		ft.ch <- time.Now()
+		waitCall(t, st)
+	}
+	stopLoop(t, cancel, done)
 
 	allowed := map[string]bool{
 		"time": true, "level": true, "msg": true, "error": true, "deleted": true,
 		"retentionDays": true, "task": true, "panic": true, "stack": true,
-		"maxRetentionDaysAtCapture": true,
+		"affectedIncidents": true, "oldestCreatedAt": true, "newestCreatedAt": true, "firstSweepDelay": true,
 	}
 	for _, rec := range lc.records(t) {
 		for k := range rec {
@@ -395,39 +407,64 @@ func TestRetainer_LogUsesOnlyBoundedStructuredFields(t *testing.T) {
 	}
 }
 
-func TestRetainer_StartupWarnsWhenLoweringRetroactivelyDeletes(t *testing.T) {
+func TestRetainer_LoweringDefersTheFirstSweepOneGraceWindow(t *testing.T) {
+	affected := store.RetentionLoweringImpact{Count: 4,
+		Oldest: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Newest: time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)}
 	for name, tc := range map[string]struct {
-		max      int
-		maxErr   error
-		wantWarn bool
+		impact    store.RetentionLoweringImpact
+		impactErr error
+		confirmed bool
+		wantWarn  bool
+		wantNow   bool // sweeps before any tick
 	}{
-		"configured lower than an existing incident's": {max: 90, wantWarn: true},
-		"configured equal":                             {max: 30},
-		"configured higher":                            {max: 7},
-		"empty table":                                  {max: 0},
-		"query failure is not fatal":                   {maxErr: errors.New("db down")},
+		"lowering with affected rows warns and defers": {impact: affected, wantWarn: true},
+		"confirmed lowering sweeps immediately":        {impact: affected, confirmed: true, wantWarn: true, wantNow: true},
+		"normal expiry: no warning, no delay":          {wantNow: true},
+		"unreadable impact defers, fail safe":          {impactErr: errors.New("db down"), wantWarn: true},
+		"unreadable impact but confirmed sweeps":       {impactErr: errors.New("db down"), confirmed: true, wantWarn: true, wantNow: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			lc := &logCapture{}
 			st := newFakeRetentionStore()
-			st.maxCapture, st.maxErr = tc.max, tc.maxErr
-			r, _ := newTestRetainer(t, st, 30, lc)
-			startLoop(t, r)
-			waitCall(t, st) // the warning is emitted before the first sweep
+			st.impact, st.impactErr = tc.impact, tc.impactErr
+			r, ft := newTestRetainer(t, st, 30, lc)
+			r.WithLoweringConfirmed(tc.confirmed)
+			cancel, done := startLoop(t, r)
+			select {
+			case d := <-ft.periods: // created right after the (non-)deferral decision
+				if d != time.Hour {
+					t.Errorf("period = %s", d)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("loop never reached its ticker")
+			}
+			if got := len(st.calls()); (got > 0) != tc.wantNow {
+				t.Fatalf("sweeps before the first tick = %d, wantNow=%v", got, tc.wantNow)
+			}
+			if !tc.wantNow {
+				ft.ch <- time.Now() // the grace window elapses: the deferred sweep runs
+				waitCall(t, st)
+			}
+			stopLoop(t, cancel, done)
+
 			var warned bool
 			for _, rec := range lc.records(t) {
-				if rec["level"] == "WARN" && rec["maxRetentionDaysAtCapture"] != nil {
-					warned = true
-					if rec["retentionDays"].(float64) != 30 || rec["maxRetentionDaysAtCapture"].(float64) != float64(tc.max) {
+				if rec["level"] != "WARN" {
+					continue
+				}
+				warned = true
+				if tc.impactErr == nil {
+					if rec["affectedIncidents"].(float64) != 4 || rec["retentionDays"].(float64) != 30 ||
+						rec["oldestCreatedAt"] != "2026-08-01T00:00:00Z" || rec["newestCreatedAt"] != "2026-08-20T00:00:00Z" {
 						t.Errorf("warning fields = %v", rec)
 					}
+				}
+				if !tc.confirmed && !tc.wantNow && rec["firstSweepDelay"] != "1h0m0s" {
+					t.Errorf("deferral warning lacks the delay: %v", rec)
 				}
 			}
 			if warned != tc.wantWarn {
 				t.Errorf("warned = %v, want %v", warned, tc.wantWarn)
-			}
-			if tc.maxErr != nil && len(st.calls()) == 0 {
-				t.Error("a failed lookup must not stop the sweep")
 			}
 		})
 	}
@@ -507,7 +544,7 @@ func TestResolveSettings_ClampsEveryLimit(t *testing.T) {
 		{"capture timeout zero", func(c *config.IncidentsConfig) { c.CaptureTimeout = 0 }, "captureTimeout",
 			func(s Settings) (any, any) { return s.Limits.CaptureTimeout, config.DefaultIncidentsCaptureTimeout }},
 
-		{"source timeout above max", func(c *config.IncidentsConfig) { c.SourceTimeout = time.Hour }, "sourceTimeout",
+		{"source timeout above max", func(c *config.IncidentsConfig) { c.CaptureTimeout = maxCaptureTimeout; c.SourceTimeout = time.Hour }, "sourceTimeout",
 			func(s Settings) (any, any) { return s.Limits.SourceTimeout, maxSourceTimeout }},
 		{"source timeout below min", func(c *config.IncidentsConfig) { c.SourceTimeout = time.Millisecond }, "sourceTimeout",
 			func(s Settings) (any, any) { return s.Limits.SourceTimeout, minTimeout }},
@@ -565,6 +602,91 @@ func TestResolveSettings_InRangeValuesAreKeptAndSilent(t *testing.T) {
 	if got := s.Limits.EvidenceLimits(); got.MaxItems != 10 || got.MaxScopes != 2 {
 		t.Errorf("EvidenceLimits() = %+v", got)
 	}
+}
+
+func TestResolveSettings_EveryEvidenceLimitAcceptsItsExactCeiling(t *testing.T) {
+	lc := &logCapture{}
+	cfg := defaultIncidentsConfig()
+	cfg.MaxItemBytes = store.EvidenceMaxItemBytesCeiling
+	cfg.MaxIncidentBytes = store.EvidenceMaxIncidentBytesCeiling
+	cfg.MaxItems = store.EvidenceMaxItemsCeiling
+	cfg.MaxScopes = store.EvidenceMaxScopesCeiling
+	s := ResolveSettings(cfg, lc.logger())
+	want := store.EvidenceLimits{
+		MaxItemBytes: store.EvidenceMaxItemBytesCeiling, MaxIncidentBytes: store.EvidenceMaxIncidentBytesCeiling,
+		MaxItems: store.EvidenceMaxItemsCeiling, MaxScopes: store.EvidenceMaxScopesCeiling,
+	}
+	if got := s.Limits.EvidenceLimits(); got != want {
+		t.Errorf("EvidenceLimits() = %+v, want the exact ceilings %+v", got, want)
+	}
+	if err := s.Limits.EvidenceLimits().Validate(); err != nil {
+		t.Errorf("ceiling limits rejected by the store: %v", err)
+	}
+	if recs := lc.records(t); len(recs) != 0 {
+		t.Errorf("exact ceilings logged corrections: %v", recs)
+	}
+	// One past each ceiling is clamped back to it.
+	cfg.MaxItemBytes++
+	cfg.MaxIncidentBytes++
+	cfg.MaxItems++
+	cfg.MaxScopes++
+	if got := ResolveSettings(cfg, slog.New(slog.DiscardHandler)).Limits.EvidenceLimits(); got != want {
+		t.Errorf("ceiling+1 resolved to %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveSettings_CrossFieldConsistency(t *testing.T) {
+	t.Run("incident bytes below item bytes is raised and logged", func(t *testing.T) {
+		lc := &logCapture{}
+		cfg := defaultIncidentsConfig()
+		cfg.MaxItemBytes = 8192
+		cfg.MaxIncidentBytes = 4096
+		s := ResolveSettings(cfg, lc.logger())
+		if s.Limits.MaxIncidentBytes != 8192 || s.Limits.MaxItemBytes != 8192 {
+			t.Errorf("limits = item %d incident %d, want both 8192", s.Limits.MaxItemBytes, s.Limits.MaxIncidentBytes)
+		}
+		if err := s.Limits.Validate(); err != nil {
+			t.Errorf("resolved limits invalid: %v", err)
+		}
+		if !loggedField(lc.records(t), "maxIncidentBytes") {
+			t.Errorf("correction not logged: %s", lc.buf.String())
+		}
+	})
+	t.Run("source timeout above capture timeout is capped and logged", func(t *testing.T) {
+		lc := &logCapture{}
+		cfg := defaultIncidentsConfig()
+		cfg.CaptureTimeout = 10 * time.Second
+		cfg.SourceTimeout = 30 * time.Second
+		s := ResolveSettings(cfg, lc.logger())
+		if s.Limits.SourceTimeout != 10*time.Second || s.Limits.CaptureTimeout != 10*time.Second {
+			t.Errorf("timeouts = source %s capture %s, want both 10s", s.Limits.SourceTimeout, s.Limits.CaptureTimeout)
+		}
+		if !loggedField(lc.records(t), "sourceTimeout") {
+			t.Errorf("correction not logged: %s", lc.buf.String())
+		}
+	})
+	t.Run("consistent values are untouched and silent", func(t *testing.T) {
+		lc := &logCapture{}
+		cfg := defaultIncidentsConfig()
+		cfg.MaxItemBytes, cfg.MaxIncidentBytes = 4096, 4096
+		cfg.CaptureTimeout, cfg.SourceTimeout = 7*time.Second, 7*time.Second
+		s := ResolveSettings(cfg, lc.logger())
+		if s.Limits.MaxIncidentBytes != 4096 || s.Limits.SourceTimeout != 7*time.Second {
+			t.Errorf("equal values were altered: %+v", s.Limits)
+		}
+		if recs := lc.records(t); len(recs) != 0 {
+			t.Errorf("logged %v", recs)
+		}
+	})
+}
+
+func loggedField(recs []map[string]any, field string) bool {
+	for _, rec := range recs {
+		if rec["level"] == "WARN" && rec["field"] == field {
+			return true
+		}
+	}
+	return false
 }
 
 func TestResolveSettings_ExactCeilingsAreAccepted(t *testing.T) {
