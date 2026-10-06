@@ -137,10 +137,14 @@ async function deleteIncident(page: Page, id: string): Promise<void> {
   }
 }
 
-/** A local viewer user and its access token; `remove` deletes the account. */
+/**
+ * A local viewer user, its access token, and a page signed in as it alone.
+ * `remove` closes that page's context and deletes the account.
+ */
 interface SecondUser {
   id: string;
   token: string;
+  page: Page;
   remove: () => Promise<void>;
 }
 
@@ -148,8 +152,20 @@ interface SecondUser {
  * Creates a viewer with no Kubernetes RBAC and logs it in. Both calls spend
  * the shared 5-per-minute auth bucket, so they go through postWithBackoff;
  * the id comes from /auth/me, which is the identity grants are keyed on.
+ *
+ * The admin creates the account, but the LOGIN goes through the viewer's own
+ * browser context, never the admin page's. `page.request` shares its
+ * context's cookie jar, and a login answers with the httpOnly refresh
+ * cookie: logged in through the admin page, the viewer's cookie replaced the
+ * admin's, and the admin page's next token refresh silently turned it into
+ * the viewer (a revoke then failed as "only the incident owner may revoke
+ * its grants"). The empty storage state keeps the admin's cookie and stored
+ * token out of the viewer's context in the other direction.
  */
-async function createSecondUser(page: Page): Promise<SecondUser> {
+async function createSecondUser(
+  page: Page,
+  browser: Browser,
+): Promise<SecondUser> {
   const headers = await getAuthHeaders(page);
   const username = e2eSecureName("collab");
   const password = `e2e-${crypto.randomUUID()}`;
@@ -169,7 +185,11 @@ async function createSecondUser(page: Page): Promise<SecondUser> {
     );
   }
   const accountId = (await created.json())?.data?.id as string | undefined;
+  const context = await browser.newContext({
+    storageState: { cookies: [], origins: [] },
+  });
   const remove = async () => {
+    await context.close();
     if (!accountId) return;
     await page.request.delete(`/api/v1/users/${accountId}`, {
       headers,
@@ -177,7 +197,8 @@ async function createSecondUser(page: Page): Promise<SecondUser> {
     });
   };
   try {
-    const login = await postWithBackoff(page, "/api/v1/auth/login", "log in as the collaborator", {
+    const own = await context.newPage();
+    const login = await postWithBackoff(own, "/api/v1/auth/login", "log in as the collaborator", {
       headers: {
         "Content-Type": "application/json",
         "X-Requested-With": "XMLHttpRequest",
@@ -188,30 +209,17 @@ async function createSecondUser(page: Page): Promise<SecondUser> {
       throw new Error(`collaborator login failed: ${login.status()} ${await login.text()}`);
     }
     const token = (await login.json()).data.accessToken as string;
-    const me = await page.request.get(`/api/v1/auth/me?namespace=${NS}`, {
+    const me = await own.request.get(`/api/v1/auth/me?namespace=${NS}`, {
       headers: bearerHeaders(token),
     });
     const id = (await me.json())?.data?.user?.id as string | undefined;
     if (!id) throw new Error("/auth/me returned no user id for the collaborator");
-    return { id, token, remove };
+    await attachAuthInjection(own, token);
+    return { id, token, page: own, remove };
   } catch (err) {
     await remove();
     throw err;
   }
-}
-
-/**
- * A page in a context of its own, authenticated as `token` and nobody else:
- * the empty storage state keeps the admin's refresh cookie and stored token
- * out of it, so nothing can silently refresh it into the admin.
- */
-async function pageAs(browser: Browser, token: string): Promise<Page> {
-  const context = await browser.newContext({
-    storageState: { cookies: [], origins: [] },
-  });
-  const page = await context.newPage();
-  await attachAuthInjection(page, token);
-  return page;
 }
 
 const captureRegion = (page: Page) =>
@@ -284,7 +292,6 @@ test.describe("Incidents (AE6)", () => {
     const note = `Handoff note ${crypto.randomUUID()}`;
     let incidentId: string | undefined;
     let collaborator: SecondUser | undefined;
-    let collabPage: Page | undefined;
 
     try {
       await page.goto(INCIDENTS);
@@ -374,18 +381,17 @@ test.describe("Incidents (AE6)", () => {
         await expect(notes.getByRole("list", { name: "Notes" })).toContainText(note);
       });
 
-      collaborator = await createSecondUser(page);
+      collaborator = await createSecondUser(page, browser);
       const collab = collaborator;
       const incidentApi = `/api/v1/incidents/${incidentId}`;
       const collabGet = async () =>
         (
-          await page.request.get(incidentApi, {
+          await collab.page.request.get(incidentApi, {
             headers: bearerHeaders(collab.token),
             failOnStatusCode: false,
           })
         ).status();
-      collabPage = await pageAs(browser, collab.token);
-      const other = collabPage;
+      const other = collab.page;
 
       await test.step("cross-user: before any grant the collaborator gets 404, not 403", async () => {
         expect(await collabGet()).toBe(404);
@@ -470,7 +476,6 @@ test.describe("Incidents (AE6)", () => {
         expect(objectSnapshot?.redaction?.rules).toContain("last-applied-config");
       });
     } finally {
-      await collabPage?.context().close();
       await collaborator?.remove();
       if (incidentId) await deleteIncident(page, incidentId);
       await deletePod(page, pod);
