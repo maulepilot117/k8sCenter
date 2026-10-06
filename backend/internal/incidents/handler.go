@@ -77,12 +77,17 @@ import (
 // within the unit's file budget (plan R-7 / A-11); a housekeeping PR promotes
 // them. audit.Action is an open string type, so these are first-class values.
 const (
-	ActionIncidentCreate     audit.Action = "incident_create"
-	ActionIncidentUpdate     audit.Action = "incident_update"
-	ActionIncidentDelete     audit.Action = "incident_delete"
-	ActionIncidentNoteCreate audit.Action = "incident_note_create"
-	ActionIncidentNoteUpdate audit.Action = "incident_note_update"
-	ActionIncidentNoteDelete audit.Action = "incident_note_delete"
+	ActionIncidentCreate audit.Action = "incident_create"
+	// ActionIncidentCreateReplayed (U25c): a create carried a clientRequestId
+	// that already made an incident, so nothing was written and the existing
+	// incident was returned. Kept apart from incident_create so a create is
+	// never audited twice.
+	ActionIncidentCreateReplayed audit.Action = "incident_create_replayed"
+	ActionIncidentUpdate         audit.Action = "incident_update"
+	ActionIncidentDelete         audit.Action = "incident_delete"
+	ActionIncidentNoteCreate     audit.Action = "incident_note_create"
+	ActionIncidentNoteUpdate     audit.Action = "incident_note_update"
+	ActionIncidentNoteDelete     audit.Action = "incident_note_delete"
 	// U23b (handler_capture.go, handler_grants.go, handler_export.go).
 	ActionIncidentCapture     audit.Action = "incident_capture"
 	ActionIncidentGrantAdd    audit.Action = "incident_grant_add"
@@ -125,6 +130,9 @@ const (
 	// (503 + Retry-After); the capture may or may not be durable, and a
 	// retry is safe because duplicates are ignored.
 	ReasonCaptureOutcomeUnknown = "incident_capture_outcome_unknown"
+	// ReasonInvalidClientRequestID: POST /incidents carried a clientRequestId
+	// that is not a canonical, non-nil UUID string (400).
+	ReasonInvalidClientRequestID = "invalid_client_request_id"
 )
 
 const (
@@ -156,6 +164,7 @@ const (
 // so tests run against in-memory fakes; NewHandler takes the concrete stores.
 type incidentStore interface {
 	Create(ctx context.Context, r store.IncidentRow) (uuid.UUID, error)
+	CreateWithRequestID(ctx context.Context, r store.IncidentRow, requestID uuid.UUID) (uuid.UUID, bool, error)
 	Get(ctx context.Context, id uuid.UUID) (*store.IncidentRow, error)
 	ListVisible(ctx context.Context, userID string, limit int, cursor string) ([]store.IncidentRow, string, error)
 	Update(ctx context.Context, id uuid.UUID, ownerID string, title, summary, status *string) error
@@ -382,11 +391,31 @@ type NoteView struct {
 // createIncidentRequest is the POST /incidents body. The owner is the
 // authenticated caller and the cluster is the local one (Release D capture is
 // local-only); neither is accepted from the body.
+//
+// ClientRequestID (U25c) is an optional idempotency key the client generates
+// once per create attempt and resends on every retry of it. Absent or null,
+// the create behaves as it always did.
 type createIncidentRequest struct {
-	Title       string     `json:"title"`
-	Summary     string     `json:"summary"`
-	WindowStart time.Time  `json:"windowStart"`
-	WindowEnd   *time.Time `json:"windowEnd,omitempty"`
+	Title           string     `json:"title"`
+	Summary         string     `json:"summary"`
+	WindowStart     time.Time  `json:"windowStart"`
+	WindowEnd       *time.Time `json:"windowEnd,omitempty"`
+	ClientRequestID *string    `json:"clientRequestId,omitempty"`
+}
+
+// parseClientRequestID validates a clientRequestId strictly: exactly the
+// 36-character hyphenated UUID form (either hex case) and not the nil UUID.
+// uuid.Parse alone also accepts braced, urn: and unhyphenated spellings,
+// which would let one key be written several ways.
+func parseClientRequestID(raw string) (uuid.UUID, bool) {
+	if len(raw) != 36 {
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil || id == uuid.Nil {
+		return uuid.Nil, false
+	}
+	return id, true
 }
 
 // updateIncidentRequest is the PUT /incidents/{id} body. A field left out
@@ -907,6 +936,15 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 // are validated by the store; its retention is the configured default. The
 // write is audited as soon as it commits; if the read-back then fails the
 // response is still 201, built from the id and the request.
+//
+// Idempotency (U25c): with a clientRequestId, a retry of a create whose
+// response was lost returns the incident the first attempt made, 200 instead
+// of 201, same body shape. Nothing is written and the stored incident is
+// returned as it is, even if the retry's title, summary or window differ
+// (first write wins). The replay is audited as incident_create_replayed, so
+// one incident is never audited as two creates. A replay whose read-back
+// fails is a retryable 503, never a body built from the request: the
+// request's fields are not what was stored.
 // POST /api/v1/incidents
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.begin(w, r)
@@ -917,15 +955,38 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	var requestID uuid.UUID
+	if req.ClientRequestID != nil {
+		if requestID, ok = parseClientRequestID(*req.ClientRequestID); !ok {
+			httputil.WriteErrorWithReason(w, http.StatusBadRequest,
+				"clientRequestId must be a non-nil UUID in its 36-character hyphenated form",
+				ReasonInvalidClientRequestID, nil)
+			return
+		}
+	}
 	ctx := r.Context()
 	intended := store.IncidentRow{
 		OwnerID: user.ID, ClusterID: k8s.LocalClusterID, Title: req.Title, Summary: req.Summary,
 		WindowStart: req.WindowStart, WindowEnd: req.WindowEnd, RetentionDaysAtCapture: h.retentionDays,
 	}
-	id, err := h.incidents.Create(ctx, intended)
+	var (
+		id      uuid.UUID
+		created = true
+		err     error
+	)
+	if requestID == uuid.Nil {
+		id, err = h.incidents.Create(ctx, intended)
+	} else {
+		id, created, err = h.incidents.CreateWithRequestID(ctx, intended, requestID)
+	}
 	if err != nil {
 		h.auditLog(r, user, ActionIncidentCreate, audit.ResultFailure, k8s.LocalClusterID, "incident", "")
 		h.writeStoreFailure(w, "create incident", err)
+		return
+	}
+	if !created {
+		h.auditLog(r, user, ActionIncidentCreateReplayed, audit.ResultSuccess, k8s.LocalClusterID, "incident", "incident "+id.String())
+		h.writeReplayedCreate(w, r, user, id)
 		return
 	}
 	h.auditLog(r, user, ActionIncidentCreate, audit.ResultSuccess, k8s.LocalClusterID, "incident", "incident "+id.String())
@@ -941,6 +1002,27 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		row = &intended
 	}
 	httputil.WriteJSON(w, http.StatusCreated, api.Response{Data: IncidentSummary{
+		Incident: incidentView(row, RoleOwner, true),
+		Counts:   h.countsBestEffort(ctx, user, id),
+	}})
+}
+
+// writeReplayedCreate answers a create replay with the stored incident, 200.
+// The key is per owner, so the caller owns it. A read fault is the usual
+// 503; an incident deleted since the replay matched is a retryable 503 too,
+// because a retry with the same clientRequestId now creates a new one.
+func (h *Handler) writeReplayedCreate(w http.ResponseWriter, r *http.Request, user *auth.User, id uuid.UUID) {
+	ctx := r.Context()
+	row, err := h.incidents.Get(ctx, id)
+	if err != nil {
+		h.writeStoreFailure(w, "read replayed incident", err)
+		return
+	}
+	if row == nil {
+		writeBusy(w, "incident was deleted while the create was replayed; retry")
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, api.Response{Data: IncidentSummary{
 		Incident: incidentView(row, RoleOwner, true),
 		Counts:   h.countsBestEffort(ctx, user, id),
 	}})

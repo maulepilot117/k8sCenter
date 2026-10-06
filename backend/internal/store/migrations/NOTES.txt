@@ -593,3 +593,50 @@ identical across replicas.
 
 Inspect:
     SELECT applied_retention_days, updated_at FROM incident_retention_state;
+
+000026_incident_client_request_id (Release D incidents, U25c, 2026-10-06)
+------------------------------------------------------------------------
+
+Adds one nullable column, incidents.client_request_id (UUID), and a partial
+UNIQUE index idx_incidents_owner_client_request on (owner_id,
+client_request_id) WHERE client_request_id IS NOT NULL. Purely additive: no
+backfill, existing rows keep NULL and never conflict.
+
+What it is for:
+  POST /incidents accepts an optional clientRequestId the browser generates
+  once per create attempt. When a create's response is lost (network drop,
+  proxy timeout, a remount) and the client retries with the same id, the
+  backend returns the incident the first attempt made (200 instead of 201)
+  rather than a duplicate. The key is scoped per owner, so two users can never
+  reach each other's incident through it, and it is never returned by the API.
+  First write wins: a replay whose title, summary or window differ from the
+  stored incident still gets the stored incident unchanged. Deleting the
+  incident frees the key, so a later create with the same id makes a new one.
+
+Lock impact:
+  ADD COLUMN of a nullable column with no default is a catalog-only change
+  (brief ACCESS EXCLUSIVE lock, no table rewrite). CREATE UNIQUE INDEX (not
+  CONCURRENTLY, which golang-migrate cannot run inside its transaction) takes a
+  SHARE lock that blocks incident writes while it builds. incidents is a small
+  table that no release has shipped yet (Release D is unreleased), and every
+  existing row is NULL, so the build is near-instant.
+
+Rollback:
+  The down file drops the index, then the column. Every incident, its
+  evidence, notes and grants are kept; only the create idempotency is lost (a
+  create retried across the rollback may make a duplicate incident). To run an
+  image that embeds only 000025 against a database recorded at version 26,
+  with every new-image pod stopped, run the 000026 down file, then
+    UPDATE schema_migrations SET version = 25, dirty = false;
+  Leaving the column in place instead is also safe for the older image (it
+  never names the column, and the partial index ignores its NULL inserts); a
+  later roll-forward re-runs the up file without error (ADD COLUMN IF NOT
+  EXISTS, CREATE UNIQUE INDEX IF NOT EXISTS, COMMENT ON). Ids recorded before
+  the rollback then still match their incidents.
+  TestMigration000026_RoundTripKeepsIncidents covers up, down and re-apply.
+
+Inspect:
+    SELECT owner_id, COUNT(*) AS with_request_id
+      FROM incidents
+     WHERE client_request_id IS NOT NULL
+     GROUP BY owner_id;

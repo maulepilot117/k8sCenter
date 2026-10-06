@@ -377,31 +377,12 @@ func scanNote(row pgx.Row) (IncidentNoteRow, error) {
 // ClusterID defaults to "local". RetentionDaysAtCapture is the retention in
 // force at creation, supplied by the caller; it must be within [1, 3650].
 func (s *IncidentStore) Create(ctx context.Context, r IncidentRow) (uuid.UUID, error) {
-	if err := requireIdentity("owner id", r.OwnerID); err != nil {
+	clusterID, err := validateIncidentCreate(r)
+	if err != nil {
 		return uuid.Nil, err
 	}
-	if err := ValidateIncidentTitle(r.Title); err != nil {
-		return uuid.Nil, err
-	}
-	if err := ValidateIncidentSummary(r.Summary); err != nil {
-		return uuid.Nil, err
-	}
-	if err := ValidateIncidentWindow(r.WindowStart, r.WindowEnd); err != nil {
-		return uuid.Nil, err
-	}
-	if err := ValidateIncidentRetentionDays(r.RetentionDaysAtCapture); err != nil {
-		return uuid.Nil, err
-	}
-	if r.Status != "" && r.Status != IncidentStatusOpen {
-		return uuid.Nil, fmt.Errorf("%w: an incident is created open, got status %q", ErrIncidentInvalid, r.Status)
-	}
-	clusterID := r.ClusterID
-	if clusterID == "" {
-		clusterID = "local"
-	}
-
 	var id uuid.UUID
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		INSERT INTO incidents (owner_id, cluster_id, title, summary, window_start, window_end, retention_days_at_capture)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id`,
@@ -411,6 +392,98 @@ func (s *IncidentStore) Create(ctx context.Context, r IncidentRow) (uuid.UUID, e
 		return uuid.Nil, fmt.Errorf("insert incidents: %w", err)
 	}
 	return id, nil
+}
+
+// incidentCreateAttempts bounds CreateWithRequestID's insert-or-find loop. A
+// second pass is needed only when the conflicting incident was deleted
+// between the INSERT and the lookup; a third would need that to happen twice
+// in a row.
+const incidentCreateAttempts = 3
+
+// CreateWithRequestID is Create made idempotent per owner by a
+// client-generated request id (migration 000026). The first call for
+// (r.OwnerID, requestID) inserts the incident and returns (id, true, nil);
+// any later call with the same pair returns (that id, false, nil) and writes
+// nothing. First write wins: a replay whose title, summary or window differ
+// from the stored incident still gets the stored incident, unchanged, because
+// a retry of a lost response must not be able to rewrite what the first
+// attempt committed. The key is scoped by owner, so another identity using
+// the same request id gets its own incident and never learns of this one. A
+// deleted incident frees its key: a later call creates a new incident.
+//
+// Concurrency: INSERT ... ON CONFLICT DO NOTHING waits for an in-flight
+// insert of the same key to commit or roll back, so concurrent callers with
+// one key produce exactly one row and all of them get its id. Input is
+// validated before any SQL, exactly as Create does; requestID must not be
+// uuid.Nil.
+func (s *IncidentStore) CreateWithRequestID(ctx context.Context, r IncidentRow, requestID uuid.UUID) (uuid.UUID, bool, error) {
+	clusterID, err := validateIncidentCreate(r)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	if requestID == uuid.Nil {
+		return uuid.Nil, false, fmt.Errorf("%w: client request id must not be the nil UUID", ErrIncidentInvalid)
+	}
+	for range incidentCreateAttempts {
+		var id uuid.UUID
+		err := s.pool.QueryRow(ctx, `
+			INSERT INTO incidents (owner_id, cluster_id, title, summary, window_start, window_end,
+				retention_days_at_capture, client_request_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (owner_id, client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING
+			RETURNING id`,
+			r.OwnerID, clusterID, r.Title, r.Summary, r.WindowStart, r.WindowEnd, r.RetentionDaysAtCapture, requestID,
+		).Scan(&id)
+		if err == nil {
+			return id, true, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, fmt.Errorf("insert incidents: %w", err)
+		}
+		// Conflict: the key is taken. Read back the incident holding it. Under
+		// READ COMMITTED this new statement sees the committed winner.
+		err = s.pool.QueryRow(ctx,
+			`SELECT id FROM incidents WHERE owner_id = $1 AND client_request_id = $2`,
+			r.OwnerID, requestID,
+		).Scan(&id)
+		if err == nil {
+			return id, false, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, fmt.Errorf("find incident by client request id: %w", err)
+		}
+		// The holder was deleted in between; the key is free again, so retry.
+	}
+	return uuid.Nil, false, fmt.Errorf("%w: client request id kept conflicting with an incident deleted before it could be read",
+		ErrIncidentBusy)
+}
+
+// validateIncidentCreate is the pre-SQL validation shared by Create and
+// CreateWithRequestID. It returns the cluster id to store ("local" when
+// r.ClusterID is empty).
+func validateIncidentCreate(r IncidentRow) (string, error) {
+	if err := requireIdentity("owner id", r.OwnerID); err != nil {
+		return "", err
+	}
+	if err := ValidateIncidentTitle(r.Title); err != nil {
+		return "", err
+	}
+	if err := ValidateIncidentSummary(r.Summary); err != nil {
+		return "", err
+	}
+	if err := ValidateIncidentWindow(r.WindowStart, r.WindowEnd); err != nil {
+		return "", err
+	}
+	if err := ValidateIncidentRetentionDays(r.RetentionDaysAtCapture); err != nil {
+		return "", err
+	}
+	if r.Status != "" && r.Status != IncidentStatusOpen {
+		return "", fmt.Errorf("%w: an incident is created open, got status %q", ErrIncidentInvalid, r.Status)
+	}
+	if r.ClusterID == "" {
+		return "local", nil
+	}
+	return r.ClusterID, nil
 }
 
 // Get returns one incident by id, or (nil, nil) when it does not exist. A
