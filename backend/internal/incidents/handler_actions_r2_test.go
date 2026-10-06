@@ -165,11 +165,14 @@ func TestExportJSONWriterAllocationIsBoundedByOneElement(t *testing.T) {
 		}
 		_ = bw.Flush()
 	})
-	// Per-element serialization allocates about one copy of each element in
-	// turn (json.Marshal's returned slice); a whole-document encode grows a
-	// buffer by doubling to the full content and then indents it, which is
-	// at least 2x the content. 1.5x separates the two with margin.
-	if ratio := float64(allocated) / float64(content); ratio > 1.5 {
+	// Per-element serialization reuses one scratch buffer, so it allocates
+	// next to nothing per element (more under -race, where sync.Pool drops
+	// the encoder's pooled state at random); a whole-document encode grows
+	// a buffer by doubling to the full content and then indents it, about
+	// 8x the content. 1.5x separates the two with margin in both modes.
+	ratio := float64(allocated) / float64(content)
+	t.Logf("allocated %d bytes for %d bytes of content (%.2fx)", allocated, content, ratio)
+	if ratio > 1.5 {
 		t.Fatalf("writing %d bytes of content allocated %d bytes (%.2fx); the writer is buffering more than one element", content, allocated, ratio)
 	}
 }

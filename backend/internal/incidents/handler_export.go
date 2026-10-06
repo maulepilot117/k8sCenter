@@ -35,6 +35,7 @@ package incidents
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -296,12 +297,22 @@ const exportWriteBuffer = 64 << 10
 // and its scalar/small fields by hand (same field names and order as
 // ExportDocument, so json.Unmarshal into ExportDocument round-trips), then
 // each evidence item, placeholder and note serialized on its own line.
-// Only one element is ever serialized in memory; elements are compact and
-// the envelope is indented two spaces, so the file still reads as a
-// document.
+// Only one element is ever serialized in memory, into one scratch buffer
+// reused across elements (so the steady-state allocation does not grow
+// with the element count); elements are compact and the envelope is
+// indented two spaces, so the file still reads as a document.
 func writeExportJSON(w *bufio.Writer, doc *ExportDocument) error {
+	var scratch bytes.Buffer
+	enc := json.NewEncoder(&scratch) // HTML escaping on, as json.Marshal
+	marshal := func(v any) ([]byte, error) {
+		scratch.Reset()
+		if err := enc.Encode(v); err != nil {
+			return nil, err
+		}
+		return bytes.TrimSuffix(scratch.Bytes(), []byte{0x0a}), nil // drop Encode's newline
+	}
 	field := func(name string, v any, last bool) error {
-		b, err := json.Marshal(v)
+		b, err := marshal(v)
 		if err != nil {
 			return err
 		}
@@ -324,7 +335,7 @@ func writeExportJSON(w *bufio.Writer, doc *ExportDocument) error {
 				w.WriteString(",")
 			}
 			w.WriteString("\n    ")
-			b, err := json.Marshal(element(i))
+			b, err := marshal(element(i))
 			if err != nil {
 				return err
 			}
