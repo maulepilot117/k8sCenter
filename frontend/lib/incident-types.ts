@@ -357,6 +357,17 @@ export function isIncidentId(id: string): boolean {
   return UUID_RE.test(id);
 }
 
+/**
+ * True for "." and "..". `encodeURIComponent` leaves both unchanged, and a
+ * URL path normalizes them away, so either one as a path segment addresses a
+ * different resource ("/incidents/{id}/grants/.." is "/incidents/{id}").
+ * The raw value is checked: a percent-encoded form such as "%2E%2E" is
+ * encoded again to "%252E%252E" and stays a literal segment.
+ */
+export function isDotSegment(segment: string): boolean {
+  return segment === "." || segment === "..";
+}
+
 // --- View-model helpers (U24b) -------------------------------------------------
 //
 // Pure functions the incident workspace islands share. They decide wording,
@@ -519,6 +530,7 @@ export function liveLinkTarget(
 ): { href: string; apiPath: string } | null {
   const segment = KIND_ROUTE_MAP[source.kind];
   if (!segment || !source.namespace || !source.name) return null;
+  if (isDotSegment(source.namespace) || isDotSegment(source.name)) return null;
   const ns = encodeURIComponent(source.namespace);
   const name = encodeURIComponent(source.name);
   return {

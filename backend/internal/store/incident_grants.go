@@ -54,6 +54,12 @@ func ValidateGranteeID(id string) error {
 	if id == "" {
 		return fmt.Errorf("%w: grantee id is required", ErrIncidentInvalid)
 	}
+	// "." and ".." are URL dot-segments: as the {granteeId} path segment of
+	// a revoke they would be normalized into a different resource (".."
+	// makes it DELETE /incidents/{id}), so no grant may carry one.
+	if id == "." || id == ".." {
+		return fmt.Errorf("%w: grantee id must not be %q", ErrIncidentInvalid, id)
+	}
 	if len(id) > IncidentMaxGranteeIDBytes {
 		return fmt.Errorf("%w: grantee id exceeds %d bytes", ErrIncidentInvalid, IncidentMaxGranteeIDBytes)
 	}

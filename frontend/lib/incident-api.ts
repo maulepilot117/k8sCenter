@@ -49,6 +49,7 @@ import {
   type IncidentDetail,
   type IncidentSummary,
   type IncidentView,
+  isDotSegment,
   isIncidentId,
   type NoteView,
   type UpdateIncidentRequest,
@@ -91,6 +92,19 @@ export class InvalidIncidentIdError extends Error {
   constructor(what: "incident" | "note") {
     super(`invalid ${what} id`);
     this.name = "InvalidIncidentIdError";
+  }
+}
+
+/**
+ * Thrown, before any request is made, for a grantee id of "." or "..". As
+ * the last path segment of a revoke either would be normalized into another
+ * resource (".." makes it DELETE /incidents/{id}). The server refuses to
+ * create such a grant; this refuses to address one.
+ */
+export class UnsafeGranteeIdError extends Error {
+  constructor() {
+    super("grantee id cannot be used in a request path");
+    this.name = "UnsafeGranteeIdError";
   }
 }
 
@@ -328,6 +342,7 @@ export async function removeGrant(
   granteeId: string,
   signal?: AbortSignal,
 ): Promise<void> {
+  if (isDotSegment(granteeId)) throw new UnsafeGranteeIdError();
   await apiDelete(
     `${base(id)}/grants/${encodeURIComponent(granteeId)}`,
     pinned(signal),

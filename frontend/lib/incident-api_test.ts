@@ -23,6 +23,7 @@ import {
   listIncidents,
   listNotes,
   removeGrant,
+  UnsafeGranteeIdError,
   updateIncident,
   updateNote,
 } from "./incident-api.ts";
@@ -33,6 +34,7 @@ import {
   type IncidentDetail,
   type IncidentView,
   isIncidentId,
+  liveLinkTarget,
   type NoteView,
 } from "./incident-types.ts";
 
@@ -586,6 +588,40 @@ test("a non-UUID incident or note id is refused before any request", async () =>
     expect(err).toBeInstanceOf(InvalidIncidentIdError);
   }
   expect(calls).toHaveLength(0);
+});
+
+test('removeGrant refuses "." and ".." as grantee ids before any request', async () => {
+  stubFetch({ status: 204 });
+  for (const dot of [".", ".."]) {
+    const err = await removeGrant(ID, dot).catch((e) => e);
+    expect(err).toBeInstanceOf(UnsafeGranteeIdError);
+  }
+  expect(calls).toHaveLength(0);
+  // A percent-encoded dot-segment is a literal id, encoded once more.
+  await removeGrant(ID, "%2E%2E");
+  expect(calls[0].url).toBe(`/api/v1/incidents/${ID}/grants/%252E%252E`);
+});
+
+test("liveLinkTarget yields no link for a dot-segment namespace or name", () => {
+  const source = {
+    clusterId: "local",
+    apiGroup: "apps",
+    resource: "deployments",
+    kind: "Deployment",
+    namespace: "shop",
+    name: "checkout",
+  };
+  expect(liveLinkTarget(source)?.apiPath).toBe(
+    "/v1/resources/deployments/shop/checkout",
+  );
+  for (const over of [
+    { namespace: ".." },
+    { namespace: "." },
+    { name: ".." },
+    { name: "." },
+  ]) {
+    expect(liveLinkTarget({ ...source, ...over })).toBeNull();
+  }
 });
 
 // --- Error helpers -------------------------------------------------------------

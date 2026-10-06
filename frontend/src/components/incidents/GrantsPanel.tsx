@@ -3,7 +3,12 @@ import { useEffect, useRef } from "preact/hooks";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { ApiError } from "@/lib/api.ts";
-import { addGrant, listGrants, removeGrant } from "@/lib/incident-api.ts";
+import {
+  addGrant,
+  listGrants,
+  removeGrant,
+  UnsafeGranteeIdError,
+} from "@/lib/incident-api.ts";
 import type { GrantView } from "@/lib/incident-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { simpleErrorText } from "./errors.ts";
@@ -63,7 +68,10 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
       message.value = await action();
       changes.current++;
     } catch (err) {
-      error.value = simpleErrorText(err, "The change could not be saved.");
+      error.value =
+        err instanceof UnsafeGranteeIdError
+          ? "This collaborator id cannot be removed from the UI."
+          : simpleErrorText(err, "The change could not be saved.");
       if (err instanceof ApiError && err.status === 404) {
         reloadSeq.value = reloadSeq.peek() + 1;
       }
