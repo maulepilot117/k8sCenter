@@ -14,6 +14,7 @@ import {
   type NoteView,
 } from "@/lib/incident-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import { busyText } from "@/src/components/incidents/errors.ts";
 import {
   BUTTON_PRIMARY,
   BUTTON_SECONDARY,
@@ -29,11 +30,21 @@ import {
  * author, while still able to annotate, may edit or delete it. The controls
  * follow those rules; the server enforces them.
  *
- * An edit carries the revision the editor was opened on. When someone else
- * saved the note in between, the server answers 409 `note_revision_conflict`:
- * the draft is kept exactly as typed, a banner explains what happened, and
- * "Reload notes" fetches the current text. Saving again after the reload uses
- * the reloaded revision. Typing is never discarded by a failed save.
+ * Editing never loses typing:
+ *   - an edit carries the revision it is bound to. A 409
+ *     `note_revision_conflict` keeps the draft, shows a banner and offers
+ *     "Reload notes"; the text shown beside the draft is labelled as the
+ *     caller's last loaded copy until the reload brings the current one, and
+ *     the next save carries the reloaded revision.
+ *   - when the note being edited is not in the loaded list (a reload returns
+ *     page one and the note is further on), the editor stays on screen on its
+ *     own, with the draft, and says to load more to find the note.
+ *   - the textarea is read-only while a save is in flight, so nothing typed
+ *     during the request can be overwritten by its result.
+ *
+ * A new note is appended locally only when the whole thread is loaded; with
+ * more pages to come it would sit out of order, so the user is told it is at
+ * the end of the thread instead.
  */
 
 const PAGE_SIZE = 50;
@@ -41,7 +52,7 @@ const PAGE_SIZE = 50;
 function noteErrorText(err: unknown, action: string): string {
   if (err instanceof ApiError) {
     if (err.reason === "incident_busy") {
-      return "The incident is busy. Try again in a moment.";
+      return busyText("The incident is busy.", err);
     }
     switch (err.status) {
       case 400:
@@ -59,8 +70,15 @@ function noteErrorText(err: unknown, action: string): string {
 interface Editing {
   noteId: string;
   draft: string;
-  /** Set by a 409: the revision the server now holds, when it said. */
-  conflict: { current?: number } | null;
+  /** The revision a save carries: the editor's, refreshed by each reload. */
+  revision: number;
+  /** The body as last loaded, shown beside the draft after a conflict. */
+  loadedBody: string;
+  /**
+   * Set by a 409. `current` is the revision the server reported; `reloaded`
+   * turns true once a reload has brought the note's current text.
+   */
+  conflict: { current?: number; reloaded: boolean } | null;
   saving: boolean;
   error: string | null;
 }
@@ -70,6 +88,108 @@ function NoteBody({ body }: { body: string }) {
     <p class="m-0 whitespace-pre-wrap break-words text-sm text-text-primary">
       {body}
     </p>
+  );
+}
+
+function NoteEditor({
+  edit,
+  missing,
+  busy,
+  onDraft,
+  onSave,
+  onReload,
+  onCancel,
+}: {
+  edit: Editing;
+  /** The note is not in the loaded list. */
+  missing: boolean;
+  busy: boolean;
+  onDraft: (draft: string) => void;
+  onSave: () => void;
+  onReload: () => void;
+  onCancel: () => void;
+}) {
+  const fieldId = `note-edit-${edit.noteId}`;
+  return (
+    <div class="flex flex-col gap-2" data-note-editor={edit.noteId}>
+      {missing && (
+        <div role="status">
+          <Alert variant="info">
+            The note you are editing is not in the loaded list. Load more notes
+            to find it. Your draft is kept.
+          </Alert>
+        </div>
+      )}
+      {edit.conflict && (
+        <div role="alert">
+          <Alert variant="warning">
+            Someone saved this note after you started editing
+            {edit.conflict.current !== undefined
+              ? ` (it is now at revision ${edit.conflict.current})`
+              : ""}
+            . Your draft is kept below.{" "}
+            {edit.conflict.reloaded
+              ? "The current text is shown; save again to replace it."
+              : "Reload notes to see the current text, then save again."}
+          </Alert>
+        </div>
+      )}
+      {edit.conflict && (
+        <div class="flex flex-col gap-1">
+          <span class="text-xs text-text-muted">
+            {edit.conflict.reloaded
+              ? "Current saved text"
+              : "Your last loaded copy"}
+          </span>
+          <NoteBody body={edit.loadedBody} />
+        </div>
+      )}
+      {edit.error && (
+        <div role="alert">
+          <Alert variant="error">{edit.error}</Alert>
+        </div>
+      )}
+      <label class="sr-only" for={fieldId}>
+        Edit note
+      </label>
+      <textarea
+        id={fieldId}
+        rows={4}
+        maxLength={INCIDENT_MAX_NOTE_BODY_CHARS}
+        value={edit.draft}
+        disabled={edit.saving}
+        onInput={(ev) => onDraft(ev.currentTarget.value)}
+        class={FIELD}
+      />
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          aria-disabled={edit.saving}
+          onClick={onSave}
+          class={BUTTON_PRIMARY}
+        >
+          {edit.saving ? "Saving…" : "Save"}
+        </button>
+        {edit.conflict && (
+          <button
+            type="button"
+            aria-disabled={busy}
+            onClick={onReload}
+            class={BUTTON_SECONDARY}
+          >
+            Reload notes
+          </button>
+        )}
+        <button
+          type="button"
+          aria-disabled={edit.saving}
+          onClick={onCancel}
+          class={BUTTON_SECONDARY}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -96,8 +216,10 @@ export default function IncidentNotes({
   const draft = useSignal("");
   const posting = useSignal(false);
   const postError = useSignal<string | null>(null);
+  const postNotice = useSignal<string | null>(null);
   const editing = useSignal<Editing | null>(null);
   const confirmDelete = useSignal<string | null>(null);
+  const deleting = useSignal<string | null>(null);
   const deleteError = useSignal<string | null>(null);
 
   const { cursor, seq } = request.value;
@@ -120,6 +242,21 @@ export default function IncidentNotes({
           ];
         } else {
           notes.value = page.items;
+        }
+        // After a conflict the user asked to see the current text: bind the
+        // editor to what was just loaded, so the next save carries that
+        // revision. Without a conflict the editor keeps the revision it was
+        // opened on, so someone else's later save still surfaces as a 409
+        // instead of being overwritten silently.
+        const e = editing.peek();
+        const fresh = e?.conflict && page.items.find((n) => n.id === e.noteId);
+        if (e?.conflict && fresh && !e.saving) {
+          editing.value = {
+            ...e,
+            revision: fresh.revision,
+            loadedBody: fresh.body,
+            conflict: { ...e.conflict, reloaded: true },
+          };
         }
         nextCursor.value = page.continue;
         loaded.value = true;
@@ -155,12 +292,17 @@ export default function IncidentNotes({
     }
     posting.value = true;
     postError.value = null;
+    postNotice.value = null;
     try {
       const note = await createNote(incidentId, body);
-      // Newest, so it belongs at the end; a later page that also holds it is
-      // de-duplicated on load.
-      notes.value = [...notes.value.filter((n) => n.id !== note.id), note];
       draft.value = "";
+      if (nextCursor.peek() === undefined) {
+        // The whole thread is loaded, so the newest note goes last.
+        notes.value = [...notes.value.filter((n) => n.id !== note.id), note];
+      } else {
+        postNotice.value =
+          "Note added. It appears at the end of the thread; load more notes to see it.";
+      }
     } catch (err) {
       postError.value = noteErrorText(err, "added");
     } finally {
@@ -172,36 +314,29 @@ export default function IncidentNotes({
     editing.value = {
       noteId: note.id,
       draft: note.body,
+      revision: note.revision,
+      loadedBody: note.body,
       conflict: null,
       saving: false,
       error: null,
     };
   };
 
+  const setDraft = (value: string) => {
+    const cur = editing.peek();
+    if (cur && !cur.saving) editing.value = { ...cur, draft: value };
+  };
+
   const saveEdit = async () => {
     const e = editing.value;
     if (!e || e.saving) return;
-    const note = notes.value.find((n) => n.id === e.noteId);
-    if (!note) {
-      editing.value = {
-        ...e,
-        error:
-          "This note is not in the loaded list. Reload notes; your draft is kept.",
-      };
-      return;
-    }
     if (!e.draft.trim()) {
       editing.value = { ...e, error: "A note cannot be empty." };
       return;
     }
     editing.value = { ...e, saving: true, error: null };
     try {
-      const saved = await updateNote(
-        incidentId,
-        e.noteId,
-        e.draft,
-        note.revision,
-      );
+      const saved = await updateNote(incidentId, e.noteId, e.draft, e.revision);
       notes.value = notes.value.map((n) => (n.id === saved.id ? saved : n));
       editing.value = null;
     } catch (err) {
@@ -210,7 +345,10 @@ export default function IncidentNotes({
         editing.value = {
           ...current,
           saving: false,
-          conflict: { current: incidentErrorNumber(err, "currentRevision") },
+          conflict: {
+            current: incidentErrorNumber(err, "currentRevision"),
+            reloaded: false,
+          },
         };
       } else {
         editing.value = {
@@ -222,19 +360,44 @@ export default function IncidentNotes({
     }
   };
 
+  const cancelEdit = () => {
+    if (!editing.peek()?.saving) editing.value = null;
+  };
+
   const remove = async (noteId: string) => {
+    if (deleting.value) return;
+    deleting.value = noteId;
     deleteError.value = null;
     try {
       await deleteNote(incidentId, noteId);
       notes.value = notes.value.filter((n) => n.id !== noteId);
       confirmDelete.value = null;
     } catch (err) {
-      deleteError.value = noteErrorText(err, "deleted");
+      if (err instanceof ApiError && err.status === 404) {
+        // Already gone (another tab, or a retried click): the outcome the
+        // user asked for.
+        notes.value = notes.value.filter((n) => n.id !== noteId);
+        confirmDelete.value = null;
+      } else {
+        deleteError.value = noteErrorText(err, "deleted");
+      }
+    } finally {
+      deleting.value = null;
     }
   };
 
   const busy = loading.value;
   const edit = editing.value;
+  const editMissing =
+    edit !== null && !notes.value.some((n) => n.id === edit.noteId);
+  const editorProps = edit && {
+    edit,
+    busy,
+    onDraft: setDraft,
+    onSave: saveEdit,
+    onReload: reload,
+    onCancel: cancelEdit,
+  };
 
   return (
     <section
@@ -255,12 +418,18 @@ export default function IncidentNotes({
           <Alert variant="error">{loadError.value}</Alert>
         </div>
       )}
-      {loaded.value && notes.value.length === 0 && (
+      {loaded.value && notes.value.length === 0 && !editMissing && (
         <p class="m-0 text-sm text-text-secondary">No notes yet.</p>
       )}
       {deleteError.value && (
         <div role="alert">
           <Alert variant="error">{deleteError.value}</Alert>
+        </div>
+      )}
+
+      {editorProps && editMissing && (
+        <div class="rounded-lg border border-border-subtle bg-surface p-3">
+          <NoteEditor {...editorProps} missing />
         </div>
       )}
 
@@ -272,6 +441,7 @@ export default function IncidentNotes({
               currentUserId !== null &&
               note.authorId === currentUserId;
             const isEditing = edit?.noteId === note.id;
+            const removing = deleting.value === note.id;
             return (
               <li
                 key={note.id}
@@ -286,83 +456,8 @@ export default function IncidentNotes({
                   </time>
                   {note.revision > 1 && <span>(edited)</span>}
                 </div>
-                {isEditing && edit ? (
-                  <div class="flex flex-col gap-2">
-                    {edit.conflict && (
-                      <div role="alert">
-                        <Alert variant="warning">
-                          Someone saved this note after you started editing
-                          {edit.conflict.current !== undefined
-                            ? ` (it is now at revision ${edit.conflict.current})`
-                            : ""}
-                          . Your draft is kept below. Reload notes to see the
-                          current text, then save again.
-                        </Alert>
-                      </div>
-                    )}
-                    {edit.conflict && (
-                      <div class="flex flex-col gap-1">
-                        <span class="text-xs text-text-muted">
-                          Current saved text
-                        </span>
-                        <NoteBody body={note.body} />
-                      </div>
-                    )}
-                    {edit.error && (
-                      <div role="alert">
-                        <Alert variant="error">{edit.error}</Alert>
-                      </div>
-                    )}
-                    <label class="sr-only" for={`note-edit-${note.id}`}>
-                      Edit note
-                    </label>
-                    <textarea
-                      id={`note-edit-${note.id}`}
-                      rows={4}
-                      maxLength={INCIDENT_MAX_NOTE_BODY_CHARS}
-                      value={edit.draft}
-                      onInput={(ev) => {
-                        const cur = editing.peek();
-                        if (cur) {
-                          editing.value = {
-                            ...cur,
-                            draft: ev.currentTarget.value,
-                          };
-                        }
-                      }}
-                      class={FIELD}
-                    />
-                    <div class="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        aria-disabled={edit.saving}
-                        onClick={saveEdit}
-                        class={BUTTON_PRIMARY}
-                      >
-                        {edit.saving ? "Saving…" : "Save"}
-                      </button>
-                      {edit.conflict && (
-                        <button
-                          type="button"
-                          aria-disabled={busy}
-                          onClick={reload}
-                          class={BUTTON_SECONDARY}
-                        >
-                          Reload notes
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        aria-disabled={edit.saving}
-                        onClick={() => {
-                          if (!edit.saving) editing.value = null;
-                        }}
-                        class={BUTTON_SECONDARY}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
+                {isEditing && editorProps ? (
+                  <NoteEditor {...editorProps} missing={false} />
                 ) : (
                   <NoteBody body={note.body} />
                 )}
@@ -379,15 +474,17 @@ export default function IncidentNotes({
                       <>
                         <button
                           type="button"
+                          aria-disabled={removing}
                           onClick={() => remove(note.id)}
                           class={BUTTON_SECONDARY}
                         >
-                          Confirm delete
+                          {removing ? "Deleting…" : "Confirm delete"}
                         </button>
                         <button
                           type="button"
+                          aria-disabled={removing}
                           onClick={() => {
-                            confirmDelete.value = null;
+                            if (!removing) confirmDelete.value = null;
                           }}
                           class={BUTTON_SECONDARY}
                         >
@@ -444,6 +541,11 @@ export default function IncidentNotes({
             <div role="alert">
               <Alert variant="error">{postError.value}</Alert>
             </div>
+          )}
+          {postNotice.value && (
+            <p role="status" class="m-0 text-sm text-text-secondary">
+              {postNotice.value}
+            </p>
           )}
           <textarea
             id={`new-note-${incidentId}`}

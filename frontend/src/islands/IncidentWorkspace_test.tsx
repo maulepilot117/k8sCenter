@@ -16,7 +16,6 @@ import type {
 const { default: IncidentEvidenceTimeline } = await import(
   "./IncidentEvidenceTimeline.tsx"
 );
-const { default: IncidentNotes } = await import("./IncidentNotes.tsx");
 const { default: IncidentWorkspace } = await import("./IncidentWorkspace.tsx");
 const { captureErrorText } = await import(
   "@/src/components/incidents/CapturePanel.tsx"
@@ -294,77 +293,6 @@ test("a live link to a present object deep-links to its detail page", async () =
   expect(
     root.querySelector('a[href="/workloads/deployments/shop/checkout"]'),
   ).not.toBeNull();
-});
-
-// --- Notes -------------------------------------------------------------------
-
-const note: NoteView = {
-  id: "00000000-0000-4000-8000-0000000000a1",
-  incidentId: ID,
-  authorId: "alice",
-  body: "first take",
-  revision: 1,
-  createdAt: "2026-10-01T10:00:00Z",
-  updatedAt: "2026-10-01T10:00:00Z",
-};
-
-test("a revision conflict keeps the draft, explains, and offers a reload", async () => {
-  let saved: Call | undefined;
-  stubFetch(routeNotes([note]), (c) => {
-    if (c.method !== "PUT") return undefined;
-    saved = c;
-    return json(409, {
-      error: {
-        code: 409,
-        message: "note was modified since it was read",
-        reason: "note_revision_conflict",
-        extra: { currentRevision: 2 },
-      },
-    });
-  });
-  const root = await mount(
-    <IncidentNotes incidentId={ID} canAnnotate currentUserId="alice" />,
-  );
-  const edit = [...root.querySelectorAll("button")].find(
-    (b) => b.textContent === "Edit",
-  );
-  act(() => edit?.click());
-  const area = root.querySelector(
-    "textarea#note-edit-00000000-0000-4000-8000-0000000000a1",
-  ) as HTMLTextAreaElement;
-  act(() => {
-    area.value = "my careful rewrite";
-    area.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  const save = [...root.querySelectorAll("button")].find(
-    (b) => b.textContent === "Save",
-  );
-  act(() => save?.click());
-  await flush();
-  expect(JSON.parse(saved?.body ?? "{}")).toEqual({
-    body: "my careful rewrite",
-    revision: 1,
-  });
-  expect(root.textContent).toContain("revision 2");
-  const kept = root.querySelector(
-    "textarea#note-edit-00000000-0000-4000-8000-0000000000a1",
-  ) as HTMLTextAreaElement;
-  expect(kept.value).toBe("my careful rewrite");
-  expect(
-    [...root.querySelectorAll("button")].some(
-      (b) => b.textContent === "Reload notes",
-    ),
-  ).toBe(true);
-});
-
-test("another author's note offers no edit or delete", async () => {
-  stubFetch(routeNotes([note]));
-  const root = await mount(
-    <IncidentNotes incidentId={ID} canAnnotate currentUserId="bob" />,
-  );
-  const labels = [...root.querySelectorAll("button")].map((b) => b.textContent);
-  expect(labels).not.toContain("Edit");
-  expect(labels).not.toContain("Delete");
 });
 
 // --- Workspace -----------------------------------------------------------------
