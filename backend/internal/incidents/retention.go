@@ -44,37 +44,47 @@ const (
 type retentionStore interface {
 	Cleanup(ctx context.Context, retentionDays int) (int64, error)
 	RetentionLoweringImpact(ctx context.Context, retentionDays int) (store.RetentionLoweringImpact, error)
+	AppliedRetentionDays(ctx context.Context) (days int, found bool, err error)
+	RecordAppliedRetention(ctx context.Context, days int) error
 }
 
 // Retainer deletes incidents older than the configured retention: one sweep
 // at start (or one hour after start, see below), then one per hour.
 //
 // Lowering the retention deletes incidents created under a longer one, and a
-// config rollback cannot bring them back. So at start the Retainer counts the
-// incidents the configured value would delete right now although their own
-// retention would have kept them (past the new window), and separately those
-// still inside the new window that were captured under a longer retention and
-// so will be deleted earlier than promised (laterAffectedIncidents). When the
-// first count is above zero it logs a Warn with both counts and the affected
-// date range and defers the first sweep by loweringGraceWindow, giving the
-// operator one hour to restore the old value. The deferral is keyed on the
-// past-window count only. When only the second count is above zero it logs the
-// Warn without deferring. Setting RetentionLoweringConfirmed
-// (KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED) skips the deferral. If the
-// counts cannot be read, the first sweep is deferred too (fail safe).
+// config rollback cannot bring them back. The Retainer therefore tells a NEW
+// lowering from steady state using the retention the last successful sweep
+// applied, which it persists (incident_retention_state, migration 000025):
 //
-// Incidents that merely expired under their own retention are in neither
-// count, so both are zero in normal operation. They are NOT zero after the
-// first sweep, though: the warning (and the deferral) can recur on later
-// restarts until every incident captured under the longer retention has aged
-// past the new window. A process that restarts more often than hourly with an
-// unconfirmed lowering therefore never reaches its first sweep (fail safe);
-// set the confirmed flag to proceed.
+//   - New lowering: the configured days are below the persisted applied days,
+//     or nothing is persisted yet (first run after upgrade) and incidents are
+//     already past the configured window. If incidents are past the window
+//     (Count above zero), the Retainer logs a Warn with the counts and the
+//     affected date range and defers the first sweep by loweringGraceWindow,
+//     giving the operator one hour to restore the old value. The deferral is
+//     keyed on the past-window count only. If only incidents still inside the
+//     window were captured under a longer retention (laterAffectedIncidents),
+//     it logs the Warn without deferring.
+//   - Steady state: the configured days are at or above the persisted days.
+//     There is no deferral and no Warn on restart; the laterAffectedIncidents
+//     notice is logged at Info, since those incidents are aging out under a
+//     lowering the operator already went through.
 //
-// Multi-replica skew: every replica sweeps with its OWN configured value. A
-// replica started with a lower value deletes for all of them, and restoring
-// the config afterwards cannot restore what it deleted. Keep the value
-// identical across replicas (docs: migrations/NOTES.txt, 000024).
+// The first successful sweep persists the configured days, so the deferral
+// happens once per lowering, not on every restart. RetentionLoweringConfirmed
+// (KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED) skips that one deferral and
+// is only a one-shot acknowledgement: remove it after the first sweep. If the
+// counts or the persisted value cannot be read, the first sweep is deferred
+// too (fail safe). A process that restarts more often than hourly during an
+// unconfirmed new lowering never reaches its first sweep; set the flag to
+// proceed. A failure to persist is logged and never stops the loop; the next
+// start then simply treats the lowering as new again.
+//
+// Multi-replica skew: every replica sweeps with its OWN configured value, and
+// the persisted value is shared. A replica started with a lower value deletes
+// for all of them, and restoring the config afterwards cannot restore what it
+// deleted. Keep the value identical across replicas (docs:
+// migrations/NOTES.txt, 000024 and 000025).
 //
 // Lifecycle contract: RunLoop is meant to be started with a plain `go`
 // statement and owns no sync.WaitGroup and no counted channel. It returns when
@@ -177,6 +187,14 @@ func (r *Retainer) sweep(ctx context.Context) {
 			return // shutdown interrupted the sweep; not a failure
 		}
 		r.logger.Error("incident retention sweep failed", "retentionDays", r.retentionDays, "error", err)
+		return
+	}
+	// Remember what this sweep applied, so a restart can tell steady state from
+	// a new lowering. A failure here is logged and never stops the loop.
+	if rerr := r.store.RecordAppliedRetention(ctx, r.retentionDays); rerr != nil && ctx.Err() == nil {
+		r.logger.Warn("incident retention: could not record the applied retention; "+
+			"the next start will treat a lowering as new again",
+			"retentionDays", r.retentionDays, "error", rerr)
 	}
 }
 
@@ -186,6 +204,11 @@ func (r *Retainer) shouldDeferFirstSweep(ctx context.Context) bool {
 	cctx, cancel := context.WithTimeout(ctx, retentionCheckTimeout)
 	defer cancel()
 	impact, err := r.store.RetentionLoweringImpact(cctx, r.retentionDays)
+	var applied int
+	var found bool
+	if err == nil {
+		applied, found, err = r.store.AppliedRetentionDays(cctx)
+	}
 	if err != nil {
 		if r.loweringConfirmed {
 			r.logger.Warn("incident retention: could not check whether the configured retention deletes existing incidents; "+
@@ -197,6 +220,20 @@ func (r *Retainer) shouldDeferFirstSweep(ctx context.Context) bool {
 			"deferring the first sweep",
 			"retentionDays", r.retentionDays, "firstSweepDelay", loweringGraceWindow.String(), "error", err)
 		return true
+	}
+	// A lowering is new when the configured days are below what the last sweep
+	// applied, or, with nothing recorded yet (first run after upgrade), when
+	// incidents are already past the configured window.
+	newLowering := (found && r.retentionDays < applied) || (!found && impact.Count > 0)
+	if !newLowering {
+		if impact.LaterCount > 0 {
+			// Steady state: these incidents are aging out under a lowering that
+			// already went through. Informational only.
+			r.logger.Info("some live incidents were captured under a longer retention than the configured one; "+
+				"they will be deleted earlier than they were captured to be",
+				"retentionDays", r.retentionDays, "laterAffectedIncidents", impact.LaterCount)
+		}
+		return false
 	}
 	if impact.Count == 0 {
 		if impact.LaterCount > 0 {

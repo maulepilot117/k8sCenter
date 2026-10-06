@@ -475,14 +475,17 @@ Retention (operator footgun 1):
       counted. The Warn also reports laterAffectedIncidents: live incidents
       still inside the new window that were captured under a longer
       retention and so will be deleted earlier than promised. That count is
-      reported but does not defer the sweep. Because those incidents survive
-      the first sweep, the warning (and the deferral, while any incident is
-      past the new window) can recur on later restarts until every incident
-      captured under the longer retention has aged past the new window. A
-      process that restarts more often than hourly with an unconfirmed
-      lowering never runs its first sweep (fail safe); set the confirmed flag
-      to proceed. The sweep deletes in batches of 500, so a large backlog
-      is removed progressively and an interrupted sweep keeps its progress.
+      reported but does not defer the sweep. Whether a start counts as a NEW
+      lowering is decided from the retention the last successful sweep
+      applied, which is persisted (000025 below): the deferral and the Warn
+      happen once per lowering, and later restarts are steady state (no
+      deferral, no Warn; laterAffectedIncidents is logged at Info). The
+      confirmed flag is a one-shot acknowledgement: remove it after the
+      first sweep. A process that restarts more often than hourly during an
+      unconfirmed new lowering never runs its first sweep (fail safe); set
+      the confirmed flag to proceed. The sweep deletes in batches of 500, so
+      a large backlog is removed progressively and an interrupted sweep keeps
+      its progress.
     - Multi-replica skew: every replica sweeps with its OWN configured value.
       A replica started with a lower value deletes for all of them, and
       reverting the config afterwards does not restore what it deleted. Roll
@@ -531,3 +534,45 @@ Inspect incidents:
     SELECT id, owner_id, cluster_id, created_at, evidence_count, evidence_bytes
       FROM incidents
      ORDER BY created_at;
+
+000025_incident_retention_state (Release D incidents, U25a, 2026-10-05)
+------------------------------------------------------------------------
+
+Creates one table, incident_retention_state, holding at most one row (id is a
+boolean primary key constrained to true): the incident retention in days that
+the last successful retention sweep applied, and when. Purely additive; no
+existing table, column or row is touched.
+
+Why: the retention lowering guard (see "Retention" under 000024) must tell a
+NEW lowering from steady state. Without a record it would defer the first sweep
+and warn on every restart for as long as incidents captured under the old,
+longer retention keep crossing the new window, which would teach operators to
+leave KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED on permanently. With it:
+  - configured days below the recorded days (or no record and incidents already
+    past the window): a new lowering, the first sweep is deferred one hour
+    unless the confirmed flag is set;
+  - configured days at or above the recorded days: steady state, no deferral
+    and no Warn.
+The row is written after every successful sweep. A failed write is logged and
+the loop keeps sweeping; the next start then treats the lowering as new again.
+It holds no user data.
+
+Rollback and the down migration: the down file drops only this table, leaving
+every incident intact. The consequence is that the next start has no recorded
+retention, so the guard uses its first-run rule (defer the first sweep when
+incidents are already past the configured window, unless the confirmed flag is
+set). If a database recorded at version 25 must run an image that embeds only
+000024, reset the recorded version to 24 with the same procedure as the 000024
+rollback ("UPDATE schema_migrations SET version = 24, dirty = false;" with
+every new-image pod stopped); the table is left in place and a later
+roll-forward re-runs the up file harmlessly (CREATE TABLE IF NOT EXISTS,
+COMMENT ON).
+TestMigration000025_RoundTripKeepsIncidents covers up, down and re-apply.
+
+Multi-replica note: the recorded value is shared. Replicas configured with
+different retention values overwrite each other's record, and a replica started
+with a lower value deletes for all of them. Keep KUBECENTER_INCIDENTS_RETENTIONDAYS
+identical across replicas.
+
+Inspect:
+    SELECT applied_retention_days, updated_at FROM incident_retention_state;

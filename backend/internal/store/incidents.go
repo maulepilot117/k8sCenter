@@ -686,6 +686,37 @@ func (s *IncidentStore) RetentionLoweringImpact(ctx context.Context, retentionDa
 	return impact, nil
 }
 
+// AppliedRetentionDays returns the retention (days) the last successful
+// retention sweep applied, from the single-row incident_retention_state table
+// (migration 000025). found is false when no sweep has recorded one yet.
+func (s *IncidentStore) AppliedRetentionDays(ctx context.Context) (days int, found bool, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT applied_retention_days FROM incident_retention_state`).Scan(&days)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("read applied retention: %w", err)
+	}
+	return days, true, nil
+}
+
+// RecordAppliedRetention upserts the retention a successful sweep applied. It
+// rejects a value outside [IncidentMinRetentionDays, IncidentMaxRetentionDays]
+// before any SQL.
+func (s *IncidentStore) RecordAppliedRetention(ctx context.Context, days int) error {
+	if err := ValidateIncidentRetentionDays(days); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO incident_retention_state (id, applied_retention_days, updated_at)
+		VALUES (true, $1, now())
+		ON CONFLICT (id) DO UPDATE
+		   SET applied_retention_days = EXCLUDED.applied_retention_days, updated_at = now()`, days); err != nil {
+		return fmt.Errorf("record applied retention: %w", err)
+	}
+	return nil
+}
+
 // CreateNote adds a note at revision 1. authorID is the authenticated caller.
 // Whether the caller may annotate this incident (owner, or a grant with
 // can_annotate, Q1 P3) is the caller's check. Returns ErrIncidentNotFound when
