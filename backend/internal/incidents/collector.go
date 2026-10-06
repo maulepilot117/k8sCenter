@@ -141,15 +141,16 @@ type Limits struct {
 }
 
 // DefaultLimits returns the Release D defaults: 1 MiB per item, 10 MiB per
-// incident, 500 items, 20 scopes, 20 s per capture, 5 s per source, 4
-// concurrent sources.
+// incident, 500 items, 20 scopes, 15 s per capture, 5 s per source, 4
+// concurrent sources. The capture default leaves room for the insert inside
+// captureRequestBudget (see handler_capture.go).
 func DefaultLimits() Limits {
 	return Limits{
 		MaxItemBytes:     store.EvidenceMaxItemBytesCeiling,
 		MaxIncidentBytes: store.EvidenceMaxIncidentBytesCeiling,
 		MaxItems:         store.EvidenceMaxItemsCeiling,
 		MaxScopes:        store.EvidenceMaxScopesCeiling,
-		CaptureTimeout:   20 * time.Second,
+		CaptureTimeout:   15 * time.Second,
 		SourceTimeout:    5 * time.Second,
 		MaxConcurrency:   4,
 	}

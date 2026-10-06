@@ -33,9 +33,14 @@ const (
 
 // Operator-facing bounds for the values the store does not itself ceiling.
 const (
-	minTimeout          = time.Second
-	maxCaptureTimeout   = 5 * time.Minute
-	maxSourceTimeout    = 2 * time.Minute
+	minTimeout = time.Second
+	// maxCaptureTimeout is what is left of captureRequestBudget (27 s, under
+	// the frontend proxy's 30 s) after the collector grace, the minimum insert
+	// work and the COMMIT bound: 27 - 0.25 - 5 - 5 = 16.75 s. See the budget
+	// derivation in handler_capture.go.
+	maxCaptureTimeout = captureRequestBudget - captureGrace - captureMinInsertWork - store.IncidentCommitTimeout
+	// maxSourceTimeout cannot usefully exceed the capture deadline it runs inside.
+	maxSourceTimeout    = maxCaptureTimeout
 	maxConcurrencyBound = 16
 )
 

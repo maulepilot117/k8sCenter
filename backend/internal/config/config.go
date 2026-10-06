@@ -65,8 +65,14 @@ type IncidentsConfig struct {
 	MaxIncidentBytes int `koanf:"maxincidentbytes"`
 	MaxItems         int `koanf:"maxitems"`
 	MaxScopes        int `koanf:"maxscopes"`
-	// CaptureTimeout bounds one whole capture; SourceTimeout one evidence
-	// source inside it. MaxConcurrency bounds sources run at once.
+	// CaptureTimeout bounds one whole capture (default 15s); SourceTimeout one
+	// evidence source inside it (default 5s, capped at CaptureTimeout).
+	// MaxConcurrency bounds sources run at once. A capture request must finish
+	// inside 27s: the browser path goes through the frontend proxy (30s,
+	// PROXY_TIMEOUT_MS), so CaptureTimeout is clamped to at most 16.75s, which
+	// leaves the 250ms collector grace, 5s for the insert and the 5s commit
+	// bound inside the budget (incidents.captureRequestBudget). The server
+	// WriteTimeout (60s) is not the binding limit. Corrections are logged.
 	CaptureTimeout time.Duration `koanf:"capturetimeout"`
 	SourceTimeout  time.Duration `koanf:"sourcetimeout"`
 	MaxConcurrency int           `koanf:"maxconcurrency"`

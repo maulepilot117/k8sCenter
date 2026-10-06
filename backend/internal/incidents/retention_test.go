@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -678,7 +679,7 @@ func TestRetainer_LoweringDefersTheFirstSweepOneGraceWindow(t *testing.T) {
 		// still crossing the window, but the lowering already went through.
 		"restart after the lowering was applied: no deferral, no Warn, Info": {
 			impact: affected, applied: 30, found: true, wantInfo: true, wantNow: true},
-		"raised retention: no deferral, no Warn": {impact: affected, applied: 10, found: true, wantInfo: true, wantNow: true},
+		"raised retention: no deferral, no Warn":     {impact: affected, applied: 10, found: true, wantInfo: true, wantNow: true},
 		"raised retention, nothing affected: silent": {applied: 10, found: true, wantNow: true},
 		"unreadable applied retention defers, fail safe": {
 			appliedErr: errors.New("db down"), wantWarn: true, wantMsg: "deferring the first sweep", wantDelay: true},
@@ -880,7 +881,7 @@ func TestResolveSettings_DurationsAreLoggedAsStrings(t *testing.T) {
 		if rec["field"] != "captureTimeout" {
 			continue
 		}
-		if rec["configured"] != "1h0m0s" || rec["effective"] != "5m0s" || rec["min"] != "1s" || rec["max"] != "5m0s" {
+		if rec["configured"] != "1h0m0s" || rec["effective"] != "16.75s" || rec["min"] != "1s" || rec["max"] != "16.75s" {
 			t.Errorf("duration fields = %v, want human-readable strings, not nanoseconds", rec)
 		}
 		return
@@ -918,6 +919,110 @@ func TestResolveSettingsLimitsReachRedactorCollectorAndHandler(t *testing.T) {
 	}
 	if h.limits.CaptureTimeout != 9*time.Second {
 		t.Errorf("capture timeout = %s, want 9s", h.limits.CaptureTimeout)
+	}
+}
+
+// frontendProxyTimeout mirrors PROXY_TIMEOUT_MS in frontend/server/api-proxy.ts
+// (30 s): the browser path to the capture endpoint is cut there.
+const frontendProxyTimeout = 30 * time.Second
+
+// An arithmetic guard: a future change to any of these constants that lets a
+// capture request outlive the proxy fails here instead of in production.
+func TestCaptureBudgetFitsUnderTheProxyDeadline(t *testing.T) {
+	if captureRequestBudget >= frontendProxyTimeout {
+		t.Errorf("captureRequestBudget %s must stay under the %s proxy deadline", captureRequestBudget, frontendProxyTimeout)
+	}
+	if got := maxCaptureTimeout + captureGrace + captureMinInsertWork + store.IncidentCommitTimeout; got > captureRequestBudget {
+		t.Errorf("max capture timeout %s + grace %s + min insert %s + commit %s = %s exceeds the %s budget",
+			maxCaptureTimeout, captureGrace, captureMinInsertWork, store.IncidentCommitTimeout, got, captureRequestBudget)
+	}
+	d := DefaultLimits()
+	if got := d.CaptureTimeout + captureGrace + captureMinInsertWork + store.IncidentCommitTimeout; got > captureRequestBudget {
+		t.Errorf("default capture timeout leaves %s of work for a %s budget", got, captureRequestBudget)
+	}
+	if d.CaptureTimeout > maxCaptureTimeout || maxSourceTimeout > maxCaptureTimeout {
+		t.Errorf("defaults or the source ceiling exceed the capture ceiling: default %s, source max %s, capture max %s",
+			d.CaptureTimeout, maxSourceTimeout, maxCaptureTimeout)
+	}
+	if captureMinInsertWork < 5*time.Second {
+		t.Errorf("captureMinInsertWork %s is below the store's 5s lock timeout", captureMinInsertWork)
+	}
+}
+
+// captureInsertDeadline never lets the insert (plus its detached commit) end
+// after the budget measured from handler entry, however long collection took.
+func TestCaptureInsertDeadlineStaysInsideTheBudget(t *testing.T) {
+	start := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	budgetEnd := start.Add(captureRequestBudget)
+	for name, elapsed := range map[string]time.Duration{
+		"instant collection":           0,
+		"default collection":           DefaultLimits().CaptureTimeout + captureGrace,
+		"maximum configured":           maxCaptureTimeout + captureGrace,
+		"collection ate the whole run": captureRequestBudget,
+	} {
+		now := start.Add(elapsed)
+		dl := captureInsertDeadline(start, now)
+		if got := dl.Add(store.IncidentCommitTimeout); got.After(budgetEnd) {
+			t.Errorf("%s: insert deadline + commit bound ends %s after the budget", name, got.Sub(budgetEnd))
+		}
+		if dl.After(now.Add(storeWriteTimeout)) {
+			t.Errorf("%s: insert deadline %s past now exceeds storeWriteTimeout", name, dl.Sub(now))
+		}
+	}
+	// A maximal collection still leaves the minimum insert allowance.
+	now := start.Add(maxCaptureTimeout + captureGrace)
+	if left := captureInsertDeadline(start, now).Sub(now); left < captureMinInsertWork {
+		t.Errorf("insert allowance after a maximal collection = %s, want at least %s", left, captureMinInsertWork)
+	}
+	// Instant collection gets the full store write timeout.
+	if left := captureInsertDeadline(start, start).Sub(start); left != storeWriteTimeout {
+		t.Errorf("insert allowance after instant collection = %s, want %s", left, storeWriteTimeout)
+	}
+}
+
+// Through the handler: InsertBatch's context deadline, at the default and at
+// the maximum configured capture timeout, is inside the budget measured from
+// before the handler was entered.
+func TestHandleCaptureInsertDeadlineIsInsideTheRequestBudget(t *testing.T) {
+	for name, captureTimeout := range map[string]time.Duration{
+		"default limits":     DefaultLimits().CaptureTimeout,
+		"maximum configured": maxCaptureTimeout,
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newHarness(t)
+			id := hs.seed(t, alice)
+			lim := DefaultLimits()
+			lim.CaptureTimeout = captureTimeout
+			hs.h.limits = lim
+			hs.h.collector = newTestCollector(t, lim, completeSource("object", completeItem("web")))
+
+			// A clock that jumps by the whole collection time between handler
+			// entry (first read) and the insert (later reads) simulates a
+			// collection that used its full CaptureTimeout plus grace.
+			entry := time.Now()
+			reads := 0
+			hs.h.now = func() time.Time {
+				reads++
+				if reads == 1 {
+					return entry
+				}
+				return entry.Add(captureTimeout + captureGrace)
+			}
+			w := hs.capture(t, alice, id, defaultCapture)
+			wantStatus(t, w, http.StatusOK)
+
+			dl := hs.st.insertDeadline
+			if dl.IsZero() {
+				t.Fatal("InsertBatch ran without a deadline")
+			}
+			budgetEnd := entry.Add(captureRequestBudget)
+			if end := dl.Add(store.IncidentCommitTimeout); end.After(budgetEnd) {
+				t.Errorf("insert deadline + commit bound ends %s after the request budget", end.Sub(budgetEnd))
+			}
+			if left := dl.Sub(entry.Add(captureTimeout + captureGrace)); left < captureMinInsertWork {
+				t.Errorf("insert allowance after the collection = %s, want at least %s", left, captureMinInsertWork)
+			}
+		})
 	}
 }
 

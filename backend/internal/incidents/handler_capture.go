@@ -43,6 +43,54 @@ import (
 // reported as incident_busy by the store rather than as a deadline here.
 const storeWriteTimeout = 10 * time.Second
 
+// Capture request budget. The browser reaches POST /incidents/{id}/capture
+// through the frontend proxy, which gives up after 30 s (PROXY_TIMEOUT_MS in
+// frontend/server/api-proxy.ts); the server WriteTimeout is 60 s
+// (internal/server/server.go) and is not the binding limit. The whole handler
+// path, measured from handler entry, therefore has to finish inside
+// captureRequestBudget, which leaves 3 s of headroom under the proxy:
+//
+//	collector deadline (CaptureTimeout) + captureGrace
+//	  + insert work (at least captureMinInsertWork)
+//	  + the detached COMMIT bound (store.IncidentCommitTimeout)
+//	<= captureRequestBudget
+//
+// The collector runs under the configured CaptureTimeout, which ResolveSettings
+// clamps to maxCaptureTimeout (budget - grace - minimum insert work - commit
+// bound = 16.75 s); the default is 15 s. The insert then gets the lesser of
+// storeWriteTimeout and what is left of the budget before its COMMIT (see
+// captureInsertDeadline), so even a capture that used its whole collection
+// budget cannot push the request past captureRequestBudget. The commit runs
+// detached from the caller's context and is bounded by
+// store.IncidentCommitTimeout, which captureInsertDeadline reserves.
+const (
+	captureRequestBudget = 27 * time.Second
+	// captureMinInsertWork is the insert time (lock wait up to the store's 5 s
+	// lock timeout, then the writes) a maximal collection must still leave.
+	captureMinInsertWork = 5 * time.Second
+)
+
+// clock returns the current time; tests inject h.now to simulate a slow
+// collection without waiting for it.
+func (h *Handler) clock() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
+}
+
+// captureInsertDeadline is the deadline for InsertBatch's work: the lesser of
+// now+storeWriteTimeout and the budget's end minus the COMMIT bound, so the
+// commit that follows ends inside captureRequestBudget measured from start.
+func captureInsertDeadline(start, now time.Time) time.Time {
+	byStore := now.Add(storeWriteTimeout)
+	byBudget := start.Add(captureRequestBudget - store.IncidentCommitTimeout)
+	if byBudget.Before(byStore) {
+		return byBudget
+	}
+	return byStore
+}
+
 // captureRequest is the POST /incidents/{id}/capture body. There is
 // deliberately no cluster and no uid field: the body is decoded with
 // DisallowUnknownFields, so sending either is a 400 rather than silently
@@ -103,6 +151,7 @@ func captureTarget(req captureRequest) (TargetRef, error) {
 // incident (owner-only) and persists it.
 // POST /api/v1/incidents/{incidentID}/capture
 func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
+	start := h.clock() // the budget is measured from handler entry
 	user, ok := h.begin(w, r)
 	if !ok {
 		return
@@ -156,9 +205,11 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 
 	// The collector bounds the sources with its own CaptureTimeout (and a
 	// short grace); this context bounds the whole operation, insert
-	// included, and must outlive the collector's deadline so a capture that
-	// hits it still returns its partial report instead of the context error.
-	ctx, cancel := context.WithTimeout(r.Context(), h.limits.CaptureTimeout+captureGrace+storeWriteTimeout)
+	// included, to captureRequestBudget from handler entry. It outlives the
+	// collector's deadline (CaptureTimeout is clamped to leave the insert
+	// its share), so a capture that hits that deadline still returns its
+	// partial report instead of the context error.
+	ctx, cancel := context.WithDeadline(r.Context(), start.Add(captureRequestBudget))
 	defer cancel()
 	report, err := h.collector.Capture(ctx, CaptureRequest{ClusterID: k8s.LocalClusterID, User: user, Target: target, Sources: req.Sources})
 	if err != nil {
@@ -182,7 +233,9 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	}
 	inserted := 0
 	if len(rows) > 0 {
-		inserted, err = h.evidence.InsertBatch(ctx, id, user.ID, rows, h.limits.EvidenceLimits())
+		insertCtx, cancelInsert := context.WithDeadline(ctx, captureInsertDeadline(start, h.clock()))
+		inserted, err = h.evidence.InsertBatch(insertCtx, id, user.ID, rows, h.limits.EvidenceLimits())
+		cancelInsert()
 		switch {
 		case errors.Is(err, store.ErrCommitOutcomeUnknown):
 			// The COMMIT's result is ambiguous (no reply, the commit bound

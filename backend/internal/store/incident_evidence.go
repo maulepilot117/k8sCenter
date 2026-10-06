@@ -83,6 +83,10 @@ var (
 // connection from holding the goroutine.
 const incidentCommitTimeout = 5 * time.Second
 
+// IncidentCommitTimeout exports incidentCommitTimeout so the capture handler
+// can budget the whole request (incidents.captureRequestBudget) around it.
+const IncidentCommitTimeout = incidentCommitTimeout
+
 // incidentLockTimeout bounds how long InsertBatch and AddGrant wait for the
 // incident row lock, so a stalled holder cannot pin pool connections.
 const incidentLockTimeout = 5 * time.Second
