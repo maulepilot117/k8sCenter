@@ -3,9 +3,6 @@ import { useEffect } from "preact/hooks";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { LOCAL_CLUSTER_ID } from "@/lib/cluster.ts";
 import {
-  type Completeness,
-  completenessDescription,
-  completenessLabel,
   type Evidence,
   type EvidenceItem,
   type EvidenceMode,
@@ -20,6 +17,12 @@ import {
   withheldReasonText,
 } from "@/lib/incident-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import {
+  BADGE_CLASS,
+  CompletenessBadge,
+  FOCUS_RING,
+  LINK,
+} from "@/src/components/incidents/ui.tsx";
 
 /**
  * An incident's evidence as a timeline, newest capture first. The caller
@@ -40,32 +43,11 @@ import { timeAgo } from "@/lib/timeAgo.ts";
  *     there and why it is withheld, and nothing about what it is about.
  */
 
-const BADGE = "inline-flex rounded-full px-2 py-0.5 text-xs font-medium";
-
-const COMPLETENESS_CLASS: Record<Completeness, string> = {
-  complete: "bg-success-dim text-success",
-  partial: "bg-warning-dim text-warning",
-  failed: "bg-danger-dim text-danger",
-  forbidden: "border border-danger text-danger",
-  timed_out: "border border-warning text-warning",
-};
-
-export function CompletenessBadge({ value }: { value: Completeness }) {
-  return (
-    <span
-      class={`${BADGE} ${COMPLETENESS_CLASS[value] ?? "border border-border-subtle text-text-muted"}`}
-      title={completenessDescription(value)}
-    >
-      {completenessLabel(value)}
-    </span>
-  );
-}
-
 function ModeBadge({ mode }: { mode: EvidenceMode }) {
   return mode === "live_link" ? (
-    <span class={`${BADGE} border border-accent text-accent`}>Live link</span>
+    <span class={BADGE_CLASS.accentOutline}>Live link</span>
   ) : (
-    <span class={`${BADGE} bg-accent-dim text-accent`}>Snapshot</span>
+    <span class={BADGE_CLASS.accent}>Snapshot</span>
   );
 }
 
@@ -140,10 +122,7 @@ function LiveLink({ source }: { source: SourceRef }) {
   }, [target?.apiPath, source.clusterId, source.uid]);
 
   const link = target && (
-    <a
-      href={target.href}
-      class="rounded-sm text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50"
-    >
+    <a href={target.href} class={LINK}>
       Open the live object
     </a>
   );
@@ -239,7 +218,9 @@ function EvidenceRow({ item }: { item: Evidence }) {
       ) : (
         item.payload !== undefined && (
           <details class="text-sm">
-            <summary class="cursor-pointer rounded-sm text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50">
+            <summary
+              class={`cursor-pointer rounded-sm text-text-secondary ${FOCUS_RING}`}
+            >
               Captured data ({item.payloadBytes} bytes)
             </summary>
             <pre class="mt-2 max-h-80 overflow-auto rounded-md border border-border-subtle bg-base p-3 text-xs text-text-primary">
@@ -259,9 +240,7 @@ function WithheldRow({ item }: { item: WithheldEvidence }) {
       class="flex flex-col gap-1 rounded-lg border border-dashed border-border-primary bg-surface p-3"
     >
       <div class="flex flex-wrap items-center gap-2">
-        <span class={`${BADGE} border border-border-primary text-text-muted`}>
-          Withheld
-        </span>
+        <span class={BADGE_CLASS.muted}>Withheld</span>
         <span class="text-sm text-text-secondary">
           {evidenceKindLabel(item.evidenceKind)}
         </span>

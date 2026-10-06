@@ -14,6 +14,12 @@ import {
   type NoteView,
 } from "@/lib/incident-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import {
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  FIELD,
+  HEADING,
+} from "@/src/components/incidents/ui.tsx";
 
 /**
  * An incident's notes, oldest first, paged with "Load more".
@@ -31,13 +37,6 @@ import { timeAgo } from "@/lib/timeAgo.ts";
  */
 
 const PAGE_SIZE = 50;
-
-const BUTTON_PRIMARY =
-  "inline-flex cursor-pointer items-center justify-center rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-(--bg-base) focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
-const BUTTON_SECONDARY =
-  "inline-flex cursor-pointer items-center justify-center rounded-md border border-border-primary bg-transparent px-3 py-1.5 text-sm font-medium text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
-const TEXTAREA =
-  "block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/50";
 
 function noteErrorText(err: unknown, action: string): string {
   if (err instanceof ApiError) {
@@ -242,10 +241,7 @@ export default function IncidentNotes({
       aria-labelledby="incident-notes-heading"
       class="flex flex-col gap-3"
     >
-      <h2
-        id="incident-notes-heading"
-        class="m-0 text-base font-semibold text-text-primary"
-      >
+      <h2 id="incident-notes-heading" class={HEADING}>
         Notes
       </h2>
 
@@ -334,7 +330,7 @@ export default function IncidentNotes({
                           };
                         }
                       }}
-                      class={TEXTAREA}
+                      class={FIELD}
                     />
                     <div class="flex flex-wrap items-center gap-2">
                       <button
@@ -457,7 +453,7 @@ export default function IncidentNotes({
             onInput={(ev) => {
               draft.value = ev.currentTarget.value;
             }}
-            class={TEXTAREA}
+            class={FIELD}
           />
           <div>
             <button

@@ -17,11 +17,13 @@ const { default: IncidentEvidenceTimeline } = await import(
   "./IncidentEvidenceTimeline.tsx"
 );
 const { default: IncidentNotes } = await import("./IncidentNotes.tsx");
-const {
-  default: IncidentWorkspace,
-  captureErrorText,
-  fetchExport,
-} = await import("./IncidentWorkspace.tsx");
+const { default: IncidentWorkspace } = await import("./IncidentWorkspace.tsx");
+const { captureErrorText } = await import(
+  "@/src/components/incidents/CapturePanel.tsx"
+);
+const { fetchExport } = await import(
+  "@/src/components/incidents/ExportMenu.tsx"
+);
 
 beforeAll(() => GlobalRegistrator.register());
 afterAll(() => GlobalRegistrator.unregister());
