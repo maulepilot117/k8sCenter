@@ -546,3 +546,92 @@ test("Edit on another note while a save is pending does not hijack the editor", 
   await flush();
   expect(editor(root, N2)?.value).toBe(`body of ${N2}`);
 });
+
+// --- Review round 3 ---------------------------------------------------------
+
+/** A list route whose "p2" page is held until the test releases it. */
+function heldPageTwo(page2: () => { items: NoteView[]; next?: string }) {
+  let release: () => void = () => {};
+  const route: Route = (c) => {
+    if (c.method !== "GET" || !c.url.includes("/notes")) return undefined;
+    if (!c.url.includes("continue=p2")) {
+      return json(200, { data: [note(N2)], metadata: { continue: "p2" } });
+    }
+    return new Promise<Response>((resolve) => {
+      release = () => {
+        const p = page2();
+        resolve(
+          json(200, {
+            data: p.items,
+            metadata: p.next ? { continue: p.next } : {},
+          }),
+        );
+      };
+    });
+  };
+  return { route, release: () => release() };
+}
+const createRoute: Route = (c) =>
+  c.method === "POST"
+    ? json(201, { data: note(N1, { body: "made mid-page" }) })
+    : undefined;
+
+test("a note held during Load more is appended when that page completes the thread", async () => {
+  const p2 = heldPageTwo(() => ({ items: [] }));
+  stubFetch(p2.route, createRoute);
+  const root = await mount();
+  await click(root, "Load more notes");
+  submitNew(root, "made mid-page");
+  await flush();
+  // Held: not yet in the list while the page is in flight.
+  expect(
+    root.querySelector("ol[aria-label='Notes']")?.textContent,
+  ).not.toContain("made mid-page");
+  p2.release();
+  await flush();
+  const items = [...root.querySelectorAll("ol[aria-label='Notes'] > li")];
+  expect(items).toHaveLength(2);
+  expect(items[1].textContent).toContain("made mid-page");
+});
+
+test("a note held during Load more is reported when more pages still follow", async () => {
+  const p2 = heldPageTwo(() => ({ items: [], next: "p3" }));
+  stubFetch(p2.route, createRoute);
+  const root = await mount();
+  await click(root, "Load more notes");
+  submitNew(root, "made mid-page");
+  await flush();
+  p2.release();
+  await flush();
+  expect(
+    root.querySelector("ol[aria-label='Notes']")?.textContent,
+  ).not.toContain("made mid-page");
+  expect(root.textContent).toContain("appears at the end of the thread");
+});
+
+test("a note held for one incident is never placed into another incident's thread", async () => {
+  const ID2 = "00000000-0000-4000-8000-000000000002";
+  let releaseFirst: () => void = () => {};
+  stubFetch((c) => {
+    if (c.method !== "GET" || !c.url.includes("/notes")) return undefined;
+    if (c.url.includes(ID2)) return json(200, { data: [], metadata: {} });
+    return new Promise<Response>((resolve) => {
+      releaseFirst = () => resolve(json(200, { data: [], metadata: {} }));
+    });
+  }, createRoute);
+  const root = await mount();
+  submitNew(root, "made mid-page");
+  await flush();
+  // The view switches to another incident while the first load is held.
+  act(() =>
+    render(
+      <IncidentNotes incidentId={ID2} canAnnotate currentUserId="alice" />,
+      host as HTMLElement,
+    ),
+  );
+  await flush();
+  releaseFirst();
+  await flush();
+  expect(root.textContent).not.toContain("made mid-page");
+  expect(root.textContent).toContain("No notes yet.");
+});

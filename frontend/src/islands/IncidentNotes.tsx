@@ -233,6 +233,15 @@ export default function IncidentNotes({
    * load settles instead of being appended (and then erased) immediately.
    */
   const pendingNotes = useRef<NoteView[]>([]);
+  // Within one incident no load is ever superseded while one is in flight
+  // (every issuer waits for `loading`), so a held note always meets the load
+  // it waited for. A different incident's thread is another matter: its
+  // load must never place this incident's notes.
+  useEffect(() => {
+    return () => {
+      pendingNotes.current = [];
+    };
+  }, [incidentId]);
 
   const { cursor, seq } = request.value;
   useEffect(() => {
@@ -384,15 +393,15 @@ export default function IncidentNotes({
       return;
     }
     editing.value = { ...e, saving: true, error: null };
-    // The result belongs to this note's editor only; never apply it to
-    // another one.
-    const stillThis = () => editing.peek()?.noteId === e.noteId;
+    // The result belongs to this note's editor only. Nothing can replace or
+    // close the editor while `saving` is set (startEdit, cancelEdit, setDraft
+    // and a conflict reload all refuse), so the editor open when the result
+    // lands is still this one.
     try {
       const saved = await updateNote(incidentId, e.noteId, e.draft, e.revision);
       notes.value = notes.value.map((n) => (n.id === saved.id ? saved : n));
-      if (stillThis()) editing.value = null;
+      editing.value = null;
     } catch (err) {
-      if (!stillThis()) return;
       const current = editing.peek() ?? e;
       if (err instanceof ApiError && err.reason === "note_revision_conflict") {
         editing.value = {

@@ -1,5 +1,5 @@
 /** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { render } from "preact";
 import { act } from "preact/test-utils";
@@ -933,4 +933,66 @@ test("an unmounted timeline frees its live-link slots and drops its queued reads
   expect(calls.slice(6).every((c) => c.url.includes("/shop/b"))).toBe(true);
   for (const release of held.splice(0)) release();
   await flush();
+});
+
+// --- Review round 3 ---------------------------------------------------------
+
+test("a hung live-link read times out after 10s, shows it, and frees its slot", async () => {
+  // Microtask-only flush: setTimeout is faked for this test.
+  const settle = () =>
+    act(async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
+  stubFetch();
+  // Reads that never answer; like fetch, they reject when aborted.
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), method: "GET", headers: new Headers() });
+    return new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("Aborted", "AbortError")),
+      );
+    });
+  }) as typeof globalThis.fetch;
+  jest.useFakeTimers();
+  try {
+    const items = Array.from({ length: 7 }, (_, i) =>
+      evidence(i, {
+        id: `t${i}`,
+        mode: "live_link",
+        payload: undefined,
+        source: { ...evidence(i).source, name: `t${i}` },
+      }),
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() =>
+      render(<IncidentEvidenceTimeline items={items} />, host as HTMLElement),
+    );
+    await settle();
+    expect(calls).toHaveLength(6);
+    expect(host.querySelectorAll('[data-live-state="checking"]')).toHaveLength(
+      7,
+    );
+
+    jest.advanceTimersByTime(9_999);
+    await settle();
+    expect(calls).toHaveLength(6);
+
+    jest.advanceTimersByTime(1);
+    await settle();
+    // The six hung reads gave up and say so; the queued seventh started.
+    expect(host.querySelectorAll('[data-live-state="error"]')).toHaveLength(6);
+    expect(host.textContent).toContain(
+      "The live object could not be checked right now.",
+    );
+    expect(calls).toHaveLength(7);
+    expect(calls[6].url).toContain("/shop/t6");
+
+    // The seventh read times out on its own clock too.
+    jest.advanceTimersByTime(10_000);
+    await settle();
+    expect(host.querySelectorAll('[data-live-state="error"]')).toHaveLength(7);
+  } finally {
+    jest.useRealTimers();
+  }
 });
