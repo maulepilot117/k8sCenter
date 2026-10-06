@@ -121,7 +121,7 @@ const (
 	// ReasonExportFormatInvalid: ?format is not json or markdown (400; no
 	// HTML export exists, Q1 P12).
 	ReasonExportFormatInvalid = "export_format_invalid"
-	// ReasonCaptureOutcomeUnknown: the store's COMMIT answer never arrived
+	// ReasonCaptureOutcomeUnknown: the store's COMMIT result is ambiguous
 	// (503 + Retry-After); the capture may or may not be durable, and a
 	// retry is safe because duplicates are ignored.
 	ReasonCaptureOutcomeUnknown = "incident_capture_outcome_unknown"

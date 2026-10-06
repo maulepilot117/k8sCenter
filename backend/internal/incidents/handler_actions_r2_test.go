@@ -386,10 +386,22 @@ func TestExportJSONEnvelopeParity(t *testing.T) {
 	empty := &ExportDocument{Schema: exportSchema, ExportedAt: fixedNow, ExportedBy: alice.ID,
 		WithheldByReason: map[string]int{}, Evidence: []Evidence{}, Withheld: []WithheldEvidence{}, Notes: []NoteView{}}
 
+	// Every field non-zero, truncation included, so no omitempty field can
+	// hide from the comparison.
+	everything := *full
+	everything.Truncated = true
+	everything.Truncation = &ExportTruncation{EvidenceOmitted: 2, WithheldOmitted: 1, NotesOmitted: true}
+	v := reflect.ValueOf(everything)
+	for i := range v.NumField() {
+		if f := v.Field(i); f.IsZero() || (f.Kind() == reflect.Slice || f.Kind() == reflect.Map) && f.Len() == 0 {
+			t.Fatalf("fixture: ExportDocument.%s is empty in the every-field document", v.Type().Field(i).Name)
+		}
+	}
+
 	for _, tc := range []struct {
 		name string
 		doc  *ExportDocument
-	}{{"populated, not truncated", full}, {"all arrays empty", empty}, {"truncated", truncated}} {
+	}{{"populated, not truncated", full}, {"all arrays empty", empty}, {"truncated", truncated}, {"every field non-zero", &everything}} {
 		t.Run(tc.name, func(t *testing.T) {
 			want, err := json.Marshal(tc.doc)
 			if err != nil {

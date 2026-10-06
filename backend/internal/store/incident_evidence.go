@@ -844,6 +844,9 @@ func (s *IncidentEvidenceStore) insertValidated(
 //     PgError of severity ERROR outside SQLSTATE classes 57 and 08 (for
 //     example 40001 serialization failure, 23xxx integrity violations) are
 //     definite failures: nothing was written.
+//   - Severity is SeverityUnlocalized, or the localized Severity when the
+//     server sent none; a Code shorter than two characters has no class
+//     and is judged by severity alone.
 //   - A PgError of severity FATAL or PANIC, or of class 57 (operator
 //     intervention, e.g. 57P01 admin shutdown) or 08 (connection
 //     exception), is outcome unknown: the server can raise these after the

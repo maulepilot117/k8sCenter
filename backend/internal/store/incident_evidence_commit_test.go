@@ -86,6 +86,12 @@ func TestClassifyCommitError(t *testing.T) {
 		{"unexpected EOF", io.ErrUnexpectedEOF, true},
 		{"network error", &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}, true},
 		{"commit bound passed", context.DeadlineExceeded, true},
+		// Older servers send only the localized Severity: it is the fallback.
+		{"localized-only FATAL", &pgconn.PgError{Severity: "FATAL", Code: "XX000"}, true},
+		{"localized-only ERROR 40001", &pgconn.PgError{Severity: "ERROR", Code: "40001"}, false},
+		// A Code shorter than two characters has no class: severity decides.
+		{"short code at ERROR", pg("ERROR", "5"), false},
+		{"empty code at FATAL", pg("FATAL", ""), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

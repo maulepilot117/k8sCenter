@@ -290,11 +290,12 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// exportEnvelopeFields is every ExportDocument JSON field, in the order
-// writeExportJSON writes them. A reflection test compares it with the
-// struct's json tags, so a field added to ExportDocument without a matching
-// line in the writer fails the build's tests instead of silently vanishing
-// from exports.
+// exportEnvelopeFields is every ExportDocument JSON field, in order.
+// writeExportJSON iterates it and dispatches on each name, failing on a
+// name it has no case for; a reflection test compares it with the struct's
+// json tags. Together they make a field added to ExportDocument fail the
+// tests until the writer emits it, instead of silently vanishing from
+// exports.
 var exportEnvelopeFields = [...]string{
 	"schema", "exportedAt", "exportedBy", "incident", "counts", "withheldByReason",
 	"evidence", "withheld", "notes", "truncated", "truncation",
@@ -323,25 +324,16 @@ func writeExportJSON(w *bufio.Writer, doc *ExportDocument) error {
 		}
 		return bytes.TrimSuffix(scratch.Bytes(), []byte{0x0a}), nil // drop Encode's newline
 	}
-	field := func(name string, v any, last bool) error {
+	field := func(v any) error {
 		b, err := marshal(v)
 		if err != nil {
 			return err
 		}
-		w.WriteString("  \"")
-		w.WriteString(name)
-		w.WriteString("\": ")
-		w.Write(b)
-		if !last {
-			w.WriteString(",")
-		}
-		_, err = w.WriteString("\n")
+		_, err = w.Write(b)
 		return err
 	}
-	array := func(name string, n int, element func(i int) any) error {
-		w.WriteString("  \"")
-		w.WriteString(name)
-		w.WriteString("\": [")
+	array := func(n int, element func(i int) any) error {
+		w.WriteString("[")
 		for i := range n {
 			if i > 0 {
 				w.WriteString(",")
@@ -356,39 +348,57 @@ func writeExportJSON(w *bufio.Writer, doc *ExportDocument) error {
 		if n > 0 {
 			w.WriteString("\n  ")
 		}
-		_, err := w.WriteString("],\n")
+		_, err := w.WriteString("]")
 		return err
 	}
-	w.WriteString("{\n")
-	for _, f := range []struct {
-		name string
-		v    any
-	}{
-		{"schema", doc.Schema}, {"exportedAt", doc.ExportedAt}, {"exportedBy", doc.ExportedBy},
-		{"incident", doc.Incident}, {"counts", doc.Counts}, {"withheldByReason", doc.WithheldByReason},
-	} {
-		if err := field(f.name, f.v, false); err != nil {
+	// Each field is written as `  "name": value`, separated by ",\n"; the
+	// list drives the order, and a name without a case below fails every
+	// export rather than being dropped.
+	w.WriteString("{")
+	wrote := false
+	for _, name := range exportEnvelopeFields {
+		if name == "truncation" && doc.Truncation == nil {
+			continue // omitempty, as json.Marshal
+		}
+		if wrote {
+			w.WriteString(",")
+		}
+		wrote = true
+		w.WriteString("\n  \"")
+		w.WriteString(name)
+		w.WriteString("\": ")
+		var err error
+		switch name {
+		case "schema":
+			err = field(doc.Schema)
+		case "exportedAt":
+			err = field(doc.ExportedAt)
+		case "exportedBy":
+			err = field(doc.ExportedBy)
+		case "incident":
+			err = field(doc.Incident)
+		case "counts":
+			err = field(doc.Counts)
+		case "withheldByReason":
+			err = field(doc.WithheldByReason)
+		case "evidence":
+			err = array(len(doc.Evidence), func(i int) any { return doc.Evidence[i] })
+		case "withheld":
+			err = array(len(doc.Withheld), func(i int) any { return doc.Withheld[i] })
+		case "notes":
+			err = array(len(doc.Notes), func(i int) any { return doc.Notes[i] })
+		case "truncated":
+			err = field(doc.Truncated)
+		case "truncation":
+			err = field(doc.Truncation)
+		default:
+			err = fmt.Errorf("unknown export envelope field %q", name)
+		}
+		if err != nil {
 			return err
 		}
 	}
-	if err := array("evidence", len(doc.Evidence), func(i int) any { return doc.Evidence[i] }); err != nil {
-		return err
-	}
-	if err := array("withheld", len(doc.Withheld), func(i int) any { return doc.Withheld[i] }); err != nil {
-		return err
-	}
-	if err := array("notes", len(doc.Notes), func(i int) any { return doc.Notes[i] }); err != nil {
-		return err
-	}
-	if err := field("truncated", doc.Truncated, doc.Truncation == nil); err != nil {
-		return err
-	}
-	if doc.Truncation != nil {
-		if err := field("truncation", doc.Truncation, true); err != nil {
-			return err
-		}
-	}
-	_, err := w.WriteString("}\n")
+	_, err := w.WriteString("\n}\n")
 	return err
 }
 

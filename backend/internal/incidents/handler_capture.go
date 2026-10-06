@@ -185,12 +185,14 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 		inserted, err = h.evidence.InsertBatch(ctx, id, user.ID, rows, h.limits.EvidenceLimits())
 		switch {
 		case errors.Is(err, store.ErrCommitOutcomeUnknown):
-			// The COMMIT's answer never arrived: the batch may be durable.
+			// The COMMIT's result is ambiguous (no reply, the commit bound
+			// passed, or a FATAL/PANIC, class 57 or class 08 reply that can
+			// follow a local commit): the batch may be durable.
 			// Never claim "nothing was recorded"; a retry is safe (P15
 			// de-duplication).
 			h.logger.Warn("incident capture commit outcome unknown", "incidentId", id, "error", err)
 			h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
-				detail+": outcome unknown (commit unanswered)")
+				detail+": outcome unknown (commit result ambiguous)")
 			w.Header().Set("Retry-After", "1")
 			httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable,
 				"the capture may or may not have been recorded; retrying is safe (duplicates are ignored)",
