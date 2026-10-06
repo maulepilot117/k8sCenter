@@ -290,6 +290,16 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// exportEnvelopeFields is every ExportDocument JSON field, in the order
+// writeExportJSON writes them. A reflection test compares it with the
+// struct's json tags, so a field added to ExportDocument without a matching
+// line in the writer fails the build's tests instead of silently vanishing
+// from exports.
+var exportEnvelopeFields = [...]string{
+	"schema", "exportedAt", "exportedBy", "incident", "counts", "withheldByReason",
+	"evidence", "withheld", "notes", "truncated", "truncation",
+}
+
 // exportWriteBuffer is the bufio.Writer size both formats stream through.
 const exportWriteBuffer = 64 << 10
 
@@ -301,6 +311,8 @@ const exportWriteBuffer = 64 << 10
 // reused across elements (so the steady-state allocation does not grow
 // with the element count); elements are compact and the envelope is
 // indented two spaces, so the file still reads as a document.
+// buildExport never leaves the three arrays nil; a nil slice would be
+// written as [] where json.Marshal writes null.
 func writeExportJSON(w *bufio.Writer, doc *ExportDocument) error {
 	var scratch bytes.Buffer
 	enc := json.NewEncoder(&scratch) // HTML escaping on, as json.Marshal

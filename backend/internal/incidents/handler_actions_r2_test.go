@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -345,5 +346,80 @@ func TestExportStreamFailureAfterHeadersIsLoggedAtWarn(t *testing.T) {
 		if acts := hs.audit.actions(); len(acts) != 1 || acts[0] != "incident_export:success" {
 			t.Fatalf("%s: audit = %v", format, acts)
 		}
+	}
+}
+
+// streamedCompact runs writeExportJSON and compacts its output.
+func streamedCompact(t *testing.T, doc *ExportDocument) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	bw := bufio.NewWriterSize(&buf, exportWriteBuffer)
+	if err := writeExportJSON(bw, doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := bw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, buf.Bytes()); err != nil {
+		t.Fatalf("streamed JSON is invalid: %v\n%s", err, buf.String())
+	}
+	return compact.Bytes()
+}
+
+// TestExportJSONEnvelopeParity (PR #583 round 3): the hand-written
+// envelope is byte-equal, once compacted, to json.Marshal of the same
+// document for every envelope shape: populated and not truncated, all
+// three arrays empty, and truncated (the only shape with "truncation").
+func TestExportJSONEnvelopeParity(t *testing.T) {
+	hs, id := mixedFixture(t)
+	full := hs.buildDoc(t, alice, id)
+	if full.Truncated || full.Truncation != nil || len(full.Evidence) == 0 || len(full.Withheld) == 0 || len(full.Notes) == 0 {
+		t.Fatalf("fixture: want a populated, untruncated document; got truncated %t, %d/%d/%d",
+			full.Truncated, len(full.Evidence), len(full.Withheld), len(full.Notes))
+	}
+	hs.h.exportMax = exportWithheldOverhead - 1 // nothing fits
+	truncated := hs.buildDoc(t, alice, id)
+	if !truncated.Truncated || truncated.Truncation == nil {
+		t.Fatal("fixture: want a truncated document")
+	}
+	empty := &ExportDocument{Schema: exportSchema, ExportedAt: fixedNow, ExportedBy: alice.ID,
+		WithheldByReason: map[string]int{}, Evidence: []Evidence{}, Withheld: []WithheldEvidence{}, Notes: []NoteView{}}
+
+	for _, tc := range []struct {
+		name string
+		doc  *ExportDocument
+	}{{"populated, not truncated", full}, {"all arrays empty", empty}, {"truncated", truncated}} {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := json.Marshal(tc.doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := streamedCompact(t, tc.doc); !bytes.Equal(got, want) {
+				t.Fatalf("streamed envelope differs from json.Marshal:\n got %s\nwant %s", got, want)
+			}
+		})
+	}
+}
+
+// TestExportEnvelopeCoversEveryDocumentField fails when ExportDocument
+// gains (or reorders) a JSON field that writeExportJSON's hand-written
+// envelope (exportEnvelopeFields) does not emit in the same order.
+func TestExportEnvelopeCoversEveryDocumentField(t *testing.T) {
+	var tags []string
+	typ := reflect.TypeFor[ExportDocument]()
+	for i := range typ.NumField() {
+		f := typ.Field(i)
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if !f.IsExported() || name == "-" {
+			continue
+		}
+		if name == "" {
+			name = f.Name
+		}
+		tags = append(tags, name)
+	}
+	if !reflect.DeepEqual(tags, exportEnvelopeFields[:]) {
+		t.Fatalf("ExportDocument JSON fields %v; the streamed envelope writes %v", tags, exportEnvelopeFields)
 	}
 }

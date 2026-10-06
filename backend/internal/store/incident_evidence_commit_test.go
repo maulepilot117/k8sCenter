@@ -3,8 +3,14 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // TestInsertBatchCommitRunsFreeOfCallerCancellation (PR #583 round 2):
@@ -51,5 +57,48 @@ func TestErrCommitOutcomeUnknownIsDistinct(t *testing.T) {
 	}
 	if incidentCommitTimeout <= 0 || incidentCommitTimeout > incidentLockTimeout*2 {
 		t.Fatalf("incidentCommitTimeout = %s; want a short positive bound", incidentCommitTimeout)
+	}
+}
+
+// TestClassifyCommitError (PR #583 round 3) pins which COMMIT failures
+// read as "nothing was written" and which as "outcome unknown". A server
+// ERROR reply or a reported rollback means the transaction did not commit;
+// a FATAL/PANIC reply, an admin-shutdown (57) or connection-exception (08)
+// SQLSTATE, a transport error and the commit bound passing can all arrive
+// after the server committed locally.
+func TestClassifyCommitError(t *testing.T) {
+	pg := func(severity, code string) error {
+		return &pgconn.PgError{Severity: severity, SeverityUnlocalized: severity, Code: code, Message: "x"}
+	}
+	cases := []struct {
+		name    string
+		err     error
+		unknown bool
+	}{
+		{"server reported rollback", pgx.ErrTxCommitRollback, false},
+		{"serialization failure", pg("ERROR", "40001"), false},
+		{"unique violation", pg("ERROR", "23505"), false},
+		{"wrapped ERROR reply", fmt.Errorf("commit: %w", pg("ERROR", "40P01")), false},
+		{"admin shutdown FATAL", pg("FATAL", "57P01"), true},
+		{"PANIC", pg("PANIC", "XX000"), true},
+		{"class 57 at ERROR severity", pg("ERROR", "57014"), true},
+		{"class 08 connection exception", pg("ERROR", "08006"), true},
+		{"unexpected EOF", io.ErrUnexpectedEOF, true},
+		{"network error", &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}, true},
+		{"commit bound passed", context.DeadlineExceeded, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyCommitError(tc.err)
+			if got == nil {
+				t.Fatal("classifyCommitError returned nil for a failed COMMIT")
+			}
+			if !errors.Is(got, tc.err) {
+				t.Fatalf("classified error %v no longer wraps the cause %v", got, tc.err)
+			}
+			if errors.Is(got, ErrCommitOutcomeUnknown) != tc.unknown {
+				t.Fatalf("classifyCommitError(%v): outcome unknown = %t, want %t", tc.err, !tc.unknown, tc.unknown)
+			}
+		})
 	}
 }

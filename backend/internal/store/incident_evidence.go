@@ -66,11 +66,13 @@ var (
 	ErrIncidentBusy = errors.New("incident is busy")
 
 	// ErrCommitOutcomeUnknown wraps an InsertBatch error raised by the COMMIT
-	// itself when the server's answer never arrived (I/O failure, the commit
-	// bound passed): the batch may or may not be durable. Every other
-	// InsertBatch error, context errors included, is raised before the
-	// commit and means nothing was written. Retrying is safe: capture_key
-	// de-duplication ignores rows that did land.
+	// itself when its outcome is unknown (no reply: I/O failure, the commit
+	// bound passed; or a FATAL/PANIC, class 57 or class 08 reply, which can
+	// follow a local commit; see classifyCommitError): the batch may or may
+	// not be durable. Every other InsertBatch error, context errors
+	// included, is raised before the commit or proves the commit failed, and
+	// means nothing was written. Retrying is safe: capture_key de-duplication
+	// ignores rows that did land.
 	ErrCommitOutcomeUnknown = errors.New("incident evidence commit outcome unknown")
 )
 
@@ -829,15 +831,45 @@ func (s *IncidentEvidenceStore) insertValidated(
 	commitCtx, cancelCommit := context.WithTimeout(context.WithoutCancel(ctx), incidentCommitTimeout)
 	defer cancelCommit()
 	if err := tx.Commit(commitCtx); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.Is(err, pgx.ErrTxCommitRollback) || errors.As(err, &pgErr) {
-			// The server answered (a rollback or an error response to the
-			// COMMIT): the transaction did not commit, nothing was written.
-			return 0, fmt.Errorf("commit incident evidence tx: %w", err)
-		}
-		return 0, fmt.Errorf("%w: commit incident evidence tx: %w", ErrCommitOutcomeUnknown, err)
+		return 0, classifyCommitError(err)
 	}
 	return inserted, nil
+}
+
+// classifyCommitError wraps a failed COMMIT, marking it
+// ErrCommitOutcomeUnknown unless the server's reply proves the transaction
+// did not commit. The rule:
+//
+//   - pgx.ErrTxCommitRollback (the server reported a rollback) and a
+//     PgError of severity ERROR outside SQLSTATE classes 57 and 08 (for
+//     example 40001 serialization failure, 23xxx integrity violations) are
+//     definite failures: nothing was written.
+//   - A PgError of severity FATAL or PANIC, or of class 57 (operator
+//     intervention, e.g. 57P01 admin shutdown) or 08 (connection
+//     exception), is outcome unknown: the server can raise these after the
+//     commit is already durable locally (a synchronous-replication wait
+//     cut short by a shutdown or a terminated backend).
+//   - Anything else (I/O and network errors, the incidentCommitTimeout
+//     bound passing) means the reply never arrived: outcome unknown.
+func classifyCommitError(err error) error {
+	if errors.Is(err, pgx.ErrTxCommitRollback) {
+		return fmt.Errorf("commit incident evidence tx: %w", err)
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		severity := pgErr.SeverityUnlocalized
+		if severity == "" {
+			severity = pgErr.Severity
+		}
+		class := ""
+		if len(pgErr.Code) >= 2 {
+			class = pgErr.Code[:2]
+		}
+		if severity != "FATAL" && severity != "PANIC" && class != "57" && class != "08" {
+			return fmt.Errorf("commit incident evidence tx: %w", err)
+		}
+	}
+	return fmt.Errorf("%w: commit incident evidence tx: %w", ErrCommitOutcomeUnknown, err)
 }
 
 // insertEvidenceRows pipelines the inserts in one round trip and sums the rows

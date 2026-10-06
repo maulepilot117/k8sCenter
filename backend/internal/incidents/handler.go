@@ -232,6 +232,11 @@ type Handler struct {
 // global slot. captureConcurrency bounds how many captures fan out
 // impersonated reads at once (each already bounded by
 // Limits.MaxConcurrency sources).
+//
+// All three caps are per process. With N backend replicas a user can run N
+// exports at once (one per replica) and the cluster-wide peak export memory
+// is N times the per-replica bound. That is acceptable at the chart's
+// default replicaCount of 1; scaling out multiplies both.
 const (
 	exportConcurrency  = 2
 	exportPerUser      = 1
