@@ -58,9 +58,15 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  * another, the dialog looks for an open incident the caller owns with this
  * target's title and summary (the summary carries the full, untruncated
  * target) created since the click. Exactly one match is reused; several are
- * reported so the operator picks one from the list. If the lookup itself
- * fails, a marker is kept and the next attempt looks again from the same
- * click before it may create. The heuristic has limits: it allows 2 minutes
+ * reported so the operator picks one from the list (the marker stays until
+ * they do, so a retry looks again rather than creating). If the lookup
+ * itself fails, the marker is kept too. A marker is also written before every
+ * create, so a remounted island clicked while that create is still in flight
+ * looks for it instead of creating; for 30 s (the proxy's request timeout) a
+ * lookup that finds nothing does not license a create either. Every write a
+ * flow makes after its create is conditional on the stored record still
+ * being that flow's, so a create answering late cannot overwrite what a
+ * newer flow recorded. The heuristic has limits: it allows 2 minutes
  * of browser/server clock skew, reads only the first 50 rows of the list
  * (newest first), and cannot tell two creates of the same target inside that
  * window apart. A server-side create idempotency key is the full fix and is a
@@ -77,6 +83,12 @@ const LIST_PAGE_SIZE = 50;
  * and the server.
  */
 const CREATE_MATCH_SLACK_MS = 2 * 60 * 1000;
+/**
+ * How long a create may still be in flight: the frontend proxy gives up on a
+ * request after 30 s (PROXY_TIMEOUT_MS in server/api-proxy.ts). Until then a
+ * `creating` marker whose lookup finds nothing does not license a new create.
+ */
+const CREATE_IN_FLIGHT_MS = 30 * 1000;
 const PENDING_STORAGE_PREFIX = "kubecenter.capture-pending:";
 const DIALOG_TITLE_ID = "capture-to-incident-title";
 const REASON_ID = "capture-to-incident-reason";
@@ -98,13 +110,16 @@ const incidentHref = (id: string) =>
  * What a target remembers between attempts, and across remounts:
  *   - `id`: an incident this dialog created whose capture has not succeeded;
  *     the next attempt captures into it instead of creating another.
- *   - `lookup`: a create whose outcome was lost AND whose follow-up lookup
- *     failed too; the next attempt looks again (from the same click time)
- *     before it may create.
+ *   - `lookup`: a create that may have committed without this island
+ *     knowing its id: one in flight (`creating`, written before the request
+ *     so a remount mid-create cannot create a second), one whose response was
+ *     lost and whose follow-up lookup failed, or one with several candidates.
+ *     The next attempt looks again (from the same click time) before it may
+ *     create.
  */
 interface PendingRecord {
   id?: string;
-  lookup?: { clickedAt: number };
+  lookup?: { clickedAt: number; creating?: boolean };
 }
 
 /**
@@ -131,9 +146,15 @@ function parsePending(raw: string | null): PendingRecord | null {
     const { id, lookup } = v as Record<string, unknown>;
     const rec: PendingRecord = {};
     if (typeof id === "string" && id) rec.id = id;
-    const at = (lookup as { clickedAt?: unknown } | undefined)?.clickedAt;
+    const marker = lookup as
+      | { clickedAt?: unknown; creating?: unknown }
+      | undefined;
+    const at = marker?.clickedAt;
     if (typeof at === "number" && Number.isFinite(at)) {
-      rec.lookup = { clickedAt: at };
+      rec.lookup =
+        marker?.creating === true
+          ? { clickedAt: at, creating: true }
+          : { clickedAt: at };
     }
     return rec.id || rec.lookup ? rec : null;
   } catch {
@@ -342,6 +363,8 @@ export default function CaptureToIncidentButton({
    * load in flight across a switch still settles its own flags.
    */
   const lifetime = useRef<AbortController | null>(null);
+  /** A first-page picker reload was asked for while a load was in flight. */
+  const reloadQueued = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -379,7 +402,12 @@ export default function CaptureToIncidentButton({
         : null;
 
   const loadOwned = async (cursor?: string) => {
-    if (listLoading.peek()) return;
+    if (listLoading.peek()) {
+      // A first-page reload asked for mid-load (the several-candidates
+      // refresh) runs once the current load settles, so it cannot be lost.
+      if (!cursor) reloadQueued.current = true;
+      return;
+    }
     listLoading.value = true;
     listError.value = null;
     const signal = lifetime.current?.signal;
@@ -403,7 +431,13 @@ export default function CaptureToIncidentButton({
       }
       listError.value = "Could not load your open incidents.";
     } finally {
-      if (!signal?.aborted) listLoading.value = false;
+      if (!signal?.aborted) {
+        listLoading.value = false;
+        if (reloadQueued.current) {
+          reloadQueued.current = false;
+          void loadOwned();
+        }
+      }
     }
   };
 
@@ -449,12 +483,26 @@ export default function CaptureToIncidentButton({
     return captureEvidence(id, clusterId, { namespace, kind, name }, signal);
   };
 
-  /** Writes or clears the pending record, re-rendering while mounted. */
-  const setPending = (rec: PendingRecord | null, signal?: AbortSignal) => {
+  /**
+   * Writes or clears the pending record, re-rendering while mounted. With
+   * `owns`, the write happens only while the stored record still belongs to
+   * the calling flow, so a flow that outlived its island (a create answering
+   * after a remount) cannot overwrite what a newer flow recorded since.
+   */
+  const setPending = (
+    rec: PendingRecord | null,
+    signal?: AbortSignal,
+    owns?: (current: PendingRecord | null) => boolean,
+  ) => {
+    if (owns && !owns(readPending(key))) return;
     if (rec) writePending(key, rec);
     else clearPending(key);
     if (!signal?.aborted) pendingVersion.value++;
   };
+
+  /** The stored record is the lookup marker of the click at `clickedAt`. */
+  const markerOf = (clickedAt: number) => (current: PendingRecord | null) =>
+    !current?.id && current?.lookup?.clickedAt === clickedAt;
 
   // The new incident's title and summary. The summary carries the full,
   // untruncated target, so it (not the title, which a long name truncates)
@@ -491,30 +539,35 @@ export default function CaptureToIncidentButton({
   };
 
   /**
-   * Settles a lost-create lookup: one match is adopted, none returns null
-   * (the caller may create), and several, or a failed lookup, stop with the
-   * possible-duplicate message. A failed lookup leaves a marker so the next
-   * attempt looks again from the same click instead of creating.
+   * Settles a lookup for the click at `clickedAt`. One match is adopted. None
+   * returns null (the caller may create), unless `stillCreating`: a create
+   * for that click may not have landed yet, so the marker stays. Several,
+   * or a failed lookup, keep the marker and stop with the possible-duplicate
+   * message, so a retry looks again instead of creating. Every write is
+   * conditional on the marker still being this click's.
    */
   const adoptLookup = (
     found: IncidentView[] | null,
     clickedAt: number,
     signal?: AbortSignal,
+    stillCreating = false,
   ): string | null => {
+    const owns = markerOf(clickedAt);
     if (found === null) {
-      setPending({ lookup: { clickedAt } }, signal);
+      setPending({ lookup: { clickedAt } }, signal, owns);
       throw new PossibleDuplicateCreate();
     }
     if (found.length > 1) {
-      setPending(null, signal);
+      setPending({ lookup: { clickedAt } }, signal, owns);
       if (!signal?.aborted) void loadOwned();
       throw new PossibleDuplicateCreate();
     }
     if (found.length === 1) {
-      setPending({ id: found[0].id }, signal);
+      setPending({ id: found[0].id }, signal, owns);
       return found[0].id;
     }
-    setPending(null, signal);
+    if (stillCreating) throw new PossibleDuplicateCreate();
+    setPending(null, signal, owns);
     return null;
   };
 
@@ -523,11 +576,20 @@ export default function CaptureToIncidentButton({
       const pending = readPending(key);
       let id = pending?.id ?? null;
       if (!id && pending?.lookup) {
-        const { clickedAt } = pending.lookup;
-        id = adoptLookup(await findCreatedSince(clickedAt), clickedAt, signal);
+        const { clickedAt, creating } = pending.lookup;
+        id = adoptLookup(
+          await findCreatedSince(clickedAt),
+          clickedAt,
+          signal,
+          creating === true && Date.now() - clickedAt < CREATE_IN_FLIGHT_MS,
+        );
       }
       if (!id) {
         const clickedAt = Date.now();
+        const owns = markerOf(clickedAt);
+        // Recorded before the request: if the island remounts while it is in
+        // flight, the next click looks for this create instead of creating.
+        setPending({ lookup: { clickedAt, creating: true } }, signal);
         // The create and its lookup run without the lifetime signal: a create
         // that reached the server must be recorded even when the island has
         // unmounted, so a remount retries into it instead of creating again.
@@ -538,9 +600,12 @@ export default function CaptureToIncidentButton({
             windowStart: resolveWindowStart(windowStart, clickedAt),
           });
           id = created.incident.id;
-          setPending({ id }, signal);
+          setPending({ id }, signal, owns);
         } catch (err) {
-          if (!createOutcomeUnknown(err)) throw err;
+          if (!createOutcomeUnknown(err)) {
+            setPending(null, signal, owns);
+            throw err;
+          }
           id = adoptLookup(
             await findCreatedSince(clickedAt),
             clickedAt,
@@ -550,23 +615,25 @@ export default function CaptureToIncidentButton({
         }
       }
       if (signal?.aborted) return null;
+      const target = id;
+      const ownsId = (current: PendingRecord | null) => current?.id === target;
       try {
-        await capture(id, signal);
+        await capture(target, signal);
       } catch (err) {
         // The incident cannot take this capture (gone, not ours, closed,
         // full): forget it, so the next attempt creates a fresh one. A
         // transient failure keeps it as the retry target.
-        if (captureRefusedForGood(err)) setPending(null, signal);
+        if (captureRefusedForGood(err)) setPending(null, signal, ownsId);
         throw err;
       }
-      setPending(null, signal);
-      return id;
+      setPending(null, signal, ownsId);
+      return target;
     });
 
   const captureExisting = (id: string) =>
     run(async (signal) => {
       await capture(id, signal);
-      // The target is now captured: no pending incident is owed anymore.
+      // The target is now captured: no pending incident or lookup is owed.
       setPending(null, signal);
       return id;
     });

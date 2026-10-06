@@ -1153,3 +1153,221 @@ test("a lost-create lookup matches on the full target, not a truncated title", a
   expect(captures()).toHaveLength(0);
   expect(root.textContent).toContain("Capture failed");
 });
+
+// --- Review round 3 ---------------------------------------------------------------------
+
+const candidate = (id: string) =>
+  incident({
+    id,
+    title: TITLE,
+    summary: SUMMARY,
+    createdAt: new Date().toISOString(),
+  });
+
+test("several lost-create candidates: a second click looks again instead of creating", async () => {
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) return listOf([candidate("a"), candidate("b")]);
+    if (c.path === "/api/v1/incidents") {
+      return Promise.reject(new TypeError("Failed to fetch"));
+    }
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("may already have been created");
+  expect(stored("local")).toEqual({
+    lookup: { clickedAt: expect.any(Number) },
+  });
+
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(1);
+  expect(root.textContent).toContain("may already have been created");
+  expect(captures()).toHaveLength(0);
+});
+
+test("picking one of several candidates clears the lookup marker", async () => {
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) return listOf([candidate("a"), candidate("b")]);
+    if (c.path === "/api/v1/incidents") {
+      return Promise.reject(new TypeError("Failed to fetch"));
+    }
+    if (c.path === "/api/v1/incidents/b/capture") return captured;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  const rows = root.querySelectorAll(
+    '[data-testid="capture-to-existing-incident"]',
+  );
+  await click(rows[1] as HTMLElement);
+  expect(assigned).toEqual(["/observability/incidents/b"]);
+  expect(stored("local")).toBeNull();
+});
+
+test("the several-candidates refresh is not lost while the picker's first load is in flight", async () => {
+  const first = deferred(empty);
+  let lists = 0;
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) {
+      lists++;
+      return lists === 1
+        ? first.promise
+        : listOf([candidate("a"), candidate("b")]);
+    }
+    if (c.path === "/api/v1/incidents") {
+      return Promise.reject(new TypeError("Failed to fetch"));
+    }
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("may already have been created");
+  first.release();
+  await settle();
+  expect(
+    root.querySelectorAll('[data-testid="capture-to-existing-incident"]'),
+  ).toHaveLength(2);
+});
+
+test("a remount mid-create looks for the in-flight create instead of creating a second", async () => {
+  const held = deferred(created("inc-old"));
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents") return held.promise;
+    return captured;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  act(() => q(root, "capture-to-new-incident").click());
+  await settle();
+  unmount();
+
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(1);
+  expect(root.textContent).toContain("may already have been created");
+
+  // The first create lands; its id becomes the retry target.
+  held.release();
+  await settle();
+  expect(stored("local")).toEqual({ id: "inc-old" });
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(1);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/inc-old/capture",
+  ]);
+});
+
+test("a create answering after a newer flow settled does not overwrite its state", async () => {
+  const held = deferred(created("inc-old"));
+  let lists = 0;
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) {
+      lists++;
+      // The remounted island's lookup finds the first create's incident.
+      return lists >= 2 ? listOf([candidate("inc-old")]) : empty;
+    }
+    if (c.path === "/api/v1/incidents") return held.promise;
+    return captured;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  act(() => q(root, "capture-to-new-incident").click());
+  await settle();
+  unmount();
+
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/inc-old/capture",
+  ]);
+  expect(assigned).toEqual(["/observability/incidents/inc-old"]);
+  expect(stored("local")).toBeNull();
+
+  held.release();
+  await settle();
+  expect(stored("local")).toBeNull();
+  expect(creates()).toHaveLength(1);
+});
+
+const refusals: [string, { status: number; body: unknown }][] = [
+  ["404", json(404, { error: { code: 404, message: "not found" } })],
+  ["403", json(403, { error: { code: 403, message: "forbidden" } })],
+  [
+    "evidence_limit_exceeded",
+    json(413, {
+      error: { code: 413, message: "x", reason: "evidence_limit_exceeded" },
+    }),
+  ],
+  [
+    "scope_limit_exceeded",
+    json(409, {
+      error: { code: 409, message: "x", reason: "scope_limit_exceeded" },
+    }),
+  ],
+];
+
+for (const [label, reply] of refusals) {
+  test(`a pending incident refusing capture with ${label} is forgotten`, async () => {
+    seed("local", { id: "stale" });
+    stub((c) => {
+      if (c.method === "GET") return empty;
+      if (c.path === "/api/v1/incidents/stale/capture") return reply;
+    });
+    const root = await mount({});
+    await click(q(root, "capture-to-incident"));
+    await click(q(root, "capture-to-new-incident"));
+    expect(stored("local")).toBeNull();
+    expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
+  });
+}
+
+test("a tombstone stops shadowing once storage no longer holds the value", async () => {
+  seed("local", { id: "stuck" });
+  breakStorage("removeItem");
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents/stuck/capture") {
+      return json(404, { error: { code: 404, message: "gone" } });
+    }
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  // Storage refused the removal; the tombstone hides the stuck value.
+  expect(stored("local")).toEqual({ id: "stuck" });
+  expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
+
+  restoreStorage?.();
+  globalThis.sessionStorage.clear();
+  unmount();
+  root = await mount({});
+  // The tombstone has healed, so a value written to storage now shows.
+  seed("local", { id: "later" });
+  unmount();
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(RETRY_LABEL);
+});
+
+test("re-running a stored lookup that finds several candidates keeps the marker and creates nothing", async () => {
+  seed("local", { lookup: { clickedAt: Date.now() } });
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) return listOf([candidate("a"), candidate("b")]);
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(0);
+  expect(root.textContent).toContain("may already have been created");
+  expect(stored("local")).toEqual({
+    lookup: { clickedAt: expect.any(Number) },
+  });
+});
