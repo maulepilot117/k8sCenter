@@ -19,8 +19,9 @@
  *   - `captureEvidence` is the exception. It reads a live object, and Release
  *     D captures from the local cluster only. The caller names the cluster the
  *     target was observed on and it is sent as X-Cluster-ID, so a remote target
- *     is refused by the server (400 `remote_capture_unsupported`) instead of
- *     being silently resolved to a same-named object on the local cluster.
+ *     is refused by the server instead of being silently resolved to a
+ *     same-named object on the local cluster. How it is refused depends on the
+ *     caller; see `captureEvidence` and `isRemoteCaptureRefusal`.
  *
  * Paging is cursor-based: pass the previous page's `continue` back; a page
  * without one is the last.
@@ -162,7 +163,26 @@ export async function listEvidence(
 /**
  * `POST /v1/incidents/{id}/capture` (owner only): collects evidence about one
  * object on `clusterId`, the cluster the target was observed on. Only the
- * local cluster is accepted; see the module doc.
+ * local cluster is accepted (see the module doc). A remote `clusterId` is
+ * refused in one of two shapes, and nothing is collected in either:
+ *
+ *   - an admin passes the cluster-access gate and the handler answers 400
+ *     with reason `remote_capture_unsupported`;
+ *   - anyone else is stopped earlier by the ClusterContext middleware with a
+ *     reason-less 403 ("admin role required for remote cluster access").
+ *
+ * Use `isRemoteCaptureRefusal(err, clusterId)` to recognize both. Better
+ * still, a capture UI should not offer capture while the target's cluster is
+ * not the local one, so neither request is sent.
+ *
+ * That 403 also fires api.ts's `onForbidden` callback, like every non-auth
+ * 403. In this app the callback (lib/auth.ts) only re-reads RBAC for the
+ * selected namespace through `GET /v1/auth/me`; it never logs the user out or
+ * redirects, and its re-entry guard collapses bursts. With a remote cluster
+ * selected that re-read can itself 403 for a non-admin, which leaves the RBAC
+ * summary unset (permissive until the next read), the same as for any other
+ * remote 403. That is the existing global behaviour, so it is not changed
+ * here.
  */
 export async function captureEvidence(
   id: string,
@@ -319,4 +339,28 @@ export function isPersistenceUnavailable(err: unknown): boolean {
   return (
     err instanceof ApiError && err.reason === "incident_persistence_unavailable"
   );
+}
+
+/**
+ * True when a `captureEvidence` call to `clusterId` was refused because the
+ * target is not on the local cluster: either the handler's 400
+ * `remote_capture_unsupported` (admin callers) or the cluster middleware's
+ * reason-less 403 (everyone else; see `captureEvidence`).
+ *
+ * The 403 carries no reason, so it is attributed by the cluster the request
+ * was sent to: a reason-less 403 on a capture addressed to a non-local
+ * cluster. For a local `clusterId` a 403 is the owner-only gate and is never
+ * reported here. One overlap remains: an admin who is a collaborator, not the
+ * owner, gets the owner-only 403 before the cluster check runs. Capture is an
+ * owner control, so a UI that offers it only to owners never sees that case.
+ */
+export function isRemoteCaptureRefusal(
+  err: unknown,
+  clusterId: string,
+): boolean {
+  if (!(err instanceof ApiError)) return false;
+  if (err.reason === "remote_capture_unsupported") return true;
+  // The middleware reads an empty X-Cluster-ID as the local cluster too.
+  const local = clusterId === "" || clusterId === INCIDENT_CLUSTER;
+  return err.status === 403 && !err.reason && !local;
 }

@@ -16,6 +16,7 @@ import {
   getIncident,
   incidentErrorNumber,
   isPersistenceUnavailable,
+  isRemoteCaptureRefusal,
   listEvidence,
   listGrants,
   listIncidents,
@@ -57,6 +58,17 @@ interface Recorded {
 interface Reply {
   status: number;
   payload?: unknown;
+  /** When set, the response is held until this settles (an in-flight request). */
+  gate?: Promise<unknown>;
+}
+
+/** A promise the test resolves by hand. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = () => {};
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 const ID = "6f1d3c52-4b1e-4f0a-9c53-0d7a2b8e1f64";
@@ -82,17 +94,19 @@ function stubFetch(...replies: Reply[]) {
       body: typeof init?.body === "string" ? init.body : null,
     });
     const reply = replies[Math.min(i++, replies.length - 1)];
-    if (reply.status === 204) {
-      return Promise.resolve(new Response(null, { status: 204 }));
-    }
-    return Promise.resolve(
-      new Response(JSON.stringify(reply.payload ?? {}), {
-        status: reply.status,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    const respond = () =>
+      reply.status === 204
+        ? new Response(null, { status: 204 })
+        : new Response(JSON.stringify(reply.payload ?? {}), {
+            status: reply.status,
+            headers: { "Content-Type": "application/json" },
+          });
+    return reply.gate ? reply.gate.then(respond) : Promise.resolve(respond());
   }) as typeof globalThis.fetch;
 }
+
+/** The real `location.assign`, restored after a test that spied on it. */
+let originalAssign: Location["assign"] | undefined;
 
 afterEach(() => {
   if (host) {
@@ -102,6 +116,8 @@ afterEach(() => {
   }
   if (original) globalThis.fetch = original;
   original = undefined;
+  if (originalAssign) globalThis.location.assign = originalAssign;
+  originalAssign = undefined;
   setAccessToken(null);
   switchCluster("local", "local");
 });
@@ -541,6 +557,40 @@ test("isPersistenceUnavailable recognizes only the no-database reason", async ()
   expect(isPersistenceUnavailable(new Error("x"))).toBe(false);
 });
 
+test("isRemoteCaptureRefusal: the admin 400 and the middleware's reason-less 403", async () => {
+  const target = { namespace: "a", kind: "Pod", name: "b" } as const;
+
+  // Admin: the handler's own refusal.
+  stubFetch(apiError(400, "remote_capture_unsupported"));
+  const admin = await rejection(captureEvidence(ID, "cluster-r", target));
+  expect(isRemoteCaptureRefusal(admin, "cluster-r")).toBe(true);
+
+  // Non-admin: ClusterContext answers before the handler, with no reason.
+  stubFetch({
+    status: 403,
+    payload: {
+      error: {
+        code: 403,
+        message: "admin role required for remote cluster access",
+      },
+    },
+  });
+  const nonAdmin = await rejection(captureEvidence(ID, "cluster-r", target));
+  expect(isRemoteCaptureRefusal(nonAdmin, "cluster-r")).toBe(true);
+  // The same 403 on a local capture is the owner-only gate, not a remote refusal.
+  expect(isRemoteCaptureRefusal(nonAdmin, "local")).toBe(false);
+  expect(isRemoteCaptureRefusal(nonAdmin, "")).toBe(false);
+
+  // A 403 with a reason, other failures and non-ApiErrors are not it.
+  stubFetch(apiError(403, "something_else"));
+  const reasoned = await rejection(captureEvidence(ID, "cluster-r", target));
+  expect(isRemoteCaptureRefusal(reasoned, "cluster-r")).toBe(false);
+  stubFetch(apiError(409, "incident_closed"));
+  const closed = await rejection(captureEvidence(ID, "cluster-r", target));
+  expect(isRemoteCaptureRefusal(closed, "cluster-r")).toBe(false);
+  expect(isRemoteCaptureRefusal(new Error("x"), "cluster-r")).toBe(false);
+});
+
 // =============================================================================
 // IncidentList island
 // =============================================================================
@@ -549,14 +599,30 @@ const { default: IncidentList } = await import(
   "@/src/islands/IncidentList.tsx"
 );
 
+// The repo has no shared wait-for-condition test utility (ChangeReceipt_test
+// keeps its own `until`), so this file does the same: `until` waits for a
+// condition that must become true, and `flush` (a few macrotask turns) is kept
+// for asserting that something did NOT happen, where there is no condition to
+// wait for.
 const flush = () =>
   act(async () => {
     for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
   });
 
-/** Records navigations instead of performing them. */
+async function until(done: () => boolean, limitMs = 500): Promise<void> {
+  const deadline = Date.now() + limitMs;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error("condition never held");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 2));
+    });
+  }
+}
+
+/** Records navigations instead of performing them; afterEach restores. */
 function spyNavigation(): string[] {
   const visited: string[] = [];
+  originalAssign ??= globalThis.location.assign;
   globalThis.location.assign = (href: string | URL) => {
     visited.push(String(href));
   };
@@ -783,4 +849,304 @@ test("IncidentList: a create error is shown in the form and nothing navigates", 
   expect(form?.querySelector('[role="alert"]')?.textContent).toContain(
     "title must be 1..200 characters",
   );
+});
+
+// --- IncidentList: review round 1 -------------------------------------------
+
+function button(
+  root: ParentNode,
+  label: string,
+): HTMLButtonElement | undefined {
+  return [...root.querySelectorAll("button")].find((b) =>
+    b.textContent?.includes(label),
+  );
+}
+
+async function openForm(root: HTMLElement): Promise<HTMLFormElement> {
+  act(() => button(root, "New incident")?.click());
+  await until(() => root.querySelector("form") !== null);
+  return root.querySelector("form") as HTMLFormElement;
+}
+
+function submit(form: HTMLFormElement) {
+  act(() => {
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+  });
+}
+
+const listCalls = () => calls.filter((c) => c.method === "GET");
+
+test("IncidentList: Load more after a failed page re-requests the same cursor and appends", async () => {
+  stubFetch(
+    {
+      status: 200,
+      payload: { data: [incident(1)], metadata: { continue: "p2" } },
+    },
+    apiError(503, "incident_store_unavailable"),
+    { status: 200, payload: { data: [incident(2)] } },
+  );
+  const root = await mount();
+  act(() => button(root, "Load more")?.click());
+  await until(() => root.querySelector('[role="alert"]') !== null);
+  // The failed page keeps the rows already shown and offers Retry.
+  expect(root.querySelectorAll("tbody tr")).toHaveLength(1);
+  expect(button(root, "Retry")).toBeDefined();
+  expect(button(root, "Load more")).toBeDefined();
+
+  // Load more again: the identical request is issued, not swallowed.
+  act(() => button(root, "Load more")?.click());
+  await until(() => root.querySelectorAll("tbody tr").length === 2);
+  expect(listCalls().map((c) => c.url)).toEqual([
+    "/api/v1/incidents?limit=50",
+    "/api/v1/incidents?limit=50&continue=p2",
+    "/api/v1/incidents?limit=50&continue=p2",
+  ]);
+  expect(root.querySelector('[role="alert"]')).toBeNull();
+  expect(button(root, "Retry")).toBeUndefined();
+});
+
+test("IncidentList: Retry after a failed page re-requests the same cursor and appends", async () => {
+  stubFetch(
+    {
+      status: 200,
+      payload: { data: [incident(1)], metadata: { continue: "p2" } },
+    },
+    apiError(503, "incident_store_unavailable"),
+    { status: 200, payload: { data: [incident(2)] } },
+  );
+  const root = await mount();
+  act(() => button(root, "Load more")?.click());
+  await until(() => button(root, "Retry") !== undefined);
+  act(() => button(root, "Retry")?.click());
+  await until(() => root.querySelectorAll("tbody tr").length === 2);
+  expect(listCalls()[2].url).toBe("/api/v1/incidents?limit=50&continue=p2");
+});
+
+test("IncidentList: a retry clears the stale error while it runs; Retry is inert while busy", async () => {
+  const gate = deferred();
+  stubFetch(apiError(503, "incident_store_unavailable"), {
+    status: 200,
+    payload: { data: [incident(1)] },
+    gate: gate.promise,
+  });
+  const root = await mount();
+  expect(root.querySelector('[role="alert"]')).not.toBeNull();
+
+  const retry = button(root, "Retry");
+  act(() => retry?.click());
+  await until(() => listCalls().length === 2);
+  // In flight: the old message is gone, Retry stays mounted but inactive.
+  expect(root.querySelector('[role="alert"]')).toBeNull();
+  expect(button(root, "Retry")?.getAttribute("aria-disabled")).toBe("true");
+  expect(root.textContent).toContain("Retrying");
+  act(() => button(root, "Retry")?.click());
+  await flush();
+  expect(listCalls()).toHaveLength(2);
+
+  gate.resolve();
+  await until(() => root.querySelectorAll("tbody tr").length === 1);
+  expect(button(root, "Retry")).toBeUndefined();
+});
+
+test("IncidentList: Load more is inert while its page is loading", async () => {
+  const gate = deferred();
+  stubFetch(
+    {
+      status: 200,
+      payload: { data: [incident(1)], metadata: { continue: "p2" } },
+    },
+    { status: 200, payload: { data: [incident(2)] }, gate: gate.promise },
+  );
+  const root = await mount();
+  act(() => button(root, "Load more")?.click());
+  await until(() => listCalls().length === 2);
+  const more = button(root, "Load more");
+  expect(more?.getAttribute("aria-disabled")).toBe("true");
+  act(() => more?.click());
+  await flush();
+  expect(listCalls()).toHaveLength(2);
+  gate.resolve();
+  await until(() => root.querySelectorAll("tbody tr").length === 2);
+});
+
+test("IncidentList: busy list reads say so", async () => {
+  stubFetch(apiError(503, "incident_busy"));
+  const root = await mount();
+  expect(root.querySelector('[role="alert"]')?.textContent).toContain("busy");
+});
+
+test("IncidentList: an unknown status renders neutrally; a collaborator who may annotate is not read-only", async () => {
+  stubFetch({
+    status: 200,
+    payload: {
+      data: [
+        incident(1, {
+          status: "archived" as unknown as IncidentView["status"],
+          role: "collaborator",
+          canAnnotate: true,
+        }),
+      ],
+    },
+  });
+  const root = await mount();
+  const row = root.querySelector("tbody tr");
+  expect(row?.textContent).toContain("archived");
+  expect(row?.textContent).not.toContain("Open");
+  expect(row?.textContent).toContain("Collaborator");
+  expect(row?.textContent).not.toContain("read-only");
+});
+
+test("IncidentList: Cancel closes the form and returns focus to New incident", async () => {
+  stubFetch({ status: 200, payload: { data: [] } });
+  const root = await mount();
+  const form = await openForm(root);
+  act(() => button(form, "Cancel")?.click());
+  await until(() => root.querySelector("form") === null);
+  await until(() => document.activeElement === button(root, "New incident"));
+});
+
+test("IncidentList: Cancel is inert during a create, and the create still opens the incident", async () => {
+  const gate = deferred();
+  const created = incident(9);
+  stubFetch(
+    { status: 200, payload: { data: [] } },
+    {
+      status: 201,
+      payload: { data: { incident: created } },
+      gate: gate.promise,
+    },
+  );
+  const visited = spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "x");
+  await flush();
+  submit(form);
+  await until(() => calls.length === 2);
+  const cancel = button(form, "Cancel");
+  expect(cancel?.getAttribute("aria-disabled")).toBe("true");
+  act(() => cancel?.click());
+  await flush();
+  expect(root.querySelector("form")).not.toBeNull();
+  gate.resolve();
+  await until(() => visited.length === 1);
+  expect(visited).toEqual([`/observability/incidents/${created.id}`]);
+});
+
+test("IncidentList: a create that settles after the form unmounted never navigates", async () => {
+  const gate = deferred();
+  stubFetch(
+    { status: 200, payload: { data: [] } },
+    {
+      status: 201,
+      payload: { data: { incident: incident(3) } },
+      gate: gate.promise,
+    },
+  );
+  const visited = spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "x");
+  await flush();
+  submit(form);
+  await until(() => calls.length === 2);
+  // The create carries the form's lifetime signal.
+  expect(calls[1].signal).toBeInstanceOf(AbortSignal);
+  act(() => render(null, root));
+  gate.resolve();
+  await flush();
+  expect(visited).toEqual([]);
+});
+
+test("IncidentList: a second submit while creating sends nothing", async () => {
+  const gate = deferred();
+  stubFetch(
+    { status: 200, payload: { data: [] } },
+    {
+      status: 201,
+      payload: { data: { incident: incident(4) } },
+      gate: gate.promise,
+    },
+  );
+  spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "x");
+  await flush();
+  submit(form);
+  await until(() => calls.length === 2);
+  submit(form);
+  await flush();
+  expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
+  gate.resolve();
+  await flush();
+});
+
+test("IncidentList: client validation refuses an empty title and an unparseable start", async () => {
+  stubFetch({ status: 200, payload: { data: [] } });
+  spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+
+  setValue(form.querySelector("#incident-title"), "   ");
+  await flush();
+  submit(form);
+  await until(() => form.querySelector('[role="alert"]') !== null);
+  expect(form.querySelector('[role="alert"]')?.textContent).toContain(
+    "Give the incident a title",
+  );
+
+  setValue(form.querySelector("#incident-title"), "x");
+  setValue(form.querySelector("#incident-window-start"), "");
+  await flush();
+  submit(form);
+  await until(
+    () =>
+      form
+        .querySelector('[role="alert"]')
+        ?.textContent?.includes("window starts") ?? false,
+  );
+  expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+});
+
+test("IncidentList: a valid window end is sent on the wire", async () => {
+  stubFetch(
+    { status: 200, payload: { data: [] } },
+    { status: 201, payload: { data: { incident: incident(5) } } },
+  );
+  const visited = spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "x");
+  setValue(form.querySelector("#incident-window-start"), "2026-10-01T09:00");
+  setValue(form.querySelector("#incident-window-end"), "2026-10-01T10:15");
+  await flush();
+  submit(form);
+  await until(() => visited.length === 1);
+  const body = JSON.parse(calls[1].body ?? "");
+  expect(body.windowStart).toBe(new Date("2026-10-01T09:00").toISOString());
+  expect(body.windowEnd).toBe(new Date("2026-10-01T10:15").toISOString());
+});
+
+test("IncidentList: create maps no-database and busy to their own messages", async () => {
+  for (const [reply, text] of [
+    [apiError(503, "incident_persistence_unavailable"), "no database"],
+    [apiError(503, "incident_busy"), "busy"],
+  ] as const) {
+    stubFetch({ status: 200, payload: { data: [] } }, reply);
+    const visited = spyNavigation();
+    const root = await mount();
+    const form = await openForm(root);
+    setValue(form.querySelector("#incident-title"), "x");
+    await flush();
+    submit(form);
+    await until(() => form.querySelector('[role="alert"]') !== null);
+    expect(form.querySelector('[role="alert"]')?.textContent).toContain(text);
+    expect(visited).toEqual([]);
+    act(() => render(null, root));
+    root.remove();
+    host = null;
+  }
 });

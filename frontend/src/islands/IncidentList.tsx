@@ -28,7 +28,11 @@ import { timeAgo } from "@/lib/timeAgo.ts";
  *   - an empty list: offers the form.
  *
  * Paging is cursor-based: "Load more" appends the next page. While it loads
- * the button stays mounted and focused (aria-disabled, not disabled).
+ * the button stays mounted and focused (aria-disabled, not disabled). Every
+ * Load more or Retry activation is a new request with its own sequence
+ * number, so asking again for a page that failed always issues a fetch; the
+ * previous failure's message is cleared as the new attempt starts, and the
+ * Retry control stays mounted (inactive) until that attempt settles.
  *
  * The root element is identical during SSR and after hydration (the loading
  * state renders on the server), so there is no placeholder root to diverge.
@@ -150,9 +154,17 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
   const windowEnd = useSignal("");
   const submitting = useSignal(false);
   const error = useSignal<string | null>(null);
+  /**
+   * Aborted when the form unmounts. A create still in flight then neither
+   * navigates nor writes state; the server may already have committed it,
+   * which is why Cancel itself is inactive while a create is pending.
+   */
+  const lifetime = useRef<AbortController | null>(null);
   // Input does not forward refs, so the field is reached by its id.
   useEffect(() => {
+    lifetime.current = new AbortController();
     document.getElementById(TITLE_ID)?.focus();
+    return () => lifetime.current?.abort();
   }, []);
 
   const submit = async (e: Event) => {
@@ -182,15 +194,21 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
     }
     error.value = null;
     submitting.value = true;
+    const signal = lifetime.current?.signal;
     try {
-      const res = await createIncident({
-        title: title.value.trim(),
-        summary: summary.value,
-        windowStart: start,
-        ...(end ? { windowEnd: end } : {}),
-      });
+      const res = await createIncident(
+        {
+          title: title.value.trim(),
+          summary: summary.value,
+          windowStart: start,
+          ...(end ? { windowEnd: end } : {}),
+        },
+        signal,
+      );
+      if (signal?.aborted) return;
       globalThis.location.assign(incidentHref(res.incident.id));
     } catch (err) {
+      if (signal?.aborted) return;
       error.value = createErrorText(err);
       submitting.value = false;
     }
@@ -272,7 +290,14 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
         >
           {submitting.value ? "Creating…" : "Create incident"}
         </button>
-        <button type="button" onClick={onCancel} class={BUTTON_SECONDARY}>
+        <button
+          type="button"
+          aria-disabled={submitting.value}
+          onClick={() => {
+            if (!submitting.value) onCancel();
+          }}
+          class={BUTTON_SECONDARY}
+        >
           Cancel
         </button>
       </div>
@@ -289,17 +314,22 @@ export default function IncidentList() {
   const loaded = useSignal(false);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
+  /** The last request failed; keeps Retry mounted while it is re-attempted. */
+  const failed = useSignal(false);
   const noDatabase = useSignal(false);
   const formOpen = useSignal(false);
   /**
    * The request to make: the cursor to continue from ("" for the first page)
-   * and a counter so the same request can be retried.
+   * and a sequence number every activation increments, so asking again for
+   * the same cursor still re-runs the fetch effect.
    */
-  const request = useSignal<{ cursor: string; attempt: number }>({
+  const request = useSignal<{ cursor: string; seq: number }>({
     cursor: "",
-    attempt: 0,
+    seq: 0,
   });
   const newButtonRef = useRef<HTMLButtonElement>(null);
+  /** Set when the form closes, so focus returns to its trigger once it renders. */
+  const restoreFocus = useRef(false);
 
   useEffect(() => {
     document.title = "Incidents - k8sCenter";
@@ -308,10 +338,13 @@ export default function IncidentList() {
     };
   }, []);
 
-  const { cursor, attempt } = request.value;
+  const { cursor, seq } = request.value;
   useEffect(() => {
     const controller = new AbortController();
     loading.value = true;
+    // The previous failure is stale once a new attempt starts; Retry stays
+    // mounted through `failed` until this attempt settles.
+    error.value = null;
     listIncidents(
       { limit: PAGE_SIZE, continue: cursor || undefined },
       controller.signal,
@@ -321,7 +354,7 @@ export default function IncidentList() {
         items.value = cursor ? [...items.value, ...page.items] : page.items;
         nextCursor.value = page.continue;
         loaded.value = true;
-        error.value = null;
+        failed.value = false;
         loading.value = false;
       })
       .catch((err) => {
@@ -330,24 +363,37 @@ export default function IncidentList() {
           noDatabase.value = true;
         } else {
           error.value = listErrorText(err);
+          failed.value = true;
         }
         loading.value = false;
       });
     return () => controller.abort();
-  }, [cursor, attempt]);
+  }, [cursor, seq]);
 
+  const issue = (to: string) => {
+    request.value = { cursor: to, seq: request.peek().seq + 1 };
+  };
   const retry = () => {
-    request.value = { cursor, attempt: attempt + 1 };
+    if (loading.value) return;
+    issue(request.peek().cursor);
   };
   const loadMore = () => {
     if (loading.value || !nextCursor.value) return;
-    request.value = { cursor: nextCursor.value, attempt: 0 };
+    issue(nextCursor.value);
   };
   const closeForm = () => {
+    restoreFocus.current = true;
     formOpen.value = false;
-    // The form's controls are gone; return focus to the control that opened it.
-    queueMicrotask(() => newButtonRef.current?.focus());
   };
+  // The form's controls are gone once it closes; return focus to the control
+  // that opened it after that control has rendered again.
+  const formIsOpen = formOpen.value;
+  useEffect(() => {
+    if (!formIsOpen && restoreFocus.current) {
+      restoreFocus.current = false;
+      newButtonRef.current?.focus();
+    }
+  }, [formIsOpen]);
 
   const busy = loading.value;
   const rows = items.value;
@@ -402,25 +448,32 @@ export default function IncidentList() {
         </p>
       )}
 
-      {error.value && (
-        <div role="alert" class="flex flex-col items-start gap-2">
-          <Alert variant="error" class="w-full">
-            {error.value}
-          </Alert>
-          <button
-            type="button"
-            aria-disabled={busy}
-            onClick={() => {
-              if (!busy) retry();
-            }}
-            class={BUTTON_SECONDARY}
-          >
-            Retry
-          </button>
+      {failed.value && (
+        <div class="flex flex-col items-start gap-2">
+          {error.value && (
+            <div role="alert" class="w-full">
+              <Alert variant="error">{error.value}</Alert>
+            </div>
+          )}
+          <div class="flex items-center gap-3 text-sm">
+            <button
+              type="button"
+              aria-disabled={busy}
+              onClick={retry}
+              class={BUTTON_SECONDARY}
+            >
+              Retry
+            </button>
+            {busy && (
+              <span role="status" class="text-text-muted">
+                Retrying…
+              </span>
+            )}
+          </div>
         </div>
       )}
 
-      {loaded.value && rows.length === 0 && !error.value && (
+      {loaded.value && rows.length === 0 && !failed.value && (
         <p class="m-0 text-sm text-text-secondary">
           No incidents yet. Open one with “New incident” when you start
           investigating a problem.
@@ -493,7 +546,7 @@ export default function IncidentList() {
           >
             Load more
           </button>
-          {busy && (
+          {busy && !failed.value && (
             <span role="status" class="text-text-muted">
               Loading more incidents…
             </span>
