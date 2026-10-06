@@ -939,15 +939,19 @@ func TestRemoveMissingGrantIs404(t *testing.T) {
 	}
 }
 
-func TestRemoveGrantDecodesEscapedGranteeID(t *testing.T) {
+// A param chi took from the already-decoded r.URL.Path (no RawPath, as in
+// this direct-call harness) is final: an id with a literal "%" must not be
+// decoded a second time. The RawPath case is covered through the real
+// router in handler_actions_r1_test.go.
+func TestRemoveGrantParamFromDecodedPathIsNotDecodedAgain(t *testing.T) {
 	hs := newHarness(t)
 	id := hs.seed(t, alice)
-	grantee := "ldap:cn=bob/ou=eng"
+	grantee := "a%41b"
 	hs.grant(id, &auth.User{ID: grantee}, false)
-	w := hs.removeGrant(t, alice, id, "ldap:cn=bob%2Fou=eng")
+	w := hs.removeGrant(t, alice, id, grantee)
 	wantStatus(t, w, http.StatusNoContent)
 	if _, still := hs.st.grants[id][grantee]; still {
-		t.Fatal("escaped grantee id was not decoded")
+		t.Fatal("grantee id with a literal percent was not matched as-is")
 	}
 }
 

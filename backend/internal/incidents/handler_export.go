@@ -21,9 +21,17 @@ package incidents
 // The export then says so: JSON carries `truncated: true` with the counts
 // of what was left out, markdown ends with an explicit marker. A truncated
 // export is honest about being partial rather than refused.
+//
+// Memory: the bounded document is accumulated FIRST (so a store error on
+// any page is still a clean 503, since nothing has been written), then
+// streamed: JSON through json.Encoder straight to the response, markdown
+// through a bufio.Writer, so the peak heap is about one copy of the
+// bounded content rather than the content plus a rendered copy. A
+// process-wide bulkhead (exportConcurrency) caps how many such copies
+// exist at once; a full one is 503 incident_busy with Retry-After.
 
 import (
-	"bytes"
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -58,8 +66,10 @@ const (
 )
 
 // ExportTruncation says what a truncated export left out. Evidence counts
-// are exact (the whole-incident counts are known); notes are only known to
-// have been cut.
+// are derived from the whole-incident counts, which are read before the
+// pages (a capture committing in between can make them disagree by a
+// page; they are clamped at zero rather than reported negative). NotesOmitted
+// is true only when the incident has notes that are not all included.
 type ExportTruncation struct {
 	EvidenceOmitted int  `json:"evidenceOmitted"`
 	WithheldOmitted int  `json:"withheldOmitted"`
@@ -160,34 +170,39 @@ pages:
 		cursor = next
 	}
 
+	// Notes: all of them when the evidence fit; when it did not, nothing
+	// more fits, but whether notes exist is still reported truthfully from
+	// a one-row probe rather than assumed.
 	notesCut := false
-	if !truncated {
-		cursor = ""
-	notes:
-		for {
-			notes, next, err := h.incidents.ListNotes(ctx, id, store.IncidentMaxPageSize, cursor)
-			if err != nil {
-				return nil, fmt.Errorf("list incident notes: %w", err)
-			}
-			for _, n := range notes {
-				if !budget.take(len(n.Body) + exportNoteOverhead) {
-					notesCut = true
-					break notes
-				}
-				doc.Notes = append(doc.Notes, noteView(n))
-			}
-			if next == "" {
-				break
-			}
-			cursor = next
+	cursor = ""
+	limit := store.IncidentMaxPageSize
+	if truncated {
+		limit = 1
+	}
+notes:
+	for {
+		notes, next, err := h.incidents.ListNotes(ctx, id, limit, cursor)
+		if err != nil {
+			return nil, fmt.Errorf("list incident notes: %w", err)
 		}
+		for _, n := range notes {
+			if truncated || !budget.take(len(n.Body)+exportNoteOverhead) {
+				notesCut = true
+				break notes
+			}
+			doc.Notes = append(doc.Notes, noteView(n))
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
 	}
 	if truncated || notesCut {
 		doc.Truncated = true
 		doc.Truncation = &ExportTruncation{
-			EvidenceOmitted: counts.Visible - len(doc.Evidence),
-			WithheldOmitted: counts.Withheld - len(doc.Withheld),
-			NotesOmitted:    truncated || notesCut,
+			EvidenceOmitted: max(0, counts.Visible-len(doc.Evidence)),
+			WithheldOmitted: max(0, counts.Withheld-len(doc.Withheld)),
+			NotesOmitted:    notesCut,
 		}
 	}
 	return doc, nil
@@ -216,6 +231,12 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := acquire(h.exportSlots)
+	if !ok {
+		writeBusy(w, "too many exports in progress; retry shortly")
+		return
+	}
+	defer release()
 	doc, err := h.buildExport(r, c, user)
 	if err != nil {
 		h.auditLog(r, user, ActionIncidentExport, audit.ResultFailure, c.row.ClusterID, "incident", "incident "+c.row.ID.String())
@@ -223,35 +244,34 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, "incident export unavailable", ReasonStoreUnavailable, nil)
 		return
 	}
-
-	var (
-		body        []byte
-		contentType string
-		ext         string
-	)
-	if format == ExportFormatJSON {
-		body, err = json.MarshalIndent(doc, "", "  ")
-		if err != nil {
-			h.logger.Error("incident export could not be encoded", "incidentId", c.row.ID, "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "incident export unavailable", "")
-			return
-		}
-		contentType, ext = "application/json", "json"
-	} else {
-		body = renderMarkdown(doc)
-		contentType, ext = "text/markdown; charset=utf-8", "md"
-	}
 	h.auditLog(r, user, ActionIncidentExport, audit.ResultSuccess, c.row.ClusterID, "incident",
 		fmt.Sprintf("incident %s: format %s, visible %d, withheld %d, included %d evidence, %d withheld, %d notes, truncated %t",
 			c.row.ID, format, doc.Counts.Visible, doc.Counts.Withheld, len(doc.Evidence), len(doc.Withheld), len(doc.Notes), doc.Truncated))
 
+	contentType, ext := "application/json", "json"
+	if format == ExportFormatMarkdown {
+		contentType, ext = "text/markdown; charset=utf-8", "md"
+	}
+	// Every header is set before the first byte; after it, an encoding or
+	// write failure (the client went away mid-download) can only be logged.
 	filename := fmt.Sprintf("incident-%s-%s.%s", c.row.ID, doc.ExportedAt.Format("20060102"), ext)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	if format == ExportFormatJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		err = enc.Encode(doc)
+	} else {
+		bw := bufio.NewWriter(w)
+		renderMarkdown(bw, doc)
+		err = bw.Flush()
+	}
+	if err != nil {
+		h.logger.Warn("incident export stream interrupted after headers were sent", "incidentId", c.row.ID, "format", format, "error", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +309,7 @@ func fenceFor(s string) string {
 // writeFenced emits untrusted text as a fenced code block. The info string
 // is a fixed word; the content is written verbatim. A trailing newline is
 // added when missing so the closing fence starts its own line.
-func writeFenced(b *bytes.Buffer, info, s string) {
+func writeFenced(b *bufio.Writer, info, s string) {
 	fence := fenceFor(s)
 	b.WriteString(fence)
 	b.WriteString(info)
@@ -302,71 +322,69 @@ func writeFenced(b *bytes.Buffer, info, s string) {
 	b.WriteString("\n\n")
 }
 
-// renderMarkdown renders the document. Only server-generated values appear
-// outside fences: UUIDs, RFC 3339 timestamps, enum strings and integers.
-// Everything of untrusted origin (title, summary, ids of people, evidence
-// items, note bodies) is fenced.
-func renderMarkdown(doc *ExportDocument) []byte {
-	var b bytes.Buffer
+// renderMarkdown writes the document to b (the caller flushes). Only
+// server-generated values appear outside fences: UUIDs, RFC 3339 timestamps,
+// enum strings and integers. Everything of untrusted origin (title, summary,
+// ids of people, evidence items, note bodies) is fenced.
+func renderMarkdown(b *bufio.Writer, doc *ExportDocument) {
 	inc := doc.Incident
-	fmt.Fprintf(&b, "# Incident %s\n\n", inc.ID)
-	fmt.Fprintf(&b, "- Schema: %s\n", exportSchema)
-	fmt.Fprintf(&b, "- Exported at: %s\n", doc.ExportedAt.Format(time.RFC3339))
-	fmt.Fprintf(&b, "- Exporter role: %s\n", inc.Role)
-	fmt.Fprintf(&b, "- Status: %s\n", inc.Status)
-	fmt.Fprintf(&b, "- Window start: %s\n", inc.WindowStart.Format(time.RFC3339))
+	fmt.Fprintf(b, "# Incident %s\n\n", inc.ID)
+	fmt.Fprintf(b, "- Schema: %s\n", exportSchema)
+	fmt.Fprintf(b, "- Exported at: %s\n", doc.ExportedAt.Format(time.RFC3339))
+	fmt.Fprintf(b, "- Exporter role: %s\n", inc.Role)
+	fmt.Fprintf(b, "- Status: %s\n", inc.Status)
+	fmt.Fprintf(b, "- Window start: %s\n", inc.WindowStart.Format(time.RFC3339))
 	if inc.WindowEnd != nil {
-		fmt.Fprintf(&b, "- Window end: %s\n", inc.WindowEnd.Format(time.RFC3339))
+		fmt.Fprintf(b, "- Window end: %s\n", inc.WindowEnd.Format(time.RFC3339))
 	}
-	fmt.Fprintf(&b, "- Created: %s\n", inc.CreatedAt.Format(time.RFC3339))
-	fmt.Fprintf(&b, "- Updated: %s\n", inc.UpdatedAt.Format(time.RFC3339))
+	fmt.Fprintf(b, "- Created: %s\n", inc.CreatedAt.Format(time.RFC3339))
+	fmt.Fprintf(b, "- Updated: %s\n", inc.UpdatedAt.Format(time.RFC3339))
 	if inc.ClosedAt != nil {
-		fmt.Fprintf(&b, "- Closed: %s\n", inc.ClosedAt.Format(time.RFC3339))
+		fmt.Fprintf(b, "- Closed: %s\n", inc.ClosedAt.Format(time.RFC3339))
 	}
-	fmt.Fprintf(&b, "- Retention days: %d\n\n", inc.RetentionDays)
+	fmt.Fprintf(b, "- Retention days: %d\n\n", inc.RetentionDays)
 
 	b.WriteString("## Owner\n\n")
-	writeFenced(&b, "text", inc.OwnerID)
+	writeFenced(b, "text", inc.OwnerID)
 	b.WriteString("## Exported by\n\n")
-	writeFenced(&b, "text", doc.ExportedBy)
+	writeFenced(b, "text", doc.ExportedBy)
 	b.WriteString("## Cluster\n\n")
-	writeFenced(&b, "text", inc.ClusterID)
+	writeFenced(b, "text", inc.ClusterID)
 	b.WriteString("## Title\n\n")
-	writeFenced(&b, "text", inc.Title)
+	writeFenced(b, "text", inc.Title)
 	b.WriteString("## Summary\n\n")
-	writeFenced(&b, "text", inc.Summary)
+	writeFenced(b, "text", inc.Summary)
 
-	fmt.Fprintf(&b, "## Evidence\n\n%d readable by you, %d withheld from you; %d readable and %d withheld included below.\n\n",
+	fmt.Fprintf(b, "## Evidence\n\n%d readable by you, %d withheld from you; %d readable and %d withheld included below.\n\n",
 		doc.Counts.Visible, doc.Counts.Withheld, len(doc.Evidence), len(doc.Withheld))
 	for i, e := range doc.Evidence {
-		fmt.Fprintf(&b, "### %d. %s (%s), collected %s\n\n", i+1, e.EvidenceKind, e.Mode, e.CollectedAt.Format(time.RFC3339))
+		fmt.Fprintf(b, "### %d. %s (%s), collected %s\n\n", i+1, e.EvidenceKind, e.Mode, e.CollectedAt.Format(time.RFC3339))
 		item, err := json.MarshalIndent(e, "", "  ")
 		if err != nil {
 			item = []byte(`{"error":"item could not be encoded"}`)
 		}
-		writeFenced(&b, "json", string(item))
+		writeFenced(b, "json", string(item))
 	}
 	if len(doc.Withheld) > 0 {
 		b.WriteString("### Withheld\n\n")
 		for _, p := range doc.Withheld {
-			fmt.Fprintf(&b, "- %s: %s collected %s, withheld (%s)\n", p.ID, p.EvidenceKind, p.CollectedAt.Format(time.RFC3339), p.WithheldReason)
+			fmt.Fprintf(b, "- %s: %s collected %s, withheld (%s)\n", p.ID, p.EvidenceKind, p.CollectedAt.Format(time.RFC3339), p.WithheldReason)
 		}
 		b.WriteString("\n")
 	}
 
-	fmt.Fprintf(&b, "## Notes\n\n%d included.\n\n", len(doc.Notes))
+	fmt.Fprintf(b, "## Notes\n\n%d included.\n\n", len(doc.Notes))
 	for _, n := range doc.Notes {
-		fmt.Fprintf(&b, "### Note %s (revision %d, created %s, updated %s)\n\n", n.ID, n.Revision,
+		fmt.Fprintf(b, "### Note %s (revision %d, created %s, updated %s)\n\n", n.ID, n.Revision,
 			n.CreatedAt.Format(time.RFC3339), n.UpdatedAt.Format(time.RFC3339))
 		b.WriteString("Author:\n\n")
-		writeFenced(&b, "text", n.AuthorID)
-		writeFenced(&b, "text", n.Body)
+		writeFenced(b, "text", n.AuthorID)
+		writeFenced(b, "text", n.Body)
 	}
 
 	if doc.Truncated {
 		t := doc.Truncation
-		fmt.Fprintf(&b, "## TRUNCATED\n\nThis export reached its size bound and is incomplete: %d readable evidence items and %d withheld placeholders were omitted; notes omitted: %t.\n",
+		fmt.Fprintf(b, "## TRUNCATED\n\nThis export reached its size bound and is incomplete: %d readable evidence items and %d withheld placeholders were omitted; notes omitted: %t.\n",
 			t.EvidenceOmitted, t.WithheldOmitted, t.NotesOmitted)
 	}
-	return b.Bytes()
 }

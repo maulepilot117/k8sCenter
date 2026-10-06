@@ -19,7 +19,6 @@ package incidents
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -82,25 +81,6 @@ type EvidencePage struct {
 	Withheld []WithheldEvidence `json:"withheld"`
 }
 
-// decodeStrictBody is decodeBody with unknown fields refused: for bodies
-// where an extra field would be a security-relevant claim (a cluster, a
-// UID) rather than a harmless typo.
-func decodeStrictBody(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			httputil.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large", "")
-			return false
-		}
-		httputil.WriteError(w, http.StatusBadRequest, "invalid JSON body", err.Error())
-		return false
-	}
-	return true
-}
-
 // captureTarget validates the body's target against the kinds the collector
 // supports (exactly the kinds diagnostics resolves: diagnostics.TargetResource
 // is the supported set, and Nodes are not in it) and returns the TargetRef
@@ -135,8 +115,14 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if c.role != RoleOwner {
-		httputil.WriteError(w, http.StatusForbidden, "only the incident owner may capture evidence", "")
+	if !requireOwner(w, c, "capture evidence") {
+		return
+	}
+	// A closed investigation is frozen: refused here before any impersonated
+	// read runs. InsertBatch re-checks under the row lock, which is the
+	// authoritative guard against a close that races this read.
+	if c.row.Status == store.IncidentStatusClosed {
+		h.writeStoreFailure(w, "capture into closed incident", store.ErrIncidentClosed)
 		return
 	}
 	// The header-selected cluster is refused before any read (A-12). The
@@ -157,6 +143,12 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	}
 	id := c.row.ID
 	detail := "incident " + id.String()
+	release, ok := acquire(h.captureSlots)
+	if !ok {
+		writeBusy(w, "too many captures in progress; retry shortly")
+		return
+	}
+	defer release()
 
 	// The collector bounds the sources with its own CaptureTimeout (and a
 	// short grace); this context bounds the whole operation, insert
@@ -187,7 +179,15 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	inserted := 0
 	if len(rows) > 0 {
 		inserted, err = h.evidence.InsertBatch(ctx, id, user.ID, rows, h.limits.EvidenceLimits())
-		if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			// The client went away (or the whole-operation budget ran out)
+			// between the collector returning and the insert: the store's
+			// transaction rolled back, so this is the same "nothing was
+			// recorded" outcome as a cancellation during collection.
+			h.writeCaptureFailure(w, r, user, c.row, err)
+			return
+		case err != nil:
 			h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence", detail)
 			h.writeStoreFailure(w, "insert incident evidence", err)
 			return

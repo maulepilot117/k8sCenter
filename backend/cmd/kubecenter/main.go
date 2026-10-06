@@ -963,6 +963,12 @@ func main() {
 	// uses; the object and events sources resolve API versions through the
 	// local RESTMapper (capture is local-only, plan A-12). Redaction runs
 	// inside the sources at the per-item bound before anything is measured.
+	//
+	// incidentLimits is the ONE value the redactor, the collector and the
+	// handler are built from: the handler passes it to InsertBatch and
+	// derives the capture budget from it, so it must be exactly what the
+	// collector validated and bounds itself with. When U25a switches this
+	// line to the configured limits, nothing else changes.
 	incidentLimits := incidents.DefaultLimits()
 	incidentRedactor, err := incidents.NewRedactor(incidentLimits.MaxItemBytes)
 	if err != nil {

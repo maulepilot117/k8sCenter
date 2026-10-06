@@ -208,8 +208,21 @@ type Handler struct {
 	accessTimeout time.Duration
 	// exportMax is exportMaxBytes; a field so tests can shrink it.
 	exportMax int
-	logger    *slog.Logger
+	// exportSlots and captureSlots are the process-wide bulkheads (see
+	// acquire); a full one answers 503 incident_busy with Retry-After.
+	exportSlots  chan struct{}
+	captureSlots chan struct{}
+	logger       *slog.Logger
 }
+
+// Bulkhead sizes. exportConcurrency x exportMaxBytes (plus the encoder's
+// working set) is the export path's peak heap; captureConcurrency bounds
+// how many captures fan out impersonated reads at once (each already
+// bounded by Limits.MaxConcurrency sources).
+const (
+	exportConcurrency  = 2
+	captureConcurrency = 4
+)
 
 // NewHandler builds the handler. The stores may be nil (no database): every
 // endpoint then answers 503 ReasonPersistenceUnavailable. A nil collector
@@ -220,7 +233,8 @@ type Handler struct {
 func NewHandler(incidents *store.IncidentStore, evidence *store.IncidentEvidenceStore, grants *store.IncidentGrantStore,
 	collector *Collector, limits Limits, access *resources.AccessChecker, auditLogger audit.Logger, logger *slog.Logger) *Handler {
 	h := &Handler{limits: limits, audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout,
-		exportMax: exportMaxBytes, logger: logger}
+		exportMax: exportMaxBytes, exportSlots: make(chan struct{}, exportConcurrency),
+		captureSlots: make(chan struct{}, captureConcurrency), logger: logger}
 	if collector != nil {
 		h.collector = collector
 	}
@@ -251,7 +265,8 @@ func newHandlerWith(incidents incidentStore, evidence evidenceStore, grants gran
 		logger = slog.Default()
 	}
 	return &Handler{incidents: incidents, evidence: evidence, grants: grants, access: access, limits: DefaultLimits(),
-		audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout, exportMax: exportMaxBytes, logger: logger}
+		audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout, exportMax: exportMaxBytes,
+		exportSlots: make(chan struct{}, exportConcurrency), captureSlots: make(chan struct{}, captureConcurrency), logger: logger}
 }
 
 // SetRetentionDays sets the retention stamped on new incidents. It is the
@@ -628,8 +643,42 @@ func (h *Handler) loadVisible(w http.ResponseWriter, r *http.Request, u *auth.Us
 	return c, true
 }
 
+// requireOwner is the P3 gate after visibility: the caller already knows
+// the incident exists, so a non-owner is told 403 "only the incident owner
+// may <what>".
+func requireOwner(w http.ResponseWriter, c *caller, what string) bool {
+	if c.role != RoleOwner {
+		httputil.WriteError(w, http.StatusForbidden, "only the incident owner may "+what, "")
+		return false
+	}
+	return true
+}
+
 func (h *Handler) writeNotFound(w http.ResponseWriter) {
 	httputil.WriteError(w, http.StatusNotFound, "incident not found", "")
+}
+
+// writeBusy is the retryable 503: a lock wait timed out in the store, or a
+// bulkhead (export, capture) is full.
+func writeBusy(w http.ResponseWriter, message string) {
+	w.Header().Set("Retry-After", "1")
+	httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, message, ReasonIncidentBusy, nil)
+}
+
+// acquire takes a slot from a bulkhead without waiting. ok is false when it
+// is full; otherwise the caller defers release. Bulkheads bound the
+// process-wide concurrency of the two endpoints whose cost is not a
+// constant: an export holds up to exportMaxBytes of content on the heap
+// while it streams, and a capture fans out impersonated reads. The
+// per-user rate limiter cannot bound either across users, and N parallel
+// exports would otherwise hold N x 16 MiB in a 256 Mi pod.
+func acquire(slots chan struct{}) (release func(), ok bool) {
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, true
+	default:
+		return nil, false
+	}
 }
 
 // writeStoreFailure maps a store error to a response. Validation and cursor
@@ -669,8 +718,7 @@ func (h *Handler) writeStoreFailure(w http.ResponseWriter, op string, err error)
 	case errors.Is(err, store.ErrGrantNotFound):
 		httputil.WriteError(w, http.StatusNotFound, "incident grant not found", "")
 	case errors.Is(err, store.ErrIncidentBusy):
-		w.Header().Set("Retry-After", "1")
-		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, "incident is busy; retry shortly", ReasonIncidentBusy, nil)
+		writeBusy(w, "incident is busy; retry shortly")
 	case errors.Is(err, store.ErrIncidentInvalid):
 		httputil.WriteError(w, http.StatusBadRequest, "invalid incident input", err.Error())
 	case errors.Is(err, store.ErrInvalidIncidentCursor), errors.Is(err, store.ErrInvalidEvidenceCursor), errors.Is(err, store.ErrInvalidNoteCursor):
@@ -690,9 +738,25 @@ func (h *Handler) writeStoreFailure(w http.ResponseWriter, op string, err error)
 }
 
 // decodeBody reads a bounded JSON body into dst; 400 or 413 on failure.
+// Unknown fields are ignored (a typo is not a claim).
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSON(w, r, dst, false)
+}
+
+// decodeStrictBody is decodeBody with unknown fields refused: for bodies
+// where an extra field would be a security-relevant claim (a cluster, a
+// UID, a role) rather than a harmless typo.
+func decodeStrictBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSON(w, r, dst, true)
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, strict bool) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+	dec := json.NewDecoder(r.Body)
+	if strict {
+		dec.DisallowUnknownFields()
+	}
+	if err := dec.Decode(dst); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			httputil.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large", "")
@@ -884,8 +948,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if c.role != RoleOwner {
-		httputil.WriteError(w, http.StatusForbidden, "only the incident owner may edit it", "")
+	if !requireOwner(w, c, "edit it") {
 		return
 	}
 	var req updateIncidentRequest
@@ -951,8 +1014,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if c.role != RoleOwner {
-		httputil.WriteError(w, http.StatusForbidden, "only the incident owner may delete it", "")
+	if !requireOwner(w, c, "delete it") {
 		return
 	}
 	detail := "incident " + c.row.ID.String()

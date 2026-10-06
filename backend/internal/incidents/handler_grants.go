@@ -48,16 +48,6 @@ func grantView(g store.IncidentGrantRow) GrantView {
 		CanAnnotate: g.CanAnnotate, CreatedAt: g.CreatedAt}
 }
 
-// requireOwner is the P3 gate after visibility: the caller already knows
-// the incident exists, so a non-owner is told 403.
-func requireOwner(w http.ResponseWriter, c *caller, what string) bool {
-	if c.role != RoleOwner {
-		httputil.WriteError(w, http.StatusForbidden, "only the incident owner may "+what, "")
-		return false
-	}
-	return true
-}
-
 // HandleListGrants returns the incident's grants, oldest first (at most
 // store.IncidentMaxGrants, so there is no paging).
 // GET /api/v1/incidents/{incidentID}/grants
@@ -132,8 +122,12 @@ func (h *Handler) HandleAddGrant(w http.ResponseWriter, r *http.Request) {
 // (not an idempotent 204): the owner already knows the incident exists, so
 // nothing leaks, and a revoke that matched nothing (a mistyped id) is
 // something the owner needs to hear about rather than a silent success.
-// The path segment is percent-decoded, so an id containing "/" or "%" is
-// still addressable.
+// An id containing "/" or "%" is addressable when the client percent-encodes
+// it: chi matches on r.URL.RawPath when net/url had to keep one (the request
+// path's encoding differs from the canonical one, e.g. an encoded "/"), and
+// the param is then still encoded and is decoded here once; otherwise chi
+// matched on the already-decoded r.URL.Path and the param is final, so
+// decoding it again would turn "a%41b" into "aAb" or refuse "50%off".
 // DELETE /api/v1/incidents/{incidentID}/grants/{granteeID}
 func (h *Handler) HandleRemoveGrant(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.begin(w, r)
@@ -144,7 +138,11 @@ func (h *Handler) HandleRemoveGrant(w http.ResponseWriter, r *http.Request) {
 	if !ok || !requireOwner(w, c, "revoke its grants") {
 		return
 	}
-	granteeID, err := url.PathUnescape(chi.URLParam(r, "granteeID"))
+	granteeID := chi.URLParam(r, "granteeID")
+	var err error
+	if r.URL.RawPath != "" {
+		granteeID, err = url.PathUnescape(granteeID)
+	}
 	if err == nil {
 		err = store.ValidateGranteeID(granteeID)
 	}
