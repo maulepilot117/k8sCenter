@@ -559,23 +559,28 @@ The row is written after every successful sweep. A failed write is logged and
 the loop keeps sweeping; the next start then treats the lowering as new again.
 Residual risk: if the write fails after a RAISE of the retention, the row keeps
 the old, lower value (logged at Warn after every hourly sweep until the write
-succeeds). That is safe: a configured value at or above the recorded one is
-steady state. A failed sweep records nothing either, so a lowering whose sweeps
-keep failing is still treated as new on every start. It holds no user data.
+succeeds). While the raise stays in place this is steady state; but a later
+lowering to a value still at or above the stale row is then treated as steady
+state too, so it is neither deferred nor warned about. Fix the write failure
+before lowering. A failed sweep records nothing either, so a lowering whose
+sweeps keep failing is still treated as new on every start. It holds no user
+data.
 
 Rollback and the down migration: the down file drops only this table, leaving
 every incident intact. The consequence is that the next start has no recorded
-retention, so the guard uses its first-run rule (defer the first sweep when
-some incident was captured under a longer retention, unless the confirmed flag
-is set). If a database recorded at version 25 must run an image that embeds
+retention, so the guard uses its first-run rule: a lowering is new when some
+incident was captured under a longer retention; the first sweep is deferred
+only when incidents are already past the window (unless the confirmed flag is
+set), otherwise a Warn is logged without deferral. If a database recorded at version 25 must run an image that embeds
 only 000024, with every new-image pod stopped run both of:
     UPDATE schema_migrations SET version = 24, dirty = false;
     DELETE FROM incident_retention_state;
 (or run the 000025 down file instead of the DELETE, which drops the table). The
-DELETE matters: a row that is kept goes stale while the older image sweeps, and
-on roll-forward the next start would treat the configured value as already
-applied, so a lowering made in the meantime would not be deferred or warned
-about. With the row gone the first start after roll-forward uses the first-run
+DELETE matters: an image that embeds only 000024 has no Retainer (no
+retention sweep, no guard) and never updates the row. New incidents are stamped with that image's
+own retention while the row keeps its old value, so on roll-forward the next
+start would treat the configured value as already applied, and a lowering made
+in the meantime would not be deferred or warned about. With the row gone the first start after roll-forward uses the first-run
 rule. A later roll-forward re-runs the up file over a kept table without error
 (CREATE TABLE IF NOT EXISTS, COMMENT ON), but the stale row is the reason to
 delete it.

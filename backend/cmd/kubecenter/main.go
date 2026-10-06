@@ -955,8 +955,8 @@ func main() {
 	// (R3, correction C4).
 	//
 	// The evidence collector (U22b) runs the three local-cluster sources
-	// under incidents.DefaultLimits() (plan A-6; U25a makes them
-	// configurable). Every source SAR-gates its reads with the capturing
+	// under the configured limits (plan A-6; KUBECENTER_INCIDENTS_*, clamped
+	// and logged by incidents.ResolveSettings). Every source SAR-gates its reads with the capturing
 	// user's identity through accessChecker and reads through that user's
 	// impersonated client (k8sClient); the diagnostics source reads related
 	// objects through the same informer lister the diagnostics endpoint
@@ -967,9 +967,12 @@ func main() {
 	// incidentLimits is the ONE value the redactor, the collector and the
 	// handler are built from: the handler passes it to InsertBatch and
 	// derives the capture budget from it, so it must be exactly what the
-	// collector validated and bounds itself with. When U25a switches this
-	// line to the configured limits, nothing else changes.
-	incidentLimits := incidents.DefaultLimits()
+	// collector validated and bounds itself with. It comes from the resolved
+	// configuration, so the redactor, collector, InsertBatch limits and the
+	// capture timeout all use the configured values from one source. Every
+	// out-of-range configured value is corrected and logged by ResolveSettings.
+	incidentSettings := incidents.ResolveSettings(cfg.Incidents, logger)
+	incidentLimits := incidentSettings.Limits
 	incidentRedactor, err := incidents.NewRedactor(incidentLimits.MaxItemBytes)
 	if err != nil {
 		logger.Error("incident redactor configuration invalid", "error", err)
@@ -996,10 +999,6 @@ func main() {
 		incidentStore, incidentEvidenceStore, incidentGrantStore, incidentCollector, incidentLimits,
 		accessChecker, auditLogger, logger,
 	)
-	// Effective incident settings: every out-of-range value is corrected and
-	// logged here. The capture limits (incidentSettings.Limits) are consumed
-	// by the evidence collector when U23b wires it.
-	incidentSettings := incidents.ResolveSettings(cfg.Incidents, logger)
 	incidentsHandler.SetRetentionDays(incidentSettings.RetentionDays)
 	logger.Info("incident retention configured", "retentionDays", incidentSettings.RetentionDays)
 	if incidentStore != nil {

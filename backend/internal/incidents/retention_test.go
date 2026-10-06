@@ -888,6 +888,39 @@ func TestResolveSettings_DurationsAreLoggedAsStrings(t *testing.T) {
 	t.Fatal("no captureTimeout correction logged")
 }
 
+// The configured limits are the one value the redactor, collector and handler
+// are built from in main.go; this proves resolved settings are accepted by each
+// and reach the collector and handler unchanged.
+func TestResolveSettingsLimitsReachRedactorCollectorAndHandler(t *testing.T) {
+	cfg := defaultIncidentsConfig()
+	cfg.MaxItemBytes, cfg.MaxIncidentBytes, cfg.MaxItems, cfg.MaxScopes = 4096, 65536, 7, 3
+	cfg.CaptureTimeout, cfg.SourceTimeout, cfg.MaxConcurrency = 9*time.Second, 2*time.Second, 2
+	s := ResolveSettings(cfg, slog.New(slog.DiscardHandler))
+	if s.Limits == DefaultLimits() {
+		t.Fatal("configured limits resolved to the defaults")
+	}
+	if _, err := NewRedactor(s.Limits.MaxItemBytes); err != nil {
+		t.Fatalf("redactor rejects the configured per-item bound: %v", err)
+	}
+	collector, err := NewCollector([]Source{stubSource{id: "s", fn: nil}}, s.Limits, nil)
+	if err != nil {
+		t.Fatalf("collector rejects the resolved limits: %v", err)
+	}
+	if collector.limits != s.Limits {
+		t.Errorf("collector limits = %+v, want %+v", collector.limits, s.Limits)
+	}
+	h := NewHandler(nil, nil, nil, collector, s.Limits, nil, nil, nil)
+	if h.limits != s.Limits {
+		t.Errorf("handler limits = %+v, want %+v", h.limits, s.Limits)
+	}
+	if got := h.limits.EvidenceLimits(); got != (store.EvidenceLimits{MaxItemBytes: 4096, MaxIncidentBytes: 65536, MaxItems: 7, MaxScopes: 3}) {
+		t.Errorf("InsertBatch limits = %+v", got)
+	}
+	if h.limits.CaptureTimeout != 9*time.Second {
+		t.Errorf("capture timeout = %s, want 9s", h.limits.CaptureTimeout)
+	}
+}
+
 func TestResolveSettings_InRangeValuesAreKeptAndSilent(t *testing.T) {
 	lc := &logCapture{}
 	cfg := config.IncidentsConfig{
