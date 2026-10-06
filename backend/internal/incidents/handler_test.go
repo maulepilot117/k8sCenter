@@ -2244,16 +2244,49 @@ func TestCreateReplayWithADifferentPayloadIs409WithoutTheIncident(t *testing.T) 
 	}
 }
 
-func TestCreateReplayToleratesSubMicrosecondWindowDigits(t *testing.T) {
-	hs := newHarness(t)
-	body := `{"title":"t","windowStart":"2026-10-05T11:00:00.1234567Z","clientRequestId":"` + createReqID + `"}`
-	wantStatus(t, hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: body}), http.StatusCreated)
-	// PostgreSQL keeps microseconds: the stored window loses the 7th digit.
-	for id, row := range hs.st.incidents {
-		row.WindowStart = row.WindowStart.Truncate(time.Microsecond)
-		hs.st.incidents[id] = row
+func TestCreateReplayWindowMatching(t *testing.T) {
+	const (
+		start7  = `"windowStart":"2026-10-05T11:00:00.1234567Z"`
+		end7    = `"windowEnd":"2026-10-05T12:00:00.7654327Z"`
+		withEnd = `{"title":"t",` + start7 + `,` + end7 + `,"clientRequestId":"` + createReqID + `"}`
+		noEnd   = `{"title":"t",` + start7 + `,"clientRequestId":"` + createReqID + `"}`
+	)
+	// PostgreSQL keeps microseconds. pgx's binary encoding floors the 7th
+	// digit; a text encoding makes PostgreSQL round it (here: up).
+	floor := func(t time.Time) time.Time { return t.Truncate(time.Microsecond) }
+	round := func(t time.Time) time.Time { return t.Round(time.Microsecond) }
+	for _, tc := range []struct {
+		name          string
+		create, retry string
+		stored        func(time.Time) time.Time
+		want          int
+	}{
+		{"identical replay, floored storage", withEnd, withEnd, floor, http.StatusOK},
+		{"identical replay, rounded storage", withEnd, withEnd, round, http.StatusOK},
+		{"identical replay without end, rounded storage", noEnd, noEnd, round, http.StatusOK},
+		{"stored end, replay omits it", withEnd, noEnd, floor, http.StatusConflict},
+		{"replay adds an end the original lacked", noEnd, withEnd, floor, http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newHarness(t)
+			wantStatus(t, hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: tc.create}), http.StatusCreated)
+			for id, row := range hs.st.incidents {
+				row.WindowStart = tc.stored(row.WindowStart)
+				if row.WindowEnd != nil {
+					end := tc.stored(*row.WindowEnd)
+					row.WindowEnd = &end
+				}
+				hs.st.incidents[id] = row
+			}
+			w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: tc.retry})
+			wantStatus(t, w, tc.want)
+			if tc.want == http.StatusConflict {
+				if reason, _ := errorOf(t, w); reason != ReasonClientRequestIDConflict {
+					t.Fatalf("reason = %q, want %q", reason, ReasonClientRequestIDConflict)
+				}
+			}
+		})
 	}
-	wantStatus(t, hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: body}), http.StatusOK)
 }
 
 func TestCreateReplayOfAnIncidentTheCallerDoesNotOwnIs409(t *testing.T) {

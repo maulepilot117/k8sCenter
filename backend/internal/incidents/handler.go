@@ -1069,10 +1069,18 @@ func writeRequestIDConflict(w http.ResponseWriter) {
 }
 
 // sameCreatePayload reports whether the stored incident was created from the
-// same create fields as want. Times are compared at PostgreSQL's microsecond
-// precision (pgx truncates sub-microsecond digits when it encodes them).
+// same create fields as want.
+//
+// Times match when they are less than 1µs apart. PostgreSQL stores
+// microseconds, and how the sub-microsecond digits of the request go away
+// depends on the encoding: pgx's binary protocol floors them, while a text
+// encoding (another exec mode, or a future driver change) makes PostgreSQL
+// round to the nearest microsecond. Either way the stored value is strictly
+// less than 1µs from the input, whereas Truncate+Equal would only hold for
+// flooring and turn a genuine replay into a 409. Two distinct client values
+// less than 1µs apart are indistinguishable once stored anyway.
 func sameCreatePayload(row *store.IncidentRow, want store.IncidentRow) bool {
-	sameTime := func(a, b time.Time) bool { return a.Truncate(time.Microsecond).Equal(b.Truncate(time.Microsecond)) }
+	sameTime := func(a, b time.Time) bool { return a.Sub(b).Abs() < time.Microsecond }
 	if row.Title != want.Title || row.Summary != want.Summary || row.ClusterID != want.ClusterID ||
 		!sameTime(row.WindowStart, want.WindowStart) {
 		return false

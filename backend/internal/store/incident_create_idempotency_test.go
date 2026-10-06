@@ -182,6 +182,33 @@ func TestIncidentStore_CreateWithRequestIDReplayReturnsTheFirstIncident(t *testi
 	}
 }
 
+// The handler matches a replay's window against the stored one with a < 1µs
+// tolerance (incidents.sameCreatePayload). This pins the premise: whatever
+// PostgreSQL does with sub-microsecond digits, the stored value is strictly
+// less than 1µs from the input.
+func TestIncidentStore_CreateWithRequestIDStoresWindowWithin1us(t *testing.T) {
+	s, _ := newIncidentStore(t)
+	r := newIncident(testOwnerID(t), "7-digit window")
+	r.WindowStart = time.Date(2026, 10, 5, 11, 0, 0, 123456789, time.UTC)
+	end := time.Date(2026, 10, 5, 12, 0, 0, 765432999, time.UTC) // rounds up, floors down
+	r.WindowEnd = &end
+	id, created, err := s.CreateWithRequestID(t.Context(), r, uuid.New())
+	if err != nil || !created {
+		t.Fatalf("create = (created=%v, %v)", created, err)
+	}
+	got := mustGetIncident(t, s, id)
+	within := func(name string, stored, input time.Time) {
+		if d := stored.Sub(input).Abs(); d >= time.Microsecond {
+			t.Errorf("%s stored %s, input %s: %s apart; want < 1µs", name, stored.Format(time.RFC3339Nano), input.Format(time.RFC3339Nano), d)
+		}
+	}
+	within("window start", got.WindowStart, r.WindowStart)
+	if got.WindowEnd == nil {
+		t.Fatal("window end was not stored")
+	}
+	within("window end", *got.WindowEnd, end)
+}
+
 func TestIncidentStore_CreateWithRequestIDIsScopedPerOwner(t *testing.T) {
 	s, _ := newIncidentStore(t)
 	alice, bob := testOwnerID(t)+"-a", testOwnerID(t)+"-b"
