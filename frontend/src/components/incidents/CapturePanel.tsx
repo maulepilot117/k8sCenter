@@ -46,6 +46,7 @@ export function captureErrorText(err: unknown): string {
     case "incident_busy":
       return busyText(
         `Capture did not run: ${err.detail ?? "the incident is busy"}.`,
+        err,
       );
     case "incident_capture_outcome_unknown":
       return "The capture may or may not have been recorded. Retrying is safe: evidence that was already recorded is not duplicated.";

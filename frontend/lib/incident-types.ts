@@ -343,6 +343,20 @@ export interface GrantRequest {
   canAnnotate: boolean;
 }
 
+// --- Identifiers -----------------------------------------------------------------
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * True when `id` is a UUID, the only shape an incident or note id has (the
+ * handlers `uuid.Parse` it). Checked before an id is put into a request path
+ * or a page, so nothing like `..` can ever reach one.
+ */
+export function isIncidentId(id: string): boolean {
+  return UUID_RE.test(id);
+}
+
 // --- View-model helpers (U24b) -------------------------------------------------
 //
 // Pure functions the incident workspace islands share. They decide wording,

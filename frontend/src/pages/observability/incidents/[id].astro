@@ -1,10 +1,11 @@
 ---
+import { isIncidentId } from "../../../../lib/incident-types.ts";
 import IncidentWorkspace from "../../../islands/IncidentWorkspace.tsx";
 import ChromeLayout from "../../../layouts/ChromeLayout.astro";
+import ErrorSurface from "../../../layouts/ErrorSurface.astro";
 
 // Whether Astro hands the segment over encoded or already decoded, a stray
-// "%" must not throw here and 500 the page: fall back to the raw value and
-// let the island report an invalid id (the API answers 400 for it).
+// "%" must not throw here and 500 the page: fall back to the raw value.
 const raw = (Astro.params.id as string | undefined) ?? "";
 let id = raw;
 try {
@@ -12,7 +13,11 @@ try {
 } catch {
   id = raw;
 }
+// Incident ids are UUIDs. Anything else is a 404 here, before an island
+// could put it into a request path.
+const valid = isIncidentId(id);
+if (!valid) Astro.response.status = 404;
 ---
 <ChromeLayout>
-  <IncidentWorkspace client:load id={id} />
+  {valid ? <IncidentWorkspace client:load id={id} /> : <ErrorSurface status={404} />}
 </ChromeLayout>

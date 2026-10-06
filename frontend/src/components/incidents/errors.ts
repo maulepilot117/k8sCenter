@@ -6,12 +6,19 @@ import { incidentErrorNumber } from "@/lib/incident-api.ts";
  * it imports api.ts, so only islands (and components they render) may use it.
  */
 
-/** The server's fixed Retry-After for `incident_busy`, in seconds. */
-const BUSY_RETRY_AFTER_SECONDS = 1;
+/** Used when a busy answer carries no readable Retry-After (the server sends 1). */
+const DEFAULT_RETRY_AFTER_SECONDS = 1;
 
-/** `what` followed by when the server asked to be retried. */
-export function busyText(what: string): string {
-  const s = BUSY_RETRY_AFTER_SECONDS;
+/** The Retry-After of a busy answer, in whole seconds, when it is a number. */
+function retryAfterSeconds(err?: ApiError): number {
+  const raw = err?.headers?.get("Retry-After");
+  const n = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RETRY_AFTER_SECONDS;
+}
+
+/** `what` followed by when the server asked to be retried (its Retry-After). */
+export function busyText(what: string, err?: ApiError): string {
+  const s = retryAfterSeconds(err);
   return `${what} The server asked to retry in about ${s} second${s === 1 ? "" : "s"}.`;
 }
 
@@ -19,7 +26,7 @@ export function busyText(what: string): string {
 export function simpleErrorText(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
     if (err.reason === "incident_busy") {
-      return busyText("The incident is busy.");
+      return busyText("The incident is busy.", err);
     }
     if (err.reason === "grant_limit_reached") {
       const max = incidentErrorNumber(err, "max");

@@ -1,60 +1,22 @@
 import { useSignal } from "@preact/signals";
 import { Alert } from "@/components/ui/Alert.tsx";
-import { ApiError, getAccessToken } from "@/lib/api.ts";
-import { LOCAL_CLUSTER_ID } from "@/lib/cluster.ts";
-import { exportUrl, getIncident } from "@/lib/incident-api.ts";
+import { ApiError } from "@/lib/api.ts";
+import { exportIncident } from "@/lib/incident-api.ts";
 import type { ExportFormat } from "@/lib/incident-types.ts";
 import { simpleErrorText } from "./errors.ts";
 import { BUTTON_SECONDARY } from "./ui.tsx";
 
 /**
- * JSON and Markdown export. The access token lives in memory, so a plain
- * link cannot carry it: the file is fetched with the Authorization header and
- * saved from a Blob.
+ * JSON and Markdown export. The file is fetched through `exportIncident`
+ * (the shared authenticated transport) and saved from a Blob, because the
+ * access token lives in memory and a plain link cannot carry it.
  */
 
-/**
- * Fetches an export with the Authorization header and returns the file. On a
- * 401 the token has expired: one cheap read through api.ts refreshes it (or
- * sends the user to log in), then the export is fetched once more.
- */
-export async function fetchExport(
-  id: string,
-  format: ExportFormat,
-  signal?: AbortSignal,
-): Promise<{ blob: Blob; filename: string }> {
-  const url = exportUrl(id, format);
-  const attempt = () => {
-    const headers = new Headers({ "X-Cluster-ID": LOCAL_CLUSTER_ID });
-    const token = getAccessToken();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    return fetch(url, { headers, credentials: "include", signal });
-  };
-  let res = await attempt();
-  if (res.status === 401) {
-    await getIncident(id, { limit: 1 }, signal);
-    res = await attempt();
+function exportErrorText(err: unknown): string {
+  if (err instanceof ApiError && err.status === 429) {
+    return "Exports are rate-limited. Try again shortly.";
   }
-  if (!res.ok) {
-    let body: { error?: Record<string, unknown> } | undefined;
-    try {
-      body = await res.json();
-    } catch {
-      // not JSON
-    }
-    const e = body?.error as { code?: number; message?: string } | undefined;
-    throw new ApiError(
-      res.status,
-      e?.code ?? res.status,
-      e?.message ?? res.statusText,
-      body as ConstructorParameters<typeof ApiError>[3],
-    );
-  }
-  const disposition = res.headers.get("Content-Disposition") ?? "";
-  const match = /filename="([^"]+)"/.exec(disposition);
-  const filename =
-    match?.[1] ?? `incident-${id}.${format === "markdown" ? "md" : "json"}`;
-  return { blob: await res.blob(), filename };
+  return simpleErrorText(err, "The export could not be downloaded.");
 }
 
 function saveBlob(blob: Blob, filename: string) {
@@ -77,10 +39,10 @@ export function ExportMenu({ incidentId }: { incidentId: string }) {
     pending.value = format;
     error.value = null;
     try {
-      const { blob, filename } = await fetchExport(incidentId, format);
+      const { blob, filename } = await exportIncident(incidentId, format);
       saveBlob(blob, filename);
     } catch (err) {
-      error.value = simpleErrorText(err, "The export could not be downloaded.");
+      error.value = exportErrorText(err);
     } finally {
       pending.value = null;
     }

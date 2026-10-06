@@ -21,9 +21,6 @@ const { default: IncidentWorkspace } = await import("./IncidentWorkspace.tsx");
 const { captureErrorText } = await import(
   "@/src/components/incidents/CapturePanel.tsx"
 );
-const { fetchExport } = await import(
-  "@/src/components/incidents/ExportMenu.tsx"
-);
 
 beforeAll(() => GlobalRegistrator.register());
 afterAll(() => GlobalRegistrator.unregister());
@@ -302,7 +299,7 @@ test("a live link to a present object deep-links to its detail page", async () =
 // --- Notes -------------------------------------------------------------------
 
 const note: NoteView = {
-  id: "n1",
+  id: "00000000-0000-4000-8000-0000000000a1",
   incidentId: ID,
   authorId: "alice",
   body: "first take",
@@ -333,7 +330,7 @@ test("a revision conflict keeps the draft, explains, and offers a reload", async
   );
   act(() => edit?.click());
   const area = root.querySelector(
-    "textarea#note-edit-n1",
+    "textarea#note-edit-00000000-0000-4000-8000-0000000000a1",
   ) as HTMLTextAreaElement;
   act(() => {
     area.value = "my careful rewrite";
@@ -350,7 +347,7 @@ test("a revision conflict keeps the draft, explains, and offers a reload", async
   });
   expect(root.textContent).toContain("revision 2");
   const kept = root.querySelector(
-    "textarea#note-edit-n1",
+    "textarea#note-edit-00000000-0000-4000-8000-0000000000a1",
   ) as HTMLTextAreaElement;
   expect(kept.value).toBe("my careful rewrite");
   expect(
@@ -458,9 +455,41 @@ test("Load more after a failed page fetches that page again", async () => {
   expect(loadMore()).toBeUndefined();
 });
 
-test("export fetches with the bearer token and the requested format", async () => {
+/** Clicks the export button for `label`, capturing what was saved. */
+async function clickExport(root: HTMLElement, label: "JSON" | "Markdown") {
+  const saved: string[] = [];
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+  const realClick = HTMLAnchorElement.prototype.click;
+  URL.createObjectURL = () => "blob:x";
+  URL.revokeObjectURL = () => {};
+  HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+    saved.push(this.download);
+  };
+  try {
+    const button = [...root.querySelectorAll("button")].find(
+      (b) => b.textContent === label,
+    );
+    act(() => button?.click());
+    await flush();
+  } finally {
+    URL.createObjectURL = realCreate;
+    URL.revokeObjectURL = realRevoke;
+    HTMLAnchorElement.prototype.click = realClick;
+  }
+  return saved;
+}
+
+const routeDetail =
+  (over: Partial<IncidentView> = {}): Route =>
+  (c) =>
+    c.method === "GET" && c.url.startsWith(`/api/v1/incidents/${ID}?`)
+      ? json(200, { data: detail(over) })
+      : undefined;
+
+test("export downloads with the bearer token and the requested format", async () => {
   setAccessToken("tok");
-  stubFetch((c) =>
+  stubFetch(routeDetail({ role: "collaborator" }), routeNotes(), (c) =>
     c.url.includes("/export?")
       ? new Response("# incident", {
           status: 200,
@@ -472,24 +501,27 @@ test("export fetches with the bearer token and the requested format", async () =
         })
       : undefined,
   );
-  const { blob, filename } = await fetchExport(ID, "markdown");
-  expect(calls[0].url).toBe(`/api/v1/incidents/${ID}/export?format=markdown`);
-  expect(calls[0].headers.get("Authorization")).toBe("Bearer tok");
-  expect(calls[0].headers.get("X-Cluster-ID")).toBe("local");
-  expect(filename).toBe("incident-x-20261001.md");
-  expect(await blob.text()).toBe("# incident");
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  const saved = await clickExport(root, "Markdown");
+  const call = calls.find((c) => c.url.includes("/export?"));
+  expect(call?.url).toBe(`/api/v1/incidents/${ID}/export?format=markdown`);
+  expect(call?.headers.get("Authorization")).toBe("Bearer tok");
+  expect(call?.headers.get("X-Cluster-ID")).toBe("local");
+  expect(saved).toEqual(["incident-x-20261001.md"]);
 });
 
-test("a failed export surfaces as an ApiError with the server's reason", async () => {
-  setAccessToken("tok");
-  stubFetch(() =>
-    json(503, {
-      error: { code: 503, message: "busy", reason: "incident_busy" },
-    }),
+test("a rate-limited export says so", async () => {
+  stubFetch(routeDetail(), routeNotes(), routeGrants, (c) =>
+    c.url.includes("/export?")
+      ? json(429, { error: { code: 429, message: "too many requests" } })
+      : undefined,
   );
-  const err = await fetchExport(ID, "json").catch((e) => e);
-  expect(err).toBeInstanceOf(ApiError);
-  expect((err as ApiError).reason).toBe("incident_busy");
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  const saved = await clickExport(root, "JSON");
+  expect(saved).toEqual([]);
+  expect(root.querySelector('[role="group"] [role="alert"]')?.textContent).toBe(
+    "Exports are rate-limited. Try again shortly.",
+  );
 });
 
 test("capture errors: busy names the retry delay, outcome-unknown says retry is safe", () => {
@@ -502,6 +534,8 @@ test("capture errors: busy names the retry delay, outcome-unknown says retry is 
     },
   );
   expect(captureErrorText(busy)).toContain("retry in about 1 second");
+  busy.headers = new Headers({ "Retry-After": "4" });
+  expect(captureErrorText(busy)).toContain("retry in about 4 seconds");
   expect(captureErrorText(busy)).toContain("too many captures in progress");
   const unknown = new ApiError(503, 503, "x", {
     error: { reason: "incident_capture_outcome_unknown" },

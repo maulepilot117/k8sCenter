@@ -75,7 +75,7 @@ function loadErrorFor(err: unknown): LoadError {
     if (err.reason === "incident_busy") {
       return {
         kind: "retryable",
-        message: busyText("The incident store is busy."),
+        message: busyText("The incident store is busy.", err),
       };
     }
   }
