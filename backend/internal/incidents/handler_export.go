@@ -24,11 +24,14 @@ package incidents
 //
 // Memory: the bounded document is accumulated FIRST (so a store error on
 // any page is still a clean 503, since nothing has been written), then
-// streamed: JSON through json.Encoder straight to the response, markdown
-// through a bufio.Writer, so the peak heap is about one copy of the
-// bounded content rather than the content plus a rendered copy. A
-// process-wide bulkhead (exportConcurrency) caps how many such copies
-// exist at once; a full one is 503 incident_busy with Retry-After.
+// written element by element through a 64 KiB bufio.Writer: the JSON
+// envelope by hand, each evidence item, placeholder and note serialized on
+// its own (writeExportJSON), markdown item by item. No whole-document
+// serialization exists on either path, so one export's peak heap is the
+// bounded content plus one serialized element plus the write buffer. A
+// process-wide bulkhead (exportConcurrency) and a per-user cap
+// (exportPerUser) bound how many exports hold that at once; a refused
+// export is 503 incident_busy with Retry-After, audited.
 
 import (
 	"bufio"
@@ -231,8 +234,20 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The per-user cap is checked first so one user's second export never
+	// consumes a global slot.
+	releaseUser, ok := h.acquireUserExport(user.ID)
+	if !ok {
+		h.auditLog(r, user, ActionIncidentExport, audit.ResultFailure, c.row.ClusterID, "incident",
+			"incident "+c.row.ID.String()+": refused, an export by this user is already in progress")
+		writeBusy(w, "an export by you is already in progress; retry shortly")
+		return
+	}
+	defer releaseUser()
 	release, ok := acquire(h.exportSlots)
 	if !ok {
+		h.auditLog(r, user, ActionIncidentExport, audit.ResultFailure, c.row.ClusterID, "incident",
+			"incident "+c.row.ID.String()+": refused, export bulkhead full")
 		writeBusy(w, "too many exports in progress; retry shortly")
 		return
 	}
@@ -260,18 +275,98 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
+	bw := bufio.NewWriterSize(w, exportWriteBuffer)
 	if format == ExportFormatJSON {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		err = enc.Encode(doc)
+		err = writeExportJSON(bw, doc)
 	} else {
-		bw := bufio.NewWriter(w)
 		renderMarkdown(bw, doc)
+	}
+	if err == nil {
 		err = bw.Flush()
 	}
 	if err != nil {
 		h.logger.Warn("incident export stream interrupted after headers were sent", "incidentId", c.row.ID, "format", format, "error", err)
 	}
+}
+
+// exportWriteBuffer is the bufio.Writer size both formats stream through.
+const exportWriteBuffer = 64 << 10
+
+// writeExportJSON writes doc as JSON one element at a time: the envelope
+// and its scalar/small fields by hand (same field names and order as
+// ExportDocument, so json.Unmarshal into ExportDocument round-trips), then
+// each evidence item, placeholder and note serialized on its own line.
+// Only one element is ever serialized in memory; elements are compact and
+// the envelope is indented two spaces, so the file still reads as a
+// document.
+func writeExportJSON(w *bufio.Writer, doc *ExportDocument) error {
+	field := func(name string, v any, last bool) error {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		w.WriteString("  \"")
+		w.WriteString(name)
+		w.WriteString("\": ")
+		w.Write(b)
+		if !last {
+			w.WriteString(",")
+		}
+		_, err = w.WriteString("\n")
+		return err
+	}
+	array := func(name string, n int, element func(i int) any) error {
+		w.WriteString("  \"")
+		w.WriteString(name)
+		w.WriteString("\": [")
+		for i := range n {
+			if i > 0 {
+				w.WriteString(",")
+			}
+			w.WriteString("\n    ")
+			b, err := json.Marshal(element(i))
+			if err != nil {
+				return err
+			}
+			w.Write(b)
+		}
+		if n > 0 {
+			w.WriteString("\n  ")
+		}
+		_, err := w.WriteString("],\n")
+		return err
+	}
+	w.WriteString("{\n")
+	for _, f := range []struct {
+		name string
+		v    any
+	}{
+		{"schema", doc.Schema}, {"exportedAt", doc.ExportedAt}, {"exportedBy", doc.ExportedBy},
+		{"incident", doc.Incident}, {"counts", doc.Counts}, {"withheldByReason", doc.WithheldByReason},
+	} {
+		if err := field(f.name, f.v, false); err != nil {
+			return err
+		}
+	}
+	if err := array("evidence", len(doc.Evidence), func(i int) any { return doc.Evidence[i] }); err != nil {
+		return err
+	}
+	if err := array("withheld", len(doc.Withheld), func(i int) any { return doc.Withheld[i] }); err != nil {
+		return err
+	}
+	if err := array("notes", len(doc.Notes), func(i int) any { return doc.Notes[i] }); err != nil {
+		return err
+	}
+	if err := field("truncated", doc.Truncated, doc.Truncation == nil); err != nil {
+		return err
+	}
+	if doc.Truncation != nil {
+		if err := field("truncation", doc.Truncation, true); err != nil {
+			return err
+		}
+	}
+	_, err := w.WriteString("}\n")
+	return err
 }
 
 // ---------------------------------------------------------------------------

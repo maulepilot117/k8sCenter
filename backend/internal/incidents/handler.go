@@ -58,6 +58,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -120,6 +121,10 @@ const (
 	// ReasonExportFormatInvalid: ?format is not json or markdown (400; no
 	// HTML export exists, Q1 P12).
 	ReasonExportFormatInvalid = "export_format_invalid"
+	// ReasonCaptureOutcomeUnknown: the store's COMMIT answer never arrived
+	// (503 + Retry-After); the capture may or may not be durable, and a
+	// retry is safe because duplicates are ignored.
+	ReasonCaptureOutcomeUnknown = "incident_capture_outcome_unknown"
 )
 
 const (
@@ -212,17 +217,46 @@ type Handler struct {
 	// acquire); a full one answers 503 incident_busy with Retry-After.
 	exportSlots  chan struct{}
 	captureSlots chan struct{}
+	// exportByUser counts each user's in-flight exports (at most
+	// exportPerUser); entries are removed at zero, so it never grows past
+	// the number of users exporting right now. Guarded by exportMu.
+	exportMu     sync.Mutex
+	exportByUser map[string]int
 	logger       *slog.Logger
 }
 
-// Bulkhead sizes. exportConcurrency x exportMaxBytes (plus the encoder's
-// working set) is the export path's peak heap; captureConcurrency bounds
-// how many captures fan out impersonated reads at once (each already
-// bounded by Limits.MaxConcurrency sources).
+// Bulkhead sizes. The export path's peak heap is exportConcurrency x
+// (exportMaxBytes of accumulated content + one serialized element + a
+// 64 KiB write buffer): the JSON is written element by element, never as a
+// whole-document buffer. exportPerUser keeps one user from holding every
+// global slot. captureConcurrency bounds how many captures fan out
+// impersonated reads at once (each already bounded by
+// Limits.MaxConcurrency sources).
 const (
 	exportConcurrency  = 2
+	exportPerUser      = 1
 	captureConcurrency = 4
 )
+
+// acquireUserExport takes one of the caller's exportPerUser slots without
+// waiting; release deletes the entry when the count returns to zero.
+func (h *Handler) acquireUserExport(userID string) (release func(), ok bool) {
+	h.exportMu.Lock()
+	defer h.exportMu.Unlock()
+	if h.exportByUser[userID] >= exportPerUser {
+		return nil, false
+	}
+	h.exportByUser[userID]++
+	return func() {
+		h.exportMu.Lock()
+		defer h.exportMu.Unlock()
+		if h.exportByUser[userID] <= 1 {
+			delete(h.exportByUser, userID)
+		} else {
+			h.exportByUser[userID]--
+		}
+	}, true
+}
 
 // NewHandler builds the handler. The stores may be nil (no database): every
 // endpoint then answers 503 ReasonPersistenceUnavailable. A nil collector
@@ -234,7 +268,7 @@ func NewHandler(incidents *store.IncidentStore, evidence *store.IncidentEvidence
 	collector *Collector, limits Limits, access *resources.AccessChecker, auditLogger audit.Logger, logger *slog.Logger) *Handler {
 	h := &Handler{limits: limits, audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout,
 		exportMax: exportMaxBytes, exportSlots: make(chan struct{}, exportConcurrency),
-		captureSlots: make(chan struct{}, captureConcurrency), logger: logger}
+		captureSlots: make(chan struct{}, captureConcurrency), exportByUser: map[string]int{}, logger: logger}
 	if collector != nil {
 		h.collector = collector
 	}
@@ -266,7 +300,8 @@ func newHandlerWith(incidents incidentStore, evidence evidenceStore, grants gran
 	}
 	return &Handler{incidents: incidents, evidence: evidence, grants: grants, access: access, limits: DefaultLimits(),
 		audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout, exportMax: exportMaxBytes,
-		exportSlots: make(chan struct{}, exportConcurrency), captureSlots: make(chan struct{}, captureConcurrency), logger: logger}
+		exportSlots: make(chan struct{}, exportConcurrency), captureSlots: make(chan struct{}, captureConcurrency),
+		exportByUser: map[string]int{}, logger: logger}
 }
 
 // SetRetentionDays sets the retention stamped on new incidents. It is the

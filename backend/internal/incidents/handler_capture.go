@@ -122,6 +122,8 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	// read runs. InsertBatch re-checks under the row lock, which is the
 	// authoritative guard against a close that races this read.
 	if c.row.Status == store.IncidentStatusClosed {
+		h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
+			"incident "+c.row.ID.String()+": refused, incident is closed")
 		h.writeStoreFailure(w, "capture into closed incident", store.ErrIncidentClosed)
 		return
 	}
@@ -145,6 +147,8 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	detail := "incident " + id.String()
 	release, ok := acquire(h.captureSlots)
 	if !ok {
+		h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
+			detail+": refused, capture bulkhead full")
 		writeBusy(w, "too many captures in progress; retry shortly")
 		return
 	}
@@ -180,11 +184,25 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	if len(rows) > 0 {
 		inserted, err = h.evidence.InsertBatch(ctx, id, user.ID, rows, h.limits.EvidenceLimits())
 		switch {
+		case errors.Is(err, store.ErrCommitOutcomeUnknown):
+			// The COMMIT's answer never arrived: the batch may be durable.
+			// Never claim "nothing was recorded"; a retry is safe (P15
+			// de-duplication).
+			h.logger.Warn("incident capture commit outcome unknown", "incidentId", id, "error", err)
+			h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
+				detail+": outcome unknown (commit unanswered)")
+			w.Header().Set("Retry-After", "1")
+			httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable,
+				"the capture may or may not have been recorded; retrying is safe (duplicates are ignored)",
+				ReasonCaptureOutcomeUnknown, nil)
+			return
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 			// The client went away (or the whole-operation budget ran out)
-			// between the collector returning and the insert: the store's
-			// transaction rolled back, so this is the same "nothing was
-			// recorded" outcome as a cancellation during collection.
+			// between the collector returning and the insert. The store
+			// raises a context error only before its COMMIT (the commit
+			// runs detached and bounded), so the transaction rolled back
+			// and this is the same "nothing was recorded" outcome as a
+			// cancellation during collection.
 			h.writeCaptureFailure(w, r, user, c.row, err)
 			return
 		case err != nil:

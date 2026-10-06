@@ -54,8 +54,9 @@ func TestExportBulkheadFullIs503BusyAndSlotsAreReleased(t *testing.T) {
 	if w.Header().Get("Retry-After") == "" {
 		t.Fatal("no Retry-After on a full bulkhead")
 	}
-	if got := hs.audit.actions(); len(got) != 0 {
-		t.Fatalf("a refused export was audited: %v", got)
+	// Round 2: refusals are audited as failures with a reason, counts only.
+	if got := hs.audit.actions(); len(got) != 1 || got[0] != "incident_export:failure" || !strings.Contains(hs.audit.entries[0].Detail, "bulkhead full") {
+		t.Fatalf("refused export audit = %v", got)
 	}
 	drain()
 
