@@ -635,3 +635,44 @@ test("a note held for one incident is never placed into another incident's threa
   expect(root.textContent).not.toContain("made mid-page");
   expect(root.textContent).toContain("No notes yet.");
 });
+
+// --- Review round 4 ---------------------------------------------------------
+
+test("a note whose create resolves after the incident changed is not placed in the new thread", async () => {
+  const ID2 = "00000000-0000-4000-8000-000000000002";
+  let releaseCreate: () => void = () => {};
+  stubFetch(
+    (c) =>
+      c.method === "GET" && c.url.includes("/notes")
+        ? json(200, { data: [], metadata: {} })
+        : undefined,
+    (c) =>
+      c.method === "POST"
+        ? new Promise<Response>((resolve) => {
+            releaseCreate = () =>
+              resolve(
+                json(201, { data: note(N1, { body: "for the old one" }) }),
+              );
+          })
+        : undefined,
+  );
+  const root = await mount();
+  submitNew(root, "for the old one");
+  await flush();
+  expect(calls.find((c) => c.method === "POST")?.url).toBe(
+    `/api/v1/incidents/${ID}/notes`,
+  );
+  // The view switches incidents; the new thread is loaded, complete and idle.
+  act(() =>
+    render(
+      <IncidentNotes incidentId={ID2} canAnnotate currentUserId="alice" />,
+      host as HTMLElement,
+    ),
+  );
+  await flush();
+  releaseCreate();
+  await flush();
+  expect(root.textContent).not.toContain("for the old one");
+  expect(root.textContent).toContain("No notes yet.");
+  expect(root.textContent).not.toContain("Note added");
+});

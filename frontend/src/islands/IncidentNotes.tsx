@@ -237,7 +237,10 @@ export default function IncidentNotes({
   // (every issuer waits for `loading`), so a held note always meets the load
   // it waited for. A different incident's thread is another matter: its
   // load must never place this incident's notes.
+  /** The incident on screen now; a post compares it with the one it began on. */
+  const currentIncident = useRef(incidentId);
   useEffect(() => {
+    currentIncident.current = incidentId;
     return () => {
       pendingNotes.current = [];
     };
@@ -349,9 +352,14 @@ export default function IncidentNotes({
     posting.value = true;
     postError.value = null;
     postNotice.value = null;
+    const postedTo = incidentId;
     try {
-      const note = await createNote(incidentId, body);
+      const note = await createNote(postedTo, body);
       draft.value = "";
+      // The view moved to another incident while the create was in flight:
+      // this note belongs to the old thread, so it is neither placed nor
+      // held here.
+      if (currentIncident.current !== postedTo) return;
       if (loading.peek()) {
         // A load in flight may have read the thread before this note
         // existed; place it once that load settles.
@@ -360,7 +368,10 @@ export default function IncidentNotes({
         placeNote(note);
       }
     } catch (err) {
-      postError.value = noteErrorText(err, "added");
+      // An error about the old incident's note is not shown on another one.
+      if (currentIncident.current === postedTo) {
+        postError.value = noteErrorText(err, "added");
+      }
     } finally {
       posting.value = false;
     }
