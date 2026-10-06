@@ -593,3 +593,80 @@ identical across replicas.
 
 Inspect:
     SELECT applied_retention_days, updated_at FROM incident_retention_state;
+
+000026_incident_client_request_id (Release D incidents, U25c, 2026-10-06)
+------------------------------------------------------------------------
+
+Adds one nullable column, incidents.client_request_id (UUID), and a partial
+UNIQUE index idx_incidents_owner_client_request on (owner_id,
+client_request_id) WHERE client_request_id IS NOT NULL. Purely additive: no
+backfill, existing rows keep NULL and never conflict.
+
+What it is for:
+  POST /incidents accepts an optional clientRequestId the browser generates
+  once per create attempt. When a create's response is lost (network drop,
+  proxy timeout, a remount) and the client retries with the same id, the
+  backend returns the incident the first attempt made (200 instead of 201)
+  rather than a duplicate. The key is scoped per owner, so two users can never
+  reach each other's incident through it, and it is never returned by the API.
+  First write wins: the stored incident is never changed by a replay. A
+  replay with the same title, summary and window gets it back (200); a reused
+  id with a different payload is refused with 409 client_request_id_conflict
+  and no incident body, so the client generates a new id. (An incident edited
+  since it was created no longer matches its original payload, so a very late
+  replay of its create is a 409 too.) Deleting the incident frees the key, so
+  a later create with the same id makes a new one.
+
+Audit:
+  A new incident is audited as incident_create; a replay as
+  incident_create_replayed (success only when the 200 is sent; failure on a
+  409 conflict or a 503). Lost-response nuance: when the first request's
+  INSERT commits but its context is cancelled (client gone, proxy timeout)
+  before the result is read, that request is audited as an incident_create
+  FAILURE although the incident exists, and the client's retry is audited as
+  incident_create_replayed success. Read the two together.
+
+Lock impact:
+  ADD COLUMN of a nullable column with no default is a catalog-only change
+  (brief ACCESS EXCLUSIVE lock, no table rewrite). The index is built without
+  CONCURRENTLY (that cannot run inside the multi-statement migration file),
+  so it takes a SHARE lock that blocks incident writes (creates, updates,
+  evidence-counter updates) while it builds. incidents shipped with 000024 in
+  the tagged v0.22.338+ images, so it may hold data; but the table is
+  low-volume (bounded by retention) and the partial index matches no existing
+  row (every client_request_id is NULL), so the build is a scan with nothing to
+  insert and the lock is brief.
+  Operators with an unusually large incidents table can build the index
+  online BEFORE upgrading; the migration's IF NOT EXISTS statements are then
+  no-ops:
+      ALTER TABLE incidents ADD COLUMN IF NOT EXISTS client_request_id UUID;
+      CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_incidents_owner_client_request
+          ON incidents (owner_id, client_request_id)
+          WHERE client_request_id IS NOT NULL;
+  Run them as two separate statements (not in a transaction). A failed
+  CONCURRENTLY build leaves an INVALID index that IF NOT EXISTS would still
+  skip: check
+      SELECT indisvalid FROM pg_index
+       WHERE indexrelid = 'idx_incidents_owner_client_request'::regclass;
+  and if it is false, DROP INDEX idx_incidents_owner_client_request and rerun
+  the CREATE before upgrading.
+
+Rollback:
+  The down file drops the index, then the column. Every incident, its
+  evidence, notes and grants are kept; only the create idempotency is lost (a
+  create retried across the rollback may make a duplicate incident). To run an
+  image that embeds only 000025 against a database recorded at version 26,
+  with every new-image pod stopped, run the 000026 down file, then
+    UPDATE schema_migrations SET version = 25, dirty = false;
+  Leaving the column in place instead is also safe for the older image (it
+  never names the column, and the partial index ignores its NULL inserts); a
+  later roll-forward re-runs the up file without error (ADD COLUMN IF NOT
+  EXISTS, CREATE UNIQUE INDEX IF NOT EXISTS, COMMENT ON). Ids recorded before
+  the rollback then still match their incidents.
+  TestMigration000026_RoundTripKeepsIncidents covers up, down and re-apply.
+
+Inspect:
+    SELECT owner_id, COUNT(*) AS with_request_id
+      FROM incidents
+     WHERE client_request_id IS NOT NULL
+     GROUP BY owner_id;

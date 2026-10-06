@@ -64,16 +64,23 @@ type fakeStore struct {
 	// insertDeadline is the deadline of the last InsertBatch context.
 	insertDeadline time.Time
 	clock          time.Time
+	// requestIDs maps owner + "/" + client request id to the incident a
+	// CreateWithRequestID made (the 000026 partial unique index).
+	requestIDs map[string]uuid.UUID
+	// createWithRequestID, when set, replaces CreateWithRequestID's result
+	// (a matched id that has since vanished, a foreign owner, ErrIncidentBusy).
+	createWithRequestID func() (uuid.UUID, bool, error)
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		incidents: map[uuid.UUID]store.IncidentRow{},
-		grants:    map[uuid.UUID]map[string]store.IncidentGrantRow{},
-		evidence:  map[uuid.UUID][]store.IncidentEvidenceRow{},
-		notes:     map[uuid.UUID][]store.IncidentNoteRow{},
-		failOp:    map[string]error{},
-		clock:     fixedNow,
+		incidents:  map[uuid.UUID]store.IncidentRow{},
+		grants:     map[uuid.UUID]map[string]store.IncidentGrantRow{},
+		evidence:   map[uuid.UUID][]store.IncidentEvidenceRow{},
+		notes:      map[uuid.UUID][]store.IncidentNoteRow{},
+		failOp:     map[string]error{},
+		clock:      fixedNow,
+		requestIDs: map[string]uuid.UUID{},
 	}
 }
 
@@ -125,6 +132,40 @@ func (f *fakeStore) Create(ctx context.Context, r store.IncidentRow) (uuid.UUID,
 		f.getFails = 1
 	}
 	return r.ID, nil
+}
+
+// CreateWithRequestID mirrors the store: the key is per owner, first write
+// wins, and a deleted incident frees its key.
+func (f *fakeStore) CreateWithRequestID(ctx context.Context, r store.IncidentRow, requestID uuid.UUID) (uuid.UUID, bool, error) {
+	if err := f.enter(ctx, "CreateWithRequestID"); err != nil {
+		return uuid.Nil, false, err
+	}
+	if f.createWithRequestID != nil {
+		return f.createWithRequestID()
+	}
+	if requestID == uuid.Nil {
+		return uuid.Nil, false, fmt.Errorf("%w: client request id must not be the nil UUID", store.ErrIncidentInvalid)
+	}
+	key := r.OwnerID + "/" + requestID.String()
+	if id, ok := f.requestIDs[key]; ok {
+		if _, live := f.incidents[id]; live {
+			for _, v := range []error{
+				store.ValidateIncidentTitle(r.Title), store.ValidateIncidentSummary(r.Summary),
+				store.ValidateIncidentWindow(r.WindowStart, r.WindowEnd),
+			} {
+				if v != nil {
+					return uuid.Nil, false, v
+				}
+			}
+			return id, false, nil
+		}
+	}
+	id, err := f.Create(ctx, r)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	f.requestIDs[key] = id
+	return id, true, nil
 }
 
 func (f *fakeStore) Get(ctx context.Context, id uuid.UUID) (*store.IncidentRow, error) {
@@ -1998,5 +2039,282 @@ func TestNewHandlerKeepsNilStoresUntyped(t *testing.T) {
 	}
 	if h.retentionDays != DefaultRetentionDays || h.accessTimeout != accessCheckTimeout {
 		t.Fatalf("defaults = (%d, %s)", h.retentionDays, h.accessTimeout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Idempotent create (U25c, clientRequestId)
+// ---------------------------------------------------------------------------
+
+const createReqID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
+
+func createBody(title, reqID string) string {
+	return `{"title":"` + title + `","windowStart":"2026-10-05T11:00:00Z","clientRequestId":"` + reqID + `"}`
+}
+
+func TestCreateWithClientRequestIDReplayIs200WithTheFirstIncident(t *testing.T) {
+	hs := newHarness(t)
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("first", createReqID)})
+	wantStatus(t, w, http.StatusCreated)
+	first := data(t, w)
+	id := first["incident"].(map[string]any)["id"].(string)
+
+	// The retry resends the same payload, with the id in upper case: the
+	// same key (a UUID is case-insensitive and is keyed by its value).
+	w = hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("first", strings.ToUpper(createReqID))})
+	wantStatus(t, w, http.StatusOK)
+	replay := data(t, w)
+	inc := replay["incident"].(map[string]any)
+	if inc["id"] != id || inc["title"] != "first" || inc["ownerId"] != alice.ID || inc["role"] != "owner" || inc["canAnnotate"] != true {
+		t.Fatalf("replayed incident = %v; want the first incident %s unchanged", inc, id)
+	}
+	if _, has := replay["counts"]; !has {
+		t.Fatalf("replay body lacks counts; want the create body shape: %s", w.Body.String())
+	}
+	if _, leaked := inc["clientRequestId"]; leaked {
+		t.Fatal("the incident view exposes clientRequestId")
+	}
+	if len(hs.st.incidents) != 1 {
+		t.Fatalf("%d incidents stored after a replay; want 1", len(hs.st.incidents))
+	}
+	// One create in the audit log; the replay is its own action.
+	want := []string{string(ActionIncidentCreate) + ":success", string(ActionIncidentCreateReplayed) + ":success"}
+	if got := hs.audit.actions(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("audit = %v, want %v", got, want)
+	}
+	if d := hs.audit.entries[1].Detail; d != "incident "+id {
+		t.Errorf("replay audit detail = %q; want the incident id only", d)
+	}
+}
+
+func TestCreateWithClientRequestIDIsPerUserAndFreedByDelete(t *testing.T) {
+	hs := newHarness(t)
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("alice", createReqID)})
+	wantStatus(t, w, http.StatusCreated)
+	aliceID := data(t, w)["incident"].(map[string]any)["id"].(string)
+
+	// Bob reusing alice's request id gets his own incident, never hers.
+	w = hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: bob, body: createBody("bob", createReqID)})
+	wantStatus(t, w, http.StatusCreated)
+	if inc := data(t, w)["incident"].(map[string]any); inc["id"] == aliceID || inc["ownerId"] != bob.ID {
+		t.Fatalf("bob's create = %v; want his own incident", inc)
+	}
+
+	// Once alice deletes hers, the same request id creates a new one.
+	wantStatus(t, hs.do(t, hs.h.HandleDelete, http.MethodDelete, request{user: alice, incidentID: aliceID}), http.StatusNoContent)
+	w = hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("again", createReqID)})
+	wantStatus(t, w, http.StatusCreated)
+	if inc := data(t, w)["incident"].(map[string]any); inc["id"] == aliceID || inc["title"] != "again" {
+		t.Fatalf("create after delete = %v; want a new incident", inc)
+	}
+}
+
+func TestCreateRejectsAnInvalidClientRequestID(t *testing.T) {
+	hs := newHarness(t)
+	for name, raw := range map[string]string{
+		"not a uuid":   "abc",
+		"empty":        "",
+		"nil uuid":     "00000000-0000-0000-0000-000000000000",
+		"braced":       "{" + createReqID + "}",
+		"urn":          "urn:uuid:" + createReqID,
+		"no hyphens":   strings.ReplaceAll(createReqID, "-", ""),
+		"trailing gap": createReqID + " ",
+	} {
+		w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", raw)})
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400\n%s", name, w.Code, w.Body.String())
+			continue
+		}
+		if reason, _ := errorOf(t, w); reason != ReasonInvalidClientRequestID {
+			t.Errorf("%s: reason = %q, want %q", name, reason, ReasonInvalidClientRequestID)
+		}
+	}
+	// A non-string is a JSON type error, still a 400.
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice,
+		body: `{"title":"t","windowStart":"2026-10-05T11:00:00Z","clientRequestId":42}`})
+	wantStatus(t, w, http.StatusBadRequest)
+	if len(hs.st.incidents) != 0 {
+		t.Fatal("a create with an invalid clientRequestId was stored")
+	}
+	if got := hs.audit.actions(); len(got) != 0 {
+		t.Fatalf("audit = %v; a rejected request id never reaches the store, so nothing is audited", got)
+	}
+}
+
+func TestCreateWithoutClientRequestIDIsUnchanged(t *testing.T) {
+	hs := newHarness(t)
+	for _, body := range []string{
+		`{"title":"t","windowStart":"2026-10-05T11:00:00Z"}`,
+		`{"title":"t","windowStart":"2026-10-05T11:00:00Z"}`,
+		`{"title":"t","windowStart":"2026-10-05T11:00:00Z","clientRequestId":null}`,
+	} {
+		wantStatus(t, hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: body}), http.StatusCreated)
+	}
+	if len(hs.st.incidents) != 3 || len(hs.st.requestIDs) != 0 {
+		t.Fatalf("incidents = %d, keyed = %d; want 3 plain creates", len(hs.st.incidents), len(hs.st.requestIDs))
+	}
+}
+
+func TestCreateWithClientRequestIDStoreFailureIsAuditedOnce(t *testing.T) {
+	hs := newHarness(t)
+	hs.st.failOp["CreateWithRequestID"] = errors.New("pg down")
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)})
+	wantStatus(t, w, http.StatusServiceUnavailable)
+	if got := hs.audit.actions(); strings.Join(got, ",") != string(ActionIncidentCreate)+":failure" {
+		t.Fatalf("audit = %v; want one create failure", got)
+	}
+}
+
+// wantReplayAudit asserts the audit log is one create success followed by
+// exactly one incident_create_replayed entry with result and detail.
+func wantReplayAudit(t *testing.T, hs *harness, result audit.Result, id string) {
+	t.Helper()
+	want := []string{string(ActionIncidentCreate) + ":success", string(ActionIncidentCreateReplayed) + ":" + string(result)}
+	if got := hs.audit.actions(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("audit = %v, want %v", got, want)
+	}
+	if d := hs.audit.entries[1].Detail; d != "incident "+id {
+		t.Errorf("replay audit detail = %q; want %q", d, "incident "+id)
+	}
+}
+
+func createOnce(t *testing.T, hs *harness) string {
+	t.Helper()
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)})
+	wantStatus(t, w, http.StatusCreated)
+	return data(t, w)["incident"].(map[string]any)["id"].(string)
+}
+
+func TestCreateReplayWhoseReadBackFailsIsRetryable503AuditedAsFailure(t *testing.T) {
+	hs := newHarness(t)
+	id := createOnce(t, hs)
+	// The read-back after the replay fails: the incident exists, so the
+	// answer is a 503, never a 201 built from the request.
+	hs.st.getFails = 1
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)})
+	wantStatus(t, w, http.StatusServiceUnavailable)
+	if len(hs.st.incidents) != 1 {
+		t.Fatalf("%d incidents; want 1", len(hs.st.incidents))
+	}
+	wantReplayAudit(t, hs, audit.ResultFailure, id)
+}
+
+func TestCreateReplayWhoseIncidentVanishedIsRetryable503(t *testing.T) {
+	hs := newHarness(t)
+	id := createOnce(t, hs)
+	// The store matched the key, then the incident was deleted before the
+	// read-back: a retry with the same id now creates a new incident.
+	vanished := uuid.MustParse(id)
+	delete(hs.st.incidents, vanished)
+	hs.st.createWithRequestID = func() (uuid.UUID, bool, error) { return vanished, false, nil }
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)})
+	wantStatus(t, w, http.StatusServiceUnavailable)
+	if reason, _ := errorOf(t, w); reason != ReasonIncidentBusy || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("reason = %q, Retry-After = %q; want %s with Retry-After", reason, w.Header().Get("Retry-After"), ReasonIncidentBusy)
+	}
+	wantReplayAudit(t, hs, audit.ResultFailure, id)
+}
+
+func TestCreateReplayWithADifferentPayloadIs409WithoutTheIncident(t *testing.T) {
+	for name, body := range map[string]string{
+		"title":        createBody("other", createReqID),
+		"summary":      `{"title":"t","summary":"s","windowStart":"2026-10-05T11:00:00Z","clientRequestId":"` + createReqID + `"}`,
+		"window start": `{"title":"t","windowStart":"2026-10-05T11:00:01Z","clientRequestId":"` + createReqID + `"}`,
+		"window end":   `{"title":"t","windowStart":"2026-10-05T11:00:00Z","windowEnd":"2026-10-05T12:00:00Z","clientRequestId":"` + createReqID + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newHarness(t)
+			id := createOnce(t, hs)
+			w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: body})
+			wantStatus(t, w, http.StatusConflict)
+			if reason, _ := errorOf(t, w); reason != ReasonClientRequestIDConflict {
+				t.Fatalf("reason = %q, want %q", reason, ReasonClientRequestIDConflict)
+			}
+			if _, has := decode(t, w)["data"]; has {
+				t.Fatalf("409 carries data: %s", w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), id) {
+				t.Fatalf("409 discloses the stored incident: %s", w.Body.String())
+			}
+			if len(hs.st.incidents) != 1 {
+				t.Fatalf("%d incidents; want 1", len(hs.st.incidents))
+			}
+			wantReplayAudit(t, hs, audit.ResultFailure, id)
+		})
+	}
+}
+
+func TestCreateReplayWindowMatching(t *testing.T) {
+	const (
+		start7  = `"windowStart":"2026-10-05T11:00:00.1234567Z"`
+		end7    = `"windowEnd":"2026-10-05T12:00:00.7654327Z"`
+		withEnd = `{"title":"t",` + start7 + `,` + end7 + `,"clientRequestId":"` + createReqID + `"}`
+		noEnd   = `{"title":"t",` + start7 + `,"clientRequestId":"` + createReqID + `"}`
+	)
+	// PostgreSQL keeps microseconds. pgx's binary encoding floors the 7th
+	// digit; a text encoding makes PostgreSQL round it (here: up).
+	floor := func(t time.Time) time.Time { return t.Truncate(time.Microsecond) }
+	round := func(t time.Time) time.Time { return t.Round(time.Microsecond) }
+	for _, tc := range []struct {
+		name          string
+		create, retry string
+		stored        func(time.Time) time.Time
+		want          int
+	}{
+		{"identical replay, floored storage", withEnd, withEnd, floor, http.StatusOK},
+		{"identical replay, rounded storage", withEnd, withEnd, round, http.StatusOK},
+		{"identical replay without end, rounded storage", noEnd, noEnd, round, http.StatusOK},
+		{"stored end, replay omits it", withEnd, noEnd, floor, http.StatusConflict},
+		{"replay adds an end the original lacked", noEnd, withEnd, floor, http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newHarness(t)
+			wantStatus(t, hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: tc.create}), http.StatusCreated)
+			for id, row := range hs.st.incidents {
+				row.WindowStart = tc.stored(row.WindowStart)
+				if row.WindowEnd != nil {
+					end := tc.stored(*row.WindowEnd)
+					row.WindowEnd = &end
+				}
+				hs.st.incidents[id] = row
+			}
+			w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: tc.retry})
+			wantStatus(t, w, tc.want)
+			if tc.want == http.StatusConflict {
+				if reason, _ := errorOf(t, w); reason != ReasonClientRequestIDConflict {
+					t.Fatalf("reason = %q, want %q", reason, ReasonClientRequestIDConflict)
+				}
+			}
+		})
+	}
+}
+
+func TestCreateReplayOfAnIncidentTheCallerDoesNotOwnIs409(t *testing.T) {
+	hs := newHarness(t)
+	bobs := hs.seed(t, bob)
+	hs.st.createWithRequestID = func() (uuid.UUID, bool, error) { return bobs, false, nil }
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("checkout latency", createReqID)})
+	wantStatus(t, w, http.StatusConflict)
+	if reason, _ := errorOf(t, w); reason != ReasonClientRequestIDConflict {
+		t.Fatalf("reason = %q, want %q", reason, ReasonClientRequestIDConflict)
+	}
+	if strings.Contains(w.Body.String(), bobs.String()) || strings.Contains(w.Body.String(), bob.ID) {
+		t.Fatalf("409 discloses bob's incident: %s", w.Body.String())
+	}
+	want := []string{string(ActionIncidentCreateReplayed) + ":failure"}
+	if got := hs.audit.actions(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("audit = %v, want %v", got, want)
+	}
+}
+
+func TestCreateWithClientRequestIDBusyIsRetryable503(t *testing.T) {
+	hs := newHarness(t)
+	hs.st.createWithRequestID = func() (uuid.UUID, bool, error) {
+		return uuid.Nil, false, fmt.Errorf("%w: kept conflicting", store.ErrIncidentBusy)
+	}
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)})
+	wantStatus(t, w, http.StatusServiceUnavailable)
+	if reason, _ := errorOf(t, w); reason != ReasonIncidentBusy || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("reason = %q, Retry-After = %q; want %s with Retry-After", reason, w.Header().Get("Retry-After"), ReasonIncidentBusy)
 	}
 }
