@@ -945,7 +945,7 @@ func TestCaptureBudgetFitsUnderTheProxyDeadline(t *testing.T) {
 			d.CaptureTimeout, maxSourceTimeout, maxCaptureTimeout)
 	}
 	if captureMinInsertWork <= store.IncidentLockTimeout {
-		t.Errorf("captureMinInsertWork %s must be strictly above the store lock timeout %s, or a busy incident reports a deadline instead of incident_busy",
+		t.Errorf("captureMinInsertWork %s must be strictly above the store lock timeout %s, so a lock wait that times out is reported by the store as incident_busy rather than cut by the insert deadline (this does not cover pool acquisition or session setup, which have their own retryable mapping)",
 			captureMinInsertWork, store.IncidentLockTimeout)
 	}
 }
@@ -1027,8 +1027,15 @@ func TestHandleCaptureInsertDeadlineIsInsideTheRequestBudget(t *testing.T) {
 	}
 }
 
-// scriptedClock returns the entry time for the first `entryReads` reads and
-// entry+later afterwards.
+// scriptedClock returns entry+reads[i] on the i-th read and the last offset
+// for every read after that. It depends on the order of the handler's clock
+// reads, which HandleCapture makes exactly three times, in this order:
+//
+//	read 1: handler entry (the budget's start)
+//	read 2: the pre-collection check (is a collection window left?)
+//	read 3: the insert deadline, after collection
+//
+// A change to that sequence must update the scripts that use this helper.
 func scriptedClock(entry time.Time, reads []time.Duration) func() time.Time {
 	i := 0
 	return func() time.Time {
@@ -1132,21 +1139,87 @@ func TestHandleCaptureBudgetExhaustedBeforeCollectionRunsNothing(t *testing.T) {
 
 // (d) InsertBatch hitting its deadline answers 503 "nothing was recorded".
 func TestHandleCaptureInsertDeadlineExceededAnswersNothingRecorded(t *testing.T) {
-	hs := newHarness(t)
-	id := hs.seed(t, alice)
-	ran := false
-	hs.collect(t, recordingSource("object", &ran, completeItem("web")))
-	hs.st.failOp["InsertBatch"] = context.DeadlineExceeded
+	t.Run("our own insert deadline fired: retryable busy", func(t *testing.T) {
+		hs := newHarness(t)
+		id := hs.seed(t, alice)
+		ran := false
+		hs.collect(t, recordingSource("object", &ran, completeItem("web")))
+		hs.st.failOp["InsertBatch"] = context.DeadlineExceeded
 
-	w := hs.capture(t, alice, id, defaultCapture)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status %d, want 503\n%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "nothing was recorded") {
-		t.Errorf("body = %s, want the nothing-was-recorded answer", w.Body.String())
-	}
-	if len(hs.st.evidence[id]) != 0 {
-		t.Error("evidence was persisted despite the deadline")
+		w := hs.capture(t, alice, id, defaultCapture)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status %d, want 503\n%s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "nothing was recorded") || !strings.Contains(w.Body.String(), ReasonIncidentBusy) {
+			t.Errorf("body = %s, want the retryable busy answer", w.Body.String())
+		}
+		if w.Header().Get("Retry-After") == "" {
+			t.Error("no Retry-After on the retryable insert-deadline answer")
+		}
+		if len(hs.st.evidence[id]) != 0 {
+			t.Error("evidence was persisted despite the deadline")
+		}
+	})
+
+	t.Run("client went away: the existing cancelled answer, not busy", func(t *testing.T) {
+		hs := newHarness(t)
+		id := hs.seed(t, alice)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		// The client disconnects once collection is done, before the insert.
+		hs.h.collector = newTestCollector(t, testLimits(), stubSource{id: "object",
+			fn: func(context.Context, CaptureRequest) (SourceResult, error) {
+				cancel()
+				return SourceResult{Items: []Evidence{completeItem("web")}, Completeness: CompletenessComplete}, nil
+			}})
+		hs.st.failOp["InsertBatch"] = context.DeadlineExceeded
+
+		w := hs.do(t, hs.h.HandleCapture, http.MethodPost, request{user: alice, incidentID: id.String(), body: defaultCapture, ctx: ctx})
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status %d, want 503\n%s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), ReasonIncidentBusy) || w.Header().Get("Retry-After") != "" {
+			t.Errorf("a client disconnect was reported as retryable busy: %s", w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "cancelled") {
+			t.Errorf("body = %s, want the cancelled answer", w.Body.String())
+		}
+	})
+}
+
+// The refusal threshold for a near-exhausted budget: less than
+// minCollectionWindow of the collector's share left is refused; exactly the
+// window proceeds.
+func TestHandleCaptureMinimumCollectionWindowBoundary(t *testing.T) {
+	entry := time.Now()
+	share := captureNotAfter(entry).Sub(entry)
+	for name, tc := range map[string]struct {
+		secondRead time.Duration
+		wantStatus int
+	}{
+		"1ms short of the window is refused": {share - minCollectionWindow + time.Millisecond, http.StatusServiceUnavailable},
+		"exactly the window proceeds":        {share - minCollectionWindow, http.StatusOK},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newHarness(t)
+			id := hs.seed(t, alice)
+			ran := false
+			hs.collect(t, recordingSource("object", &ran, completeItem("web")))
+			hs.h.now = scriptedClock(entry, []time.Duration{0, tc.secondRead})
+
+			w := hs.capture(t, alice, id, defaultCapture)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status %d, want %d\n%s", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if tc.wantStatus != http.StatusOK {
+				if !strings.Contains(w.Body.String(), ReasonIncidentBusy) || w.Header().Get("Retry-After") == "" {
+					t.Errorf("refusal is not the retryable busy answer: %s", w.Body.String())
+				}
+				if ran {
+					t.Error("a source ran in a refused capture")
+				}
+			}
+		})
 	}
 }
 

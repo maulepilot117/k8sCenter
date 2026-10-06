@@ -75,6 +75,12 @@ const (
 	captureMinInsertWork = store.IncidentLockTimeout + 2*time.Second
 )
 
+// minCollectionWindow is the least collector time worth starting a capture
+// for. It equals the CaptureTimeout floor (minTimeout, 1 s): below it the
+// collector could not meet even the smallest configurable deadline, so the
+// request is refused as retryable instead of returning an empty capture.
+const minCollectionWindow = time.Second
+
 // captureNotAfter is the latest the collector may run until: the budget's end
 // minus the COMMIT bound, the minimum insert work and the collector grace.
 func captureNotAfter(start time.Time) time.Time {
@@ -223,11 +229,12 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithDeadline(r.Context(), start.Add(captureRequestBudget))
 	defer cancel()
 	// Work before collection (authorization, loading the incident, decoding)
-	// counts against the budget. If it already used the collector's share,
-	// answer retryable without running any source; otherwise cap the
-	// collector's deadline at what is left.
+	// counts against the budget. If less than minCollectionWindow of the
+	// collector's share is left, answer retryable without running any source
+	// (a shorter window would only produce an empty 200 capture); otherwise
+	// cap the collector's deadline at what is left.
 	notAfter := captureNotAfter(start)
-	if !h.clock().Before(notAfter) {
+	if notAfter.Sub(h.clock()) < minCollectionWindow {
 		h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
 			detail+": refused, capture budget exhausted before collection")
 		writeBusy(w, "the capture budget was used up before collection started; nothing was recorded; retry")
@@ -273,9 +280,20 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 				"the capture may or may not have been recorded; retrying is safe (duplicates are ignored)",
 				ReasonCaptureOutcomeUnknown, nil)
 			return
+		case errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil:
+			// Our own insert deadline fired while the client is still there:
+			// the store was too slow before its lock_timeout applied (pool
+			// acquisition, session setup) or the budget ran out. Nothing was
+			// committed (the store raises a context error only before its
+			// COMMIT), so this is retryable.
+			h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
+				detail+": insert deadline exceeded")
+			writeBusy(w, "the store was too busy; nothing was recorded; retry")
+			return
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			// The client went away (or the whole-operation budget ran out)
-			// between the collector returning and the insert. The store
+			// The client went away between the collector returning and the
+			// insert (a deadline error with a dead request context is a
+			// disconnect, not our deadline). The store
 			// raises a context error only before its COMMIT (the commit
 			// runs detached and bounded), so the transaction rolled back
 			// and this is the same "nothing was recorded" outcome as a

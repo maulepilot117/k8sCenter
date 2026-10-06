@@ -1657,6 +1657,65 @@ func TestDiagnosticsFreeTextGoesThroughTheRedactor(t *testing.T) {
 	}
 }
 
+// CaptureRequest.NotAfter caps the capture deadline: the earlier of
+// now+CaptureTimeout and NotAfter wins; zero means no cap.
+func TestCaptureNotAfterCapsTheDeadline(t *testing.T) {
+	deadlineSeen := func(t *testing.T, l Limits, notAfter time.Time) time.Time {
+		t.Helper()
+		var seen time.Time
+		var has bool
+		src := stubSource{id: "s", fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
+			seen, has = ctx.Deadline()
+			return SourceResult{Items: []Evidence{completeItem("a")}, Completeness: CompletenessComplete}, nil
+		}}
+		req := localRequest()
+		req.NotAfter = notAfter
+		capture(t, newTestCollector(t, l, src), req)
+		if !has {
+			t.Fatal("the source context has no deadline")
+		}
+		return seen
+	}
+
+	t.Run("NotAfter far away: CaptureTimeout binds", func(t *testing.T) {
+		l := testLimits()
+		l.CaptureTimeout = 40 * time.Millisecond
+		start := time.Now()
+		got := deadlineSeen(t, l, start.Add(time.Hour))
+		if got.Before(start.Add(l.CaptureTimeout)) || got.After(start.Add(l.CaptureTimeout+5*time.Second)) {
+			t.Errorf("deadline = %s after start, want about CaptureTimeout %s", got.Sub(start), l.CaptureTimeout)
+		}
+	})
+
+	t.Run("zero NotAfter is no cap", func(t *testing.T) {
+		l := testLimits()
+		l.CaptureTimeout = 3 * time.Second
+		start := time.Now()
+		got := deadlineSeen(t, l, time.Time{})
+		if got.Before(start.Add(l.CaptureTimeout)) || got.After(start.Add(l.CaptureTimeout+5*time.Second)) {
+			t.Errorf("deadline = %s after start, want about CaptureTimeout %s", got.Sub(start), l.CaptureTimeout)
+		}
+	})
+
+	t.Run("NotAfter earlier than CaptureTimeout binds and gives the usual partial report", func(t *testing.T) {
+		l := testLimits() // CaptureTimeout 1m
+		notAfter := time.Now().Add(40 * time.Millisecond)
+		c := newTestCollector(t, l, completeSource("fast", completeItem("a")), blockingSource("slow"))
+		req := localRequest()
+		req.NotAfter = notAfter
+		rep := captureWithin(t, c, req, 10*time.Second)
+		if rep.Completeness != CompletenessPartial {
+			t.Errorf("completeness = %q, want partial", rep.Completeness)
+		}
+		if got := sourceReport(t, rep, "slow"); got.Completeness == CompletenessComplete {
+			t.Errorf("slow = %+v, want it cut by NotAfter", got)
+		}
+		if got := sourceReport(t, rep, "fast"); got.Completeness != CompletenessComplete || got.Items != 1 {
+			t.Errorf("fast = %+v, want complete with 1 item", got)
+		}
+	})
+}
+
 func TestCaptureDeadlineIsHardAgainstAContextIgnoringSource(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })

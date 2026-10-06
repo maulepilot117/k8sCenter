@@ -7,6 +7,7 @@ package incidents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -308,9 +309,15 @@ func TestCaptureInsertCancelledIsReportedAsNothingRecorded(t *testing.T) {
 		if reason, _ := errorOf(t, w); reason == ReasonStoreUnavailable {
 			t.Fatalf("%v mapped to the generic store failure", cause)
 		}
+		// A live request that hit our own insert deadline is audited as such
+		// (and answered retryable busy); a cancellation as cancelled.
+		wantDetail := "cancelled"
+		if errors.Is(cause, context.DeadlineExceeded) {
+			wantDetail = "insert deadline exceeded"
+		}
 		acts := hs.audit.actions()
-		if len(acts) != 1 || acts[0] != "incident_capture:failure" || !strings.Contains(hs.audit.entries[0].Detail, "cancelled") {
-			t.Fatalf("audit = %v / %q", acts, hs.audit.entries[0].Detail)
+		if len(acts) != 1 || acts[0] != "incident_capture:failure" || !strings.Contains(hs.audit.entries[0].Detail, wantDetail) {
+			t.Fatalf("audit = %v / %q, want detail containing %q", acts, hs.audit.entries[0].Detail, wantDetail)
 		}
 	}
 }
