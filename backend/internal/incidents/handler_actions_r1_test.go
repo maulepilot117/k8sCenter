@@ -313,7 +313,7 @@ func TestCaptureInsertCancelledIsReportedAsNothingRecorded(t *testing.T) {
 		// (and answered retryable busy); a cancellation as cancelled.
 		wantDetail := "cancelled"
 		if errors.Is(cause, context.DeadlineExceeded) {
-			wantDetail = "insert deadline exceeded"
+			wantDetail = "ran out of time before it could be saved"
 		}
 		acts := hs.audit.actions()
 		if len(acts) != 1 || acts[0] != "incident_capture:failure" || !strings.Contains(hs.audit.entries[0].Detail, wantDetail) {

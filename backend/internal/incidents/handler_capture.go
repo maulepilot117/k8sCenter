@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -74,6 +75,14 @@ const (
 	// store rather than as a deadline here.
 	captureMinInsertWork = store.IncidentLockTimeout + 2*time.Second
 )
+
+// isQueryCanceled reports a PostgreSQL query_canceled (SQLSTATE 57014), which
+// pgx can return instead of a context error when a context deadline or cancel
+// interrupts a statement.
+func isQueryCanceled(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "57014"
+}
 
 // minCollectionWindow is the least collector time worth starting a capture
 // for. It equals the CaptureTimeout floor (minTimeout, 1 s): below it the
@@ -280,24 +289,35 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 				"the capture may or may not have been recorded; retrying is safe (duplicates are ignored)",
 				ReasonCaptureOutcomeUnknown, nil)
 			return
-		case errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil:
-			// Our own insert deadline fired while the client is still there:
-			// the store was too slow before its lock_timeout applied (pool
-			// acquisition, session setup) or the budget ran out. Nothing was
-			// committed (the store raises a context error only before its
-			// COMMIT), so this is retryable.
+		case (errors.Is(err, context.DeadlineExceeded) || isQueryCanceled(err)) && r.Context().Err() == nil:
+			// Our own insert deadline fired while the client is still there.
+			// It binds when the store was slow before its lock_timeout applied
+			// (pool acquisition, session setup) or when the request budget
+			// ran out; pgx may report it as a deadline error or as SQLSTATE
+			// 57014 (query_canceled). Nothing was committed (a commit-time
+			// ambiguity is ErrCommitOutcomeUnknown, handled above, and the
+			// store raises these only before its COMMIT), so this is
+			// retryable.
+			//
+			// This discrimination assumes r.Context() is cancelled only by a
+			// client disconnect: there is no per-route timeout middleware. If
+			// one is added, a deadline error from it would look like our own
+			// insert deadline here, so revisit.
 			h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
-				detail+": insert deadline exceeded")
-			writeBusy(w, "the store was too busy; nothing was recorded; retry")
+				detail+": ran out of time before it could be saved")
+			writeBusy(w, "the capture ran out of time before it could be saved; nothing was recorded; retry")
 			return
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), isQueryCanceled(err):
 			// The client went away between the collector returning and the
-			// insert (a deadline error with a dead request context is a
-			// disconnect, not our deadline). The store
+			// insert (a deadline error or query_canceled with a dead request
+			// context is a disconnect, not our deadline). The store
 			// raises a context error only before its COMMIT (the commit
 			// runs detached and bounded), so the transaction rolled back
 			// and this is the same "nothing was recorded" outcome as a
 			// cancellation during collection.
+			if isQueryCanceled(err) {
+				err = context.Canceled // writeCaptureFailure maps context errors
+			}
 			h.writeCaptureFailure(w, r, user, c.row, err)
 			return
 		case err != nil:

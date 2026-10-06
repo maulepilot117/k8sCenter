@@ -9,12 +9,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -1161,28 +1164,66 @@ func TestHandleCaptureInsertDeadlineExceededAnswersNothingRecorded(t *testing.T)
 		}
 	})
 
-	t.Run("client went away: the existing cancelled answer, not busy", func(t *testing.T) {
+	// Collection finishes normally; the client disconnects INSIDE InsertBatch,
+	// which then reports a deadline error (or SQLSTATE 57014). A dead request
+	// context means a disconnect, so the cancelled answer applies, not busy.
+	for name, insertErr := range map[string]error{
+		"deadline error": context.DeadlineExceeded,
+		"query_canceled": &pgconn.PgError{Code: "57014", Message: "canceling statement due to user request"},
+	} {
+		t.Run("client went away inside the insert ("+name+"): the cancelled answer, not busy", func(t *testing.T) {
+			hs := newHarness(t)
+			id := hs.seed(t, alice)
+			ran := false
+			hs.collect(t, recordingSource("object", &ran, completeItem("web")))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			hs.st.beforeInsert = cancel
+			hs.st.failOp["InsertBatch"] = insertErr
+
+			w := hs.do(t, hs.h.HandleCapture, http.MethodPost, request{user: alice, incidentID: id.String(), body: defaultCapture, ctx: ctx})
+			if hs.st.insertDeadline.IsZero() {
+				t.Fatal("InsertBatch was never reached; the test does not exercise the insert path")
+			}
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status %d, want 503\n%s", w.Code, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), ReasonIncidentBusy) || w.Header().Get("Retry-After") != "" {
+				t.Errorf("a client disconnect was reported as retryable busy: %s", w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "cancelled") {
+				t.Errorf("body = %s, want the cancelled answer", w.Body.String())
+			}
+			if acts := hs.audit.actions(); len(acts) != 1 || !strings.Contains(hs.audit.entries[0].Detail, "cancelled") {
+				t.Errorf("audit = %v / %q, want a cancelled detail", acts, hs.audit.entries[0].Detail)
+			}
+		})
+	}
+
+	t.Run("pgx query_canceled with a live client: the same retryable busy answer", func(t *testing.T) {
 		hs := newHarness(t)
 		id := hs.seed(t, alice)
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-		// The client disconnects once collection is done, before the insert.
-		hs.h.collector = newTestCollector(t, testLimits(), stubSource{id: "object",
-			fn: func(context.Context, CaptureRequest) (SourceResult, error) {
-				cancel()
-				return SourceResult{Items: []Evidence{completeItem("web")}, Completeness: CompletenessComplete}, nil
-			}})
-		hs.st.failOp["InsertBatch"] = context.DeadlineExceeded
+		ran := false
+		hs.collect(t, recordingSource("object", &ran, completeItem("web")))
+		hs.st.failOp["InsertBatch"] = fmt.Errorf("insert incident_evidence: %w", &pgconn.PgError{Code: "57014"})
 
-		w := hs.do(t, hs.h.HandleCapture, http.MethodPost, request{user: alice, incidentID: id.String(), body: defaultCapture, ctx: ctx})
-		if w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("status %d, want 503\n%s", w.Code, w.Body.String())
+		w := hs.capture(t, alice, id, defaultCapture)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), ReasonIncidentBusy) ||
+			!strings.Contains(w.Body.String(), "ran out of time before it could be saved") || w.Header().Get("Retry-After") == "" {
+			t.Errorf("status %d body %s, want the retryable out-of-time answer", w.Code, w.Body.String())
 		}
-		if strings.Contains(w.Body.String(), ReasonIncidentBusy) || w.Header().Get("Retry-After") != "" {
-			t.Errorf("a client disconnect was reported as retryable busy: %s", w.Body.String())
-		}
-		if !strings.Contains(w.Body.String(), "cancelled") {
-			t.Errorf("body = %s, want the cancelled answer", w.Body.String())
+	})
+
+	t.Run("commit outcome unknown keeps precedence over query_canceled", func(t *testing.T) {
+		hs := newHarness(t)
+		id := hs.seed(t, alice)
+		ran := false
+		hs.collect(t, recordingSource("object", &ran, completeItem("web")))
+		hs.st.failOp["InsertBatch"] = fmt.Errorf("%w: %w", store.ErrCommitOutcomeUnknown, &pgconn.PgError{Code: "57014"})
+
+		w := hs.capture(t, alice, id, defaultCapture)
+		if !strings.Contains(w.Body.String(), ReasonCaptureOutcomeUnknown) {
+			t.Errorf("body = %s, want the outcome-unknown answer", w.Body.String())
 		}
 	})
 }
