@@ -360,7 +360,9 @@ export default function IncidentList() {
       .catch((err) => {
         if (controller.signal.aborted) return;
         if (isPersistenceUnavailable(err)) {
+          // Not retryable: a retry that lands here must not leave Retry behind.
           noDatabase.value = true;
+          failed.value = false;
         } else {
           error.value = listErrorText(err);
           failed.value = true;
@@ -371,6 +373,9 @@ export default function IncidentList() {
   }, [cursor, seq]);
 
   const issue = (to: string) => {
+    // Busy from the click itself, not from the effect a frame later, so a
+    // second activation before the effect runs is already a no-op.
+    loading.value = true;
     request.value = { cursor: to, seq: request.peek().seq + 1 };
   };
   const retry = () => {
@@ -448,7 +453,7 @@ export default function IncidentList() {
         </p>
       )}
 
-      {failed.value && (
+      {failed.value && !noDatabase.value && (
         <div class="flex flex-col items-start gap-2">
           {error.value && (
             <div role="alert" class="w-full">

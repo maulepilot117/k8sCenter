@@ -1150,3 +1150,87 @@ test("IncidentList: create maps no-database and busy to their own messages", asy
     host = null;
   }
 });
+
+// --- IncidentList: review round 2 -------------------------------------------
+
+test("IncidentList: a retry that finds no database drops Retry and create", async () => {
+  stubFetch(
+    apiError(503, "incident_store_unavailable"),
+    apiError(503, "incident_persistence_unavailable", {
+      requires: "postgresql",
+    }),
+  );
+  const root = await mount();
+  act(() => button(root, "Retry")?.click());
+  await until(() => root.textContent?.includes("no database") ?? false);
+  await flush();
+  expect(listCalls()).toHaveLength(2);
+  expect(button(root, "Retry")).toBeUndefined();
+  expect(button(root, "New incident")).toBeUndefined();
+  expect(root.querySelector('[role="alert"]')).toBeNull();
+});
+
+test("IncidentList: two Load more clicks in the same frame issue one request", async () => {
+  stubFetch(
+    {
+      status: 200,
+      payload: { data: [incident(1)], metadata: { continue: "p2" } },
+    },
+    { status: 200, payload: { data: [incident(2)] } },
+  );
+  const root = await mount();
+  const more = button(root, "Load more");
+  // Outside act, so the first click's re-render can land between the two.
+  more?.click();
+  await Promise.resolve();
+  more?.click();
+  await until(() => root.querySelectorAll("tbody tr").length === 2);
+  await flush();
+  expect(listCalls().map((c) => c.url)).toEqual([
+    "/api/v1/incidents?limit=50",
+    "/api/v1/incidents?limit=50&continue=p2",
+  ]);
+});
+
+test("IncidentList: a page that settles after unmount writes nothing and does not throw", async () => {
+  const gate = deferred();
+  stubFetch(
+    {
+      status: 200,
+      payload: { data: [incident(1)], metadata: { continue: "p2" } },
+    },
+    { status: 200, payload: { data: [incident(2)] }, gate: gate.promise },
+  );
+  const root = await mount();
+  act(() => button(root, "Load more")?.click());
+  await until(() => listCalls().length === 2);
+  act(() => render(null, root));
+  // The in-flight read was cancelled by the unmount, which is what the
+  // island's stale-response guard keys on.
+  expect(listCalls()[1].signal?.aborted).toBe(true);
+  gate.resolve();
+  await flush();
+  expect(root.childElementCount).toBe(0);
+  expect(listCalls()).toHaveLength(2);
+});
+
+test("IncidentList: a create that rejects after unmount writes nothing and does not throw", async () => {
+  const gate = deferred();
+  stubFetch(
+    { status: 200, payload: { data: [] } },
+    { ...apiError(503, "incident_store_unavailable"), gate: gate.promise },
+  );
+  const visited = spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "x");
+  await flush();
+  submit(form);
+  await until(() => calls.length === 2);
+  act(() => render(null, root));
+  expect(calls[1].signal?.aborted).toBe(true);
+  gate.resolve();
+  await flush();
+  expect(visited).toEqual([]);
+  expect(root.childElementCount).toBe(0);
+});
