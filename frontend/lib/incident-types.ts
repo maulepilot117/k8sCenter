@@ -26,6 +26,7 @@
  */
 
 import type { Open } from "./change-types.ts";
+import { getResourceSection, KIND_ROUTE_MAP } from "./types/diagnostics.ts";
 
 // --- Bounds (store) -----------------------------------------------------------
 
@@ -340,4 +341,174 @@ export interface CaptureRequest {
 export interface GrantRequest {
   granteeId: string;
   canAnnotate: boolean;
+}
+
+// --- View-model helpers (U24b) -------------------------------------------------
+//
+// Pure functions the incident workspace islands share. They decide wording,
+// links and ordering only; nothing here fetches or touches the DOM.
+
+/** The kinds the capture form offers, in display order. */
+export const CAPTURE_KINDS: readonly CaptureKind[] = [
+  "Deployment",
+  "StatefulSet",
+  "DaemonSet",
+  "Pod",
+  "Service",
+  "PersistentVolumeClaim",
+];
+
+/** The capture sources, in display order, with the label the form shows. */
+export const CAPTURE_SOURCES: readonly {
+  id: CaptureSourceId;
+  label: string;
+}[] = [
+  { id: "diagnostics", label: "Diagnostic checks" },
+  { id: "object", label: "Object snapshot and live link" },
+  { id: "events", label: "Events" },
+];
+
+/** The label of a capture source id; an unknown id is shown as sent. */
+export function captureSourceLabel(id: string): string {
+  return CAPTURE_SOURCES.find((s) => s.id === id)?.label ?? id;
+}
+
+/**
+ * The label of each completeness state. Five distinct states, never
+ * collapsed into one "error": a forbidden source is not a failed one, and a
+ * timed-out source may succeed on retry.
+ */
+export function completenessLabel(c: Completeness): string {
+  switch (c) {
+    case "complete":
+      return "Complete";
+    case "partial":
+      return "Partial";
+    case "failed":
+      return "Failed";
+    case "forbidden":
+      return "Forbidden";
+    case "timed_out":
+      return "Timed out";
+    default:
+      return String(c);
+  }
+}
+
+/** What a completeness state means for the reader, in one sentence. */
+export function completenessDescription(c: Completeness): string {
+  switch (c) {
+    case "complete":
+      return "Everything this source set out to observe was observed.";
+    case "partial":
+      return "Some of what this source set out to observe is missing.";
+    case "failed":
+      return "The source could not observe anything.";
+    case "forbidden":
+      return "You were not allowed to read what this source needed.";
+    case "timed_out":
+      return "The source did not finish in time.";
+    default:
+      return "Unknown completeness.";
+  }
+}
+
+/** The label of an evidence kind. */
+export function evidenceKindLabel(kind: EvidenceKind): string {
+  switch (kind) {
+    case "diagnostic_check":
+      return "Diagnostic check";
+    case "object_summary":
+      return "Object summary";
+    case "event_list":
+      return "Events";
+    default:
+      return String(kind);
+  }
+}
+
+/** Shown in place of an observation time the source did not record. */
+export const OBSERVATION_TIME_UNKNOWN = "observation time unknown";
+
+/**
+ * The two timestamps of a readable item. `observed` is null when the source
+ * recorded no observation time; it is NEVER filled in from `collectedAt`
+ * (the two routinely differ by minutes, and a fallback would present the
+ * capture time as the time the cluster saw the fact).
+ */
+export function evidenceTimestamps(e: Evidence): {
+  observed: string | null;
+  captured: string;
+} {
+  return { observed: e.sourceObservedAt ?? null, captured: e.collectedAt };
+}
+
+/**
+ * Why an item is withheld. The text names no scope: what the item is about
+ * (namespace, kind, name) is itself what is being withheld.
+ */
+export function withheldReasonText(reason: WithheldReason): string {
+  switch (reason) {
+    case "forbidden":
+      return "You do not currently have access to this evidence's scope.";
+    case "authorization_check_unavailable":
+      return "Your access to this evidence could not be checked right now. Reload to try again.";
+    default:
+      return "This evidence is withheld from you.";
+  }
+}
+
+/**
+ * What redaction did to an item, as short phrases; empty when nothing was
+ * redacted. Shown so the reader knows what they are not seeing.
+ */
+export function redactionNotes(r: RedactionMeta): string[] {
+  const notes: string[] = [];
+  if (r.applied) {
+    notes.push(
+      r.fieldsRemoved === 1
+        ? "Redacted: 1 field removed"
+        : `Redacted: ${r.fieldsRemoved} fields removed`,
+    );
+  }
+  if (r.truncated) notes.push("Truncated to the size limit");
+  if (r.secretDerived) notes.push("Derived from a Secret; values are masked");
+  return notes;
+}
+
+/**
+ * Sorts timeline items newest capture first (`collectedAt` descending), ties
+ * broken by id so the order is stable across reloads and pages.
+ */
+export function sortTimeline(items: EvidenceItem[]): EvidenceItem[] {
+  return [...items].sort((a, b) => {
+    const ta = Date.parse(a.collectedAt);
+    const tb = Date.parse(b.collectedAt);
+    if (ta !== tb) return tb - ta;
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+  });
+}
+
+/** One evidence page's readable items and withheld placeholders as one list. */
+export function pageItems(
+  page: Pick<EvidencePage, "evidence" | "withheld">,
+): EvidenceItem[] {
+  return [...(page.evidence ?? []), ...(page.withheld ?? [])];
+}
+
+/**
+ * Where a live link's object lives: the in-app detail page and the API path
+ * that reads it, or null for a kind the app has no detail page for.
+ */
+export function liveLinkTarget(
+  source: SourceRef,
+): { href: string; apiPath: string } | null {
+  const segment = KIND_ROUTE_MAP[source.kind];
+  if (!segment || !source.namespace || !source.name) return null;
+  const ns = encodeURIComponent(source.namespace);
+  const name = encodeURIComponent(source.name);
+  return {
+    href: `/${getResourceSection(source.kind)}/${segment}/${ns}/${name}`,
+    apiPath: `/v1/resources/${segment}/${ns}/${name}`,
+  };
 }
