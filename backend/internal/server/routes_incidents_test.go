@@ -41,12 +41,12 @@ var wantIncidentRoutes = map[string]bool{
 	"PUT /incidents/{incidentID}/notes/{noteID}":    true,
 	"DELETE /incidents/{incidentID}/notes/{noteID}": true,
 	// U23b
-	"GET /incidents/{incidentID}/evidence":            true,
-	"POST /incidents/{incidentID}/capture":            true,
-	"GET /incidents/{incidentID}/grants":              true,
-	"POST /incidents/{incidentID}/grants":             true,
+	"GET /incidents/{incidentID}/evidence":              true,
+	"POST /incidents/{incidentID}/capture":              true,
+	"GET /incidents/{incidentID}/grants":                true,
+	"POST /incidents/{incidentID}/grants":               true,
 	"DELETE /incidents/{incidentID}/grants/{granteeID}": true,
-	"GET /incidents/{incidentID}/export":              true,
+	"GET /incidents/{incidentID}/export":                true,
 }
 
 const (
