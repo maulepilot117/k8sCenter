@@ -653,8 +653,8 @@ func (s *Server) registerChangesRoutes(ar chi.Router) {
 // matches the /changes budget rather than the wider YAML one.
 const DefaultIncidentsRateLimit = 60
 
-// registerIncidentRoutes mounts the incident record, note and (U23b)
-// capture/grant/export endpoints. Auth, CSRF and ClusterContext are inherited
+// registerIncidentRoutes mounts the incident record, note, evidence,
+// capture, grant and export endpoints. Auth, CSRF and ClusterContext are inherited
 // from the enclosing authenticated group; the handlers never use the
 // request's cluster for authorization (the evidence row's stored cluster
 // drives every access check, Q1 P6).
@@ -687,6 +687,19 @@ func (s *Server) registerIncidentRoutes(ar chi.Router) {
 		ir.Post("/{incidentID}/notes", h.HandleCreateNote)
 		ir.Put("/{incidentID}/notes/{noteID}", h.HandleUpdateNote)
 		ir.Delete("/{incidentID}/notes/{noteID}", h.HandleDeleteNote)
+		// U23b. Capture and export share the per-user bucket above rather
+		// than a tighter one: a capture is bounded by the collector's
+		// 20s deadline and the 20-scope cap, an export by exportMaxBytes,
+		// and the handler-level owner gate stops a collaborator before any
+		// source runs, so neither can outspend a detail read by more than a
+		// constant factor. {granteeID} is an auth.User.ID (percent-decoded
+		// by the handler), not a Kubernetes name.
+		ir.Get("/{incidentID}/evidence", h.HandleListEvidence)
+		ir.Post("/{incidentID}/capture", h.HandleCapture)
+		ir.Get("/{incidentID}/grants", h.HandleListGrants)
+		ir.Post("/{incidentID}/grants", h.HandleAddGrant)
+		ir.Delete("/{incidentID}/grants/{granteeID}", h.HandleRemoveGrant)
+		ir.Get("/{incidentID}/export", h.HandleExport)
 	})
 }
 

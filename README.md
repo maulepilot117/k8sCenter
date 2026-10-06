@@ -86,6 +86,7 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Policy compliance history | Yes | No | `policy/handler.go` (501: daily snapshots are recorded for the local cluster only) |
 | Tracked change receipts | Yes | Yes | Receipts are stored by this installation and listed or read for any cluster by their owner. Verifying a receipt and resolving GitOps ownership run against the cluster the receipt recorded, not the selected one, and live access to a remote cluster needs admin (a non-admin still reads a stored final verdict, redacted). Cluster IDs are random per registration, so a receipt is never verified against a re-registered cluster |
 | Backup assurance | Yes | No | `velero/assurance_handler.go` (501 `remote_assurance_unsupported`: status, exceptions and policies are collected and stored for the local cluster only) |
+| Incident evidence capture | Yes | No | `incidents/handler_capture.go` (400 `remote_capture_unsupported`: evidence is collected from the local cluster's diagnostics, objects and events). Reading, sharing and exporting an incident work under any selection: every evidence item is re-authorized against the cluster recorded on it, never the selected one |
 
 Dashboard trends (the sparklines) are local-only as well; the cards render without them.
 

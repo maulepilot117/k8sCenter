@@ -1899,7 +1899,7 @@ func TestRequestContextReachesTheStore(t *testing.T) {
 
 func TestNoDatabaseReturns503WithReason(t *testing.T) {
 	hs := newHarness(t)
-	hs.h = NewHandler(nil, nil, nil, nil, hs.audit, nil)
+	hs.h = NewHandler(nil, nil, nil, nil, DefaultLimits(), nil, hs.audit, nil)
 	id := uuid.New()
 	for name, call := range map[string]func() *httptest.ResponseRecorder{
 		"list": func() *httptest.ResponseRecorder {
@@ -1981,7 +1981,7 @@ func TestUnauthenticatedRequestReturns401(t *testing.T) {
 func TestNewHandlerKeepsNilStoresUntyped(t *testing.T) {
 	// A nil *store.IncidentStore must not become a non-nil interface that
 	// panics on first use instead of answering 503.
-	h := NewHandler(nil, nil, nil, nil, nil, nil)
+	h := NewHandler(nil, nil, nil, nil, DefaultLimits(), nil, nil, nil)
 	if h.incidents != nil || h.evidence != nil || h.grants != nil || h.access != nil {
 		t.Fatal("typed nil leaked into an interface field")
 	}

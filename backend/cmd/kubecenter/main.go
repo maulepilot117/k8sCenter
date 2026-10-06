@@ -952,8 +952,38 @@ func main() {
 	// constructed unconditionally; its store fields stay nil when no database
 	// is configured, and every /incidents endpoint then answers 503
 	// incident_persistence_unavailable rather than disappearing behind a 404
-	// (R3, correction C4). The evidence collector is wired by U23b with the
-	// capture endpoint that uses it.
+	// (R3, correction C4).
+	//
+	// The evidence collector (U22b) runs the three local-cluster sources
+	// under incidents.DefaultLimits() (plan A-6; U25a makes them
+	// configurable). Every source SAR-gates its reads with the capturing
+	// user's identity through accessChecker and reads through that user's
+	// impersonated client (k8sClient); the diagnostics source reads related
+	// objects through the same informer lister the diagnostics endpoint
+	// uses; the object and events sources resolve API versions through the
+	// local RESTMapper (capture is local-only, plan A-12). Redaction runs
+	// inside the sources at the per-item bound before anything is measured.
+	//
+	// incidentLimits is the ONE value the redactor, the collector and the
+	// handler are built from: the handler passes it to InsertBatch and
+	// derives the capture budget from it, so it must be exactly what the
+	// collector validated and bounds itself with. When U25a switches this
+	// line to the configured limits, nothing else changes.
+	incidentLimits := incidents.DefaultLimits()
+	incidentRedactor, err := incidents.NewRedactor(incidentLimits.MaxItemBytes)
+	if err != nil {
+		logger.Error("incident redactor configuration invalid", "error", err)
+		os.Exit(1)
+	}
+	incidentCollector, err := incidents.NewCollector([]incidents.Source{
+		incidents.NewDiagnosticsSource(topoLister, accessChecker, incidentRedactor, logger),
+		incidents.NewObjectSource(k8sClient, k8sClient.RESTMapper(), accessChecker, incidentRedactor, logger),
+		incidents.NewEventsSource(k8sClient, k8sClient.RESTMapper(), accessChecker, incidentRedactor, logger),
+	}, incidentLimits, logger)
+	if err != nil {
+		logger.Error("incident collector configuration invalid", "error", err)
+		os.Exit(1)
+	}
 	var incidentStore *appstore.IncidentStore
 	var incidentEvidenceStore *appstore.IncidentEvidenceStore
 	var incidentGrantStore *appstore.IncidentGrantStore
@@ -963,7 +993,8 @@ func main() {
 		incidentGrantStore = appstore.NewIncidentGrantStore(dbPool)
 	}
 	incidentsHandler := incidents.NewHandler(
-		incidentStore, incidentEvidenceStore, incidentGrantStore, accessChecker, auditLogger, logger,
+		incidentStore, incidentEvidenceStore, incidentGrantStore, incidentCollector, incidentLimits,
+		accessChecker, auditLogger, logger,
 	)
 
 	// Gateway API integration

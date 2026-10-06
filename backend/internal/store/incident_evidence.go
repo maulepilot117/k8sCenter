@@ -64,7 +64,24 @@ var (
 	// lock within its lock timeout because another transaction held it. It
 	// is retryable; nothing was written.
 	ErrIncidentBusy = errors.New("incident is busy")
+
+	// ErrCommitOutcomeUnknown wraps an InsertBatch error raised by the COMMIT
+	// itself when its outcome is unknown (no reply: I/O failure, the commit
+	// bound passed; or a FATAL/PANIC, class 57 or class 08 reply, which can
+	// follow a local commit; see classifyCommitError): the batch may or may
+	// not be durable. Every other InsertBatch error, context errors
+	// included, is raised before the commit or proves the commit failed, and
+	// means nothing was written. Retrying is safe: capture_key de-duplication
+	// ignores rows that did land.
+	ErrCommitOutcomeUnknown = errors.New("incident evidence commit outcome unknown")
 )
+
+// incidentCommitTimeout bounds InsertBatch's COMMIT, which runs free of the
+// caller's cancellation (context.WithoutCancel): a client that disconnects
+// while the commit is in flight must not turn a committed batch into an
+// error that reads as "nothing was recorded". The bound keeps a wedged
+// connection from holding the goroutine.
+const incidentCommitTimeout = 5 * time.Second
 
 // incidentLockTimeout bounds how long InsertBatch and AddGrant wait for the
 // incident row lock, so a stalled holder cannot pin pool connections.
@@ -618,6 +635,9 @@ func DecodeEvidenceCursor(s string) (EvidenceCursor, error) {
 type IncidentEvidenceStore struct {
 	pool        *pgxpool.Pool
 	lockTimeout time.Duration // incidentLockTimeout; tests shorten it
+	// beforeCommit runs just before InsertBatch's COMMIT; tests use it to
+	// cancel the caller's context at exactly that point.
+	beforeCommit func()
 }
 
 // NewIncidentEvidenceStore creates an evidence store. It never touches the
@@ -801,10 +821,58 @@ func (s *IncidentEvidenceStore) insertValidated(
 	if _, err := tx.Exec(ctx, evidenceTotalsUpdateSQL, incidentID, newBytes, newCount, newScopes); err != nil {
 		return 0, fmt.Errorf("update incidents evidence totals: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit incident evidence tx: %w", err)
+	if s.beforeCommit != nil {
+		s.beforeCommit()
+	}
+	// The commit is detached from the caller's cancellation and bounded on
+	// its own (see incidentCommitTimeout), so a caller context error can
+	// only have been raised before this point, where the deferred rollback
+	// guarantees nothing was written.
+	commitCtx, cancelCommit := context.WithTimeout(context.WithoutCancel(ctx), incidentCommitTimeout)
+	defer cancelCommit()
+	if err := tx.Commit(commitCtx); err != nil {
+		return 0, classifyCommitError(err)
 	}
 	return inserted, nil
+}
+
+// classifyCommitError wraps a failed COMMIT, marking it
+// ErrCommitOutcomeUnknown unless the server's reply proves the transaction
+// did not commit. The rule:
+//
+//   - pgx.ErrTxCommitRollback (the server reported a rollback) and a
+//     PgError of severity ERROR outside SQLSTATE classes 57 and 08 (for
+//     example 40001 serialization failure, 23xxx integrity violations) are
+//     definite failures: nothing was written.
+//   - Severity is SeverityUnlocalized, or the localized Severity when the
+//     server sent none; a Code shorter than two characters has no class
+//     and is judged by severity alone.
+//   - A PgError of severity FATAL or PANIC, or of class 57 (operator
+//     intervention, e.g. 57P01 admin shutdown) or 08 (connection
+//     exception), is outcome unknown: the server can raise these after the
+//     commit is already durable locally (a synchronous-replication wait
+//     cut short by a shutdown or a terminated backend).
+//   - Anything else (I/O and network errors, the incidentCommitTimeout
+//     bound passing) means the reply never arrived: outcome unknown.
+func classifyCommitError(err error) error {
+	if errors.Is(err, pgx.ErrTxCommitRollback) {
+		return fmt.Errorf("commit incident evidence tx: %w", err)
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		severity := pgErr.SeverityUnlocalized
+		if severity == "" {
+			severity = pgErr.Severity
+		}
+		class := ""
+		if len(pgErr.Code) >= 2 {
+			class = pgErr.Code[:2]
+		}
+		if severity != "FATAL" && severity != "PANIC" && class != "57" && class != "08" {
+			return fmt.Errorf("commit incident evidence tx: %w", err)
+		}
+	}
+	return fmt.Errorf("%w: commit incident evidence tx: %w", ErrCommitOutcomeUnknown, err)
 }
 
 // insertEvidenceRows pipelines the inserts in one round trip and sums the rows

@@ -605,6 +605,22 @@ var capabilityOperations = []capabilityOp{
 		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
 	},
+	{
+		// Release D (U23b, plan A-12): incident evidence is collected from
+		// the local cluster only. incidents/handler_capture.go HandleCapture
+		// answers a non-local X-Cluster-ID with 400
+		// remote_capture_unsupported before any source runs, and the
+		// collector (incidents/collector.go validateRequest) refuses a
+		// non-local cluster id as a second guard. Reading an incident, its
+		// evidence, grants and export is cluster-independent (the rows'
+		// STORED cluster drives every access check, Q1 P6), so only capture
+		// is a capability. AuthResource pods stands in for the target kinds
+		// the sources SAR-gate individually (the object and events adapters
+		// check `get` on the target's own resource and `list events`).
+		ID: "incidents.capture", Label: "Incident evidence capture",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "get", AuthGroup: "", AuthResource: "pods",
+	},
 }
 
 // supportedFor returns the static platformSupported value for this
