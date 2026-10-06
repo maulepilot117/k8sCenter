@@ -1242,6 +1242,11 @@ func TestIncidentStore_RetentionLoweringImpact(t *testing.T) {
 	if after.Oldest.IsZero() || after.Newest.IsZero() || after.Oldest.After(after.Newest) {
 		t.Errorf("bounds = %v..%v, want a populated, ordered range", after.Oldest, after.Newest)
 	}
+	// "fresh" (captured under 90d, 10 days old) is still inside the 30d window,
+	// so it is a later-affected incident and NOT in the current count.
+	if after.LaterCount != before.LaterCount+1 {
+		t.Errorf("LaterCount = %d, want %d (only the fresh old-policy incident is new)", after.LaterCount, before.LaterCount+1)
+	}
 
 	// Once the sweep has run the warning condition clears: it cannot re-fire.
 	if _, err := s.Cleanup(ctx, 30); err != nil {
@@ -1254,13 +1259,18 @@ func TestIncidentStore_RetentionLoweringImpact(t *testing.T) {
 	if cleared.Count != 0 || !cleared.Oldest.IsZero() || !cleared.Newest.IsZero() {
 		t.Errorf("after the sweep impact = %+v, want zero", cleared)
 	}
+	// The sweep does not touch the still-live incident, so LaterCount remains:
+	// the warning can recur until those incidents age past the window.
+	if cleared.LaterCount < after.LaterCount {
+		t.Errorf("LaterCount fell to %d after the sweep, want it kept at %d", cleared.LaterCount, after.LaterCount)
+	}
 
 	// Empty path: no incident here is ten years old, so nothing is affected.
 	none, err := s.RetentionLoweringImpact(ctx, IncidentMaxRetentionDays)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if none.Count != 0 || !none.Oldest.IsZero() || !none.Newest.IsZero() {
+	if none.Count != 0 || none.LaterCount != 0 || !none.Oldest.IsZero() || !none.Newest.IsZero() {
 		t.Errorf("impact at the maximum retention = %+v, want zero", none)
 	}
 }

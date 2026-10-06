@@ -472,8 +472,16 @@ Retention (operator footgun 1):
       sweep by one hour, the window to put the old value back. Set
       KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED=true to sweep at once.
       Incidents that simply expired under their own retention are not
-      counted, so the warning does not repeat on restart once the affected
-      rows are gone. The sweep deletes in batches of 500, so a large backlog
+      counted. The Warn also reports laterAffectedIncidents: live incidents
+      still inside the new window that were captured under a longer
+      retention and so will be deleted earlier than promised. That count is
+      reported but does not defer the sweep. Because those incidents survive
+      the first sweep, the warning (and the deferral, while any incident is
+      past the new window) can recur on later restarts until every incident
+      captured under the longer retention has aged past the new window. A
+      process that restarts more often than hourly with an unconfirmed
+      lowering never runs its first sweep (fail safe); set the confirmed flag
+      to proceed. The sweep deletes in batches of 500, so a large backlog
       is removed progressively and an interrupted sweep keeps its progress.
     - Multi-replica skew: every replica sweeps with its OWN configured value.
       A replica started with a lower value deletes for all of them, and

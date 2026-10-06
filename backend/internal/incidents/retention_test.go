@@ -26,6 +26,7 @@ type fakeRetentionStore struct {
 	cleanupDays []int
 	impact      store.RetentionLoweringImpact
 	impactErr   error
+	impactPanic bool
 	// cleanup is called on every sweep; nil means "delete nothing".
 	cleanup func(ctx context.Context, call int, days int) (int64, error)
 	called  chan struct{} // receives one value per Cleanup call
@@ -49,6 +50,9 @@ func (f *fakeRetentionStore) Cleanup(ctx context.Context, days int) (int64, erro
 }
 
 func (f *fakeRetentionStore) RetentionLoweringImpact(context.Context, int) (store.RetentionLoweringImpact, error) {
+	if f.impactPanic {
+		panic("poisoned impact row")
+	}
 	return f.impact, f.impactErr
 }
 
@@ -283,6 +287,69 @@ func TestRetainer_PanicIsRecoveredAndLoopContinues(t *testing.T) {
 	}
 }
 
+func TestRetainer_PartialProgressIsLoggedOnAFailedSweep(t *testing.T) {
+	t.Run("deleted rows then a failure: one Info and one Error", func(t *testing.T) {
+		lc := &logCapture{}
+		st := newFakeRetentionStore()
+		st.cleanup = func(ctx context.Context, call, _ int) (int64, error) {
+			if call == 1 {
+				return 7, errors.New("statement timeout")
+			}
+			<-ctx.Done() // the second sweep only parks, so it logs nothing
+			return 0, nil
+		}
+		r, ft := newTestRetainer(t, st, 30, lc)
+		cancel, done := startLoop(t, r)
+		waitCall(t, st)
+		ft.ch <- time.Now() // received only after the first sweep has returned and logged
+		waitCall(t, st)
+		stopLoop(t, cancel, done)
+		var infos, errs int
+		for _, rec := range lc.records(t) {
+			switch rec["level"] {
+			case "INFO":
+				infos++
+				if rec["deleted"].(float64) != 7 {
+					t.Errorf("deleted = %v, want 7", rec["deleted"])
+				}
+			case "ERROR":
+				errs++
+			}
+		}
+		if infos != 1 || errs != 1 {
+			t.Errorf("Info=%d Error=%d, want 1 and 1", infos, errs)
+		}
+	})
+
+	t.Run("shutdown mid-sweep: progress logged, no Error", func(t *testing.T) {
+		lc := &logCapture{}
+		st := newFakeRetentionStore()
+		st.cleanup = func(ctx context.Context, _, _ int) (int64, error) {
+			<-ctx.Done()
+			return 2, ctx.Err()
+		}
+		r, _ := newTestRetainer(t, st, 30, lc)
+		cancel, done := startLoop(t, r)
+		waitCall(t, st)
+		stopLoop(t, cancel, done)
+		var infos, errs int
+		for _, rec := range lc.records(t) {
+			switch rec["level"] {
+			case "INFO":
+				infos++
+				if rec["deleted"].(float64) != 2 {
+					t.Errorf("deleted = %v, want 2", rec["deleted"])
+				}
+			case "ERROR":
+				errs++
+			}
+		}
+		if infos != 1 || errs != 0 {
+			t.Errorf("Info=%d Error=%d, want 1 and 0: a clean shutdown is not a failure", infos, errs)
+		}
+	})
+}
+
 func TestRetainer_StopsPromptlyOnCancel(t *testing.T) {
 	t.Run("idle between ticks", func(t *testing.T) {
 		st := newFakeRetentionStore()
@@ -396,7 +463,7 @@ func TestRetainer_LogUsesOnlyBoundedStructuredFields(t *testing.T) {
 	allowed := map[string]bool{
 		"time": true, "level": true, "msg": true, "error": true, "deleted": true,
 		"retentionDays": true, "task": true, "panic": true, "stack": true,
-		"affectedIncidents": true, "oldestCreatedAt": true, "newestCreatedAt": true, "firstSweepDelay": true,
+		"affectedIncidents": true, "laterAffectedIncidents": true, "oldestCreatedAt": true, "newestCreatedAt": true, "firstSweepDelay": true,
 	}
 	for _, rec := range lc.records(t) {
 		for k := range rec {
@@ -408,25 +475,34 @@ func TestRetainer_LogUsesOnlyBoundedStructuredFields(t *testing.T) {
 }
 
 func TestRetainer_LoweringDefersTheFirstSweepOneGraceWindow(t *testing.T) {
-	affected := store.RetentionLoweringImpact{Count: 4,
+	affected := store.RetentionLoweringImpact{Count: 4, LaterCount: 6,
 		Oldest: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Newest: time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)}
 	for name, tc := range map[string]struct {
-		impact    store.RetentionLoweringImpact
-		impactErr error
-		confirmed bool
-		wantWarn  bool
-		wantNow   bool // sweeps before any tick
+		impact      store.RetentionLoweringImpact
+		impactErr   error
+		impactPanic bool
+		confirmed   bool
+		wantWarn    bool
+		wantNow     bool   // sweeps before any tick
+		wantMsg     string // substring of the Warn message
+		wantDelay   bool   // the Warn carries firstSweepDelay
+		wantPanic   bool   // a recovered-panic record is logged
 	}{
-		"lowering with affected rows warns and defers": {impact: affected, wantWarn: true},
-		"confirmed lowering sweeps immediately":        {impact: affected, confirmed: true, wantWarn: true, wantNow: true},
+		"lowering with affected rows warns and defers": {impact: affected, wantWarn: true, wantMsg: "deferred", wantDelay: true},
+		"confirmed lowering sweeps immediately":        {impact: affected, confirmed: true, wantWarn: true, wantNow: true, wantMsg: "confirmed by configuration"},
 		"normal expiry: no warning, no delay":          {wantNow: true},
-		"unreadable impact defers, fail safe":          {impactErr: errors.New("db down"), wantWarn: true},
-		"unreadable impact but confirmed sweeps":       {impactErr: errors.New("db down"), confirmed: true, wantWarn: true, wantNow: true},
+		"only later-affected rows: warns, no delay": {
+			impact: store.RetentionLoweringImpact{LaterCount: 3}, wantWarn: true, wantNow: true, wantMsg: "deleted earlier"},
+		"unreadable impact defers, fail safe": {
+			impactErr: errors.New("db down"), wantWarn: true, wantMsg: "deferring the first sweep", wantDelay: true},
+		"unreadable impact but confirmed sweeps now": {
+			impactErr: errors.New("db down"), confirmed: true, wantWarn: true, wantNow: true, wantMsg: "proceeds now"},
+		"panicking check defers, fail safe": {impactPanic: true, wantPanic: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			lc := &logCapture{}
 			st := newFakeRetentionStore()
-			st.impact, st.impactErr = tc.impact, tc.impactErr
+			st.impact, st.impactErr, st.impactPanic = tc.impact, tc.impactErr, tc.impactPanic
 			r, ft := newTestRetainer(t, st, 30, lc)
 			r.WithLoweringConfirmed(tc.confirmed)
 			cancel, done := startLoop(t, r)
@@ -447,24 +523,39 @@ func TestRetainer_LoweringDefersTheFirstSweepOneGraceWindow(t *testing.T) {
 			}
 			stopLoop(t, cancel, done)
 
-			var warned bool
+			var warned, panicked bool
 			for _, rec := range lc.records(t) {
+				if rec["task"] == retentionTask && strings.Contains(rec["msg"].(string), "panic recovered") {
+					panicked = true
+				}
 				if rec["level"] != "WARN" {
 					continue
 				}
 				warned = true
+				if msg := rec["msg"].(string); !strings.Contains(msg, tc.wantMsg) {
+					t.Errorf("warning %q does not contain %q", msg, tc.wantMsg)
+				}
+				if _, has := rec["firstSweepDelay"]; has != tc.wantDelay {
+					t.Errorf("firstSweepDelay present = %v, want %v: %v", has, tc.wantDelay, rec)
+				}
+				if tc.wantDelay && rec["firstSweepDelay"] != "1h0m0s" {
+					t.Errorf("deferral warning has delay %v, want 1h0m0s", rec["firstSweepDelay"])
+				}
 				if tc.impactErr == nil {
-					if rec["affectedIncidents"].(float64) != 4 || rec["retentionDays"].(float64) != 30 ||
-						rec["oldestCreatedAt"] != "2026-08-01T00:00:00Z" || rec["newestCreatedAt"] != "2026-08-20T00:00:00Z" {
+					if rec["laterAffectedIncidents"].(float64) != float64(tc.impact.LaterCount) || rec["retentionDays"].(float64) != 30 {
 						t.Errorf("warning fields = %v", rec)
 					}
-				}
-				if !tc.confirmed && !tc.wantNow && rec["firstSweepDelay"] != "1h0m0s" {
-					t.Errorf("deferral warning lacks the delay: %v", rec)
+					if tc.impact.Count > 0 && (rec["affectedIncidents"].(float64) != 4 ||
+						rec["oldestCreatedAt"] != "2026-08-01T00:00:00Z" || rec["newestCreatedAt"] != "2026-08-20T00:00:00Z") {
+						t.Errorf("warning fields = %v", rec)
+					}
 				}
 			}
 			if warned != tc.wantWarn {
 				t.Errorf("warned = %v, want %v", warned, tc.wantWarn)
+			}
+			if panicked != tc.wantPanic {
+				t.Errorf("recovered-panic record = %v, want %v", panicked, tc.wantPanic)
 			}
 		})
 	}
@@ -582,6 +673,23 @@ func TestResolveSettings_ClampsEveryLimit(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveSettings_DurationsAreLoggedAsStrings(t *testing.T) {
+	lc := &logCapture{}
+	cfg := defaultIncidentsConfig()
+	cfg.CaptureTimeout = time.Hour
+	ResolveSettings(cfg, lc.logger())
+	for _, rec := range lc.records(t) {
+		if rec["field"] != "captureTimeout" {
+			continue
+		}
+		if rec["configured"] != "1h0m0s" || rec["effective"] != "5m0s" || rec["min"] != "1s" || rec["max"] != "5m0s" {
+			t.Errorf("duration fields = %v, want human-readable strings, not nanoseconds", rec)
+		}
+		return
+	}
+	t.Fatal("no captureTimeout correction logged")
 }
 
 func TestResolveSettings_InRangeValuesAreKeptAndSilent(t *testing.T) {

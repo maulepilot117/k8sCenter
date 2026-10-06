@@ -637,15 +637,23 @@ type RetentionLoweringImpact struct {
 	Count int64
 	// Oldest and Newest bound their created_at; both are zero when Count is 0.
 	Oldest, Newest time.Time
+	// LaterCount is how many incidents are still inside the configured window
+	// but were captured under a longer retention: they will be deleted earlier
+	// than their own policy promised, once they age past the configured value.
+	LaterCount int64
 }
 
-// RetentionLoweringImpact counts the incidents the next Cleanup(retentionDays)
-// would delete only because the configured value is lower than the
-// retention_days_at_capture they were created under: created_at is older than
-// the configured window but still inside their own. Incidents that are simply
-// expired under their own policy are not counted, so the answer is zero in
-// normal operation and falls back to zero once the affected rows are gone. It
-// reads aggregates only, no incident content.
+// RetentionLoweringImpact reports how a configured retention departs from the
+// retention_days_at_capture of existing incidents. Count (with Oldest and
+// Newest) is the incidents the next Cleanup(retentionDays) deletes only
+// because the configured value is lower than the one they were created under:
+// created_at is older than the configured window but still inside their own.
+// LaterCount is those still inside the configured window that were captured
+// under a longer retention. Incidents simply expired under their own policy
+// are in neither, so both are zero in normal operation. LaterCount stays above
+// zero until every such incident has aged past the configured window, so a
+// caller that warns on it will warn again on later restarts. It reads
+// aggregates only, no incident content.
 func (s *IncidentStore) RetentionLoweringImpact(ctx context.Context, retentionDays int) (RetentionLoweringImpact, error) {
 	if retentionDays < 1 {
 		return RetentionLoweringImpact{}, fmt.Errorf("retention days must be at least 1, got %d", retentionDays)
@@ -655,11 +663,18 @@ func (s *IncidentStore) RetentionLoweringImpact(ctx context.Context, retentionDa
 		oldest, newest *time.Time
 	)
 	if err := s.pool.QueryRow(ctx, `
-		SELECT COUNT(*), MIN(created_at), MAX(created_at)
-		  FROM incidents
-		 WHERE created_at <  NOW() - $1 * INTERVAL '1 day'
-		   AND created_at >= NOW() - retention_days_at_capture * INTERVAL '1 day'`,
-		retentionDays).Scan(&impact.Count, &oldest, &newest); err != nil {
+		SELECT COUNT(*) FILTER (WHERE past),
+		       MIN(created_at) FILTER (WHERE past),
+		       MAX(created_at) FILTER (WHERE past),
+		       COUNT(*) FILTER (WHERE later)
+		  FROM (
+		    SELECT created_at,
+		           created_at <  NOW() - $1::int * INTERVAL '1 day'
+		             AND created_at >= NOW() - retention_days_at_capture * INTERVAL '1 day' AS past,
+		           created_at >= NOW() - $1::int * INTERVAL '1 day'
+		             AND retention_days_at_capture > $1::int AS later
+		      FROM incidents) AS t`,
+		retentionDays).Scan(&impact.Count, &oldest, &newest, &impact.LaterCount); err != nil {
 		return RetentionLoweringImpact{}, fmt.Errorf("retention lowering impact: %w", err)
 	}
 	if oldest != nil {

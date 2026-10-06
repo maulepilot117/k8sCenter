@@ -6,6 +6,7 @@ package incidents
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -50,15 +51,25 @@ type retentionStore interface {
 //
 // Lowering the retention deletes incidents created under a longer one, and a
 // config rollback cannot bring them back. So at start the Retainer counts the
-// incidents the configured value would delete although their own retention
-// would have kept them. When there are any, it logs a Warn with the count and
-// the affected date range and defers the first sweep by loweringGraceWindow,
-// giving the operator one hour to restore the old value. Setting
-// RetentionLoweringConfirmed (KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED)
-// skips the deferral. If the count cannot be read, the first sweep is
-// deferred too (fail safe). Because the count excludes incidents that merely
-// expired under their own retention, it is zero in normal operation and stops
-// being reported once the affected rows are gone, so restarts do not repeat it.
+// incidents the configured value would delete right now although their own
+// retention would have kept them (past the new window), and separately those
+// still inside the new window that were captured under a longer retention and
+// so will be deleted earlier than promised (laterAffectedIncidents). When the
+// first count is above zero it logs a Warn with both counts and the affected
+// date range and defers the first sweep by loweringGraceWindow, giving the
+// operator one hour to restore the old value. The deferral is keyed on the
+// past-window count only. When only the second count is above zero it logs the
+// Warn without deferring. Setting RetentionLoweringConfirmed
+// (KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED) skips the deferral. If the
+// counts cannot be read, the first sweep is deferred too (fail safe).
+//
+// Incidents that merely expired under their own retention are in neither
+// count, so both are zero in normal operation. They are NOT zero after the
+// first sweep, though: the warning (and the deferral) can recur on later
+// restarts until every incident captured under the longer retention has aged
+// past the new window. A process that restarts more often than hourly with an
+// unconfirmed lowering therefore never reaches its first sweep (fail safe);
+// set the confirmed flag to proceed.
 //
 // Multi-replica skew: every replica sweeps with its OWN configured value. A
 // replica started with a lower value deletes for all of them, and restoring
@@ -176,25 +187,38 @@ func (r *Retainer) shouldDeferFirstSweep(ctx context.Context) bool {
 	defer cancel()
 	impact, err := r.store.RetentionLoweringImpact(cctx, r.retentionDays)
 	if err != nil {
+		if r.loweringConfirmed {
+			r.logger.Warn("incident retention: could not check whether the configured retention deletes existing incidents; "+
+				"deletion is confirmed by configuration and proceeds now",
+				"retentionDays", r.retentionDays, "error", err)
+			return false
+		}
 		r.logger.Warn("incident retention: could not check whether the configured retention deletes existing incidents; "+
 			"deferring the first sweep",
 			"retentionDays", r.retentionDays, "firstSweepDelay", loweringGraceWindow.String(), "error", err)
-		return !r.loweringConfirmed
+		return true
 	}
 	if impact.Count == 0 {
+		if impact.LaterCount > 0 {
+			// Nothing is deleted early yet, so there is nothing to defer; say
+			// what will happen as these incidents age past the new window.
+			r.logger.Warn("configured incident retention is shorter than the retention some live incidents were captured under; "+
+				"they will be deleted earlier than they were captured to be",
+				"retentionDays", r.retentionDays, "laterAffectedIncidents", impact.LaterCount)
+		}
 		return false
 	}
 	if r.loweringConfirmed {
 		r.logger.Warn("configured incident retention deletes incidents captured under a longer retention; "+
 			"deletion is confirmed by configuration and proceeds now",
-			"retentionDays", r.retentionDays, "affectedIncidents", impact.Count,
+			"retentionDays", r.retentionDays, "affectedIncidents", impact.Count, "laterAffectedIncidents", impact.LaterCount,
 			"oldestCreatedAt", impact.Oldest.UTC().Format(time.RFC3339), "newestCreatedAt", impact.Newest.UTC().Format(time.RFC3339))
 		return false
 	}
 	r.logger.Warn("configured incident retention is shorter than the retention these incidents were captured under; "+
 		"the first sweep is deferred so the change can be rolled back, then deletes them. "+
 		"Set KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED=true to delete immediately",
-		"retentionDays", r.retentionDays, "affectedIncidents", impact.Count,
+		"retentionDays", r.retentionDays, "affectedIncidents", impact.Count, "laterAffectedIncidents", impact.LaterCount,
 		"oldestCreatedAt", impact.Oldest.UTC().Format(time.RFC3339), "newestCreatedAt", impact.Newest.UTC().Format(time.RFC3339),
 		"firstSweepDelay", loweringGraceWindow.String())
 	return true
@@ -274,7 +298,16 @@ func clamp[T cmp.Ordered](logger *slog.Logger, field string, v, def, lo, hi T) T
 	}
 	if got != v {
 		logger.Warn("incidents configuration out of range; using the effective value",
-			"field", field, "configured", v, "effective", got, "min", lo, "max", hi)
+			"field", field, "configured", logValue(v), "effective", logValue(got), "min", logValue(lo), "max", logValue(hi))
 	}
 	return got
+}
+
+// logValue renders v for a log record: durations (anything with String())
+// read as "10m0s" rather than raw nanoseconds, everything else is unchanged.
+func logValue[T any](v T) any {
+	if s, ok := any(v).(fmt.Stringer); ok {
+		return s.String()
+	}
+	return v
 }
