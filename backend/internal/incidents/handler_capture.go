@@ -55,9 +55,12 @@ const storeWriteTimeout = 10 * time.Second
 //	  + the detached COMMIT bound (store.IncidentCommitTimeout)
 //	<= captureRequestBudget
 //
-// The collector runs under the configured CaptureTimeout, which ResolveSettings
-// clamps to maxCaptureTimeout (budget - grace - minimum insert work - commit
-// bound = 16.75 s); the default is 15 s. The insert then gets the lesser of
+// The collector runs under the earlier of the configured CaptureTimeout and
+// captureNotAfter (budget - commit bound - minimum insert work - grace, from
+// handler entry), so slow work before collection shortens the collection
+// instead of the insert. ResolveSettings clamps CaptureTimeout to
+// maxCaptureTimeout (budget - grace - minimum insert work - commit bound =
+// 14.75 s); the default is 14 s. The insert then gets the lesser of
 // storeWriteTimeout and what is left of the budget before its COMMIT (see
 // captureInsertDeadline), so even a capture that used its whole collection
 // budget cannot push the request past captureRequestBudget. The commit runs
@@ -65,10 +68,18 @@ const storeWriteTimeout = 10 * time.Second
 // store.IncidentCommitTimeout, which captureInsertDeadline reserves.
 const (
 	captureRequestBudget = 27 * time.Second
-	// captureMinInsertWork is the insert time (lock wait up to the store's 5 s
-	// lock timeout, then the writes) a maximal collection must still leave.
-	captureMinInsertWork = 5 * time.Second
+	// captureMinInsertWork is the insert time a maximal collection must still
+	// leave: the store's lock wait (store.IncidentLockTimeout, 5 s) plus 2 s
+	// for the writes, so a busy incident is reported as incident_busy by the
+	// store rather than as a deadline here.
+	captureMinInsertWork = store.IncidentLockTimeout + 2*time.Second
 )
+
+// captureNotAfter is the latest the collector may run until: the budget's end
+// minus the COMMIT bound, the minimum insert work and the collector grace.
+func captureNotAfter(start time.Time) time.Time {
+	return start.Add(captureRequestBudget - store.IncidentCommitTimeout - captureMinInsertWork - captureGrace)
+}
 
 // clock returns the current time; tests inject h.now to simulate a slow
 // collection without waiting for it.
@@ -211,7 +222,18 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	// partial report instead of the context error.
 	ctx, cancel := context.WithDeadline(r.Context(), start.Add(captureRequestBudget))
 	defer cancel()
-	report, err := h.collector.Capture(ctx, CaptureRequest{ClusterID: k8s.LocalClusterID, User: user, Target: target, Sources: req.Sources})
+	// Work before collection (authorization, loading the incident, decoding)
+	// counts against the budget. If it already used the collector's share,
+	// answer retryable without running any source; otherwise cap the
+	// collector's deadline at what is left.
+	notAfter := captureNotAfter(start)
+	if !h.clock().Before(notAfter) {
+		h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
+			detail+": refused, capture budget exhausted before collection")
+		writeBusy(w, "the capture budget was used up before collection started; nothing was recorded; retry")
+		return
+	}
+	report, err := h.collector.Capture(ctx, CaptureRequest{ClusterID: k8s.LocalClusterID, User: user, Target: target, Sources: req.Sources, NotAfter: notAfter})
 	if err != nil {
 		h.writeCaptureFailure(w, r, user, c.row, err)
 		return

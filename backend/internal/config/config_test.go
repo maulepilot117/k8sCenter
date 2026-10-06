@@ -17,7 +17,7 @@ func TestIncidentsConfig(t *testing.T) {
 		want := IncidentsConfig{
 			RetentionDays: 30, MaxItemBytes: 1 << 20, MaxIncidentBytes: 10 << 20,
 			MaxItems: 500, MaxScopes: 20,
-			CaptureTimeout: 15 * time.Second, SourceTimeout: 5 * time.Second, MaxConcurrency: 4,
+			CaptureTimeout: 14 * time.Second, SourceTimeout: 5 * time.Second, MaxConcurrency: 4,
 		}
 		if cfg.Incidents != want {
 			t.Errorf("default Incidents = %+v, want %+v", cfg.Incidents, want)

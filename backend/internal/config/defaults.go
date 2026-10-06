@@ -25,7 +25,7 @@ const (
 	DefaultIncidentsMaxIncidentBytes = 10 << 20
 	DefaultIncidentsMaxItems         = 500
 	DefaultIncidentsMaxScopes        = 20
-	DefaultIncidentsCaptureTimeout   = 15 * time.Second
+	DefaultIncidentsCaptureTimeout   = 14 * time.Second
 	DefaultIncidentsSourceTimeout    = 5 * time.Second
 	DefaultIncidentsMaxConcurrency   = 4
 

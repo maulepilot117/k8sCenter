@@ -881,7 +881,7 @@ func TestResolveSettings_DurationsAreLoggedAsStrings(t *testing.T) {
 		if rec["field"] != "captureTimeout" {
 			continue
 		}
-		if rec["configured"] != "1h0m0s" || rec["effective"] != "16.75s" || rec["min"] != "1s" || rec["max"] != "16.75s" {
+		if rec["configured"] != "1h0m0s" || rec["effective"] != "14.75s" || rec["min"] != "1s" || rec["max"] != "14.75s" {
 			t.Errorf("duration fields = %v, want human-readable strings, not nanoseconds", rec)
 		}
 		return
@@ -944,8 +944,9 @@ func TestCaptureBudgetFitsUnderTheProxyDeadline(t *testing.T) {
 		t.Errorf("defaults or the source ceiling exceed the capture ceiling: default %s, source max %s, capture max %s",
 			d.CaptureTimeout, maxSourceTimeout, maxCaptureTimeout)
 	}
-	if captureMinInsertWork < 5*time.Second {
-		t.Errorf("captureMinInsertWork %s is below the store's 5s lock timeout", captureMinInsertWork)
+	if captureMinInsertWork <= store.IncidentLockTimeout {
+		t.Errorf("captureMinInsertWork %s must be strictly above the store lock timeout %s, or a busy incident reports a deadline instead of incident_busy",
+			captureMinInsertWork, store.IncidentLockTimeout)
 	}
 }
 
@@ -996,14 +997,14 @@ func TestHandleCaptureInsertDeadlineIsInsideTheRequestBudget(t *testing.T) {
 			hs.h.limits = lim
 			hs.h.collector = newTestCollector(t, lim, completeSource("object", completeItem("web")))
 
-			// A clock that jumps by the whole collection time between handler
-			// entry (first read) and the insert (later reads) simulates a
+			// A clock that jumps by the whole collection time after handler
+			// entry (read 1) and the pre-collection check (read 2) simulates a
 			// collection that used its full CaptureTimeout plus grace.
 			entry := time.Now()
 			reads := 0
 			hs.h.now = func() time.Time {
 				reads++
-				if reads == 1 {
+				if reads <= 2 {
 					return entry
 				}
 				return entry.Add(captureTimeout + captureGrace)
@@ -1023,6 +1024,129 @@ func TestHandleCaptureInsertDeadlineIsInsideTheRequestBudget(t *testing.T) {
 				t.Errorf("insert allowance after the collection = %s, want at least %s", left, captureMinInsertWork)
 			}
 		})
+	}
+}
+
+// scriptedClock returns the entry time for the first `entryReads` reads and
+// entry+later afterwards.
+func scriptedClock(entry time.Time, reads []time.Duration) func() time.Time {
+	i := 0
+	return func() time.Time {
+		d := reads[len(reads)-1]
+		if i < len(reads) {
+			d = reads[i]
+		}
+		i++
+		return entry.Add(d)
+	}
+}
+
+// (a) The context handed to the collector carries the request-budget-derived
+// deadline: with a collector whose own CaptureTimeout is far longer, the
+// sources see exactly captureNotAfter.
+func TestHandleCaptureCollectorDeadlineIsDerivedFromTheRequestBudget(t *testing.T) {
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	var seen time.Time
+	var has bool
+	src := stubSource{id: "object", fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
+		seen, has = ctx.Deadline()
+		return SourceResult{Items: []Evidence{completeItem("web")}, Completeness: CompletenessComplete}, nil
+	}}
+	lim := testLimits() // CaptureTimeout 1m: only NotAfter can make the deadline this short
+	hs.h.limits = lim
+	hs.h.collector = newTestCollector(t, lim, src)
+	entry := time.Now()
+	hs.h.now = scriptedClock(entry, []time.Duration{0})
+
+	wantStatus(t, hs.capture(t, alice, id, defaultCapture), http.StatusOK)
+	if !has {
+		t.Fatal("the source context has no deadline")
+	}
+	if want := captureNotAfter(entry); !seen.Equal(want) {
+		t.Errorf("collector deadline = %s, want captureNotAfter %s (%s from entry)", seen, want, want.Sub(entry))
+	}
+}
+
+// (b) Slow work before collection: the collector deadline stays capped by
+// NotAfter (not pushed out by the late start) and the insert still gets the
+// minimum allowance.
+func TestHandleCaptureSlowPreWorkDoesNotEatTheInsertShare(t *testing.T) {
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	var seen time.Time
+	src := stubSource{id: "object", fn: func(ctx context.Context, _ CaptureRequest) (SourceResult, error) {
+		seen, _ = ctx.Deadline()
+		return SourceResult{Items: []Evidence{completeItem("web")}, Completeness: CompletenessComplete}, nil
+	}}
+	lim := testLimits()
+	hs.h.limits = lim
+	hs.h.collector = newTestCollector(t, lim, src)
+	entry := time.Now()
+	notAfter := captureNotAfter(entry)
+	// read 1 handler entry; read 2 after 5 s of pre-work; read 3 (the insert)
+	// after the collector ran to its capped deadline plus the grace.
+	hs.h.now = scriptedClock(entry, []time.Duration{0, 5 * time.Second, notAfter.Sub(entry) + captureGrace})
+
+	wantStatus(t, hs.capture(t, alice, id, defaultCapture), http.StatusOK)
+	if !seen.Equal(notAfter) {
+		t.Errorf("collector deadline = %s, want it capped at NotAfter %s", seen, notAfter)
+	}
+	insertNow := notAfter.Add(captureGrace)
+	dl := hs.st.insertDeadline
+	if left := dl.Sub(insertNow); left < captureMinInsertWork {
+		t.Errorf("insert allowance = %s, want at least %s", left, captureMinInsertWork)
+	}
+	if end := dl.Add(store.IncidentCommitTimeout); end.After(entry.Add(captureRequestBudget)) {
+		t.Errorf("insert + commit ends %s after the budget", end.Sub(entry.Add(captureRequestBudget)))
+	}
+}
+
+// (c) Pre-work that already used the collector's share: a retryable 503, no
+// source runs, nothing is inserted.
+func TestHandleCaptureBudgetExhaustedBeforeCollectionRunsNothing(t *testing.T) {
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	ran := false
+	hs.collect(t, recordingSource("object", &ran, completeItem("web")))
+	entry := time.Now()
+	hs.h.now = scriptedClock(entry, []time.Duration{0, captureRequestBudget})
+
+	w := hs.capture(t, alice, id, defaultCapture)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503\n%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "nothing was recorded") || !strings.Contains(w.Body.String(), ReasonIncidentBusy) {
+		t.Errorf("body = %s, want the retryable budget-exhausted answer", w.Body.String())
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("no Retry-After on a retryable 503")
+	}
+	if ran {
+		t.Error("a source ran after the budget was exhausted")
+	}
+	if !hs.st.insertDeadline.IsZero() || len(hs.st.evidence[id]) != 0 {
+		t.Error("InsertBatch ran or evidence was persisted after the budget was exhausted")
+	}
+}
+
+// (d) InsertBatch hitting its deadline answers 503 "nothing was recorded".
+func TestHandleCaptureInsertDeadlineExceededAnswersNothingRecorded(t *testing.T) {
+	hs := newHarness(t)
+	id := hs.seed(t, alice)
+	ran := false
+	hs.collect(t, recordingSource("object", &ran, completeItem("web")))
+	hs.st.failOp["InsertBatch"] = context.DeadlineExceeded
+
+	w := hs.capture(t, alice, id, defaultCapture)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503\n%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "nothing was recorded") {
+		t.Errorf("body = %s, want the nothing-was-recorded answer", w.Body.String())
+	}
+	if len(hs.st.evidence[id]) != 0 {
+		t.Error("evidence was persisted despite the deadline")
 	}
 }
 

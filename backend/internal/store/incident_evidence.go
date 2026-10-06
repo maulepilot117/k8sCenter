@@ -91,6 +91,11 @@ const IncidentCommitTimeout = incidentCommitTimeout
 // incident row lock, so a stalled holder cannot pin pool connections.
 const incidentLockTimeout = 5 * time.Second
 
+// IncidentLockTimeout exports incidentLockTimeout so the capture handler's
+// minimum insert allowance (incidents.captureMinInsertWork) can be kept
+// strictly above it.
+const IncidentLockTimeout = incidentLockTimeout
+
 // beginIncidentLockTx begins a transaction whose lock waits give up after
 // lockTimeout (SET LOCAL lock_timeout, scoped to this transaction).
 func beginIncidentLockTx(ctx context.Context, pool *pgxpool.Pool, lockTimeout time.Duration, what string) (pgx.Tx, error) {

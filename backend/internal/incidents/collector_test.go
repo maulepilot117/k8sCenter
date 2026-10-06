@@ -791,7 +791,7 @@ func TestLimitsValidate(t *testing.T) {
 	}
 	d := DefaultLimits()
 	if d.MaxItemBytes != 1<<20 || d.MaxIncidentBytes != 10<<20 || d.MaxItems != 500 || d.MaxScopes != 20 ||
-		d.CaptureTimeout != 15*time.Second || d.SourceTimeout != 5*time.Second || d.MaxConcurrency != 4 {
+		d.CaptureTimeout != 14*time.Second || d.SourceTimeout != 5*time.Second || d.MaxConcurrency != 4 {
 		t.Fatalf("defaults = %+v", d)
 	}
 	for name, mutate := range map[string]func(*Limits){
