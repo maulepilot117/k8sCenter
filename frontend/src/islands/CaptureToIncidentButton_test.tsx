@@ -75,7 +75,24 @@ function stub(route: Route) {
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     };
     calls.push(call);
-    const reply = (await route(call)) ?? json(404, { error: { code: 404 } });
+    // Honour the abort signal like real fetch: a request aborted before or
+    // while it is in flight rejects with an AbortError.
+    const signal = init?.signal;
+    const aborted = () =>
+      new DOMException("The operation was aborted.", "AbortError");
+    if (signal?.aborted) throw aborted();
+    const answer = Promise.resolve(route(call));
+    const reply =
+      (signal
+        ? await Promise.race([
+            answer,
+            new Promise<never>((_, reject) =>
+              signal.addEventListener("abort", () => reject(aborted()), {
+                once: true,
+              }),
+            ),
+          ])
+        : await answer) ?? json(404, { error: { code: 404 } });
     return new Response(JSON.stringify(reply.body), {
       status: reply.status,
       headers: { "Content-Type": "application/json" },
@@ -460,6 +477,7 @@ const isProbe = (c: Call) =>
 const isList = (c: Call) =>
   c.method === "GET" && c.path.startsWith("/api/v1/incidents?limit=50");
 const TITLE = "Pod/web in team-a";
+const SUMMARY = "Opened from the diagnosis of Pod team-a/web.";
 const RETRY_LABEL = "Retry capture into the new incident";
 
 test("a remount keeps the created incident: the retry captures into it, never creates again", async () => {
@@ -517,6 +535,14 @@ test("unmounting mid-create neither captures nor navigates, and the remount retr
   await settle();
   expect(captures()).toHaveLength(0);
   expect(assigned).toEqual([]);
+  // The create reached the server, so its id is recorded despite the unmount.
+  expect(
+    JSON.parse(
+      globalThis.sessionStorage.getItem(
+        `${PENDING_PREFIX}local|team-a|Pod|web`,
+      ) ?? "null",
+    ),
+  ).toEqual({ id: "inc-u" });
 
   root = await mount({});
   await click(q(root, "capture-to-incident"));
@@ -534,11 +560,13 @@ test("a lost create response reuses the one incident created since the click", a
         incident({
           id: "older",
           title: TITLE,
+          summary: SUMMARY,
           createdAt: "2020-01-01T00:00:00Z",
         }),
         incident({
           id: "landed",
           title: TITLE,
+          summary: SUMMARY,
           createdAt: new Date().toISOString(),
         }),
         incident({ id: "other", title: "Something else" }),
@@ -565,8 +593,8 @@ test("a lost create with several candidates asks the operator to pick one", asyn
     if (isProbe(c)) return empty;
     if (isList(c)) {
       return listOf([
-        incident({ id: "a", title: TITLE, createdAt: now }),
-        incident({ id: "b", title: TITLE, createdAt: now }),
+        incident({ id: "a", title: TITLE, summary: SUMMARY, createdAt: now }),
+        incident({ id: "b", title: TITLE, summary: SUMMARY, createdAt: now }),
       ]);
     }
     if (c.path === "/api/v1/incidents") {
@@ -839,4 +867,289 @@ test("a double click on an existing incident captures once", async () => {
   await settle();
   expect(captures()).toHaveLength(1);
   expect(assigned).toEqual(["/observability/incidents/d1"]);
+});
+
+// --- Review round 2 ---------------------------------------------------------------------
+
+const PENDING_PREFIX = "kubecenter.capture-pending:";
+const seed = (cluster: string, rec: unknown) =>
+  globalThis.sessionStorage.setItem(
+    `${PENDING_PREFIX}${cluster}|team-a|Pod|web`,
+    JSON.stringify(rec),
+  );
+const stored = (cluster: string) =>
+  JSON.parse(
+    globalThis.sessionStorage.getItem(
+      `${PENDING_PREFIX}${cluster}|team-a|Pod|web`,
+    ) ?? "null",
+  );
+const NEW_LABEL = "Capture into a new incident";
+const busyReply = json(503, {
+  error: { code: 503, message: "busy", reason: "incident_busy" },
+});
+
+let restoreStorage: (() => void) | null = null;
+
+/**
+ * Swaps sessionStorage for a wrapper whose listed methods throw; the others
+ * delegate to the real storage.
+ */
+function breakStorage(...methods: ("getItem" | "setItem" | "removeItem")[]) {
+  const real = globalThis.sessionStorage;
+  const desc = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+  const fail = () => {
+    throw new DOMException("blocked", "SecurityError");
+  };
+  const fake = {
+    getItem: (k: string) => real.getItem(k),
+    setItem: (k: string, v: string) => real.setItem(k, v),
+    removeItem: (k: string) => real.removeItem(k),
+    clear: () => real.clear(),
+  };
+  for (const m of methods) fake[m] = fail;
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: fake,
+  });
+  restoreStorage = () => {
+    if (desc) Object.defineProperty(globalThis, "sessionStorage", desc);
+    restoreStorage = null;
+  };
+}
+
+afterEach(() => {
+  restoreStorage?.();
+});
+
+test("a pending incident that refuses the capture for good is forgotten; the next click creates", async () => {
+  seed("local", { id: "stale" });
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents/stale/capture") {
+      return json(409, {
+        error: { code: 409, message: "closed", reason: "incident_closed" },
+      });
+    }
+    if (c.path === "/api/v1/incidents") return created("fresh");
+    if (c.path === "/api/v1/incidents/fresh/capture") return captured;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(RETRY_LABEL);
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("That incident is closed");
+  expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
+  expect(stored("local")).toBeNull();
+
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(1);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/stale/capture",
+    "/api/v1/incidents/fresh/capture",
+  ]);
+  expect(assigned).toEqual(["/observability/incidents/fresh"]);
+});
+
+test("capturing into an existing incident clears the pending one", async () => {
+  seed("local", { id: "pending" });
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) return listOf([incident({ id: "e2", title: "Mine" })]);
+    if (c.path === "/api/v1/incidents/e2/capture") return captured;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-existing-incident"));
+  expect(assigned).toEqual(["/observability/incidents/e2"]);
+  expect(stored("local")).toBeNull();
+});
+
+test("without sessionStorage the pending id survives a remount in memory, and success clears it", async () => {
+  breakStorage("getItem", "setItem", "removeItem");
+  let attempt = 0;
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents") return created("mem");
+    attempt++;
+    return attempt === 1 ? busyReply : captured;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("The incident is busy");
+
+  unmount();
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(RETRY_LABEL);
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(1);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/mem/capture",
+    "/api/v1/incidents/mem/capture",
+  ]);
+
+  unmount();
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
+});
+
+test("when storage keeps an older value it cannot overwrite or remove, memory shadows it", async () => {
+  // A lookup marker from an earlier lost create is stuck in storage.
+  seed("local", { lookup: { clickedAt: Date.now() } });
+  breakStorage("setItem", "removeItem");
+  let attempt = 0;
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) return empty;
+    if (c.path === "/api/v1/incidents") return created("n1");
+    attempt++;
+    return attempt === 1 ? busyReply : captured;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("The incident is busy");
+
+  unmount();
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(RETRY_LABEL);
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(1);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/n1/capture",
+    "/api/v1/incidents/n1/capture",
+  ]);
+
+  // The stale marker is still in storage, but the cleared state wins: a new
+  // attempt creates without re-running the old lookup.
+  unmount();
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
+  expect(stored("local")).toEqual({ lookup: expect.any(Object) });
+});
+
+test("the same namespace/kind/name on two clusters keep separate pending ids", async () => {
+  seed("c-other", { id: "other" });
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents") return created("here");
+    return captured;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
+  await click(q(root, "capture-to-new-incident"));
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/here/capture",
+  ]);
+  expect(stored("c-other")).toEqual({ id: "other" });
+});
+
+test("an empty cluster id and the local id share one pending id", async () => {
+  seed("local", { id: "seeded" });
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    return captured;
+  });
+  const root = await mount({ clusterId: "" });
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(RETRY_LABEL);
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(0);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/seeded/capture",
+  ]);
+});
+
+/**
+ * A create whose response is lost and whose follow-up lookup also fails;
+ * `third` answers the lookup the retry makes.
+ */
+function lostCreateWithFailedLookup(third: () => unknown[]) {
+  let lists = 0;
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) {
+      lists++;
+      if (lists === 1) return empty; // the picker, on open
+      if (lists === 2) {
+        return json(500, { error: { code: 500, message: "boom" } });
+      }
+      return listOf(third());
+    }
+    if (c.path === "/api/v1/incidents") {
+      return creates().length === 1
+        ? Promise.reject(new TypeError("Failed to fetch"))
+        : created("second");
+    }
+    return captured;
+  });
+}
+
+test("a failed lookup after a lost create makes the retry look again, not create", async () => {
+  lostCreateWithFailedLookup(() => [
+    incident({
+      id: "landed",
+      title: TITLE,
+      summary: SUMMARY,
+      createdAt: new Date().toISOString(),
+    }),
+  ]);
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("may already have been created");
+  expect(stored("local")).toEqual({ lookup: expect.any(Object) });
+
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(1);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/landed/capture",
+  ]);
+  expect(assigned).toEqual(["/observability/incidents/landed"]);
+  expect(stored("local")).toBeNull();
+});
+
+test("a repeated lookup that finds nothing lets the retry create", async () => {
+  lostCreateWithFailedLookup(() => []);
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("may already have been created");
+
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(2);
+  expect(captures().map((c) => c.path)).toEqual([
+    "/api/v1/incidents/second/capture",
+  ]);
+  expect(assigned).toEqual(["/observability/incidents/second"]);
+});
+
+test("a lost-create lookup matches on the full target, not a truncated title", async () => {
+  // Same (truncated) title, different target in the summary: not ours.
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c)) {
+      return listOf([
+        incident({
+          id: "someone-else",
+          title: TITLE,
+          summary: "Opened from the diagnosis of Pod team-b/web.",
+          createdAt: new Date().toISOString(),
+        }),
+      ]);
+    }
+    if (c.path === "/api/v1/incidents") {
+      return Promise.reject(new TypeError("Failed to fetch"));
+    }
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(captures()).toHaveLength(0);
+  expect(root.textContent).toContain("Capture failed");
 });
