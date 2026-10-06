@@ -67,6 +67,9 @@ type fakeStore struct {
 	// requestIDs maps owner + "/" + client request id to the incident a
 	// CreateWithRequestID made (the 000026 partial unique index).
 	requestIDs map[string]uuid.UUID
+	// createWithRequestID, when set, replaces CreateWithRequestID's result
+	// (a matched id that has since vanished, a foreign owner, ErrIncidentBusy).
+	createWithRequestID func() (uuid.UUID, bool, error)
 }
 
 func newFakeStore() *fakeStore {
@@ -136,6 +139,9 @@ func (f *fakeStore) Create(ctx context.Context, r store.IncidentRow) (uuid.UUID,
 func (f *fakeStore) CreateWithRequestID(ctx context.Context, r store.IncidentRow, requestID uuid.UUID) (uuid.UUID, bool, error) {
 	if err := f.enter(ctx, "CreateWithRequestID"); err != nil {
 		return uuid.Nil, false, err
+	}
+	if f.createWithRequestID != nil {
+		return f.createWithRequestID()
 	}
 	if requestID == uuid.Nil {
 		return uuid.Nil, false, fmt.Errorf("%w: client request id must not be the nil UUID", store.ErrIncidentInvalid)
@@ -2053,8 +2059,9 @@ func TestCreateWithClientRequestIDReplayIs200WithTheFirstIncident(t *testing.T) 
 	first := data(t, w)
 	id := first["incident"].(map[string]any)["id"].(string)
 
-	// The retry carries a different title: the first write wins.
-	w = hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("retried", createReqID)})
+	// The retry resends the same payload, with the id in upper case: the
+	// same key (a UUID is case-insensitive and is keyed by its value).
+	w = hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("first", strings.ToUpper(createReqID))})
 	wantStatus(t, w, http.StatusOK)
 	replay := data(t, w)
 	inc := replay["incident"].(map[string]any)
@@ -2158,15 +2165,123 @@ func TestCreateWithClientRequestIDStoreFailureIsAuditedOnce(t *testing.T) {
 	}
 }
 
-func TestCreateReplayWhoseReadBackFailsIsRetryable503(t *testing.T) {
+// wantReplayAudit asserts the audit log is one create success followed by
+// exactly one incident_create_replayed entry with result and detail.
+func wantReplayAudit(t *testing.T, hs *harness, result audit.Result, id string) {
+	t.Helper()
+	want := []string{string(ActionIncidentCreate) + ":success", string(ActionIncidentCreateReplayed) + ":" + string(result)}
+	if got := hs.audit.actions(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("audit = %v, want %v", got, want)
+	}
+	if d := hs.audit.entries[1].Detail; d != "incident "+id {
+		t.Errorf("replay audit detail = %q; want %q", d, "incident "+id)
+	}
+}
+
+func createOnce(t *testing.T, hs *harness) string {
+	t.Helper()
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)})
+	wantStatus(t, w, http.StatusCreated)
+	return data(t, w)["incident"].(map[string]any)["id"].(string)
+}
+
+func TestCreateReplayWhoseReadBackFailsIsRetryable503AuditedAsFailure(t *testing.T) {
 	hs := newHarness(t)
-	wantStatus(t, hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)}), http.StatusCreated)
+	id := createOnce(t, hs)
 	// The read-back after the replay fails: the incident exists, so the
-	// answer is a retryable 503, never a 201 built from the request.
+	// answer is a 503, never a 201 built from the request.
 	hs.st.getFails = 1
-	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("other", createReqID)})
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)})
 	wantStatus(t, w, http.StatusServiceUnavailable)
 	if len(hs.st.incidents) != 1 {
 		t.Fatalf("%d incidents; want 1", len(hs.st.incidents))
+	}
+	wantReplayAudit(t, hs, audit.ResultFailure, id)
+}
+
+func TestCreateReplayWhoseIncidentVanishedIsRetryable503(t *testing.T) {
+	hs := newHarness(t)
+	id := createOnce(t, hs)
+	// The store matched the key, then the incident was deleted before the
+	// read-back: a retry with the same id now creates a new incident.
+	vanished := uuid.MustParse(id)
+	delete(hs.st.incidents, vanished)
+	hs.st.createWithRequestID = func() (uuid.UUID, bool, error) { return vanished, false, nil }
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)})
+	wantStatus(t, w, http.StatusServiceUnavailable)
+	if reason, _ := errorOf(t, w); reason != ReasonIncidentBusy || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("reason = %q, Retry-After = %q; want %s with Retry-After", reason, w.Header().Get("Retry-After"), ReasonIncidentBusy)
+	}
+	wantReplayAudit(t, hs, audit.ResultFailure, id)
+}
+
+func TestCreateReplayWithADifferentPayloadIs409WithoutTheIncident(t *testing.T) {
+	for name, body := range map[string]string{
+		"title":        createBody("other", createReqID),
+		"summary":      `{"title":"t","summary":"s","windowStart":"2026-10-05T11:00:00Z","clientRequestId":"` + createReqID + `"}`,
+		"window start": `{"title":"t","windowStart":"2026-10-05T11:00:01Z","clientRequestId":"` + createReqID + `"}`,
+		"window end":   `{"title":"t","windowStart":"2026-10-05T11:00:00Z","windowEnd":"2026-10-05T12:00:00Z","clientRequestId":"` + createReqID + `"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newHarness(t)
+			id := createOnce(t, hs)
+			w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: body})
+			wantStatus(t, w, http.StatusConflict)
+			if reason, _ := errorOf(t, w); reason != ReasonClientRequestIDConflict {
+				t.Fatalf("reason = %q, want %q", reason, ReasonClientRequestIDConflict)
+			}
+			if _, has := decode(t, w)["data"]; has {
+				t.Fatalf("409 carries data: %s", w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), id) {
+				t.Fatalf("409 discloses the stored incident: %s", w.Body.String())
+			}
+			if len(hs.st.incidents) != 1 {
+				t.Fatalf("%d incidents; want 1", len(hs.st.incidents))
+			}
+			wantReplayAudit(t, hs, audit.ResultFailure, id)
+		})
+	}
+}
+
+func TestCreateReplayToleratesSubMicrosecondWindowDigits(t *testing.T) {
+	hs := newHarness(t)
+	body := `{"title":"t","windowStart":"2026-10-05T11:00:00.1234567Z","clientRequestId":"` + createReqID + `"}`
+	wantStatus(t, hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: body}), http.StatusCreated)
+	// PostgreSQL keeps microseconds: the stored window loses the 7th digit.
+	for id, row := range hs.st.incidents {
+		row.WindowStart = row.WindowStart.Truncate(time.Microsecond)
+		hs.st.incidents[id] = row
+	}
+	wantStatus(t, hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: body}), http.StatusOK)
+}
+
+func TestCreateReplayOfAnIncidentTheCallerDoesNotOwnIs409(t *testing.T) {
+	hs := newHarness(t)
+	bobs := hs.seed(t, bob)
+	hs.st.createWithRequestID = func() (uuid.UUID, bool, error) { return bobs, false, nil }
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("checkout latency", createReqID)})
+	wantStatus(t, w, http.StatusConflict)
+	if reason, _ := errorOf(t, w); reason != ReasonClientRequestIDConflict {
+		t.Fatalf("reason = %q, want %q", reason, ReasonClientRequestIDConflict)
+	}
+	if strings.Contains(w.Body.String(), bobs.String()) || strings.Contains(w.Body.String(), bob.ID) {
+		t.Fatalf("409 discloses bob's incident: %s", w.Body.String())
+	}
+	want := []string{string(ActionIncidentCreateReplayed) + ":failure"}
+	if got := hs.audit.actions(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("audit = %v, want %v", got, want)
+	}
+}
+
+func TestCreateWithClientRequestIDBusyIsRetryable503(t *testing.T) {
+	hs := newHarness(t)
+	hs.st.createWithRequestID = func() (uuid.UUID, bool, error) {
+		return uuid.Nil, false, fmt.Errorf("%w: kept conflicting", store.ErrIncidentBusy)
+	}
+	w := hs.do(t, hs.h.HandleCreate, http.MethodPost, request{user: alice, body: createBody("t", createReqID)})
+	wantStatus(t, w, http.StatusServiceUnavailable)
+	if reason, _ := errorOf(t, w); reason != ReasonIncidentBusy || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("reason = %q, Retry-After = %q; want %s with Retry-After", reason, w.Header().Get("Retry-After"), ReasonIncidentBusy)
 	}
 }

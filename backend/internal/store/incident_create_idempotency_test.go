@@ -8,6 +8,7 @@ package store
 // only that owner's rows.
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"strings"
@@ -16,8 +17,105 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// keyHolderChurner drives CreateWithRequestID's retry loop deterministically
+// from a pgx tracer on the store's pool. Through a separate pool it:
+//   - before each conflicting INSERT, when reinsert is set, inserts a holder
+//     row for (owner, key) so the INSERT conflicts;
+//   - before each read-back SELECT, while deletes > 0, deletes the holder so
+//     the read-back finds nothing (the "deleted in between" race).
+type keyHolderChurner struct {
+	side     *pgxpool.Pool
+	owner    string
+	key      uuid.UUID
+	reinsert bool
+	deletes  int
+	inserts  int
+	selects  int
+	err      error
+}
+
+func (c *keyHolderChurner) insertHolder(ctx context.Context) error {
+	_, err := c.side.Exec(ctx, `
+		INSERT INTO incidents (owner_id, cluster_id, title, window_start, retention_days_at_capture, client_request_id)
+		VALUES ($1, $1, 'holder', NOW(), 30, $2)`, c.owner, c.key)
+	return err
+}
+
+func (c *keyHolderChurner) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	if c.err != nil {
+		return ctx
+	}
+	side := context.WithoutCancel(ctx)
+	switch {
+	case strings.Contains(d.SQL, "ON CONFLICT (owner_id, client_request_id)"):
+		c.inserts++
+		if c.reinsert {
+			c.err = c.insertHolder(side)
+		}
+	case strings.Contains(d.SQL, "WHERE owner_id = $1 AND client_request_id = $2"):
+		c.selects++
+		if c.deletes > 0 {
+			c.deletes--
+			_, c.err = c.side.Exec(side, `DELETE FROM incidents WHERE owner_id = $1 AND client_request_id = $2`, c.owner, c.key)
+		}
+	}
+	return ctx
+}
+
+func (c *keyHolderChurner) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func newChurnedStore(t *testing.T, c *keyHolderChurner) *IncidentStore {
+	t.Helper()
+	c.side = testDB(t)
+	c.owner = testOwnerID(t)
+	c.key = uuid.New()
+	return NewIncidentStore(testDBWithOptions(t, 2, func(cfg *pgxpool.Config) { cfg.ConnConfig.Tracer = c }))
+}
+
+func TestIncidentStore_CreateWithRequestIDRetriesWhenTheHolderVanishes(t *testing.T) {
+	c := &keyHolderChurner{deletes: 1}
+	s := newChurnedStore(t, c)
+	if err := c.insertHolder(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Attempt 1 conflicts with the holder, whose read-back finds it deleted;
+	// attempt 2 inserts.
+	id, created, err := s.CreateWithRequestID(t.Context(), newIncident(c.owner, "second attempt"), c.key)
+	if c.err != nil {
+		t.Fatalf("tracer side effect: %v", c.err)
+	}
+	if err != nil || !created || id == uuid.Nil {
+		t.Fatalf("CreateWithRequestID = (%s, created=%v, %v); want a new incident on the second attempt", id, created, err)
+	}
+	if c.inserts != 2 || c.selects != 1 {
+		t.Errorf("inserts = %d, selects = %d; want 2 and 1", c.inserts, c.selects)
+	}
+	if got := mustGetIncident(t, s, id); got.Title != "second attempt" {
+		t.Errorf("stored title = %q", got.Title)
+	}
+}
+
+func TestIncidentStore_CreateWithRequestIDGivesUpBusyAfterBoundedAttempts(t *testing.T) {
+	c := &keyHolderChurner{reinsert: true, deletes: incidentCreateAttempts}
+	s := newChurnedStore(t, c)
+	_, _, err := s.CreateWithRequestID(t.Context(), newIncident(c.owner, "never lands"), c.key)
+	if c.err != nil {
+		t.Fatalf("tracer side effect: %v", c.err)
+	}
+	if !errors.Is(err, ErrIncidentBusy) {
+		t.Fatalf("CreateWithRequestID = %v; want ErrIncidentBusy after %d attempts", err, incidentCreateAttempts)
+	}
+	if c.inserts != incidentCreateAttempts || c.selects != incidentCreateAttempts {
+		t.Errorf("inserts = %d, selects = %d; want %d each", c.inserts, c.selects, incidentCreateAttempts)
+	}
+	if n := countOwnerIncidents(t, c.side, c.owner); n != 0 {
+		t.Errorf("%d incidents left for the owner; want 0 (every holder deleted, nothing inserted)", n)
+	}
+}
 
 func TestIncidentStore_CreateWithRequestIDRejectsInvalidInputBeforeSQL(t *testing.T) {
 	s := NewIncidentStore(nil) // any SQL would panic on the nil pool

@@ -133,6 +133,10 @@ const (
 	// ReasonInvalidClientRequestID: POST /incidents carried a clientRequestId
 	// that is not a canonical, non-nil UUID string (400).
 	ReasonInvalidClientRequestID = "invalid_client_request_id"
+	// ReasonClientRequestIDConflict: the clientRequestId already made an
+	// incident with a different title, summary or window (409, no incident
+	// body). The client generates a new id.
+	ReasonClientRequestIDConflict = "client_request_id_conflict"
 )
 
 const (
@@ -406,7 +410,9 @@ type createIncidentRequest struct {
 // parseClientRequestID validates a clientRequestId strictly: exactly the
 // 36-character hyphenated UUID form (either hex case) and not the nil UUID.
 // uuid.Parse alone also accepts braced, urn: and unhyphenated spellings,
-// which would let one key be written several ways.
+// which would let one key be written several ways. Hex case does not split
+// a key: the parsed value (16 bytes, stored as uuid) is case-free, so an
+// upper-case retry of a lower-case create replays it.
 func parseClientRequestID(raw string) (uuid.UUID, bool) {
 	if len(raw) != 36 {
 		return uuid.Nil, false
@@ -939,12 +945,13 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 //
 // Idempotency (U25c): with a clientRequestId, a retry of a create whose
 // response was lost returns the incident the first attempt made, 200 instead
-// of 201, same body shape. Nothing is written and the stored incident is
-// returned as it is, even if the retry's title, summary or window differ
-// (first write wins). The replay is audited as incident_create_replayed, so
-// one incident is never audited as two creates. A replay whose read-back
-// fails is a retryable 503, never a body built from the request: the
-// request's fields are not what was stored.
+// of 201, same body shape, and writes nothing. A reused id whose title,
+// summary or window differ from the stored incident is 409
+// client_request_id_conflict (see writeReplayedCreate). The replay is
+// audited as incident_create_replayed, so one incident is never audited as
+// two creates. Lost-response nuance: when the first request's commit lands
+// but its context is cancelled before the result is read, that request is
+// audited as a create failure and its retry as replayed.
 // POST /api/v1/incidents
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.begin(w, r)
@@ -985,8 +992,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !created {
-		h.auditLog(r, user, ActionIncidentCreateReplayed, audit.ResultSuccess, k8s.LocalClusterID, "incident", "incident "+id.String())
-		h.writeReplayedCreate(w, r, user, id)
+		h.writeReplayedCreate(w, r, user, id, intended)
 		return
 	}
 	h.auditLog(r, user, ActionIncidentCreate, audit.ResultSuccess, k8s.LocalClusterID, "incident", "incident "+id.String())
@@ -1007,25 +1013,74 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-// writeReplayedCreate answers a create replay with the stored incident, 200.
-// The key is per owner, so the caller owns it. A read fault is the usual
-// 503; an incident deleted since the replay matched is a retryable 503 too,
-// because a retry with the same clientRequestId now creates a new one.
-func (h *Handler) writeReplayedCreate(w http.ResponseWriter, r *http.Request, user *auth.User, id uuid.UUID) {
+// writeReplayedCreate answers a create whose clientRequestId already made
+// incident id. The outcome is audited here, once, as
+// incident_create_replayed: success only right before the 200.
+//
+//   - Same create payload (title, summary, window, cluster) as the stored
+//     incident: 200 with the stored incident, the create body shape.
+//   - Different payload: the client reused a request id for a different
+//     incident. 409 client_request_id_conflict with no incident body; the
+//     client must generate a new id.
+//   - Stored owner is not the caller: impossible while the key is scoped by
+//     owner_id and ownership never moves, but checked anyway (defence in
+//     depth against a future ownership transfer). Logged at Warn, 409.
+//   - Read fault: the usual 503. Incident deleted since the replay matched:
+//     a retryable 503, because a retry with the same id now creates a new one.
+func (h *Handler) writeReplayedCreate(w http.ResponseWriter, r *http.Request, user *auth.User, id uuid.UUID, want store.IncidentRow) {
 	ctx := r.Context()
+	detail := "incident " + id.String()
+	fail := func() {
+		h.auditLog(r, user, ActionIncidentCreateReplayed, audit.ResultFailure, k8s.LocalClusterID, "incident", detail)
+	}
 	row, err := h.incidents.Get(ctx, id)
 	if err != nil {
+		fail()
 		h.writeStoreFailure(w, "read replayed incident", err)
 		return
 	}
 	if row == nil {
+		fail()
 		writeBusy(w, "incident was deleted while the create was replayed; retry")
 		return
 	}
+	if row.OwnerID != user.ID {
+		h.logger.Warn("create replay matched an incident the caller does not own", "incidentId", id)
+		fail()
+		writeRequestIDConflict(w)
+		return
+	}
+	if !sameCreatePayload(row, want) {
+		fail()
+		writeRequestIDConflict(w)
+		return
+	}
+	h.auditLog(r, user, ActionIncidentCreateReplayed, audit.ResultSuccess, k8s.LocalClusterID, "incident", detail)
 	httputil.WriteJSON(w, http.StatusOK, api.Response{Data: IncidentSummary{
 		Incident: incidentView(row, RoleOwner, true),
 		Counts:   h.countsBestEffort(ctx, user, id),
 	}})
+}
+
+func writeRequestIDConflict(w http.ResponseWriter) {
+	httputil.WriteErrorWithReason(w, http.StatusConflict,
+		"this request id was already used for a different incident; generate a new one",
+		ReasonClientRequestIDConflict, nil)
+}
+
+// sameCreatePayload reports whether the stored incident was created from the
+// same create fields as want. Times are compared at PostgreSQL's microsecond
+// precision (pgx truncates sub-microsecond digits when it encodes them).
+func sameCreatePayload(row *store.IncidentRow, want store.IncidentRow) bool {
+	sameTime := func(a, b time.Time) bool { return a.Truncate(time.Microsecond).Equal(b.Truncate(time.Microsecond)) }
+	if row.Title != want.Title || row.Summary != want.Summary || row.ClusterID != want.ClusterID ||
+		!sameTime(row.WindowStart, want.WindowStart) {
+		return false
+	}
+	if row.WindowEnd == nil || want.WindowEnd == nil {
+		return row.WindowEnd == nil && want.WindowEnd == nil
+	}
+	return sameTime(*row.WindowEnd, *want.WindowEnd)
 }
 
 // HandleGet returns the incident record, the caller's whole-incident

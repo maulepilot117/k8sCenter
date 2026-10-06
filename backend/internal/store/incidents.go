@@ -405,9 +405,11 @@ const incidentCreateAttempts = 3
 // (r.OwnerID, requestID) inserts the incident and returns (id, true, nil);
 // any later call with the same pair returns (that id, false, nil) and writes
 // nothing. First write wins: a replay whose title, summary or window differ
-// from the stored incident still gets the stored incident, unchanged, because
-// a retry of a lost response must not be able to rewrite what the first
-// attempt committed. The key is scoped by owner, so another identity using
+// from the stored incident still gets the stored incident's id, unchanged,
+// because a retry of a lost response must not be able to rewrite what the
+// first attempt committed. (The HTTP layer compares the payloads and answers
+// a reused id with a different payload 409 client_request_id_conflict.) The
+// key is scoped by owner, so another identity using
 // the same request id gets its own incident and never learns of this one. A
 // deleted incident frees its key: a later call creates a new incident.
 //
