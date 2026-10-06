@@ -1149,6 +1149,246 @@ func TestIncidentStore_CleanupDeletesOnlyExpired(t *testing.T) {
 	}
 }
 
+func TestIncidentStore_CleanupDeletesInBoundedBatches(t *testing.T) {
+	s, pool := newIncidentStore(t)
+	ctx := t.Context()
+	owner := testOwnerID(t)
+	for i := range 8 {
+		mustCreateIncident(t, s, newIncident(owner, "expired-"+strconv.Itoa(i)))
+	}
+	// Older than any row another test ages, so ORDER BY created_at reaches ours first.
+	if _, err := pool.Exec(ctx, `UPDATE incidents SET created_at = NOW() - INTERVAL '2000 days' WHERE owner_id = $1`, owner); err != nil {
+		t.Fatal(err)
+	}
+	mine := func() int {
+		return countRows(t, pool, `SELECT COUNT(*) FROM incidents WHERE owner_id = $1`, owner)
+	}
+
+	// Stop after the first batch: exactly one batch of 3 is gone, the rest
+	// remain, so a timeout part-way keeps its progress and no statement is
+	// larger than a batch.
+	var sizes []int64
+	total, err := s.cleanupBatched(ctx, 30, 3, func(n int64) bool { sizes = append(sizes, n); return false })
+	if err != nil {
+		t.Fatalf("cleanupBatched: %v", err)
+	}
+	if total != 3 || len(sizes) != 1 || sizes[0] != 3 {
+		t.Fatalf("first batch: total=%d sizes=%v, want exactly one batch of 3", total, sizes)
+	}
+	if got := mine(); got != 5 {
+		t.Fatalf("%d of our incidents remain after one batch of 3, want 5", got)
+	}
+
+	// Run to completion in batches of 3: no batch exceeds 3, and ours all go.
+	sizes = nil
+	total, err = s.cleanupBatched(ctx, 30, 3, func(n int64) bool { sizes = append(sizes, n); return true })
+	if err != nil {
+		t.Fatalf("cleanupBatched: %v", err)
+	}
+	var sum int64
+	for _, n := range sizes {
+		if n > 3 {
+			t.Errorf("batch deleted %d rows, want at most 3", n)
+		}
+		sum += n
+	}
+	if sum != total || total < 5 || len(sizes) < 2 {
+		t.Errorf("total=%d sum=%d sizes=%v, want a multi-batch run deleting at least our 5", total, sum, sizes)
+	}
+	if got := mine(); got != 0 {
+		t.Errorf("%d of our incidents survived the sweep", got)
+	}
+}
+
+func TestIncidentStore_CleanupRejectsBadBatchSize(t *testing.T) {
+	s := NewIncidentStore(nil)
+	if _, err := s.cleanupBatched(t.Context(), 30, 0, nil); err == nil {
+		t.Error("batch size 0 accepted; want an error before any SQL")
+	}
+}
+
+func TestIncidentStore_RetentionLoweringImpact(t *testing.T) {
+	s, pool := newIncidentStore(t)
+	ctx := t.Context()
+	owner := testOwnerID(t)
+	if _, err := s.RetentionLoweringImpact(ctx, 0); err == nil {
+		t.Error("retention 0 accepted; want an error before any SQL")
+	}
+
+	// The table is shared across tests, so assert on deltas and bounds.
+	before, err := s.RetentionLoweringImpact(ctx, 30)
+	if err != nil {
+		t.Fatalf("RetentionLoweringImpact: %v", err)
+	}
+	age := func(title string, capturedUnder int, days int) {
+		row := newIncident(owner, title)
+		row.RetentionDaysAtCapture = capturedUnder
+		id := mustCreateIncident(t, s, row)
+		if _, err := pool.Exec(ctx, `UPDATE incidents SET created_at = NOW() - $2 * INTERVAL '1 day' WHERE id = $1`, id, days); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age("lowered", 90, 60)          // older than 30d, inside its own 90d: counted
+	age("expired normally", 30, 40) // older than its own 30d: not counted
+	age("fresh", 90, 10)            // inside 30d: counted as later-affected only
+	age("same policy", 30, 10)      // captured under exactly the configured 30d: in neither count (strict >)
+
+	after, err := s.RetentionLoweringImpact(ctx, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Count != before.Count+1 {
+		t.Errorf("Count = %d, want %d (only the lowered incident is new)", after.Count, before.Count+1)
+	}
+	if after.Oldest.IsZero() || after.Newest.IsZero() || after.Oldest.After(after.Newest) {
+		t.Errorf("bounds = %v..%v, want a populated, ordered range", after.Oldest, after.Newest)
+	}
+	// "fresh" (captured under 90d, 10 days old) is still inside the 30d window,
+	// so it is a later-affected incident and NOT in the current count.
+	if after.LaterCount != before.LaterCount+1 {
+		t.Errorf("LaterCount = %d, want %d (only the fresh old-policy incident is new)", after.LaterCount, before.LaterCount+1)
+	}
+
+	// Once the sweep has run, the past-window count clears (those incidents are
+	// gone). The later-affected count does not: see the check below.
+	if _, err := s.Cleanup(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := s.RetentionLoweringImpact(ctx, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Count != 0 || !cleared.Oldest.IsZero() || !cleared.Newest.IsZero() {
+		t.Errorf("after the sweep impact = %+v, want zero", cleared)
+	}
+	// The sweep does not touch the still-live incident, so LaterCount remains:
+	// the warning can recur until those incidents age past the window.
+	if cleared.LaterCount < after.LaterCount {
+		t.Errorf("LaterCount fell to %d after the sweep, want it kept at %d", cleared.LaterCount, after.LaterCount)
+	}
+
+	// Empty path: no incident here is ten years old, so nothing is affected.
+	none, err := s.RetentionLoweringImpact(ctx, IncidentMaxRetentionDays)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.Count != 0 || none.LaterCount != 0 || !none.Oldest.IsZero() || !none.Newest.IsZero() {
+		t.Errorf("impact at the maximum retention = %+v, want zero", none)
+	}
+}
+
+func TestIncidentStore_AppliedRetentionRoundTrip(t *testing.T) {
+	s, pool := newIncidentStore(t)
+	ctx := t.Context()
+	// The state is one shared row, so start from a known empty state.
+	if _, err := pool.Exec(ctx, `DELETE FROM incident_retention_state`); err != nil {
+		t.Fatal(err)
+	}
+	if days, found, err := s.AppliedRetentionDays(ctx); err != nil || found || days != 0 {
+		t.Fatalf("empty state = (%d, %v, %v), want (0, false, nil)", days, found, err)
+	}
+	if err := s.RecordAppliedRetention(ctx, 60); err != nil {
+		t.Fatalf("RecordAppliedRetention(60): %v", err)
+	}
+	if days, found, err := s.AppliedRetentionDays(ctx); err != nil || !found || days != 60 {
+		t.Fatalf("after record = (%d, %v, %v), want (60, true, nil)", days, found, err)
+	}
+	// Upsert: a second record replaces the value and keeps exactly one row.
+	if err := s.RecordAppliedRetention(ctx, 30); err != nil {
+		t.Fatalf("RecordAppliedRetention(30): %v", err)
+	}
+	if days, _, err := s.AppliedRetentionDays(ctx); err != nil || days != 30 {
+		t.Fatalf("after upsert = (%d, %v), want 30", days, err)
+	}
+	if n := countRows(t, pool, `SELECT COUNT(*) FROM incident_retention_state`); n != 1 {
+		t.Errorf("%d state rows, want exactly 1", n)
+	}
+	for _, bad := range []int{0, -1, IncidentMaxRetentionDays + 1} {
+		if err := s.RecordAppliedRetention(ctx, bad); !errors.Is(err, ErrIncidentInvalid) {
+			t.Errorf("RecordAppliedRetention(%d) = %v, want ErrIncidentInvalid", bad, err)
+		}
+	}
+	// The table's own CHECKs back the Go validation.
+	if _, err := pool.Exec(ctx, `INSERT INTO incident_retention_state (id, applied_retention_days) VALUES (false, 30)`); err == nil {
+		t.Error("a second (id=false) row was accepted; the table must hold at most one")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE incident_retention_state SET applied_retention_days = 0`); err == nil {
+		t.Error("the range CHECK accepted 0")
+	}
+}
+
+func TestMigration000025_UpAndDownAreWellFormed(t *testing.T) {
+	read := func(direction string) string {
+		b, err := fs.ReadFile(migrationsFS, "migrations/000025_incident_retention_state."+direction+".sql")
+		if err != nil {
+			t.Fatalf("reading 000025 %s migration: %v", direction, err)
+		}
+		return string(b)
+	}
+	up, down := read("up"), read("down")
+	for _, want := range []string{"CREATE TABLE IF NOT EXISTS incident_retention_state", "CHECK (id)",
+		"BETWEEN 1 AND 3650", "COMMENT ON TABLE incident_retention_state"} {
+		if !strings.Contains(up, want) {
+			t.Errorf("000025 up migration is missing %q", want)
+		}
+	}
+	if !strings.Contains(down, "DROP TABLE IF EXISTS incident_retention_state") {
+		t.Error("000025 down migration does not drop the table")
+	}
+	if strings.Contains(down, "incidents;") || strings.Contains(strings.ReplaceAll(down, "incident_retention_state", ""), "DROP TABLE IF EXISTS incident") {
+		t.Error("000025 down migration touches incident data; it must drop only incident_retention_state")
+	}
+	if !strings.Contains(down, "NOTES.txt (000025)") {
+		t.Error("000025 down migration does not point at NOTES.txt (000025)")
+	}
+}
+
+func TestMigration000025_RoundTripKeepsIncidents(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+	if err := m.Migrate(25); err != nil {
+		t.Fatalf("migrating to 000025: %v", err)
+	}
+	if !tableExists(t, pool, "incident_retention_state") {
+		t.Fatal("incident_retention_state missing after 000025")
+	}
+	s := NewIncidentStore(pool)
+	id, err := s.Create(ctx, IncidentRow{OwnerID: "o", Title: "kept", WindowStart: time.Now(), RetentionDaysAtCapture: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAppliedRetention(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Migrate(24); err != nil {
+		t.Fatalf("rolling back 000025: %v", err)
+	}
+	if tableExists(t, pool, "incident_retention_state") {
+		t.Error("incident_retention_state survived the down migration")
+	}
+	if got, err := s.Get(ctx, id); err != nil || got == nil || got.Title != "kept" {
+		t.Errorf("incident after the 000025 rollback = (%+v, %v); want it intact", got, err)
+	}
+
+	// Re-applying works, starting with no recorded retention.
+	if err := m.Migrate(25); err != nil {
+		t.Fatalf("re-applying 000025: %v", err)
+	}
+	if _, found, err := s.AppliedRetentionDays(ctx); err != nil || found {
+		t.Errorf("state after re-apply = (found=%v, err=%v), want empty", found, err)
+	}
+	// The up file re-runs cleanly over the existing table (the documented
+	// rollback to 24 leaves it in place).
+	up, err := fs.ReadFile(migrationsFS, "migrations/000025_incident_retention_state.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(up)); err != nil {
+		t.Errorf("re-running the 000025 up file over its own table failed: %v", err)
+	}
+}
+
 func TestIncidentStore_CleanupHonoursCancelledContext(t *testing.T) {
 	s, pool := newIncidentStore(t)
 	owner := testOwnerID(t)

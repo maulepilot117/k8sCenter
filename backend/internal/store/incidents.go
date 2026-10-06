@@ -583,20 +583,138 @@ func (s *IncidentStore) ownershipMiss(ctx context.Context, id uuid.UUID) error {
 // value the caller passes (the currently configured retention, Q1 P13), and
 // returns the number deleted. Evidence, notes, revisions and grants cascade.
 // Lowering the configured value therefore deletes, on the next sweep,
-// incidents that were inside the old window. Bounded by cleanupTimeout; it
-// rejects retentionDays < 1 before any SQL.
+// incidents that were inside the old window. It deletes in batches of
+// incidentCleanupBatch, each its own statement, so a large backlog never holds
+// one long transaction or lock; the whole call is bounded by cleanupTimeout, and
+// a timeout or failure part-way returns the count already deleted along with the
+// error (progress is kept). It rejects retentionDays < 1 before any SQL.
 func (s *IncidentStore) Cleanup(ctx context.Context, retentionDays int) (int64, error) {
+	return s.cleanupBatched(ctx, retentionDays, incidentCleanupBatch, nil)
+}
+
+// incidentCleanupBatch is the number of incidents one Cleanup statement deletes.
+const incidentCleanupBatch = 500
+
+// cleanupBatched is Cleanup with an injectable batch size. afterBatch, when
+// non-nil, is called with each batch's deleted count and may return false to
+// stop early (test seam; production passes nil).
+func (s *IncidentStore) cleanupBatched(ctx context.Context, retentionDays, batchSize int, afterBatch func(deleted int64) bool) (int64, error) {
 	if retentionDays < 1 {
 		return 0, fmt.Errorf("retention days must be at least 1, got %d", retentionDays)
 	}
+	if batchSize < 1 {
+		return 0, fmt.Errorf("cleanup batch size must be at least 1, got %d", batchSize)
+	}
 	cleanupCtx, cancel := context.WithTimeout(ctx, cleanupTimeout)
 	defer cancel()
-	tag, err := s.pool.Exec(cleanupCtx,
-		`DELETE FROM incidents WHERE created_at < NOW() - $1 * INTERVAL '1 day'`, retentionDays)
-	if err != nil {
-		return 0, fmt.Errorf("cleanup incidents: %w", err)
+	var total int64
+	for {
+		tag, err := s.pool.Exec(cleanupCtx,
+			`DELETE FROM incidents WHERE id IN (
+			     SELECT id FROM incidents
+			      WHERE created_at < NOW() - $1 * INTERVAL '1 day'
+			      ORDER BY created_at
+			      LIMIT $2)`, retentionDays, batchSize)
+		if err != nil {
+			return total, fmt.Errorf("cleanup incidents: %w", err)
+		}
+		n := tag.RowsAffected()
+		total += n
+		if afterBatch != nil && !afterBatch(n) {
+			return total, nil
+		}
+		if n < int64(batchSize) {
+			return total, nil
+		}
 	}
-	return tag.RowsAffected(), nil
+}
+
+// RetentionLoweringImpact describes incidents a configured retention would
+// delete although the retention in force when they were created would have
+// kept them.
+type RetentionLoweringImpact struct {
+	// Count is how many such incidents exist.
+	Count int64
+	// Oldest and Newest bound their created_at; both are zero when Count is 0.
+	Oldest, Newest time.Time
+	// LaterCount is how many incidents are still inside the configured window
+	// but were captured under a longer retention: they will be deleted earlier
+	// than their own policy promised, once they age past the configured value.
+	LaterCount int64
+}
+
+// RetentionLoweringImpact reports how a configured retention departs from the
+// retention_days_at_capture of existing incidents. Count (with Oldest and
+// Newest) is the incidents the next Cleanup(retentionDays) deletes only
+// because the configured value is lower than the one they were created under:
+// created_at is older than the configured window but still inside their own.
+// LaterCount is those still inside the configured window that were captured
+// under a longer retention. Incidents simply expired under their own policy
+// are in neither, so both are zero in normal operation. LaterCount stays above
+// zero until every such incident has aged past the configured window, so a
+// caller that warns on it will warn again on later restarts. It reads
+// aggregates only, no incident content.
+func (s *IncidentStore) RetentionLoweringImpact(ctx context.Context, retentionDays int) (RetentionLoweringImpact, error) {
+	if retentionDays < 1 {
+		return RetentionLoweringImpact{}, fmt.Errorf("retention days must be at least 1, got %d", retentionDays)
+	}
+	var (
+		impact         RetentionLoweringImpact
+		oldest, newest *time.Time
+	)
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FILTER (WHERE past),
+		       MIN(created_at) FILTER (WHERE past),
+		       MAX(created_at) FILTER (WHERE past),
+		       COUNT(*) FILTER (WHERE later)
+		  FROM (
+		    SELECT created_at,
+		           created_at <  NOW() - $1::int * INTERVAL '1 day'
+		             AND created_at >= NOW() - retention_days_at_capture * INTERVAL '1 day' AS past,
+		           created_at >= NOW() - $1::int * INTERVAL '1 day'
+		             AND retention_days_at_capture > $1::int AS later
+		      FROM incidents) AS t`,
+		retentionDays).Scan(&impact.Count, &oldest, &newest, &impact.LaterCount); err != nil {
+		return RetentionLoweringImpact{}, fmt.Errorf("retention lowering impact: %w", err)
+	}
+	if oldest != nil {
+		impact.Oldest = *oldest
+	}
+	if newest != nil {
+		impact.Newest = *newest
+	}
+	return impact, nil
+}
+
+// AppliedRetentionDays returns the retention (days) the last successful
+// retention sweep applied, from the single-row incident_retention_state table
+// (migration 000025). found is false when no sweep has recorded one yet.
+func (s *IncidentStore) AppliedRetentionDays(ctx context.Context) (days int, found bool, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT applied_retention_days FROM incident_retention_state`).Scan(&days)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("read applied retention: %w", err)
+	}
+	return days, true, nil
+}
+
+// RecordAppliedRetention upserts the retention a successful sweep applied. It
+// rejects a value outside [IncidentMinRetentionDays, IncidentMaxRetentionDays]
+// before any SQL.
+func (s *IncidentStore) RecordAppliedRetention(ctx context.Context, days int) error {
+	if err := ValidateIncidentRetentionDays(days); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO incident_retention_state (id, applied_retention_days, updated_at)
+		VALUES (true, $1, now())
+		ON CONFLICT (id) DO UPDATE
+		   SET applied_retention_days = EXCLUDED.applied_retention_days, updated_at = now()`, days); err != nil {
+		return fmt.Errorf("record applied retention: %w", err)
+	}
+	return nil
 }
 
 // CreateNote adds a note at revision 1. authorID is the authenticated caller.

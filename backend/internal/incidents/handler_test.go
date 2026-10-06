@@ -58,7 +58,12 @@ type fakeStore struct {
 	blockAccessUntilDone bool
 	// deadlines records whether each store call's context carried a deadline.
 	deadlines []bool
-	clock     time.Time
+	// beforeInsert runs inside InsertBatch, before its failure is returned
+	// (a test uses it to cancel the request context mid-insert).
+	beforeInsert func()
+	// insertDeadline is the deadline of the last InsertBatch context.
+	insertDeadline time.Time
+	clock          time.Time
 }
 
 func newFakeStore() *fakeStore {
@@ -79,8 +84,14 @@ func (f *fakeStore) tick() time.Time {
 
 // enter records the call's context and returns the forced failure, if any.
 func (f *fakeStore) enter(ctx context.Context, op string) error {
-	_, has := ctx.Deadline()
+	d, has := ctx.Deadline()
 	f.deadlines = append(f.deadlines, has)
+	if op == "InsertBatch" {
+		f.insertDeadline = d
+		if f.beforeInsert != nil {
+			f.beforeInsert()
+		}
+	}
 	if f.failWith != nil {
 		return f.failWith
 	}

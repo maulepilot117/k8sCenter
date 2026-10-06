@@ -209,6 +209,8 @@ type Handler struct {
 	audit  audit.Logger
 	// retentionDays is stamped on each new incident (retention_days_at_capture).
 	retentionDays int
+	// now is the capture budget's clock; nil means time.Now (test seam).
+	now func() time.Time
 	// accessTimeout is accessCheckTimeout; a field so tests can shorten it.
 	accessTimeout time.Duration
 	// exportMax is exportMaxBytes; a field so tests can shrink it.

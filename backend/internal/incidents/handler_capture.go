@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -42,6 +43,79 @@ import (
 // writes). It sits above the store's 5s lock timeout so a busy incident is
 // reported as incident_busy by the store rather than as a deadline here.
 const storeWriteTimeout = 10 * time.Second
+
+// Capture request budget. The browser reaches POST /incidents/{id}/capture
+// through the frontend proxy, which gives up after 30 s (PROXY_TIMEOUT_MS in
+// frontend/server/api-proxy.ts); the server WriteTimeout is 60 s
+// (internal/server/server.go) and is not the binding limit. The whole handler
+// path, measured from handler entry, therefore has to finish inside
+// captureRequestBudget, which leaves 3 s of headroom under the proxy:
+//
+//	collector deadline (CaptureTimeout) + captureGrace
+//	  + insert work (at least captureMinInsertWork)
+//	  + the detached COMMIT bound (store.IncidentCommitTimeout)
+//	<= captureRequestBudget
+//
+// The collector runs under the earlier of the configured CaptureTimeout and
+// captureNotAfter (budget - commit bound - minimum insert work - grace, from
+// handler entry), so slow work before collection shortens the collection
+// instead of the insert. ResolveSettings clamps CaptureTimeout to
+// maxCaptureTimeout (budget - grace - minimum insert work - commit bound =
+// 14.75 s); the default is 14 s. The insert then gets the lesser of
+// storeWriteTimeout and what is left of the budget before its COMMIT (see
+// captureInsertDeadline), so even a capture that used its whole collection
+// budget cannot push the request past captureRequestBudget. The commit runs
+// detached from the caller's context and is bounded by
+// store.IncidentCommitTimeout, which captureInsertDeadline reserves.
+const (
+	captureRequestBudget = 27 * time.Second
+	// captureMinInsertWork is the insert time a maximal collection must still
+	// leave: the store's lock wait (store.IncidentLockTimeout, 5 s) plus 2 s
+	// for the writes, so a busy incident is reported as incident_busy by the
+	// store rather than as a deadline here.
+	captureMinInsertWork = store.IncidentLockTimeout + 2*time.Second
+)
+
+// isQueryCanceled reports a PostgreSQL query_canceled (SQLSTATE 57014), which
+// pgx can return instead of a context error when a context deadline or cancel
+// interrupts a statement.
+func isQueryCanceled(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "57014"
+}
+
+// minCollectionWindow is the least collector time worth starting a capture
+// for. It equals the CaptureTimeout floor (minTimeout, 1 s): below it the
+// collector could not meet even the smallest configurable deadline, so the
+// request is refused as retryable instead of returning an empty capture.
+const minCollectionWindow = time.Second
+
+// captureNotAfter is the latest the collector may run until: the budget's end
+// minus the COMMIT bound, the minimum insert work and the collector grace.
+func captureNotAfter(start time.Time) time.Time {
+	return start.Add(captureRequestBudget - store.IncidentCommitTimeout - captureMinInsertWork - captureGrace)
+}
+
+// clock returns the current time; tests inject h.now to simulate a slow
+// collection without waiting for it.
+func (h *Handler) clock() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
+}
+
+// captureInsertDeadline is the deadline for InsertBatch's work: the lesser of
+// now+storeWriteTimeout and the budget's end minus the COMMIT bound, so the
+// commit that follows ends inside captureRequestBudget measured from start.
+func captureInsertDeadline(start, now time.Time) time.Time {
+	byStore := now.Add(storeWriteTimeout)
+	byBudget := start.Add(captureRequestBudget - store.IncidentCommitTimeout)
+	if byBudget.Before(byStore) {
+		return byBudget
+	}
+	return byStore
+}
 
 // captureRequest is the POST /incidents/{id}/capture body. There is
 // deliberately no cluster and no uid field: the body is decoded with
@@ -103,6 +177,7 @@ func captureTarget(req captureRequest) (TargetRef, error) {
 // incident (owner-only) and persists it.
 // POST /api/v1/incidents/{incidentID}/capture
 func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
+	start := h.clock() // the budget is measured from handler entry
 	user, ok := h.begin(w, r)
 	if !ok {
 		return
@@ -156,11 +231,25 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 
 	// The collector bounds the sources with its own CaptureTimeout (and a
 	// short grace); this context bounds the whole operation, insert
-	// included, and must outlive the collector's deadline so a capture that
-	// hits it still returns its partial report instead of the context error.
-	ctx, cancel := context.WithTimeout(r.Context(), h.limits.CaptureTimeout+captureGrace+storeWriteTimeout)
+	// included, to captureRequestBudget from handler entry. It outlives the
+	// collector's deadline (CaptureTimeout is clamped to leave the insert
+	// its share), so a capture that hits that deadline still returns its
+	// partial report instead of the context error.
+	ctx, cancel := context.WithDeadline(r.Context(), start.Add(captureRequestBudget))
 	defer cancel()
-	report, err := h.collector.Capture(ctx, CaptureRequest{ClusterID: k8s.LocalClusterID, User: user, Target: target, Sources: req.Sources})
+	// Work before collection (authorization, loading the incident, decoding)
+	// counts against the budget. If less than minCollectionWindow of the
+	// collector's share is left, answer retryable without running any source
+	// (a shorter window would only produce an empty 200 capture); otherwise
+	// cap the collector's deadline at what is left.
+	notAfter := captureNotAfter(start)
+	if notAfter.Sub(h.clock()) < minCollectionWindow {
+		h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
+			detail+": refused, capture budget exhausted before collection")
+		writeBusy(w, "the capture budget was used up before collection started; nothing was recorded; retry")
+		return
+	}
+	report, err := h.collector.Capture(ctx, CaptureRequest{ClusterID: k8s.LocalClusterID, User: user, Target: target, Sources: req.Sources, NotAfter: notAfter})
 	if err != nil {
 		h.writeCaptureFailure(w, r, user, c.row, err)
 		return
@@ -182,7 +271,9 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 	}
 	inserted := 0
 	if len(rows) > 0 {
-		inserted, err = h.evidence.InsertBatch(ctx, id, user.ID, rows, h.limits.EvidenceLimits())
+		insertCtx, cancelInsert := context.WithDeadline(ctx, captureInsertDeadline(start, h.clock()))
+		inserted, err = h.evidence.InsertBatch(insertCtx, id, user.ID, rows, h.limits.EvidenceLimits())
+		cancelInsert()
 		switch {
 		case errors.Is(err, store.ErrCommitOutcomeUnknown):
 			// The COMMIT's result is ambiguous (no reply, the commit bound
@@ -198,13 +289,35 @@ func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
 				"the capture may or may not have been recorded; retrying is safe (duplicates are ignored)",
 				ReasonCaptureOutcomeUnknown, nil)
 			return
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			// The client went away (or the whole-operation budget ran out)
-			// between the collector returning and the insert. The store
+		case (errors.Is(err, context.DeadlineExceeded) || isQueryCanceled(err)) && r.Context().Err() == nil:
+			// Our own insert deadline fired while the client is still there.
+			// It binds when the store was slow before its lock_timeout applied
+			// (pool acquisition, session setup) or when the request budget
+			// ran out; pgx may report it as a deadline error or as SQLSTATE
+			// 57014 (query_canceled). Nothing was committed (a commit-time
+			// ambiguity is ErrCommitOutcomeUnknown, handled above, and the
+			// store raises these only before its COMMIT), so this is
+			// retryable.
+			//
+			// This discrimination assumes r.Context() is cancelled only by a
+			// client disconnect: there is no per-route timeout middleware. If
+			// one is added, a deadline error from it would look like our own
+			// insert deadline here, so revisit.
+			h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence",
+				detail+": ran out of time before it could be saved")
+			writeBusy(w, "the capture ran out of time before it could be saved; nothing was recorded; retry")
+			return
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), isQueryCanceled(err):
+			// The client went away between the collector returning and the
+			// insert (a deadline error or query_canceled with a dead request
+			// context is a disconnect, not our deadline). The store
 			// raises a context error only before its COMMIT (the commit
 			// runs detached and bounded), so the transaction rolled back
 			// and this is the same "nothing was recorded" outcome as a
 			// cancellation during collection.
+			if isQueryCanceled(err) {
+				err = context.Canceled // writeCaptureFailure maps context errors
+			}
 			h.writeCaptureFailure(w, r, user, c.row, err)
 			return
 		case err != nil:
