@@ -57,8 +57,9 @@ type retentionStore interface {
 // applied, which it persists (incident_retention_state, migration 000025):
 //
 //   - New lowering: the configured days are below the persisted applied days,
-//     or nothing is persisted yet (first run after upgrade) and incidents are
-//     already past the configured window. If incidents are past the window
+//     or nothing is persisted yet (first run after upgrade) and some incident
+//     was captured under a longer retention (past the configured window, or
+//     still inside it). If incidents are past the window
 //     (Count above zero), the Retainer logs a Warn with the counts and the
 //     affected date range and defers the first sweep by loweringGraceWindow,
 //     giving the operator one hour to restore the old value. The deferral is
@@ -223,8 +224,9 @@ func (r *Retainer) shouldDeferFirstSweep(ctx context.Context) bool {
 	}
 	// A lowering is new when the configured days are below what the last sweep
 	// applied, or, with nothing recorded yet (first run after upgrade), when
-	// incidents are already past the configured window.
-	newLowering := (found && r.retentionDays < applied) || (!found && impact.Count > 0)
+	// any incident was captured under a longer retention (past the window,
+	// or still inside it).
+	newLowering := (found && r.retentionDays < applied) || (!found && (impact.Count > 0 || impact.LaterCount > 0))
 	if !newLowering {
 		if impact.LaterCount > 0 {
 			// Steady state: these incidents are aging out under a lowering that

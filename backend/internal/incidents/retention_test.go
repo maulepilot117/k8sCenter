@@ -547,19 +547,86 @@ func TestRetainer_PersistenceFailureIsLoggedAndTheLoopContinues(t *testing.T) {
 	waitCall(t, st)
 	ft.ch <- time.Now()
 	waitCall(t, st)
+	countWarns := func() int {
+		var n int
+		for _, rec := range lc.records(t) {
+			if rec["level"] == "WARN" && strings.Contains(rec["msg"].(string), "could not record the applied retention") {
+				n++
+			}
+		}
+		return n
+	}
+	// The second sweep logs its Warn after Cleanup returns, so wait for that
+	// record (with a deadline) instead of racing shutdown against it.
+	deadline := time.Now().Add(5 * time.Second)
+	for countWarns() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	stopLoop(t, cancel, done)
 	if got := len(st.calls()); got != 2 {
 		t.Fatalf("sweeps = %d, want the loop to keep sweeping after a persistence failure", got)
 	}
-	var warns int
-	for _, rec := range lc.records(t) {
-		if rec["level"] == "WARN" && strings.Contains(rec["msg"].(string), "could not record the applied retention") {
-			warns++
-		}
-	}
-	if warns != 2 {
+	if warns := countWarns(); warns != 2 {
 		t.Errorf("persistence-failure Warns = %d, want 2 (one per sweep)", warns)
 	}
+}
+
+func TestRetainer_ShutdownBeforeTheDeferredSweepRecordsNothingAndTheNextStartDefersAgain(t *testing.T) {
+	affected := store.RetentionLoweringImpact{Count: 4, LaterCount: 2}
+	st := newFakeRetentionStore()
+	st.impact, st.applied, st.appliedFound = affected, 60, true // lowered from 60 to 30
+
+	r1, ft1 := newTestRetainer(t, st, 30, &logCapture{})
+	cancel, done := startLoop(t, r1)
+	<-ft1.periods // the first sweep is deferred; the process stops before the grace window ends
+	stopLoop(t, cancel, done)
+	if got := st.calls(); len(got) != 0 {
+		t.Fatalf("sweeps before shutdown = %v, want none", got)
+	}
+	if got := st.recordedDays(); len(got) != 0 {
+		t.Fatalf("recorded %v without a sweep; the lowering must stay unrecorded", got)
+	}
+
+	// The next start sees the same state, so it defers again.
+	r2, ft2 := newTestRetainer(t, st, 30, &logCapture{})
+	cancel2, done2 := startLoop(t, r2)
+	<-ft2.periods
+	if got := st.calls(); len(got) != 0 {
+		t.Errorf("second start swept %v immediately; it must defer again", got)
+	}
+	stopLoop(t, cancel2, done2)
+}
+
+func TestRetainer_FailingSweepKeepsTheOldRecordSoTheNextStartStillDefers(t *testing.T) {
+	st := newFakeRetentionStore()
+	st.impact = store.RetentionLoweringImpact{Count: 4}
+	st.applied, st.appliedFound = 60, true
+	st.cleanup = func(context.Context, int, int) (int64, error) { return 0, errors.New("timeout") }
+
+	// Confirmed, so the failing sweep actually runs on this start.
+	r1, ft1 := newTestRetainer(t, st, 30, &logCapture{})
+	r1.WithLoweringConfirmed(true)
+	cancel, done := startLoop(t, r1)
+	waitCall(t, st)
+	ft1.ch <- time.Now() // received only after the failed sweep has been handled
+	waitCall(t, st)
+	stopLoop(t, cancel, done)
+	if got := st.recordedDays(); len(got) != 0 {
+		t.Fatalf("recorded %v after failing sweeps", got)
+	}
+	if st.applied != 60 {
+		t.Fatalf("applied = %d, want the old 60 kept", st.applied)
+	}
+
+	// Next start, unconfirmed: still a lowering, so the first sweep defers.
+	calls := len(st.calls())
+	r2, ft2 := newTestRetainer(t, st, 30, &logCapture{})
+	cancel2, done2 := startLoop(t, r2)
+	<-ft2.periods
+	if got := len(st.calls()); got != calls {
+		t.Errorf("second start swept (%d calls, was %d); it must still treat the lowering as new", got, calls)
+	}
+	stopLoop(t, cancel2, done2)
 }
 
 func TestRetainer_FailedSweepDoesNotRecordTheAppliedRetention(t *testing.T) {
@@ -599,8 +666,8 @@ func TestRetainer_LoweringDefersTheFirstSweepOneGraceWindow(t *testing.T) {
 		"no row, past-window rows: warns and defers": {impact: affected, wantWarn: true, wantMsg: "deferred", wantDelay: true},
 		"confirmed lowering sweeps immediately":      {impact: affected, confirmed: true, wantWarn: true, wantNow: true, wantMsg: "confirmed by configuration"},
 		"normal expiry: no warning, no delay":        {wantNow: true},
-		"no row, nothing past the window: steady, Info only": {
-			impact: store.RetentionLoweringImpact{LaterCount: 3}, wantInfo: true, wantNow: true},
+		"no row, nothing past the window, later-affected rows: warns, no delay": {
+			impact: store.RetentionLoweringImpact{LaterCount: 3}, wantWarn: true, wantNow: true, wantMsg: "deleted earlier"},
 		// A persisted value above the configured one: a new lowering.
 		"lowered below the applied value: warns and defers": {impact: affected, applied: 60, found: true, wantWarn: true, wantMsg: "deferred", wantDelay: true},
 		"lowered, only later-affected rows: warns, no delay": {
