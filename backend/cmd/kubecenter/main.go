@@ -761,7 +761,14 @@ func main() {
 			fcmClient = nil
 		}
 
-		notifService = notifications.NewService(notifStore, hub, alertNotifier, fcmClient, logger)
+		// Assign only a non-nil notifier: a nil *alerting.Notifier stored in the
+		// EmailSender interface is a non-nil interface and would defeat the
+		// service's `emailSender == nil` guards.
+		var emailSender notifications.EmailSender
+		if alertNotifier != nil {
+			emailSender = alertNotifier
+		}
+		notifService = notifications.NewService(notifStore, hub, emailSender, fcmClient, logger)
 		notifService.Start(ctx)
 
 		notifCenterHandler = &notifications.Handler{

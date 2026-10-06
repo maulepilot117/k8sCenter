@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -108,7 +109,7 @@ func NewService(store *Store, hub *websocket.Hub, emailSender EmailSender, fcm *
 	return &NotificationService{
 		store:       store,
 		hub:         hub,
-		emailSender: emailSender,
+		emailSender: normalizeEmailSender(emailSender),
 		fcm:         fcm,
 		queue:       make(chan Notification, queueSize),
 		sem:         make(chan struct{}, semaphoreSize),
@@ -116,12 +117,26 @@ func NewService(store *Store, hub *websocket.Hub, emailSender EmailSender, fcm *
 	}
 }
 
+// normalizeEmailSender turns a typed-nil pointer stored in the EmailSender
+// interface (e.g. a nil *alerting.Notifier) into a true nil interface. A typed
+// nil is non-nil to `== nil`, so the guards in sendDigests/sendTestEmail would
+// otherwise pass and call a method on a nil receiver.
+func normalizeEmailSender(es EmailSender) EmailSender {
+	if es == nil {
+		return nil
+	}
+	if v := reflect.ValueOf(es); v.Kind() == reflect.Ptr && v.IsNil() {
+		return nil
+	}
+	return es
+}
+
 // Start loads cached rules/channels and launches the dispatch and digest goroutines.
 func (s *NotificationService) Start(ctx context.Context) {
 	s.refreshCache(ctx)
-	go s.runDispatcher(ctx)
-	go s.runDigest(ctx)
-	go s.runRetention(ctx)
+	go recoverutil.Safe(s.logger, "notifications dispatcher", func() { s.runDispatcher(ctx) })
+	go recoverutil.Safe(s.logger, "notifications digest", func() { s.runDigest(ctx) })
+	go recoverutil.Safe(s.logger, "notifications retention", func() { s.runRetention(ctx) })
 }
 
 // RefreshCache reloads rules and channels from the database.
@@ -239,7 +254,9 @@ func (s *NotificationService) runDispatcher(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case n := <-s.queue:
-			s.dispatchToChannels(ctx, n)
+			recoverutil.Tick(ctx, s.logger, "notifications dispatch", func(ctx context.Context) {
+				s.dispatchToChannels(ctx, n)
+			})
 		}
 	}
 }
@@ -482,9 +499,15 @@ func (s *NotificationService) runDigest(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Until(next)):
-			s.sendDigests(ctx)
+			s.safeSendDigests(ctx)
 		}
 	}
+}
+
+// safeSendDigests runs one digest pass with panic recovery so a bad iteration
+// is logged and the loop survives to the next 08:00 UTC.
+func (s *NotificationService) safeSendDigests(ctx context.Context) {
+	recoverutil.Tick(ctx, s.logger, "notifications digest", s.sendDigests)
 }
 
 func nextDigestTime(now time.Time) time.Time {

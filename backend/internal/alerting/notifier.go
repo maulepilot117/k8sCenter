@@ -102,6 +102,9 @@ func (n *Notifier) UpdateConfig(cfg config.SMTPConfig, from string, recipients [
 
 // SMTPConfigured returns true if SMTP is configured with at least a host.
 func (n *Notifier) SMTPConfigured() bool {
+	if n == nil {
+		return false
+	}
 	n.configMu.RLock()
 	defer n.configMu.RUnlock()
 	return n.config.Host != ""
