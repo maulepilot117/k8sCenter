@@ -17,6 +17,18 @@ const (
 	// Changes (Release E tracked changes) defaults
 	DefaultChangesReceiptRetentionDays = 30
 
+	// Incidents (Release D) defaults. The evidence limits equal the store's SQL
+	// CHECK ceilings and incidents.DefaultLimits; a test in package incidents
+	// keeps the three in step.
+	DefaultIncidentsRetentionDays    = 30
+	DefaultIncidentsMaxItemBytes     = 1 << 20
+	DefaultIncidentsMaxIncidentBytes = 10 << 20
+	DefaultIncidentsMaxItems         = 500
+	DefaultIncidentsMaxScopes        = 20
+	DefaultIncidentsCaptureTimeout   = 20 * time.Second
+	DefaultIncidentsSourceTimeout    = 5 * time.Second
+	DefaultIncidentsMaxConcurrency   = 4
+
 	// Alerting defaults
 	DefaultAlertingEnabled       = false
 	DefaultAlertingRetentionDays = 30

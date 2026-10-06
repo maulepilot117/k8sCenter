@@ -1149,6 +1149,24 @@ func TestIncidentStore_CleanupDeletesOnlyExpired(t *testing.T) {
 	}
 }
 
+func TestIncidentStore_MaxRetentionDaysAtCapture(t *testing.T) {
+	s, _ := newIncidentStore(t)
+	ctx := t.Context()
+	owner := testOwnerID(t)
+	row := newIncident(owner, "long retention")
+	row.RetentionDaysAtCapture = IncidentMaxRetentionDays
+	mustCreateIncident(t, s, row)
+
+	// The table is shared across tests, so assert only that our row is seen.
+	got, err := s.MaxRetentionDaysAtCapture(ctx)
+	if err != nil {
+		t.Fatalf("MaxRetentionDaysAtCapture: %v", err)
+	}
+	if got != IncidentMaxRetentionDays {
+		t.Errorf("MaxRetentionDaysAtCapture = %d, want %d", got, IncidentMaxRetentionDays)
+	}
+}
+
 func TestIncidentStore_CleanupHonoursCancelledContext(t *testing.T) {
 	s, pool := newIncidentStore(t)
 	owner := testOwnerID(t)

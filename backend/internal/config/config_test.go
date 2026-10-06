@@ -5,7 +5,47 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestIncidentsConfig(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		want := IncidentsConfig{
+			RetentionDays: 30, MaxItemBytes: 1 << 20, MaxIncidentBytes: 10 << 20,
+			MaxItems: 500, MaxScopes: 20,
+			CaptureTimeout: 20 * time.Second, SourceTimeout: 5 * time.Second, MaxConcurrency: 4,
+		}
+		if cfg.Incidents != want {
+			t.Errorf("default Incidents = %+v, want %+v", cfg.Incidents, want)
+		}
+	})
+
+	t.Run("every KUBECENTER_INCIDENTS_ env var maps to its field", func(t *testing.T) {
+		t.Setenv("KUBECENTER_INCIDENTS_RETENTIONDAYS", "7")
+		t.Setenv("KUBECENTER_INCIDENTS_MAXITEMBYTES", "2048")
+		t.Setenv("KUBECENTER_INCIDENTS_MAXINCIDENTBYTES", "4096")
+		t.Setenv("KUBECENTER_INCIDENTS_MAXITEMS", "11")
+		t.Setenv("KUBECENTER_INCIDENTS_MAXSCOPES", "3")
+		t.Setenv("KUBECENTER_INCIDENTS_CAPTURETIMEOUT", "45s")
+		t.Setenv("KUBECENTER_INCIDENTS_SOURCETIMEOUT", "9s")
+		t.Setenv("KUBECENTER_INCIDENTS_MAXCONCURRENCY", "2")
+		cfg, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		want := IncidentsConfig{
+			RetentionDays: 7, MaxItemBytes: 2048, MaxIncidentBytes: 4096, MaxItems: 11, MaxScopes: 3,
+			CaptureTimeout: 45 * time.Second, SourceTimeout: 9 * time.Second, MaxConcurrency: 2,
+		}
+		if cfg.Incidents != want {
+			t.Errorf("Incidents = %+v, want %+v", cfg.Incidents, want)
+		}
+	})
+}
 
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := Load("")

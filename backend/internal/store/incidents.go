@@ -599,6 +599,19 @@ func (s *IncidentStore) Cleanup(ctx context.Context, retentionDays int) (int64, 
 	return tag.RowsAffected(), nil
 }
 
+// MaxRetentionDaysAtCapture returns the largest retention_days_at_capture of
+// any stored incident, or 0 when there are none. The startup check uses it to
+// warn that a lower configured retention will delete existing incidents on the
+// next Cleanup (Q1 R-4). It reads one aggregate, no incident content.
+func (s *IncidentStore) MaxRetentionDaysAtCapture(ctx context.Context) (int, error) {
+	var longest int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(retention_days_at_capture), 0) FROM incidents`).Scan(&longest); err != nil {
+		return 0, fmt.Errorf("max retention days at capture: %w", err)
+	}
+	return longest, nil
+}
+
 // CreateNote adds a note at revision 1. authorID is the authenticated caller.
 // Whether the caller may annotate this incident (owner, or a grant with
 // can_annotate, Q1 P3) is the caller's check. Returns ErrIncidentNotFound when

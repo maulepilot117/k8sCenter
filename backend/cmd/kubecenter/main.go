@@ -996,6 +996,17 @@ func main() {
 		incidentStore, incidentEvidenceStore, incidentGrantStore, incidentCollector, incidentLimits,
 		accessChecker, auditLogger, logger,
 	)
+	// Effective incident settings: every out-of-range value is corrected and
+	// logged here. The capture limits (incidentSettings.Limits) are consumed
+	// by the evidence collector when U23b wires it.
+	incidentSettings := incidents.ResolveSettings(cfg.Incidents, logger)
+	incidentsHandler.SetRetentionDays(incidentSettings.RetentionDays)
+	logger.Info("incident retention configured", "retentionDays", incidentSettings.RetentionDays)
+	if incidentStore != nil {
+		// Plain go statement by design: Retainer.RunLoop owns no WaitGroup or
+		// counted channel and returns on ctx cancel (see its doc comment).
+		go incidents.NewRetainer(incidentStore, incidentSettings.RetentionDays, logger).RunLoop(ctx)
+	}
 
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
