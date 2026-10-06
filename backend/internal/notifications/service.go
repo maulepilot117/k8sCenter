@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -92,13 +93,15 @@ type NotificationService struct {
 	store       *Store
 	hub         eventBroadcaster
 	emailSender EmailSender
-	fcm         *FCMClient
-	queue       chan Notification
-	sem         chan struct{} // dispatch semaphore
-	rules       []Rule
-	channels    []Channel
-	mu          sync.RWMutex
-	logger      *slog.Logger
+	// dispatchHook replaces channel dispatch; set only by tests.
+	dispatchHook func(ctx context.Context, ch Channel, n Notification) error
+	fcm          *FCMClient
+	queue        chan Notification
+	sem          chan struct{} // dispatch semaphore
+	rules        []Rule
+	channels     []Channel
+	mu           sync.RWMutex
+	logger       *slog.Logger
 }
 
 // NewService creates a notification service. fcm may be nil — when nil, the
@@ -108,7 +111,7 @@ func NewService(store *Store, hub *websocket.Hub, emailSender EmailSender, fcm *
 	return &NotificationService{
 		store:       store,
 		hub:         hub,
-		emailSender: emailSender,
+		emailSender: normalizeEmailSender(emailSender),
 		fcm:         fcm,
 		queue:       make(chan Notification, queueSize),
 		sem:         make(chan struct{}, semaphoreSize),
@@ -116,12 +119,26 @@ func NewService(store *Store, hub *websocket.Hub, emailSender EmailSender, fcm *
 	}
 }
 
+// normalizeEmailSender turns a typed-nil pointer stored in the EmailSender
+// interface (e.g. a nil *alerting.Notifier) into a true nil interface. A typed
+// nil is non-nil to `== nil`, so the guards in sendDigests/sendTestEmail would
+// otherwise pass and call a method on a nil receiver.
+func normalizeEmailSender(es EmailSender) EmailSender {
+	if es == nil {
+		return nil
+	}
+	if v := reflect.ValueOf(es); v.Kind() == reflect.Ptr && v.IsNil() {
+		return nil
+	}
+	return es
+}
+
 // Start loads cached rules/channels and launches the dispatch and digest goroutines.
 func (s *NotificationService) Start(ctx context.Context) {
 	s.refreshCache(ctx)
-	go s.runDispatcher(ctx)
-	go s.runDigest(ctx)
-	go s.runRetention(ctx)
+	go recoverutil.Safe(s.logger, "notifications dispatcher", func() { s.runDispatcher(ctx) })
+	go recoverutil.Safe(s.logger, "notifications digest", func() { s.runDigest(ctx) })
+	go recoverutil.Safe(s.logger, "notifications retention", func() { s.runRetention(ctx) })
 }
 
 // RefreshCache reloads rules and channels from the database.
@@ -239,7 +256,9 @@ func (s *NotificationService) runDispatcher(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case n := <-s.queue:
-			s.dispatchToChannels(ctx, n)
+			recoverutil.Tick(ctx, s.logger, "notifications dispatch", func(ctx context.Context) {
+				s.dispatchToChannels(ctx, n)
+			})
 		}
 	}
 }
@@ -271,14 +290,20 @@ func (s *NotificationService) dispatchToChannels(ctx context.Context, n Notifica
 			return
 		}
 		go func(ch Channel, n Notification) {
+			// The semaphore release stays OUTSIDE the recovered closure so a
+			// panicking send still frees its slot.
 			defer func() { <-s.sem }()
-			dctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
-			defer cancel()
-			if err := s.dispatch(dctx, ch, n); err != nil {
-				s.logger.Error("dispatch failed",
-					"channel", ch.Name, "type", ch.Type, "error", err)
-				_ = s.store.UpdateChannelError(dctx, ch.ID, err.Error())
-			}
+			// This goroutine is outside chi's recovery and outside the Tick
+			// around dispatchToChannels, so it needs its own recovery.
+			recoverutil.Safe(s.logger, "notifications channel dispatch", func() {
+				dctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
+				defer cancel()
+				if err := s.dispatch(dctx, ch, n); err != nil {
+					s.logger.Error("dispatch failed",
+						"channel", ch.Name, "type", ch.Type, "error", err)
+					_ = s.store.UpdateChannelError(dctx, ch.ID, err.Error())
+				}
+			})
 		}(ch, n)
 	}
 }
@@ -296,6 +321,9 @@ func ruleMatches(rule Rule, n Notification) bool {
 // --- Channel dispatch (switch, no interface) ---
 
 func (s *NotificationService) dispatch(ctx context.Context, ch Channel, n Notification) error {
+	if s.dispatchHook != nil {
+		return s.dispatchHook(ctx, ch, n)
+	}
 	switch ch.Type {
 	case ChannelSlack:
 		return s.sendSlack(ctx, ch, n)
@@ -482,9 +510,15 @@ func (s *NotificationService) runDigest(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Until(next)):
-			s.sendDigests(ctx)
+			s.safeSendDigests(ctx)
 		}
 	}
+}
+
+// safeSendDigests runs one digest pass with panic recovery so a bad iteration
+// is logged and the loop survives to the next 08:00 UTC.
+func (s *NotificationService) safeSendDigests(ctx context.Context) {
+	recoverutil.Tick(ctx, s.logger, "notifications digest", s.sendDigests)
 }
 
 func nextDigestTime(now time.Time) time.Time {
