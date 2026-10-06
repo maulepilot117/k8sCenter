@@ -11,7 +11,6 @@ import {
 import {
   INCIDENT_MAX_SUMMARY_CHARS,
   INCIDENT_MAX_TITLE_CHARS,
-  type IncidentStatus,
   type IncidentView,
 } from "@/lib/incident-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
@@ -21,6 +20,7 @@ import {
   FIELD,
   HEADING,
   LINK,
+  StatusBadge,
 } from "@/src/components/incidents/ui.tsx";
 
 /**
@@ -93,29 +93,6 @@ function createErrorText(err: unknown): string {
     }
   }
   return "Could not create the incident.";
-}
-
-function StatusBadge({ status }: { status: IncidentStatus }) {
-  switch (status) {
-    case "open":
-      return (
-        <span class="inline-flex rounded-full bg-warning-dim px-2 py-0.5 text-xs font-medium text-warning">
-          Open
-        </span>
-      );
-    case "closed":
-      return (
-        <span class="inline-flex rounded-full bg-success-dim px-2 py-0.5 text-xs font-medium text-success">
-          Closed
-        </span>
-      );
-    default:
-      return (
-        <span class="inline-flex rounded-full border border-border-subtle px-2 py-0.5 text-xs font-medium text-text-muted">
-          {String(status)}
-        </span>
-      );
-  }
 }
 
 function RoleBadge({ incident }: { incident: IncidentView }) {

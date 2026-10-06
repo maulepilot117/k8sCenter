@@ -31,6 +31,7 @@ import {
   HEADING,
   LINK,
   PANEL,
+  StatusBadge,
 } from "@/src/components/incidents/ui.tsx";
 import IncidentEvidenceTimeline from "./IncidentEvidenceTimeline.tsx";
 import IncidentNotes from "./IncidentNotes.tsx";
@@ -94,18 +95,6 @@ function loadErrorFor(err: unknown, cursor: string): LoadError {
     kind: "retryable",
     message: "Could not load the incident's evidence.",
   };
-}
-
-function StatusBadge({ status }: { status: IncidentStatus }) {
-  return status === "closed" ? (
-    <span class="inline-flex rounded-full bg-success-dim px-2 py-0.5 text-xs font-medium text-success">
-      Closed
-    </span>
-  ) : (
-    <span class="inline-flex rounded-full bg-warning-dim px-2 py-0.5 text-xs font-medium text-warning">
-      Open
-    </span>
-  );
 }
 
 function When({ at }: { at: string }) {
@@ -302,6 +291,9 @@ export default function IncidentWorkspace({ id }: { id: string }) {
         "The status could not be changed.",
       );
     } finally {
+      // Any page load issued while the PUT was in flight may have read the
+      // old record; bumping again makes it discard that record too.
+      statusEpoch.current++;
       statusBusy.value = false;
     }
   };

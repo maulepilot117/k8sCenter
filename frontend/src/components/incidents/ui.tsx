@@ -2,6 +2,7 @@ import {
   type Completeness,
   completenessDescription,
   completenessLabel,
+  type IncidentStatus,
 } from "@/lib/incident-types.ts";
 
 /**
@@ -51,6 +52,22 @@ const COMPLETENESS_CLASS: Record<Completeness, string> = {
   forbidden: "border border-danger text-danger",
   timed_out: "border border-warning text-warning",
 };
+
+/** An incident's status; an unknown value is shown as sent. */
+export function StatusBadge({ status }: { status: IncidentStatus }) {
+  switch (status) {
+    case "open":
+      return <span class={`${BADGE} bg-warning-dim text-warning`}>Open</span>;
+    case "closed":
+      return <span class={`${BADGE} bg-success-dim text-success`}>Closed</span>;
+    default:
+      return (
+        <span class={`${BADGE} border border-border-subtle text-text-muted`}>
+          {String(status)}
+        </span>
+      );
+  }
+}
 
 /** One of the five completeness states, each visually distinct. */
 export function CompletenessBadge({ value }: { value: Completeness }) {

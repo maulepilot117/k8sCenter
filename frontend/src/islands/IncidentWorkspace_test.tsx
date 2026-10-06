@@ -829,3 +829,108 @@ test("a failed evidence page says it could not load more and offers Retry", asyn
     root.querySelectorAll("ol[aria-label='Evidence timeline'] > li"),
   ).toHaveLength(2);
 });
+
+// --- Review round 2 ---------------------------------------------------------
+
+test("a reload issued while the status PUT is in flight cannot revert it", async () => {
+  const put = gate();
+  const reload = gate();
+  let gets = 0;
+  stubFetch(
+    (c) => {
+      if (c.method !== "GET" || !c.url.startsWith(`/api/v1/incidents/${ID}?`)) {
+        return undefined;
+      }
+      gets++;
+      return gets === 1 ? json(200, { data: detail() }) : reload.promise;
+    },
+    routeNotes(),
+    routeGrants,
+    (c) =>
+      c.method === "POST" && c.url.endsWith("/capture")
+        ? captureOk()
+        : undefined,
+    (c) => (c.method === "PUT" ? put.promise : undefined),
+  );
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  await clickButton(root, "Close incident");
+  // While the PUT is pending, a capture issues a first-page reload.
+  setField(root, "capture-namespace", "shop");
+  setField(root, "capture-name", "checkout");
+  submitFormOf(root, "capture-namespace");
+  await flush();
+  expect(gets).toBe(2);
+  put.release(
+    json(200, { data: { incident: incident({ status: "closed" }) } }),
+  );
+  await flush();
+  expect(findButton(root, "Reopen incident")).toBeDefined();
+  // The reload, issued mid-PUT, answers afterwards with the old record.
+  reload.release(json(200, { data: detail() }));
+  await flush();
+  expect(findButton(root, "Reopen incident")).toBeDefined();
+  expect(findButton(root, "Close incident")).toBeUndefined();
+});
+
+test('a ".." collaborator id is never sent as a revoke path', async () => {
+  stubFetch(routeDetail(), routeNotes(), (c) =>
+    c.method === "GET" && c.url.endsWith("/grants")
+      ? json(200, { data: [grant("..")] })
+      : undefined,
+  );
+  const root = await mount(<IncidentWorkspace id={ID} />);
+  // The sharing panel mounts with the incident and then reads its grants.
+  await flush();
+  expect(findButton(root, "Remove")).toBeDefined();
+  await clickButton(root, "Remove");
+  expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  expect(root.textContent).toContain(
+    "This collaborator id cannot be removed from the UI.",
+  );
+});
+
+test("an unmounted timeline frees its live-link slots and drops its queued reads", async () => {
+  const held: Array<() => void> = [];
+  stubFetch();
+  // Reads that never answer on their own, but reject on abort like fetch.
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), method: "GET", headers: new Headers() });
+    return new Promise<Response>((resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("Aborted", "AbortError")),
+      );
+      held.push(() =>
+        resolve(json(200, { data: { metadata: { uid: "uid-1" } } })),
+      );
+    });
+  }) as typeof globalThis.fetch;
+  const links = (prefix: string, n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      evidence(i, {
+        id: `${prefix}${i}`,
+        mode: "live_link",
+        payload: undefined,
+        source: { ...evidence(i).source, name: `${prefix}${i}` },
+      }),
+    );
+  // Six reads in flight and two queued, then the timeline goes away.
+  await mount(<IncidentEvidenceTimeline items={links("a", 8)} />);
+  expect(calls).toHaveLength(6);
+  act(() => render(null, host as HTMLElement));
+  await flush();
+  // Aborted in-flight reads released their slots, and the queued two never
+  // ran: a new timeline gets all six slots at once.
+  act(() =>
+    render(
+      <IncidentEvidenceTimeline items={links("b", 6)} />,
+      host as HTMLElement,
+    ),
+  );
+  await flush();
+  expect(calls).toHaveLength(12);
+  // Every read after the remount is one of the new timeline's: the two
+  // queued "a" reads were dropped, not started.
+  expect(calls.slice(6).every((c) => c.url.includes("/shop/b"))).toBe(true);
+  for (const release of held.splice(0)) release();
+  await flush();
+});

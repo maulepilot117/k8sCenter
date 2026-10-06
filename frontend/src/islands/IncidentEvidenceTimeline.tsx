@@ -83,6 +83,8 @@ type LiveState =
 
 /** At most this many live-link reads run at once; the rest wait their turn. */
 const LIVE_LINK_CONCURRENCY = 6;
+/** A live-link read is abandoned after this long, freeing its slot. */
+const LIVE_LINK_TIMEOUT_MS = 10_000;
 let liveActive = 0;
 const liveWaiting: Array<() => void> = [];
 
@@ -136,12 +138,21 @@ function LiveLink({ source }: { source: SourceRef }) {
   useEffect(() => {
     if (!target || !local) return;
     const controller = new AbortController();
-    withLiveSlot(controller.signal, () =>
-      apiGet<{ metadata?: { uid?: string } }>(target.apiPath, {
+    withLiveSlot(controller.signal, () => {
+      // A read that hangs would hold its slot for good; give up after
+      // LIVE_LINK_TIMEOUT_MS and report "could not be checked".
+      const read = new AbortController();
+      const stop = () => read.abort();
+      controller.signal.addEventListener("abort", stop, { once: true });
+      const timer = setTimeout(stop, LIVE_LINK_TIMEOUT_MS);
+      return apiGet<{ metadata?: { uid?: string } }>(target.apiPath, {
         clusterId: source.clusterId,
-        signal: controller.signal,
-      }),
-    )
+        signal: read.signal,
+      }).finally(() => {
+        clearTimeout(timer);
+        controller.signal.removeEventListener("abort", stop);
+      });
+    })
       .then((res) => {
         if (controller.signal.aborted) return;
         const uid = res.data?.metadata?.uid;

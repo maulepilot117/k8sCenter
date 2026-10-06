@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { ApiError, apiBlob, setAccessToken } from "./api.ts";
+import { ApiError, api, apiBlob, setAccessToken } from "./api.ts";
 
 // apiBlob shares api()'s transport: the bearer token, X-Cluster-ID, the
 // single 401 refresh-and-retry and ApiError parsing. It differs only in what
@@ -117,4 +117,45 @@ test("apiBlob parses an error envelope into ApiError with reason, extra and head
   expect(err.detail).toBe("too many exports in progress; retry shortly");
   expect(err.body?.error?.extra).toEqual({ max: 2 });
   expect(err.headers?.get("Retry-After")).toBe("3");
+});
+
+// api() now runs over the same send(); these pin what it kept.
+
+test("api() answers a 204 with an empty envelope", async () => {
+  stubFetch([() => new Response(null, { status: 204 })]);
+  const res = await api("/v1/things/1", { method: "DELETE" });
+  expect(res).toEqual({ data: undefined } as unknown as typeof res);
+  expect(calls[0].headers.get("X-Requested-With")).toBe("XMLHttpRequest");
+});
+
+test("api() turns a non-JSON error body into an ApiError with the status text", async () => {
+  stubFetch([
+    () =>
+      new Response("<html>bad gateway</html>", {
+        status: 502,
+        statusText: "Bad Gateway",
+        headers: { "Content-Type": "text/html" },
+      }),
+  ]);
+  const err = (await api("/v1/things").catch((e) => e)) as ApiError;
+  expect(err).toBeInstanceOf(ApiError);
+  expect(err.status).toBe(502);
+  expect(err.code).toBe(502);
+  expect(err.detail).toBe("Bad Gateway");
+  expect(err.reason).toBeUndefined();
+});
+
+test("api() errors carry the response headers too", async () => {
+  stubFetch([
+    () =>
+      new Response(
+        JSON.stringify({
+          error: { code: 503, message: "busy", reason: "incident_busy" },
+        }),
+        { status: 503, headers: { "Retry-After": "2" } },
+      ),
+  ]);
+  const err = (await api("/v1/things").catch((e) => e)) as ApiError;
+  expect(err.reason).toBe("incident_busy");
+  expect(err.headers?.get("Retry-After")).toBe("2");
 });
