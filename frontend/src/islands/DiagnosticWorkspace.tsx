@@ -4,8 +4,12 @@ import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import type { AffectedResource } from "@/src/islands/BlastRadiusPanel.tsx";
 import BlastRadiusPanel from "@/src/islands/BlastRadiusPanel.tsx";
+import CaptureToIncidentButton, {
+  earliestObservedAt,
+} from "@/src/islands/CaptureToIncidentButton.tsx";
 import type { DiagnosticResult } from "@/src/islands/DiagnosticChecklist.tsx";
 import DiagnosticChecklist from "@/src/islands/DiagnosticChecklist.tsx";
+import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface DiagnosticResponse {
@@ -350,6 +354,14 @@ export default function DiagnosticWorkspace() {
                 {kind.value}/{name.value} in {namespace.value}
               </span>
             </div>
+            <CaptureToIncidentButton
+              class="ml-auto mr-2"
+              clusterId={selectedCluster.value}
+              namespace={namespace.value}
+              kind={kind.value}
+              name={name.value}
+              windowStart={earliestObservedAt(results.value)}
+            />
             <button
               type="button"
               onClick={() =>

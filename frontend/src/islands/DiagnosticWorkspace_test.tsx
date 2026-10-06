@@ -114,3 +114,18 @@ test("a local result renders without the remote notice", async () => {
   ).toBeNull();
   expect(root.textContent).not.toContain("Select a resource to investigate");
 });
+
+test("a local result offers capture to an incident beside Re-scan", async () => {
+  const root = await mount(200, {
+    data: {
+      target: { kind: "Pod", name: "web", namespace: "team-a" },
+      results: [],
+      blastRadius: { directlyAffected: [], potentiallyAffected: [] },
+    },
+  });
+  const capture = root.querySelector('[data-testid="capture-to-incident"]');
+  expect(capture).not.toBeNull();
+  expect(capture?.getAttribute("aria-disabled")).toBe("false");
+  const banner = capture?.parentElement?.parentElement;
+  expect(banner?.textContent).toContain("Re-scan");
+});
