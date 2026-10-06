@@ -37,14 +37,18 @@ package incidents
 //	POST   /api/v1/incidents/{incidentID}/notes            HandleCreateNote
 //	PUT    /api/v1/incidents/{incidentID}/notes/{noteID}   HandleUpdateNote
 //	DELETE /api/v1/incidents/{incidentID}/notes/{noteID}   HandleDeleteNote
+//	GET    /api/v1/incidents/{incidentID}/evidence         HandleListEvidence   (handler_capture.go)
+//	POST   /api/v1/incidents/{incidentID}/capture          HandleCapture        (handler_capture.go)
+//	GET    /api/v1/incidents/{incidentID}/grants           HandleListGrants     (handler_grants.go)
+//	POST   /api/v1/incidents/{incidentID}/grants           HandleAddGrant       (handler_grants.go)
+//	DELETE /api/v1/incidents/{incidentID}/grants/{granteeID} HandleRemoveGrant  (handler_grants.go)
+//	GET    /api/v1/incidents/{incidentID}/export           HandleExport         (handler_export.go)
 //
 // metadata.total means, per endpoint: on the list, the incidents on this
 // page (every listed incident is visible by definition); on the detail
-// read, the whole-incident count of evidence the caller may read (the
-// evidence array is one page of it, continued by metadata.continue); on the
-// notes list, the notes on this page.
-//
-// Capture, grants and export are U23b.
+// read and the evidence list, the whole-incident count of evidence the
+// caller may read (the evidence array is one page of it, continued by
+// metadata.continue); on the notes list, the notes on this page.
 
 import (
 	"context"
@@ -78,6 +82,11 @@ const (
 	ActionIncidentNoteCreate audit.Action = "incident_note_create"
 	ActionIncidentNoteUpdate audit.Action = "incident_note_update"
 	ActionIncidentNoteDelete audit.Action = "incident_note_delete"
+	// U23b (handler_capture.go, handler_grants.go, handler_export.go).
+	ActionIncidentCapture     audit.Action = "incident_capture"
+	ActionIncidentGrantAdd    audit.Action = "incident_grant_add"
+	ActionIncidentGrantRemove audit.Action = "incident_grant_remove"
+	ActionIncidentExport      audit.Action = "incident_export"
 )
 
 // Machine-readable error reasons.
@@ -93,6 +102,24 @@ const (
 	// ReasonNoteRevisionConflict: the note was edited since the caller read
 	// it; extra.currentRevision carries the revision to retry with.
 	ReasonNoteRevisionConflict = "note_revision_conflict"
+	// ReasonCaptureUnavailable: no evidence collector is wired (503).
+	ReasonCaptureUnavailable = "incident_capture_unavailable"
+	// ReasonRemoteCaptureUnsupported: X-Cluster-ID names a remote cluster;
+	// Release D capture is local-only (400, plan A-12).
+	ReasonRemoteCaptureUnsupported = "remote_capture_unsupported"
+	// ReasonEvidenceLimitExceeded: a byte or item ceiling (413, Q1 P14);
+	// extra carries limit, max, current and attempted.
+	ReasonEvidenceLimitExceeded = "evidence_limit_exceeded"
+	// ReasonScopeLimitExceeded: the distinct-scope cap (409, Q1 P5).
+	ReasonScopeLimitExceeded = "scope_limit_exceeded"
+	// ReasonIncidentClosed: evidence cannot be captured into a closed
+	// incident (409).
+	ReasonIncidentClosed = "incident_closed"
+	// ReasonGrantLimitReached: the incident has IncidentMaxGrants grantees (409).
+	ReasonGrantLimitReached = "grant_limit_reached"
+	// ReasonExportFormatInvalid: ?format is not json or markdown (400; no
+	// HTML export exists, Q1 P12).
+	ReasonExportFormatInvalid = "export_format_invalid"
 )
 
 const (
@@ -137,11 +164,22 @@ type incidentStore interface {
 type evidenceStore interface {
 	ListByIncident(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]store.IncidentEvidenceRow, string, error)
 	ListScopeRowsByIncident(ctx context.Context, incidentID uuid.UUID) ([]store.IncidentEvidenceRow, error)
+	InsertBatch(ctx context.Context, incidentID uuid.UUID, ownerID string, rows []store.IncidentEvidenceRow, limits store.EvidenceLimits) (int, error)
 }
 
 type grantStore interface {
 	GetGrant(ctx context.Context, incidentID uuid.UUID, userID string) (*store.IncidentGrantRow, error)
 	GrantsFor(ctx context.Context, userID string, incidentIDs []uuid.UUID) (map[uuid.UUID]store.IncidentGrantRow, error)
+	ListGrants(ctx context.Context, incidentID uuid.UUID) ([]store.IncidentGrantRow, error)
+	AddGrant(ctx context.Context, incidentID uuid.UUID, ownerID, granteeID string, canAnnotate bool) error
+	RemoveGrant(ctx context.Context, incidentID uuid.UUID, ownerID, granteeID string) error
+}
+
+// capturer is the one *Collector method HandleCapture calls. Unexported so
+// tests drive the real Collector with stub sources (collector_test.go) or
+// a fake.
+type capturer interface {
+	Capture(ctx context.Context, req CaptureRequest) (CaptureReport, error)
 }
 
 // accessChecker is the one *resources.AccessChecker method FilterEvidence
@@ -158,21 +196,34 @@ type Handler struct {
 	evidence  evidenceStore // nil when no database
 	grants    grantStore    // nil when no database
 	access    accessChecker
-	audit     audit.Logger
+	// collector runs captures (nil: capture answers 503 ReasonCaptureUnavailable).
+	collector capturer
+	// limits are the capture bounds InsertBatch enforces and the capture
+	// timeout; the same Limits the collector was built with (plan A-6).
+	limits Limits
+	audit  audit.Logger
 	// retentionDays is stamped on each new incident (retention_days_at_capture).
 	retentionDays int
 	// accessTimeout is accessCheckTimeout; a field so tests can shorten it.
 	accessTimeout time.Duration
-	logger        *slog.Logger
+	// exportMax is exportMaxBytes; a field so tests can shrink it.
+	exportMax int
+	logger    *slog.Logger
 }
 
 // NewHandler builds the handler. The stores may be nil (no database): every
-// endpoint then answers 503 ReasonPersistenceUnavailable. A nil access
+// endpoint then answers 503 ReasonPersistenceUnavailable. A nil collector
+// makes capture answer 503 ReasonCaptureUnavailable; limits must be the
+// Limits the collector was built with (it validated them). A nil access
 // checker withholds every evidence item as authorization_check_unavailable.
 // A nil audit logger audits nothing.
 func NewHandler(incidents *store.IncidentStore, evidence *store.IncidentEvidenceStore, grants *store.IncidentGrantStore,
-	access *resources.AccessChecker, auditLogger audit.Logger, logger *slog.Logger) *Handler {
-	h := &Handler{audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout, logger: logger}
+	collector *Collector, limits Limits, access *resources.AccessChecker, auditLogger audit.Logger, logger *slog.Logger) *Handler {
+	h := &Handler{limits: limits, audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout,
+		exportMax: exportMaxBytes, logger: logger}
+	if collector != nil {
+		h.collector = collector
+	}
 	// Assign only non-nil pointers so a nil *store.X never becomes a
 	// non-nil interface that panics on first use instead of answering 503.
 	if incidents != nil {
@@ -199,8 +250,8 @@ func newHandlerWith(incidents incidentStore, evidence evidenceStore, grants gran
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{incidents: incidents, evidence: evidence, grants: grants, access: access,
-		audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout, logger: logger}
+	return &Handler{incidents: incidents, evidence: evidence, grants: grants, access: access, limits: DefaultLimits(),
+		audit: auditLogger, retentionDays: DefaultRetentionDays, accessTimeout: accessCheckTimeout, exportMax: exportMaxBytes, logger: logger}
 }
 
 // SetRetentionDays sets the retention stamped on new incidents. It is the
@@ -587,11 +638,36 @@ func (h *Handler) writeNotFound(w http.ResponseWriter) {
 // caller already knows the incident exists) or 404; a lock timeout is a
 // retryable 503; anything else is logged and answered 503 without detail.
 func (h *Handler) writeStoreFailure(w http.ResponseWriter, op string, err error) {
-	var conflict *store.NoteRevisionConflictError
+	var (
+		conflict   *store.NoteRevisionConflictError
+		evLimit    *store.EvidenceLimitError
+		scopeLimit *store.ScopeLimitError
+	)
 	switch {
 	case errors.As(err, &conflict):
 		httputil.WriteErrorWithReason(w, http.StatusConflict, "note was modified since it was read",
 			ReasonNoteRevisionConflict, map[string]any{"currentRevision": conflict.Current})
+	case errors.As(err, &evLimit):
+		// InsertBatch precedence (store): item_bytes before the lock, items
+		// and incident_bytes after the insert. For item_bytes Current is 0
+		// (the offending item's size is Attempted); every case reports all
+		// three so the client can say which bound was hit (Q1 P14).
+		httputil.WriteErrorWithReason(w, http.StatusRequestEntityTooLarge, "incident evidence limit exceeded",
+			ReasonEvidenceLimitExceeded, map[string]any{
+				"limit": evLimit.Limit, "max": evLimit.Max, "current": evLimit.Current, "attempted": evLimit.Attempted,
+			})
+	case errors.As(err, &scopeLimit):
+		httputil.WriteErrorWithReason(w, http.StatusConflict, "incident evidence scope limit exceeded",
+			ReasonScopeLimitExceeded, map[string]any{
+				"max": scopeLimit.Max, "current": scopeLimit.Current, "attempted": scopeLimit.Attempted,
+			})
+	case errors.Is(err, store.ErrIncidentClosed):
+		httputil.WriteErrorWithReason(w, http.StatusConflict, "incident is closed; reopen it to capture evidence", ReasonIncidentClosed, nil)
+	case errors.Is(err, store.ErrGrantLimit):
+		httputil.WriteErrorWithReason(w, http.StatusConflict, "incident grant limit reached", ReasonGrantLimitReached,
+			map[string]any{"max": store.IncidentMaxGrants})
+	case errors.Is(err, store.ErrGrantNotFound):
+		httputil.WriteError(w, http.StatusNotFound, "incident grant not found", "")
 	case errors.Is(err, store.ErrIncidentBusy):
 		w.Header().Set("Retry-After", "1")
 		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, "incident is busy; retry shortly", ReasonIncidentBusy, nil)
@@ -778,37 +854,18 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	limit, cursor, ok := pageQuery(w, r)
+	page, next, ok := h.evidencePage(w, r, user, c.row.ID)
 	if !ok {
-		return
-	}
-	ctx := r.Context()
-	rows, next, err := h.evidence.ListByIncident(ctx, c.row.ID, limit, cursor)
-	if err != nil {
-		h.writeStoreFailure(w, "list incident evidence", err)
-		return
-	}
-	memo, cancel := h.newScopeMemo(ctx, user)
-	defer cancel()
-	counts, err := h.countEvidence(ctx, memo, c.row.ID)
-	if err != nil {
-		h.writeStoreFailure(w, "count incident evidence", err)
-		return
-	}
-	visible, withheld, err := memo.filter(rows)
-	if err != nil {
-		h.logger.Error("incident evidence could not be decoded", "incidentId", c.row.ID, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "incident evidence unavailable", "")
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, api.Response{
 		Data: IncidentDetail{
 			Incident: incidentView(c.row, c.role, c.canAnnotate),
-			Counts:   counts,
-			Evidence: visible,
-			Withheld: withheld,
+			Counts:   page.Counts,
+			Evidence: page.Evidence,
+			Withheld: page.Withheld,
 		},
-		Metadata: &api.Metadata{Total: counts.Visible, Continue: next},
+		Metadata: &api.Metadata{Total: page.Counts.Visible, Continue: next},
 	})
 }
 

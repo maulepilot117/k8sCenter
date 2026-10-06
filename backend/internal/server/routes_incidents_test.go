@@ -40,18 +40,27 @@ var wantIncidentRoutes = map[string]bool{
 	"POST /incidents/{incidentID}/notes":            true,
 	"PUT /incidents/{incidentID}/notes/{noteID}":    true,
 	"DELETE /incidents/{incidentID}/notes/{noteID}": true,
+	// U23b
+	"GET /incidents/{incidentID}/evidence":            true,
+	"POST /incidents/{incidentID}/capture":            true,
+	"GET /incidents/{incidentID}/grants":              true,
+	"POST /incidents/{incidentID}/grants":             true,
+	"DELETE /incidents/{incidentID}/grants/{granteeID}": true,
+	"GET /incidents/{incidentID}/export":              true,
 }
 
 const (
 	incidentsTestID = "0f6a0000-0000-4000-8000-000000000002"
 	noteTestID      = "0f6a0000-0000-4000-8000-000000000003"
+	granteeTestID   = "local:u2"
 )
 
 // incidentsHandlerWithoutDB is the handler main.go builds when no database is
-// configured: every endpoint answers 503 with a reason.
+// configured: every endpoint answers 503 with a reason. The collector is
+// nil too; the store gate answers first on every route, capture included.
 func incidentsHandlerWithoutDB() *incidents.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return incidents.NewHandler(nil, nil, nil, nil, audit.NewSlogLogger(logger), logger)
+	return incidents.NewHandler(nil, nil, nil, nil, incidents.DefaultLimits(), nil, audit.NewSlogLogger(logger), logger)
 }
 
 // incidentsFullServer builds the production server through New so requests
@@ -92,6 +101,7 @@ func incidentPath(route string) (method, path string) {
 	method, path, _ = strings.Cut(route, " ")
 	path = strings.Replace(path, "{incidentID}", incidentsTestID, 1)
 	path = strings.Replace(path, "{noteID}", noteTestID, 1)
+	path = strings.Replace(path, "{granteeID}", granteeTestID, 1)
 	return method, "/api/v1" + path
 }
 

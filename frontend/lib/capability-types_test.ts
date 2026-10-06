@@ -93,6 +93,7 @@ test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistenc
     "flux.notifications",
     "gateway.read",
     "gitops.applications",
+    "incidents.capture",
     "logs.search",
     "logs.stream",
     "mesh.golden_signals",

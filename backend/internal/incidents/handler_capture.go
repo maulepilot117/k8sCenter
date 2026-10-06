@@ -1,0 +1,278 @@
+package incidents
+
+// Capture and evidence-list handlers (Release D, U23b; Q1 P3, P5, P14, P15).
+//
+// Capture is owner-only (P3): a collaborator, who can see the incident, gets
+// 403; anyone else gets the same 404 a missing id gets (P1). The target is
+// {namespace, kind, name} and nothing else: the cluster is ALWAYS the local
+// one (plan A-12: a remote X-Cluster-ID is refused before anything is
+// collected) and the object's UID is never taken from the caller (the
+// collector derives identity from a SAR-gated impersonated read, Q1 P9), so
+// the body is decoded strictly and a clusterId or uid field is a 400.
+//
+// The collector returns an honest report; this handler persists it. Each
+// item is re-validated with store.ValidateEvidenceRow and an invalid one is
+// dropped and counted, so one bad item never fails its siblings (partial
+// capture truth), and the store's InsertBatch precedence is mapped to one
+// status per cause (writeStoreFailure). A request cancelled before the
+// insert persists nothing: Capture returns the context error with no items.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/diagnostics"
+	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/store"
+	"github.com/kubecenter/kubecenter/pkg/api"
+)
+
+// storeWriteTimeout bounds the InsertBatch, AddGrant and RemoveGrant calls
+// (review obligation: deadline-bearing contexts into the lock-taking
+// writes). It sits above the store's 5s lock timeout so a busy incident is
+// reported as incident_busy by the store rather than as a deadline here.
+const storeWriteTimeout = 10 * time.Second
+
+// captureRequest is the POST /incidents/{id}/capture body. There is
+// deliberately no cluster and no uid field: the body is decoded with
+// DisallowUnknownFields, so sending either is a 400 rather than silently
+// ignored.
+type captureRequest struct {
+	Namespace string   `json:"namespace"`
+	Kind      string   `json:"kind"`
+	Name      string   `json:"name"`
+	Sources   []string `json:"sources,omitempty"`
+}
+
+// CaptureResponse is the capture result: the collector's per-source report
+// (fixed, scope-free details) and what the store did with its items. Items
+// themselves are not echoed; the evidence list is the read path and applies
+// the read-time filter like every other representation (P10).
+type CaptureResponse struct {
+	Completeness Completeness   `json:"completeness"`
+	CollectedAt  time.Time      `json:"collectedAt"`
+	Sources      []SourceReport `json:"sources"`
+	// Collected is how many items the collector returned.
+	Collected int `json:"collected"`
+	// Inserted is how many new rows the store wrote; Deduplicated is how many
+	// items already existed for this incident (same capture_key, P15) and
+	// were skipped; Dropped is how many failed row validation here.
+	Inserted     int `json:"inserted"`
+	Deduplicated int `json:"deduplicated"`
+	Dropped      int `json:"dropped"`
+}
+
+// EvidencePage is the GET /incidents/{id}/evidence response: the caller's
+// whole-incident counts and one page of evidence filtered by the same
+// decision, with placeholders for the page's withheld items.
+type EvidencePage struct {
+	Counts   EvidenceCounts     `json:"counts"`
+	Evidence []Evidence         `json:"evidence"`
+	Withheld []WithheldEvidence `json:"withheld"`
+}
+
+// decodeStrictBody is decodeBody with unknown fields refused: for bodies
+// where an extra field would be a security-relevant claim (a cluster, a
+// UID) rather than a harmless typo.
+func decodeStrictBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			httputil.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large", "")
+			return false
+		}
+		httputil.WriteError(w, http.StatusBadRequest, "invalid JSON body", err.Error())
+		return false
+	}
+	return true
+}
+
+// captureTarget validates the body's target against the kinds the collector
+// supports (exactly the kinds diagnostics resolves: diagnostics.TargetResource
+// is the supported set, and Nodes are not in it) and returns the TargetRef
+// with the group, version and plural resource the SAR gates need.
+func captureTarget(req captureRequest) (TargetRef, error) {
+	if !resources.ValidateK8sName(req.Namespace) || req.Namespace == "" {
+		return TargetRef{}, errors.New("namespace must be a DNS-1123 name")
+	}
+	if !resources.ValidateK8sName(req.Name) || req.Name == "" {
+		return TargetRef{}, errors.New("name must be a DNS-1123 name")
+	}
+	group, version, resource, ok := diagnostics.TargetResource(req.Kind)
+	if !ok {
+		return TargetRef{}, fmt.Errorf("kind %q is not supported for capture", req.Kind)
+	}
+	return TargetRef{APIGroup: group, Version: version, Resource: resource, Kind: req.Kind, Namespace: req.Namespace, Name: req.Name}, nil
+}
+
+// HandleCapture collects evidence about one local-cluster object into the
+// incident (owner-only) and persists it.
+// POST /api/v1/incidents/{incidentID}/capture
+func (h *Handler) HandleCapture(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.begin(w, r)
+	if !ok {
+		return
+	}
+	if h.collector == nil {
+		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, "incident evidence capture unavailable", ReasonCaptureUnavailable, nil)
+		return
+	}
+	c, ok := h.loadVisible(w, r, user)
+	if !ok {
+		return
+	}
+	if c.role != RoleOwner {
+		httputil.WriteError(w, http.StatusForbidden, "only the incident owner may capture evidence", "")
+		return
+	}
+	// The header-selected cluster is refused before any read (A-12). The
+	// body cannot name a cluster at all.
+	if selected := middleware.ClusterIDFromContext(r.Context()); !k8s.IsLocalClusterID(selected) {
+		httputil.WriteErrorWithReason(w, http.StatusBadRequest, "evidence capture is supported on the local cluster only",
+			ReasonRemoteCaptureUnsupported, map[string]any{"selectedCluster": selected})
+		return
+	}
+	var req captureRequest
+	if !decodeStrictBody(w, r, &req) {
+		return
+	}
+	target, err := captureTarget(req)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid capture target", err.Error())
+		return
+	}
+	id := c.row.ID
+	detail := "incident " + id.String()
+
+	// The collector bounds the sources with its own CaptureTimeout (and a
+	// short grace); this context bounds the whole operation, insert
+	// included, and must outlive the collector's deadline so a capture that
+	// hits it still returns its partial report instead of the context error.
+	ctx, cancel := context.WithTimeout(r.Context(), h.limits.CaptureTimeout+captureGrace+storeWriteTimeout)
+	defer cancel()
+	report, err := h.collector.Capture(ctx, CaptureRequest{ClusterID: k8s.LocalClusterID, User: user, Target: target, Sources: req.Sources})
+	if err != nil {
+		h.writeCaptureFailure(w, r, user, c.row, err)
+		return
+	}
+
+	rows := make([]store.IncidentEvidenceRow, 0, len(report.Items))
+	dropped := 0
+	for i, item := range report.Items {
+		row, err := item.Row()
+		if err == nil {
+			err = store.ValidateEvidenceRow(row)
+		}
+		if err != nil {
+			dropped++
+			h.logger.Warn("incident capture item failed row validation; dropped", "incidentId", id, "item", i, "kind", item.EvidenceKind, "error", err)
+			continue
+		}
+		rows = append(rows, row)
+	}
+	inserted := 0
+	if len(rows) > 0 {
+		inserted, err = h.evidence.InsertBatch(ctx, id, user.ID, rows, h.limits.EvidenceLimits())
+		if err != nil {
+			h.auditLog(r, user, ActionIncidentCapture, audit.ResultFailure, c.row.ClusterID, "incidentEvidence", detail)
+			h.writeStoreFailure(w, "insert incident evidence", err)
+			return
+		}
+	}
+	resp := CaptureResponse{
+		Completeness: report.Completeness, CollectedAt: report.CollectedAt, Sources: report.Sources,
+		Collected: len(report.Items), Inserted: inserted, Deduplicated: len(rows) - inserted, Dropped: dropped,
+	}
+	h.auditLog(r, user, ActionIncidentCapture, audit.ResultSuccess, c.row.ClusterID, "incidentEvidence",
+		fmt.Sprintf("%s: completeness %s, collected %d, inserted %d, deduplicated %d, dropped %d",
+			detail, resp.Completeness, resp.Collected, resp.Inserted, resp.Deduplicated, resp.Dropped))
+	httputil.WriteData(w, resp)
+}
+
+// writeCaptureFailure maps a Collector.Capture error. Nothing was persisted
+// on any of these paths.
+func (h *Handler) writeCaptureFailure(w http.ResponseWriter, r *http.Request, u *auth.User, row *store.IncidentRow, err error) {
+	var unknown *UnknownSourceError
+	switch {
+	case errors.Is(err, ErrRemoteCaptureUnsupported):
+		httputil.WriteErrorWithReason(w, http.StatusBadRequest, "evidence capture is supported on the local cluster only", ReasonRemoteCaptureUnsupported, nil)
+	case errors.As(err, &unknown):
+		httputil.WriteError(w, http.StatusBadRequest, "unknown evidence source", unknown.ID)
+	case errors.Is(err, ErrInvalidCaptureRequest):
+		httputil.WriteError(w, http.StatusBadRequest, "invalid capture request", err.Error())
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		h.auditLog(r, u, ActionIncidentCapture, audit.ResultFailure, row.ClusterID, "incidentEvidence", "incident "+row.ID.String()+": cancelled")
+		httputil.WriteError(w, http.StatusServiceUnavailable, "capture was cancelled before it completed; nothing was recorded", "")
+	default:
+		h.logger.Error("incident capture failed", "incidentId", row.ID, "error", err)
+		h.auditLog(r, u, ActionIncidentCapture, audit.ResultFailure, row.ClusterID, "incidentEvidence", "incident "+row.ID.String())
+		httputil.WriteError(w, http.StatusInternalServerError, "incident capture failed", "")
+	}
+}
+
+// evidencePage reads one page of an incident's evidence and the caller's
+// whole-incident counts through ONE memo (so the page and the counts agree
+// and each scope costs one check). It writes the error response itself.
+func (h *Handler) evidencePage(w http.ResponseWriter, r *http.Request, u *auth.User, incidentID uuid.UUID) (EvidencePage, string, bool) {
+	limit, cursor, ok := pageQuery(w, r)
+	if !ok {
+		return EvidencePage{}, "", false
+	}
+	ctx := r.Context()
+	rows, next, err := h.evidence.ListByIncident(ctx, incidentID, limit, cursor)
+	if err != nil {
+		h.writeStoreFailure(w, "list incident evidence", err)
+		return EvidencePage{}, "", false
+	}
+	memo, cancel := h.newScopeMemo(ctx, u)
+	defer cancel()
+	counts, err := h.countEvidence(ctx, memo, incidentID)
+	if err != nil {
+		h.writeStoreFailure(w, "count incident evidence", err)
+		return EvidencePage{}, "", false
+	}
+	visible, withheld, err := memo.filter(rows)
+	if err != nil {
+		h.logger.Error("incident evidence could not be decoded", "incidentId", incidentID, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "incident evidence unavailable", "")
+		return EvidencePage{}, "", false
+	}
+	return EvidencePage{Counts: counts, Evidence: visible, Withheld: withheld}, next, true
+}
+
+// HandleListEvidence returns one page of the incident's evidence the caller
+// may read (owner or collaborator), with the same placeholders and counts
+// as the detail read.
+// GET /api/v1/incidents/{incidentID}/evidence?limit=&continue=
+func (h *Handler) HandleListEvidence(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.begin(w, r)
+	if !ok {
+		return
+	}
+	c, ok := h.loadVisible(w, r, user)
+	if !ok {
+		return
+	}
+	page, next, ok := h.evidencePage(w, r, user, c.row.ID)
+	if !ok {
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, api.Response{
+		Data:     page,
+		Metadata: &api.Metadata{Total: page.Counts.Visible, Continue: next},
+	})
+}
