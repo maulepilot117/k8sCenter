@@ -113,6 +113,25 @@ function When({ at }: { at: string }) {
 }
 
 /**
+ * A create whose outcome is not known yet: its request id, the inputs it was
+ * last sent with, and whether any attempt with it ended with an unknown
+ * outcome. Kept by the list island, not the form, so closing and reopening
+ * the form neither forgets it nor mints a new id.
+ */
+interface Outstanding {
+  requestId: string;
+  payload: CreatePayload;
+  uncertain: boolean;
+}
+
+interface CreatePayload {
+  title: string;
+  summary: string;
+  windowStart: string;
+  windowEnd?: string;
+}
+
+/**
  * The "New incident" form. Creates the incident, then opens it.
  *
  * Each create carries a `clientRequestId` (U25c). While the last attempt's
@@ -131,23 +150,35 @@ function When({ at }: { at: string }) {
  * the same inputs never committed); after one, the id is kept, because the
  * earlier attempt may have committed different inputs. No database drops it
  * either way.
+ *
+ * The outstanding create lives in the list island (`outstanding`), so a
+ * Cancel and reopen restores it: the form opens prefilled with the inputs
+ * it was last sent with and says why, and submitting resends its id.
  */
-function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
-  const title = useSignal("");
-  const summary = useSignal("");
+function NewIncidentForm({
+  onCancel,
+  outstanding: intent,
+}: {
+  onCancel: () => void;
+  outstanding: { current: Outstanding | null };
+}) {
+  const restored = intent.current?.payload;
+  const title = useSignal(restored?.title ?? "");
+  const summary = useSignal(restored?.summary ?? "");
   const windowStart = useSignal(
-    toLocalInput(new Date(Date.now() - DEFAULT_INCIDENT_WINDOW_MS)),
+    toLocalInput(
+      restored
+        ? new Date(restored.windowStart)
+        : new Date(Date.now() - DEFAULT_INCIDENT_WINDOW_MS),
+    ),
   );
-  const windowEnd = useSignal("");
+  const windowEnd = useSignal(
+    restored?.windowEnd ? toLocalInput(new Date(restored.windowEnd)) : "",
+  );
   const submitting = useSignal(false);
   const error = useSignal<string | null>(null);
   /** A retried create met `client_request_id_conflict`. */
   const conflict = useSignal(false);
-  /**
-   * The outstanding create: its request id, and whether any attempt with it
-   * ended with an unknown outcome. Null when nothing is outstanding.
-   */
-  const intent = useRef<{ requestId: string; uncertain: boolean } | null>(null);
   /**
    * Aborted when the form unmounts. A create still in flight then neither
    * navigates nor writes state; the server may already have committed it,
@@ -186,7 +217,7 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
       }
       end = parsed;
     }
-    const payload = {
+    const payload: CreatePayload = {
       title: title.value.trim(),
       summary: summary.value,
       windowStart: start,
@@ -195,9 +226,14 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
     // An outstanding id is resent even with edited inputs (see the doc
     // above); only "anyway" or nothing outstanding mints a new one.
     if (fresh || !intent.current) {
-      intent.current = { requestId: newClientRequestId(), uncertain: false };
+      intent.current = {
+        requestId: newClientRequestId(),
+        payload,
+        uncertain: false,
+      };
     }
     const sent = intent.current;
+    sent.payload = payload;
     error.value = null;
     conflict.value = false;
     submitting.value = true;
@@ -247,6 +283,15 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
         <div role="alert">
           <Alert variant="error">{error.value}</Alert>
         </div>
+      )}
+      {restored && !conflict.value && !error.value && (
+        <p
+          data-testid="new-incident-restored"
+          class="m-0 text-sm text-text-secondary"
+        >
+          Restored from a create whose outcome is not known. Submitting again
+          cannot make a second incident.
+        </p>
       )}
       {conflict.value && (
         <div
@@ -359,6 +404,8 @@ export default function IncidentList() {
   const failed = useSignal(false);
   const noDatabase = useSignal(false);
   const formOpen = useSignal(false);
+  /** The create whose outcome is unknown, across Cancel and reopen. */
+  const outstanding = useRef<Outstanding | null>(null);
   /**
    * The request to make: the cursor to continue from ("" for the first page)
    * and a sequence number every activation increments, so asking again for
@@ -471,7 +518,9 @@ export default function IncidentList() {
         )}
       </div>
 
-      {canCreate && formOpen.value && <NewIncidentForm onCancel={closeForm} />}
+      {canCreate && formOpen.value && (
+        <NewIncidentForm onCancel={closeForm} outstanding={outstanding} />
+      )}
 
       {noDatabase.value && (
         <div

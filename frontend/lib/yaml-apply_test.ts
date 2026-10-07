@@ -70,7 +70,10 @@ function stubFetch() {
 
 let container: HTMLElement | null = null;
 
-afterEach(() => {
+afterEach(async () => {
+  // The signed-in user is a module-wide signal: never leave one behind.
+  // (withFetch puts the stub in place, so restore the fetch afterwards.)
+  await signOut();
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
   if (container) {

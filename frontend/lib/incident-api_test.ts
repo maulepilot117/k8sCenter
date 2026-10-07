@@ -1670,3 +1670,66 @@ test("IncidentList: a 400 refusal says why and drops the key; the next submit mi
   await submitAndSettle(form, 1);
   expect(keyOf(creates()[1])).not.toBe(keyOf(creates()[0]));
 });
+
+test("IncidentList: Cancel and reopen after a lost create restores the inputs and resends the same key", async () => {
+  const server = createServer();
+  let attempt = 0;
+  stubCreates((b) => {
+    attempt++;
+    const reply = server.create(b);
+    return attempt === 1 ? lostResponse() : reply;
+  });
+  const visited = spyNavigation();
+  const root = await mount();
+  let form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  setValue(form.querySelector("#incident-window-start"), "2026-10-01T09:00");
+  await flush();
+  await submitAndSettle(form, 0);
+  expect(form.textContent).toContain("may or may not have been created");
+
+  act(() => button(root, "Cancel")?.click());
+  await flush();
+  expect(root.querySelector("form")).toBeNull();
+  form = await openForm(root);
+  expect(
+    (form.querySelector("#incident-title") as HTMLInputElement).value,
+  ).toBe("Checkout down");
+  expect(
+    form.querySelector('[data-testid="new-incident-restored"]'),
+  ).not.toBeNull();
+
+  await submitAndSettle(form, 1);
+  expect(keyOf(creates()[1])).toBe(keyOf(creates()[0]));
+  expect(sentBody(creates()[1])).toEqual(sentBody(creates()[0]));
+  expect(server.made.size).toBe(1);
+  expect(visited).toEqual([`/observability/incidents/${incident(1).id}`]);
+});
+
+test("IncidentList: a 413 after a 5xx keeps the key", async () => {
+  let attempt = 0;
+  const server = createServer();
+  stubCreates((b) => {
+    attempt++;
+    if (attempt === 1) {
+      server.create(b);
+      return { status: 502, payload: {} };
+    }
+    if (attempt === 2) {
+      return {
+        status: 413,
+        payload: { error: { code: 413, message: "too large" } },
+      };
+    }
+    return server.create(b);
+  });
+  const visited = spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  for (let i = 0; i < 3; i++) await submitAndSettle(form, i);
+  expect(new Set(creates().map(keyOf)).size).toBe(1);
+  expect(server.made.size).toBe(1);
+  expect(visited).toEqual([`/observability/incidents/${incident(1).id}`]);
+});

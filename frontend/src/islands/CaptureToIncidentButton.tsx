@@ -66,7 +66,9 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  * reads it, even after a session that ended without logging out. A Re-scan
  * remounts the island, and a remount (even one taken while the create is
  * still in flight) therefore retries with the same id. The button stays
- * inactive until the signed-in user is known.
+ * inactive until the signed-in user is known; when nothing is loading the
+ * user (the top bar's load failed), selecting it retries the load once and
+ * a second failure says to reload the page.
  *
  * While the record has no incident id, every retry resends the stored id
  * and the stored title, summary and window byte for byte, whatever the
@@ -87,9 +89,9 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  * list, and nothing is created on the next click: only the explicit "Create
  * a new incident anyway" mints a new id. The conflict state is recorded, so
  * it survives a remount. Two other states read the same way: an intent
- * whose outcome is still unknown after `PENDING_INTENT_MAX_AGE_MS` (15
- * minutes, far longer than any create can stay in flight) is no longer
- * resent silently, and capturing into an existing incident while an
+ * whose outcome is still unknown `PENDING_INTENT_MAX_AGE_MS` (15 minutes,
+ * far longer than any create can stay in flight) after it was last sent is
+ * no longer resent silently, and capturing into an existing incident while an
  * intent's outcome is unknown leaves the notice behind instead of dropping
  * the intent.
  *
@@ -225,9 +227,11 @@ export default function CaptureToIncidentButton({
   class: className,
 }: CaptureToIncidentButtonProps) {
   const isLocal = clusterId === "" || clusterId === LOCAL_CLUSTER_ID;
-  const { user } = useAuth();
+  const { user, loading: userLoading, fetchCurrentUser } = useAuth();
   /** The signed-in user; the button is inactive until it is known. */
   const userId = user.value?.id ?? null;
+  /** This island's own retry of the user load ended without a user. */
+  const userLoadFailed = useSignal(false);
   const key = pendingKey(userId ?? "", clusterId, namespace, kind, name);
   /** Set when the deployment has no database; fixed for the page's life. */
   const noDatabase = useSignal(false);
@@ -288,9 +292,13 @@ export default function CaptureToIncidentButton({
       ? "This deployment has no database, so incidents cannot be recorded."
       : !isCaptureKind(kind)
         ? `${kind || "This kind"} cannot be captured into an incident.`
-        : !userId
-          ? "Your sign-in details are still loading."
-          : null;
+        : userId
+          ? null
+          : userLoading.value
+            ? "Your sign-in details are still loading."
+            : userLoadFailed.value
+              ? "Your sign-in details could not be loaded. Reload the page."
+              : "Your sign-in details are not loaded. Select to try again.";
 
   const loadOwned = async (cursor?: string) => {
     if (listLoading.peek()) return;
@@ -321,7 +329,23 @@ export default function CaptureToIncidentButton({
     }
   };
 
+  /**
+   * Retries the user load once per click when nothing is loading it (the
+   * top bar's load failed or never ran). Failing again says so truthfully.
+   */
+  const retryUserLoad = async () => {
+    if (userId || userLoading.peek()) return;
+    userLoadFailed.value = false;
+    const loaded = await fetchCurrentUser();
+    if (!lifetime.current?.signal.aborted) userLoadFailed.value = !loaded;
+  };
+
   const openDialog = () => {
+    // Only the missing user stands in the way: try loading it again.
+    if (isLocal && !noDatabase.peek() && isCaptureKind(kind) && !userId) {
+      void retryUserLoad();
+      return;
+    }
     if (inactiveReason || open.peek()) return;
     error.value = null;
     open.value = true;
@@ -359,9 +383,12 @@ export default function CaptureToIncidentButton({
       if (signal?.aborted) return;
       // A failed create has its own wording; a failed capture uses the
       // workspace's.
+      // A key conflict is shown by the "may already exist" notice, not twice.
       error.value =
         err instanceof CreateFailed
-          ? keyedCreateErrorText(err.failure)
+          ? isCreateConflict(err.failure)
+            ? null
+            : keyedCreateErrorText(err.failure)
           : captureErrorText(err);
       busy.value = false;
     }
@@ -423,8 +450,9 @@ export default function CaptureToIncidentButton({
       !isPendingConflict(current) && current?.requestId === intent.requestId;
     // Recorded before the request, so a retry (after a lost response, or
     // from a remounted island while this create is still in flight) resends
-    // the same request id and payload and gets the same incident back.
-    setPending(intent, signal);
+    // the same request id and payload and gets the same incident back. The
+    // send time is restamped on every send: the age bound runs from it.
+    setPending({ ...intent, sentAt: Date.now() }, signal);
     let id: string;
     // Not tied to the island's lifetime: a create that reached the server
     // must be recorded even when the island has unmounted.
@@ -574,10 +602,10 @@ export default function CaptureToIncidentButton({
                 </a>
               </div>
             )}
-            {error.value && !conflict && (
+            {error.value && (
               <div role="alert" class="flex flex-col gap-2">
                 <Alert variant="error">{error.value}</Alert>
-                {created && (
+                {created && !conflict && (
                   <a href={incidentHref(created)} class={LINK_CLASS}>
                     Open the incident that was created
                   </a>

@@ -29,6 +29,21 @@ const { createRefusedForGood } = await import(
  * Signs `id` in, as the top bar's /auth/me load does, through a fetch of its
  * own so no test's recorded calls change.
  */
+/** Signs out (logout() with its request answered), resetting the shared user. */
+async function signOut() {
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response("{}", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as unknown as typeof globalThis.fetch;
+  try {
+    await logout();
+  } finally {
+    globalThis.fetch = previous;
+  }
+}
+
 async function signIn(id: string) {
   const previous = globalThis.fetch;
   globalThis.fetch = (async () =>
@@ -168,14 +183,14 @@ interface Props {
   clusterId?: string;
   windowStart?: string;
   kind?: string;
-  /** Who is signed in; "u1" unless a test says otherwise. */
-  user?: string;
+  /** Who is signed in; "u1" unless a test says otherwise; null for nobody. */
+  user?: string | null;
 }
 
 /** Renders (or re-renders, with new props) into the current host. */
 async function show(props: Props) {
-  const user = props.user ?? "u1";
-  if (currentUserId() !== user) await signIn(user);
+  const user = props.user === undefined ? "u1" : props.user;
+  if (user !== null && currentUserId() !== user) await signIn(user);
   if (!host) {
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -650,8 +665,10 @@ function breakStorage(...methods: ("getItem" | "setItem" | "removeItem")[]) {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
   restoreStorage?.();
+  // The signed-in user is a module-wide signal: never leave one behind.
+  await signOut();
 });
 
 // --- The create idempotency key ---------------------------------------------------------
@@ -1377,6 +1394,147 @@ test("logout with storage that refuses removals still hides the record (tombston
   expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
 });
 
+// --- Round 7 -------------------------------------------------------------------
+
+test("the age bound runs from the last send: first sent long ago, resent moments ago, not stale", async () => {
+  seed("local", {
+    createdAt: Date.now() - 20 * 60 * 1000,
+    sentAt: Date.now() - 20 * 1000,
+  });
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) return networkError();
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(root.querySelector('[data-testid="capture-create-conflict"]')).toBe(
+    null,
+  );
+  const before = Date.now();
+  await click(q(root, "capture-to-new-incident"));
+  expect(requestIdOf(creates()[0])).toBe(
+    "11111111-1111-4111-8111-111111111111",
+  );
+  // Every send restamps sentAt.
+  expect(stored("local").sentAt).toBeGreaterThanOrEqual(before);
+});
+
+for (const [label, over] of [
+  ["older than the bound", { createdAt: Date.now() - 20 * 60 * 1000 }],
+  ["without a recorded time", { createdAt: undefined }],
+] as const) {
+  test(`an intent ${label} WITH a known incident still retries into it`, async () => {
+    seed("local", { ...over, id: uuidFor("known") });
+    stub((c) => {
+      if (c.method === "GET") return empty;
+      if (c.path === `/api/v1/incidents/${uuidFor("known")}/capture`) {
+        return captured;
+      }
+    });
+    const root = await mount({});
+    await click(q(root, "capture-to-incident"));
+    expect(root.querySelector('[data-testid="capture-create-conflict"]')).toBe(
+      null,
+    );
+    expect(q(root, "capture-to-new-incident").textContent).toBe(RETRY_LABEL);
+    await click(q(root, "capture-to-new-incident"));
+    expect(creates()).toHaveLength(0);
+    expect(captures().map((c) => c.path)).toEqual([
+      `/api/v1/incidents/${uuidFor("known")}/capture`,
+    ]);
+    expect(assigned).toEqual([`/observability/incidents/${uuidFor("known")}`]);
+  });
+}
+
+test("logout clears every identity's records, not only the current user's", async () => {
+  seed("local");
+  globalThis.sessionStorage.setItem(
+    pendingStorageKey("local", "someone-else"),
+    JSON.stringify({ conflict: true }),
+  );
+  stub(() => empty);
+  await mount({});
+  await signOut();
+  expect(stored("local")).toBeNull();
+  expect(stored("local", "someone-else")).toBeNull();
+});
+
+test("a failed sign-in load says so truthfully; selecting the button retries it", async () => {
+  let me = 500;
+  stub((c) => {
+    if (c.path === "/api/v1/auth/me") {
+      return me === 200
+        ? json(200, {
+            data: {
+              user: {
+                id: "u1",
+                username: "u1",
+                provider: "local",
+                kubernetesUsername: "u1",
+                kubernetesGroups: [],
+                roles: [],
+              },
+              rbac: {},
+            },
+          })
+        : json(500, { error: { code: 500, message: "boom" } });
+    }
+    return empty;
+  });
+  const root = await mount({ user: null });
+  const trigger = q(root, "capture-to-incident");
+  expect(trigger.getAttribute("aria-disabled")).toBe("true");
+  expect(trigger.getAttribute("title")).toContain("not loaded");
+
+  await click(trigger);
+  expect(trigger.getAttribute("title")).toBe(
+    "Your sign-in details could not be loaded. Reload the page.",
+  );
+  expect(trigger.getAttribute("title")).not.toContain("loading");
+  expect(root.querySelector('[data-testid="capture-to-incident-dialog"]')).toBe(
+    null,
+  );
+
+  me = 200;
+  await click(trigger);
+  expect(trigger.getAttribute("aria-disabled")).toBe("false");
+  await click(trigger);
+  expect(q(root, "capture-to-incident-dialog")).toBeTruthy();
+});
+
+test("with a stale intent's notice showing, a closed existing incident is still explained", async () => {
+  seed("local", { createdAt: Date.now() - 20 * 60 * 1000 });
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c))
+      return listOf([incident({ id: uuidFor("e6"), title: "Mine" })]);
+    if (c.path === `/api/v1/incidents/${uuidFor("e6")}/capture`) {
+      return json(409, {
+        error: { code: 409, message: "closed", reason: "incident_closed" },
+      });
+    }
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-create-conflict")).toBeTruthy();
+  await click(q(root, "capture-to-existing-incident"));
+  expect(root.textContent).toContain("This incident is closed");
+  expect(q(root, "capture-create-conflict")).toBeTruthy();
+});
+
+test("a key conflict is shown once, by the notice, not again as an error", async () => {
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) return conflictReply;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(q(root, "capture-create-conflict")).toBeTruthy();
+  const text = root.textContent ?? "";
+  expect(text.split("may already exist").length - 1).toBe(1);
+});
+
 test("without sessionStorage the pending record survives a remount in memory, and success clears it", async () => {
   breakStorage("getItem", "setItem", "removeItem");
   let attempt = 0;
@@ -1688,27 +1846,39 @@ const errorCases: [
   ["non-ApiError", "network", "Capture failed. Nothing was recorded."],
 ];
 
-for (const [label, reply, text] of errorCases) {
-  test(`capture into an existing incident: ${label} is explained and the dialog stays`, async () => {
-    stub((c) => {
-      if (isProbe(c)) return empty;
-      if (isList(c))
-        return listOf([incident({ id: uuidFor("e1"), title: "Mine" })]);
-      if (c.path === `/api/v1/incidents/${uuidFor("e1")}/capture`) {
-        return reply === "network" ? networkError() : reply;
+for (const [label, reply, text] of errorCases)
+  for (const pending of [
+    "no record",
+    "a conflict",
+    "a stale intent",
+  ] as const) {
+    test(`capture into an existing incident with ${pending}: ${label} is explained and the dialog stays`, async () => {
+      if (pending === "a conflict") seed("local", { conflict: true });
+      if (pending === "a stale intent") {
+        seed("local", { createdAt: Date.now() - 20 * 60 * 1000 });
       }
+      stub((c) => {
+        if (isProbe(c)) return empty;
+        if (isList(c))
+          return listOf([incident({ id: uuidFor("e1"), title: "Mine" })]);
+        if (c.path === `/api/v1/incidents/${uuidFor("e1")}/capture`) {
+          return reply === "network" ? networkError() : reply;
+        }
+      });
+      const root = await mount({});
+      await click(q(root, "capture-to-incident"));
+      if (pending !== "no record") {
+        expect(q(root, "capture-create-conflict")).toBeTruthy();
+      }
+      await click(q(root, "capture-to-existing-incident"));
+      expect(root.textContent).toContain(text);
+      expect(q(root, "capture-to-incident-dialog")).toBeTruthy();
+      expect(assigned).toEqual([]);
+      expect(
+        q(root, "capture-to-existing-incident").getAttribute("aria-disabled"),
+      ).toBe("false");
     });
-    const root = await mount({});
-    await click(q(root, "capture-to-incident"));
-    await click(q(root, "capture-to-existing-incident"));
-    expect(root.textContent).toContain(text);
-    expect(q(root, "capture-to-incident-dialog")).toBeTruthy();
-    expect(assigned).toEqual([]);
-    expect(
-      q(root, "capture-to-existing-incident").getAttribute("aria-disabled"),
-    ).toBe("false");
-  });
-}
+  }
 
 test("a double click on an existing incident captures once", async () => {
   const held = deferred(captured);

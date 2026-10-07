@@ -23,7 +23,7 @@ mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
 const { default: DiagnosticWorkspace } = await import(
   "./DiagnosticWorkspace.tsx"
 );
-const { fetchCurrentUser } = await import("@/lib/auth.ts");
+const { fetchCurrentUser, logout } = await import("@/lib/auth.ts");
 
 /**
  * Signs a user in, as the top bar's /auth/me load does: the capture button
@@ -60,10 +60,27 @@ afterAll(() => {
   GlobalRegistrator.unregister();
 });
 
+/** Signs out (logout() with its request answered), resetting the shared user. */
+async function signOut() {
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response("{}", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as unknown as typeof globalThis.fetch;
+  try {
+    await logout();
+  } finally {
+    globalThis.fetch = previous;
+  }
+}
+
 let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 
-afterEach(() => {
+afterEach(async () => {
+  // The signed-in user is a module-wide signal: never leave one behind.
+  await signOut();
   if (host) {
     act(() => render(null, host as HTMLElement));
     host.remove();

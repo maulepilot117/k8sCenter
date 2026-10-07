@@ -36,8 +36,9 @@ export function newClientRequestId(): string {
 /**
  * One "capture into a new incident" intent: the request id the create is
  * (re)sent with, the exact payload it was first sent with (a retry resends
- * it unchanged), when it was first sent (epoch ms), and the incident it
- * made once that is known.
+ * it unchanged), when the intent was made and when it was last sent (epoch
+ * ms; `sentAt` is client-only and restamped on every send), and the
+ * incident it made once that is known.
  */
 export interface PendingCreate {
   requestId: string;
@@ -45,6 +46,7 @@ export interface PendingCreate {
   summary: string;
   windowStart: string;
   createdAt: number;
+  sentAt?: number;
   id?: string;
 }
 
@@ -66,21 +68,28 @@ export const isPendingConflict = (
 ): rec is PendingConflict => rec !== null && "conflict" in rec;
 
 /**
- * How long an intent whose create outcome is unknown (no incident id yet)
- * is silently resent. Past it no create can still be in flight (the proxy
- * gives up after 30 s), and an operator returning to it much later should
- * decide rather than have an old intent replayed: the record then reads
- * like a conflict, an incident for this capture may already exist.
+ * How long after its LAST send an intent whose create outcome is unknown
+ * (no incident id yet) is still resent silently. Past it no create can
+ * still be in flight (the proxy gives up after 30 s), and an operator
+ * returning to it much later should decide rather than have an old intent
+ * replayed: the record then reads like a conflict, an incident for this
+ * capture may already exist. Measured from `sentAt`, falling back to
+ * `createdAt`, so an intent retried a moment ago is never stale however
+ * long ago it was first sent.
  */
 export const PENDING_INTENT_MAX_AGE_MS = 15 * 60 * 1000;
 
-/** True for an id-less intent older than `PENDING_INTENT_MAX_AGE_MS`. */
+/**
+ * True for an id-less intent last sent more than `PENDING_INTENT_MAX_AGE_MS`
+ * ago. An intent with a known incident id is never stale: retrying it only
+ * captures into that incident.
+ */
 export function isStaleIntent(rec: PendingCapture | null, now: number) {
   return (
     rec !== null &&
     !isPendingConflict(rec) &&
     !rec.id &&
-    now - rec.createdAt > PENDING_INTENT_MAX_AGE_MS
+    now - (rec.sentAt ?? rec.createdAt) > PENDING_INTENT_MAX_AGE_MS
   );
 }
 
@@ -99,8 +108,16 @@ function parse(raw: string | null): PendingCapture | null {
   try {
     const v = JSON.parse(raw) as unknown;
     if (!v || typeof v !== "object") return null;
-    const { requestId, title, summary, windowStart, createdAt, id, conflict } =
-      v as Record<string, unknown>;
+    const {
+      requestId,
+      title,
+      summary,
+      windowStart,
+      createdAt,
+      sentAt,
+      id,
+      conflict,
+    } = v as Record<string, unknown>;
     if (conflict === true) return { conflict: true };
     if (
       typeof requestId !== "string" ||
@@ -122,6 +139,9 @@ function parse(raw: string | null): PendingCapture | null {
           ? createdAt
           : 0,
     };
+    if (typeof sentAt === "number" && Number.isFinite(sentAt)) {
+      rec.sentAt = sentAt;
+    }
     if (typeof id === "string" && id) rec.id = id;
     return rec;
   } catch {
