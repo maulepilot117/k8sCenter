@@ -116,6 +116,8 @@ export type IncidentErrorReason = Open<
   | "grant_limit_reached"
   | "export_format_invalid"
   | "incident_capture_outcome_unknown"
+  | "invalid_client_request_id"
+  | "client_request_id_conflict"
 >;
 
 // --- Records -------------------------------------------------------------------
@@ -326,12 +328,20 @@ export interface ExportDocument {
 /**
  * createIncidentRequest. The owner is the caller and the cluster is the local
  * one; neither is accepted from the body.
+ *
+ * `clientRequestId` (U25c) is an optional idempotency key: a UUID in its
+ * 36-character hyphenated form, generated once per create intent and resent
+ * on every retry of it. A replay with the same payload returns the original
+ * incident (200 instead of 201); the same id with a different title, summary
+ * or window is 409 `client_request_id_conflict`, and a malformed one is 400
+ * `invalid_client_request_id`.
  */
 export interface CreateIncidentRequest {
   title: string;
   summary: string;
   windowStart: string;
   windowEnd?: string;
+  clientRequestId?: string;
 }
 
 /** updateIncidentRequest: an omitted field keeps its current value. */
@@ -387,16 +397,6 @@ export function isDotSegment(segment: string): boolean {
 //
 // Pure functions the incident workspace islands share. They decide wording,
 // links and ordering only; nothing here fetches or touches the DOM.
-
-/** The kinds the capture form offers, in display order. */
-export const CAPTURE_KINDS: readonly CaptureKind[] = [
-  "Deployment",
-  "StatefulSet",
-  "DaemonSet",
-  "Pod",
-  "Service",
-  "PersistentVolumeClaim",
-];
 
 /** The capture sources, in display order, with the label the form shows. */
 export const CAPTURE_SOURCES: readonly {

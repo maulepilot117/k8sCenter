@@ -267,6 +267,35 @@ test("createIncident POSTs the body with CSRF and returns the summary", async ()
   expect(res).toEqual(summary);
 });
 
+test("createIncident sends the clientRequestId, and a replay (200) returns the same summary", async () => {
+  const summary = {
+    incident: incident(1),
+    counts: { visible: 0, withheld: 0 },
+  };
+  stubFetch({ status: 200, payload: { data: summary } });
+  const body = {
+    title: "Checkout down",
+    summary: "",
+    windowStart: "2026-10-01T09:00:00.000Z",
+    clientRequestId: "3b0f4a6e-8c1d-4e2f-9a7b-5c6d7e8f9a0b",
+  };
+  const res = await createIncident(body);
+  expect(JSON.parse(calls[0].body ?? "")).toEqual(body);
+  expect(res).toEqual(summary);
+});
+
+test("a reused clientRequestId surfaces client_request_id_conflict", async () => {
+  stubFetch(apiError(409, "client_request_id_conflict"));
+  const err = await createIncident({
+    title: "t",
+    summary: "",
+    windowStart: "2026-10-01T09:00:00.000Z",
+    clientRequestId: "3b0f4a6e-8c1d-4e2f-9a7b-5c6d7e8f9a0b",
+  }).catch((e) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect((err as ApiError).reason).toBe("client_request_id_conflict");
+});
+
 test("getIncident pages evidence through the query and returns detail plus cursor", async () => {
   const detail: IncidentDetail = {
     incident: incident(1),

@@ -1,5 +1,8 @@
 import { ApiError } from "@/lib/api.ts";
-import { incidentErrorNumber } from "@/lib/incident-api.ts";
+import {
+  incidentErrorNumber,
+  isPersistenceUnavailable,
+} from "@/lib/incident-api.ts";
 
 /**
  * Error wording shared by the incident workspace and its panels. Client-only:
@@ -37,4 +40,27 @@ export function simpleErrorText(err: unknown, fallback: string): string {
     }
   }
   return fallback;
+}
+
+/**
+ * A failed create that carried a `clientRequestId` (U25c), as the
+ * diagnosis-to-incident entry point sends it. A 4xx made nothing and says
+ * why; `client_request_id_conflict` means the id was spent on a different
+ * payload, so the next attempt sends a new one. Anything else (a network
+ * error, a 5xx) may have committed, and the retry resends the same id, which
+ * the server answers with the incident the first attempt made.
+ */
+export function keyedCreateErrorText(err: unknown): string {
+  if (isPersistenceUnavailable(err)) {
+    return "This deployment has no database, so incidents cannot be recorded.";
+  }
+  if (err instanceof ApiError) {
+    if (err.reason === "client_request_id_conflict") {
+      return "This create request was already used for a different incident. Try again: the next attempt sends a new request.";
+    }
+    if (err.status >= 400 && err.status < 500) {
+      return `The incident could not be created: ${err.body?.error?.detail || err.detail || err.message}.`;
+    }
+  }
+  return "The incident may or may not have been created. Try again: the retry resends the same request, so it cannot create a second incident.";
 }

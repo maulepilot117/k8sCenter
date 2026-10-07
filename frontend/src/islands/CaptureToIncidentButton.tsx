@@ -6,9 +6,7 @@ import { ApiError } from "@/lib/api.ts";
 import {
   captureEvidence,
   createIncident,
-  incidentErrorNumber,
   isPersistenceUnavailable,
-  isRemoteCaptureRefusal,
   listIncidents,
 } from "@/lib/incident-api.ts";
 import {
@@ -17,6 +15,8 @@ import {
   type IncidentView,
   isCaptureKind,
 } from "@/lib/incident-types.ts";
+import { captureErrorText } from "@/src/components/incidents/CapturePanel.tsx";
+import { keyedCreateErrorText } from "@/src/components/incidents/errors.ts";
 import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
 
 /**
@@ -38,57 +38,36 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  * (`incident_persistence_unavailable`) and the button is inactive with that
  * explanation rather than failing on click.
  *
- * A repeated click cannot duplicate anything. Every action is inactive while
- * one is in flight. An incident this dialog created stays the target of a
- * retried capture until a capture into it succeeds, so a capture that failed
- * after its incident was created never creates a second incident. That
- * pending id outlives the island (sessionStorage, keyed by the target with
- * "" and the local id normalised to one cluster; a module-scoped Map when
- * storage is unavailable), because a Re-scan remounts it. The create runs
- * without the island's lifetime signal, so a create that reached the server
- * is recorded even if the island unmounts before it answers. The pending id
- * is dropped when a capture into it succeeds, when that incident refuses the
- * capture for good (gone, not the caller's, closed, at a limit), and when
- * the target is captured into an existing incident instead. Capture itself
+ * **No duplicate incidents.** The guarantee comes from the server's create
+ * idempotency key (U25c, `clientRequestId`): each "capture into a new
+ * incident" intent gets one request id, and every retry of that intent,
+ * including one after a lost or unknown response, resends the same id, so
+ * the server answers with the incident the first attempt made instead of
+ * creating another. The intent is recorded BEFORE the create is sent, in a
+ * pending record keyed by the target ("" and the local id normalised to one
+ * cluster): sessionStorage, or a module-scoped Map when storage is
+ * unavailable. A Re-scan remounts the island, and a remount (even one taken
+ * while the create is still in flight) therefore retries with the same id.
+ * The record holds the request id, the title, summary and window it was sent
+ * with (a retry must resend the same payload), and, once known, the incident
+ * id, which later attempts capture into directly. It is dropped when a
+ * capture into that incident succeeds, when the incident refuses the capture
+ * for good (gone, not the caller's, closed, at a limit), when the target is
+ * captured into an existing incident instead, when the create is refused
+ * outright (4xx), and on `client_request_id_conflict`, after which the next
+ * attempt uses a fresh id. A diagnosis whose window start changed is a new
+ * intent and gets a new id. Every write a flow makes after it starts is
+ * conditional on the record still being that flow's, so a reply that lands
+ * after a newer flow took over cannot overwrite it. Every action is inactive
+ * while one is in flight, so a double click sends one create. Capture itself
  * is deduplicated server-side by capture key, which is what makes retrying an
  * outcome-unknown capture safe.
- *
- * Create is NOT idempotent server-side: a create whose response was lost (a
- * network error or a 5xx) may still have committed. Before a retry creates
- * another, the dialog looks for an open incident the caller owns with this
- * target's title and summary (the summary carries the full, untruncated
- * target) created since the click. Exactly one match is reused; several are
- * reported so the operator picks one from the list (the marker stays until
- * they do, so a retry looks again rather than creating). If the lookup
- * itself fails, the marker is kept too. A marker is also written before every
- * create, so a remounted island clicked while that create is still in flight
- * looks for it instead of creating; for 30 s (the proxy's request timeout) a
- * lookup that finds nothing does not license a create either. Every write a
- * flow makes after its create is conditional on the stored record still
- * being that flow's, so a create answering late cannot overwrite what a
- * newer flow recorded. The heuristic has limits: it allows 2 minutes
- * of browser/server clock skew, reads only the first 50 rows of the list
- * (newest first), and cannot tell two creates of the same target inside that
- * window apart. A server-side create idempotency key is the full fix and is a
- * follow-up.
  *
  * Inactive controls use `aria-disabled` rather than `disabled`, so they stay
  * focusable and their explanatory tooltip stays reachable.
  */
 
 const LIST_PAGE_SIZE = 50;
-/**
- * How far before the click a possibly-created incident's `createdAt` may be
- * and still count as this click's: absorbs clock skew between the browser
- * and the server.
- */
-const CREATE_MATCH_SLACK_MS = 2 * 60 * 1000;
-/**
- * How long a create may still be in flight: the frontend proxy gives up on a
- * request after 30 s (PROXY_TIMEOUT_MS in server/api-proxy.ts). Until then a
- * `creating` marker whose lookup finds nothing does not license a new create.
- */
-const CREATE_IN_FLIGHT_MS = 30 * 1000;
 const PENDING_STORAGE_PREFIX = "kubecenter.capture-pending:";
 const DIALOG_TITLE_ID = "capture-to-incident-title";
 const REASON_ID = "capture-to-incident-reason";
@@ -104,22 +83,19 @@ const BUTTON_SECONDARY =
 const incidentHref = (id: string) =>
   `/observability/incidents/${encodeURIComponent(id)}`;
 
-// --- Pending created incident ----------------------------------------------------
+// --- Pending create intent ---------------------------------------------------------
 
 /**
- * What a target remembers between attempts, and across remounts:
- *   - `id`: an incident this dialog created whose capture has not succeeded;
- *     the next attempt captures into it instead of creating another.
- *   - `lookup`: a create that may have committed without this island
- *     knowing its id: one in flight (`creating`, written before the request
- *     so a remount mid-create cannot create a second), one whose response was
- *     lost and whose follow-up lookup failed, or one with several candidates.
- *     The next attempt looks again (from the same click time) before it may
- *     create.
+ * One "capture into a new incident" intent for a target: the request id the
+ * create is (re)sent with, the payload it was first sent with, and the
+ * incident it made once that is known.
  */
 interface PendingRecord {
+  requestId: string;
+  title: string;
+  summary: string;
+  windowStart: string;
   id?: string;
-  lookup?: { clickedAt: number; creating?: boolean };
 }
 
 /**
@@ -143,20 +119,22 @@ function parsePending(raw: string | null): PendingRecord | null {
   try {
     const v = JSON.parse(raw) as unknown;
     if (!v || typeof v !== "object") return null;
-    const { id, lookup } = v as Record<string, unknown>;
-    const rec: PendingRecord = {};
-    if (typeof id === "string" && id) rec.id = id;
-    const marker = lookup as
-      | { clickedAt?: unknown; creating?: unknown }
-      | undefined;
-    const at = marker?.clickedAt;
-    if (typeof at === "number" && Number.isFinite(at)) {
-      rec.lookup =
-        marker?.creating === true
-          ? { clickedAt: at, creating: true }
-          : { clickedAt: at };
+    const { requestId, title, summary, windowStart, id } = v as Record<
+      string,
+      unknown
+    >;
+    if (
+      typeof requestId !== "string" ||
+      !requestId ||
+      typeof title !== "string" ||
+      typeof summary !== "string" ||
+      typeof windowStart !== "string"
+    ) {
+      return null;
     }
-    return rec.id || rec.lookup ? rec : null;
+    const rec: PendingRecord = { requestId, title, summary, windowStart };
+    if (typeof id === "string" && id) rec.id = id;
+    return rec;
   } catch {
     return null;
   }
@@ -212,20 +190,37 @@ function clearPending(key: string): void {
 }
 
 /**
- * Raised when a create's outcome was lost and several recent incidents could
- * be the one it made; the operator picks one from the list.
+ * A new create request id: a v4 UUID in its 36-character hyphenated form,
+ * the only spelling the server accepts. `crypto.randomUUID` exists only in
+ * secure contexts, and a homelab install may be served over plain HTTP, so
+ * the id is built from `crypto.getRandomValues` when it is missing.
  */
-class PossibleDuplicateCreate extends Error {}
+function newRequestId(): string {
+  const c = globalThis.crypto;
+  if (typeof c.randomUUID === "function") return c.randomUUID();
+  const b = c.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** A failed create, kept apart from a failed capture for its wording. */
+class CreateFailed extends Error {
+  constructor(readonly failure: unknown) {
+    super("create failed");
+  }
+}
 
 /**
- * True when a failed create may still have committed: the response was lost
- * (a network error) or the server failed after accepting it (5xx). A 4xx,
- * and the definitive no-database 503, never committed anything.
+ * True when a failed create certainly made nothing, so its request id can be
+ * dropped: a 4xx (including `client_request_id_conflict`) and the no-database
+ * 503. A network error or any other 5xx may have committed, and the intent
+ * is kept so the retry resends the same id.
  */
-function createOutcomeUnknown(err: unknown): boolean {
-  if (isPersistenceUnavailable(err)) return false;
-  if (err instanceof ApiError) return err.status >= 500;
-  return true;
+function createRefusedForGood(err: unknown): boolean {
+  if (isPersistenceUnavailable(err)) return true;
+  return err instanceof ApiError && err.status >= 400 && err.status < 500;
 }
 
 /**
@@ -279,43 +274,6 @@ export function resolveWindowStart(
   );
 }
 
-/** The message for a failed create or capture. */
-function actionErrorText(err: unknown, clusterId: string): string {
-  if (err instanceof PossibleDuplicateCreate) {
-    return "An incident may already have been created for this diagnosis. Try again to look for it, or capture into it from the list below, instead of creating another.";
-  }
-  if (isRemoteCaptureRefusal(err, clusterId)) {
-    return "Capture is local-cluster only. Nothing was recorded.";
-  }
-  if (isPersistenceUnavailable(err)) {
-    return "This deployment has no database, so incidents cannot be recorded.";
-  }
-  if (!(err instanceof ApiError)) return "Capture failed. Try again.";
-  switch (err.reason) {
-    case "incident_busy":
-      return "The incident is busy. Try again in a moment.";
-    case "incident_capture_outcome_unknown":
-      return "The capture may or may not have been recorded. Retrying is safe: evidence that was already recorded is not duplicated.";
-    case "incident_closed":
-      return "That incident is closed. Reopen it to capture evidence.";
-    case "incident_capture_unavailable":
-      return "Evidence capture is not available on this deployment.";
-    case "evidence_limit_exceeded":
-      return "This capture would exceed the incident's evidence limit. Nothing was recorded.";
-    case "scope_limit_exceeded": {
-      const max = incidentErrorNumber(err, "max");
-      return `That incident already holds evidence from the most distinct scopes it can${max !== undefined ? ` (${max})` : ""}. Nothing was recorded.`;
-    }
-  }
-  if (err.status === 403) {
-    return "Only the incident owner may capture evidence.";
-  }
-  if (err.status === 400) {
-    return `The capture target is invalid: ${err.body?.error?.detail || err.detail || "check the namespace, kind and name"}.`;
-  }
-  return "Capture failed. Try again.";
-}
-
 export interface CaptureToIncidentButtonProps {
   /** The cluster the diagnosed object was observed on. */
   clusterId: string;
@@ -345,8 +303,8 @@ export default function CaptureToIncidentButton({
   const busy = useSignal(false);
   const error = useSignal<string | null>(null);
   /**
-   * Bumped whenever the pending created-incident id is written or cleared, so
-   * the label and link, which read it from storage, re-render.
+   * Bumped whenever the pending record is written or cleared, so the label
+   * and link, which read it from storage, re-render.
    */
   const pendingVersion = useSignal(0);
 
@@ -363,8 +321,6 @@ export default function CaptureToIncidentButton({
    * load in flight across a switch still settles its own flags.
    */
   const lifetime = useRef<AbortController | null>(null);
-  /** A first-page picker reload was asked for while a load was in flight. */
-  const reloadQueued = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -402,12 +358,7 @@ export default function CaptureToIncidentButton({
         : null;
 
   const loadOwned = async (cursor?: string) => {
-    if (listLoading.peek()) {
-      // A first-page reload asked for mid-load (the several-candidates
-      // refresh) runs once the current load settles, so it cannot be lost.
-      if (!cursor) reloadQueued.current = true;
-      return;
-    }
+    if (listLoading.peek()) return;
     listLoading.value = true;
     listError.value = null;
     const signal = lifetime.current?.signal;
@@ -431,13 +382,7 @@ export default function CaptureToIncidentButton({
       }
       listError.value = "Could not load your open incidents.";
     } finally {
-      if (!signal?.aborted) {
-        listLoading.value = false;
-        if (reloadQueued.current) {
-          reloadQueued.current = false;
-          void loadOwned();
-        }
-      }
+      if (!signal?.aborted) listLoading.value = false;
     }
   };
 
@@ -471,7 +416,12 @@ export default function CaptureToIncidentButton({
       globalThis.location.assign(incidentHref(id));
     } catch (err) {
       if (signal?.aborted) return;
-      error.value = actionErrorText(err, clusterId);
+      // A failed create has its own wording; a failed capture uses the
+      // workspace's.
+      error.value =
+        err instanceof CreateFailed
+          ? keyedCreateErrorText(err.failure)
+          : captureErrorText(err);
       busy.value = false;
     }
   };
@@ -486,8 +436,8 @@ export default function CaptureToIncidentButton({
   /**
    * Writes or clears the pending record, re-rendering while mounted. With
    * `owns`, the write happens only while the stored record still belongs to
-   * the calling flow, so a flow that outlived its island (a create answering
-   * after a remount) cannot overwrite what a newer flow recorded since.
+   * the calling flow, so a reply that lands after a newer flow took over (a
+   * create answering after a remount) cannot overwrite what it recorded.
    */
   const setPending = (
     rec: PendingRecord | null,
@@ -500,13 +450,8 @@ export default function CaptureToIncidentButton({
     if (!signal?.aborted) pendingVersion.value++;
   };
 
-  /** The stored record is the lookup marker of the click at `clickedAt`. */
-  const markerOf = (clickedAt: number) => (current: PendingRecord | null) =>
-    !current?.id && current?.lookup?.clickedAt === clickedAt;
-
   // The new incident's title and summary. The summary carries the full,
-  // untruncated target, so it (not the title, which a long name truncates)
-  // is what identifies this target's incident in the lost-create lookup.
+  // untruncated target.
   const incidentTitle = `${kind}/${name} in ${namespace}`.slice(
     0,
     INCIDENT_MAX_TITLE_CHARS,
@@ -514,105 +459,58 @@ export default function CaptureToIncidentButton({
   const incidentSummary = `Opened from the diagnosis of ${kind} ${namespace}/${name}.`;
 
   /**
-   * Open incidents the caller owns with this target's title and summary,
-   * created no earlier than the click (less the skew slack): the candidates
-   * for a create whose response was lost. Null when the lookup itself
-   * failed. Not tied to the island's lifetime: what it finds must be
-   * recorded even if the island unmounts meanwhile.
+   * The create intent to (re)send: the stored one when its payload still
+   * matches this diagnosis (a retry must resend the same payload with the
+   * same id), else a new one with a fresh request id. Without a diagnosis
+   * window the stored window, the one-hour fallback computed at the first
+   * click, is reused rather than recomputed.
    */
-  const findCreatedSince = async (
-    clickedAt: number,
-  ): Promise<IncidentView[] | null> => {
-    try {
-      const page = await listIncidents({ limit: LIST_PAGE_SIZE });
-      return page.items.filter(
-        (i) =>
-          i.role === "owner" &&
-          i.status === "open" &&
-          i.title === incidentTitle &&
-          i.summary === incidentSummary &&
-          Date.parse(i.createdAt) >= clickedAt - CREATE_MATCH_SLACK_MS,
-      );
-    } catch {
-      return null;
+  const createIntent = (stored: PendingRecord | null): PendingRecord => {
+    if (
+      stored &&
+      stored.title === incidentTitle &&
+      stored.summary === incidentSummary &&
+      (windowStart === undefined || windowStart === stored.windowStart)
+    ) {
+      return stored;
     }
-  };
-
-  /**
-   * Settles a lookup for the click at `clickedAt`. One match is adopted. None
-   * returns null (the caller may create), unless `stillCreating`: a create
-   * for that click may not have landed yet, so the marker stays. Several,
-   * or a failed lookup, keep the marker and stop with the possible-duplicate
-   * message, so a retry looks again instead of creating. Every write is
-   * conditional on the marker still being this click's.
-   */
-  const adoptLookup = (
-    found: IncidentView[] | null,
-    clickedAt: number,
-    signal?: AbortSignal,
-    stillCreating = false,
-  ): string | null => {
-    const owns = markerOf(clickedAt);
-    if (found === null) {
-      setPending({ lookup: { clickedAt } }, signal, owns);
-      throw new PossibleDuplicateCreate();
-    }
-    if (found.length > 1) {
-      setPending({ lookup: { clickedAt } }, signal, owns);
-      if (!signal?.aborted) void loadOwned();
-      throw new PossibleDuplicateCreate();
-    }
-    if (found.length === 1) {
-      setPending({ id: found[0].id }, signal, owns);
-      return found[0].id;
-    }
-    if (stillCreating) throw new PossibleDuplicateCreate();
-    setPending(null, signal, owns);
-    return null;
+    return {
+      requestId: newRequestId(),
+      title: incidentTitle,
+      summary: incidentSummary,
+      windowStart: resolveWindowStart(windowStart, Date.now()),
+    };
   };
 
   const captureNew = () =>
     run(async (signal) => {
-      const pending = readPending(key);
-      let id = pending?.id ?? null;
-      if (!id && pending?.lookup) {
-        const { clickedAt, creating } = pending.lookup;
-        id = adoptLookup(
-          await findCreatedSince(clickedAt),
-          clickedAt,
-          signal,
-          creating === true && Date.now() - clickedAt < CREATE_IN_FLIGHT_MS,
-        );
-      }
+      const stored = readPending(key);
+      let id = stored?.id ?? null;
       if (!id) {
-        const clickedAt = Date.now();
-        const owns = markerOf(clickedAt);
-        // Recorded before the request: if the island remounts while it is in
-        // flight, the next click looks for this create instead of creating.
-        setPending({ lookup: { clickedAt, creating: true } }, signal);
-        // The create and its lookup run without the lifetime signal: a create
-        // that reached the server must be recorded even when the island has
-        // unmounted, so a remount retries into it instead of creating again.
+        const intent = createIntent(stored);
+        const ownsIntent = (current: PendingRecord | null) =>
+          current?.requestId === intent.requestId;
+        // Recorded before the request, so a retry (after a lost response,
+        // or from a remounted island while this create is still in flight)
+        // resends the same request id and gets the same incident back.
+        setPending(intent, signal);
+        // Not tied to the island's lifetime: a create that reached the
+        // server must be recorded even when the island has unmounted.
         try {
           const created = await createIncident({
-            title: incidentTitle,
-            summary: incidentSummary,
-            windowStart: resolveWindowStart(windowStart, clickedAt),
+            title: intent.title,
+            summary: intent.summary,
+            windowStart: intent.windowStart,
+            clientRequestId: intent.requestId,
           });
           id = created.incident.id;
-          setPending({ id }, signal, owns);
         } catch (err) {
-          if (!createOutcomeUnknown(err)) {
-            setPending(null, signal, owns);
-            throw err;
-          }
-          id = adoptLookup(
-            await findCreatedSince(clickedAt),
-            clickedAt,
-            signal,
-          );
-          if (!id) throw err;
+          // A refused create made nothing: drop the intent, so the next
+          // attempt (after a request id conflict, too) starts afresh.
+          if (createRefusedForGood(err)) setPending(null, signal, ownsIntent);
+          throw new CreateFailed(err);
         }
+        setPending({ ...intent, id }, signal, ownsIntent);
       }
       if (signal?.aborted) return null;
       const target = id;
@@ -633,7 +531,7 @@ export default function CaptureToIncidentButton({
   const captureExisting = (id: string) =>
     run(async (signal) => {
       await capture(id, signal);
-      // The target is now captured: no pending incident or lookup is owed.
+      // The target is now captured: no pending create intent is owed.
       setPending(null, signal);
       return id;
     });
