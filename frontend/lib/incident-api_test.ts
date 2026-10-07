@@ -3,6 +3,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import { ApiError, setAccessToken } from "./api.ts";
+import { fetchCurrentUser, logout } from "./auth.ts";
 import { switchCluster } from "./cluster.ts";
 import {
   addGrant,
@@ -742,7 +743,52 @@ function spyNavigation(): string[] {
   return visited;
 }
 
+/**
+ * Answers every request with `payload` through a fetch of its own, so the
+ * calls a test recorded do not change.
+ */
+async function withOwnFetch<T>(payload: unknown, run: () => Promise<T>) {
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as unknown as typeof globalThis.fetch;
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = previous;
+  }
+}
+
+afterEach(async () => {
+  // The signed-in user is a module-wide signal, and the form records its
+  // outstanding create per user: leave neither behind.
+  await withOwnFetch({}, () => logout());
+  globalThis.sessionStorage.clear();
+});
+
+/**
+ * Mounts the island with a user signed in, as the top bar's /auth/me load
+ * does: the New-incident form sends nothing until the user is known (#597).
+ */
 async function mount() {
+  await withOwnFetch(
+    {
+      data: {
+        user: {
+          id: "alice",
+          username: "alice",
+          provider: "local",
+          kubernetesUsername: "alice",
+          kubernetesGroups: [],
+          roles: [],
+        },
+        rbac: {},
+      },
+    },
+    () => fetchCurrentUser(),
+  );
   host = document.createElement("div");
   document.body.appendChild(host);
   act(() => render(h(IncidentList, {}), host as HTMLElement));
