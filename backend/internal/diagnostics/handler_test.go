@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	appsv1 "k8s.io/api/apps/v1"
@@ -272,5 +275,82 @@ func TestDiagnostics_MissingTargetIs404WithTheHistoricalMessage(t *testing.T) {
 	}
 	if want := `Pod "ghost" not found in namespace "team-a"`; body.Error.Code != 404 || body.Error.Message != want {
 		t.Fatalf("error = %+v, want code 404 message %q", body.Error, want)
+	}
+}
+
+// TestDiagnostics_ResultsCarryObservedAt pins #595: every check in the
+// resource diagnostics response carries observedAt, the one server-clock
+// instant its checks were evaluated at. It is RFC 3339 in UTC with exactly
+// three fraction digits (the ECMAScript date-time format, so every browser
+// parses it), identical across the checks of one response, and inside the
+// request's time bounds. Every legacy key keeps its value, so the field is a
+// pure addition.
+func TestDiagnostics_ResultsCarryObservedAt(t *testing.T) {
+	lister := &countingLister{pods: []*corev1.Pod{testPod(false)}}
+	h := newDiagHandler(lister, false)
+
+	// observedAt is truncated to the millisecond, so the lower bound is too.
+	before := time.Now().UTC().Truncate(time.Millisecond)
+	w := callDiag(t, h, "local", diagPaths["resource"])
+	after := time.Now().UTC()
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Results []map[string]any `json:"results"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v; body: %s", err, w.Body.String())
+	}
+	got := body.Data.Results
+	if len(got) < 2 {
+		t.Fatalf("got %d results, want at least 2 to compare observedAt across checks", len(got))
+	}
+
+	var first string
+	for i, r := range got {
+		raw, ok := r["observedAt"].(string)
+		if !ok {
+			t.Fatalf("results[%d].observedAt = %#v, want a string", i, r["observedAt"])
+		}
+		at, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t.Fatalf("results[%d].observedAt = %q is not RFC 3339: %v", i, raw, err)
+		}
+		if !strings.HasSuffix(raw, "Z") || len(raw) != len("2006-01-02T15:04:05.000Z") {
+			t.Errorf("results[%d].observedAt = %q, want UTC with exactly three fraction digits", i, raw)
+		}
+		if at.Before(before) || at.After(after) {
+			t.Errorf("results[%d].observedAt = %s, want within [%s, %s]", i, raw, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+		}
+		if i == 0 {
+			first = raw
+		} else if raw != first {
+			t.Errorf("results[%d].observedAt = %q, want %q: one evaluation time per request", i, raw, first)
+		}
+	}
+
+	// The legacy keys are exactly what RunDiagnostics produces for the same
+	// target, encoded as the endpoint always encoded them.
+	target, err := Resolve(context.Background(), lister, "team-a", "Pod", "web", &RelatedRBAC{Pods: true})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	legacyJSON, err := json.Marshal(RunDiagnostics(context.Background(), target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []map[string]any
+	if err := json.Unmarshal(legacyJSON, &want); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range got {
+		delete(r, "observedAt")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("legacy fields changed:\n got  %v\n want %v", got, want)
 	}
 }
