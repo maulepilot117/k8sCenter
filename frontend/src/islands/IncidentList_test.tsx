@@ -588,8 +588,8 @@ test("a user switch on a mounted list never carries the first user's create over
     await signIn("u2");
   });
   await settle();
-  // The form is closed and reopened as u2.
-  await click(buttonNamed(root, "Cancel"));
+  // The switch closes the form; u2 opens it afresh.
+  expect(root.querySelector("form")).toBeNull();
   await openForm(root);
   expect(field(root, "incident-title").value).toBe("");
   await type(root, "incident-title", "Theirs");
@@ -623,16 +623,19 @@ test("a create answered after logout does not bring the record back", async () =
   await createOnce(root);
   expect(stored()).not.toBeNull();
 
-  await signOut();
+  await act(async () => {
+    await signOut();
+  });
   release();
   await settle();
   expect(stored()).toBeNull();
-  // Nor does the island keep it: after signing back in, nothing is restored.
+  // Signing out closed the form; nor does the island keep the create: after
+  // signing back in, nothing is restored.
+  expect(root.querySelector("form")).toBeNull();
   await act(async () => {
     await signIn("u1");
   });
   await settle();
-  await click(buttonNamed(root, "Cancel"));
   await openForm(root);
   expect(field(root, "incident-title").value).toBe("");
   expect(stored()).toBeNull();
@@ -809,34 +812,66 @@ test("a create restored after the form opened is resent by the next submit", asy
   expect(requestIdOf(creates()[0])).toBe(SEEDED_ID);
 });
 
-test("a user switch with the form open holds the create until the new user's record is restored", async () => {
+/** Whether `root` shows the seeded draft's inputs or the restored notice. */
+function showsSeededDraft(root: HTMLElement): boolean {
+  const values = [...root.querySelectorAll("input, textarea")].map(
+    (el) => (el as HTMLInputElement).value,
+  );
+  return (
+    values.includes("API latency") ||
+    values.includes("p99 over 2s") ||
+    (root.textContent ?? "").includes("Restored from a create")
+  );
+}
+
+const hasNewIncidentButton = (root: HTMLElement) =>
+  [...root.querySelectorAll("button")].some(
+    (b) => b.textContent?.trim() === "New incident",
+  );
+
+test("a user switch with the form open closes it: u2 never sees u1's draft, and nothing is sent before u2's restore", async () => {
   seed();
   serve(() => busyReply);
   const root = await mount("u1");
   await openForm(root);
-  expect(field(root, "incident-title").value).toBe("API latency");
+  expect(showsSeededDraft(root)).toBe(true);
   expect(createButton(root).getAttribute("aria-disabled")).toBe("false");
 
   // u2 signs in outside act: the island re-renders with u2, but the effect
-  // that restores u2's record has not run yet.
-  await signIn("u2");
-  await new Promise((r) => setTimeout(r, 0));
-  expect(createButton(root).getAttribute("aria-disabled")).toBe("true");
-  expect(
-    root.querySelector('[data-testid="new-incident-not-ready"]')?.textContent,
-  ).toContain("still loading");
-  await submit(root);
-  expect(creates()).toHaveLength(0);
+  // that restores u2's record has not run yet. Scheduled outside act, that
+  // effect waits for the next animation frame or Preact's 100 ms fallback
+  // timer; frames are stopped here so it is the timer in every environment
+  // (frames do not reliably fire on CI).
+  const raf = spyOn(globalThis, "requestAnimationFrame").mockImplementation(
+    () => 0,
+  );
+  try {
+    await signIn("u2");
+    await new Promise((r) => setTimeout(r, 0));
+    // Before u2's restore: u1's draft is already gone, and nothing can be
+    // sent.
+    expect(showsSeededDraft(root)).toBe(false);
+    expect(createButton(root)).toBeNull();
+    await submit(root);
+    expect(creates()).toHaveLength(0);
 
-  // Once u2's restore has run (its effect waits for the next animation
-  // frame, as it does in a browser), the form is ready and u1's create is
-  // gone.
-  await act(async () => {
-    await new Promise((r) => requestAnimationFrame(() => r(undefined)));
-  });
-  await settle();
-  await type(root, "incident-title", "Theirs");
+    // Once u2's restore has run, the form stays closed for u2 to open.
+    const deadline = Date.now() + 2000;
+    while (!hasNewIncidentButton(root)) {
+      if (Date.now() > deadline) throw new Error("u2's restore never ran");
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+  } finally {
+    raf.mockRestore();
+  }
+  expect(root.querySelector("form")).toBeNull();
+  await openForm(root);
+  expect(showsSeededDraft(root)).toBe(false);
+  expect(field(root, "incident-title").value).toBe("");
   expect(createButton(root).getAttribute("aria-disabled")).toBe("false");
+  await type(root, "incident-title", "Theirs");
   await submit(root);
   expect(creates()).toHaveLength(1);
   expect(requestIdOf(creates()[0])).not.toBe(SEEDED_ID);

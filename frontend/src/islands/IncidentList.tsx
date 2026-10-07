@@ -596,11 +596,14 @@ export default function IncidentList() {
     const state = createState.current;
     // Signed out, or another user signed in on this page: nothing of the
     // previous user's create carries over in memory (logout cleared their
-    // record, and another user's key never reads it).
+    // record, and another user's key never reads it). The form closes too:
+    // it was filled from, and may say it restored, the previous user's
+    // create, so the next user opens it afresh.
     if (restoredFor.peek() !== null) {
       state.intent = null;
       state.conflict = false;
       state.conflictAt = undefined;
+      formOpen.value = false;
     }
     if (!userId) {
       restoredFor.value = null;
@@ -612,6 +615,13 @@ export default function IncidentList() {
     restoredFor.value = userId;
   }, [userId]);
   const createReady = userId !== null && restoredFor.value === userId;
+  /**
+   * The signed-in user is no longer the one whose create the island holds.
+   * For the render before the effect above runs, the form is not shown, so
+   * the previous user's draft is never on screen for the next one.
+   */
+  const userChanged =
+    restoredFor.value !== null && restoredFor.value !== userId;
   // "Could not be loaded" only once the load finished without a user; while
   // it runs, or between the user arriving and their record being restored,
   // the form is still loading.
@@ -731,7 +741,7 @@ export default function IncidentList() {
         )}
       </div>
 
-      {canCreate && formOpen.value && (
+      {canCreate && formOpen.value && !userChanged && (
         <NewIncidentForm
           onCancel={closeForm}
           state={createState.current}
