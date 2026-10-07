@@ -18,6 +18,11 @@ import { clearPendingApplies } from "@/lib/pending-apply.ts";
 /** Reactive user state. */
 const userSignal = signal<UserInfo | null>(null);
 const loadingSignal = signal(false);
+/**
+ * Whether a user load has started since the page loaded (or since logout).
+ * Before the first one, "no user" means "not loaded yet", not "failed".
+ */
+const loadAttemptedSignal = signal(false);
 
 /** RBAC permissions from /auth/me — keyed by namespace + cluster-scoped. */
 const rbacSignal = signal<RBACSummary | null>(null);
@@ -104,6 +109,7 @@ export async function logout(): Promise<void> {
   setAccessToken(null);
   userSignal.value = null;
   rbacSignal.value = null;
+  loadAttemptedSignal.value = false;
   // An unknown-outcome apply id, and a pending capture-to-incident key or
   // incident, belong to the session that recorded them.
   clearPendingApplies();
@@ -124,6 +130,7 @@ export async function fetchCurrentUser(
   // Don't bail on missing token — api() will attempt a refresh via
   // the httpOnly cookie on 401, then retry the request.
   try {
+    loadAttemptedSignal.value = true;
     loadingSignal.value = true;
     const params = namespace
       ? `?namespace=${encodeURIComponent(namespace)}`
@@ -188,6 +195,7 @@ export function useAuth() {
     rbac: rbacSignal,
     isAuthenticated,
     loading: loadingSignal,
+    loadAttempted: loadAttemptedSignal,
     login,
     logout,
     fetchCurrentUser,

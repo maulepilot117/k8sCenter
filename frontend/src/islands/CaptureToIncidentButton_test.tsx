@@ -21,6 +21,7 @@ const {
 const { currentUserId, fetchCurrentUser, logout } = await import(
   "@/lib/auth.ts"
 );
+const { selectedNamespace } = await import("@/src/lib/namespace.ts");
 const { createRefusedForGood } = await import(
   "@/src/components/incidents/errors.ts"
 );
@@ -1484,7 +1485,11 @@ test("a failed sign-in load says so truthfully; selecting the button retries it"
   const root = await mount({ user: null });
   const trigger = q(root, "capture-to-incident");
   expect(trigger.getAttribute("aria-disabled")).toBe("true");
-  expect(trigger.getAttribute("title")).toContain("not loaded");
+  // No load has been attempted yet (the top bar's has not started): that is
+  // "loading", never "not loaded".
+  expect(trigger.getAttribute("title")).toBe(
+    "Your sign-in details are still loading.",
+  );
 
   await click(trigger);
   expect(trigger.getAttribute("title")).toBe(
@@ -1500,6 +1505,125 @@ test("a failed sign-in load says so truthfully; selecting the button retries it"
   expect(trigger.getAttribute("aria-disabled")).toBe("false");
   await click(trigger);
   expect(q(root, "capture-to-incident-dialog")).toBeTruthy();
+});
+
+test("after the top bar's load failed, the button says not loaded and offers a retry", async () => {
+  stub((c) => {
+    if (c.path === "/api/v1/auth/me") {
+      return json(500, { error: { code: 500, message: "boom" } });
+    }
+    return empty;
+  });
+  // The top bar's own load, failing.
+  await fetchCurrentUser();
+  const root = await mount({ user: null });
+  expect(q(root, "capture-to-incident").getAttribute("title")).toBe(
+    "Your sign-in details are not loaded. Select to try again.",
+  );
+});
+
+test("while the user is loading the button says so, and selecting it starts no second load", async () => {
+  const held = deferred(
+    json(200, {
+      data: {
+        user: {
+          id: "u1",
+          username: "u1",
+          provider: "local",
+          kubernetesUsername: "u1",
+          kubernetesGroups: [],
+          roles: [],
+        },
+        rbac: {},
+      },
+    }),
+  );
+  stub((c) => {
+    if (c.path === "/api/v1/auth/me") return held.promise;
+    return empty;
+  });
+  // The top bar's load, still in flight.
+  const loading = fetchCurrentUser();
+  const root = await mount({ user: null });
+  const trigger = q(root, "capture-to-incident");
+  expect(trigger.getAttribute("title")).toBe(
+    "Your sign-in details are still loading.",
+  );
+  await click(trigger);
+  expect(calls.filter((c) => c.path === "/api/v1/auth/me")).toHaveLength(1);
+  held.release();
+  await loading;
+  await settle();
+  expect(trigger.getAttribute("aria-disabled")).toBe("false");
+});
+
+test("the button's retry of the user load is scoped to the selected namespace", async () => {
+  const previous = selectedNamespace.peek();
+  selectedNamespace.value = "team-a";
+  try {
+    stub((c) => {
+      if (c.path.startsWith("/api/v1/auth/me"))
+        return json(200, {
+          data: {
+            user: {
+              id: "u1",
+              username: "u1",
+              provider: "local",
+              kubernetesUsername: "u1",
+              kubernetesGroups: [],
+              roles: [],
+            },
+            rbac: {},
+          },
+        });
+      return empty;
+    });
+    const root = await mount({ user: null });
+    await click(q(root, "capture-to-incident"));
+    expect(
+      calls
+        .filter((c) => c.path.startsWith("/api/v1/auth/me"))
+        .map((c) => c.path),
+    ).toEqual(["/api/v1/auth/me?namespace=team-a"]);
+  } finally {
+    selectedNamespace.value = previous;
+  }
+});
+
+test("a key conflict whose record write was refused (a newer flow owns it) still shows the notice", async () => {
+  const held = deferred(conflictReply);
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) return held.promise;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  act(() => q(root, "capture-to-new-incident").click());
+  await settle();
+  // Another mount's newer intent takes the record over meanwhile.
+  globalThis.sessionStorage.setItem(
+    pendingStorageKey("local"),
+    JSON.stringify({
+      requestId: "22222222-2222-4222-8222-222222222222",
+      title: TITLE,
+      summary: SUMMARY,
+      windowStart: "2026-10-06T08:00:00.000Z",
+      createdAt: Date.now(),
+    }),
+  );
+  held.release();
+  await settle();
+  // The conflict record was not written over the newer intent...
+  expect(stored("local")).toMatchObject({
+    requestId: "22222222-2222-4222-8222-222222222222",
+  });
+  // ...but the operator still sees the notice, and nothing creates silently.
+  expect(q(root, "capture-create-conflict").textContent).toContain(
+    "may already exist",
+  );
+  expect(root.querySelector('[data-testid="capture-to-new-incident"]')).toBe(
+    null,
+  );
 });
 
 test("with a stale intent's notice showing, a closed existing incident is still explained", async () => {

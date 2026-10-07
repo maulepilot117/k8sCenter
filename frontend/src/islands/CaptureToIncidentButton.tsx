@@ -34,6 +34,7 @@ import {
   keyedCreateErrorText,
 } from "@/src/components/incidents/errors.ts";
 import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
+import { selectedNamespace } from "@/src/lib/namespace.ts";
 
 /**
  * The diagnosis-to-incident entry point (Release D, U25b): a button that
@@ -227,11 +228,22 @@ export default function CaptureToIncidentButton({
   class: className,
 }: CaptureToIncidentButtonProps) {
   const isLocal = clusterId === "" || clusterId === LOCAL_CLUSTER_ID;
-  const { user, loading: userLoading, fetchCurrentUser } = useAuth();
+  const {
+    user,
+    loading: userLoading,
+    loadAttempted: userLoadAttempted,
+    fetchCurrentUser,
+  } = useAuth();
   /** The signed-in user; the button is inactive until it is known. */
   const userId = user.value?.id ?? null;
   /** This island's own retry of the user load ended without a user. */
   const userLoadFailed = useSignal(false);
+  /**
+   * A create met `client_request_id_conflict` in this mount. Normally the
+   * stored conflict record shows the notice; this keeps it showing when that
+   * write was refused because a newer flow owns the record.
+   */
+  const conflictSeen = useSignal(false);
   const key = pendingKey(userId ?? "", clusterId, namespace, kind, name);
   /** Set when the deployment has no database; fixed for the page's life. */
   const noDatabase = useSignal(false);
@@ -294,7 +306,7 @@ export default function CaptureToIncidentButton({
         ? `${kind || "This kind"} cannot be captured into an incident.`
         : userId
           ? null
-          : userLoading.value
+          : userLoading.value || !userLoadAttempted.value
             ? "Your sign-in details are still loading."
             : userLoadFailed.value
               ? "Your sign-in details could not be loaded. Reload the page."
@@ -336,7 +348,10 @@ export default function CaptureToIncidentButton({
   const retryUserLoad = async () => {
     if (userId || userLoading.peek()) return;
     userLoadFailed.value = false;
-    const loaded = await fetchCurrentUser();
+    // Scoped like the top bar's load, so the RBAC summary it stores keeps
+    // matching the selected namespace.
+    const ns = selectedNamespace.peek();
+    const loaded = await fetchCurrentUser(ns !== "all" ? ns : undefined);
     if (!lifetime.current?.signal.aborted) userLoadFailed.value = !loaded;
   };
 
@@ -384,6 +399,9 @@ export default function CaptureToIncidentButton({
       // A failed create has its own wording; a failed capture uses the
       // workspace's.
       // A key conflict is shown by the "may already exist" notice, not twice.
+      if (err instanceof CreateFailed && isCreateConflict(err.failure)) {
+        conflictSeen.value = true;
+      }
       error.value =
         err instanceof CreateFailed
           ? isCreateConflict(err.failure)
@@ -510,7 +528,11 @@ export default function CaptureToIncidentButton({
   const captureNew = () =>
     run(async (signal) => {
       const stored = readPendingCapture(key);
-      if (isPendingConflict(stored) || isStaleIntent(stored, Date.now())) {
+      if (
+        conflictSeen.peek() ||
+        isPendingConflict(stored) ||
+        isStaleIntent(stored, Date.now())
+      ) {
         return null;
       }
       if (stored?.id) return captureInto(stored.id, signal);
@@ -519,7 +541,10 @@ export default function CaptureToIncidentButton({
 
   /** After a conflict, the operator's explicit choice to create anyway. */
   const createAnyway = () =>
-    run((signal) => createAndCapture(freshIntent(), signal));
+    run((signal) => {
+      conflictSeen.value = false;
+      return createAndCapture(freshIntent(), signal);
+    });
 
   const captureExisting = (id: string) =>
     run(async (signal) => {
@@ -549,7 +574,9 @@ export default function CaptureToIncidentButton({
   // A conflict, or an unresolved intent too old to resend silently, both
   // read as "an incident for this capture may already exist".
   const conflict =
-    isPendingConflict(pending) || isStaleIntent(pending, Date.now());
+    conflictSeen.value ||
+    isPendingConflict(pending) ||
+    isStaleIntent(pending, Date.now());
   const created = conflict ? null : (pending?.id ?? null);
 
   return (

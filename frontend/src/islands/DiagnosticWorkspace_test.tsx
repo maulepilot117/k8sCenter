@@ -79,8 +79,6 @@ let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 
 afterEach(async () => {
-  // The signed-in user is a module-wide signal: never leave one behind.
-  await signOut();
   if (host) {
     act(() => render(null, host as HTMLElement));
     host.remove();
@@ -90,6 +88,9 @@ afterEach(async () => {
   originalFetch = undefined;
   setAccessToken(null);
   globalThis.history.replaceState(null, "", "/");
+  // Unmounted first, then signed out: the signed-in user is a module-wide
+  // signal, never left behind for the next file.
+  await signOut();
 });
 
 function stubFetch(status: number, body: unknown) {

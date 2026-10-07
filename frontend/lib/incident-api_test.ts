@@ -1356,7 +1356,7 @@ test("IncidentList: a create that rejects after unmount writes nothing and does 
  * response). Calls are recorded in `calls` like stubFetch's.
  */
 function stubCreates(
-  create: (body: Record<string, unknown>) => Reply | Promise<never>,
+  create: (body: Record<string, unknown>) => Reply | Promise<Reply>,
 ) {
   calls = [];
   original ??= globalThis.fetch;
@@ -1683,7 +1683,9 @@ test("IncidentList: Cancel and reopen after a lost create restores the inputs an
   const root = await mount();
   let form = await openForm(root);
   setValue(form.querySelector("#incident-title"), "Checkout down");
+  setValue(form.querySelector("#incident-summary"), "Payments failing");
   setValue(form.querySelector("#incident-window-start"), "2026-10-01T09:00");
+  setValue(form.querySelector("#incident-window-end"), "2026-10-01T10:15");
   await flush();
   await submitAndSettle(form, 0);
   expect(form.textContent).toContain("may or may not have been created");
@@ -1692,9 +1694,12 @@ test("IncidentList: Cancel and reopen after a lost create restores the inputs an
   await flush();
   expect(root.querySelector("form")).toBeNull();
   form = await openForm(root);
-  expect(
-    (form.querySelector("#incident-title") as HTMLInputElement).value,
-  ).toBe("Checkout down");
+  const field = (id: string) =>
+    (form.querySelector(`#${id}`) as HTMLInputElement).value;
+  expect(field("incident-title")).toBe("Checkout down");
+  expect(field("incident-summary")).toBe("Payments failing");
+  expect(field("incident-window-start")).toBe("2026-10-01T09:00");
+  expect(field("incident-window-end")).toBe("2026-10-01T10:15");
   expect(
     form.querySelector('[data-testid="new-incident-restored"]'),
   ).not.toBeNull();
@@ -1732,4 +1737,124 @@ test("IncidentList: a 413 after a 5xx keeps the key", async () => {
   expect(new Set(creates().map(keyOf)).size).toBe(1);
   expect(server.made.size).toBe(1);
   expect(visited).toEqual([`/observability/incidents/${incident(1).id}`]);
+});
+
+const restoredNote = (form: HTMLFormElement) =>
+  form.querySelector('[data-testid="new-incident-restored"]');
+
+test("IncidentList: a blank form's first in-flight submit shows no restored note", async () => {
+  const gate = deferred();
+  const server = createServer();
+  stubCreates(async (b) => {
+    await gate.promise;
+    return server.create(b);
+  });
+  spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  submit(form);
+  await until(() => creates().length === 1);
+  await flush();
+  expect(restoredNote(form)).toBeNull();
+  gate.resolve();
+  await flush();
+});
+
+test("IncidentList: the restored note hides on submit and stays hidden beside an error", async () => {
+  let attempt = 0;
+  stubCreates(() => {
+    attempt++;
+    return attempt === 1 ? lostResponse() : { status: 502, payload: {} };
+  });
+  spyNavigation();
+  const root = await mount();
+  let form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  act(() => button(root, "Cancel")?.click());
+  await flush();
+  form = await openForm(root);
+  expect(restoredNote(form)).not.toBeNull();
+  await submitAndSettle(form, 1);
+  expect(form.textContent).toContain("may or may not have been created");
+  expect(restoredNote(form)).toBeNull();
+});
+
+test("IncidentList: after a conflict, Cancel and reopen shows the notice on a blank form; only Create anyway creates", async () => {
+  const server = createServer();
+  let attempt = 0;
+  stubCreates((b) => {
+    attempt++;
+    const reply = server.create(b);
+    if (attempt === 1) {
+      server.edit(String(b.clientRequestId));
+      return lostResponse();
+    }
+    return reply;
+  });
+  const visited = spyNavigation();
+  const root = await mount();
+  let form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  await submitAndSettle(form, 1);
+  expect(
+    form.querySelector('[data-testid="new-incident-conflict"]'),
+  ).not.toBeNull();
+
+  act(() => button(root, "Cancel")?.click());
+  await flush();
+  form = await openForm(root);
+  expect(
+    (form.querySelector("#incident-title") as HTMLInputElement).value,
+  ).toBe("");
+  expect(restoredNote(form)).toBeNull();
+  expect(
+    form.querySelector('[data-testid="new-incident-conflict"]')?.textContent,
+  ).toContain("may already exist");
+  setValue(form.querySelector("#incident-title"), "Checkout down again");
+  await flush();
+  submit(form);
+  await flush();
+  expect(creates()).toHaveLength(2);
+
+  act(() =>
+    (
+      form.querySelector(
+        '[data-testid="new-incident-create-anyway"]',
+      ) as HTMLElement
+    ).click(),
+  );
+  await until(() => visited.length === 1);
+  expect(creates()).toHaveLength(3);
+  expect(keyOf(creates()[2])).not.toBe(keyOf(creates()[0]));
+  expect(server.made.size).toBe(2);
+});
+
+test("IncidentList: after a 400 with nothing uncertain, reopening starts blank", async () => {
+  stubCreates(() => ({
+    status: 400,
+    payload: { error: { code: 400, message: "invalid", detail: "bad" } },
+  }));
+  spyNavigation();
+  const root = await mount();
+  let form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  expect(form.textContent).toContain("could not be created: bad");
+  act(() => button(root, "Cancel")?.click());
+  await flush();
+  form = await openForm(root);
+  expect(
+    (form.querySelector("#incident-title") as HTMLInputElement).value,
+  ).toBe("");
+  expect(restoredNote(form)).toBeNull();
+  expect(
+    form.querySelector('[data-testid="new-incident-conflict"]'),
+  ).toBeNull();
 });
