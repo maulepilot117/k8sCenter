@@ -354,3 +354,44 @@ func TestDiagnostics_ResultsCarryObservedAt(t *testing.T) {
 		t.Errorf("legacy fields changed:\n got  %v\n want %v", got, want)
 	}
 }
+
+// TestResultsWire_KeepsNullAndEmptyShapes: no results still encode as null and
+// an empty result set as [], the shapes the response had before observedAt.
+func TestResultsWire_KeepsNullAndEmptyShapes(t *testing.T) {
+	at := time.Date(2026, 10, 6, 9, 59, 30, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		results []Result
+		want    string
+	}{
+		{"nil", nil, "null"},
+		{"empty", []Result{}, "[]"},
+	} {
+		got, err := json.Marshal(resultsWire(Normalize("local", nil, at, tc.results)))
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", tc.name, err)
+		}
+		if string(got) != tc.want {
+			t.Errorf("%s: encoded %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestResultsWire_TruncatesObservedAtToMilliseconds: a sub-millisecond part is
+// dropped, never rounded up past the stamp, the zone is converted to UTC, and
+// the fraction always has three digits.
+func TestResultsWire_TruncatesObservedAtToMilliseconds(t *testing.T) {
+	plus2 := time.FixedZone("UTC+2", 2*60*60)
+	for _, tc := range []struct {
+		at   time.Time
+		want string
+	}{
+		{time.Date(2026, 10, 6, 11, 59, 30, 123_999_999, plus2), "2026-10-06T09:59:30.123Z"},
+		{time.Date(2026, 10, 6, 9, 59, 30, 0, time.UTC), "2026-10-06T09:59:30.000Z"},
+	} {
+		got := resultsWire(Normalize("local", nil, tc.at, []Result{{RuleName: "PendingPod", Status: "pass"}}))
+		if len(got) != 1 || got[0].ObservedAt != tc.want {
+			t.Errorf("observedAt for %s = %+v, want %q", tc.at.Format(time.RFC3339Nano), got, tc.want)
+		}
+	}
+}

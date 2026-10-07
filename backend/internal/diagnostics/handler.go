@@ -45,7 +45,8 @@ type diagnosticsResponse struct {
 // client decodes Result by key and ignores the addition.
 type resultWire struct {
 	Result
-	// ObservedAt is when the check was evaluated: RFC 3339, UTC, in the
+	// ObservedAt is the server-clock instant taken when the request's checks
+	// finished evaluating: RFC 3339, UTC, in the
 	// ECMAScript date-time format (exactly three fraction digits). Go's own
 	// time encoding emits up to nine digits and trims trailing zeros, which
 	// browsers parse only through implementation-specific fallbacks, and the
@@ -58,9 +59,11 @@ const observedAtLayout = "2006-01-02T15:04:05.000Z07:00"
 
 // resultsWire encodes checks for the legacy wire. The legacy fields come from
 // Denormalize, so the wire stays byte-compatible with what RunDiagnostics
-// produced, and observedAt is each check's own. Truncating to the millisecond
-// keeps the value at or before the evaluation, which is what a window start
-// derived from it needs. A nil checks yields nil, as the response always has.
+// produced, and observedAt is each check's own: the stamp HandleDiagnostics
+// takes once RunDiagnostics returns. Truncating (never rounding) to the
+// millisecond keeps the encoded value at or before that stamp. A nil checks
+// yields nil and an empty one an empty slice, so the response keeps encoding
+// them as null and [] as it always has.
 func resultsWire(checks []CheckResult) []resultWire {
 	if checks == nil {
 		return nil
