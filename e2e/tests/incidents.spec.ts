@@ -4,9 +4,13 @@ import { expect, test } from "../fixtures/base.ts";
 import {
   attachAuthInjection,
   bearerHeaders,
+  type CleanupApi,
+  CleanupBackstop,
   createSecondUser,
+  deleteAccount,
   e2eName,
   getAuthHeaders,
+  pageCleanupApi,
   type SecondUser,
   withCleanup,
 } from "../helpers.ts";
@@ -102,9 +106,9 @@ async function podStatus(page: Page, name: string): Promise<number> {
   return res.status();
 }
 
-async function deletePod(page: Page, name: string): Promise<void> {
-  const res = await page.request.delete(podPath(name), {
-    headers: await getAuthHeaders(page),
+async function deletePod(api: CleanupApi, name: string): Promise<void> {
+  const res = await api.request.delete(podPath(name), {
+    headers: api.headers,
     failOnStatusCode: false,
   });
   if (!res.ok() && res.status() !== 404) {
@@ -129,9 +133,9 @@ async function createIncidentViaApi(page: Page, title: string): Promise<string> 
   return (await res.json()).data.incident.id as string;
 }
 
-async function deleteIncident(page: Page, id: string): Promise<void> {
-  const res = await page.request.delete(`/api/v1/incidents/${id}`, {
-    headers: await getAuthHeaders(page),
+async function deleteIncident(api: CleanupApi, id: string): Promise<void> {
+  const res = await api.request.delete(`/api/v1/incidents/${id}`, {
+    headers: api.headers,
     failOnStatusCode: false,
   });
   if (!res.ok() && res.status() !== 404) {
@@ -208,6 +212,22 @@ async function capture(
 const sourceRow = (result: Locator, label: string) =>
   result.getByRole("listitem").filter({ hasText: label });
 
+/**
+ * File-level backstop for the in-test cleanups: a test that times out is
+ * aborted and its page closed, so withCleanup may not run (or may fail on the
+ * dead page). Every cleanup below is tracked here with a page-free API
+ * equivalent, and afterAll runs whatever the test did not finish. All of them
+ * treat 404 as done, so a resource the test already removed is not an error.
+ */
+const backstop = new CleanupBackstop();
+
+test.afterAll(async ({ playwright }, testInfo) => {
+  // Its own, generous timeout: the default hook budget is the test timeout,
+  // which an aborted slow test may have used up.
+  testInfo.setTimeout(60_000);
+  await backstop.drain(playwright, testInfo.project.use.baseURL);
+});
+
 test.describe("Incidents (AE6)", () => {
   test("capture, source deletion, cross-user 404, handoff, revocation and filtered export", async ({
     page,
@@ -222,9 +242,11 @@ test.describe("Incidents (AE6)", () => {
     const note = `Handoff note ${crypto.randomUUID()}`;
     let incidentId: string | undefined;
     let collaborator: SecondUser | undefined;
+    let collaboratorId: string | undefined;
 
     await withCleanup(async () => {
       await page.goto(INCIDENTS);
+      await backstop.adopt(page);
       await applyYaml(page, canaryPod(pod, canary));
       // Capture's diagnostics and the live link both read through the
       // informer cache, so wait until it has the pod.
@@ -285,7 +307,7 @@ test.describe("Incidents (AE6)", () => {
       expect(before.withheld).toBe(0);
 
       await test.step("deletion: stored evidence outlives the pod; the live link says so", async () => {
-        await deletePod(page, pod);
+        await deletePod(await pageCleanupApi(page), pod);
         await expect.poll(() => podStatus(page, pod), { timeout: 60_000 }).toBe(404);
         await page.reload();
         await expect(page.getByRole("heading", { name: title, level: 1 })).toBeVisible();
@@ -311,7 +333,14 @@ test.describe("Incidents (AE6)", () => {
         await expect(notes.getByRole("list", { name: "Notes" })).toContainText(note);
       });
 
-      collaborator = await createSecondUser(page, browser, "the collaborator");
+      collaborator = await createSecondUser(
+        page,
+        browser,
+        "the collaborator",
+        (id) => {
+          collaboratorId = id;
+        },
+      );
       const collab = collaborator;
       const incidentApi = `/api/v1/incidents/${incidentId}`;
       const collabGet = async () =>
@@ -413,9 +442,20 @@ test.describe("Incidents (AE6)", () => {
         expect(objectSnapshot?.redaction?.rules).toContain("last-applied-config");
       });
     }, [
-      () => collaborator?.remove(),
-      () => (incidentId ? deleteIncident(page, incidentId) : undefined),
-      () => deletePod(page, pod),
+      backstop.track(
+        (api) =>
+          collaboratorId
+            ? deleteAccount(api, collaboratorId, "the collaborator")
+            : undefined,
+        "collaborator account",
+      ),
+      // The context is not an API resource; it dies with the worker.
+      () => collaborator?.context.close(),
+      backstop.track(
+        (api) => (incidentId ? deleteIncident(api, incidentId) : undefined),
+        "incident",
+      ),
+      backstop.track((api) => deletePod(api, pod), "canary pod"),
     ]);
   });
 
@@ -427,6 +467,7 @@ test.describe("Incidents (AE6)", () => {
     // while the events source still runs (and finds nothing).
     const missing = e2eName("svc");
     await page.goto(INCIDENTS);
+    await backstop.adopt(page);
     const id = await createIncidentViaApi(page, title);
     await withCleanup(async () => {
       await openIncident(page, id, title);
@@ -449,7 +490,9 @@ test.describe("Incidents (AE6)", () => {
         rows.filter({ hasText: "Identified by name only" }),
       ).toHaveCount(1);
       await expect(page.getByText("No evidence yet.")).toHaveCount(0);
-    }, [() => deleteIncident(page, id)]);
+    }, [
+      backstop.track((api) => deleteIncident(api, id), "incident"),
+    ]);
   });
 
   test("a stale note edit shows the conflict banner and keeps the draft", async ({
@@ -460,6 +503,7 @@ test.describe("Incidents (AE6)", () => {
     const first = `First save ${crypto.randomUUID()}`;
     const draft = `Second tab draft ${crypto.randomUUID()}`;
     await page.goto(INCIDENTS);
+    await backstop.adopt(page);
     const id = await createIncidentViaApi(page, title);
     let secondTab: Page | undefined;
     await withCleanup(async () => {
@@ -506,6 +550,9 @@ test.describe("Incidents (AE6)", () => {
       await expect(secondNotes.getByText("Current saved text")).toBeVisible();
       await expect(secondNotes).toContainText(first);
       await expect(secondNotes.getByLabel("Edit note")).toHaveValue(draft);
-    }, [() => secondTab?.close(), () => deleteIncident(page, id)]);
+    }, [
+      () => secondTab?.close(),
+      backstop.track((api) => deleteIncident(api, id), "incident"),
+    ]);
   });
 });

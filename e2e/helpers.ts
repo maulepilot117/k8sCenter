@@ -5,6 +5,7 @@ import {
   type BrowserContext,
   expect,
   type Page,
+  type PlaywrightWorkerArgs,
 } from "@playwright/test";
 
 /** Get the stored E2E access token from the browser context's localStorage */
@@ -437,6 +438,147 @@ export async function withCleanup(
 }
 
 /**
+ * What an API-level cleanup needs: a request context and the admin's headers.
+ * Deliberately not a Page, so the same action works from a test body and from
+ * a test.afterAll hook, where the aborted test's page is already gone.
+ */
+export interface CleanupApi {
+  request: APIRequestContext;
+  headers: Record<string, string>;
+}
+
+/** The CleanupApi for an admin page that is still open. */
+export async function pageCleanupApi(page: Page): Promise<CleanupApi> {
+  return { request: page.request, headers: await getAuthHeaders(page) };
+}
+
+/**
+ * Deletes a local account through the admin API. A 404 counts as done, so it
+ * is safe to run after the in-test cleanup already removed the account.
+ */
+export async function deleteAccount(
+  api: CleanupApi,
+  id: string,
+  label: string,
+): Promise<void> {
+  const res = await api.request.delete(`/api/v1/users/${id}`, {
+    headers: api.headers,
+    failOnStatusCode: false,
+  });
+  if (!res.ok() && res.status() !== 404) {
+    throw new Error(`could not delete ${label} (${id}): ${res.status()}`);
+  }
+}
+
+/**
+ * A per-file safety net for in-test cleanups.
+ *
+ * withCleanup runs inside the test body, so a test timeout (Playwright aborts
+ * the body and closes the page) can leave its resources behind. A spec makes
+ * one backstop at file level, tracks each resource's teardown, and drains it
+ * from test.afterAll:
+ *
+ *   const backstop = new CleanupBackstop();
+ *   test.afterAll(({ playwright }, info) =>
+ *     backstop.drain(playwright, info.project.use.baseURL));
+ *   ...
+ *   await backstop.adopt(page);   // once the page is on the app origin
+ *   await withCleanup(body, [
+ *     backstop.track((api) => deleteIncident(api, id), "incident"),
+ *   ]);
+ *
+ * The contract: a tracked action is the ONLY thing that marks an entry done,
+ * and the in-test cleanup `track` returns runs that very action (through the
+ * adopted page), so it cannot report success without doing the work. If the
+ * page is dead the action throws, the entry stays pending, and drain runs it
+ * again through a fresh request context. Actions must be idempotent (a 404 is
+ * success) and may return early when their handle is unset, but only when
+ * there is genuinely nothing to delete: record ids at the earliest moment
+ * they exist (see createSecondUser's onAccount), never after a slow step.
+ * Do not put a handle-dependent teardown (closing a browser context) in a
+ * tracked action; leave it as a plain untracked cleanup beside it.
+ *
+ * Token lifetime: adopt() reads e2e_access_token, which auth.setup.ts minted
+ * once at suite start as a 15-minute access token, so the window counts from
+ * setup, not from adopt(). Near that mark drain's deletes answer 401 and
+ * afterAll fails loudly, naming the leaked entries. Refreshing here would
+ * mean replaying the setup's login (spending the shared 5-per-minute auth
+ * bucket the specs already contend for) for a case that also breaks every
+ * test body using the same token, so the limit is documented, not worked
+ * around.
+ */
+export class CleanupBackstop {
+  private readonly entries: {
+    label: string;
+    action: (api: CleanupApi) => unknown;
+    done: boolean;
+  }[] = [];
+  private page: Page | undefined;
+  private headers: Record<string, string> | undefined;
+
+  /** Captures the admin page and identity; call once the page is on the app origin. */
+  async adopt(page: Page): Promise<void> {
+    this.page = page;
+    this.headers = await getAuthHeaders(page);
+  }
+
+  /**
+   * Registers `action` and returns the in-test cleanup that runs it through
+   * the adopted page. Only a completed action marks the entry done.
+   */
+  track(action: (api: CleanupApi) => unknown, label = "cleanup"): Cleanup {
+    const entry = { label, action, done: false };
+    this.entries.push(entry);
+    return async () => {
+      if (!this.page) throw new Error(`${label}: adopt(page) was never called`);
+      await entry.action(await pageCleanupApi(this.page));
+      entry.done = true;
+    };
+  }
+
+  /** Labels of tracked entries whose action has not completed. */
+  get pending(): string[] {
+    return this.entries.filter((e) => !e.done).map((e) => e.label);
+  }
+
+  /**
+   * Runs every not-yet-done action through a fresh request context. Throws
+   * listing the leaked labels if any failed (or if there was work but no
+   * captured admin identity), so a leak is reported, not silently left.
+   */
+  async drain(
+    playwright: PlaywrightWorkerArgs["playwright"],
+    baseURL: string | undefined,
+  ): Promise<void> {
+    const todo = this.entries.filter((e) => !e.done);
+    if (todo.length === 0) return;
+    const headers = this.headers;
+    if (!headers || !baseURL) {
+      throw new Error(
+        `cleanup backstop: no admin identity captured; leaked: ${todo.map((e) => e.label).join(", ")}`,
+      );
+    }
+    const request = await playwright.request.newContext({ baseURL });
+    try {
+      const failed: string[] = [];
+      for (const e of todo) {
+        try {
+          await e.action({ request, headers });
+          e.done = true;
+        } catch (err) {
+          failed.push(`${e.label} (${String(err)})`);
+        }
+      }
+      if (failed.length > 0) {
+        throw new Error(`cleanup backstop: leaked: ${failed.join("; ")}`);
+      }
+    } finally {
+      await request.dispose();
+    }
+  }
+}
+
+/**
  * A second local user, signed in from a browser context of its own.
  *
  * `token` authenticates its API calls (with bearerHeaders); `page` is in its
@@ -466,6 +608,9 @@ export interface SecondUser {
  * allow for postWithBackoff's waits in its timeout. The id comes from
  * /auth/me, which is the identity grants and ownership are keyed on.
  *
+ * `onAccount` is called with the new account's id as soon as it exists, before
+ * the (slow) login, for callers that track it in a CleanupBackstop.
+ *
  * `remove` reads the admin page's token when it runs rather than reusing
  * headers captured at creation, so it authenticates with whatever token that
  * page holds at teardown.
@@ -474,6 +619,7 @@ export async function createSecondUser(
   adminPage: Page,
   browser: Browser,
   label: string,
+  onAccount?: (id: string) => void,
 ): Promise<SecondUser> {
   const username = e2eSecureName("user");
   const password = `e2e-${crypto.randomUUID()}`;
@@ -486,15 +632,7 @@ export async function createSecondUser(
       () => context.close(),
       async () => {
         if (!accountId) return;
-        const res = await adminPage.request.delete(
-          `/api/v1/users/${accountId}`,
-          { headers: await getAuthHeaders(adminPage), failOnStatusCode: false },
-        );
-        if (!res.ok() && res.status() !== 404) {
-          throw new Error(
-            `could not delete ${label} (${accountId}): ${res.status()}`,
-          );
-        }
+        await deleteAccount(await pageCleanupApi(adminPage), accountId, label);
       },
     ]);
   try {
@@ -522,6 +660,9 @@ export async function createSecondUser(
     if (!accountId) {
       throw new Error(`created ${label}, but the response carried no id to delete it by`);
     }
+    // Reported at once, so a caller's afterAll backstop can delete the account
+    // even when the login below outlasts the test's timeout.
+    onAccount?.(accountId);
     const page = await context.newPage();
     const login = await postWithBackoff(
       page,
