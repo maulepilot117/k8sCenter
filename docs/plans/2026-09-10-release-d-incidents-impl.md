@@ -112,7 +112,7 @@ Release E added a `changes.receipts` row to `capabilityOperations` in `backend/i
 
 ## As shipped (2026-10-07)
 
-Release D is functionally complete. U20 shipped earlier (#562); the remaining units merged as #572 to #589, except U25b (#587, the capture-to-incident button and navigation), which was still open when this section was written and is the final unit. The sections below the amendments are the historical plan; this section records what merged and where it differs. Facts here come from `git log` and `gh pr view` on `main` at 6432d6b7.
+Release D is complete. U20 shipped earlier (#562); the remaining units merged as #572 to #589, with U25b (#587, the capture-to-incident button and navigation, merged as 904638d5) the final unit. The sections below the amendments are the historical plan; this section records what merged and where it differs. Facts here come from `git log` and `gh pr view` on `main` at 904638d5.
 
 ### Units
 
@@ -132,7 +132,7 @@ Release D is functionally complete. U20 shipped earlier (#562); the remaining un
 | U24b | #586 | `/observability/incidents/[id]` workspace: evidence timeline, notes with revision conflicts, sharing, export. |
 | U25c | #588 | Idempotent `POST /incidents` with `clientRequestId`, migration `000026_incident_client_request_id`. |
 | U24c | #589 | AE6 end-to-end spec (`e2e/tests/incidents.spec.ts`). |
-| U25b | #587 | Capture-to-incident button in the Investigate workspace and the Incidents navigation entry. Open at the time of writing. |
+| U25b | #587 | Capture-to-incident button in the Investigate workspace and the Incidents navigation entry (merged last, as 904638d5). |
 
 The units merged out of the plan's order (for example U25a before U24a, and U25c added late), because each merged when it was ready.
 
@@ -144,6 +144,7 @@ The units merged out of the plan's order (for example U25a before U24a, and U25c
 - **`apiBlob` in `frontend/lib/api.ts` (#586).** The export download needs the bearer token, `X-Cluster-ID` and the one 401 refresh-and-retry that `api()` has, so `apiBlob` shares its transport. `ApiError` now keeps the response headers so a busy message can show `Retry-After`.
 - **UUID and dot-segment guards (#586).** `incident-api.ts` refuses incident and note ids that are not UUIDs before building a path, and the `[id]` page renders a not-found state without the island. `store.ValidateGranteeID` rejects `.` and `..` as grantee ids because `DELETE /incidents/{id}/grants/..` normalizes to `DELETE /incidents/{id}`; `liveLinkTarget` yields no link for a dot-segment namespace or name.
 - **Idempotent create replaced the client heuristic.** A replay returns 200 with the stored incident; the same key with a different title, summary, window or cluster is 409 `client_request_id_conflict`.
+- **U25b's final shape (#587).** Both the capture button and the IncidentList New-incident form send a `clientRequestId` per intent. The button resends the stored request id and the stored payload while the outcome is unknown; the form resends its stored id with the current inputs. The key is kept except on 400, 413 and no-database (the form keeps it on 400/413 too once an earlier attempt with that key had an unknown outcome). A 409 `client_request_id_conflict` shows a "may already exist — check your incidents" notice and an explicit "Create a new incident anyway". The button's pending records are user-scoped in `sessionStorage`, cleared on logout, and resent silently for at most 15 minutes from the last send. Details are in `docs/solutions/idempotent-create-client-request-id.md`.
 - **E2E second identity (#589).** `createSecondUser` and `postWithBackoff` live in `e2e/helpers.ts`. The second user logs in from its own fresh context, because logging in through the admin's `page.request` replaces the admin's refresh cookie. `change-receipts.spec.ts` was moved onto the helper. New `withCleanup` and `runCleanups` helpers run every cleanup even when one throws.
 - **Window source field (#587).** The brief said `sourceObservedAt`; the check contract's field is `observedAt`, and the diagnostics HTTP response does not carry it yet, so every capture window falls back to one hour before the click (#595).
 - **File budget.** Some units exceeded five files where migrations, notes and tests could not fit (#588 touched seven).
@@ -156,6 +157,7 @@ The units merged out of the plan's order (for example U25a before U24a, and U25c
 - #593: the backend capture-budget test mirrors `PROXY_TIMEOUT_MS` as a literal; derive or guard it.
 - #594: `DiagnosticWorkspace` Tailwind conversion (R-6, pre-existing debt).
 - #595: the diagnostics HTTP response lacks `observedAt`, so capture windows always fall back to now minus one hour.
+- #597: the IncidentList New-incident form loses its outstanding create key on a page reload.
 
 ---
 

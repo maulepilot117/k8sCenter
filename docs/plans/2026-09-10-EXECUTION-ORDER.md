@@ -186,7 +186,7 @@ U20                     pulled forward from Release D                         [d
 Release E               U26 → U27 → U28 → U29a → U29b → U30a → U30b → U31   [done]
                         PRs #563–#570 (see "Release E — as shipped" below)
 Release D (remainder)   U21a → U21b → U22a → U22b → U23a → U23b → U24a → U24b → U24c → U25a → U25b   [done]
-                        PRs #572–#589 (+ U25c #588 added mid-release); final unit U25b is #587 (see "Release D — as shipped" below)
+                        PRs #572–#589 (+ U25c #588 added mid-release); final unit U25b is #587, merged as 904638d5 (see "Release D — as shipped" below)
 
 Release G / P5          29 catalog widgets, ~7 units — interleaved as waves   [done]
                         between the releases above; no ordering dependency
@@ -228,9 +228,9 @@ Open items carried out of Release E:
 
 ### Release D — as shipped (2026-10-07)
 
-Release D (persistent incident investigations) is done: #572 (plan amendments), #573 U21a, #574 U22a, #575 U21b, #576 U22b, #577 (test hotfix), #578 U23a, #583 U23b, #582 U25a, #584 U24a, #585 (notifications digest hotfix), #586 U24b, #588 U25c (idempotent create, added mid-release), #589 U24c, and #587 U25b (capture-to-incident button and navigation, the final unit; open when this was written). Migrations `000024` to `000026`. Per-unit deviations are in the "As shipped" section of `2026-09-10-release-d-incidents-impl.md`.
+Release D (persistent incident investigations) is done: #572 (plan amendments), #573 U21a, #574 U22a, #575 U21b, #576 U22b, #577 (test hotfix), #578 U23a, #583 U23b, #582 U25a, #584 U24a, #585 (notifications digest hotfix), #586 U24b, #588 U25c (idempotent create, added mid-release), #589 U24c, and #587 U25b (capture-to-incident button and navigation, merged last as 904638d5). Migrations `000024` to `000026`. Per-unit deviations are in the "As shipped" section of `2026-09-10-release-d-incidents-impl.md`.
 
-Open items carried out of Release D: issues #590 (velero assurance flake under `-race`), #591 (saved-views e2e second-user login), #592 (e2e `afterAll` backstop), #593 (`PROXY_TIMEOUT_MS` mirrored in a backend test), #594 (`DiagnosticWorkspace` Tailwind conversion), #595 (diagnostics response lacks `observedAt`). The #590 flake is the same test the Release E close-out listed above.
+Open items carried out of Release D: issues #590 (velero assurance flake under `-race`), #591 (saved-views e2e second-user login), #592 (e2e `afterAll` backstop), #593 (`PROXY_TIMEOUT_MS` mirrored in a backend test), #594 (`DiagnosticWorkspace` Tailwind conversion), #595 (diagnostics response lacks `observedAt`), #597 (IncidentList form loses its create key on reload). The #590 flake is the same test the Release E close-out listed above.
 
 ### Correction (2026-09-13): C/U7-U8-U11a pulled forward, Release G inserted
 
