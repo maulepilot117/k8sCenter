@@ -1,5 +1,7 @@
 import {
   type APIRequestContext,
+  type APIResponse,
+  type Browser,
   type BrowserContext,
   expect,
   type Page,
@@ -285,7 +287,14 @@ export async function attachAuthInjection(
   }, token ?? null);
 }
 
-/** Log in through the API and return the access token. */
+/**
+ * Log in through the API and return the access token.
+ *
+ * The page must belong to the identity being logged in: the login answers
+ * with an httpOnly refresh cookie that lands in the page's cookie jar. To
+ * sign in as a second user, use createSecondUser, which logs in from that
+ * user's own context.
+ */
 export async function loginViaApi(
   page: Page,
   username: string,
@@ -319,6 +328,49 @@ export function bearerHeaders(token: string): Record<string, string> {
 }
 
 /**
+ * POSTs, waiting out 429s from the shared 5-per-minute auth bucket with
+ * backoff (honouring Retry-After). Fails loudly if the bucket never clears,
+ * rather than skipping: a skipped isolation test looks like a passing one.
+ *
+ * For the requests a second-identity spec makes against that bucket:
+ * creating the user (`POST /api/v1/users`) and logging it in
+ * (`POST /api/v1/auth/login`). createSecondUser makes both.
+ *
+ * The page/context must belong to the identity being logged in.
+ * `page.request` shares its context's cookie jar, and a login answers with
+ * the httpOnly refresh cookie, so logging user B in through user A's page
+ * replaces A's refresh cookie with B's: A's next token refresh then silently
+ * turns that page into B (in incidents.spec.ts the owner's revoke failed as
+ * "only the incident owner may revoke its grants"). Create the account
+ * through the admin's page, but log it in through a page of its own.
+ */
+export async function postWithBackoff(
+  page: Page,
+  url: string,
+  what: string,
+  init: { headers: Record<string, string>; data: unknown },
+): Promise<APIResponse> {
+  const deadline = Date.now() + 130_000;
+  for (let attempt = 1; ; attempt++) {
+    const res = await page.request.post(url, {
+      ...init,
+      failOnStatusCode: false,
+    });
+    if (res.status() !== 429) return res;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `${what}: still rate limited (429) after ${attempt} attempts; the shared auth bucket never cleared, so cross-user isolation was NOT checked`,
+      );
+    }
+    const retryAfter = Number(res.headers()["retry-after"]);
+    const waitS = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter, 30)
+      : Math.min(5 * 2 ** (attempt - 1), 30);
+    await page.waitForTimeout(waitS * 1000);
+  }
+}
+
+/**
  * A unique name backed by crypto.randomUUID rather than Math.random.
  *
  * e2eName is fine for k8s object names, but a value that becomes an account
@@ -327,6 +379,190 @@ export function bearerHeaders(token: string): Record<string, string> {
  */
 export function e2eSecureName(kind: string): string {
   return `e2e${kind}${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+/** One teardown action; it may return nothing or a promise of anything. */
+export type Cleanup = () => unknown;
+
+/**
+ * Runs every cleanup in order, each one whether or not an earlier one threw,
+ * then throws if any failed. A teardown that stopped at its first failure
+ * would leave the rest behind for an unrelated later spec to trip over.
+ */
+export async function runCleanups(cleanups: readonly Cleanup[]): Promise<void> {
+  const failures: unknown[] = [];
+  for (const cleanup of cleanups) {
+    try {
+      await cleanup();
+    } catch (err) {
+      failures.push(err);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(
+      failures,
+      `${failures.length} cleanups failed: ${failures.map(String).join("; ")}`,
+    );
+  }
+}
+
+/**
+ * Runs `body`, then every cleanup (see runCleanups), whatever happened.
+ *
+ * A cleanup failure never masks the test's own failure: when `body` threw,
+ * that error is the one rethrown and the cleanup failures are logged beside
+ * it. A bare `finally` that throws would replace the test's error with the
+ * teardown's, and the report would blame the wrong thing.
+ *
+ * Put everything that creates server state inside `body`, so a failure part
+ * way through setup is still cleaned up. Cleanups run after `body`, so they
+ * can read variables `body` assigned.
+ */
+export async function withCleanup(
+  body: () => Promise<void>,
+  cleanups: readonly Cleanup[],
+): Promise<void> {
+  try {
+    await body();
+  } catch (err) {
+    try {
+      await runCleanups(cleanups);
+    } catch (cleanupErr) {
+      console.error("cleanup also failed after the test failed:", cleanupErr);
+    }
+    throw err;
+  }
+  await runCleanups(cleanups);
+}
+
+/**
+ * A second local user, signed in from a browser context of its own.
+ *
+ * `token` authenticates its API calls (with bearerHeaders); `page` is in its
+ * own context with the auth injection applied, so its UI runs as this user
+ * alone. `remove` closes that context and deletes the account.
+ */
+export interface SecondUser {
+  id: string;
+  username: string;
+  token: string;
+  context: BrowserContext;
+  page: Page;
+  remove: () => Promise<void>;
+}
+
+/**
+ * Creates a local viewer with no Kubernetes RBAC, logs it in, and returns it
+ * (see SecondUser). `label` names it in failure messages ("the collaborator").
+ *
+ * The admin's page creates the account; the LOGIN, and every later call the
+ * user makes, goes through the user's own fresh context, never the admin's
+ * (see postWithBackoff for the refresh-cookie swap the other way invites).
+ * The context starts from an empty storage state, so the admin's refresh
+ * cookie and stored token never reach it either.
+ *
+ * Both POSTs spend the shared 5-per-minute auth bucket, so a caller should
+ * allow for postWithBackoff's waits in its timeout. The id comes from
+ * /auth/me, which is the identity grants and ownership are keyed on.
+ *
+ * `remove` reads the admin page's token when it runs rather than reusing
+ * headers captured at creation, so it authenticates with whatever token that
+ * page holds at teardown.
+ */
+export async function createSecondUser(
+  adminPage: Page,
+  browser: Browser,
+  label: string,
+): Promise<SecondUser> {
+  const username = e2eSecureName("user");
+  const password = `e2e-${crypto.randomUUID()}`;
+  const context = await browser.newContext({
+    storageState: { cookies: [], origins: [] },
+  });
+  let accountId: string | undefined;
+  const remove = () =>
+    runCleanups([
+      () => context.close(),
+      async () => {
+        if (!accountId) return;
+        const res = await adminPage.request.delete(
+          `/api/v1/users/${accountId}`,
+          { headers: await getAuthHeaders(adminPage), failOnStatusCode: false },
+        );
+        if (!res.ok() && res.status() !== 404) {
+          throw new Error(
+            `could not delete ${label} (${accountId}): ${res.status()}`,
+          );
+        }
+      },
+    ]);
+  try {
+    const created = await postWithBackoff(
+      adminPage,
+      "/api/v1/users",
+      `create ${label}`,
+      {
+        headers: await getAuthHeaders(adminPage),
+        data: {
+          username,
+          password,
+          k8sUsername: username,
+          k8sGroups: [],
+          roles: ["viewer"],
+        },
+      },
+    );
+    if (!created.ok()) {
+      throw new Error(
+        `creating ${label} failed: ${created.status()} ${await created.text()}`,
+      );
+    }
+    accountId = (await created.json())?.data?.id as string | undefined;
+    if (!accountId) {
+      throw new Error(`created ${label}, but the response carried no id to delete it by`);
+    }
+    const page = await context.newPage();
+    const login = await postWithBackoff(
+      page,
+      "/api/v1/auth/login",
+      `log in as ${label}`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        data: { username, password },
+      },
+    );
+    if (!login.ok()) {
+      throw new Error(
+        `${label} login failed: ${login.status()} ${await login.text()}`,
+      );
+    }
+    const token = (await login.json()).data.accessToken as string;
+    // The namespace selects /auth/me's one-namespace fast path; only the id
+    // is used, and `default` always exists.
+    const me = await page.request.get("/api/v1/auth/me?namespace=default", {
+      headers: bearerHeaders(token),
+      failOnStatusCode: false,
+    });
+    const id = (await me.json().catch(() => null))?.data?.user?.id as
+      | string
+      | undefined;
+    if (!me.ok() || !id) {
+      throw new Error(`/auth/me returned no user id for ${label}: ${me.status()}`);
+    }
+    await attachAuthInjection(page, token);
+    return { id, username, token, context, page, remove };
+  } catch (err) {
+    try {
+      await remove();
+    } catch (cleanupErr) {
+      console.error(`removing ${label} also failed:`, cleanupErr);
+    }
+    throw err;
+  }
 }
 
 /**
