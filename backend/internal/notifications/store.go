@@ -112,7 +112,7 @@ var errDedupUnavailable = errors.New("dedup unavailable")
 // A failure before the insert wraps errDedupUnavailable and has written
 // nothing. A commit failure does not: the row may or may not exist, and the
 // caller's retry is absorbed by this same dedup.
-func (s *Store) InsertDeduped(ctx context.Context, n Notification, window time.Duration) (id string, inserted bool, err error) {
+func (s *Store) InsertDeduped(ctx context.Context, n Notification, window time.Duration) (string, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", false, fmt.Errorf("%w: begin: %w", errDedupUnavailable, err)
@@ -129,7 +129,8 @@ func (s *Store) InsertDeduped(ctx context.Context, n Notification, window time.D
 	if exists {
 		return "", false, nil
 	}
-	if id, err = insertNotification(ctx, tx, n); err != nil {
+	id, err := insertNotification(ctx, tx, n)
+	if err != nil {
 		return "", false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
