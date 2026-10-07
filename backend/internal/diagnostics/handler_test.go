@@ -117,7 +117,7 @@ func testPod(crashing bool) *corev1.Pod {
 
 // newDiagHandler wires a handler whose Lister and TopoBuilder both read the
 // counting lister. With tripwire set, NotifService has no store, so any Emit
-// panics (Store.DedupExists dereferences its nil pool): reaching the
+// panics (Store.InsertDeduped dereferences its nil pool): reaching the
 // notification step at all fails the test.
 func newDiagHandler(lister *countingLister, tripwire bool) *Handler {
 	h := &Handler{

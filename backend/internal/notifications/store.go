@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -29,10 +30,20 @@ func NewStore(pool *pgxpool.Pool, masterSecret string) *Store {
 
 // --- Notifications ---
 
+// rowQuerier is the one pgx method the insert and the dedup lookup need, so
+// each runs either on the pool or inside InsertDeduped's transaction.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // InsertNotification persists a notification and returns its ID.
 func (s *Store) InsertNotification(ctx context.Context, n Notification) (string, error) {
+	return insertNotification(ctx, s.pool, n)
+}
+
+func insertNotification(ctx context.Context, q rowQuerier, n Notification) (string, error) {
 	var id string
-	err := s.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		INSERT INTO nc_notifications (source, severity, title, message, resource_kind, resource_ns, resource_name, resource_uid, cluster_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id`,
@@ -82,11 +93,69 @@ func dedupClusterID(clusterID string) string {
 	return clusterID
 }
 
-// DedupExists checks whether a matching notification was created within the dedup window.
+// errDedupUnavailable marks an InsertDeduped failure that happened before
+// anything was written: the transaction, the identity lock or the dedup
+// lookup failed. The caller may still persist without dedup.
+var errDedupUnavailable = errors.New("dedup unavailable")
+
+// InsertDeduped persists n unless a notification with the same dedup
+// identity was created within window, and reports whether it inserted.
+//
+// The lookup and the insert run in one transaction under a
+// transaction-scoped advisory lock on the identity (dedupLockKey), so
+// concurrent emits of one identity serialize: the first inserts, and each
+// later one, whose lookup takes a fresh READ COMMITTED snapshot only after
+// the lock is granted, sees that row and inserts nothing. A plain
+// check-then-insert let every concurrent caller see "no row yet" (#590:
+// two backup-assurance replicas sending one claimed intent at once).
+//
+// A failure before the insert wraps errDedupUnavailable and has written
+// nothing. A commit failure does not: the row may or may not exist, and the
+// caller's retry is absorbed by this same dedup.
+func (s *Store) InsertDeduped(ctx context.Context, n Notification, window time.Duration) (id string, inserted bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("%w: begin: %w", errDedupUnavailable, err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, dedupLockKey(n)); err != nil {
+		return "", false, fmt.Errorf("%w: lock: %w", errDedupUnavailable, err)
+	}
+	exists, err := dedupExists(ctx, tx, n, window)
+	if err != nil {
+		return "", false, fmt.Errorf("%w: %w", errDedupUnavailable, err)
+	}
+	if exists {
+		return "", false, nil
+	}
+	if id, err = insertNotification(ctx, tx, n); err != nil {
+		return "", false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", false, fmt.Errorf("commit notification: %w", err)
+	}
+	return id, true, nil
+}
+
+// dedupLockKey is the advisory-lock key for n's dedup identity: the fields
+// dedupExistsQuery compares, with the cluster folded the same way, so two
+// emits that would dedup against each other always contend for one lock.
+// Identities that hash alike only serialize; they never dedup each other,
+// because the lookup under the lock still compares every field.
+func dedupLockKey(n Notification) string {
+	return strings.Join([]string{
+		"nc_notifications_dedup",
+		string(n.Source), n.ResourceKind, n.ResourceNS, n.ResourceName, n.Title,
+		n.ResourceUID, dedupClusterID(n.ClusterID),
+	}, "\x1f")
+}
+
+// dedupExists checks whether a matching notification was created within the dedup window.
 // Uses database time (now()) to avoid clock drift between app server and PostgreSQL.
-func (s *Store) DedupExists(ctx context.Context, n Notification, window time.Duration) (bool, error) {
+func dedupExists(ctx context.Context, q rowQuerier, n Notification, window time.Duration) (bool, error) {
 	var exists bool
-	err := s.pool.QueryRow(ctx, dedupExistsQuery,
+	err := q.QueryRow(ctx, dedupExistsQuery,
 		n.Source, n.ResourceKind, n.ResourceNS, n.ResourceName, n.Title,
 		n.ResourceUID, dedupClusterID(n.ClusterID), k8s.LocalClusterID,
 		fmt.Sprintf("%d seconds", int(window.Seconds())),

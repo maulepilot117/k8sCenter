@@ -141,9 +141,9 @@ func mustInsert(t *testing.T, s *Store, n Notification) string {
 
 func mustDedup(t *testing.T, s *Store, n Notification) bool {
 	t.Helper()
-	exists, err := s.DedupExists(t.Context(), n, dedupWindow)
+	exists, err := dedupExists(t.Context(), s.pool, n, dedupWindow)
 	if err != nil {
-		t.Fatalf("DedupExists: %v", err)
+		t.Fatalf("dedupExists: %v", err)
 	}
 	return exists
 }
@@ -167,6 +167,41 @@ func TestDedupClusterID(t *testing.T) {
 	for _, tc := range tests {
 		if got := dedupClusterID(tc.in); got != tc.want {
 			t.Errorf("dedupClusterID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestDedupLockKey_MatchesTheDedupIdentity pins InsertDeduped's lock to the
+// lookup's identity. Two emits the lookup would fold together must contend
+// for one lock, or they race past each other again (#590); fields outside
+// the identity must not split the lock either.
+func TestDedupLockKey_MatchesTheDedupIdentity(t *testing.T) {
+	base := Notification{
+		Source: SourceVelero, Severity: SeverityWarning, Title: "t", Message: "m",
+		ResourceKind: "Pod", ResourceNS: "ns", ResourceName: "web", ResourceUID: "uid", ClusterID: "",
+	}
+	key := dedupLockKey(base)
+
+	same := base
+	same.ClusterID = k8s.LocalClusterID
+	same.Severity, same.Message = SeverityCritical, "other message"
+	if got := dedupLockKey(same); got != key {
+		t.Errorf("empty and local cluster, or a differing severity/message, split the lock:\n%q\n%q", key, got)
+	}
+
+	for name, mutate := range map[string]func(*Notification){
+		"source":  func(n *Notification) { n.Source = SourceDiagnostic },
+		"kind":    func(n *Notification) { n.ResourceKind = "Deployment" },
+		"ns":      func(n *Notification) { n.ResourceNS = "other" },
+		"name":    func(n *Notification) { n.ResourceName = "api" },
+		"title":   func(n *Notification) { n.Title = "other" },
+		"uid":     func(n *Notification) { n.ResourceUID = "uid-2" },
+		"cluster": func(n *Notification) { n.ClusterID = "prod-east" },
+	} {
+		n := base
+		mutate(&n)
+		if dedupLockKey(n) == key {
+			t.Errorf("a different %s shares the lock key %q", name, key)
 		}
 	}
 }
