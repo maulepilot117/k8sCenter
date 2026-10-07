@@ -196,7 +196,7 @@ export default function DiagnosticWorkspace() {
               type="button"
               onClick={handleInvestigate}
               disabled={!namespace.value || !kind.value || !name.value}
-              class="cursor-pointer rounded-md border border-accent bg-accent px-4 py-1.5 text-sm font-semibold text-[var(--bg-base)] disabled:cursor-not-allowed disabled:opacity-50"
+              class="cursor-pointer rounded-md border border-accent bg-accent px-4 py-1.5 text-sm font-semibold text-(--bg-base) disabled:cursor-not-allowed disabled:opacity-50"
             >
               Investigate
             </button>

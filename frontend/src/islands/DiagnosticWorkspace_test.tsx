@@ -197,3 +197,50 @@ test("each picker field is named by its visible label", () => {
     expect(field?.tagName).toMatch(/^(INPUT|SELECT)$/);
   }
 });
+
+function check(
+  status: "pass" | "warn" | "fail",
+  severity: "critical" | "warning" | "info",
+) {
+  return { ruleName: `${status}-${severity}`, status, severity, message: "m" };
+}
+
+for (const { name, results, text, banner, tone } of [
+  {
+    name: "a critical failure",
+    results: [check("fail", "critical"), check("warn", "warning")],
+    text: "1 critical issue",
+    banner: "bg-error-dim",
+    tone: "text-error",
+  },
+  {
+    name: "warnings only",
+    results: [check("warn", "warning"), check("fail", "warning")],
+    text: "2 warnings",
+    banner: "bg-warning-dim",
+    tone: "text-warning",
+  },
+  {
+    name: "no failures",
+    results: [check("pass", "info")],
+    text: "All checks passed",
+    banner: "bg-success-dim",
+    tone: "text-success",
+  },
+]) {
+  test(`the status banner takes the ${tone} tone for ${name}`, async () => {
+    const root = await mount(200, {
+      data: {
+        target: { kind: "Pod", name: "web", namespace: "team-a" },
+        results,
+        blastRadius: { directlyAffected: [], potentiallyAffected: [] },
+      },
+    });
+    const status = Array.from(root.querySelectorAll("span")).find(
+      (s) => s.textContent === text,
+    );
+    expect(status?.classList.contains(tone)).toBe(true);
+    const bar = status?.parentElement?.parentElement;
+    expect(bar?.classList.contains(banner)).toBe(true);
+  });
+}
