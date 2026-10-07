@@ -23,6 +23,37 @@ mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
 const { default: DiagnosticWorkspace } = await import(
   "./DiagnosticWorkspace.tsx"
 );
+const { fetchCurrentUser } = await import("@/lib/auth.ts");
+
+/**
+ * Signs a user in, as the top bar's /auth/me load does: the capture button
+ * stays inactive until the signed-in user is known.
+ */
+async function signIn() {
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        data: {
+          user: {
+            id: "u1",
+            username: "u1",
+            provider: "local",
+            kubernetesUsername: "u1",
+            kubernetesGroups: [],
+            roles: [],
+          },
+          rbac: {},
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as unknown as typeof globalThis.fetch;
+  try {
+    await fetchCurrentUser();
+  } finally {
+    globalThis.fetch = previous;
+  }
+}
 
 afterAll(() => {
   mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
@@ -116,6 +147,7 @@ test("a local result renders without the remote notice", async () => {
 });
 
 test("a local result offers capture to an incident beside Re-scan", async () => {
+  await signIn();
   const root = await mount(200, {
     data: {
       target: { kind: "Pod", name: "web", namespace: "team-a" },
