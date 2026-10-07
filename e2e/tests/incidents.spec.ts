@@ -1,24 +1,26 @@
-import type { Browser, Locator, Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { expect, test } from "../fixtures/base.ts";
 import {
   attachAuthInjection,
   bearerHeaders,
+  createSecondUser,
   e2eName,
-  e2eSecureName,
   getAuthHeaders,
-  postWithBackoff,
+  type SecondUser,
+  withCleanup,
 } from "../helpers.ts";
 
 /**
  * Persistent incident investigations, end to end (Release D U24c, AE6).
  *
  * Runs against the real backend, the CI kind cluster and PostgreSQL 17. The
- * second identity follows the pattern change-receipts.spec.ts ships: the
- * admin creates a local viewer through POST /api/v1/users, logs it in through
- * the shared auth bucket with backoff, drives its API with bearerHeaders and
- * its UI with attachAuthInjection in a fresh context, and deletes it in
- * `finally`. No extra Playwright project or setup file is needed.
+ * second identity is createSecondUser (e2e/helpers.ts), which
+ * change-receipts.spec.ts shares: the admin creates a local viewer through
+ * POST /api/v1/users, the viewer logs in and makes every call from its own
+ * fresh browser context (API with bearerHeaders, UI under the auth
+ * injection), and teardown deletes it. No extra Playwright project or setup
+ * file is needed.
  *
  * What the kind cluster can and cannot prove:
  *
@@ -138,88 +140,16 @@ async function deleteIncident(page: Page, id: string): Promise<void> {
 }
 
 /**
- * A local viewer user, its access token, and a page signed in as it alone.
- * `remove` closes that page's context and deletes the account.
+ * Downloads the incident's JSON export as `page`'s user, through the Export
+ * menu, and returns the file's text.
  */
-interface SecondUser {
-  id: string;
-  token: string;
-  page: Page;
-  remove: () => Promise<void>;
-}
-
-/**
- * Creates a viewer with no Kubernetes RBAC and logs it in. Both calls spend
- * the shared 5-per-minute auth bucket, so they go through postWithBackoff;
- * the id comes from /auth/me, which is the identity grants are keyed on.
- *
- * The admin creates the account, but the LOGIN goes through the viewer's own
- * browser context, never the admin page's. `page.request` shares its
- * context's cookie jar, and a login answers with the httpOnly refresh
- * cookie: logged in through the admin page, the viewer's cookie replaced the
- * admin's, and the admin page's next token refresh silently turned it into
- * the viewer (a revoke then failed as "only the incident owner may revoke
- * its grants"). The empty storage state keeps the admin's cookie and stored
- * token out of the viewer's context in the other direction.
- */
-async function createSecondUser(
-  page: Page,
-  browser: Browser,
-): Promise<SecondUser> {
-  const headers = await getAuthHeaders(page);
-  const username = e2eSecureName("collab");
-  const password = `e2e-${crypto.randomUUID()}`;
-  const created = await postWithBackoff(page, "/api/v1/users", "create the collaborator", {
-    headers,
-    data: {
-      username,
-      password,
-      k8sUsername: username,
-      k8sGroups: [],
-      roles: ["viewer"],
-    },
-  });
-  if (!created.ok()) {
-    throw new Error(
-      `creating the collaborator failed: ${created.status()} ${await created.text()}`,
-    );
-  }
-  const accountId = (await created.json())?.data?.id as string | undefined;
-  const context = await browser.newContext({
-    storageState: { cookies: [], origins: [] },
-  });
-  const remove = async () => {
-    await context.close();
-    if (!accountId) return;
-    await page.request.delete(`/api/v1/users/${accountId}`, {
-      headers,
-      failOnStatusCode: false,
-    });
-  };
-  try {
-    const own = await context.newPage();
-    const login = await postWithBackoff(own, "/api/v1/auth/login", "log in as the collaborator", {
-      headers: {
-        "Content-Type": "application/json",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      data: { username, password },
-    });
-    if (!login.ok()) {
-      throw new Error(`collaborator login failed: ${login.status()} ${await login.text()}`);
-    }
-    const token = (await login.json()).data.accessToken as string;
-    const me = await own.request.get(`/api/v1/auth/me?namespace=${NS}`, {
-      headers: bearerHeaders(token),
-    });
-    const id = (await me.json())?.data?.user?.id as string | undefined;
-    if (!id) throw new Error("/auth/me returned no user id for the collaborator");
-    await attachAuthInjection(own, token);
-    return { id, token, page: own, remove };
-  } catch (err) {
-    await remove();
-    throw err;
-  }
+async function downloadJsonExport(page: Page): Promise<string> {
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("group", { name: "Export" })
+    .getByRole("button", { name: "JSON", exact: true })
+    .click();
+  return await readFile(await (await download).path(), "utf8");
 }
 
 const captureRegion = (page: Page) =>
@@ -293,7 +223,7 @@ test.describe("Incidents (AE6)", () => {
     let incidentId: string | undefined;
     let collaborator: SecondUser | undefined;
 
-    try {
+    await withCleanup(async () => {
       await page.goto(INCIDENTS);
       await applyYaml(page, canaryPod(pod, canary));
       // Capture's diagnostics and the live link both read through the
@@ -381,7 +311,7 @@ test.describe("Incidents (AE6)", () => {
         await expect(notes.getByRole("list", { name: "Notes" })).toContainText(note);
       });
 
-      collaborator = await createSecondUser(page, browser);
+      collaborator = await createSecondUser(page, browser, "the collaborator");
       const collab = collaborator;
       const incidentApi = `/api/v1/incidents/${incidentId}`;
       const collabGet = async () =>
@@ -429,6 +359,19 @@ test.describe("Incidents (AE6)", () => {
         // Owner-only controls are not offered to a collaborator.
         await expect(captureRegion(other)).toHaveCount(0);
         await expect(sharingRegion(other)).toHaveCount(0);
+
+        // The collaborator's export is its own filtered view: every item a
+        // withheld placeholder, and nothing that names the pod or leaks the
+        // stripped annotation.
+        const text = await downloadJsonExport(other);
+        for (const leak of [pod, canary, "stringData", LAST_APPLIED]) {
+          expect(text).not.toContain(leak);
+        }
+        const doc = JSON.parse(text);
+        expect(doc.incident.id).toBe(incidentId);
+        expect(doc.counts).toEqual({ visible: 0, withheld: before.visible });
+        expect(doc.evidence).toHaveLength(0);
+        expect(doc.withheld).toHaveLength(before.visible);
       });
 
       await test.step("revocation: the owner removes the grant; the next load is 404", async () => {
@@ -448,13 +391,7 @@ test.describe("Incidents (AE6)", () => {
       });
 
       await test.step("filtered export: the JSON download carries no secret material", async () => {
-        const download = page.waitForEvent("download");
-        await page
-          .getByRole("group", { name: "Export" })
-          .getByRole("button", { name: "JSON", exact: true })
-          .click();
-        const file = await (await download).path();
-        const text = await readFile(file, "utf8");
+        const text = await downloadJsonExport(page);
         expect(text).not.toContain("stringData");
         expect(text).not.toContain(LAST_APPLIED);
         expect(text).not.toContain(canary);
@@ -475,11 +412,11 @@ test.describe("Incidents (AE6)", () => {
         );
         expect(objectSnapshot?.redaction?.rules).toContain("last-applied-config");
       });
-    } finally {
-      await collaborator?.remove();
-      if (incidentId) await deleteIncident(page, incidentId);
-      await deletePod(page, pod);
-    }
+    }, [
+      () => collaborator?.remove(),
+      () => (incidentId ? deleteIncident(page, incidentId) : undefined),
+      () => deletePod(page, pod),
+    ]);
   });
 
   test("a failing source is reported per source, not as a blanket error", async ({
@@ -491,7 +428,7 @@ test.describe("Incidents (AE6)", () => {
     const missing = e2eName("svc");
     await page.goto(INCIDENTS);
     const id = await createIncidentViaApi(page, title);
-    try {
+    await withCleanup(async () => {
       await openIncident(page, id, title);
       const result = await capture(page, "Service", missing);
       await expect(result).toContainText(/^Capture partial:/);
@@ -512,9 +449,7 @@ test.describe("Incidents (AE6)", () => {
         rows.filter({ hasText: "Identified by name only" }),
       ).toHaveCount(1);
       await expect(page.getByText("No evidence yet.")).toHaveCount(0);
-    } finally {
-      await deleteIncident(page, id);
-    }
+    }, [() => deleteIncident(page, id)]);
   });
 
   test("a stale note edit shows the conflict banner and keeps the draft", async ({
@@ -526,17 +461,19 @@ test.describe("Incidents (AE6)", () => {
     const draft = `Second tab draft ${crypto.randomUUID()}`;
     await page.goto(INCIDENTS);
     const id = await createIncidentViaApi(page, title);
-    const res = await page.request.post(`/api/v1/incidents/${id}/notes`, {
-      headers: await getAuthHeaders(page),
-      data: { body: original },
-    });
-    expect(res.ok(), `create note: ${res.status()}`).toBe(true);
+    let secondTab: Page | undefined;
+    await withCleanup(async () => {
+      const res = await page.request.post(`/api/v1/incidents/${id}/notes`, {
+        headers: await getAuthHeaders(page),
+        data: { body: original },
+      });
+      expect(res.ok(), `create note: ${res.status()}`).toBe(true);
 
-    // A second tab of the same user. A page opened on the context does not
-    // get the base fixture's token injection, so it is applied here.
-    const second = await page.context().newPage();
-    await attachAuthInjection(second);
-    try {
+      // A second tab of the same user. A page opened on the context does not
+      // get the base fixture's token injection, so it is applied here.
+      const second = await page.context().newPage();
+      secondTab = second;
+      await attachAuthInjection(second);
       for (const tab of [page, second]) {
         await openIncident(tab, id, title);
         const notes = notesRegion(tab);
@@ -569,9 +506,6 @@ test.describe("Incidents (AE6)", () => {
       await expect(secondNotes.getByText("Current saved text")).toBeVisible();
       await expect(secondNotes).toContainText(first);
       await expect(secondNotes.getByLabel("Edit note")).toHaveValue(draft);
-    } finally {
-      await second.close();
-      await deleteIncident(page, id);
-    }
+    }, [() => secondTab?.close(), () => deleteIncident(page, id)]);
   });
 });

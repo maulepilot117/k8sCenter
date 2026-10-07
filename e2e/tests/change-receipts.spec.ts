@@ -3,10 +3,11 @@ import { expect, test } from "../fixtures/base.ts";
 import {
   attachAuthInjection,
   bearerHeaders,
+  createSecondUser,
   e2eName,
-  e2eSecureName,
   getAuthHeaders,
-  postWithBackoff,
+  type SecondUser,
+  withCleanup,
 } from "../helpers.ts";
 
 /**
@@ -472,68 +473,28 @@ test.describe("Change receipts (live)", () => {
     test.setTimeout(180_000);
     const name = e2eName("cm");
     createdConfigMaps.push(name);
-    await page.goto("/");
-    const { operationId } = await trackedApply(page, configMap(name));
-    const headers = await getAuthHeaders(page);
+    let second: SecondUser | undefined;
+    await withCleanup(async () => {
+      await page.goto("/");
+      const { operationId } = await trackedApply(page, configMap(name));
 
-    const username = e2eSecureName("user");
-    const password = `e2e-${crypto.randomUUID()}`;
-    const created = await postWithBackoff(page, "/api/v1/users", "create the second user", {
-      headers,
-      data: {
-        username,
-        password,
-        k8sUsername: username,
-        k8sGroups: [],
-        roles: ["viewer"],
-      },
-    });
-    if (!created.ok()) {
-      throw new Error(
-        `creating the second user failed: ${created.status()} ${await created.text()}`,
-      );
-    }
-    const userId = (await created.json())?.data?.id;
-    try {
-      const login = await postWithBackoff(page, "/api/v1/auth/login", "log in as the second user", {
-        headers: {
-          "Content-Type": "application/json",
-          "X-Requested-With": "XMLHttpRequest",
-        },
-        data: { username, password },
-      });
-      if (!login.ok()) {
-        throw new Error(`second login failed: ${login.status()} ${await login.text()}`);
-      }
-      const token = (await login.json()).data.accessToken as string;
+      // Logs in from its own context: logging in through the admin's page
+      // would swap the admin's refresh cookie for the second user's.
+      second = await createSecondUser(page, browser, "the second user");
+      const other = second.page;
 
-      const direct = await page.request.get(`/api/v1/changes/${operationId}`, {
-        headers: bearerHeaders(token),
+      const direct = await other.request.get(`/api/v1/changes/${operationId}`, {
+        headers: bearerHeaders(second.token),
         failOnStatusCode: false,
       });
       expect(direct.status()).toBe(404);
 
-      const context = await browser.newContext();
-      try {
-        const other = await context.newPage();
-        await attachAuthInjection(other, token);
-        await other.goto(`/changes/${operationId}`);
-        await expect(other.getByRole("alert")).toContainText(
-          "Change receipt not found",
-        );
-        await expect(other.getByText(name)).toHaveCount(0);
-      } finally {
-        await context.close();
-      }
-    } finally {
-      if (userId) {
-        await page.request.delete(`/api/v1/users/${userId}`, {
-          headers,
-          failOnStatusCode: false,
-        });
-      }
-      await deleteConfigMap(page, name);
-    }
+      await other.goto(`/changes/${operationId}`);
+      await expect(other.getByRole("alert")).toContainText(
+        "Change receipt not found",
+      );
+      await expect(other.getByText(name)).toHaveCount(0);
+    }, [() => second?.remove(), () => deleteConfigMap(page, name)]);
   });
 
   test("the receipts list is reachable from the Tools navigation", async ({
