@@ -2,11 +2,14 @@ import { expect, test } from "../fixtures/base.ts";
 import {
   attachAuthInjection,
   bearerHeaders,
+  CleanupBackstop,
   createSavedView,
   createSecondUser,
+  deleteAccount,
   deleteAllSavedViews,
   e2eName,
   getAuthHeaders,
+  runCleanups,
   type SavedViewConfigSeed,
   type SecondUser,
   setClusterTarget,
@@ -32,6 +35,13 @@ import {
 
 const PODS = "/workloads/pods";
 
+/**
+ * Backstop for the second user's account: a test that times out is aborted
+ * and its page closed, so withCleanup may not run. afterAll deletes whatever
+ * the test did not.
+ */
+const backstop = new CleanupBackstop();
+
 function podConfig(
   overrides: Partial<SavedViewConfigSeed> = {},
 ): SavedViewConfigSeed {
@@ -53,16 +63,24 @@ test.describe.serial("Saved views", () => {
     await deleteAllSavedViews(page);
   });
 
-  test.afterAll(async ({ browser }) => {
-    // afterAll gets no page fixture; open one so cleanup can authenticate.
-    const context = await browser.newContext({
-      storageState: "playwright/.auth/admin.json",
-    });
-    const page = await context.newPage();
-    await attachAuthInjection(page);
-    await page.goto(PODS);
-    await deleteAllSavedViews(page);
-    await context.close();
+  test.afterAll(async ({ browser, playwright }, testInfo) => {
+    // Its own, generous timeout: the default hook budget is the test timeout,
+    // which an aborted slow test may have used up.
+    testInfo.setTimeout(60_000);
+    await runCleanups([
+      () => backstop.drain(playwright, testInfo.project.use.baseURL),
+      async () => {
+        // afterAll gets no page fixture; open one so cleanup can authenticate.
+        const context = await browser.newContext({
+          storageState: "playwright/.auth/admin.json",
+        });
+        const page = await context.newPage();
+        await attachAuthInjection(page);
+        await page.goto(PODS);
+        await deleteAllSavedViews(page);
+        await context.close();
+      },
+    ]);
   });
 
   test("saves the current filters and sort and lists the view", async ({
@@ -130,17 +148,28 @@ test.describe.serial("Saved views", () => {
   test("does not leak another user's views", async ({ page, browser }) => {
     // Never skipped: a 429 from the shared auth bucket is waited out with
     // backoff, and the test fails loudly if it never clears, so the
-    // cross-user isolation check cannot silently stop running in CI.
-    test.setTimeout(180_000);
+    // cross-user isolation check cannot silently stop running in CI. Two
+    // waits on that bucket (create user, log in) can each back off for up to
+    // ~130s before failing loudly.
+    test.setTimeout(360_000);
     let second: SecondUser | undefined;
+    let secondId: string | undefined;
     await withCleanup(async () => {
       await page.goto(PODS);
+      await backstop.adopt(page);
       const name = e2eName("view");
       const id = await createSavedView(page, name, podConfig());
 
       // Logs in from its own context: logging in through the admin's page
       // would swap the admin's refresh cookie for the second user's.
-      second = await createSecondUser(page, browser, "the second user");
+      second = await createSecondUser(
+        page,
+        browser,
+        "the second user",
+        (accountId) => {
+          secondId = accountId;
+        },
+      );
 
       // Asserted at the API with the other user's own token. Going through
       // the UI would only add flake: the guarantee under test is that the
@@ -182,7 +211,15 @@ test.describe.serial("Saved views", () => {
         (r: { id: string }) => r.id === id,
       );
       expect(stillThere?.name).toBe(name);
-    }, [() => second?.remove()]);
+    }, [
+      backstop.track(
+        (api) =>
+          secondId ? deleteAccount(api, secondId, "the second user") : undefined,
+        "second user account",
+      ),
+      // The context is not an API resource; it dies with the worker.
+      () => second?.context.close(),
+    ]);
   });
 
   test("renaming with a stale revision surfaces a conflict", async ({
