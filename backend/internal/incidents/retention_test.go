@@ -12,6 +12,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -925,15 +930,46 @@ func TestResolveSettingsLimitsReachRedactorCollectorAndHandler(t *testing.T) {
 	}
 }
 
-// frontendProxyTimeout mirrors PROXY_TIMEOUT_MS in frontend/server/api-proxy.ts
-// (30 s): the browser path to the capture endpoint is cut there.
-const frontendProxyTimeout = 30 * time.Second
+// proxyTimeoutDecl matches `export const PROXY_TIMEOUT_MS = 30_000;`.
+var proxyTimeoutDecl = regexp.MustCompile(`(?m)^export const PROXY_TIMEOUT_MS\s*=\s*([0-9][0-9_]*)\s*;`)
 
-// An arithmetic guard: a future change to any of these constants that lets a
-// capture request outlive the proxy fails here instead of in production.
+// frontendProxyTimeout reads PROXY_TIMEOUT_MS from frontend/server/api-proxy.ts,
+// the deadline after which the browser path to the capture endpoint is cut. It
+// reads the source rather than mirroring the number so the guard cannot go
+// stale; a missing file or declaration fails loudly instead of skipping. The
+// file is located from this test's own path, not the working directory.
+func frontendProxyTimeout(t *testing.T) time.Duration {
+	t.Helper()
+	_, self, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate this test file via runtime.Caller")
+	}
+	// backend/internal/incidents/retention_test.go -> repo root is three up
+	// from the package directory.
+	root := filepath.Join(filepath.Dir(self), "..", "..", "..")
+	path := filepath.Join(root, "frontend", "server", "api-proxy.ts")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("cannot read %s to derive the proxy deadline (run tests from a full checkout): %v", path, err)
+	}
+	m := proxyTimeoutDecl.FindSubmatch(src)
+	if m == nil {
+		t.Fatalf("no `export const PROXY_TIMEOUT_MS = <ms>;` declaration in %s; update proxyTimeoutDecl if it was renamed or reshaped", path)
+	}
+	ms, err := strconv.Atoi(strings.ReplaceAll(string(m[1]), "_", ""))
+	if err != nil || ms <= 0 {
+		t.Fatalf("PROXY_TIMEOUT_MS %q in %s is not a positive integer: %v", m[1], path, err)
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// An arithmetic guard: a future change to any of these constants, or to the
+// proxy deadline itself, that lets a capture request outlive the proxy fails
+// here instead of in production.
 func TestCaptureBudgetFitsUnderTheProxyDeadline(t *testing.T) {
-	if captureRequestBudget >= frontendProxyTimeout {
-		t.Errorf("captureRequestBudget %s must stay under the %s proxy deadline", captureRequestBudget, frontendProxyTimeout)
+	proxy := frontendProxyTimeout(t)
+	if captureRequestBudget >= proxy {
+		t.Errorf("captureRequestBudget %s must stay under the %s proxy deadline", captureRequestBudget, proxy)
 	}
 	if got := maxCaptureTimeout + captureGrace + captureMinInsertWork + store.IncidentCommitTimeout; got > captureRequestBudget {
 		t.Errorf("max capture timeout %s + grace %s + min insert %s + commit %s = %s exceeds the %s budget",

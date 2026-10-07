@@ -689,7 +689,9 @@ func (s *Server) registerIncidentRoutes(ar chi.Router) {
 		ir.Delete("/{incidentID}/notes/{noteID}", h.HandleDeleteNote)
 		// U23b. Capture and export share the per-user bucket above rather
 		// than a tighter one: a capture is bounded by the collector's
-		// 20s deadline and the 20-scope cap, an export by exportMaxBytes,
+		// CaptureTimeout (14s default, clamped to maxCaptureTimeout, 14.75s),
+		// the whole request by captureRequestBudget (27s, under the frontend
+		// proxy's 30s), and by the 20-scope cap; an export by exportMaxBytes,
 		// and the handler-level owner gate stops a collaborator before any
 		// source runs, so neither can outspend a detail read by more than a
 		// constant factor. {granteeID} is an auth.User.ID (percent-decoded
