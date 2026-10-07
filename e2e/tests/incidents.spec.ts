@@ -443,26 +443,19 @@ test.describe("Incidents (AE6)", () => {
       });
     }, [
       backstop.track(
-        () => collaborator?.remove(),
         (api) =>
           collaboratorId
             ? deleteAccount(api, collaboratorId, "the collaborator")
             : undefined,
         "collaborator account",
       ),
+      // The context is not an API resource; it dies with the worker.
+      () => collaborator?.context.close(),
       backstop.track(
-        async () =>
-          incidentId
-            ? deleteIncident(await pageCleanupApi(page), incidentId)
-            : undefined,
         (api) => (incidentId ? deleteIncident(api, incidentId) : undefined),
         "incident",
       ),
-      backstop.track(
-        async () => deletePod(await pageCleanupApi(page), pod),
-        (api) => deletePod(api, pod),
-        "canary pod",
-      ),
+      backstop.track((api) => deletePod(api, pod), "canary pod"),
     ]);
   });
 
@@ -498,11 +491,7 @@ test.describe("Incidents (AE6)", () => {
       ).toHaveCount(1);
       await expect(page.getByText("No evidence yet.")).toHaveCount(0);
     }, [
-      backstop.track(
-        async () => deleteIncident(await pageCleanupApi(page), id),
-        (api) => deleteIncident(api, id),
-        "incident",
-      ),
+      backstop.track((api) => deleteIncident(api, id), "incident"),
     ]);
   });
 
@@ -563,11 +552,7 @@ test.describe("Incidents (AE6)", () => {
       await expect(secondNotes.getByLabel("Edit note")).toHaveValue(draft);
     }, [
       () => secondTab?.close(),
-      backstop.track(
-        async () => deleteIncident(await pageCleanupApi(page), id),
-        (api) => deleteIncident(api, id),
-        "incident",
-      ),
+      backstop.track((api) => deleteIncident(api, id), "incident"),
     ]);
   });
 });

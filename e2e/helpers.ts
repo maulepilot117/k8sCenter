@@ -475,63 +475,76 @@ export async function deleteAccount(
  *
  * withCleanup runs inside the test body, so a test timeout (Playwright aborts
  * the body and closes the page) can leave its resources behind. A spec makes
- * one backstop at file level, tracks each cleanup that has an API-level
- * equivalent, and drains it from test.afterAll:
+ * one backstop at file level, tracks each resource's teardown, and drains it
+ * from test.afterAll:
  *
  *   const backstop = new CleanupBackstop();
  *   test.afterAll(({ playwright }, info) =>
  *     backstop.drain(playwright, info.project.use.baseURL));
  *   ...
- *   await backstop.adopt(page);          // after the page is on the app origin
+ *   await backstop.adopt(page);   // once the page is on the app origin
  *   await withCleanup(body, [
- *     backstop.track(() => collaborator?.remove(),
- *                    (api) => collaboratorId && deleteAccount(api, collaboratorId, "x")),
+ *     backstop.track((api) => deleteIncident(api, id), "incident"),
  *   ]);
  *
- * `track` returns the in-test cleanup: it runs `inTest`, and only a clean run
- * marks the entry done. Anything not done is run again by drain through the
- * page-free `viaApi` action, which must therefore be idempotent (a 404 is
- * success). Entries without `viaApi` are never retried.
+ * The contract: a tracked action is the ONLY thing that marks an entry done,
+ * and the in-test cleanup `track` returns runs that very action (through the
+ * adopted page), so it cannot report success without doing the work. If the
+ * page is dead the action throws, the entry stays pending, and drain runs it
+ * again through a fresh request context. Actions must be idempotent (a 404 is
+ * success) and may return early when their handle is unset, but only when
+ * there is genuinely nothing to delete: record ids at the earliest moment
+ * they exist (see createSecondUser's onAccount), never after a slow step.
+ * Do not put a handle-dependent teardown (closing a browser context) in a
+ * tracked action; leave it as a plain untracked cleanup beside it.
  *
- * The admin token is captured by adopt() while the page is alive, because
- * afterAll has no page fixture. It lives 15 minutes, longer than any single
- * test here.
+ * Token lifetime: adopt() reads e2e_access_token, which auth.setup.ts minted
+ * once at suite start as a 15-minute access token, so the window counts from
+ * setup, not from adopt(). Near that mark drain's deletes answer 401 and
+ * afterAll fails loudly, naming the leaked entries. Refreshing here would
+ * mean replaying the setup's login (spending the shared 5-per-minute auth
+ * bucket the specs already contend for) for a case that also breaks every
+ * test body using the same token, so the limit is documented, not worked
+ * around.
  */
 export class CleanupBackstop {
   private readonly entries: {
     label: string;
-    viaApi: (api: CleanupApi) => unknown;
+    action: (api: CleanupApi) => unknown;
     done: boolean;
   }[] = [];
+  private page: Page | undefined;
   private headers: Record<string, string> | undefined;
 
-  /** Captures the admin identity from a page on the app origin. */
+  /** Captures the admin page and identity; call once the page is on the app origin. */
   async adopt(page: Page): Promise<void> {
+    this.page = page;
     this.headers = await getAuthHeaders(page);
   }
 
-  track(
-    inTest: Cleanup,
-    viaApi: (api: CleanupApi) => unknown,
-    label = "cleanup",
-  ): Cleanup {
-    const entry = { label, viaApi, done: false };
+  /**
+   * Registers `action` and returns the in-test cleanup that runs it through
+   * the adopted page. Only a completed action marks the entry done.
+   */
+  track(action: (api: CleanupApi) => unknown, label = "cleanup"): Cleanup {
+    const entry = { label, action, done: false };
     this.entries.push(entry);
     return async () => {
-      await inTest();
+      if (!this.page) throw new Error(`${label}: adopt(page) was never called`);
+      await entry.action(await pageCleanupApi(this.page));
       entry.done = true;
     };
   }
 
-  /** Number of tracked cleanups the in-test run did not complete. */
-  get pending(): number {
-    return this.entries.filter((e) => !e.done).length;
+  /** Labels of tracked entries whose action has not completed. */
+  get pending(): string[] {
+    return this.entries.filter((e) => !e.done).map((e) => e.label);
   }
 
   /**
-   * Runs every not-yet-done action through a fresh request context. Throws if
-   * any failed (or if there was work but no captured admin identity), so a
-   * leak is reported rather than silently left for a later spec.
+   * Runs every not-yet-done action through a fresh request context. Throws
+   * listing the leaked labels if any failed (or if there was work but no
+   * captured admin identity), so a leak is reported, not silently left.
    */
   async drain(
     playwright: PlaywrightWorkerArgs["playwright"],
@@ -539,19 +552,26 @@ export class CleanupBackstop {
   ): Promise<void> {
     const todo = this.entries.filter((e) => !e.done);
     if (todo.length === 0) return;
-    if (!this.headers || !baseURL) {
+    const headers = this.headers;
+    if (!headers || !baseURL) {
       throw new Error(
-        `${todo.length} cleanup(s) still pending but no admin identity was captured: ${todo.map((e) => e.label).join(", ")}`,
+        `cleanup backstop: no admin identity captured; leaked: ${todo.map((e) => e.label).join(", ")}`,
       );
     }
     const request = await playwright.request.newContext({ baseURL });
     try {
-      await runCleanups(
-        todo.map((e) => async () => {
-          await e.viaApi({ request, headers: this.headers as Record<string, string> });
+      const failed: string[] = [];
+      for (const e of todo) {
+        try {
+          await e.action({ request, headers });
           e.done = true;
-        }),
-      );
+        } catch (err) {
+          failed.push(`${e.label} (${String(err)})`);
+        }
+      }
+      if (failed.length > 0) {
+        throw new Error(`cleanup backstop: leaked: ${failed.join("; ")}`);
+      }
     } finally {
       await request.dispose();
     }
