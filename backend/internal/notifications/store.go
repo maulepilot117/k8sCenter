@@ -73,6 +73,11 @@ func insertNotification(ctx context.Context, q rowQuerier, n Notification) (stri
 // The leading equality columns and the created_at range are served by
 // idx_nc_notif_dedup; cluster and UID are residual filters over the handful
 // of rows that share the rest of the key inside the window.
+//
+// Window: measured from statement_timestamp(), not now(). Inside
+// InsertDeduped's transaction now() is the transaction start, before the
+// advisory-lock wait, and a cutoff built on it would still match a row that
+// aged out during the wait. On the pool the two are the same instant.
 const dedupExistsQuery = `
 		SELECT EXISTS(
 			SELECT 1 FROM nc_notifications
@@ -80,7 +85,7 @@ const dedupExistsQuery = `
 			  AND resource_name = $4 AND title = $5
 			  AND resource_uid = $6
 			  AND (CASE WHEN cluster_id = '' THEN $8::text ELSE cluster_id END) = $7::text
-			  AND created_at > now() - $9::interval
+			  AND created_at > statement_timestamp() - $9::interval
 		)`
 
 // dedupClusterID folds the empty cluster id onto the local id so that the
@@ -153,7 +158,7 @@ func dedupLockKey(n Notification) string {
 }
 
 // dedupExists checks whether a matching notification was created within the dedup window.
-// Uses database time (now()) to avoid clock drift between app server and PostgreSQL.
+// Uses database time (statement_timestamp()) to avoid clock drift between app server and PostgreSQL.
 func dedupExists(ctx context.Context, q rowQuerier, n Notification, window time.Duration) (bool, error) {
 	var exists bool
 	err := q.QueryRow(ctx, dedupExistsQuery,

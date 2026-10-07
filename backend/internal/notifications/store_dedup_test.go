@@ -388,6 +388,35 @@ func TestDedupExists_OutsideWindowIsNotADuplicate(t *testing.T) {
 	}
 }
 
+// TestDedupExists_WindowIsMeasuredWhenTheLookupRuns covers the lookup inside
+// InsertDeduped's transaction, which runs only after the advisory lock is
+// granted. now() is the transaction start, so a cutoff built on it would
+// stretch the window by the lock wait and report a row that has already aged
+// out as a duplicate, swallowing the new notification. The sleep stands in
+// for the lock wait, and a one-second window keeps the test short.
+func TestDedupExists_WindowIsMeasuredWhenTheLookupRuns(t *testing.T) {
+	s := testNotifStore(t)
+
+	n := baseNotification(t)
+	mustInsert(t, s, n)
+
+	tx, err := s.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(t.Context())
+	if _, err := tx.Exec(t.Context(), `SELECT pg_sleep(1.5)`); err != nil {
+		t.Fatalf("sleeping inside the transaction: %v", err)
+	}
+	exists, err := dedupExists(t.Context(), tx, n, time.Second)
+	if err != nil {
+		t.Fatalf("dedupExists: %v", err)
+	}
+	if exists {
+		t.Fatal("a row 1.5s old matched a 1s window because the cutoff used the transaction start")
+	}
+}
+
 func TestInsertAndList_RoundTripResourceUID(t *testing.T) {
 	s := testNotifStore(t)
 
