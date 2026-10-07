@@ -6,6 +6,7 @@ units: U20–U25
 migration_sequence: 000024
 date: 2026-09-10
 q1_policy: resolved — owner + explicit grant + current-authorization re-check at read time, 30-day retention
+status: complete
 ---
 
 # Release D — Persistent Incident Investigations — Implementation Plan
@@ -106,6 +107,57 @@ Release E added one constant to `backend/internal/audit/logger.go`: `ActionChang
 ### A-12. Capability rows
 
 Release E added a `changes.receipts` row to `capabilityOperations` in `backend/internal/server/handle_capabilities.go` and a row in README's "Remote cluster support" table; `readme_capability_parity_test.go` keeps the two in step. Incidents need a row: capture is **local-cluster-only** in Release D (remote capture is deferred), so the row declares `LocalSupported: true, RemoteSupported: false`, with a matching README table row. Owner: **U23b**, the unit that ships the capture endpoint, adds both so the capability never claims more than the handlers do. If U23b's file budget is full, U25b owns it. CLAUDE.md requires `capabilityOperations`, the README table and handler behaviour to move together.
+
+---
+
+## As shipped (2026-10-07)
+
+Release D is complete. U20 shipped earlier (#562); the remaining units merged as #572 to #589, with U25b (#587, the capture-to-incident button and navigation, merged as 904638d5) the final unit. The sections below the amendments are the historical plan; this section records what merged and where it differs. Facts here come from `git log` and `gh pr view` on `main` at 904638d5.
+
+### Units
+
+| Unit | PR | What merged |
+|---|---|---|
+| Plan refresh | #572 | The "0. Amendments (2026-10-05)" section above. |
+| U21a | #573 | Migration `000024_create_incidents` and the incident and note stores. |
+| U22a | #574 | Fuzzed redaction for captured evidence. |
+| U21b | #575 | Append-only evidence store with transactional size accounting, and grants. |
+| U22b | #576 | Bounded-concurrency collector with diagnostics, object and event adapters. |
+| hotfix | #577 | Event-paging collector tests made deterministic under `-race` (#576 merged with the Backend job red). |
+| U23a | #578 | Incident CRUD, notes, and read-time authorization filtering. |
+| U23b | #583 | Capture, collaborator grants, paged evidence list, filtered export, and the `incidents.capture` capability row (local-only) with its README row. |
+| U25a | #582 | Configurable bounded retention sweep, `incidents` config, migration `000025_incident_retention_state`. |
+| U24a | #584 | Frontend incident types, API client and list route. |
+| hotfix | #585 | Notifications daily digest no longer calls a typed-nil email sender; background loops wrapped in `recoverutil` (see `docs/solutions/go-typed-nil-interface.md`). |
+| U24b | #586 | `/observability/incidents/[id]` workspace: evidence timeline, notes with revision conflicts, sharing, export. |
+| U25c | #588 | Idempotent `POST /incidents` with `clientRequestId`, migration `000026_incident_client_request_id`. |
+| U24c | #589 | AE6 end-to-end spec (`e2e/tests/incidents.spec.ts`). |
+| U25b | #587 | Capture-to-incident button in the Investigate workspace and the Incidents navigation entry (merged last, as 904638d5). |
+
+The units merged out of the plan's order (for example U25a before U24a, and U25c added late), because each merged when it was ready.
+
+### Deviations from the plan
+
+- **U25c was added mid-release.** U25b's flow creates an incident and then a capture, and a lost response could leave a duplicate incident. Review of #587 kept finding holes in a client-side lookup heuristic. U25c replaced it with a server-side key, so U25b adopts `clientRequestId` instead. The pattern is in `docs/solutions/idempotent-create-client-request-id.md`.
+- **Migrations 000025 and 000026 were not in the plan.** `000025_incident_retention_state` persists the applied retention so lowering it defers the first sweep once rather than on every restart (U25a). `000026_incident_client_request_id` adds the nullable `client_request_id` column and the partial unique index per owner (U25c).
+- **The capture deadline is a budget, not the plan's 20s.** The capture request has a 27s budget under the frontend proxy's 30s timeout. The default `CaptureTimeout` is 14s and is clamped to at most 14.75s (27s minus the 0.25s grace, the 7s minimum insert work and the 5s commit bound), so the insert keeps its own time. The minimum collection window is 1s. These supersede the plan's 20s collector deadline.
+- **`apiBlob` in `frontend/lib/api.ts` (#586).** The export download needs the bearer token, `X-Cluster-ID` and the one 401 refresh-and-retry that `api()` has, so `apiBlob` shares its transport. `ApiError` now keeps the response headers so a busy message can show `Retry-After`.
+- **UUID and dot-segment guards (#586).** `incident-api.ts` refuses incident and note ids that are not UUIDs before building a path, and the `[id]` page renders a not-found state without the island. `store.ValidateGranteeID` rejects `.` and `..` as grantee ids because `DELETE /incidents/{id}/grants/..` normalizes to `DELETE /incidents/{id}`; `liveLinkTarget` yields no link for a dot-segment namespace or name.
+- **Idempotent create replaced the client heuristic.** A replay returns 200 with the stored incident; the same key with a different title, summary, window or cluster is 409 `client_request_id_conflict`.
+- **U25b's final shape (#587).** Both the capture button and the IncidentList New-incident form send a `clientRequestId` per intent. The button resends the stored request id and the stored payload while the outcome is unknown; the form resends its stored id with the current inputs. The key is kept except on 400, 413 and no-database (the form keeps it on 400/413 too once an earlier attempt with that key had an unknown outcome). A 409 `client_request_id_conflict` shows a "may already exist — check your incidents" notice and an explicit "Create a new incident anyway". The button's pending records are user-scoped in `sessionStorage`, cleared on logout, and resent silently for at most 15 minutes from the last send. Details are in `docs/solutions/idempotent-create-client-request-id.md`.
+- **E2E second identity (#589).** `createSecondUser` and `postWithBackoff` live in `e2e/helpers.ts`. The second user logs in from its own fresh context, because logging in through the admin's `page.request` replaces the admin's refresh cookie. `change-receipts.spec.ts` was moved onto the helper. New `withCleanup` and `runCleanups` helpers run every cleanup even when one throws.
+- **Window source field (#587).** The brief said `sourceObservedAt`; the check contract's field is `observedAt`, and the diagnostics HTTP response does not carry it yet, so every capture window falls back to one hour before the click (#595).
+- **File budget.** Some units exceeded five files where migrations, notes and tests could not fit (#588 touched seven).
+
+### Follow-up issues
+
+- #590: flaky `TestAssurance_TwoServicesOneStoreProduceOneExceptionAndOneDelivery` under `-race` (duplicate notification; seen on several PR runs).
+- #591: `saved-views.spec.ts` still logs a second user in through the admin page; migrate to `createSecondUser`.
+- #592: e2e has no `afterAll` backstop when a test times out (incident, pod or viewer may leak).
+- #593: the backend capture-budget test mirrors `PROXY_TIMEOUT_MS` as a literal; derive or guard it.
+- #594: `DiagnosticWorkspace` Tailwind conversion (R-6, pre-existing debt).
+- #595: the diagnostics HTTP response lacks `observedAt`, so capture windows always fall back to now minus one hour.
+- #597: the IncidentList New-incident form loses its outstanding create key on a page reload.
 
 ---
 
