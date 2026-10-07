@@ -2,8 +2,10 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import {
   clearPendingCaptures,
+  isStaleConflict,
   newIncidentFormKey,
   PENDING_CAPTURE_PREFIX,
+  PENDING_INTENT_MAX_AGE_MS,
   readPendingCapture,
   writePendingCapture,
 } from "./incident-create.ts";
@@ -64,4 +66,29 @@ test("logout's clear removes the form's records with the button's, for every use
   expect(readPendingCapture(newIncidentFormKey("u2"))).toBeNull();
   expect(readPendingCapture("u1|local|team-a|Pod|web")).toBeNull();
   expect(globalThis.sessionStorage.length).toBe(0);
+});
+
+test("a conflict keeps its send time through storage; a malformed one is dropped", () => {
+  const key = newIncidentFormKey("u1");
+  writePendingCapture(key, { conflict: true, sentAt: 1_800_000_000_000 });
+  expect(readPendingCapture(key)).toEqual({
+    conflict: true,
+    sentAt: 1_800_000_000_000,
+  });
+  globalThis.sessionStorage.setItem(
+    PENDING_CAPTURE_PREFIX + key,
+    JSON.stringify({ conflict: true, sentAt: "soon" }),
+  );
+  expect(readPendingCapture(key)).toEqual({ conflict: true });
+});
+
+test("isStaleConflict ages a conflict from its send time; none counts as stale", () => {
+  const now = 1_800_000_000_000;
+  const at = (ago: number) => ({ conflict: true as const, sentAt: now - ago });
+  expect(isStaleConflict(at(PENDING_INTENT_MAX_AGE_MS), now)).toBe(false);
+  expect(isStaleConflict(at(PENDING_INTENT_MAX_AGE_MS + 1), now)).toBe(true);
+  expect(isStaleConflict({ conflict: true }, now)).toBe(true);
+  // Only conflicts age here: an intent or nothing is never a stale conflict.
+  expect(isStaleConflict({ ...create, sentAt: 0 }, now)).toBe(false);
+  expect(isStaleConflict(null, now)).toBe(false);
 });

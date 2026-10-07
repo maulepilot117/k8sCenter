@@ -12,6 +12,7 @@ import {
 import {
   clearPendingCapture,
   isPendingConflict,
+  isStaleConflict,
   isStaleIntent,
   newClientRequestId,
   newIncidentFormKey,
@@ -66,6 +67,7 @@ import {
 const ROOT_CLASS = "flex flex-col gap-5";
 const PAGE_SIZE = 50;
 const TITLE_ID = "incident-title";
+const NOT_READY_ID = "new-incident-not-ready";
 
 const incidentHref = (id: string) =>
   `/observability/incidents/${encodeURIComponent(id)}`;
@@ -148,19 +150,21 @@ interface CreatePayload {
 /**
  * What the form must not forget when it closes: the outstanding create, and
  * whether a create met `client_request_id_conflict` (so a reopened form
- * still shows the notice and creates only through "anyway").
+ * still shows the notice and creates only through "anyway") and when the
+ * create that met it was sent (the conflict's age bound runs from it).
  */
 interface CreateState {
   intent: Outstanding | null;
   conflict: boolean;
+  conflictAt?: number;
 }
 
 /**
- * Records `state` for `userId` (nothing when the user is not known yet: the
- * state then lives in memory only, as it did before #597). With `owner`, the
- * write happens only while the stored record is still that create's, so an
- * answer that lands after a logout cleared every record does not bring this
- * one back.
+ * Records `state` for `userId`. The form sends nothing until the user is
+ * known and their record restored, so a null `userId` (logged out) writes
+ * nothing. With `owner`, the write happens only while the stored record is
+ * still that create's, so an answer that lands after a logout cleared every
+ * record does not bring this one back.
  */
 function recordCreateState(
   userId: string | null,
@@ -175,7 +179,10 @@ function recordCreateState(
   }
   const { intent } = state;
   const rec: PendingCapture | null = state.conflict
-    ? { conflict: true }
+    ? {
+        conflict: true,
+        ...(state.conflictAt !== undefined ? { sentAt: state.conflictAt } : {}),
+      }
     : intent && {
         requestId: intent.requestId,
         ...intent.payload,
@@ -187,19 +194,21 @@ function recordCreateState(
 }
 
 /**
- * What `userId` recorded, as form state. A create recorded more than
- * `PENDING_INTENT_MAX_AGE_MS` after its last send is dropped: no create can
- * still be in flight by then, so the list this page shows is the answer to
- * whether it committed. A restored create is uncertain: the page that sent
- * it never saw its outcome, so a later 400 or 413 keeps its id.
+ * What `userId` recorded, as form state. A create or a conflict whose
+ * create was sent more than `PENDING_INTENT_MAX_AGE_MS` ago is dropped: no
+ * create can still be in flight by then, so the list this page shows is the
+ * answer to whether one committed. A restored create is uncertain: the page
+ * that sent it never saw its outcome, so a later 400 or 413 keeps its id.
  */
 function restoreCreateState(userId: string, now: number): CreateState {
   const key = newIncidentFormKey(userId);
   const rec = readPendingCapture(key);
-  if (isPendingConflict(rec)) return { intent: null, conflict: true };
-  if (rec === null || isStaleIntent(rec, now)) {
+  if (rec === null || isStaleIntent(rec, now) || isStaleConflict(rec, now)) {
     if (rec !== null) clearPendingCapture(key);
     return { intent: null, conflict: false };
+  }
+  if (isPendingConflict(rec)) {
+    return { intent: null, conflict: true, conflictAt: rec.sentAt };
   }
   const { requestId, title, summary, windowStart, windowEnd } = rec;
   return {
@@ -249,18 +258,31 @@ function restoreCreateState(userId: string, now: number): CreateState {
  * written before each create is sent), so a reload, or the notice's link
  * back to this page, restores them the same way the next time the form
  * opens. The form does not open by itself. A confirmed success, a refusal
- * that drops the id, and logout clear the record; one whose last send is
- * older than `PENDING_INTENT_MAX_AGE_MS` is ignored.
+ * that drops the id, and logout clear the record; one whose create was sent
+ * more than `PENDING_INTENT_MAX_AGE_MS` ago is ignored.
+ *
+ * Nothing is sent until the signed-in user is known and their record has
+ * been restored into `state` (`ready`): a create sent earlier would mint a
+ * new id while an outcome-unknown one is still recorded. Until then the
+ * create controls are inactive and say why (`notReadyReason`). A record
+ * restored while the form is already open is used by the next submit, and a
+ * restored conflict shows its notice at once.
  */
 function NewIncidentForm({
   onCancel,
   state,
   userId,
+  ready,
+  notReadyReason,
 }: {
   onCancel: () => void;
   state: CreateState;
-  /** Whose record the form writes; null while the user is not known. */
+  /** Whose record the form writes. */
   userId: string | null;
+  /** The user is known and their record restored: a create may be sent. */
+  ready: boolean;
+  /** Why nothing can be sent yet, while `ready` is false. */
+  notReadyReason: string;
 }) {
   // Snapshotted once: the form prefills from, and announces, only what was
   // outstanding when it opened, never a create this form starts itself.
@@ -283,9 +305,17 @@ function NewIncidentForm({
   /** A create met `client_request_id_conflict` (kept in `state` too). */
   const conflict = useSignal(state.conflict);
   /**
+   * The notice shows for a conflict this form met, or one restored into
+   * `state` after it opened (the island re-renders when it restores).
+   */
+  const inConflict = conflict.value || state.conflict;
+  /**
    * Aborted when the form unmounts. A create still in flight then neither
-   * navigates nor writes state; the server may already have committed it,
-   * which is why Cancel itself is inactive while a create is pending.
+   * navigates nor touches this form's signals, but it still settles the
+   * island's state and the stored record, which outlive the form: the abort
+   * itself leaves the outcome unknown, so the id is kept as uncertain. The
+   * server may already have committed it, which is also why Cancel is
+   * inactive while a create is pending.
    */
   const lifetime = useRef<AbortController | null>(null);
   // Input does not forward refs, so the field is reached by its id.
@@ -297,7 +327,7 @@ function NewIncidentForm({
 
   /** Validates and creates; `fresh` forces a new request id. */
   const create = async (fresh: boolean) => {
-    if (submitting.value) return;
+    if (submitting.value || !ready) return;
     const start = fromLocalInput(windowStart.value);
     if (!title.value.trim()) {
       error.value = "Give the incident a title.";
@@ -341,6 +371,7 @@ function NewIncidentForm({
     sent.payload = payload;
     sent.sentAt = now;
     state.conflict = false;
+    state.conflictAt = undefined;
     // Recorded before the request, so a reload while it is in flight, or
     // after its answer was lost, resends this id.
     recordCreateState(userId, state);
@@ -375,7 +406,10 @@ function NewIncidentForm({
         } else if (!createRefusedForGood(err)) {
           sent.uncertain = true;
         }
-        state.conflict = isCreateConflict(err);
+        if (isCreateConflict(err)) {
+          state.conflict = true;
+          state.conflictAt = sent.sentAt;
+        }
         recordCreateState(userId, state, sent.requestId);
       }
       if (signal?.aborted) return;
@@ -387,9 +421,8 @@ function NewIncidentForm({
 
   const submit = (e: Event) => {
     e.preventDefault();
-    // After a conflict only the explicit "anyway" action creates. A conflict
-    // restored after the form opened (the signed-in user loaded late) is in
-    // `state` only, and is shown now rather than bypassed.
+    // After a conflict only the explicit "anyway" action creates, including
+    // one restored into `state` after the form opened.
     if (conflict.value || state.conflict) {
       conflict.value = true;
       return;
@@ -411,7 +444,7 @@ function NewIncidentForm({
           <Alert variant="error">{error.value}</Alert>
         </div>
       )}
-      {showRestored.value && !conflict.value && !error.value && (
+      {showRestored.value && !inConflict && !error.value && (
         <p
           data-testid="new-incident-restored"
           class="m-0 text-sm text-text-secondary"
@@ -420,7 +453,7 @@ function NewIncidentForm({
           cannot make a second incident.
         </p>
       )}
-      {conflict.value && (
+      {inConflict && (
         <div
           role="alert"
           data-testid="new-incident-conflict"
@@ -483,11 +516,22 @@ function NewIncidentForm({
           }}
         />
       </div>
+      {!ready && (
+        <p
+          id={NOT_READY_ID}
+          role="status"
+          data-testid="new-incident-not-ready"
+          class="m-0 text-sm text-text-muted"
+        >
+          {notReadyReason}
+        </p>
+      )}
       <div class="flex items-center gap-3">
-        {conflict.value ? (
+        {inConflict ? (
           <button
             type="button"
-            aria-disabled={submitting.value}
+            aria-disabled={submitting.value || !ready}
+            aria-describedby={ready ? undefined : NOT_READY_ID}
             data-testid="new-incident-create-anyway"
             onClick={() => void create(true)}
             class={BUTTON_PRIMARY}
@@ -497,7 +541,9 @@ function NewIncidentForm({
         ) : (
           <button
             type="submit"
-            aria-disabled={submitting.value}
+            aria-disabled={submitting.value || !ready}
+            aria-describedby={ready ? undefined : NOT_READY_ID}
+            data-testid="new-incident-create"
             class={BUTTON_PRIMARY}
           >
             {submitting.value ? "Creating…" : "Create incident"}
@@ -534,26 +580,47 @@ export default function IncidentList() {
   /** The outstanding create and conflict state, across Cancel and reopen. */
   const createState = useRef<CreateState>({ intent: null, conflict: false });
   /** The signed-in user; the top bar loads it, possibly after this mounts. */
-  const userId = useAuth().user.value?.id ?? null;
-  /** The user `createState` belongs to, once one is known. */
-  const createStateOwner = useRef<string | null>(null);
+  const auth = useAuth();
+  const userId = auth.user.value?.id ?? null;
+  /**
+   * The user whose record `createState` was restored from. The form sends
+   * nothing until it is the signed-in user, and setting it re-renders an
+   * open form so a restored conflict shows at once.
+   */
+  const restoredFor = useSignal<string | null>(null);
 
   // Restores what this user recorded before a reload, once the user is
   // known. The state is mutated in place: an open form holds this object.
   useEffect(() => {
-    if (!userId || createStateOwner.current === userId) return;
+    if (restoredFor.peek() === userId) return;
     const state = createState.current;
-    // Another user signed in on this page: nothing of the previous user's
-    // create carries over, in memory or in storage.
-    if (createStateOwner.current !== null) {
+    // Signed out, or another user signed in on this page: nothing of the
+    // previous user's create carries over in memory (logout cleared their
+    // record, and another user's key never reads it).
+    if (restoredFor.peek() !== null) {
       state.intent = null;
       state.conflict = false;
+      state.conflictAt = undefined;
     }
-    createStateOwner.current = userId;
-    // A create this page started before the user was known stays in memory.
-    if (state.intent || state.conflict) return;
-    Object.assign(state, restoreCreateState(userId, Date.now()));
+    if (!userId) {
+      restoredFor.value = null;
+      return;
+    }
+    if (state.intent || state.conflict) {
+      // Nothing is sent before this runs, so this is not expected; if this
+      // page's state is somehow newer, it replaces the record rather than
+      // leave an older one to resurface later.
+      recordCreateState(userId, state);
+    } else {
+      Object.assign(state, restoreCreateState(userId, Date.now()));
+    }
+    restoredFor.value = userId;
   }, [userId]);
+  const createReady = userId !== null && restoredFor.value === userId;
+  const notReadyReason =
+    auth.loading.value || !auth.loadAttempted.value
+      ? "Your sign-in details are still loading. You can create the incident once they have."
+      : "Your sign-in details could not be loaded. Reload the page to create an incident.";
   /**
    * The request to make: the cursor to continue from ("" for the first page)
    * and a sequence number every activation increments, so asking again for
@@ -671,6 +738,8 @@ export default function IncidentList() {
           onCancel={closeForm}
           state={createState.current}
           userId={userId}
+          ready={createReady}
+          notReadyReason={notReadyReason}
         />
       )}
 

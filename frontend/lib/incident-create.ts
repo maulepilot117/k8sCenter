@@ -67,9 +67,15 @@ export interface PendingCreate {
  * `client_request_id_conflict` (an earlier attempt made an incident that
  * was edited since), or the target was captured into an existing incident
  * while a create's outcome was still unknown. The key is dropped.
+ *
+ * `sentAt` (epoch ms) is when the create that met the conflict was sent. The
+ * New-incident form records it and ages the conflict out with
+ * `isStaleConflict`; the capture button records none, and its conflicts
+ * never age.
  */
 export interface PendingConflict {
   conflict: true;
+  sentAt?: number;
 }
 
 export type PendingCapture = PendingCreate | PendingConflict;
@@ -101,6 +107,20 @@ export function isStaleIntent(rec: PendingCapture | null, now: number) {
     !isPendingConflict(rec) &&
     !rec.id &&
     now - (rec.sentAt ?? rec.createdAt) > PENDING_INTENT_MAX_AGE_MS
+  );
+}
+
+/**
+ * True for a conflict whose create was sent more than
+ * `PENDING_INTENT_MAX_AGE_MS` ago, or that carries no send time (counted as
+ * stale, like an intent without a valid time). Only the New-incident form
+ * asks: its page lists the caller's incidents, which answer by then whether
+ * one exists. The capture button's conflicts never age.
+ */
+export function isStaleConflict(rec: PendingCapture | null, now: number) {
+  return (
+    isPendingConflict(rec) &&
+    now - (rec.sentAt ?? 0) > PENDING_INTENT_MAX_AGE_MS
   );
 }
 
@@ -138,7 +158,11 @@ function parse(raw: string | null): PendingCapture | null {
       id,
       conflict,
     } = v as Record<string, unknown>;
-    if (conflict === true) return { conflict: true };
+    if (conflict === true) {
+      return typeof sentAt === "number" && Number.isFinite(sentAt)
+        ? { conflict: true, sentAt }
+        : { conflict: true };
+    }
     if (
       typeof requestId !== "string" ||
       !requestId ||

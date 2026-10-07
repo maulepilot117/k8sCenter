@@ -182,7 +182,24 @@ function stub(route: Route) {
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     };
     calls.push(call);
-    const reply = (await route(call)) ?? json(404, { error: { code: 404 } });
+    // Honour the abort signal like real fetch: a request aborted before or
+    // while it is in flight rejects with an AbortError.
+    const signal = init?.signal;
+    const aborted = () =>
+      new DOMException("The operation was aborted.", "AbortError");
+    if (signal?.aborted) throw aborted();
+    const answer = Promise.resolve(route(call));
+    const reply =
+      (signal
+        ? await Promise.race([
+            answer,
+            new Promise<never>((_, reject) =>
+              signal.addEventListener("abort", () => reject(aborted()), {
+                once: true,
+              }),
+            ),
+          ])
+        : await answer) ?? json(404, { error: { code: 404 } });
     return new Response(JSON.stringify(reply.body), {
       status: reply.status,
       headers: { "Content-Type": "application/json" },
@@ -567,7 +584,9 @@ test("a user switch on a mounted list never carries the first user's create over
   serve(() => busyReply);
   const root = await mount("u1");
   await createOnce(root);
-  await signIn("u2");
+  await act(async () => {
+    await signIn("u2");
+  });
   await settle();
   // The form is closed and reopened as u2.
   await click(buttonNamed(root, "Cancel"));
@@ -608,7 +627,15 @@ test("a create answered after logout does not bring the record back", async () =
   release();
   await settle();
   expect(stored()).toBeNull();
-  expect(root).toBeTruthy();
+  // Nor does the island keep it: after signing back in, nothing is restored.
+  await act(async () => {
+    await signIn("u1");
+  });
+  await settle();
+  await click(buttonNamed(root, "Cancel"));
+  await openForm(root);
+  expect(field(root, "incident-title").value).toBe("");
+  expect(stored()).toBeNull();
 });
 
 // --- Without storage ------------------------------------------------------------
@@ -641,4 +668,221 @@ test("with sessionStorage throwing, Cancel and reopen still restore the outstand
   expect(field(root, "incident-title").value).toBe("API latency");
   await submit(root);
   expect(requestIdOf(creates()[1])).toBe(requestIdOf(creates()[0]));
+});
+
+// --- Before the signed-in user is known ----------------------------------------
+
+const createButton = (root: HTMLElement) =>
+  root.querySelector('[data-testid="new-incident-create"]') as HTMLElement;
+const conflictNotice = (root: HTMLElement) =>
+  root.querySelector('[data-testid="new-incident-conflict"]');
+const seedConflict = (over: Record<string, unknown> = {}) =>
+  globalThis.sessionStorage.setItem(
+    FORM_KEY(),
+    JSON.stringify({ conflict: true, sentAt: Date.now(), ...over }),
+  );
+
+test("a submit before the signed-in user is known sends nothing; once known, the stored id is resent", async () => {
+  seed();
+  serve(() => busyReply);
+  const root = await mount(null);
+  await openForm(root);
+  await type(root, "incident-title", "API latency");
+  await submit(root);
+  expect(creates()).toHaveLength(0);
+  expect(createButton(root).getAttribute("aria-disabled")).toBe("true");
+  expect(createButton(root).getAttribute("aria-describedby")).toBe(
+    "new-incident-not-ready",
+  );
+  expect(
+    root.querySelector('[data-testid="new-incident-not-ready"]')?.textContent,
+  ).toContain("still loading");
+
+  await act(async () => {
+    await signIn("u1");
+  });
+  await settle();
+  expect(createButton(root).getAttribute("aria-disabled")).toBe("false");
+  expect(
+    root.querySelector('[data-testid="new-incident-not-ready"]'),
+  ).toBeNull();
+  await submit(root);
+  expect(creates()).toHaveLength(1);
+  expect(requestIdOf(creates()[0])).toBe(SEEDED_ID);
+  expect(stored().requestId).toBe(SEEDED_ID);
+});
+
+test("when the user load failed, the create stays inactive and says to reload", async () => {
+  serve(() => busyReply);
+  // A load that ends without a user, as when /auth/me fails.
+  await withFetch({}, () => fetchCurrentUser());
+  const root = await mount(null);
+  await openForm(root);
+  await type(root, "incident-title", "API latency");
+  await submit(root);
+  expect(creates()).toHaveLength(0);
+  expect(
+    root.querySelector('[data-testid="new-incident-not-ready"]')?.textContent,
+  ).toContain("Reload the page");
+});
+
+test("a conflict restored after the form opened shows its notice at once, and nothing is sent", async () => {
+  seedConflict();
+  serve(() => busyReply);
+  const root = await mount(null);
+  await openForm(root);
+  expect(conflictNotice(root)).toBeNull();
+
+  await act(async () => {
+    await signIn("u1");
+  });
+  await settle();
+  expect(conflictNotice(root)).toBeTruthy();
+  expect(
+    root.querySelector('[data-testid="new-incident-create-anyway"]'),
+  ).toBeTruthy();
+  await type(root, "incident-title", "API latency");
+  await submit(root);
+  expect(creates()).toHaveLength(0);
+
+  await click(
+    root.querySelector(
+      '[data-testid="new-incident-create-anyway"]',
+    ) as HTMLElement,
+  );
+  expect(creates()).toHaveLength(1);
+  expect(requestIdOf(creates()[0])).toMatch(UUID);
+});
+
+test("a create restored after the form opened is resent by the next submit", async () => {
+  seed();
+  serve(() => busyReply);
+  const root = await mount(null);
+  await openForm(root);
+  await act(async () => {
+    await signIn("u1");
+  });
+  await settle();
+  await type(root, "incident-title", "API latency");
+  await submit(root);
+  expect(creates()).toHaveLength(1);
+  expect(requestIdOf(creates()[0])).toBe(SEEDED_ID);
+});
+
+// --- The conflict's age bound ---------------------------------------------------
+
+test("a conflict past the age bound is ignored and cleared: the next submit creates", async () => {
+  seedConflict({ sentAt: Date.now() - PENDING_INTENT_MAX_AGE_MS - 60_000 });
+  serve(() => busyReply);
+  const root = await mount();
+  expect(stored()).toBeNull();
+  await openForm(root);
+  expect(conflictNotice(root)).toBeNull();
+  await type(root, "incident-title", "API latency");
+  await submit(root);
+  expect(creates()).toHaveLength(1);
+});
+
+test("a conflict without a send time counts as stale", async () => {
+  globalThis.sessionStorage.setItem(
+    FORM_KEY(),
+    JSON.stringify({ conflict: true }),
+  );
+  serve(() => busyReply);
+  const root = await mount();
+  await openForm(root);
+  expect(conflictNotice(root)).toBeNull();
+});
+
+test("a conflict records when its create was sent, and inside the bound it survives a reload", async () => {
+  const server = idempotentServer();
+  let n = 0;
+  serve((c) => {
+    const reply = server.create(c);
+    return ++n === 1 ? networkError() : reply;
+  });
+  const before = Date.now();
+  let root = await mount();
+  await createOnce(root, "API latency");
+  await type(root, "incident-title", "Edited");
+  await submit(root);
+  expect(stored().conflict).toBe(true);
+  expect(stored().sentAt).toBeGreaterThanOrEqual(before);
+
+  root = await reload();
+  await openForm(root);
+  expect(conflictNotice(root)).toBeTruthy();
+});
+
+// --- The form unmounting mid-create --------------------------------------------
+
+test("a create cut off by the form unmounting keeps its id; a later 400 does not drop it", async () => {
+  let releaseList: (r: Reply) => void = () => {};
+  let gets = 0;
+  let posts = 0;
+  stub((c) => {
+    if (c.method === "GET") {
+      // The first page load is held, then answers no database, which
+      // unmounts the form while its create is still pending.
+      return ++gets === 1
+        ? new Promise<Reply>((resolve) => {
+            releaseList = resolve;
+          })
+        : emptyList;
+    }
+    if (!isCreate(c)) return undefined;
+    return ++posts === 1 ? new Promise<Reply>(() => {}) : badRequest;
+  });
+  let root = await mount();
+  await createOnce(root);
+  const id = requestIdOf(creates()[0]);
+  expect(stored().requestId).toBe(id);
+
+  releaseList(noDatabase);
+  await settle();
+  expect(root.querySelector("form")).toBeNull();
+  // The abort leaves the outcome unknown: the id is kept.
+  expect(stored().requestId).toBe(id);
+
+  root = await reload();
+  await openForm(root);
+  expect(field(root, "incident-title").value).toBe("API latency");
+  await submit(root);
+  expect(root.querySelector('[role="alert"]')).toBeTruthy();
+  expect(stored().requestId).toBe(id);
+  await submit(root);
+  expect(requestIdOf(creates()[2])).toBe(id);
+});
+
+// --- 413 ------------------------------------------------------------------------
+
+const tooLarge = json(413, {
+  error: { code: 413, message: "too large", detail: "the body is too large" },
+});
+
+test("a first attempt refused with a 413 clears the record it wrote before sending", async () => {
+  let release: () => void = () => {};
+  serve(
+    () =>
+      new Promise<Reply>((resolve) => {
+        release = () => resolve(tooLarge);
+      }),
+  );
+  const root = await mount();
+  await createOnce(root);
+  expect(stored().requestId).toBe(requestIdOf(creates()[0]));
+  release();
+  await settle();
+  expect(root.textContent).toContain("could not be created");
+  expect(stored()).toBeNull();
+});
+
+test("a create restored after a reload keeps its id through a 413, like a 400", async () => {
+  seed();
+  serve(() => tooLarge);
+  const root = await mount();
+  await openForm(root);
+  await submit(root);
+  expect(requestIdOf(creates()[0])).toBe(SEEDED_ID);
+  expect(stored().requestId).toBe(SEEDED_ID);
 });
