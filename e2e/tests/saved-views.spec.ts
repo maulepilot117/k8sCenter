@@ -3,13 +3,14 @@ import {
   attachAuthInjection,
   bearerHeaders,
   createSavedView,
+  createSecondUser,
   deleteAllSavedViews,
   e2eName,
-  e2eSecureName,
   getAuthHeaders,
-  loginViaApi,
   type SavedViewConfigSeed,
+  type SecondUser,
   setClusterTarget,
+  withCleanup,
 } from "../helpers.ts";
 
 /**
@@ -126,79 +127,62 @@ test.describe.serial("Saved views", () => {
     await context.close();
   });
 
-  test("does not leak another user's views", async ({ page }) => {
-    await page.goto(PODS);
-    const name = e2eName("view");
-    const id = await createSavedView(page, name, podConfig());
+  test("does not leak another user's views", async ({ page, browser }) => {
+    // Never skipped: a 429 from the shared auth bucket is waited out with
+    // backoff, and the test fails loudly if it never clears, so the
+    // cross-user isolation check cannot silently stop running in CI.
+    test.setTimeout(180_000);
+    let second: SecondUser | undefined;
+    await withCleanup(async () => {
+      await page.goto(PODS);
+      const name = e2eName("view");
+      const id = await createSavedView(page, name, podConfig());
 
-    // crypto-backed, not Math.random: this value becomes an account identity.
-    const otherUser = e2eSecureName("user");
-    const password = `e2e-${crypto.randomUUID()}`;
-    const headers = await getAuthHeaders(page);
-    const created = await page.request.post("/api/v1/users", {
-      headers,
-      data: {
-        username: otherUser,
-        password,
-        k8sUsername: otherUser,
-        k8sGroups: [],
-        roles: ["viewer"],
-      },
-      failOnStatusCode: false,
-    });
-    test.skip(
-      !created.ok(),
-      `could not create a second user (${created.status()}); rate limiter or policy`,
-    );
-    const createdId = (await created.json())?.data?.id;
+      // Logs in from its own context: logging in through the admin's page
+      // would swap the admin's refresh cookie for the second user's.
+      second = await createSecondUser(page, browser, "the second user");
 
-    // Asserted at the API with the other user's own token. Going through a
-    // browser context would only add flake: the guarantee under test is that
-    // the server scopes every record to its owner, and an unauthenticated
-    // request answers 401 long before that check is reached -- which would
-    // pass a naive "not 200" assertion while proving nothing.
-    const theirToken = await loginViaApi(page, otherUser, password);
-    const theirHeaders = bearerHeaders(theirToken);
+      // Asserted at the API with the other user's own token. Going through
+      // the UI would only add flake: the guarantee under test is that the
+      // server scopes every record to its owner, and an unauthenticated
+      // request answers 401 long before that check is reached -- which would
+      // pass a naive "not 200" assertion while proving nothing.
+      const theirs = second.page.request;
+      const theirHeaders = bearerHeaders(second.token);
 
-    const theirList = await page.request.get("/api/v1/preferences/views", {
-      headers: theirHeaders,
-    });
-    expect(theirList.status()).toBe(200);
-    const theirBody = await theirList.json();
-    expect((theirBody.data ?? []).some((r: { id: string }) => r.id === id))
-      .toBe(false);
+      const theirList = await theirs.get("/api/v1/preferences/views", {
+        headers: theirHeaders,
+      });
+      expect(theirList.status()).toBe(200);
+      const theirBody = await theirList.json();
+      expect((theirBody.data ?? []).some((r: { id: string }) => r.id === id))
+        .toBe(false);
 
-    // 404, not 403: a 403 would confirm the record exists, which is itself a
-    // disclosure. Another user's id must be indistinguishable from a
-    // nonexistent one.
-    const direct = await page.request.put(`/api/v1/preferences/views/${id}`, {
-      headers: theirHeaders,
-      data: { name: "stolen", revision: 1, config: podConfig() },
-      failOnStatusCode: false,
-    });
-    expect(direct.status()).toBe(404);
-
-    const deleteAttempt = await page.request.delete(
-      `/api/v1/preferences/views/${id}`,
-      { headers: theirHeaders, failOnStatusCode: false },
-    );
-    expect(deleteAttempt.status()).toBe(404);
-
-    // The record is still the owner's, untouched by either attempt.
-    const mine = await page.request.get("/api/v1/preferences/views", {
-      headers,
-    });
-    const stillThere = (await mine.json()).data.find(
-      (r: { id: string }) => r.id === id,
-    );
-    expect(stillThere?.name).toBe(name);
-
-    if (createdId) {
-      await page.request.delete(`/api/v1/users/${createdId}`, {
-        headers,
+      // 404, not 403: a 403 would confirm the record exists, which is itself
+      // a disclosure. Another user's id must be indistinguishable from a
+      // nonexistent one.
+      const direct = await theirs.put(`/api/v1/preferences/views/${id}`, {
+        headers: theirHeaders,
+        data: { name: "stolen", revision: 1, config: podConfig() },
         failOnStatusCode: false,
       });
-    }
+      expect(direct.status()).toBe(404);
+
+      const deleteAttempt = await theirs.delete(
+        `/api/v1/preferences/views/${id}`,
+        { headers: theirHeaders, failOnStatusCode: false },
+      );
+      expect(deleteAttempt.status()).toBe(404);
+
+      // The record is still the owner's, untouched by either attempt.
+      const mine = await page.request.get("/api/v1/preferences/views", {
+        headers: await getAuthHeaders(page),
+      });
+      const stillThere = (await mine.json()).data.find(
+        (r: { id: string }) => r.id === id,
+      );
+      expect(stillThere?.name).toBe(name);
+    }, [() => second?.remove()]);
   });
 
   test("renaming with a stale revision surfaces a conflict", async ({
