@@ -179,3 +179,21 @@ test("a local result offers capture to an incident beside Re-scan", async () => 
   const banner = capture?.parentElement?.parentElement;
   expect(banner?.textContent).toContain("Re-scan");
 });
+
+test("each picker field is named by its visible label", () => {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+  const labels = Array.from(host.querySelectorAll("label"));
+  expect(labels.map((l) => l.textContent)).toEqual([
+    "Namespace",
+    "Kind",
+    "Name",
+  ]);
+  for (const label of labels) {
+    const field = label.htmlFor
+      ? host.querySelector(`#${CSS.escape(label.htmlFor)}`)
+      : null;
+    expect(field?.tagName).toMatch(/^(INPUT|SELECT)$/);
+  }
+});
