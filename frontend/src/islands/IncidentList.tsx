@@ -606,19 +606,17 @@ export default function IncidentList() {
       restoredFor.value = null;
       return;
     }
-    if (state.intent || state.conflict) {
-      // Nothing is sent before this runs, so this is not expected; if this
-      // page's state is somehow newer, it replaces the record rather than
-      // leave an older one to resurface later.
-      recordCreateState(userId, state);
-    } else {
-      Object.assign(state, restoreCreateState(userId, Date.now()));
-    }
+    // The state is empty here: only a create sets it, a create waits for
+    // this restore, and the reset above empties it whenever the user changes.
+    Object.assign(state, restoreCreateState(userId, Date.now()));
     restoredFor.value = userId;
   }, [userId]);
   const createReady = userId !== null && restoredFor.value === userId;
+  // "Could not be loaded" only once the load finished without a user; while
+  // it runs, or between the user arriving and their record being restored,
+  // the form is still loading.
   const notReadyReason =
-    auth.loading.value || !auth.loadAttempted.value
+    userId !== null || auth.loading.value || !auth.loadAttempted.value
       ? "Your sign-in details are still loading. You can create the incident once they have."
       : "Your sign-in details could not be loaded. Reload the page to create an incident.";
   /**

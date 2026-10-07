@@ -682,6 +682,42 @@ const seedConflict = (over: Record<string, unknown> = {}) =>
     JSON.stringify({ conflict: true, sentAt: Date.now(), ...over }),
   );
 
+/**
+ * Records every text that appears under `root`, including ones a later
+ * render replaces before the test can look: added nodes, removed nodes and
+ * the old value of every changed text.
+ */
+function watchTexts(root: HTMLElement) {
+  const seen: string[] = [];
+  const observer = new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.oldValue) seen.push(r.oldValue);
+      if (r.type === "characterData") seen.push(r.target.textContent ?? "");
+      for (const n of [...r.addedNodes, ...r.removedNodes]) {
+        seen.push(n.textContent ?? "");
+      }
+    }
+  });
+  observer.observe(root, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    characterDataOldValue: true,
+  });
+  return {
+    stop() {
+      for (const r of observer.takeRecords()) {
+        if (r.oldValue) seen.push(r.oldValue);
+        for (const n of [...r.addedNodes, ...r.removedNodes]) {
+          seen.push(n.textContent ?? "");
+        }
+      }
+      observer.disconnect();
+      return seen;
+    },
+  };
+}
+
 test("a submit before the signed-in user is known sends nothing; once known, the stored id is resent", async () => {
   seed();
   serve(() => busyReply);
@@ -698,10 +734,14 @@ test("a submit before the signed-in user is known sends nothing; once known, the
     root.querySelector('[data-testid="new-incident-not-ready"]')?.textContent,
   ).toContain("still loading");
 
+  // Every text the page shows while the user loads and the record is
+  // restored: none may say the load failed.
+  const shown = watchTexts(root);
   await act(async () => {
     await signIn("u1");
   });
   await settle();
+  expect(shown.stop().join(" ")).not.toContain("Reload the page");
   expect(createButton(root).getAttribute("aria-disabled")).toBe("false");
   expect(
     root.querySelector('[data-testid="new-incident-not-ready"]'),
@@ -767,6 +807,41 @@ test("a create restored after the form opened is resent by the next submit", asy
   await submit(root);
   expect(creates()).toHaveLength(1);
   expect(requestIdOf(creates()[0])).toBe(SEEDED_ID);
+});
+
+test("a user switch with the form open holds the create until the new user's record is restored", async () => {
+  seed();
+  serve(() => busyReply);
+  const root = await mount("u1");
+  await openForm(root);
+  expect(field(root, "incident-title").value).toBe("API latency");
+  expect(createButton(root).getAttribute("aria-disabled")).toBe("false");
+
+  // u2 signs in outside act: the island re-renders with u2, but the effect
+  // that restores u2's record has not run yet.
+  await signIn("u2");
+  await new Promise((r) => setTimeout(r, 0));
+  expect(createButton(root).getAttribute("aria-disabled")).toBe("true");
+  expect(
+    root.querySelector('[data-testid="new-incident-not-ready"]')?.textContent,
+  ).toContain("still loading");
+  await submit(root);
+  expect(creates()).toHaveLength(0);
+
+  // Once u2's restore has run (its effect waits for the next animation
+  // frame, as it does in a browser), the form is ready and u1's create is
+  // gone.
+  await act(async () => {
+    await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+  });
+  await settle();
+  await type(root, "incident-title", "Theirs");
+  expect(createButton(root).getAttribute("aria-disabled")).toBe("false");
+  await submit(root);
+  expect(creates()).toHaveLength(1);
+  expect(requestIdOf(creates()[0])).not.toBe(SEEDED_ID);
+  expect(stored("u1").requestId).toBe(SEEDED_ID);
+  expect(stored("u2").requestId).toBe(requestIdOf(creates()[0]));
 });
 
 // --- The conflict's age bound ---------------------------------------------------
