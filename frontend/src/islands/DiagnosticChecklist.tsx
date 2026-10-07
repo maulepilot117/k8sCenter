@@ -1,15 +1,11 @@
 import type { Signal } from "@preact/signals";
-import { KIND_ROUTE_MAP } from "@/lib/types/diagnostics.ts";
+import {
+  type DiagnosticResult,
+  KIND_ROUTE_MAP,
+} from "@/lib/types/diagnostics.ts";
 
-export interface DiagnosticResult {
-  ruleName: string;
-  status: "pass" | "warn" | "fail";
-  severity: "critical" | "warning" | "info";
-  message: string;
-  detail?: string;
-  remediation?: string;
-  links?: { label: string; kind: string; name: string }[];
-}
+// The shape lives once, in lib/types; DiagnosticWorkspace imports it from here.
+export type { DiagnosticResult };
 
 interface DiagnosticChecklistProps {
   results: Signal<DiagnosticResult[]>;

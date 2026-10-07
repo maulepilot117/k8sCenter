@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	appsv1 "k8s.io/api/apps/v1"
@@ -272,5 +275,123 @@ func TestDiagnostics_MissingTargetIs404WithTheHistoricalMessage(t *testing.T) {
 	}
 	if want := `Pod "ghost" not found in namespace "team-a"`; body.Error.Code != 404 || body.Error.Message != want {
 		t.Fatalf("error = %+v, want code 404 message %q", body.Error, want)
+	}
+}
+
+// TestDiagnostics_ResultsCarryObservedAt pins #595: every check in the
+// resource diagnostics response carries observedAt, the one server-clock
+// instant its checks were evaluated at. It is RFC 3339 in UTC with exactly
+// three fraction digits (the ECMAScript date-time format, so every browser
+// parses it), identical across the checks of one response, and inside the
+// request's time bounds. Every legacy key keeps its value, so the field is a
+// pure addition.
+func TestDiagnostics_ResultsCarryObservedAt(t *testing.T) {
+	lister := &countingLister{pods: []*corev1.Pod{testPod(false)}}
+	h := newDiagHandler(lister, false)
+
+	// observedAt is truncated to the millisecond, so the lower bound is too.
+	before := time.Now().UTC().Truncate(time.Millisecond)
+	w := callDiag(t, h, "local", diagPaths["resource"])
+	after := time.Now().UTC()
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Results []map[string]any `json:"results"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v; body: %s", err, w.Body.String())
+	}
+	got := body.Data.Results
+	if len(got) < 2 {
+		t.Fatalf("got %d results, want at least 2 to compare observedAt across checks", len(got))
+	}
+
+	var first string
+	for i, r := range got {
+		raw, ok := r["observedAt"].(string)
+		if !ok {
+			t.Fatalf("results[%d].observedAt = %#v, want a string", i, r["observedAt"])
+		}
+		at, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t.Fatalf("results[%d].observedAt = %q is not RFC 3339: %v", i, raw, err)
+		}
+		if !strings.HasSuffix(raw, "Z") || len(raw) != len("2006-01-02T15:04:05.000Z") {
+			t.Errorf("results[%d].observedAt = %q, want UTC with exactly three fraction digits", i, raw)
+		}
+		if at.Before(before) || at.After(after) {
+			t.Errorf("results[%d].observedAt = %s, want within [%s, %s]", i, raw, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+		}
+		if i == 0 {
+			first = raw
+		} else if raw != first {
+			t.Errorf("results[%d].observedAt = %q, want %q: one evaluation time per request", i, raw, first)
+		}
+	}
+
+	// The legacy keys are exactly what RunDiagnostics produces for the same
+	// target, encoded as the endpoint always encoded them.
+	target, err := Resolve(context.Background(), lister, "team-a", "Pod", "web", &RelatedRBAC{Pods: true})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	legacyJSON, err := json.Marshal(RunDiagnostics(context.Background(), target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []map[string]any
+	if err := json.Unmarshal(legacyJSON, &want); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range got {
+		delete(r, "observedAt")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("legacy fields changed:\n got  %v\n want %v", got, want)
+	}
+}
+
+// TestResultsWire_KeepsNullAndEmptyShapes: no results still encode as null and
+// an empty result set as [], the shapes the response had before observedAt.
+func TestResultsWire_KeepsNullAndEmptyShapes(t *testing.T) {
+	at := time.Date(2026, 10, 6, 9, 59, 30, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		results []Result
+		want    string
+	}{
+		{"nil", nil, "null"},
+		{"empty", []Result{}, "[]"},
+	} {
+		got, err := json.Marshal(resultsWire(Normalize("local", nil, at, tc.results)))
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", tc.name, err)
+		}
+		if string(got) != tc.want {
+			t.Errorf("%s: encoded %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestResultsWire_TruncatesObservedAtToMilliseconds: a sub-millisecond part is
+// dropped, never rounded up past the stamp, the zone is converted to UTC, and
+// the fraction always has three digits.
+func TestResultsWire_TruncatesObservedAtToMilliseconds(t *testing.T) {
+	plus2 := time.FixedZone("UTC+2", 2*60*60)
+	for _, tc := range []struct {
+		at   time.Time
+		want string
+	}{
+		{time.Date(2026, 10, 6, 11, 59, 30, 123_999_999, plus2), "2026-10-06T09:59:30.123Z"},
+		{time.Date(2026, 10, 6, 9, 59, 30, 0, time.UTC), "2026-10-06T09:59:30.000Z"},
+	} {
+		got := resultsWire(Normalize("local", nil, tc.at, []Result{{RuleName: "PendingPod", Status: "pass"}}))
+		if len(got) != 1 || got[0].ObservedAt != tc.want {
+			t.Errorf("observedAt for %s = %+v, want %q", tc.at.Format(time.RFC3339Nano), got, tc.want)
+		}
 	}
 }

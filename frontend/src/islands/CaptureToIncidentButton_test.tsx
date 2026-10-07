@@ -4,6 +4,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import { ApiError, setAccessToken } from "@/lib/api.ts";
+import type { DiagnosticResult } from "@/lib/types/diagnostics.ts";
 
 /**
  * The diagnosis-to-incident entry point (U25b). Requests go through a fetch
@@ -348,6 +349,77 @@ test("without a diagnosis time the window starts an hour before the click", asyn
   expect(start).toBeGreaterThanOrEqual(before - 3_600_000);
   expect(start).toBeLessThanOrEqual(after - 3_600_000);
 });
+
+/**
+ * Results as `GET /v1/diagnostics/{ns}/{kind}/{name}` returns them (#595):
+ * the legacy fields plus `observedAt`, one server instant per response in
+ * the backend's three-fraction-digit UTC form.
+ */
+function diagnosisResults(observedAt?: string): DiagnosticResult[] {
+  const at = observedAt === undefined ? {} : { observedAt };
+  return [
+    {
+      ruleName: "CrashLoopBackOff",
+      status: "fail",
+      severity: "critical",
+      message: "Container app is crash-looping",
+      links: [{ label: "web", kind: "Pod", name: "web" }],
+      ...at,
+    },
+    {
+      ruleName: "ImagePullBackOff",
+      status: "pass",
+      severity: "critical",
+      message: "No image pull errors",
+      ...at,
+    },
+    {
+      ruleName: "PendingPod",
+      status: "pass",
+      severity: "critical",
+      message: "No pending pods",
+      ...at,
+    },
+  ];
+}
+
+/** Creates a new incident from `results` the way DiagnosticWorkspace wires it. */
+async function createFrom(results: DiagnosticResult[]) {
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (c.path === "/api/v1/incidents") return created(uuidFor("inc-obs"));
+    return captured;
+  });
+  const root = await mount({ windowStart: earliestObservedAt(results) });
+  await click(q(root, "capture-to-incident"));
+  const before = Date.now();
+  await click(q(root, "capture-to-new-incident"));
+  const after = Date.now();
+  expect(creates()).toHaveLength(1);
+  const windowStart = (creates()[0].body as Record<string, string>).windowStart;
+  return { windowStart, before, after };
+}
+
+test("a diagnosis carrying observedAt starts the window at its check time", async () => {
+  const { windowStart } = await createFrom(
+    diagnosisResults("2026-10-06T09:59:30.123Z"),
+  );
+  expect(windowStart).toBe("2026-10-06T09:59:30.123Z");
+});
+
+for (const [label, observedAt] of [
+  ["missing", undefined],
+  ["invalid", "not a time"],
+] as const) {
+  test(`a diagnosis with observedAt ${label} still takes the one-hour fallback`, async () => {
+    const { windowStart, before, after } = await createFrom(
+      diagnosisResults(observedAt),
+    );
+    const start = Date.parse(windowStart);
+    expect(start).toBeGreaterThanOrEqual(before - 3_600_000);
+    expect(start).toBeLessThanOrEqual(after - 3_600_000);
+  });
+}
 
 test("a double click creates and captures exactly once", async () => {
   let release: () => void = () => {};

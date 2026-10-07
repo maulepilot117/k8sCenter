@@ -36,8 +36,47 @@ type diagnosticsResponse struct {
 		Name      string `json:"name"`
 		Namespace string `json:"namespace"`
 	} `json:"target"`
-	Results     []Result     `json:"results"`
+	Results     []resultWire `json:"results"`
 	BlastRadius *BlastResult `json:"blastRadius"`
+}
+
+// resultWire is one check on the resource diagnostics wire: the legacy Result,
+// whose keys and values are unchanged, plus observedAt (#595). The Flutter
+// client decodes Result by key and ignores the addition.
+type resultWire struct {
+	Result
+	// ObservedAt is the server-clock instant taken when the request's checks
+	// finished evaluating: RFC 3339, UTC, in the
+	// ECMAScript date-time format (exactly three fraction digits). Go's own
+	// time encoding emits up to nine digits and trims trailing zeros, which
+	// browsers parse only through implementation-specific fallbacks, and the
+	// incident capture reads this with Date.parse.
+	ObservedAt string `json:"observedAt"`
+}
+
+// observedAtLayout is resultWire.ObservedAt's format for a UTC time.
+const observedAtLayout = "2006-01-02T15:04:05.000Z07:00"
+
+// resultsWire encodes checks for the legacy wire. The legacy fields come from
+// Denormalize, so the wire stays byte-compatible with what RunDiagnostics
+// produced, and observedAt is each check's own: the stamp HandleDiagnostics
+// takes once RunDiagnostics returns. Truncating (never rounding) to the
+// millisecond keeps the encoded value at or before that stamp. A nil checks
+// yields nil and an empty one an empty slice, so the response keeps encoding
+// them as null and [] as it always has.
+func resultsWire(checks []CheckResult) []resultWire {
+	if checks == nil {
+		return nil
+	}
+	legacy := Denormalize(checks)
+	out := make([]resultWire, len(checks))
+	for i, c := range checks {
+		out[i] = resultWire{
+			Result:     legacy[i],
+			ObservedAt: c.ObservedAt.UTC().Truncate(time.Millisecond).Format(observedAtLayout),
+		}
+	}
+	return out
 }
 
 // namespaceSummaryResponse is the response for namespace-level diagnostic summary.
@@ -190,8 +229,10 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run diagnostic checks
+	// Run diagnostic checks. One evaluation time, from the server clock,
+	// stamps every check, as incident capture does (incidents/sources.go).
 	results := RunDiagnostics(ctx, target)
+	checks := Normalize(clusterID, target, time.Now().UTC(), results)
 
 	// Build topology graph for blast radius analysis
 	var blast *BlastResult
@@ -225,7 +266,7 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := diagnosticsResponse{
-		Results:     results,
+		Results:     resultsWire(checks),
 		BlastRadius: blast,
 	}
 	resp.Target.Kind = kind
