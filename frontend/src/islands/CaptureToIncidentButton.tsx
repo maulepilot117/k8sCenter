@@ -177,11 +177,11 @@ function captureRefusedForGood(err: unknown): boolean {
  * instant, or undefined when no check reports one. Unparseable values are
  * ignored, never coerced.
  *
- * `observedAt` is the normalized check contract's field
- * (diagnostics.CheckResult). The legacy `GET /v1/diagnostics` response does
- * not carry it yet, so the checks are typed loosely and the field is read only
- * when it is present as a string; until the response carries it, every
- * diagnosis takes the one-hour fallback in `resolveWindowStart`.
+ * `GET /v1/diagnostics` stamps every check with the one instant it evaluated
+ * them (#595). The checks are still typed loosely and the field is read only
+ * when it is present as a string, so a response from a backend that predates
+ * it, or a value that does not parse, takes the one-hour fallback in
+ * `resolveWindowStart`.
  */
 export function earliestObservedAt(
   checks: ReadonlyArray<object>,
