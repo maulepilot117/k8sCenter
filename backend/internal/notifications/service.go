@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -198,19 +199,22 @@ func (s *NotificationService) EmitSync(ctx context.Context, n Notification) (Emi
 	}
 
 	// Dedup: suppress if same (source, kind, ns, name, title, cluster, UID)
-	// within 15 min. See dedupExistsQuery for how '' and "local" fold.
-	exists, err := s.store.DedupExists(ctx, n, dedupWindow)
-	if err != nil {
+	// within 15 min. See dedupExistsQuery for how '' and "local" fold, and
+	// InsertDeduped for why concurrent emits of one identity persist once.
+	id, inserted, err := s.store.InsertDeduped(ctx, n, dedupWindow)
+	if errors.Is(err, errDedupUnavailable) {
 		s.logger.Error("dedup check failed", "error", err)
 		// Continue — better to duplicate than to drop
+		id, err = s.store.InsertNotification(ctx, n)
+		inserted = err == nil
 	}
-	if exists {
+	if err != nil {
+		return EmitFailed, fmt.Errorf("persist: %w", err)
+	}
+	if !inserted {
 		return EmitDeduped, nil
 	}
-
-	if err := s.persistAndBroadcast(ctx, n); err != nil {
-		return EmitFailed, err
-	}
+	s.broadcast(n, id)
 
 	// Enqueue for external dispatch (non-blocking)
 	select {
@@ -227,9 +231,15 @@ func (s *NotificationService) persistAndBroadcast(ctx context.Context, n Notific
 	if err != nil {
 		return fmt.Errorf("persist: %w", err)
 	}
+	s.broadcast(n, id)
+	return nil
+}
+
+// broadcast announces the persisted row id to WebSocket subscribers. n is a
+// copy, so the caller's (queued) notification keeps an empty ID.
+func (s *NotificationService) broadcast(n Notification, id string) {
 	n.ID = id
 	s.hub.HandleEvent("ADDED", "notifications", "", n.ID, broadcastPayload(n))
-	return nil
 }
 
 // broadcastPayload is the WebSocket payload for a persisted notification:

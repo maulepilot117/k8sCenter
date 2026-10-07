@@ -22,7 +22,7 @@ package store
 // Sending is at-least-once per intent, not exactly-once: a claimed intent
 // stays pending until the sender marks it, so a sender that dies, or a
 // second drainer that overlaps it, can send the same transition again.
-// notifications.DedupExists is the second layer against that double send
+// notifications.Store.InsertDeduped is the second layer against that double send
 // and must stay in place in the consumer.
 //
 // The lease is ADVISORY. It suppresses duplicate Kubernetes reads and racing

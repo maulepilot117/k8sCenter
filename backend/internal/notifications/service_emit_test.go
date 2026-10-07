@@ -413,6 +413,55 @@ func TestEmitSync_ReturnsEmitDedupedInsideWindow(t *testing.T) {
 	}
 }
 
+// TestEmitSync_ConcurrentEmitsOfOneIdentityPersistOnce is the regression for
+// #590. Two backup-assurance replicas can claim the same pending delivery
+// intent and send it at the same moment; the dedup window is what is meant
+// to absorb that re-send. A check-then-insert dedup lets every concurrent
+// caller see "no row yet" and persist its own copy, so each round here races
+// several emits of one identity and requires exactly one to persist.
+func TestEmitSync_ConcurrentEmitsOfOneIdentityPersistOnce(t *testing.T) {
+	st := testNotifStore(t)
+	svc, rec := newTestService(st)
+	const rounds, emitters = 20, 4 // emitters matches testNotifStore's MaxConns
+
+	for round := range rounds {
+		n := emitNotification(t, SourceVelero)
+		results := make([]EmitResult, emitters)
+		errs := make([]error, emitters)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := range emitters {
+			wg.Go(func() {
+				<-start
+				results[i], errs[i] = svc.EmitSync(t.Context(), n)
+			})
+		}
+		close(start)
+		wg.Wait()
+
+		persisted := 0
+		for i := range emitters {
+			if errs[i] != nil {
+				t.Fatalf("round %d emitter %d: %v", round, i, errs[i])
+			}
+			switch results[i] {
+			case EmitPersisted:
+				persisted++
+			case EmitDeduped:
+			default:
+				t.Fatalf("round %d emitter %d result = %v, want EmitPersisted or EmitDeduped", round, i, results[i])
+			}
+		}
+		if rows := rowsFor(t, st, n); len(rows) != 1 || persisted != 1 {
+			t.Fatalf("round %d: persisted rows = %d, EmitPersisted results = %d; want exactly one of each", round, len(rows), persisted)
+		}
+		takeQueued(t, svc)
+		if calls := rec.take(); len(calls) != 1 {
+			t.Fatalf("round %d: broadcast calls = %d, want 1", round, len(calls))
+		}
+	}
+}
+
 func TestEmitSync_ReturnsEmitSkippedForAuditSource(t *testing.T) {
 	st := testNotifStore(t)
 	svc, rec := newTestService(st)
