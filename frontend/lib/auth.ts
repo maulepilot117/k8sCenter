@@ -10,6 +10,7 @@ import {
   LOCAL_GENERATION,
   switchCluster,
 } from "@/lib/cluster.ts";
+import { clearPendingCaptures } from "@/lib/incident-create.ts";
 import type { RBACSummary, UserInfo } from "@/lib/k8s-types.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { clearPendingApplies } from "@/lib/pending-apply.ts";
@@ -103,8 +104,10 @@ export async function logout(): Promise<void> {
   setAccessToken(null);
   userSignal.value = null;
   rbacSignal.value = null;
-  // An unknown-outcome apply id belongs to the session that minted it.
+  // An unknown-outcome apply id, and a pending capture-to-incident key or
+  // incident, belong to the session that recorded them.
   clearPendingApplies();
+  clearPendingCaptures();
   // The selected cluster is persisted per browser profile, not per session,
   // so without this the next identity on this machine inherits the previous
   // operator's target -- and if they are not an admin, every request 403s.

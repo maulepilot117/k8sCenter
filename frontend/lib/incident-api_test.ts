@@ -1347,3 +1347,237 @@ test("IncidentList: a create that rejects after unmount writes nothing and does 
   expect(visited).toEqual([]);
   expect(root.childElementCount).toBe(0);
 });
+
+// --- IncidentList: the create idempotency key (U25c) -------------------------
+
+/**
+ * A fetch stub for the "New incident" form: list reads answer empty, and
+ * creates go to `create`, which may return a reply or a rejection (a lost
+ * response). Calls are recorded in `calls` like stubFetch's.
+ */
+function stubCreates(
+  create: (body: Record<string, unknown>) => Reply | Promise<never>,
+) {
+  calls = [];
+  original ??= globalThis.fetch;
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const headers = new Headers(init?.headers);
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? init.body : null;
+    calls.push({
+      url: String(input),
+      method,
+      clusterHeader: headers.get("X-Cluster-ID"),
+      csrfHeader: headers.get("X-Requested-With"),
+      signal: init?.signal,
+      body,
+    });
+    const reply: Reply =
+      method === "POST"
+        ? await create(JSON.parse(body ?? "{}"))
+        : { status: 200, payload: { data: [] } };
+    return new Response(JSON.stringify(reply.payload ?? {}), {
+      status: reply.status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof globalThis.fetch;
+}
+
+/**
+ * The handler's replay rules over an in-memory table: the first create with
+ * a request id makes an incident (201); the same id with the same title,
+ * summary and window replays it (200); a different payload is 409
+ * client_request_id_conflict. `edit` changes what an id made, as an
+ * operator editing that incident would.
+ */
+function createServer() {
+  const made = new Map<string, { n: number; payload: string }>();
+  const payloadOf = (b: Record<string, unknown>) =>
+    JSON.stringify([b.title, b.summary, b.windowStart, b.windowEnd]);
+  const create = (b: Record<string, unknown>): Reply => {
+    const rid = String(b.clientRequestId);
+    const row = made.get(rid);
+    if (row) {
+      if (row.payload !== payloadOf(b)) {
+        return apiError(409, "client_request_id_conflict");
+      }
+      return { status: 200, payload: { data: { incident: incident(row.n) } } };
+    }
+    const n = made.size + 1;
+    made.set(rid, { n, payload: payloadOf(b) });
+    return { status: 201, payload: { data: { incident: incident(n) } } };
+  };
+  const edit = (rid: string) => {
+    const row = made.get(rid);
+    if (row) made.set(rid, { ...row, payload: "edited" });
+  };
+  return { made, create, edit };
+}
+
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const lostResponse = (): Promise<never> =>
+  Promise.reject(new TypeError("Failed to fetch"));
+const creates = () => calls.filter((c) => c.method === "POST");
+const sentBody = (c: Recorded) =>
+  JSON.parse(c.body ?? "{}") as Record<string, unknown>;
+const keyOf = (c: Recorded) => sentBody(c).clientRequestId;
+
+/** Submits and waits for the attempt to settle (an alert or a navigation). */
+async function submitAndSettle(form: HTMLFormElement, before: number) {
+  submit(form);
+  await until(() => creates().length > before);
+  await flush();
+}
+
+test("IncidentList: a lost create resubmitted unchanged resends the same key and payload: one incident", async () => {
+  const server = createServer();
+  let attempt = 0;
+  stubCreates((b) => {
+    attempt++;
+    const reply = server.create(b);
+    return attempt === 1 ? lostResponse() : reply;
+  });
+  const visited = spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  expect(form.textContent).toContain("may or may not have been created");
+  expect(visited).toEqual([]);
+
+  await submitAndSettle(form, 1);
+  expect(creates()).toHaveLength(2);
+  expect(keyOf(creates()[0])).toMatch(UUID_V4);
+  expect(keyOf(creates()[1])).toBe(keyOf(creates()[0]));
+  expect(sentBody(creates()[1])).toEqual(sentBody(creates()[0]));
+  expect(server.made.size).toBe(1);
+  expect(visited).toEqual([`/observability/incidents/${incident(1).id}`]);
+});
+
+test("IncidentList: a 5xx, incident_busy and a 429 keep the key until the create lands", async () => {
+  const server = createServer();
+  let attempt = 0;
+  stubCreates((b) => {
+    attempt++;
+    const reply = server.create(b);
+    if (attempt === 1) return { status: 502, payload: {} };
+    if (attempt === 2) return apiError(503, "incident_busy");
+    if (attempt === 3) return apiError(429, "rate_limited");
+    return reply;
+  });
+  const visited = spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  for (let i = 0; i < 4; i++) await submitAndSettle(form, i);
+  expect(creates()).toHaveLength(4);
+  expect(new Set(creates().map(keyOf)).size).toBe(1);
+  expect(server.made.size).toBe(1);
+  expect(visited).toEqual([`/observability/incidents/${incident(1).id}`]);
+});
+
+test("IncidentList: changed inputs after a lost create are a new intent with a new key", async () => {
+  let attempt = 0;
+  const server = createServer();
+  stubCreates((b) => {
+    attempt++;
+    const reply = server.create(b);
+    return attempt === 1 ? lostResponse() : reply;
+  });
+  spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  setValue(form.querySelector("#incident-title"), "Checkout down (payments)");
+  await flush();
+  await submitAndSettle(form, 1);
+  expect(keyOf(creates()[1])).toMatch(UUID_V4);
+  expect(keyOf(creates()[1])).not.toBe(keyOf(creates()[0]));
+  expect(sentBody(creates()[1]).title).toBe("Checkout down (payments)");
+});
+
+test("IncidentList: client_request_id_conflict links to the list; submit creates nothing; only Create anyway mints a key", async () => {
+  const server = createServer();
+  let attempt = 0;
+  stubCreates((b) => {
+    attempt++;
+    const reply = server.create(b);
+    if (attempt === 1) {
+      server.edit(String(b.clientRequestId));
+      return lostResponse();
+    }
+    return reply;
+  });
+  const visited = spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  await submitAndSettle(form, 1);
+  expect(keyOf(creates()[1])).toBe(keyOf(creates()[0]));
+
+  const notice = form.querySelector('[data-testid="new-incident-conflict"]');
+  expect(notice?.textContent).toContain(
+    "An incident for this request may already exist — check your incidents.",
+  );
+  expect(
+    notice?.querySelector('a[href="/observability/incidents"]'),
+  ).not.toBeNull();
+  expect(visited).toEqual([]);
+
+  // Submitting again (Enter in a field) does not create.
+  submit(form);
+  await flush();
+  expect(creates()).toHaveLength(2);
+
+  act(() =>
+    (
+      form.querySelector(
+        '[data-testid="new-incident-create-anyway"]',
+      ) as HTMLElement
+    ).click(),
+  );
+  await until(() => visited.length === 1);
+  expect(creates()).toHaveLength(3);
+  expect(keyOf(creates()[2])).toMatch(UUID_V4);
+  expect(keyOf(creates()[2])).not.toBe(keyOf(creates()[0]));
+  expect(server.made.size).toBe(2);
+  expect(visited).toEqual([`/observability/incidents/${incident(2).id}`]);
+});
+
+test("IncidentList: a 400 refusal says why and drops the key; the next submit mints a new one", async () => {
+  let attempt = 0;
+  const server = createServer();
+  stubCreates((b) => {
+    attempt++;
+    if (attempt === 1) {
+      return {
+        status: 400,
+        payload: {
+          error: { code: 400, message: "invalid", detail: "title too long" },
+        },
+      };
+    }
+    return server.create(b);
+  });
+  spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  expect(form.textContent).toContain(
+    "The incident could not be created: title too long.",
+  );
+  await submitAndSettle(form, 1);
+  expect(keyOf(creates()[1])).not.toBe(keyOf(creates()[0]));
+});

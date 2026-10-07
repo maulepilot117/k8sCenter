@@ -18,6 +18,7 @@ const {
   earliestObservedAt,
   resolveWindowStart,
 } = await import("./CaptureToIncidentButton.tsx");
+const { logout } = await import("@/lib/auth.ts");
 
 afterAll(() => {
   GlobalRegistrator.unregister();
@@ -517,24 +518,43 @@ const busyReply = json(503, {
 const networkError = () => Promise.reject(new TypeError("Failed to fetch"));
 
 /**
- * The server's create idempotency (U25c): the first create with a request
- * id makes an incident; every later one with the same id replays it (200).
- * `made` maps request id to incident id, so a test can count incidents.
+ * The server's create idempotency (U25c), as the handler implements it: the
+ * first create with a request id makes an incident; a later one with the
+ * same id and the same title, summary and window replays it (200), and one
+ * with a different payload is 409 client_request_id_conflict. `made` maps
+ * request id to incident id, so a test can count incidents; `edit` changes
+ * a stored incident's payload, as an operator editing it would.
  */
 function idempotentServer() {
   const made = new Map<string, string>();
+  const payloads = new Map<string, string>();
+  const payloadOf = (c: Call) => {
+    const b = c.body as Record<string, unknown>;
+    return JSON.stringify([b.title, b.summary, b.windowStart, b.windowEnd]);
+  };
   const create = (c: Call) => {
     const rid = requestIdOf(c) ?? `anon-${made.size}`;
     const existing = made.get(rid);
     if (existing) {
+      if (payloads.get(rid) !== payloadOf(c)) return conflictReply;
       return json(200, { data: { incident: incident({ id: existing }) } });
     }
     const id = uuidFor(`inc-${made.size + 1}`);
     made.set(rid, id);
+    payloads.set(rid, payloadOf(c));
     return created(id);
   };
-  return { made, create };
+  const edit = (rid: string) => payloads.set(rid, "edited");
+  return { made, create, edit };
 }
+
+const conflictReply = json(409, {
+  error: {
+    code: 409,
+    message: "conflict",
+    reason: "client_request_id_conflict",
+  },
+});
 
 const PENDING_PREFIX = "kubecenter.capture-pending:";
 const pendingStorageKey = (cluster: string) =>
@@ -591,10 +611,18 @@ afterEach(() => {
 
 // --- The create idempotency key ---------------------------------------------------------
 
-for (const [label, lost] of [
-  ["a network error", networkError],
-  ["a 502", () => json(502, { error: { code: 502, message: "bad gateway" } })],
-  ["incident_busy", () => busyReply],
+for (const [label, lost, says] of [
+  [
+    "a network error",
+    networkError,
+    "may or may not have been created. Try again",
+  ],
+  [
+    "a 502",
+    () => json(502, { error: { code: 502, message: "bad gateway" } }),
+    "may or may not have been created. Try again",
+  ],
+  ["incident_busy", () => busyReply, "The incident store is busy."],
 ] as const) {
   test(`a create lost to ${label} is retried with the same request id: one incident`, async () => {
     const server = idempotentServer();
@@ -612,9 +640,8 @@ for (const [label, lost] of [
     const root = await mount({});
     await click(q(root, "capture-to-incident"));
     await click(q(root, "capture-to-new-incident"));
-    expect(root.textContent).toContain(
-      "may or may not have been created. Try again",
-    );
+    expect(root.textContent).toContain(says);
+    expect(root.textContent).toContain("cannot create a second incident");
     expect(captures()).toHaveLength(0);
 
     await click(q(root, "capture-to-new-incident"));
@@ -631,6 +658,77 @@ for (const [label, lost] of [
     expect(stored("local")).toBeNull();
   });
 }
+
+test("a lost create retried into a 429 keeps the key: the third attempt resends it, one incident", async () => {
+  const server = idempotentServer();
+  let createCalls = 0;
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) {
+      createCalls++;
+      if (createCalls === 1) {
+        server.create(c);
+        return networkError();
+      }
+      if (createCalls === 2) {
+        return json(429, {
+          error: { code: 429, message: "slow down", detail: "rate limited" },
+        });
+      }
+      return server.create(c);
+    }
+    return captured;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("This attempt was refused: rate limited");
+  expect(stored("local")).toMatchObject({
+    requestId: requestIdOf(creates()[0]),
+  });
+
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(3);
+  expect(requestIdOf(creates()[2])).toBe(requestIdOf(creates()[0]));
+  expect(creates()[2].body).toEqual(creates()[0].body);
+  expect(server.made.size).toBe(1);
+  expect(assigned).toEqual([`/observability/incidents/${uuidFor("inc-1")}`]);
+});
+
+test("a lost create retried after a re-scan with a new window resends the stored key and payload", async () => {
+  const server = idempotentServer();
+  let createCalls = 0;
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) {
+      createCalls++;
+      const reply = server.create(c);
+      return createCalls === 1
+        ? json(502, { error: { code: 502, message: "bad gateway" } })
+        : reply;
+    }
+    return captured;
+  });
+  let root = await mount({ windowStart: "2026-10-06T09:00:00.000Z" });
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("may or may not have been created");
+  unmount();
+
+  // The re-scan reports a different window; the outcome is still unknown.
+  root = await mount({ windowStart: "2026-10-06T09:30:00.000Z" });
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(2);
+  expect(requestIdOf(creates()[1])).toBe(requestIdOf(creates()[0]));
+  expect(creates()[1].body).toEqual(creates()[0].body);
+  expect(creates()[1].body).toMatchObject({
+    windowStart: "2026-10-06T09:00:00.000Z",
+  });
+  expect(server.made.size).toBe(1);
+  expect(assigned).toEqual([`/observability/incidents/${uuidFor("inc-1")}`]);
+});
 
 test("a remount mid-create retries with the stored request id, and the late answer changes nothing", async () => {
   const server = idempotentServer();
@@ -657,6 +755,7 @@ test("a remount mid-create retries with the stored request id, and the late answ
   await click(q(root, "capture-to-new-incident"));
   expect(creates()).toHaveLength(2);
   expect(requestIdOf(creates()[1])).toBe(requestIdOf(creates()[0]));
+  expect(creates()[1].body).toEqual(creates()[0].body);
   expect(server.made.size).toBe(1);
   expect(assigned).toEqual([`/observability/incidents/${uuidFor("inc-1")}`]);
   expect(stored("local")).toBeNull();
@@ -696,35 +795,101 @@ test("unmounting mid-create neither captures nor navigates; the remount captures
   );
 });
 
-test("client_request_id_conflict drops the request id; the next attempt sends a new one", async () => {
+test("client_request_id_conflict on a retry: no silent create; only Create anyway mints a new key", async () => {
+  const server = idempotentServer();
   let createCalls = 0;
   stub((c) => {
     if (c.method === "GET") return empty;
     if (isCreate(c)) {
       createCalls++;
-      return createCalls === 1
-        ? json(409, {
-            error: {
-              code: 409,
-              message: "conflict",
-              reason: "client_request_id_conflict",
-            },
-          })
-        : created(uuidFor("inc-c"));
+      const reply = server.create(c);
+      if (createCalls === 1) {
+        // The first create commits and its answer is lost; the incident is
+        // then edited, so the retry's payload no longer matches it.
+        server.edit(requestIdOf(c) as string);
+        return networkError();
+      }
+      return reply;
     }
+    return captured;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(2);
+  expect(requestIdOf(creates()[1])).toBe(requestIdOf(creates()[0]));
+
+  const notice = q(root, "capture-create-conflict");
+  expect(notice.textContent).toContain(
+    "An incident for this capture may already exist — check your incidents.",
+  );
+  expect(
+    notice.querySelector('a[href="/observability/incidents"]'),
+  ).not.toBeNull();
+  expect(root.querySelector('[data-testid="capture-to-new-incident"]')).toBe(
+    null,
+  );
+  expect(stored("local")).toEqual({ conflict: true });
+
+  // The conflict survives a re-scan: still no silent create.
+  unmount();
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-create-conflict")).toBeTruthy();
+  expect(creates()).toHaveLength(2);
+
+  await click(q(root, "capture-create-anyway"));
+  expect(creates()).toHaveLength(3);
+  expect(requestIdOf(creates()[2])).toMatch(UUID);
+  expect(requestIdOf(creates()[2])).not.toBe(requestIdOf(creates()[0]));
+  expect(server.made.size).toBe(2);
+  expect(assigned).toEqual([`/observability/incidents/${uuidFor("inc-2")}`]);
+  expect(stored("local")).toBeNull();
+});
+
+test("a conflict recorded behind an open dialog still stops the next click from creating", async () => {
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) return created(uuidFor("inc-x2"));
     return captured;
   });
   const root = await mount({});
   await click(q(root, "capture-to-incident"));
+  // Another mount for the same target records a conflict meanwhile.
+  globalThis.sessionStorage.setItem(
+    pendingStorageKey("local"),
+    JSON.stringify({ conflict: true }),
+  );
   await click(q(root, "capture-to-new-incident"));
-  expect(root.textContent).toContain("already used for a different incident");
-  expect(stored("local")).toBeNull();
+  expect(creates()).toHaveLength(0);
+  expect(q(root, "capture-create-conflict")).toBeTruthy();
+  // The dialog is not left busy: the explicit action is available.
+  expect(q(root, "capture-create-anyway").getAttribute("aria-disabled")).toBe(
+    "false",
+  );
+});
 
+test("a create answered with no database clears the record and says so", async () => {
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) {
+      return json(503, {
+        error: {
+          code: 503,
+          message: "no database",
+          reason: "incident_persistence_unavailable",
+        },
+      });
+    }
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
   await click(q(root, "capture-to-new-incident"));
-  expect(creates()).toHaveLength(2);
-  expect(requestIdOf(creates()[1])).toMatch(UUID);
-  expect(requestIdOf(creates()[1])).not.toBe(requestIdOf(creates()[0]));
-  expect(assigned).toEqual([`/observability/incidents/${uuidFor("inc-c")}`]);
+  expect(root.textContent).toContain(
+    "This deployment has no database, so incidents cannot be recorded.",
+  );
+  expect(stored("local")).toBeNull();
 });
 
 test("a create refused with a 4xx says why and drops the request id", async () => {
@@ -745,36 +910,37 @@ test("a create refused with a 4xx says why and drops the request id", async () =
   expect(stored("local")).toBeNull();
 });
 
-test("a stored intent is resent as stored; a changed diagnosis window is a new intent", async () => {
+test("a stored intent is resent exactly as stored, whatever the diagnosis window", async () => {
   seed("local", { windowStart: "2026-10-06T08:00:00.000Z" });
-  const server = idempotentServer();
   stub((c) => {
     if (c.method === "GET") return empty;
-    if (isCreate(c)) return server.create(c);
-    return busyReply;
+    if (isCreate(c)) return created(uuidFor("inc-s"));
+    return captured;
   });
-  // No diagnosis window: the stored request and its window are resent.
-  let root = await mount({});
+  const root = await mount({ windowStart: "2026-10-06T09:30:00.000Z" });
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()[0].body).toEqual({
+    title: TITLE,
+    summary: SUMMARY,
+    windowStart: "2026-10-06T08:00:00.000Z",
+    clientRequestId: "11111111-1111-4111-8111-111111111111",
+  });
+});
+
+test("with no stored intent, a new key is minted with the current window", async () => {
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) return created(uuidFor("inc-n"));
+    return captured;
+  });
+  const root = await mount({ windowStart: "2026-10-06T09:30:00.000Z" });
   await click(q(root, "capture-to-incident"));
   await click(q(root, "capture-to-new-incident"));
   expect(creates()[0].body).toMatchObject({
-    clientRequestId: "11111111-1111-4111-8111-111111111111",
-    windowStart: "2026-10-06T08:00:00.000Z",
-  });
-  // The incident is known now; drop it to test the next intent afresh.
-  unmount();
-  seed("local", { windowStart: "2026-10-06T08:00:00.000Z" });
-
-  root = await mount({ windowStart: "2026-10-06T09:30:00.000Z" });
-  await click(q(root, "capture-to-incident"));
-  await click(q(root, "capture-to-new-incident"));
-  expect(creates()[1].body).toMatchObject({
     windowStart: "2026-10-06T09:30:00.000Z",
   });
-  expect(requestIdOf(creates()[1])).toMatch(UUID);
-  expect(requestIdOf(creates()[1])).not.toBe(
-    "11111111-1111-4111-8111-111111111111",
-  );
+  expect(requestIdOf(creates()[0])).toMatch(UUID);
 });
 
 test("without crypto.randomUUID (plain HTTP) the request id is still a v4 UUID", async () => {
@@ -911,6 +1077,65 @@ test("capturing into an existing incident clears the pending one", async () => {
   expect(assigned).toEqual([`/observability/incidents/${uuidFor("e2")}`]);
   expect(stored("local")).toBeNull();
 });
+
+test("a create from an earlier mount that lands during capture-into-existing stays recorded", async () => {
+  const lateCreate = deferred(created(uuidFor("late")));
+  const existingCapture = deferred(captured);
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c))
+      return listOf([incident({ id: uuidFor("e3"), title: "Mine" })]);
+    if (isCreate(c)) return lateCreate.promise;
+    if (c.path === `/api/v1/incidents/${uuidFor("e3")}/capture`)
+      return existingCapture.promise;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  act(() => q(root, "capture-to-new-incident").click());
+  await settle();
+  unmount();
+
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  act(() => q(root, "capture-to-existing-incident").click());
+  await settle();
+  // The earlier mount's create answers while the capture is in flight.
+  lateCreate.release();
+  await settle();
+  existingCapture.release();
+  await settle();
+  expect(assigned).toEqual([`/observability/incidents/${uuidFor("e3")}`]);
+  // The guarded clear left the newly made incident recorded, not orphaned.
+  expect(stored("local")).toMatchObject({ id: uuidFor("late") });
+});
+
+for (const [label, broken] of [
+  ["sessionStorage", false],
+  ["the in-memory fallback", true],
+] as const) {
+  test(`logout forgets the pending record held in ${label}`, async () => {
+    if (broken) breakStorage("getItem", "setItem", "removeItem");
+    let attempt = 0;
+    stub((c) => {
+      if (c.path === "/api/v1/auth/logout") return json(200, { data: {} });
+      if (c.method === "GET") return empty;
+      if (isCreate(c)) return created(uuidFor("lo"));
+      attempt++;
+      return attempt === 1 ? busyReply : captured;
+    });
+    let root = await mount({});
+    await click(q(root, "capture-to-incident"));
+    await click(q(root, "capture-to-new-incident"));
+    expect(root.textContent).toContain("Capture did not run");
+    unmount();
+
+    await logout();
+    root = await mount({});
+    await click(q(root, "capture-to-incident"));
+    expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
+    if (!broken) expect(stored("local")).toBeNull();
+  });
+}
 
 test("without sessionStorage the pending record survives a remount in memory, and success clears it", async () => {
   breakStorage("getItem", "setItem", "removeItem");

@@ -8,6 +8,7 @@ import {
   isPersistenceUnavailable,
   listIncidents,
 } from "@/lib/incident-api.ts";
+import { newClientRequestId } from "@/lib/incident-create.ts";
 import {
   DEFAULT_INCIDENT_WINDOW_MS,
   INCIDENT_MAX_SUMMARY_CHARS,
@@ -15,6 +16,12 @@ import {
   type IncidentView,
 } from "@/lib/incident-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import {
+  createConflictText,
+  createRefusedForGood,
+  isCreateConflict,
+  keyedCreateErrorText,
+} from "@/src/components/incidents/errors.ts";
 import {
   BUTTON_PRIMARY,
   BUTTON_SECONDARY,
@@ -77,23 +84,6 @@ function listErrorText(err: unknown): string {
   return "Could not load incidents.";
 }
 
-function createErrorText(err: unknown): string {
-  if (isPersistenceUnavailable(err)) {
-    return "This deployment has no database, so incidents cannot be recorded.";
-  }
-  if (err instanceof ApiError) {
-    if (err.reason === "incident_busy") {
-      return "The incident store is busy. Try again in a moment.";
-    }
-    if (err.status === 400) {
-      return (
-        err.body?.error?.detail || err.detail || "The incident is invalid."
-      );
-    }
-  }
-  return "Could not create the incident.";
-}
-
 function RoleBadge({ incident }: { incident: IncidentView }) {
   if (incident.role === "owner") {
     return (
@@ -122,7 +112,19 @@ function When({ at }: { at: string }) {
   );
 }
 
-/** The "New incident" form. Creates the incident, then opens it. */
+/**
+ * The "New incident" form. Creates the incident, then opens it.
+ *
+ * Each submission intent carries a `clientRequestId` (U25c). A retry after a
+ * lost or unknown answer (a network error, a 5xx, `incident_busy`, or any
+ * refusal that does not prove nothing was made) resends the same id while
+ * the inputs are unchanged, so the server returns the incident the first
+ * attempt made instead of creating a second. Changed inputs are a new
+ * intent with a new id. `client_request_id_conflict` means an earlier
+ * attempt made an incident that was edited since: the id is dropped, a
+ * notice links to the incident list, and only "Create a new incident
+ * anyway" creates.
+ */
 function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
   const title = useSignal("");
   const summary = useSignal("");
@@ -132,6 +134,10 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
   const windowEnd = useSignal("");
   const submitting = useSignal(false);
   const error = useSignal<string | null>(null);
+  /** A retried create met `client_request_id_conflict`. */
+  const conflict = useSignal(false);
+  /** The current submission intent: its request id and exact payload. */
+  const intent = useRef<{ requestId: string; payload: string } | null>(null);
   /**
    * Aborted when the form unmounts. A create still in flight then neither
    * navigates nor writes state; the server may already have committed it,
@@ -145,8 +151,8 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
     return () => lifetime.current?.abort();
   }, []);
 
-  const submit = async (e: Event) => {
-    e.preventDefault();
+  /** Validates and creates; `fresh` forces a new request id. */
+  const create = async (fresh: boolean) => {
     if (submitting.value) return;
     const start = fromLocalInput(windowStart.value);
     if (!title.value.trim()) {
@@ -170,26 +176,44 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
       }
       end = parsed;
     }
+    const payload = {
+      title: title.value.trim(),
+      summary: summary.value,
+      windowStart: start,
+      ...(end ? { windowEnd: end } : {}),
+    };
+    const key = JSON.stringify(payload);
+    // The same inputs resend the same id; changed ones (or "anyway") mint one.
+    if (fresh || intent.current?.payload !== key) {
+      intent.current = { requestId: newClientRequestId(), payload: key };
+    }
+    const sent = intent.current;
     error.value = null;
+    conflict.value = false;
     submitting.value = true;
     const signal = lifetime.current?.signal;
     try {
       const res = await createIncident(
-        {
-          title: title.value.trim(),
-          summary: summary.value,
-          windowStart: start,
-          ...(end ? { windowEnd: end } : {}),
-        },
+        { ...payload, clientRequestId: sent.requestId },
         signal,
       );
       if (signal?.aborted) return;
       globalThis.location.assign(incidentHref(res.incident.id));
     } catch (err) {
       if (signal?.aborted) return;
-      error.value = createErrorText(err);
+      if (isCreateConflict(err) || createRefusedForGood(err)) {
+        if (intent.current === sent) intent.current = null;
+      }
+      if (isCreateConflict(err)) conflict.value = true;
+      else error.value = keyedCreateErrorText(err, "this request");
       submitting.value = false;
     }
+  };
+
+  const submit = (e: Event) => {
+    e.preventDefault();
+    // After a conflict only the explicit "anyway" action creates.
+    if (!conflict.value) void create(false);
   };
 
   return (
@@ -204,6 +228,18 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
       {error.value && (
         <div role="alert">
           <Alert variant="error">{error.value}</Alert>
+        </div>
+      )}
+      {conflict.value && (
+        <div
+          role="alert"
+          data-testid="new-incident-conflict"
+          class="flex flex-col gap-2"
+        >
+          <Alert variant="warning">{createConflictText("this request")}</Alert>
+          <a href="/observability/incidents" class={`text-sm ${LINK}`}>
+            Check your incidents
+          </a>
         </div>
       )}
       <Input
@@ -258,13 +294,25 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
         />
       </div>
       <div class="flex items-center gap-3">
-        <button
-          type="submit"
-          aria-disabled={submitting.value}
-          class={BUTTON_PRIMARY}
-        >
-          {submitting.value ? "Creating…" : "Create incident"}
-        </button>
+        {conflict.value ? (
+          <button
+            type="button"
+            aria-disabled={submitting.value}
+            data-testid="new-incident-create-anyway"
+            onClick={() => void create(true)}
+            class={BUTTON_PRIMARY}
+          >
+            {submitting.value ? "Creating…" : "Create a new incident anyway"}
+          </button>
+        ) : (
+          <button
+            type="submit"
+            aria-disabled={submitting.value}
+            class={BUTTON_PRIMARY}
+          >
+            {submitting.value ? "Creating…" : "Create incident"}
+          </button>
+        )}
         <button
           type="button"
           aria-disabled={submitting.value}

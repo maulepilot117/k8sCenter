@@ -10,13 +10,27 @@ import {
   listIncidents,
 } from "@/lib/incident-api.ts";
 import {
+  clearPendingCapture,
+  isPendingConflict,
+  newClientRequestId,
+  type PendingCapture,
+  type PendingCreate,
+  readPendingCapture,
+  writePendingCapture,
+} from "@/lib/incident-create.ts";
+import {
   DEFAULT_INCIDENT_WINDOW_MS,
   INCIDENT_MAX_TITLE_CHARS,
   type IncidentView,
   isCaptureKind,
 } from "@/lib/incident-types.ts";
 import { captureErrorText } from "@/src/components/incidents/CapturePanel.tsx";
-import { keyedCreateErrorText } from "@/src/components/incidents/errors.ts";
+import {
+  createConflictText,
+  createRefusedForGood,
+  isCreateConflict,
+  keyedCreateErrorText,
+} from "@/src/components/incidents/errors.ts";
 import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
 
 /**
@@ -41,26 +55,42 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  * **No duplicate incidents.** The guarantee comes from the server's create
  * idempotency key (U25c, `clientRequestId`): each "capture into a new
  * incident" intent gets one request id, and every retry of that intent,
- * including one after a lost or unknown response, resends the same id, so
- * the server answers with the incident the first attempt made instead of
- * creating another. The intent is recorded BEFORE the create is sent, in a
- * pending record keyed by the target ("" and the local id normalised to one
- * cluster): sessionStorage, or a module-scoped Map when storage is
- * unavailable. A Re-scan remounts the island, and a remount (even one taken
- * while the create is still in flight) therefore retries with the same id.
- * The record holds the request id, the title, summary and window it was sent
- * with (a retry must resend the same payload), and, once known, the incident
- * id, which later attempts capture into directly. It is dropped when a
- * capture into that incident succeeds, when the incident refuses the capture
- * for good (gone, not the caller's, closed, at a limit), when the target is
- * captured into an existing incident instead, when the create is refused
- * outright (4xx), and on `client_request_id_conflict`, after which the next
- * attempt uses a fresh id. A diagnosis whose window start changed is a new
- * intent and gets a new id. Every write a flow makes after it starts is
- * conditional on the record still being that flow's, so a reply that lands
- * after a newer flow took over cannot overwrite it. Every action is inactive
- * while one is in flight, so a double click sends one create. Capture itself
- * is deduplicated server-side by capture key, which is what makes retrying an
+ * including one after a lost or unknown response, resends the same id with
+ * the same payload, so the server answers with the incident the first
+ * attempt made instead of creating another. The intent is recorded BEFORE
+ * the create is sent, in a pending record keyed by the target ("" and the
+ * local id normalised to one cluster; storage lives in
+ * `lib/incident-create.ts`). A Re-scan remounts the island, and a remount
+ * (even one taken while the create is still in flight) therefore retries
+ * with the same id.
+ *
+ * While the record has no incident id, every retry resends the stored id
+ * and the stored title, summary and window byte for byte, whatever the
+ * diagnosis now reports; a new id is minted only when no intent is stored.
+ * Once the incident id is known, later attempts capture into it directly.
+ * The record is dropped when a capture into that incident succeeds, when
+ * the incident refuses the capture for good (gone, not the caller's, closed,
+ * at a limit), when the target is captured into an existing incident
+ * instead, when the create is refused in a way that proves nothing was made
+ * (400, 413, no database), and on logout. A 401, 403, 408, 429 or any other
+ * refusal keeps it: an earlier attempt may have committed, and resending the
+ * key cannot create a second incident.
+ *
+ * `client_request_id_conflict` on a retry means an earlier attempt made an
+ * incident that was edited since. The key is dropped, a notice says an
+ * incident for this capture may already exist and links to the incident
+ * list, and nothing is created on the next click: only the explicit "Create
+ * a new incident anyway" mints a new id. The conflict state is recorded, so
+ * it survives a remount.
+ *
+ * Every write a flow makes after it starts is conditional on the record
+ * still being that flow's, so a reply that lands after a newer flow took
+ * over cannot overwrite it. One window remains: a create from an earlier
+ * mount that finishes after the operator captured into an existing incident
+ * finds its intent gone and records nothing, so that empty incident shows
+ * only in the incident list. Every action is inactive while one is in
+ * flight, so a double click sends one create. Capture itself is deduplicated
+ * server-side by capture key, which is what makes retrying an
  * outcome-unknown capture safe.
  *
  * Inactive controls use `aria-disabled` rather than `disabled`, so they stay
@@ -68,7 +98,6 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  */
 
 const LIST_PAGE_SIZE = 50;
-const PENDING_STORAGE_PREFIX = "kubecenter.capture-pending:";
 const DIALOG_TITLE_ID = "capture-to-incident-title";
 const REASON_ID = "capture-to-incident-reason";
 
@@ -80,31 +109,14 @@ const BUTTON_PRIMARY =
 const BUTTON_SECONDARY =
   "inline-flex cursor-pointer items-center justify-center rounded-md border border-border-primary bg-transparent px-3 py-1.5 text-sm font-medium text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
 
+const INCIDENTS_HREF = "/observability/incidents";
+const LINK_CLASS =
+  "text-sm font-medium text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50";
+
 const incidentHref = (id: string) =>
   `/observability/incidents/${encodeURIComponent(id)}`;
 
 // --- Pending create intent ---------------------------------------------------------
-
-/**
- * One "capture into a new incident" intent for a target: the request id the
- * create is (re)sent with, the payload it was first sent with, and the
- * incident it made once that is known.
- */
-interface PendingRecord {
-  requestId: string;
-  title: string;
-  summary: string;
-  windowStart: string;
-  id?: string;
-}
-
-/**
- * Overrides sessionStorage when storage is unavailable (SSR, blocked
- * storage, a private window that throws, a full quota). A record here is
- * newer than whatever storage holds; `null` is a tombstone for a clear that
- * storage refused. Module-scoped, so it survives a remount within the page.
- */
-const pendingFallback = new Map<string, PendingRecord | null>();
 
 /** The pending key; "" and the local id are the same (local) cluster. */
 const pendingKey = (
@@ -114,95 +126,13 @@ const pendingKey = (
   name: string,
 ) => `${clusterId || LOCAL_CLUSTER_ID}|${namespace}|${kind}|${name}`;
 
-function parsePending(raw: string | null): PendingRecord | null {
-  if (!raw) return null;
-  try {
-    const v = JSON.parse(raw) as unknown;
-    if (!v || typeof v !== "object") return null;
-    const { requestId, title, summary, windowStart, id } = v as Record<
-      string,
-      unknown
-    >;
-    if (
-      typeof requestId !== "string" ||
-      !requestId ||
-      typeof title !== "string" ||
-      typeof summary !== "string" ||
-      typeof windowStart !== "string"
-    ) {
-      return null;
-    }
-    const rec: PendingRecord = { requestId, title, summary, windowStart };
-    if (typeof id === "string" && id) rec.id = id;
-    return rec;
-  } catch {
-    return null;
+/** Same record: same key, same incident, or both a conflict, or both none. */
+function sameRecord(a: PendingCapture | null, b: PendingCapture | null) {
+  if (a === null || b === null) return a === b;
+  if (isPendingConflict(a) || isPendingConflict(b)) {
+    return isPendingConflict(a) && isPendingConflict(b);
   }
-}
-
-/** What sessionStorage holds for the key; null when empty or unreadable. */
-function storedPending(key: string): PendingRecord | null {
-  try {
-    return parsePending(
-      globalThis.sessionStorage.getItem(PENDING_STORAGE_PREFIX + key),
-    );
-  } catch {
-    return null;
-  }
-}
-
-function readPending(key: string): PendingRecord | null {
-  if (pendingFallback.has(key)) {
-    const rec = pendingFallback.get(key) ?? null;
-    // A tombstone is only needed while storage still holds a value.
-    if (rec === null && storedPending(key) === null) {
-      pendingFallback.delete(key);
-    }
-    return rec;
-  }
-  return storedPending(key);
-}
-
-function writePending(key: string, rec: PendingRecord): void {
-  try {
-    globalThis.sessionStorage.setItem(
-      PENDING_STORAGE_PREFIX + key,
-      JSON.stringify(rec),
-    );
-    pendingFallback.delete(key);
-  } catch {
-    // Storage unavailable or full: the fallback holds it, and shadows any
-    // older value storage still has.
-    pendingFallback.set(key, rec);
-  }
-}
-
-function clearPending(key: string): void {
-  try {
-    globalThis.sessionStorage.removeItem(PENDING_STORAGE_PREFIX + key);
-    pendingFallback.delete(key);
-  } catch {
-    // Storage refused the removal: a tombstone shadows what it still holds,
-    // or, when it holds nothing readable, there is nothing to shadow.
-    if (storedPending(key) === null) pendingFallback.delete(key);
-    else pendingFallback.set(key, null);
-  }
-}
-
-/**
- * A new create request id: a v4 UUID in its 36-character hyphenated form,
- * the only spelling the server accepts. `crypto.randomUUID` exists only in
- * secure contexts, and a homelab install may be served over plain HTTP, so
- * the id is built from `crypto.getRandomValues` when it is missing.
- */
-function newRequestId(): string {
-  const c = globalThis.crypto;
-  if (typeof c.randomUUID === "function") return c.randomUUID();
-  const b = c.getRandomValues(new Uint8Array(16));
-  b[6] = (b[6] & 0x0f) | 0x40;
-  b[8] = (b[8] & 0x3f) | 0x80;
-  const hex = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return a.requestId === b.requestId && a.id === b.id;
 }
 
 /** A failed create, kept apart from a failed capture for its wording. */
@@ -210,17 +140,6 @@ class CreateFailed extends Error {
   constructor(readonly failure: unknown) {
     super("create failed");
   }
-}
-
-/**
- * True when a failed create certainly made nothing, so its request id can be
- * dropped: a 4xx (including `client_request_id_conflict`) and the no-database
- * 503. A network error or any other 5xx may have committed, and the intent
- * is kept so the retry resends the same id.
- */
-function createRefusedForGood(err: unknown): boolean {
-  if (isPersistenceUnavailable(err)) return true;
-  return err instanceof ApiError && err.status >= 400 && err.status < 500;
 }
 
 /**
@@ -412,7 +331,13 @@ export default function CaptureToIncidentButton({
     const signal = lifetime.current?.signal;
     try {
       const id = await action(signal);
-      if (signal?.aborted || !id) return;
+      if (signal?.aborted) return;
+      if (!id) {
+        // Nothing to open (a conflict stopped the create): stay, re-read.
+        busy.value = false;
+        pendingVersion.value++;
+        return;
+      }
       globalThis.location.assign(incidentHref(id));
     } catch (err) {
       if (signal?.aborted) return;
@@ -440,13 +365,13 @@ export default function CaptureToIncidentButton({
    * create answering after a remount) cannot overwrite what it recorded.
    */
   const setPending = (
-    rec: PendingRecord | null,
+    rec: PendingCapture | null,
     signal?: AbortSignal,
-    owns?: (current: PendingRecord | null) => boolean,
+    owns?: (current: PendingCapture | null) => boolean,
   ) => {
-    if (owns && !owns(readPending(key))) return;
-    if (rec) writePending(key, rec);
-    else clearPending(key);
+    if (owns && !owns(readPendingCapture(key))) return;
+    if (rec) writePendingCapture(key, rec);
+    else clearPendingCapture(key);
     if (!signal?.aborted) pendingVersion.value++;
   };
 
@@ -458,88 +383,115 @@ export default function CaptureToIncidentButton({
   );
   const incidentSummary = `Opened from the diagnosis of ${kind} ${namespace}/${name}.`;
 
+  /** A fresh create intent for this diagnosis, with a new request id. */
+  const freshIntent = (): PendingCreate => ({
+    requestId: newClientRequestId(),
+    title: incidentTitle,
+    summary: incidentSummary,
+    windowStart: resolveWindowStart(windowStart, Date.now()),
+  });
+
   /**
-   * The create intent to (re)send: the stored one when its payload still
-   * matches this diagnosis (a retry must resend the same payload with the
-   * same id), else a new one with a fresh request id. Without a diagnosis
-   * window the stored window, the one-hour fallback computed at the first
-   * click, is reused rather than recomputed.
+   * Creates the incident for `intent` (recorded first), then captures into
+   * it. Returns the incident to open.
    */
-  const createIntent = (stored: PendingRecord | null): PendingRecord => {
-    if (
-      stored &&
-      stored.title === incidentTitle &&
-      stored.summary === incidentSummary &&
-      (windowStart === undefined || windowStart === stored.windowStart)
-    ) {
-      return stored;
+  const createAndCapture = async (
+    intent: PendingCreate,
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
+    const ownsIntent = (current: PendingCapture | null) =>
+      !isPendingConflict(current) && current?.requestId === intent.requestId;
+    // Recorded before the request, so a retry (after a lost response, or
+    // from a remounted island while this create is still in flight) resends
+    // the same request id and payload and gets the same incident back.
+    setPending(intent, signal);
+    let id: string;
+    // Not tied to the island's lifetime: a create that reached the server
+    // must be recorded even when the island has unmounted.
+    try {
+      const created = await createIncident({
+        title: intent.title,
+        summary: intent.summary,
+        windowStart: intent.windowStart,
+        clientRequestId: intent.requestId,
+      });
+      id = created.incident.id;
+    } catch (err) {
+      if (isCreateConflict(err)) {
+        // An earlier attempt with this key made an incident that was edited
+        // since. Drop the key and create nothing until the operator says so.
+        setPending({ conflict: true }, signal, ownsIntent);
+      } else if (createRefusedForGood(err)) {
+        // Nothing was ever made with this key: the next attempt starts afresh.
+        setPending(null, signal, ownsIntent);
+      }
+      throw new CreateFailed(err);
     }
-    return {
-      requestId: newRequestId(),
-      title: incidentTitle,
-      summary: incidentSummary,
-      windowStart: resolveWindowStart(windowStart, Date.now()),
-    };
+    setPending({ ...intent, id }, signal, ownsIntent);
+    if (signal?.aborted) return null;
+    return captureInto(id, signal);
   };
 
+  /**
+   * Captures into the pending incident `id`, clearing the record once the
+   * capture lands or the incident refuses it for good.
+   */
+  const captureInto = async (id: string, signal?: AbortSignal) => {
+    const ownsId = (current: PendingCapture | null) =>
+      !isPendingConflict(current) && current?.id === id;
+    try {
+      await capture(id, signal);
+    } catch (err) {
+      // The incident cannot take this capture (gone, not ours, closed,
+      // full): forget it, so the next attempt creates a fresh one. A
+      // transient failure keeps it as the retry target.
+      if (captureRefusedForGood(err)) setPending(null, signal, ownsId);
+      throw err;
+    }
+    setPending(null, signal, ownsId);
+    return id;
+  };
+
+  /**
+   * "Capture into a new incident": a stored intent is resent exactly as
+   * stored, whatever the current window, until its outcome is known; a new
+   * request id is minted only when there is no stored intent. After a
+   * conflict it does nothing: only "Create a new incident anyway" creates.
+   */
   const captureNew = () =>
     run(async (signal) => {
-      const stored = readPending(key);
-      let id = stored?.id ?? null;
-      if (!id) {
-        const intent = createIntent(stored);
-        const ownsIntent = (current: PendingRecord | null) =>
-          current?.requestId === intent.requestId;
-        // Recorded before the request, so a retry (after a lost response,
-        // or from a remounted island while this create is still in flight)
-        // resends the same request id and gets the same incident back.
-        setPending(intent, signal);
-        // Not tied to the island's lifetime: a create that reached the
-        // server must be recorded even when the island has unmounted.
-        try {
-          const created = await createIncident({
-            title: intent.title,
-            summary: intent.summary,
-            windowStart: intent.windowStart,
-            clientRequestId: intent.requestId,
-          });
-          id = created.incident.id;
-        } catch (err) {
-          // A refused create made nothing: drop the intent, so the next
-          // attempt (after a request id conflict, too) starts afresh.
-          if (createRefusedForGood(err)) setPending(null, signal, ownsIntent);
-          throw new CreateFailed(err);
-        }
-        setPending({ ...intent, id }, signal, ownsIntent);
-      }
-      if (signal?.aborted) return null;
-      const target = id;
-      const ownsId = (current: PendingRecord | null) => current?.id === target;
-      try {
-        await capture(target, signal);
-      } catch (err) {
-        // The incident cannot take this capture (gone, not ours, closed,
-        // full): forget it, so the next attempt creates a fresh one. A
-        // transient failure keeps it as the retry target.
-        if (captureRefusedForGood(err)) setPending(null, signal, ownsId);
-        throw err;
-      }
-      setPending(null, signal, ownsId);
-      return target;
+      const stored = readPendingCapture(key);
+      if (isPendingConflict(stored)) return null;
+      if (stored?.id) return captureInto(stored.id, signal);
+      return createAndCapture(stored ?? freshIntent(), signal);
     });
+
+  /** After a conflict, the operator's explicit choice to create anyway. */
+  const createAnyway = () =>
+    run((signal) => createAndCapture(freshIntent(), signal));
 
   const captureExisting = (id: string) =>
     run(async (signal) => {
+      const before = readPendingCapture(key);
       await capture(id, signal);
-      // The target is now captured: no pending create intent is owed.
-      setPending(null, signal);
+      // The target is now captured: no pending create intent is owed. The
+      // clear is guarded: when a create from an earlier mount finished in
+      // the meantime, its incident id stays recorded, so the next visit
+      // offers to capture into it rather than leaving it unmentioned. A
+      // create from an earlier mount that finishes AFTER this clear finds
+      // its intent gone and records nothing: that empty incident is then
+      // only visible in the incident list (a remount mid-create followed by
+      // choosing an existing incident is needed to get there).
+      setPending(null, signal, (current) => sameRecord(current, before));
       return id;
     });
 
   const inFlight = busy.value;
   // Read after the version so a write or clear re-renders the label and link.
   void pendingVersion.value;
-  const created = readPending(key)?.id ?? null;
+  const pending = readPendingCapture(key);
+  const conflict = isPendingConflict(pending);
+  const created = conflict ? null : (pending?.id ?? null);
 
   return (
     <div class={className ? `${ROOT_CLASS} ${className}` : ROOT_CLASS}>
@@ -577,14 +529,25 @@ export default function CaptureToIncidentButton({
               </span>{" "}
               in <span class="font-medium text-text-primary">{namespace}</span>.
             </p>
-            {error.value && (
+            {conflict && (
+              <div
+                role="alert"
+                data-testid="capture-create-conflict"
+                class="flex flex-col gap-2"
+              >
+                <Alert variant="warning">
+                  {createConflictText("this capture")}
+                </Alert>
+                <a href={INCIDENTS_HREF} class={LINK_CLASS}>
+                  Check your incidents
+                </a>
+              </div>
+            )}
+            {error.value && !conflict && (
               <div role="alert" class="flex flex-col gap-2">
                 <Alert variant="error">{error.value}</Alert>
                 {created && (
-                  <a
-                    href={incidentHref(created)}
-                    class="text-sm font-medium text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50"
-                  >
+                  <a href={incidentHref(created)} class={LINK_CLASS}>
                     Open the incident that was created
                   </a>
                 )}
@@ -595,18 +558,31 @@ export default function CaptureToIncidentButton({
                 Capturing…
               </p>
             )}
-            <button
-              ref={newButtonRef}
-              type="button"
-              aria-disabled={inFlight}
-              data-testid="capture-to-new-incident"
-              onClick={captureNew}
-              class={BUTTON_PRIMARY}
-            >
-              {created
-                ? "Retry capture into the new incident"
-                : "Capture into a new incident"}
-            </button>
+            {conflict ? (
+              <button
+                ref={newButtonRef}
+                type="button"
+                aria-disabled={inFlight}
+                data-testid="capture-create-anyway"
+                onClick={createAnyway}
+                class={BUTTON_PRIMARY}
+              >
+                Create a new incident anyway
+              </button>
+            ) : (
+              <button
+                ref={newButtonRef}
+                type="button"
+                aria-disabled={inFlight}
+                data-testid="capture-to-new-incident"
+                onClick={captureNew}
+                class={BUTTON_PRIMARY}
+              >
+                {created
+                  ? "Retry capture into the new incident"
+                  : "Capture into a new incident"}
+              </button>
+            )}
             <section
               aria-labelledby="capture-existing-heading"
               class="flex flex-col gap-2"
