@@ -490,6 +490,7 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
           { label: "Service Topology", href: "/observability/topology" },
           { label: "Log Explorer", href: "/observability/logs" },
           { label: "Investigate", href: "/observability/investigate" },
+          { label: "Incidents", href: "/observability/incidents" },
         ],
       },
       {

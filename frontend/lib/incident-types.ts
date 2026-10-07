@@ -41,6 +41,13 @@ export const INCIDENT_MAX_GRANTS = 50;
 /** store.IncidentMaxPageSize: the largest `limit` a list honours. */
 export const INCIDENT_MAX_PAGE_SIZE = 200;
 
+/**
+ * The default investigation window starts this long before "now": the "New
+ * incident" form's default, and the fallback when a diagnosis reports no
+ * observation time.
+ */
+export const DEFAULT_INCIDENT_WINDOW_MS = 60 * 60 * 1000;
+
 // --- Enumerations ------------------------------------------------------------
 
 /** store.IncidentStatus* (incidents.status CHECK). */
@@ -73,13 +80,21 @@ export type WithheldReason = "forbidden" | "authorization_check_unavailable";
 export type CaptureSourceId = "diagnostics" | "object" | "events";
 
 /** The kinds capture accepts: exactly the kinds diagnostics resolves. */
-export type CaptureKind =
-  | "Deployment"
-  | "StatefulSet"
-  | "DaemonSet"
-  | "Pod"
-  | "Service"
-  | "PersistentVolumeClaim";
+export const CAPTURE_KINDS = [
+  "Deployment",
+  "StatefulSet",
+  "DaemonSet",
+  "Pod",
+  "Service",
+  "PersistentVolumeClaim",
+] as const;
+
+export type CaptureKind = (typeof CAPTURE_KINDS)[number];
+
+/** True when `kind` is one capture accepts. */
+export function isCaptureKind(kind: string): kind is CaptureKind {
+  return (CAPTURE_KINDS as readonly string[]).includes(kind);
+}
 
 /** incidents.ExportFormat*. There is no HTML export. */
 export type ExportFormat = "json" | "markdown";
@@ -101,6 +116,8 @@ export type IncidentErrorReason = Open<
   | "grant_limit_reached"
   | "export_format_invalid"
   | "incident_capture_outcome_unknown"
+  | "invalid_client_request_id"
+  | "client_request_id_conflict"
 >;
 
 // --- Records -------------------------------------------------------------------
@@ -311,12 +328,20 @@ export interface ExportDocument {
 /**
  * createIncidentRequest. The owner is the caller and the cluster is the local
  * one; neither is accepted from the body.
+ *
+ * `clientRequestId` (U25c) is an optional idempotency key: a UUID in its
+ * 36-character hyphenated form, generated once per create intent and resent
+ * on every retry of it. A replay with the same payload returns the original
+ * incident (200 instead of 201); the same id with a different title, summary
+ * or window is 409 `client_request_id_conflict`, and a malformed one is 400
+ * `invalid_client_request_id`.
  */
 export interface CreateIncidentRequest {
   title: string;
   summary: string;
   windowStart: string;
   windowEnd?: string;
+  clientRequestId?: string;
 }
 
 /** updateIncidentRequest: an omitted field keeps its current value. */
@@ -372,16 +397,6 @@ export function isDotSegment(segment: string): boolean {
 //
 // Pure functions the incident workspace islands share. They decide wording,
 // links and ordering only; nothing here fetches or touches the DOM.
-
-/** The kinds the capture form offers, in display order. */
-export const CAPTURE_KINDS: readonly CaptureKind[] = [
-  "Deployment",
-  "StatefulSet",
-  "DaemonSet",
-  "Pod",
-  "Service",
-  "PersistentVolumeClaim",
-];
 
 /** The capture sources, in display order, with the label the form shows. */
 export const CAPTURE_SOURCES: readonly {

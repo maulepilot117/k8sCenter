@@ -8,12 +8,20 @@ import {
   isPersistenceUnavailable,
   listIncidents,
 } from "@/lib/incident-api.ts";
+import { newClientRequestId } from "@/lib/incident-create.ts";
 import {
+  DEFAULT_INCIDENT_WINDOW_MS,
   INCIDENT_MAX_SUMMARY_CHARS,
   INCIDENT_MAX_TITLE_CHARS,
   type IncidentView,
 } from "@/lib/incident-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import {
+  createConflictText,
+  createRefusedForGood,
+  isCreateConflict,
+  keyedCreateErrorText,
+} from "@/src/components/incidents/errors.ts";
 import {
   BUTTON_PRIMARY,
   BUTTON_SECONDARY,
@@ -47,8 +55,6 @@ import {
 
 const ROOT_CLASS = "flex flex-col gap-5";
 const PAGE_SIZE = 50;
-/** The default investigation window starts this long before "now". */
-const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
 const TITLE_ID = "incident-title";
 
 const incidentHref = (id: string) =>
@@ -76,23 +82,6 @@ function listErrorText(err: unknown): string {
     return "The incident store could not be reached. Try again.";
   }
   return "Could not load incidents.";
-}
-
-function createErrorText(err: unknown): string {
-  if (isPersistenceUnavailable(err)) {
-    return "This deployment has no database, so incidents cannot be recorded.";
-  }
-  if (err instanceof ApiError) {
-    if (err.reason === "incident_busy") {
-      return "The incident store is busy. Try again in a moment.";
-    }
-    if (err.status === 400) {
-      return (
-        err.body?.error?.detail || err.detail || "The incident is invalid."
-      );
-    }
-  }
-  return "Could not create the incident.";
 }
 
 function RoleBadge({ incident }: { incident: IncidentView }) {
@@ -123,16 +112,88 @@ function When({ at }: { at: string }) {
   );
 }
 
-/** The "New incident" form. Creates the incident, then opens it. */
-function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
-  const title = useSignal("");
-  const summary = useSignal("");
+/**
+ * A create whose outcome is not known yet: its request id, the inputs it was
+ * last sent with, and whether any attempt with it ended with an unknown
+ * outcome. Kept by the list island, not the form, so closing and reopening
+ * the form neither forgets it nor mints a new id.
+ */
+interface Outstanding {
+  requestId: string;
+  payload: CreatePayload;
+  uncertain: boolean;
+}
+
+interface CreatePayload {
+  title: string;
+  summary: string;
+  windowStart: string;
+  windowEnd?: string;
+}
+
+/**
+ * What the form must not forget when it closes: the outstanding create, and
+ * whether a create met `client_request_id_conflict` (so a reopened form
+ * still shows the notice and creates only through "anyway").
+ */
+interface CreateState {
+  intent: Outstanding | null;
+  conflict: boolean;
+}
+
+/**
+ * The "New incident" form. Creates the incident, then opens it.
+ *
+ * Each create carries a `clientRequestId` (U25c). While the last attempt's
+ * outcome is unknown (a network error, a 5xx, `incident_busy`, or any
+ * refusal that does not prove nothing was made), every later submit sends
+ * the same id with the CURRENT inputs: the server creates if nothing
+ * committed, returns the incident the first attempt made if the inputs are
+ * unchanged, or answers `client_request_id_conflict` if different inputs
+ * committed. So editing a field after a lost answer can never make a second
+ * incident silently. On a conflict the id is dropped, a notice links to the
+ * incident list, and only "Create a new incident anyway" creates, with a new
+ * id. A new id is otherwise minted only when no attempt is outstanding.
+ *
+ * A 400 or 413 proves nothing was made only while no earlier attempt with
+ * the id had an unknown outcome (the server validates before it writes, so
+ * the same inputs never committed); after one, the id is kept, because the
+ * earlier attempt may have committed different inputs. No database drops it
+ * either way.
+ *
+ * The outstanding create and the conflict state live in the list island
+ * (`state`), so a Cancel and reopen restores them: the form opens prefilled
+ * with the inputs the outstanding create was last sent with and says why
+ * until the next submit, and submitting resends its id; after a conflict it
+ * opens with the notice, and only "Create a new incident anyway" creates.
+ */
+function NewIncidentForm({
+  onCancel,
+  state,
+}: {
+  onCancel: () => void;
+  state: CreateState;
+}) {
+  // Snapshotted once: the form prefills from, and announces, only what was
+  // outstanding when it opened, never a create this form starts itself.
+  const restored = useRef(state.intent?.payload).current;
+  const showRestored = useSignal(restored !== undefined);
+  const title = useSignal(restored?.title ?? "");
+  const summary = useSignal(restored?.summary ?? "");
   const windowStart = useSignal(
-    toLocalInput(new Date(Date.now() - DEFAULT_WINDOW_MS)),
+    toLocalInput(
+      restored
+        ? new Date(restored.windowStart)
+        : new Date(Date.now() - DEFAULT_INCIDENT_WINDOW_MS),
+    ),
   );
-  const windowEnd = useSignal("");
+  const windowEnd = useSignal(
+    restored?.windowEnd ? toLocalInput(new Date(restored.windowEnd)) : "",
+  );
   const submitting = useSignal(false);
   const error = useSignal<string | null>(null);
+  /** A create met `client_request_id_conflict` (kept in `state` too). */
+  const conflict = useSignal(state.conflict);
   /**
    * Aborted when the form unmounts. A create still in flight then neither
    * navigates nor writes state; the server may already have committed it,
@@ -146,8 +207,8 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
     return () => lifetime.current?.abort();
   }, []);
 
-  const submit = async (e: Event) => {
-    e.preventDefault();
+  /** Validates and creates; `fresh` forces a new request id. */
+  const create = async (fresh: boolean) => {
     if (submitting.value) return;
     const start = fromLocalInput(windowStart.value);
     if (!title.value.trim()) {
@@ -171,26 +232,61 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
       }
       end = parsed;
     }
+    const payload: CreatePayload = {
+      title: title.value.trim(),
+      summary: summary.value,
+      windowStart: start,
+      ...(end ? { windowEnd: end } : {}),
+    };
+    // An outstanding id is resent even with edited inputs (see the doc
+    // above); only "anyway" or nothing outstanding mints a new one.
+    if (fresh || !state.intent) {
+      state.intent = {
+        requestId: newClientRequestId(),
+        payload,
+        uncertain: false,
+      };
+    }
+    const sent = state.intent;
+    sent.payload = payload;
     error.value = null;
+    conflict.value = false;
+    state.conflict = false;
+    showRestored.value = false;
     submitting.value = true;
     const signal = lifetime.current?.signal;
     try {
       const res = await createIncident(
-        {
-          title: title.value.trim(),
-          summary: summary.value,
-          windowStart: start,
-          ...(end ? { windowEnd: end } : {}),
-        },
+        { ...payload, clientRequestId: sent.requestId },
         signal,
       );
       if (signal?.aborted) return;
       globalThis.location.assign(incidentHref(res.incident.id));
     } catch (err) {
       if (signal?.aborted) return;
-      error.value = createErrorText(err);
+      // Attempts are serialized (submitting), and an unmount returns above,
+      // so `sent` is still the outstanding intent here.
+      if (
+        isCreateConflict(err) ||
+        isPersistenceUnavailable(err) ||
+        (createRefusedForGood(err) && !sent.uncertain)
+      ) {
+        state.intent = null;
+      } else if (!createRefusedForGood(err)) {
+        sent.uncertain = true;
+      }
+      if (isCreateConflict(err)) {
+        conflict.value = true;
+        state.conflict = true;
+      } else error.value = keyedCreateErrorText(err, "this request");
       submitting.value = false;
     }
+  };
+
+  const submit = (e: Event) => {
+    e.preventDefault();
+    // After a conflict only the explicit "anyway" action creates.
+    if (!conflict.value) void create(false);
   };
 
   return (
@@ -205,6 +301,27 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
       {error.value && (
         <div role="alert">
           <Alert variant="error">{error.value}</Alert>
+        </div>
+      )}
+      {showRestored.value && !conflict.value && !error.value && (
+        <p
+          data-testid="new-incident-restored"
+          class="m-0 text-sm text-text-secondary"
+        >
+          Restored from a create whose outcome is not known. Submitting again
+          cannot make a second incident.
+        </p>
+      )}
+      {conflict.value && (
+        <div
+          role="alert"
+          data-testid="new-incident-conflict"
+          class="flex flex-col gap-2"
+        >
+          <Alert variant="warning">{createConflictText("this request")}</Alert>
+          <a href="/observability/incidents" class={`text-sm ${LINK}`}>
+            Check your incidents
+          </a>
         </div>
       )}
       <Input
@@ -259,13 +376,25 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
         />
       </div>
       <div class="flex items-center gap-3">
-        <button
-          type="submit"
-          aria-disabled={submitting.value}
-          class={BUTTON_PRIMARY}
-        >
-          {submitting.value ? "Creating…" : "Create incident"}
-        </button>
+        {conflict.value ? (
+          <button
+            type="button"
+            aria-disabled={submitting.value}
+            data-testid="new-incident-create-anyway"
+            onClick={() => void create(true)}
+            class={BUTTON_PRIMARY}
+          >
+            {submitting.value ? "Creating…" : "Create a new incident anyway"}
+          </button>
+        ) : (
+          <button
+            type="submit"
+            aria-disabled={submitting.value}
+            class={BUTTON_PRIMARY}
+          >
+            {submitting.value ? "Creating…" : "Create incident"}
+          </button>
+        )}
         <button
           type="button"
           aria-disabled={submitting.value}
@@ -294,6 +423,8 @@ export default function IncidentList() {
   const failed = useSignal(false);
   const noDatabase = useSignal(false);
   const formOpen = useSignal(false);
+  /** The outstanding create and conflict state, across Cancel and reopen. */
+  const createState = useRef<CreateState>({ intent: null, conflict: false });
   /**
    * The request to make: the cursor to continue from ("" for the first page)
    * and a sequence number every activation increments, so asking again for
@@ -406,7 +537,9 @@ export default function IncidentList() {
         )}
       </div>
 
-      {canCreate && formOpen.value && <NewIncidentForm onCancel={closeForm} />}
+      {canCreate && formOpen.value && (
+        <NewIncidentForm onCancel={closeForm} state={createState.current} />
+      )}
 
       {noDatabase.value && (
         <div
