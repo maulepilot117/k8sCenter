@@ -3,6 +3,7 @@ import { useEffect, useRef } from "preact/hooks";
 import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError } from "@/lib/api.ts";
+import { useAuth } from "@/lib/auth.ts";
 import {
   captureEvidence,
   createIncident,
@@ -12,6 +13,7 @@ import {
 import {
   clearPendingCapture,
   isPendingConflict,
+  isStaleIntent,
   newClientRequestId,
   type PendingCapture,
   type PendingCreate,
@@ -58,11 +60,13 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  * including one after a lost or unknown response, resends the same id with
  * the same payload, so the server answers with the incident the first
  * attempt made instead of creating another. The intent is recorded BEFORE
- * the create is sent, in a pending record keyed by the target ("" and the
- * local id normalised to one cluster; storage lives in
- * `lib/incident-create.ts`). A Re-scan remounts the island, and a remount
- * (even one taken while the create is still in flight) therefore retries
- * with the same id.
+ * the create is sent, in a pending record keyed by the signed-in user and
+ * the target ("" and the local id normalised to one cluster; storage lives
+ * in `lib/incident-create.ts`), so another identity on the same tab never
+ * reads it, even after a session that ended without logging out. A Re-scan
+ * remounts the island, and a remount (even one taken while the create is
+ * still in flight) therefore retries with the same id. The button stays
+ * inactive until the signed-in user is known.
  *
  * While the record has no incident id, every retry resends the stored id
  * and the stored title, summary and window byte for byte, whatever the
@@ -70,8 +74,9 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  * Once the incident id is known, later attempts capture into it directly.
  * The record is dropped when a capture into that incident succeeds, when
  * the incident refuses the capture for good (gone, not the caller's, closed,
- * at a limit), when the target is captured into an existing incident
- * instead, when the create is refused in a way that proves nothing was made
+ * at a limit), when the target is captured into an existing incident while
+ * nothing is owed (no record, a conflict, or a known incident), when the
+ * create is refused in a way that proves nothing was made
  * (400, 413, no database), and on logout. A 401, 403, 408, 429 or any other
  * refusal keeps it: an earlier attempt may have committed, and resending the
  * key cannot create a second incident.
@@ -81,14 +86,16 @@ import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
  * incident for this capture may already exist and links to the incident
  * list, and nothing is created on the next click: only the explicit "Create
  * a new incident anyway" mints a new id. The conflict state is recorded, so
- * it survives a remount.
+ * it survives a remount. Two other states read the same way: an intent
+ * whose outcome is still unknown after `PENDING_INTENT_MAX_AGE_MS` (15
+ * minutes, far longer than any create can stay in flight) is no longer
+ * resent silently, and capturing into an existing incident while an
+ * intent's outcome is unknown leaves the notice behind instead of dropping
+ * the intent.
  *
  * Every write a flow makes after it starts is conditional on the record
  * still being that flow's, so a reply that lands after a newer flow took
- * over cannot overwrite it. One window remains: a create from an earlier
- * mount that finishes after the operator captured into an existing incident
- * finds its intent gone and records nothing, so that empty incident shows
- * only in the incident list. Every action is inactive while one is in
+ * over cannot overwrite it. Every action is inactive while one is in
  * flight, so a double click sends one create. Capture itself is deduplicated
  * server-side by capture key, which is what makes retrying an
  * outcome-unknown capture safe.
@@ -118,13 +125,17 @@ const incidentHref = (id: string) =>
 
 // --- Pending create intent ---------------------------------------------------------
 
-/** The pending key; "" and the local id are the same (local) cluster. */
+/**
+ * The pending key: the signed-in user, then the target. "" and the local id
+ * are the same (local) cluster.
+ */
 const pendingKey = (
+  userId: string,
   clusterId: string,
   namespace: string,
   kind: string,
   name: string,
-) => `${clusterId || LOCAL_CLUSTER_ID}|${namespace}|${kind}|${name}`;
+) => `${userId}|${clusterId || LOCAL_CLUSTER_ID}|${namespace}|${kind}|${name}`;
 
 /** Same record: same key, same incident, or both a conflict, or both none. */
 function sameRecord(a: PendingCapture | null, b: PendingCapture | null) {
@@ -214,7 +225,10 @@ export default function CaptureToIncidentButton({
   class: className,
 }: CaptureToIncidentButtonProps) {
   const isLocal = clusterId === "" || clusterId === LOCAL_CLUSTER_ID;
-  const key = pendingKey(clusterId, namespace, kind, name);
+  const { user } = useAuth();
+  /** The signed-in user; the button is inactive until it is known. */
+  const userId = user.value?.id ?? null;
+  const key = pendingKey(userId ?? "", clusterId, namespace, kind, name);
   /** Set when the deployment has no database; fixed for the page's life. */
   const noDatabase = useSignal(false);
   const open = useSignal(false);
@@ -274,7 +288,9 @@ export default function CaptureToIncidentButton({
       ? "This deployment has no database, so incidents cannot be recorded."
       : !isCaptureKind(kind)
         ? `${kind || "This kind"} cannot be captured into an incident.`
-        : null;
+        : !userId
+          ? "Your sign-in details are still loading."
+          : null;
 
   const loadOwned = async (cursor?: string) => {
     if (listLoading.peek()) return;
@@ -384,12 +400,16 @@ export default function CaptureToIncidentButton({
   const incidentSummary = `Opened from the diagnosis of ${kind} ${namespace}/${name}.`;
 
   /** A fresh create intent for this diagnosis, with a new request id. */
-  const freshIntent = (): PendingCreate => ({
-    requestId: newClientRequestId(),
-    title: incidentTitle,
-    summary: incidentSummary,
-    windowStart: resolveWindowStart(windowStart, Date.now()),
-  });
+  const freshIntent = (): PendingCreate => {
+    const now = Date.now();
+    return {
+      requestId: newClientRequestId(),
+      title: incidentTitle,
+      summary: incidentSummary,
+      windowStart: resolveWindowStart(windowStart, now),
+      createdAt: now,
+    };
+  };
 
   /**
    * Creates the incident for `intent` (recorded first), then captures into
@@ -456,12 +476,15 @@ export default function CaptureToIncidentButton({
    * "Capture into a new incident": a stored intent is resent exactly as
    * stored, whatever the current window, until its outcome is known; a new
    * request id is minted only when there is no stored intent. After a
-   * conflict it does nothing: only "Create a new incident anyway" creates.
+   * conflict, or once an unresolved intent is stale, it does nothing: only
+   * "Create a new incident anyway" creates.
    */
   const captureNew = () =>
     run(async (signal) => {
       const stored = readPendingCapture(key);
-      if (isPendingConflict(stored)) return null;
+      if (isPendingConflict(stored) || isStaleIntent(stored, Date.now())) {
+        return null;
+      }
       if (stored?.id) return captureInto(stored.id, signal);
       return createAndCapture(stored ?? freshIntent(), signal);
     });
@@ -474,23 +497,31 @@ export default function CaptureToIncidentButton({
     run(async (signal) => {
       const before = readPendingCapture(key);
       await capture(id, signal);
-      // The target is now captured: no pending create intent is owed. The
-      // clear is guarded: when a create from an earlier mount finished in
-      // the meantime, its incident id stays recorded, so the next visit
-      // offers to capture into it rather than leaving it unmentioned. A
-      // create from an earlier mount that finishes AFTER this clear finds
-      // its intent gone and records nothing: that empty incident is then
-      // only visible in the incident list (a remount mid-create followed by
-      // choosing an existing incident is needed to get there).
-      setPending(null, signal, (current) => sameRecord(current, before));
+      // The target is now captured: no pending create intent is owed. Every
+      // write here is guarded: when a create from an earlier mount finished
+      // in the meantime, its incident id stays recorded, so the next visit
+      // offers to capture into it. An intent whose create outcome is still
+      // unknown (no incident id) is not dropped silently, because that
+      // create may have committed: it becomes the "may already exist"
+      // notice, with the link to the incident list, so the next visit says
+      // so. A late create from an earlier mount then finds that notice, not
+      // its intent, and records nothing more.
+      const unresolved =
+        before !== null && !isPendingConflict(before) && !before.id;
+      setPending(unresolved ? { conflict: true } : null, signal, (current) =>
+        sameRecord(current, before),
+      );
       return id;
     });
 
   const inFlight = busy.value;
   // Read after the version so a write or clear re-renders the label and link.
   void pendingVersion.value;
-  const pending = readPendingCapture(key);
-  const conflict = isPendingConflict(pending);
+  const pending = userId ? readPendingCapture(key) : null;
+  // A conflict, or an unresolved intent too old to resend silently, both
+  // read as "an incident for this capture may already exist".
+  const conflict =
+    isPendingConflict(pending) || isStaleIntent(pending, Date.now());
   const created = conflict ? null : (pending?.id ?? null);
 
   return (

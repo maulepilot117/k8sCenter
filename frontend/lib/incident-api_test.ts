@@ -1482,7 +1482,7 @@ test("IncidentList: a 5xx, incident_busy and a 429 keep the key until the create
   expect(visited).toEqual([`/observability/incidents/${incident(1).id}`]);
 });
 
-test("IncidentList: changed inputs after a lost create are a new intent with a new key", async () => {
+test("IncidentList: edited inputs after a lost create that committed keep the key and reach the conflict notice", async () => {
   let attempt = 0;
   const server = createServer();
   stubCreates((b) => {
@@ -1490,7 +1490,7 @@ test("IncidentList: changed inputs after a lost create are a new intent with a n
     const reply = server.create(b);
     return attempt === 1 ? lostResponse() : reply;
   });
-  spyNavigation();
+  const visited = spyNavigation();
   const root = await mount();
   const form = await openForm(root);
   setValue(form.querySelector("#incident-title"), "Checkout down");
@@ -1499,9 +1499,98 @@ test("IncidentList: changed inputs after a lost create are a new intent with a n
   setValue(form.querySelector("#incident-title"), "Checkout down (payments)");
   await flush();
   await submitAndSettle(form, 1);
+  expect(keyOf(creates()[1])).toBe(keyOf(creates()[0]));
+  expect(sentBody(creates()[1]).title).toBe("Checkout down (payments)");
+  // The first attempt committed other inputs: no second incident.
+  expect(server.made.size).toBe(1);
+  expect(
+    form.querySelector('[data-testid="new-incident-conflict"]')?.textContent,
+  ).toContain("may already exist");
+  expect(visited).toEqual([]);
+});
+
+test("IncidentList: edited inputs after a lost create that never committed create once with the same key", async () => {
+  let attempt = 0;
+  const server = createServer();
+  stubCreates((b) => {
+    attempt++;
+    // The first attempt never reaches the server.
+    return attempt === 1 ? lostResponse() : server.create(b);
+  });
+  const visited = spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  setValue(form.querySelector("#incident-title"), "Checkout down (payments)");
+  await flush();
+  await submitAndSettle(form, 1);
+  expect(keyOf(creates()[1])).toBe(keyOf(creates()[0]));
+  expect(server.made.size).toBe(1);
+  expect(visited).toEqual([`/observability/incidents/${incident(1).id}`]);
+});
+
+test("IncidentList: a 400 after an unknown outcome keeps the key; the fixed inputs reach the conflict notice", async () => {
+  let attempt = 0;
+  const server = createServer();
+  stubCreates((b) => {
+    attempt++;
+    if (attempt === 1) {
+      server.create(b);
+      return lostResponse();
+    }
+    if (attempt === 2) {
+      return {
+        status: 400,
+        payload: {
+          error: { code: 400, message: "invalid", detail: "bad window" },
+        },
+      };
+    }
+    return server.create(b);
+  });
+  spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  setValue(form.querySelector("#incident-title"), "Checkout down (edited)");
+  await flush();
+  await submitAndSettle(form, 1);
+  expect(form.textContent).toContain("could not be created: bad window");
+  setValue(form.querySelector("#incident-title"), "Checkout down (fixed)");
+  await flush();
+  await submitAndSettle(form, 2);
+  expect(new Set(creates().map(keyOf)).size).toBe(1);
+  expect(server.made.size).toBe(1);
+  expect(
+    form.querySelector('[data-testid="new-incident-conflict"]'),
+  ).not.toBeNull();
+});
+
+test("IncidentList: a no-database refusal says so and drops the key", async () => {
+  let attempt = 0;
+  const server = createServer();
+  stubCreates((b) => {
+    attempt++;
+    return attempt === 1
+      ? apiError(503, "incident_persistence_unavailable")
+      : server.create(b);
+  });
+  spyNavigation();
+  const root = await mount();
+  const form = await openForm(root);
+  setValue(form.querySelector("#incident-title"), "Checkout down");
+  await flush();
+  await submitAndSettle(form, 0);
+  expect(form.textContent).toContain(
+    "This deployment has no database, so incidents cannot be recorded.",
+  );
+  await submitAndSettle(form, 1);
   expect(keyOf(creates()[1])).toMatch(UUID_V4);
   expect(keyOf(creates()[1])).not.toBe(keyOf(creates()[0]));
-  expect(sentBody(creates()[1]).title).toBe("Checkout down (payments)");
 });
 
 test("IncidentList: client_request_id_conflict links to the list; submit creates nothing; only Create anyway mints a key", async () => {

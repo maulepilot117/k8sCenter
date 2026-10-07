@@ -115,15 +115,22 @@ function When({ at }: { at: string }) {
 /**
  * The "New incident" form. Creates the incident, then opens it.
  *
- * Each submission intent carries a `clientRequestId` (U25c). A retry after a
- * lost or unknown answer (a network error, a 5xx, `incident_busy`, or any
- * refusal that does not prove nothing was made) resends the same id while
- * the inputs are unchanged, so the server returns the incident the first
- * attempt made instead of creating a second. Changed inputs are a new
- * intent with a new id. `client_request_id_conflict` means an earlier
- * attempt made an incident that was edited since: the id is dropped, a
- * notice links to the incident list, and only "Create a new incident
- * anyway" creates.
+ * Each create carries a `clientRequestId` (U25c). While the last attempt's
+ * outcome is unknown (a network error, a 5xx, `incident_busy`, or any
+ * refusal that does not prove nothing was made), every later submit sends
+ * the same id with the CURRENT inputs: the server creates if nothing
+ * committed, returns the incident the first attempt made if the inputs are
+ * unchanged, or answers `client_request_id_conflict` if different inputs
+ * committed. So editing a field after a lost answer can never make a second
+ * incident silently. On a conflict the id is dropped, a notice links to the
+ * incident list, and only "Create a new incident anyway" creates, with a new
+ * id. A new id is otherwise minted only when no attempt is outstanding.
+ *
+ * A 400 or 413 proves nothing was made only while no earlier attempt with
+ * the id had an unknown outcome (the server validates before it writes, so
+ * the same inputs never committed); after one, the id is kept, because the
+ * earlier attempt may have committed different inputs. No database drops it
+ * either way.
  */
 function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
   const title = useSignal("");
@@ -136,8 +143,11 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
   const error = useSignal<string | null>(null);
   /** A retried create met `client_request_id_conflict`. */
   const conflict = useSignal(false);
-  /** The current submission intent: its request id and exact payload. */
-  const intent = useRef<{ requestId: string; payload: string } | null>(null);
+  /**
+   * The outstanding create: its request id, and whether any attempt with it
+   * ended with an unknown outcome. Null when nothing is outstanding.
+   */
+  const intent = useRef<{ requestId: string; uncertain: boolean } | null>(null);
   /**
    * Aborted when the form unmounts. A create still in flight then neither
    * navigates nor writes state; the server may already have committed it,
@@ -182,10 +192,10 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
       windowStart: start,
       ...(end ? { windowEnd: end } : {}),
     };
-    const key = JSON.stringify(payload);
-    // The same inputs resend the same id; changed ones (or "anyway") mint one.
-    if (fresh || intent.current?.payload !== key) {
-      intent.current = { requestId: newClientRequestId(), payload: key };
+    // An outstanding id is resent even with edited inputs (see the doc
+    // above); only "anyway" or nothing outstanding mints a new one.
+    if (fresh || !intent.current) {
+      intent.current = { requestId: newClientRequestId(), uncertain: false };
     }
     const sent = intent.current;
     error.value = null;
@@ -201,8 +211,16 @@ function NewIncidentForm({ onCancel }: { onCancel: () => void }) {
       globalThis.location.assign(incidentHref(res.incident.id));
     } catch (err) {
       if (signal?.aborted) return;
-      if (isCreateConflict(err) || createRefusedForGood(err)) {
-        if (intent.current === sent) intent.current = null;
+      // Attempts are serialized (submitting), and an unmount returns above,
+      // so `sent` is still the outstanding intent here.
+      if (
+        isCreateConflict(err) ||
+        isPersistenceUnavailable(err) ||
+        (createRefusedForGood(err) && !sent.uncertain)
+      ) {
+        intent.current = null;
+      } else if (!createRefusedForGood(err)) {
+        sent.uncertain = true;
       }
       if (isCreateConflict(err)) conflict.value = true;
       else error.value = keyedCreateErrorText(err, "this request");

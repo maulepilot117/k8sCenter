@@ -5,10 +5,16 @@
  *
  * The record lives in sessionStorage under `PENDING_CAPTURE_PREFIX`, or in a
  * module-scoped Map when storage is unavailable (SSR, blocked storage, a
- * private window that throws, a full quota). It belongs to the session that
- * wrote it: `clearPendingCaptures` runs on logout, so the next identity on
- * this tab never resends another operator's key or captures into another
- * operator's incident. Every storage access is guarded.
+ * private window that throws, a full quota). Every storage access is
+ * guarded.
+ *
+ * Whose record it is: the caller builds the key from the signed-in user's
+ * id, so another identity on the same tab never reads it, even when the
+ * session ended without `logout()` (a failed refresh redirects to the login
+ * page directly). `clearPendingCaptures` runs on logout and removes every
+ * identity's records; a record left behind by a session that ended
+ * otherwise stays unread until the tab closes, unless the same user signs
+ * in again.
  */
 
 /**
@@ -30,20 +36,24 @@ export function newClientRequestId(): string {
 /**
  * One "capture into a new incident" intent: the request id the create is
  * (re)sent with, the exact payload it was first sent with (a retry resends
- * it unchanged), and the incident it made once that is known.
+ * it unchanged), when it was first sent (epoch ms), and the incident it
+ * made once that is known.
  */
 export interface PendingCreate {
   requestId: string;
   title: string;
   summary: string;
   windowStart: string;
+  createdAt: number;
   id?: string;
 }
 
 /**
- * A retry of a stored intent was refused with `client_request_id_conflict`:
- * an incident made by an earlier attempt may exist (and was since edited).
- * The key is dropped, and nothing is created until the operator chooses to.
+ * An incident for this capture may already exist, and nothing is created
+ * until the operator chooses to: a retry was refused with
+ * `client_request_id_conflict` (an earlier attempt made an incident that
+ * was edited since), or the target was captured into an existing incident
+ * while a create's outcome was still unknown. The key is dropped.
  */
 export interface PendingConflict {
   conflict: true;
@@ -54,6 +64,25 @@ export type PendingCapture = PendingCreate | PendingConflict;
 export const isPendingConflict = (
   rec: PendingCapture | null,
 ): rec is PendingConflict => rec !== null && "conflict" in rec;
+
+/**
+ * How long an intent whose create outcome is unknown (no incident id yet)
+ * is silently resent. Past it no create can still be in flight (the proxy
+ * gives up after 30 s), and an operator returning to it much later should
+ * decide rather than have an old intent replayed: the record then reads
+ * like a conflict, an incident for this capture may already exist.
+ */
+export const PENDING_INTENT_MAX_AGE_MS = 15 * 60 * 1000;
+
+/** True for an id-less intent older than `PENDING_INTENT_MAX_AGE_MS`. */
+export function isStaleIntent(rec: PendingCapture | null, now: number) {
+  return (
+    rec !== null &&
+    !isPendingConflict(rec) &&
+    !rec.id &&
+    now - rec.createdAt > PENDING_INTENT_MAX_AGE_MS
+  );
+}
 
 /** Every pending capture record lives under this prefix. */
 export const PENDING_CAPTURE_PREFIX = "kubecenter.capture-pending:";
@@ -70,7 +99,7 @@ function parse(raw: string | null): PendingCapture | null {
   try {
     const v = JSON.parse(raw) as unknown;
     if (!v || typeof v !== "object") return null;
-    const { requestId, title, summary, windowStart, id, conflict } =
+    const { requestId, title, summary, windowStart, createdAt, id, conflict } =
       v as Record<string, unknown>;
     if (conflict === true) return { conflict: true };
     if (
@@ -82,7 +111,17 @@ function parse(raw: string | null): PendingCapture | null {
     ) {
       return null;
     }
-    const rec: PendingCreate = { requestId, title, summary, windowStart };
+    // A record without a valid time (an older format) counts as stale.
+    const rec: PendingCreate = {
+      requestId,
+      title,
+      summary,
+      windowStart,
+      createdAt:
+        typeof createdAt === "number" && Number.isFinite(createdAt)
+          ? createdAt
+          : 0,
+    };
     if (typeof id === "string" && id) rec.id = id;
     return rec;
   } catch {

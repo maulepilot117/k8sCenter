@@ -3,7 +3,7 @@ import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { render } from "preact";
 import { act } from "preact/test-utils";
-import { setAccessToken } from "@/lib/api.ts";
+import { ApiError, setAccessToken } from "@/lib/api.ts";
 
 /**
  * The diagnosis-to-incident entry point (U25b). Requests go through a fetch
@@ -18,7 +18,42 @@ const {
   earliestObservedAt,
   resolveWindowStart,
 } = await import("./CaptureToIncidentButton.tsx");
-const { logout } = await import("@/lib/auth.ts");
+const { currentUserId, fetchCurrentUser, logout } = await import(
+  "@/lib/auth.ts"
+);
+const { createRefusedForGood } = await import(
+  "@/src/components/incidents/errors.ts"
+);
+
+/**
+ * Signs `id` in, as the top bar's /auth/me load does, through a fetch of its
+ * own so no test's recorded calls change.
+ */
+async function signIn(id: string) {
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        data: {
+          user: {
+            id,
+            username: id,
+            provider: "local",
+            kubernetesUsername: id,
+            kubernetesGroups: [],
+            roles: [],
+          },
+          rbac: {},
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as unknown as typeof globalThis.fetch;
+  try {
+    await fetchCurrentUser();
+  } finally {
+    globalThis.fetch = previous;
+  }
+}
 
 afterAll(() => {
   GlobalRegistrator.unregister();
@@ -133,10 +168,14 @@ interface Props {
   clusterId?: string;
   windowStart?: string;
   kind?: string;
+  /** Who is signed in; "u1" unless a test says otherwise. */
+  user?: string;
 }
 
 /** Renders (or re-renders, with new props) into the current host. */
 async function show(props: Props) {
+  const user = props.user ?? "u1";
+  if (currentUserId() !== user) await signIn(user);
   if (!host) {
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -557,8 +596,8 @@ const conflictReply = json(409, {
 });
 
 const PENDING_PREFIX = "kubecenter.capture-pending:";
-const pendingStorageKey = (cluster: string) =>
-  `${PENDING_PREFIX}${cluster}|team-a|Pod|web`;
+const pendingStorageKey = (cluster: string, user = "u1") =>
+  `${PENDING_PREFIX}${user}|${cluster}|team-a|Pod|web`;
 /** Seeds a pending record for the target on `cluster`. */
 const seed = (cluster: string, over: Record<string, unknown> = {}) =>
   globalThis.sessionStorage.setItem(
@@ -568,12 +607,14 @@ const seed = (cluster: string, over: Record<string, unknown> = {}) =>
       title: TITLE,
       summary: SUMMARY,
       windowStart: "2026-10-06T08:00:00.000Z",
+      createdAt: Date.now(),
       ...over,
     }),
   );
-const stored = (cluster: string) =>
+const stored = (cluster: string, user = "u1") =>
   JSON.parse(
-    globalThis.sessionStorage.getItem(pendingStorageKey(cluster)) ?? "null",
+    globalThis.sessionStorage.getItem(pendingStorageKey(cluster, user)) ??
+      "null",
   );
 
 let restoreStorage: (() => void) | null = null;
@@ -593,6 +634,10 @@ function breakStorage(...methods: ("getItem" | "setItem" | "removeItem")[]) {
     setItem: (k: string, v: string) => real.setItem(k, v),
     removeItem: (k: string) => real.removeItem(k),
     clear: () => real.clear(),
+    key: (i: number) => real.key(i),
+    get length() {
+      return real.length;
+    },
   };
   for (const m of methods) fake[m] = fail;
   Object.defineProperty(globalThis, "sessionStorage", {
@@ -1136,6 +1181,201 @@ for (const [label, broken] of [
     if (!broken) expect(stored("local")).toBeNull();
   });
 }
+
+// --- Round 6: identity scope, age bound, refusal table -------------------------------
+
+test("a record written as one user is never read as another: no retry label, no resend", async () => {
+  let attempt = 0;
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) {
+      return created(uuidFor(creates().length === 1 ? "of-a" : "of-b"));
+    }
+    attempt++;
+    return attempt === 1 ? busyReply : captured;
+  });
+  let root = await mount({ user: "user-a" });
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("Capture did not run");
+  expect(stored("local", "user-a")).toMatchObject({ id: uuidFor("of-a") });
+  unmount();
+
+  // The session ends without logout and user B signs in on the same tab.
+  root = await mount({ user: "user-b" });
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
+  await click(q(root, "capture-to-new-incident"));
+  expect(creates()).toHaveLength(2);
+  expect(requestIdOf(creates()[1])).not.toBe(requestIdOf(creates()[0]));
+  expect(captures().map((c) => c.path)).toEqual([
+    `/api/v1/incidents/${uuidFor("of-a")}/capture`,
+    `/api/v1/incidents/${uuidFor("of-b")}/capture`,
+  ]);
+  // User A's record is untouched, and A still sees it.
+  expect(stored("local", "user-a")).toMatchObject({ id: uuidFor("of-a") });
+  unmount();
+  root = await mount({ user: "user-a" });
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(RETRY_LABEL);
+});
+
+test("until the signed-in user is known the button is inactive and says why", async () => {
+  stub(() => empty);
+  const root = await mount({});
+  await logout();
+  await settle();
+  const trigger = q(root, "capture-to-incident");
+  expect(trigger.getAttribute("aria-disabled")).toBe("true");
+  expect(trigger.getAttribute("title")).toContain("sign-in details");
+});
+
+for (const [label, over] of [
+  ["older than the bound", { createdAt: Date.now() - 16 * 60 * 1000 }],
+  ["without a recorded time", { createdAt: undefined }],
+] as const) {
+  test(`an unresolved intent ${label} is not resent: the notice, then Create anyway`, async () => {
+    seed("local", over);
+    stub((c) => {
+      if (c.method === "GET") return empty;
+      if (isCreate(c)) return created(uuidFor("inc-stale"));
+      return captured;
+    });
+    const root = await mount({});
+    await click(q(root, "capture-to-incident"));
+    const notice = q(root, "capture-create-conflict");
+    expect(notice.textContent).toContain("may already exist");
+    expect(
+      notice.querySelector('a[href="/observability/incidents"]'),
+    ).not.toBeNull();
+    expect(root.querySelector('[data-testid="capture-to-new-incident"]')).toBe(
+      null,
+    );
+    expect(creates()).toHaveLength(0);
+
+    await click(q(root, "capture-create-anyway"));
+    expect(creates()).toHaveLength(1);
+    expect(requestIdOf(creates()[0])).toMatch(UUID);
+    expect(requestIdOf(creates()[0])).not.toBe(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    expect(assigned).toEqual([
+      `/observability/incidents/${uuidFor("inc-stale")}`,
+    ]);
+  });
+}
+
+test("an unresolved intent inside the bound is still resent", async () => {
+  seed("local", { createdAt: Date.now() - 14 * 60 * 1000 });
+  stub((c) => {
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) return created(uuidFor("inc-fresh"));
+    return captured;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(requestIdOf(creates()[0])).toBe(
+    "11111111-1111-4111-8111-111111111111",
+  );
+});
+
+test("createRefusedForGood drops the key only for 400, 413 and no database", () => {
+  const refusal = (status: number, reason?: string) =>
+    new ApiError(status, status, "refused", {
+      error: { code: status, message: "refused", reason },
+    });
+  const table: [string, unknown, boolean][] = [
+    ["400", refusal(400), true],
+    ["400 invalid id", refusal(400, "invalid_client_request_id"), true],
+    ["413", refusal(413), true],
+    ["no database", refusal(503, "incident_persistence_unavailable"), true],
+    ["401", refusal(401), false],
+    ["403", refusal(403), false],
+    ["404", refusal(404), false],
+    ["408", refusal(408), false],
+    ["409 conflict", refusal(409, "client_request_id_conflict"), false],
+    ["429", refusal(429), false],
+    ["500", refusal(500), false],
+    ["502", refusal(502), false],
+    ["503 busy", refusal(503, "incident_busy"), false],
+    ["network", new TypeError("Failed to fetch"), false],
+  ];
+  expect(
+    table.map(([label, err]) => [label, createRefusedForGood(err)]),
+  ).toEqual(table.map(([label, , drops]) => [label, drops]));
+});
+
+test("capturing into an existing incident while the record is a conflict clears it", async () => {
+  seed("local", { conflict: true });
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c))
+      return listOf([incident({ id: uuidFor("e4"), title: "Mine" })]);
+    if (c.path === `/api/v1/incidents/${uuidFor("e4")}/capture`)
+      return captured;
+  });
+  const root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-create-conflict")).toBeTruthy();
+  await click(q(root, "capture-to-existing-incident"));
+  expect(assigned).toEqual([`/observability/incidents/${uuidFor("e4")}`]);
+  expect(stored("local")).toBeNull();
+});
+
+test("capturing into an existing incident after a lost create leaves the notice, not a silent drop", async () => {
+  const server = idempotentServer();
+  stub((c) => {
+    if (isProbe(c)) return empty;
+    if (isList(c))
+      return listOf([incident({ id: uuidFor("e5"), title: "Mine" })]);
+    if (isCreate(c)) {
+      server.create(c);
+      return networkError();
+    }
+    if (c.path === `/api/v1/incidents/${uuidFor("e5")}/capture`)
+      return captured;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(root.textContent).toContain("may or may not have been created");
+  await click(q(root, "capture-to-existing-incident"));
+  expect(assigned).toEqual([`/observability/incidents/${uuidFor("e5")}`]);
+  // The create committed (server.made), so the next visit says so.
+  expect(server.made.size).toBe(1);
+  expect(stored("local")).toEqual({ conflict: true });
+  unmount();
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-create-conflict").textContent).toContain(
+    "may already exist",
+  );
+});
+
+test("logout with storage that refuses removals still hides the record (tombstone)", async () => {
+  breakStorage("removeItem");
+  let attempt = 0;
+  stub((c) => {
+    if (c.path === "/api/v1/auth/logout") return json(200, { data: {} });
+    if (c.method === "GET") return empty;
+    if (isCreate(c)) return created(uuidFor("tomb"));
+    attempt++;
+    return attempt === 1 ? busyReply : captured;
+  });
+  let root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  await click(q(root, "capture-to-new-incident"));
+  expect(stored("local")).toMatchObject({ id: uuidFor("tomb") });
+  unmount();
+
+  await logout();
+  // Storage could not remove it; the same user signs in again.
+  expect(stored("local")).toMatchObject({ id: uuidFor("tomb") });
+  root = await mount({});
+  await click(q(root, "capture-to-incident"));
+  expect(q(root, "capture-to-new-incident").textContent).toBe(NEW_LABEL);
+});
 
 test("without sessionStorage the pending record survives a remount in memory, and success clears it", async () => {
   breakStorage("getItem", "setItem", "removeItem");
