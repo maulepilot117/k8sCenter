@@ -998,6 +998,11 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // unlike the two above there is no short/long form to get wrong.
   "nodes-list": (signal) => readList("/v1/resources/nodes", signal),
 
+  // The topology map's two remaining kinds. `pvcs` is the adapter's short
+  // form, like `hpas` and `pdbs` above.
+  "services-list": (signal) => readList("/v1/resources/services", signal),
+  "pvcs-list": (signal) => readList("/v1/resources/pvcs", signal),
+
   // Two family routes rather than the generic one, and neither is a list page
   // -- both answer with a whole roll-up, so `read` and not `readList`.
   //
