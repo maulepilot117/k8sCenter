@@ -159,6 +159,11 @@ export const DATA_SOURCE_KEYS = [
   "nodes-list",
   "limits-namespaces",
   "storage-classes",
+  // The last two kinds the cluster topology map draws. The generic list route
+  // again; `pvcs` is the adapter's `Kind()`, the same short-form trap as
+  // `hpas`/`pdbs` above -- `persistentvolumeclaims` is a 404.
+  "services-list",
+  "pvcs-list",
   // The first sources that are neither an informer read nor a discovery
   // route: two named, server-owned PromQL templates from the slug registry
   // (`backend/internal/monitoring/query_registry.go`). The widget names a
@@ -394,6 +399,9 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   // Same route, same reasons, and a node object is one of the larger ones the
   // route serves -- capacity, allocatable, images and a dozen conditions each.
   "nodes-list": "expensive",
+  // Same route, same reasons.
+  "services-list": "expensive",
+  "pvcs-list": "expensive",
   // Neither of these is the generic list route, and neither is cheap.
   //
   // `limits-namespaces` runs a SelfSubjectAccessReview PER NAMESPACE before it

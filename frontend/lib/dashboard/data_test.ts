@@ -1704,3 +1704,36 @@ test("snapshots-status turns a remote could-not-tell error into a verdict", asyn
     globalThis.fetch = realFetch;
   }
 });
+
+test("errorKind: generic list sources are unsupported under a remote selection, with no request", async () => {
+  // The generic list route answers from the LOCAL informer cache whatever
+  // cluster is selected (crud.go HandleListResource; only events reads a
+  // remote cluster directly). Fetching it under a remote selection would draw
+  // the local cluster's objects under the remote cluster's name, so the
+  // source refuses before any request is made, and says why.
+  const { LOCAL_CLUSTER_ID, selectedCluster } = await import(
+    "@/src/lib/cluster.ts"
+  );
+  const realFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = (() => {
+    requests++;
+    return Promise.reject(new Error("no request expected"));
+  }) as unknown as typeof fetch;
+  const previous = selectedCluster.peek();
+  selectedCluster.value = "remote-cluster-id";
+  try {
+    const keys: DataSourceKey[] = ["pods-list", "services-list", "pvcs-list"];
+    const cache = createSourceCache(DASHBOARD_FETCHERS);
+    cache.ensure(keys, "1h");
+    await cache.settled();
+    for (const key of keys) {
+      expect(cache.state(key).errorKind).toBe("unsupported");
+      expect(cache.state(key).error).toContain("remote clusters");
+    }
+    expect(requests).toBe(0);
+  } finally {
+    selectedCluster.value = previous ?? LOCAL_CLUSTER_ID;
+    globalThis.fetch = realFetch;
+  }
+});
