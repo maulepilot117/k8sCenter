@@ -78,6 +78,7 @@ func TestContractParity(t *testing.T) {
 				want: []string{
 					"active-alerts", "audit-activity",
 					"certs-expiring", "cluster-health", "cluster-status",
+					"cluster-topology",
 					"cpu-tile", "diagnostics-summary", "eso-health",
 					"gateway-routes",
 					"gitops-app-health", "gitops-recent-syncs",
@@ -146,10 +147,11 @@ func TestContractParity(t *testing.T) {
 	// keys are pinned" in frontend/lib/dashboard/registry_test.ts.
 	t.Run("widget specs", func(t *testing.T) {
 		want := map[string]widgetSpec{
-			"active-alerts":  {MinW: 2, MinH: 3},
-			"certs-expiring": {MinW: 4, MinH: 3},
-			"cluster-health": {MinW: 3, MinH: 4},
-			"cpu-tile":       {MinW: 2, MinH: 2},
+			"active-alerts":    {MinW: 2, MinH: 3},
+			"certs-expiring":   {MinW: 4, MinH: 3},
+			"cluster-health":   {MinW: 3, MinH: 4},
+			"cluster-topology": {MinW: 6, MinH: 4},
+			"cpu-tile":         {MinW: 2, MinH: 2},
 			// The platform family. None takes parameters -- every backing
 			// route is scoped by the caller's identity or by the whole
 			// install. The two admin-gated routes are NOT marked here: this

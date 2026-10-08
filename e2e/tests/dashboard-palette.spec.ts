@@ -30,7 +30,7 @@ const PARTIAL_LAYOUT: DashboardLayoutConfig = {
 };
 
 /** Every widget registered for the overview scope, parameterized included. */
-const CATALOG_SIZE = 38;
+const CATALOG_SIZE = 39;
 
 /** What the shipped default layout places: the curated starting subset. */
 const DEFAULT_LAYOUT_SIZE = 10;
@@ -78,6 +78,7 @@ const NOT_ON_DEFAULT_IDS = [
   "mtls-coverage",
   "gateway-routes",
   "cluster-status",
+  "cluster-topology",
   "notifications-feed",
   "audit-activity",
   "saved-views",
