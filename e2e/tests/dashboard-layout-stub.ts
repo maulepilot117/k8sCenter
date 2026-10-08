@@ -42,6 +42,14 @@ export const LAYOUT_URL = "**/api/v1/preferences/layouts/overview";
  */
 export const LAYOUT_LIST_URL = "**/api/v1/preferences/layouts";
 
+/**
+ * Every widget the palette offers for the overview scope, parameterized
+ * included. One copy for every spec that counts the palette: two specs each
+ * pinning their own number is how adding cluster-topology updated one and
+ * failed the other.
+ */
+export const OVERVIEW_CATALOG_SIZE = 39;
+
 /** A full preference record, the shape `api()` unwraps from `data`. */
 export function record(revision: number, config: unknown) {
   return {

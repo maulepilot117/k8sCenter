@@ -7,6 +7,7 @@ import { expect, test } from "../fixtures/base.ts";
 import {
   type CatalogSourceReply,
   json,
+  OVERVIEW_CATALOG_SIZE,
   stubCatalogSources,
   stubLayoutStore,
 } from "./dashboard-layout-stub.ts";
@@ -408,7 +409,9 @@ test.describe("dashboard catalog", () => {
     await page.goto("/");
     await openEditor(page);
     await page.getByTestId("add-widget").click();
-    await expect(palette(page).getByRole("option")).toHaveCount(38);
+    await expect(palette(page).getByRole("option")).toHaveCount(
+      OVERVIEW_CATALOG_SIZE,
+    );
     for (const [id, query] of [
       ["cpu-tile", "CPU"],
       ["pending-pods", "Pending"],
@@ -421,7 +424,9 @@ test.describe("dashboard catalog", () => {
     ]) {
       await palette(page).getByRole("combobox").fill(query);
       await expect(page.getByTestId("widget-option-" + id)).toBeVisible();
-      expect(await palette(page).getByRole("option").count()).toBeLessThan(38);
+      expect(await palette(page).getByRole("option").count()).toBeLessThan(
+        OVERVIEW_CATALOG_SIZE,
+      );
     }
   });
 });
