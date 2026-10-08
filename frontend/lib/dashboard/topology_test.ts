@@ -2,13 +2,16 @@ import { describe, expect, test } from "bun:test";
 import {
   clusterTopologyView,
   labelSelectorSelects,
+  panTopologyCamera,
   RELATED_LIMIT,
   serviceSelects,
   stepTopologyZoom,
   TOPOLOGY_MIN_ZOOM,
   topologyMaxZoom,
+  zoomTopologyCameraAt,
 } from "./topology.ts";
 import type { ResourceListPage } from "./wire-types.ts";
+import { WORKLOAD_KIND_HREFS } from "./workload-health.ts";
 
 // The graph behind `cluster-topology`. Which pod a service fronts, which
 // workload owns a pod and which claim a pod mounts are joins across seven
@@ -258,6 +261,7 @@ describe("clusterTopologyView", () => {
     expect(view.rows.node.available).toBe(false);
     expect(view.rows.pod).toEqual({
       available: true,
+      absent: [],
       total: 800,
       counted: 1,
       truncated: true,
@@ -270,13 +274,82 @@ describe("clusterTopologyView", () => {
     const view = clusterTopologyView({
       deployments: page([deployment("ns", "a", { app: "a" })], 600),
       statefulsets: page([]),
+      daemonsets: page([]),
     });
-    expect(view.rows.workload).toMatchObject({
+    expect(view.rows.workload).toEqual({
       available: true,
+      absent: [],
       total: 600,
       counted: 1,
       truncated: true,
+      readable: true,
     });
+  });
+
+  // An account that can list Deployments but not DaemonSets, or a dashboard
+  // where one controller list has not landed, draws a partial row. The row
+  // must say which kinds are missing, or the legend's count reads as every
+  // workload on the cluster.
+  test("a workload row missing some controller kinds names them", () => {
+    const view = clusterTopologyView({
+      deployments: page([deployment("ns", "a", { app: "a" })]),
+      statefulsets: page([]),
+      daemonsets: null,
+    });
+    expect(view.rows.workload.available).toBe(true);
+    expect(view.rows.workload.absent).toEqual(["daemonsets"]);
+  });
+
+  test("a row with no page at all is unavailable and names every source", () => {
+    const view = clusterTopologyView({ pods: page([pod("ns", "p")]) });
+    expect(view.rows.workload.available).toBe(false);
+    expect(view.rows.workload.absent).toEqual([
+      "deployments",
+      "statefulsets",
+      "daemonsets",
+    ]);
+    expect(view.rows.node.absent).toEqual(["nodes"]);
+    expect(view.rows.pod.absent).toEqual([]);
+  });
+
+  test("statefulsets and daemonsets get their own ids, glyphs and routes", () => {
+    const sts = {
+      metadata: { name: "db", namespace: "ns" },
+      spec: { replicas: 1, selector: { matchLabels: { app: "db" } } },
+      status: { readyReplicas: 1 },
+    };
+    const ds = {
+      metadata: { name: "agent", namespace: "ns" },
+      spec: { selector: { matchLabels: { app: "agent" } } },
+      status: { desiredNumberScheduled: 2, numberReady: 2 },
+    };
+    const view = clusterTopologyView({
+      statefulsets: page([sts]),
+      daemonsets: page([ds]),
+    });
+    const byName = new Map(view.nodes.map((n) => [n.name, n]));
+    expect(byName.get("db")).toMatchObject({
+      id: "workload/ns/StatefulSet/db",
+      abbr: "STS",
+      workloadKind: "StatefulSet",
+      href: `${WORKLOAD_KIND_HREFS.statefulsets}/ns/db`,
+    });
+    expect(byName.get("agent")).toMatchObject({
+      id: "workload/ns/DaemonSet/agent",
+      abbr: "DS",
+      workloadKind: "DaemonSet",
+      href: `${WORKLOAD_KIND_HREFS.daemonsets}/ns/agent`,
+    });
+  });
+
+  test("a claim missing from the PVC page draws no edge", () => {
+    const view = clusterTopologyView({
+      pods: page([pod("ns", "p", { claims: ["data", "gone"] })]),
+      pvcs: page([pvc("ns", "data")]),
+    });
+    expect(view.edges).toEqual([
+      { from: "pod/ns/p", to: "pvc/ns/data", kind: "pod-pvc" },
+    ]);
   });
 
   test("survives every page being absent or malformed", () => {
@@ -375,5 +448,66 @@ describe("zoom", () => {
     }
     expect(z).toBe(max);
     expect(clicks).toBeLessThanOrEqual(12);
+  });
+});
+
+describe("camera", () => {
+  // The default 8x6 card around a 105-pod canvas: far wider than the card,
+  // so `meet` fits it by width and letterboxes it top and bottom.
+  const canvas = { width: 6572, height: 560 };
+  const box = { w: 975, h: 217 };
+
+  /** Where a box pixel lands on the canvas under preserveAspectRatio meet. */
+  const toCanvas = (
+    cam: { zoom: number; x: number; y: number },
+    px: number,
+    py: number,
+  ) => {
+    const vbW = canvas.width / cam.zoom;
+    const vbH = canvas.height / cam.zoom;
+    const s = Math.min(box.w / vbW, box.h / vbH);
+    return {
+      x: cam.x + (px - (box.w - vbW * s) / 2) / s,
+      y: cam.y + (py - (box.h - vbH * s) / 2) / s,
+    };
+  };
+
+  // Each axis used to convert by its own box ratio, but meet draws at ONE
+  // scale, so on a letterboxed axis the map moved a fraction of the cursor.
+  test("a drag moves the map exactly as far as the cursor on both axes", () => {
+    const start = { zoom: 2, x: 100, y: 50 };
+    const before = toCanvas(start, 300, 120);
+    const moved = panTopologyCamera(start, 40, 30, canvas, box);
+    const after = toCanvas(moved, 340, 150);
+    expect(after.x).toBeCloseTo(before.x, 6);
+    expect(after.y).toBeCloseTo(before.y, 6);
+  });
+
+  test("zooming keeps the point under the pointer still", () => {
+    const cam = { zoom: 1.5, x: 400, y: 20 };
+    // Inside the map, and inside the letterbox band above it.
+    for (const [px, py] of [
+      [300, 120],
+      [900, 10],
+      [0, 216],
+    ]) {
+      const before = toCanvas(cam, px, py);
+      const next = zoomTopologyCameraAt(cam, 3.2, canvas, box, {
+        x: px,
+        y: py,
+      });
+      expect(next.zoom).toBe(3.2);
+      const after = toCanvas(next, px, py);
+      expect(after.x).toBeCloseTo(before.x, 6);
+      expect(after.y).toBeCloseTo(before.y, 6);
+    }
+  });
+
+  test("an unmeasured box leaves the camera where it was", () => {
+    const cam = { zoom: 1, x: 0, y: 0 };
+    expect(panTopologyCamera(cam, 10, 10, canvas, { w: 0, h: 0 })).toEqual(cam);
+    expect(
+      zoomTopologyCameraAt(cam, 2, canvas, { w: 0, h: 0 }, { x: 1, y: 1 }),
+    ).toEqual({ zoom: 2, x: 0, y: 0 });
   });
 });

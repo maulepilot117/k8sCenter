@@ -166,3 +166,91 @@ describe("notifications-feed", () => {
     expect(html).not.toContain("notifications-feed-none");
   });
 });
+
+// The widget whose central promise is a sentence rather than a number: a row
+// the map could not draw, or drew from a capped page, is named in words, so
+// an incomplete picture never reads as a smaller cluster. The words come from
+// per-source state the pure graph module never sees, so only a render can
+// check them.
+describe("cluster-topology", () => {
+  const SOURCES = [
+    "nodes-list",
+    "services-list",
+    "deployments-list",
+    "statefulsets-list",
+    "daemonsets-list",
+    "pods-list",
+    "pvcs-list",
+  ];
+
+  const pod = (name: string) => ({
+    metadata: { name, namespace: "ns" },
+    spec: { containers: [{ name: "app" }] },
+    status: { phase: "Running" },
+  });
+
+  /** Every read landed and empty, then the overrides on top. */
+  function seedAll(over: Record<string, Partial<SourceState>> = {}): void {
+    for (const key of SOURCES) seed(key, { data: page([]), ...over[key] });
+  }
+
+  test("a refused row is named as not permitted", () => {
+    seedAll({
+      "pods-list": { data: page([pod("p")]) },
+      "nodes-list": { data: null, errorKind: "permission" },
+    });
+    const html = renderWidget("cluster-topology");
+    expect(html).toContain(
+      "Not drawn: Nodes (not permitted for this account).",
+    );
+  });
+
+  test("a row still loading is named as loading", () => {
+    seedAll({
+      "pods-list": { data: page([pod("p")]) },
+      "nodes-list": { data: null, loading: true },
+    });
+    expect(renderWidget("cluster-topology")).toContain("Nodes (loading)");
+  });
+
+  // The partial workload row: Deployments and StatefulSets listed, DaemonSets
+  // refused. Naming the whole row would hide that two kinds DID draw; saying
+  // nothing would pass the partial count off as every workload.
+  test("a partial workload row names the missing kind, not the row", () => {
+    seedAll({
+      "pods-list": { data: page([pod("p")]) },
+      "daemonsets-list": { data: null, errorKind: "permission" },
+    });
+    const html = renderWidget("cluster-topology");
+    expect(html).toContain(
+      "Not drawn: DaemonSets (not permitted for this account).",
+    );
+    expect(html).not.toContain("Workloads (");
+  });
+
+  test("a capped page says how much of it was drawn", () => {
+    seedAll({ "pods-list": { data: page([pod("a"), pod("b")], 900) } });
+    expect(renderWidget("cluster-topology")).toContain(
+      "Showing 2 of 900 pods.",
+    );
+  });
+
+  test("a complete read has no coverage notes", () => {
+    seedAll({ "pods-list": { data: page([pod("p")]) } });
+    const html = renderWidget("cluster-topology");
+    expect(html).toContain("cluster-topology-canvas");
+    expect(html).not.toContain("cluster-topology-coverage");
+  });
+
+  test("an empty cluster and an unreadable pod list are told apart", () => {
+    seedAll();
+    let html = renderWidget("cluster-topology");
+    expect(html).toContain("cluster-topology-empty");
+    expect(html).not.toContain("cluster-topology-unreadable");
+
+    seedAll({ "pods-list": { data: page(null) } });
+    html = renderWidget("cluster-topology");
+    expect(html).toContain("cluster-topology-unreadable");
+    expect(html).not.toContain("cluster-topology-empty");
+  });
+});

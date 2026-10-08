@@ -30,7 +30,7 @@ import type { PageCoverage } from "./page-coverage.ts";
 import { coverage } from "./page-coverage.ts";
 import type { ResourceListPage } from "./wire-types.ts";
 import type { WorkloadKind } from "./workload-health.ts";
-import { workloadReady } from "./workload-health.ts";
+import { WORKLOAD_KIND_HREFS, workloadReady } from "./workload-health.ts";
 
 export const TOPOLOGY_KINDS = [
   "node",
@@ -77,6 +77,20 @@ export interface TopologyPages {
   pvcs?: ResourceListPage | null;
 }
 
+/** One of the seven reads. The workload row is drawn from three of them. */
+export type TopologySource = keyof TopologyPages;
+
+/** What a coverage note calls each read. */
+export const TOPOLOGY_SOURCE_LABEL: Readonly<Record<TopologySource, string>> = {
+  nodes: "Nodes",
+  services: "Services",
+  deployments: "Deployments",
+  statefulsets: "StatefulSets",
+  daemonsets: "DaemonSets",
+  pods: "Pods",
+  pvcs: "PVCs",
+};
+
 export interface TopologyRelated {
   kind: TopologyKind;
   /** At most RELATED_LIMIT names. */
@@ -122,6 +136,14 @@ export interface TopologyEdge {
  * answered at all -- a different claim from answering with nothing. */
 export interface TopologyRowCoverage extends PageCoverage {
   available: boolean;
+  /**
+   * The row's reads that have no page: not landed yet, or refused. Empty for
+   * a complete row; every source when `available` is false. The workload row
+   * is the one that can be partial -- an account that may list Deployments
+   * but not DaemonSets -- and without this its count would read as every
+   * workload on the cluster.
+   */
+  absent: TopologySource[];
 }
 
 export interface TopologyView {
@@ -277,12 +299,6 @@ function workloadHealth(
 
 const enc = encodeURIComponent;
 
-const WORKLOAD_ROUTE: Readonly<Record<WorkloadKind, string>> = {
-  deployments: "deployments",
-  statefulsets: "statefulsets",
-  daemonsets: "daemonsets",
-};
-
 const WORKLOAD_SINGULAR: Readonly<Record<WorkloadKind, string>> = {
   deployments: "Deployment",
   statefulsets: "StatefulSet",
@@ -357,6 +373,79 @@ export function stepTopologyZoom(
   return Math.min(max, Math.max(TOPOLOGY_MIN_ZOOM, next));
 }
 
+/** The visible window: `zoom` over the whole canvas, its top-left at x/y. */
+export interface TopologyCamera {
+  zoom: number;
+  x: number;
+  y: number;
+}
+
+type Canvas = Readonly<{ width: number; height: number }>;
+type Box = Readonly<{ w: number; h: number }>;
+
+/**
+ * How the svg draws its viewBox into the box under preserveAspectRatio
+ * "xMidYMid meet": ONE scale for both axes, the smaller of the two fits, and
+ * the slack on the other axis split evenly either side. A wide cluster's
+ * canvas is far wider than any card, so the vertical slack is most of the box,
+ * and converting each axis by its own box ratio moved the map a fraction of
+ * the cursor on that axis. Null while the box is unmeasured.
+ */
+function meetFit(
+  cam: TopologyCamera,
+  canvas: Canvas,
+  box: Box,
+): { scale: number; offX: number; offY: number } | null {
+  if (!(box.w > 0) || !(box.h > 0)) return null;
+  const vbW = canvas.width / cam.zoom;
+  const vbH = canvas.height / cam.zoom;
+  const scale = Math.min(box.w / vbW, box.h / vbH);
+  return {
+    scale,
+    offX: (box.w - vbW * scale) / 2,
+    offY: (box.h - vbH * scale) / 2,
+  };
+}
+
+/** The camera after dragging `dx`/`dy` box pixels from `start`: the canvas
+ * point that was under the cursor stays under it. */
+export function panTopologyCamera(
+  start: TopologyCamera,
+  dx: number,
+  dy: number,
+  canvas: Canvas,
+  box: Box,
+): TopologyCamera {
+  const fit = meetFit(start, canvas, box);
+  if (fit === null) return start;
+  return {
+    zoom: start.zoom,
+    x: start.x - dx / fit.scale,
+    y: start.y - dy / fit.scale,
+  };
+}
+
+/** The camera at `zoom`, holding the canvas point under `point` (box pixels)
+ * where it is on screen. An unmeasured box changes the zoom only. */
+export function zoomTopologyCameraAt(
+  cam: TopologyCamera,
+  zoom: number,
+  canvas: Canvas,
+  box: Box,
+  point: Readonly<{ x: number; y: number }>,
+): TopologyCamera {
+  const before = meetFit(cam, canvas, box);
+  const after = meetFit({ ...cam, zoom }, canvas, box);
+  if (before === null || after === null) return { ...cam, zoom };
+  const ux = cam.x + (point.x - before.offX) / before.scale;
+  const uy = cam.y + (point.y - before.offY) / before.scale;
+  return {
+    zoom,
+    x: ux - (point.x - after.offX) / after.scale,
+    y: uy - (point.y - after.offY) / after.scale,
+  };
+}
+
 /** Shapes shrink on a busy row so neighbours do not overlap. */
 function rowSize(kind: TopologyKind, count: number): number {
   switch (kind) {
@@ -411,15 +500,18 @@ function parseItems(
 }
 
 function rowCoverage(
-  pages: readonly (ResourceListPage | null | undefined)[],
+  pages: TopologyPages,
+  sources: readonly TopologySource[],
   counted: number,
 ): TopologyRowCoverage {
-  const present = pages.filter(
-    (p): p is ResourceListPage => p !== null && p !== undefined,
-  );
+  const absent = sources.filter((s) => pages[s] == null);
+  const present = sources
+    .map((s) => pages[s])
+    .filter((p): p is ResourceListPage => p != null);
   if (present.length === 0) {
     return {
       available: false,
+      absent,
       total: 0,
       counted: 0,
       truncated: false,
@@ -435,7 +527,7 @@ function rowCoverage(
     truncated ||= c.truncated;
     readable ||= c.readable;
   }
-  return { available: true, total, counted, truncated, readable };
+  return { available: true, absent, total, counted, truncated, readable };
 }
 
 function addRelated(
@@ -496,14 +588,15 @@ export function clusterTopologyView(pages: TopologyPages): TopologyView {
     wlIn.reduce((n, w) => n + w.skipped, 0);
 
   const rows: Record<TopologyKind, TopologyRowCoverage> = {
-    node: rowCoverage([pages.nodes], nodesIn.parsed.length),
-    service: rowCoverage([pages.services], svcsIn.parsed.length),
+    node: rowCoverage(pages, ["nodes"], nodesIn.parsed.length),
+    service: rowCoverage(pages, ["services"], svcsIn.parsed.length),
     workload: rowCoverage(
-      workloadPages.map(([, p]) => p),
+      pages,
+      ["deployments", "statefulsets", "daemonsets"],
       workloads.length,
     ),
-    pod: rowCoverage([pages.pods], podsIn.parsed.length),
-    pvc: rowCoverage([pages.pvcs], pvcsIn.parsed.length),
+    pod: rowCoverage(pages, ["pods"], podsIn.parsed.length),
+    pvc: rowCoverage(pages, ["pvcs"], pvcsIn.parsed.length),
   };
 
   // Canvas.
@@ -583,7 +676,7 @@ export function clusterTopologyView(pages: TopologyPages): TopologyView {
       namespace: w.namespace,
       workloadKind: WORKLOAD_SINGULAR[w.kind],
       abbr: WORKLOAD_ABBR[w.kind],
-      href: `/workloads/${WORKLOAD_ROUTE[w.kind]}/${enc(w.namespace)}/${enc(w.name)}`,
+      href: `${WORKLOAD_KIND_HREFS[w.kind]}/${enc(w.namespace)}/${enc(w.name)}`,
       ...workloadHealth(w.kind, w.item),
       related: [],
       ...place("workload", i, workloads.length),

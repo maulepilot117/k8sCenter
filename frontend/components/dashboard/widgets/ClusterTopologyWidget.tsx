@@ -6,20 +6,25 @@ import { registerWidget } from "@/lib/dashboard/registry.ts";
 // The joins, the health grading, the layout and the per-row coverage live in
 // lib/, under test (D-10, KTD8). This file only draws what they return.
 import type {
+  TopologyCamera,
   TopologyEdgeKind,
   TopologyHealth,
   TopologyKind,
   TopologyNode,
+  TopologySource,
   TopologyView,
 } from "@/lib/dashboard/topology.ts";
 import {
   clusterTopologyView,
+  panTopologyCamera,
   stepTopologyZoom,
   TOPOLOGY_KIND_LABEL,
   TOPOLOGY_KINDS,
   TOPOLOGY_MIN_ZOOM,
   TOPOLOGY_PAGE_HREF,
+  TOPOLOGY_SOURCE_LABEL,
   topologyMaxZoom,
+  zoomTopologyCameraAt,
 } from "@/lib/dashboard/topology.ts";
 import type { DataSourceKey } from "@/lib/dashboard/types.ts";
 import type { ResourceListPage } from "@/lib/dashboard/wire-types.ts";
@@ -46,24 +51,20 @@ const HEALTH_COLOR: Readonly<Record<TopologyHealth, string>> = {
   error: "var(--error)",
 };
 
-/** The reads behind each row. Workloads are three controller kinds. */
-const ROW_SOURCES: Readonly<Record<TopologyKind, readonly DataSourceKey[]>> = {
-  node: ["nodes-list"],
-  service: ["services-list"],
-  workload: ["deployments-list", "statefulsets-list", "daemonsets-list"],
-  pod: ["pods-list"],
-  pvc: ["pvcs-list"],
+/** The dashboard source behind each of the graph's reads. */
+const SOURCE_KEY: Readonly<Record<TopologySource, DataSourceKey>> = {
+  nodes: "nodes-list",
+  services: "services-list",
+  deployments: "deployments-list",
+  statefulsets: "statefulsets-list",
+  daemonsets: "daemonsets-list",
+  pods: "pods-list",
+  pvcs: "pvcs-list",
 };
 
 /** Pixels a press must travel before it is a pan rather than a click. */
 const DRAG_THRESHOLD = 4;
 const LABEL_CHARS = 15;
-
-interface Camera {
-  zoom: number;
-  x: number;
-  y: number;
-}
 
 interface Active {
   id: string;
@@ -158,7 +159,7 @@ function ClusterTopology() {
 }
 
 function TopologyCanvas({ view }: { view: TopologyView }) {
-  const [camera, setCamera] = useState<Camera>({ zoom: 1, x: 0, y: 0 });
+  const [camera, setCamera] = useState<TopologyCamera>({ zoom: 1, x: 0, y: 0 });
   const [active, setActive] = useState<Active | null>(null);
   const [dragging, setDragging] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -166,13 +167,17 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
     id: number;
     sx: number;
     sy: number;
-    cam: Camera;
+    cam: TopologyCamera;
     dragging: boolean;
   } | null>(null);
   const suppressClick = useRef(false);
 
   const byId = useMemo(() => new Map(view.nodes.map((n) => [n.id, n])), [view]);
   const activeNode = active === null ? undefined : byId.get(active.id);
+  // Read through the live graph, not the hover state: a refresh can drop the
+  // hovered object while the pointer is still on the spot it occupied, and a
+  // dead id would keep every edge dimmed with nothing highlighted.
+  const activeId = activeNode?.id ?? null;
 
   // The zoom ceiling depends on how small the fitted map is drawn, so the box
   // is measured. Debounced like WidgetHost's observer: a grid resize fires
@@ -199,32 +204,31 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
   const vbW = view.width / camera.zoom;
   const vbH = view.height / camera.zoom;
 
-  /** Zooms to `next`, keeping the point at fractions (fx, fy) of the canvas
-   * where it is on screen. */
-  const zoomTo = (next: number, fx = 0.5, fy = 0.5) => {
-    setCamera((c) => {
-      const zoom = Math.min(maxZoom, Math.max(TOPOLOGY_MIN_ZOOM, next));
-      const oldW = view.width / c.zoom;
-      const oldH = view.height / c.zoom;
-      const newW = view.width / zoom;
-      const newH = view.height / zoom;
-      return {
-        zoom,
-        x: c.x + (oldW - newW) * fx,
-        y: c.y + (oldH - newH) * fy,
-      };
-    });
+  /** Zooms one step, holding the canvas point under `at` (box pixels; the
+   * centre when omitted) where it is on screen. */
+  const zoomStep = (direction: 1 | -1, at?: { x: number; y: number }) => {
+    const rect = boxRef.current?.getBoundingClientRect();
+    const size = { w: rect?.width ?? 0, h: rect?.height ?? 0 };
+    const point = at ?? { x: size.w / 2, y: size.h / 2 };
+    setCamera((c) =>
+      zoomTopologyCameraAt(
+        c,
+        stepTopologyZoom(c.zoom, direction, maxZoom),
+        view,
+        size,
+        point,
+      ),
+    );
   };
 
   const onWheel = (e: WheelEvent) => {
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
     const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
-    zoomTo(
-      stepTopologyZoom(camera.zoom, e.deltaY > 0 ? -1 : 1, maxZoom),
-      (e.clientX - rect.left) / rect.width,
-      (e.clientY - rect.top) / rect.height,
-    );
+    zoomStep(e.deltaY > 0 ? -1 : 1, {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    });
   };
 
   const onPointerDown = (e: PointerEvent) => {
@@ -241,6 +245,14 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
   const onPointerMove = (e: PointerEvent) => {
     const p = press.current;
     if (p === null || p.id !== e.pointerId) return;
+    // Released outside the svg before the press became a pan (capture is only
+    // taken once it does), so no pointerup reached us. Without this the next
+    // hover with no button held would start a phantom drag.
+    if (e.buttons === 0) {
+      press.current = null;
+      setDragging(false);
+      return;
+    }
     const dx = e.clientX - p.sx;
     const dy = e.clientY - p.sy;
     if (!p.dragging) {
@@ -253,17 +265,20 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
       setActive(null);
     }
     const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
-    setCamera({
-      zoom: p.cam.zoom,
-      x: p.cam.x - dx * (vbW / rect.width),
-      y: p.cam.y - dy * (vbH / rect.height),
-    });
+    setCamera(
+      panTopologyCamera(p.cam, dx, dy, view, {
+        w: rect.width,
+        h: rect.height,
+      }),
+    );
   };
 
   const endPress = (e: PointerEvent) => {
     const p = press.current;
     if (p === null || p.id !== e.pointerId) return;
-    suppressClick.current = p.dragging;
+    // Only a pointerup is followed by a click; a cancelled drag has none to
+    // swallow, and setting the flag would eat the next genuine one.
+    suppressClick.current = p.dragging && e.type === "pointerup";
     press.current = null;
     setDragging(false);
   };
@@ -281,7 +296,7 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
   };
 
   const isRelated = (edgeFrom: string, edgeTo: string) =>
-    active !== null && (edgeFrom === active.id || edgeTo === active.id);
+    activeId !== null && (edgeFrom === activeId || edgeTo === activeId);
 
   return (
     <div
@@ -327,7 +342,7 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
               y2={to.y}
               stroke={EDGE_COLOR[edge.kind]}
               stroke-width={lit ? 2.5 : 1.5}
-              stroke-opacity={active === null ? 0.35 : lit ? 0.9 : 0.12}
+              stroke-opacity={activeId === null ? 0.35 : lit ? 0.9 : 0.12}
             />
           );
         })}
@@ -335,7 +350,7 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
           <NodeGlyph
             key={node.id}
             node={node}
-            active={active?.id === node.id}
+            active={activeId === node.id}
             onEnter={(e) => showFor(node.id, e.clientX, e.clientY)}
             onFocus={(el) => {
               const r = el.getBoundingClientRect();
@@ -350,14 +365,14 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
         <CanvasButton
           label="Zoom in"
           disabled={camera.zoom >= maxZoom}
-          onClick={() => zoomTo(stepTopologyZoom(camera.zoom, 1, maxZoom))}
+          onClick={() => zoomStep(1)}
         >
           +
         </CanvasButton>
         <CanvasButton
           label="Zoom out"
           disabled={camera.zoom <= TOPOLOGY_MIN_ZOOM}
-          onClick={() => zoomTo(stepTopologyZoom(camera.zoom, -1, maxZoom))}
+          onClick={() => zoomStep(-1)}
         >
           −
         </CanvasButton>
@@ -643,23 +658,35 @@ function Legend({ view }: { view: TopologyView }) {
   );
 }
 
+/** Why reads have no page, in the words a coverage note can use. */
+function whyAbsent(sources: readonly TopologySource[]): string {
+  const states = sources.map((s) => dashboardData.state(SOURCE_KEY[s]));
+  if (states.some((s) => s.loading)) return "loading";
+  if (states.every((s) => s.errorKind === "permission")) {
+    return "not permitted for this account";
+  }
+  return "unavailable";
+}
+
 /**
  * What the picture leaves out, said in words. An undrawn row and a capped row
  * both look like a smaller cluster, which is the one reading this card must
  * not invite.
  */
 function CoverageNotes({ view }: { view: TopologyView }) {
-  const missing = TOPOLOGY_KINDS.filter((k) => !view.rows[k].available).map(
-    (k) => {
-      const states = ROW_SOURCES[k].map((s) => dashboardData.state(s));
-      const why = states.some((s) => s.loading)
-        ? "loading"
-        : states.every((s) => s.errorKind === "permission")
-          ? "not permitted for this account"
-          : "unavailable";
-      return `${TOPOLOGY_KIND_LABEL[k]} (${why})`;
-    },
-  );
+  // A row with no page at all is named as the row. A row missing only some of
+  // its reads -- the workload row, with one controller kind refused or still
+  // loading -- names those reads, so its count is never taken for the whole.
+  const missing = TOPOLOGY_KINDS.flatMap((k) => {
+    const row = view.rows[k];
+    if (row.absent.length === 0) return [];
+    if (!row.available) {
+      return [`${TOPOLOGY_KIND_LABEL[k]} (${whyAbsent(row.absent)})`];
+    }
+    return row.absent.map(
+      (s) => `${TOPOLOGY_SOURCE_LABEL[s]} (${whyAbsent([s])})`,
+    );
+  });
   const capped = TOPOLOGY_KINDS.filter((k) => view.rows[k].truncated);
 
   if (missing.length === 0 && capped.length === 0 && view.skipped === 0) {
