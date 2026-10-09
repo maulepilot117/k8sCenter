@@ -1705,20 +1705,29 @@ test("snapshots-status turns a remote could-not-tell error into a verdict", asyn
   }
 });
 
-test("errorKind: generic list sources are unsupported under a remote selection, with no request", async () => {
-  // The generic list route answers from the LOCAL informer cache whatever
-  // cluster is selected (crud.go HandleListResource; only events reads a
-  // remote cluster directly). Fetching it under a remote selection would draw
-  // the local cluster's objects under the remote cluster's name, so the
-  // source refuses before any request is made, and says why.
+test("generic list sources fetch normally under a remote selection, scoped by X-Cluster-ID", async () => {
+  // The generic list route reads the SELECTED cluster through ClusterRouter,
+  // so a remote selection is an ordinary request that carries the cluster id
+  // header, not a refusal made before any request.
   const { LOCAL_CLUSTER_ID, selectedCluster } = await import(
     "@/src/lib/cluster.ts"
   );
   const realFetch = globalThis.fetch;
-  let requests = 0;
-  globalThis.fetch = (() => {
-    requests++;
-    return Promise.reject(new Error("no request expected"));
+  const seen: { url: string; cluster: string | null }[] = [];
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined),
+    );
+    seen.push({
+      url: input instanceof Request ? input.url : String(input),
+      cluster: headers.get("X-Cluster-ID"),
+    });
+    return Promise.resolve(
+      new Response(JSON.stringify({ data: [], metadata: { total: 0 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
   }) as unknown as typeof fetch;
   const previous = selectedCluster.peek();
   selectedCluster.value = "remote-cluster-id";
@@ -1727,11 +1736,13 @@ test("errorKind: generic list sources are unsupported under a remote selection, 
     const cache = createSourceCache(DASHBOARD_FETCHERS);
     cache.ensure(keys, "1h");
     await cache.settled();
+    expect(seen).toHaveLength(keys.length);
+    for (const req of seen) expect(req.cluster).toBe("remote-cluster-id");
     for (const key of keys) {
-      expect(cache.state(key).errorKind).toBe("unsupported");
-      expect(cache.state(key).error).toContain("remote clusters");
+      expect(cache.state(key).data).not.toBeNull();
+      expect(cache.state(key).error).toBeNull();
+      expect(cache.state(key).errorKind).toBeNull();
     }
-    expect(requests).toBe(0);
   } finally {
     selectedCluster.value = previous ?? LOCAL_CLUSTER_ID;
     globalThis.fetch = realFetch;

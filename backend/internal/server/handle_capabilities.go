@@ -295,6 +295,22 @@ var capabilityOperations = []capabilityOp{
 		ClusterScoped: true,
 	},
 	{
+		// Remote since #608: the generic list and detail routes
+		// (GET /resources/{kind}[/{ns}[/{name}]], k8s/resources/crud.go
+		// HandleListResource/HandleGetResource, adapter ListDirect/GetDirect)
+		// read the selected cluster as the user through ClusterRouter
+		// instead of the local informer cache. A remote list is read whole,
+		// bounded at 5,000 objects (500 per page, 10 pages), then paged by
+		// k8sCenter so metadata.total and continue keep their meaning; past
+		// the cap the response is flagged metadata.truncated. Secrets are
+		// excluded: they keep their own masked route. No Probe: the core
+		// kinds this row stands for are always served. Namespaced, so a
+		// denial is reported as authz_namespace_scoped like the other rows.
+		ID: "resources.read", Label: "Resource lists and detail",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
 		// Resource counts rely on the local informer cache; remote clusters
 		// use direct API calls and do not populate informers.
 		// k8s/resources/counts.go:28 (400).

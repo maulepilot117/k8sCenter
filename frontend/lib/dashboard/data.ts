@@ -235,16 +235,6 @@ export function sourceRefreshOffsetMs(key: string, intervalMs: number): number {
   return hash32(key) % window;
 }
 
-/**
- * A source that cannot answer for the selected cluster, decided before any
- * request is made. Classified `unsupported` like a route's own refusal: muted,
- * its message shown, no retry offered, since retrying cannot change it.
- */
-class UnsupportedSourceError extends Error {}
-
-const REMOTE_LIST_UNSUPPORTED =
-  "Not available for remote clusters yet: this list is read from the local cluster's cache.";
-
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -269,7 +259,6 @@ function messageOf(err: unknown): string {
  * sources that read it, and carries the full reasoning.
  */
 function classify(err: unknown, base: string): SourceErrorKind {
-  if (err instanceof UnsupportedSourceError) return "unsupported";
   if (!(err instanceof ApiError)) return "failure";
   if (err.status === 403) return "permission";
   if (err.status === 404 && NOT_FOUND_IS_REFUSAL.has(base)) return "permission";
@@ -905,20 +894,15 @@ const UNREAD_FEED_LIMIT = 10;
  * complete list from the first 500 of three thousand. Every widget that ranks
  * a list has to say which of the two it is showing.
  *
- * Local cluster only. The generic list route answers from the LOCAL informer
- * cache whatever cluster is selected (`crud.go` HandleListResource; only
- * events reads a remote cluster directly), so under a remote selection its
- * "list" is the local cluster's objects, and a card would draw them under the
- * remote cluster's name. Refused before any request instead. Lift this once
- * that route reads remote clusters through ClusterRouter.
+ * The list is read from the selected cluster: the api client sends
+ * X-Cluster-ID, and the route reads a remote cluster through ClusterRouter as
+ * the user. A remote cluster's list is read whole by the server up to its cap
+ * and then paged, so `metadata.total` is the number read.
  */
 async function readList(
   path: string,
   signal: AbortSignal,
 ): Promise<ResourceListPage> {
-  if (selectedCluster.peek() !== LOCAL_CLUSTER_ID) {
-    throw new UnsupportedSourceError(REMOTE_LIST_UNSUPPORTED);
-  }
   const res = await api<unknown>(`${path}?limit=${LIST_PAGE_LIMIT}`, {
     method: "GET",
     signal,
