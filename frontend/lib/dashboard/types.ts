@@ -720,9 +720,7 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * (`dashboard.go`); 400 is the only status that handler writes itself. A
  * remote cluster is not missing a feature and a retry cannot change the
  * answer, which is this set's meaning exactly, and the handler's message is
- * what the card should show. `resource-counts` used to be listed here too and
- * is not any more: the counts route reads the selected cluster as the user
- * (#608), so a 400 from it is an ordinary failure.
+ * what the card should show.
  *
  * `diagnostics-summary` is the same case answered differently: the route reads
  * the local informer cache and refuses any other cluster with 501

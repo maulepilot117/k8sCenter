@@ -8,11 +8,7 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import SnapshotList from "@/src/islands/SnapshotList.tsx";
 import StorageClassWizard from "@/src/islands/StorageClassWizard.tsx";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import {
-  countsPendingText,
-  getCount,
-  resourceCounts,
-} from "@/src/lib/resource-counts.ts";
+import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 
 function resolveTab(currentPath: string): {
   kind: string;
@@ -128,7 +124,7 @@ export default function StorageDashboard({
       ? "Volume snapshots"
       : countsReady
         ? `${listCount} ${title.toLowerCase()}`
-        : countsPendingText(`Loading ${title.toLowerCase()}…`);
+        : `Loading ${title.toLowerCase()}…`;
 
   // Overview donut: show total PVCs as a single neutral segment
   // (no invented phase split — real phases require a list fetch that's

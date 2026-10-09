@@ -978,7 +978,7 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
       signal,
     ),
 
-  // Batch counts across every informer-tracked kind. Deliberately requested
+  // Batch counts across every counted kind. Deliberately requested
   // without a namespace: the dashboard is a cluster-wide surface, and the
   // namespace picker scopes the list pages rather than this one.
   "resource-counts": (signal) => read("/v1/resources/counts", signal),
