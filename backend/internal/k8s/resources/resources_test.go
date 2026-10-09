@@ -254,6 +254,28 @@ func TestPagination(t *testing.T) {
 	}
 }
 
+// TestPaginateAny_BadContinueTokenStartsAtFirstPage proves a negative or
+// non-numeric continue token serves the first page instead of panicking on a
+// negative slice bound.
+func TestPaginateAny_BadContinueTokenStartsAtFirstPage(t *testing.T) {
+	for _, tok := range []string{"-1", "abc", "0"} {
+		t.Run(tok, func(t *testing.T) {
+			items := []any{
+				&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "c", Namespace: "default"}},
+				&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"}},
+				&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "default"}},
+			}
+			page, next := paginateAny(items, 2, tok)
+			if len(page) != 2 || next != "2" {
+				t.Fatalf("page len=%d next=%q, want 2 items and next=2", len(page), next)
+			}
+			if got := page[0].(*corev1.Pod).Name; got != "a" {
+				t.Errorf("first item = %q, want a (the first page)", got)
+			}
+		})
+	}
+}
+
 func TestListPods(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "nginx-abc123", Namespace: "default"},

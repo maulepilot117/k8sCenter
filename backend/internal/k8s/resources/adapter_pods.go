@@ -40,6 +40,24 @@ func (podAdapter) GetFromCache(inf *k8s.InformerManager, ns, name string) (any, 
 	return inf.Pods().Pods(ns).Get(name)
 }
 
+// ListDirect implements ResourceAdapter.
+func (podAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
+	list, err := cs.CoreV1().Pods(ns).List(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]any, len(list.Items))
+	for i := range list.Items {
+		out[i] = &list.Items[i]
+	}
+	return out, list.Continue, nil
+}
+
+// GetDirect implements ResourceAdapter.
+func (podAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
+	return cs.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
 // Create is not supported for pods (they are created by controllers).
 func (podAdapter) Create(_ context.Context, _ kubernetes.Interface, _ string, _ []byte) (any, error) {
 	return nil, errReadOnly

@@ -35,6 +35,24 @@ func (clusterRoleBindingAdapter) GetFromCache(inf *k8s.InformerManager, _, name 
 	return inf.ClusterRoleBindings().Get(name)
 }
 
+// ListDirect implements ResourceAdapter.
+func (clusterRoleBindingAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, _ string, opts metav1.ListOptions) ([]any, string, error) {
+	list, err := cs.RbacV1().ClusterRoleBindings().List(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]any, len(list.Items))
+	for i := range list.Items {
+		out[i] = &list.Items[i]
+	}
+	return out, list.Continue, nil
+}
+
+// GetDirect implements ResourceAdapter.
+func (clusterRoleBindingAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, _, name string) (any, error) {
+	return cs.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{})
+}
+
 func (clusterRoleBindingAdapter) Create(ctx context.Context, cs kubernetes.Interface, _ string, body []byte) (any, error) {
 	var obj rbacv1.ClusterRoleBinding
 	if err := json.Unmarshal(body, &obj); err != nil {

@@ -44,6 +44,24 @@ func (deploymentAdapter) GetFromCache(inf *k8s.InformerManager, ns, name string)
 	return inf.Deployments().Deployments(ns).Get(name)
 }
 
+// ListDirect implements ResourceAdapter.
+func (deploymentAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
+	list, err := cs.AppsV1().Deployments(ns).List(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]any, len(list.Items))
+	for i := range list.Items {
+		out[i] = &list.Items[i]
+	}
+	return out, list.Continue, nil
+}
+
+// GetDirect implements ResourceAdapter.
+func (deploymentAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
+	return cs.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
 func (deploymentAdapter) Create(ctx context.Context, cs kubernetes.Interface, ns string, body []byte) (any, error) {
 	var obj appsv1.Deployment
 	if err := json.Unmarshal(body, &obj); err != nil {

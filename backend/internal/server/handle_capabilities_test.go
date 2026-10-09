@@ -257,7 +257,7 @@ func assertCapabilities(t *testing.T, body CapabilitiesResponse, ids []string, w
 // other remote test reads them rather than hard-coding its own copy.
 var (
 	wantRemoteSupported = []string{
-		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply", "dashboard.summary",
+		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply", "dashboard.summary", "resources.read",
 		"node.drain", "gitops.applications", "velero.backups", "storage.snapshots",
 		"storage.classes", "flux.notifications", "alert.rules", "gateway.read", "mesh.routing",
 		"mesh.mtls", "eso.read", "certmanager.certificates", "policy.read", "changes.receipts",

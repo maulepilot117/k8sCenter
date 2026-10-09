@@ -41,6 +41,24 @@ func (ingressAdapter) GetFromCache(inf *k8s.InformerManager, ns, name string) (a
 	return inf.Ingresses().Ingresses(ns).Get(name)
 }
 
+// ListDirect implements ResourceAdapter.
+func (ingressAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
+	list, err := cs.NetworkingV1().Ingresses(ns).List(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]any, len(list.Items))
+	for i := range list.Items {
+		out[i] = &list.Items[i]
+	}
+	return out, list.Continue, nil
+}
+
+// GetDirect implements ResourceAdapter.
+func (ingressAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
+	return cs.NetworkingV1().Ingresses(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
 func (ingressAdapter) Create(ctx context.Context, cs kubernetes.Interface, ns string, body []byte) (any, error) {
 	var obj networkingv1.Ingress
 	if err := json.Unmarshal(body, &obj); err != nil {
