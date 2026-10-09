@@ -6,6 +6,8 @@ export interface APIResponse<T> {
     page?: number;
     pageSize?: number;
     continue?: string;
+    /** Set when a remote read hit the paging cap: totals are lower bounds. */
+    truncated?: boolean;
   };
 }
 

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { fetchCounts, resourceCounts } from "./resource-counts.ts";
+import {
+  fetchCounts,
+  formatCount,
+  REMOTE_COUNT_CAP,
+  resetCountsForTest,
+  resourceCounts,
+  resourceCountsTruncated,
+} from "./resource-counts.ts";
 
 /**
  * The counts store's fetch outcome handling.
@@ -37,20 +44,67 @@ function answer(status: number, payload: unknown) {
 
 beforeEach(() => {
   calls = [];
-  resourceCounts.value = null;
+  resetCountsForTest();
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  resourceCounts.value = null;
+  resetCountsForTest();
 });
 
 describe("fetchCounts", () => {
-  test("a 400 on a remote cluster is an ordinary error: no reason is published", async () => {
+  test("a 400 on a remote cluster keeps that cluster's counts", async () => {
+    answer(200, { data: { pods: 7 } });
+    await fetchCounts("all", "abc123");
     answer(400, { error: { code: 400, message: "bad request" } });
     await fetchCounts("all", "abc123");
-    expect(calls).toHaveLength(1);
-    expect(calls[0].clusterHeader).toBe("abc123");
+    expect(calls[1].clusterHeader).toBe("abc123");
+    expect(resourceCounts.value).toEqual({ pods: 7 });
+  });
+
+  test("a cluster switch clears the previous cluster's counts before the read lands", async () => {
+    answer(200, { data: { pods: 7 } });
+    await fetchCounts("all", "local");
+    expect(resourceCounts.value).toEqual({ pods: 7 });
+    let release: (r: Response) => void = () => {};
+    globalThis.fetch = (() =>
+      new Promise<Response>((r) => {
+        release = r;
+      })) as unknown as typeof globalThis.fetch;
+    const pending = fetchCounts("all", "abc123");
+    expect(resourceCounts.value).toBeNull();
+    release(
+      new Response(JSON.stringify({ data: { pods: 2 } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await pending;
+    expect(resourceCounts.value).toEqual({ pods: 2 });
+  });
+
+  test("truncated metadata sets the signal and a plain response resets it", async () => {
+    answer(200, {
+      data: { pods: 5000 },
+      metadata: { total: 5000, truncated: true },
+    });
+    await fetchCounts("all", "abc123");
+    expect(resourceCountsTruncated.value).toBe(true);
+    expect(formatCount("pods")).toBe("5000+");
+    answer(200, { data: { pods: 5000 }, metadata: { total: 5000 } });
+    await fetchCounts("all", "abc123");
+    expect(resourceCountsTruncated.value).toBe(false);
+    expect(formatCount("pods")).toBe("5000");
+    expect(REMOTE_COUNT_CAP).toBe(5000);
+  });
+
+  test("formatCount marks only kinds at the cap", async () => {
+    answer(200, {
+      data: { pods: 5000, services: 3 },
+      metadata: { total: 5003, truncated: true },
+    });
+    await fetchCounts("all", "abc123");
+    expect(formatCount("services")).toBe("3");
   });
 
   test("a failed read for another cluster clears the previous cluster's counts", async () => {
