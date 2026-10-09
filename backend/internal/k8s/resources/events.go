@@ -182,7 +182,7 @@ func (h *Handler) handleListEvents(w http.ResponseWriter, r *http.Request, user 
 // filter pushed down as a field selector. The result is filtered again by the
 // caller, so an API server that ignored the selector still cannot widen the
 // answer. truncated reports that the list still had more pages after
-// remoteListMaxPages. On failure it writes the error response and returns
+// k8s.RemoteListMaxPages. On failure it writes the error response and returns
 // ok=false; it never falls back to the local cluster.
 func (h *Handler) listRemoteEvents(
 	w http.ResponseWriter, r *http.Request, user *auth.User,

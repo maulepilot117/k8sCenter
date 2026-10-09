@@ -728,16 +728,20 @@ func main() {
 	go scanDiscoverer.RunDiscoveryLoop(ctx)
 
 	scanHandler := &scanning.Handler{
-		K8sClient:     k8sClient,
 		Discoverer:    scanDiscoverer,
 		AccessChecker: accessChecker,
 		Logger:        logger,
+		Clients:       clusterRouter,
+		Presence:      remotePresence,
 	}
 	scanHandler.InitCache()
+	clusterRouter.RegisterEvictHook(scanHandler.EvictRemoteCache)
 
 	// Namespace limits handler (ResourceQuota + LimitRange management)
 	// Note: Limits checker is created after notification center to enable threshold alerts
 	limitsHandler := limits.NewHandler(informerMgr, accessChecker, logger)
+	limitsHandler.Clients = clusterRouter
+	clusterRouter.RegisterEvictHook(limitsHandler.EvictRemoteCache)
 
 	// Velero backup/restore handler
 	veleroDiscoverer := velero.NewDiscoverer(k8sClient, logger)
@@ -792,7 +796,6 @@ func main() {
 			policyHandler.NotifService = notifService
 		}
 		gitopsHandler.NotifService = notifService
-		scanHandler.NotifService = notifService
 		diagHandler.NotifService = notifService
 		veleroHandler.NotifService = notifService
 

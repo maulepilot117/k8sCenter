@@ -703,6 +703,20 @@ test("errorKind: any other failure stays an ordinary failure", async () => {
   expect(cache.state("cluster-info").errorKind).toBe("failure");
 });
 
+test("errorKind: a 400 from resource-counts is a plain failure now that remote clusters serve counts", async () => {
+  // The counts route used to refuse every non-local cluster with a 400, which
+  // made 400 mean "unsupported here". It reads the selected cluster now (#608),
+  // so a 400 is an ordinary bad request and a retry is a fair response.
+  const cache = createSourceCache({
+    "resource-counts": () =>
+      Promise.reject(new ApiError(400, 400, "bad namespace")),
+  });
+
+  cache.ensure(["resource-counts"], "1h");
+  await cache.settled();
+  expect(cache.state("resource-counts").errorKind).toBe("failure");
+});
+
 test("errorKind: a not-found from a slug source is a refusal, not a failure", async () => {
   // The slug-query handler answers "you lack the grant" and "no such slug"
   // with the same 404 so its catalog cannot be enumerated (F#29). Left as an

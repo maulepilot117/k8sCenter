@@ -22,7 +22,7 @@ import (
 
 const (
 	// remoteListTimeout bounds one whole paged list on a remote cluster,
-	// including client resolution. Up to remoteListMaxPages round trips share
+	// including client resolution. Up to k8s.RemoteListMaxPages round trips share
 	// it, so a slow or unreachable API server fails the request in bounded
 	// time instead of holding it open.
 	remoteListTimeout = 10 * time.Second
@@ -270,7 +270,7 @@ func (h *Handler) HandleDeleteResource(w http.ResponseWriter, r *http.Request) {
 // listRemote pages through adapter's list on a remote cluster, as the user,
 // under remoteListTimeout. base carries the caller's selectors; noun names the
 // resource in error messages. truncated reports that the list still had more
-// pages after remoteListMaxPages. On failure it writes the error response and
+// pages after k8s.RemoteListMaxPages. On failure it writes the error response and
 // returns ok=false; it never falls back to the local cluster, and the raw
 // error reaches only the log.
 func (h *Handler) listRemote(
@@ -288,7 +288,7 @@ func (h *Handler) listRemote(
 		return nil, false, false
 	}
 
-	items, truncated, err = pageRemoteList(ctx, base, func(ctx context.Context, opts metav1.ListOptions) ([]any, string, error) {
+	items, truncated, err = k8s.PageList(ctx, base, func(ctx context.Context, opts metav1.ListOptions) ([]any, string, error) {
 		return adapter.ListDirect(ctx, cs, ns, opts)
 	})
 	if err != nil {
