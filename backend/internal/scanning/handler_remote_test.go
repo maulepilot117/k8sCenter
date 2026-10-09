@@ -203,8 +203,8 @@ type harness struct {
 // newHarness builds a Handler over a remote cluster and a local one. The
 // local cluster is seeded with its own reports and its Discoverer says both
 // scanners are installed, so a local read or a local presence answer on the
-// remote path shows up. K8sClient is nil, so any service-account read
-// panics.
+// remote path shows up. The handler holds no service-account client, so
+// every read goes through clients.
 func newHarness(t *testing.T, remote *fakeCluster) *harness {
 	t.Helper()
 	clients := &fakeClients{clusters: map[string]*fakeCluster{

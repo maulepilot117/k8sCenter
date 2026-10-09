@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -223,7 +224,7 @@ func TestResourceCounts_RemoteListErrorOmittedWithoutLeak(t *testing.T) {
 }
 
 func TestResourceCounts_RemoteDeniedSAROmitsKind(t *testing.T) {
-	h, _, _ := remoteEventsHandler(t, nil, countsDeployment("a", "r1"), countsNode("r-n1"))
+	h, _, remote := remoteEventsHandler(t, nil, countsDeployment("a", "r1"), countsNode("r-n1"))
 	h.AccessChecker = NewDenyResourcesAccessChecker("nodes")
 
 	rr := httptest.NewRecorder()
@@ -233,6 +234,40 @@ func TestResourceCounts_RemoteDeniedSAROmitsKind(t *testing.T) {
 		t.Errorf("denied kind nodes was counted: %v", counts)
 	}
 	assertCount(t, counts, "deployments", 1)
+	// The check runs inside the kind's worker, before its list: a denied kind
+	// is never listed at all.
+	for _, a := range readActions(remote) {
+		if a.GetResource().Resource == "nodes" {
+			t.Errorf("denied kind nodes was listed on the remote cluster: %v", a)
+		}
+	}
+}
+
+func TestRemoteCountOrder_HeavyKindsFirstRestStable(t *testing.T) {
+	checks := countedKinds("ns")
+	got := remoteCountOrder(checks)
+	if len(got) != len(checks) {
+		t.Fatalf("len = %d, want %d", len(got), len(checks))
+	}
+	for i, kind := range remoteCountsHeavyFirst {
+		if got[i].kind != kind {
+			t.Errorf("position %d = %q, want %q", i, got[i].kind, kind)
+		}
+	}
+	var rest []string
+	for _, c := range checks {
+		if !slices.Contains(remoteCountsHeavyFirst, c.kind) {
+			rest = append(rest, c.kind)
+		}
+	}
+	for i, kind := range rest {
+		if got[len(remoteCountsHeavyFirst)+i].kind != kind {
+			t.Errorf("tail position %d = %q, want %q (original order)", i, got[len(remoteCountsHeavyFirst)+i].kind, kind)
+		}
+	}
+	if checks[0].kind != "nodes" {
+		t.Error("remoteCountOrder modified its input")
+	}
 }
 
 func TestResourceCounts_RemoteResolveFailure(t *testing.T) {
@@ -257,7 +292,7 @@ func TestResourceCounts_RemoteResolveFailure(t *testing.T) {
 
 func TestResourceCounts_RemoteTruncatedAtCap(t *testing.T) {
 	h, _, remote := remoteEventsHandler(t, nil, countsNode("r-n1"))
-	page := make([]corev1.Pod, remoteListPageSize)
+	page := make([]corev1.Pod, k8s.RemoteListPageSize)
 	for i := range page {
 		page[i] = corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("p%d", i), Namespace: "a"}}
 	}
@@ -271,7 +306,7 @@ func TestResourceCounts_RemoteTruncatedAtCap(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
 	}
 	counts, hasMetadata, truncated := decodeCounts(t, rr)
-	assertCount(t, counts, "pods", remoteListPageSize*remoteListMaxPages)
+	assertCount(t, counts, "pods", k8s.RemoteListPageSize*k8s.RemoteListMaxPages)
 	assertCount(t, counts, "nodes", 1)
 	if !hasMetadata || !truncated {
 		t.Errorf("metadata.truncated missing on a capped count: %s", rr.Body.String()[:min(200, rr.Body.Len())])

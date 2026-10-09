@@ -8,9 +8,12 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 	"github.com/kubecenter/kubecenter/pkg/version"
+	"golang.org/x/sync/errgroup"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -19,29 +22,19 @@ import (
 
 const (
 	clusterInfoTimeout   = 10 * time.Second
-	clusterInfoPageSize  = 500
-	clusterInfoMaxPages  = 10
 	clusterInfoReachMsg  = "failed to reach the selected cluster"
 	clusterInfoNodesMsg  = "failed to list nodes on the selected cluster"
 	clusterInfoNoSession = "authentication required"
 )
 
-// clusterInfoRemoteClient overrides remote client resolution in tests (a real
-// resolution needs a cluster registry and a reachable API server). It is nil
-// in production, which always routes through ClusterRouter. Tests that set it
-// must not run in parallel.
-var clusterInfoRemoteClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
-
-var errNoClusterRouter = errors.New("no cluster router wired")
-
 // remoteClientForInfo resolves the impersonating clientset for a remote
 // cluster. ClusterRouter has no local fallback on failure.
 func (s *Server) remoteClientForInfo(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error) {
-	if clusterInfoRemoteClient != nil {
-		return clusterInfoRemoteClient(ctx, clusterID, user)
+	if s.remoteInfoClient != nil {
+		return s.remoteInfoClient(ctx, clusterID, user)
 	}
 	if s.ClusterRouter == nil {
-		return nil, errNoClusterRouter
+		return nil, errors.New("no cluster router wired")
 	}
 	return s.ClusterRouter.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 }
@@ -108,66 +101,76 @@ func (s *Server) handleRemoteClusterInfo(w http.ResponseWriter, r *http.Request,
 		writeClusterInfoError(w, clusterInfoReachMsg)
 		return
 	}
-	serverVersion, err := cs.Discovery().ServerVersion()
-	if err != nil {
+	// The version read and the node count run at once. A version failure
+	// cancels the node read and is reported first, as it was when the two
+	// ran in sequence; a node failure never cancels the version read.
+	var gitVersion, platform string
+	g, gctx := errgroup.WithContext(ctx)
+	recoverutil.Go(g, s.Logger, "cluster info remote server version", func() error {
+		v, err := cs.Discovery().ServerVersion()
+		if err != nil {
+			return err
+		}
+		gitVersion, platform = v.GitVersion, v.Platform
+		return nil
+	})
+	nodeCount, nodeErr := s.remoteNodeCount(gctx, id, user, cs)
+	if err := g.Wait(); err != nil {
 		s.Logger.Warn("cluster info: remote server version failed", "cluster", id, "error", err)
 		writeClusterInfoError(w, clusterInfoReachMsg)
 		return
 	}
-
-	// nodeCount stays nil (JSON null) unless the user was proven allowed to
-	// list nodes and the whole list was read: the body never carries a count
-	// it did not observe.
-	var nodeCount any
-	allowed := false
-	if s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil {
-		allowed, err = s.ResourceHandler.AccessChecker.CanAccess(ctx, id, user.KubernetesUsername, user.KubernetesGroups, "list", "nodes", "")
-		if err != nil {
-			s.Logger.Warn("cluster info: node access check failed", "cluster", id, "error", err)
-			allowed = false
-		}
-	}
-	if allowed {
-		count, complete, err := countRemoteNodes(ctx, cs)
-		switch {
-		case err != nil && apierrors.IsForbidden(err):
-			// Denied by the cluster itself: unknown, not zero.
-		case err != nil:
-			s.Logger.Warn("cluster info: remote node list failed", "cluster", id, "error", err)
-			writeClusterInfoError(w, clusterInfoNodesMsg)
-			return
-		case complete:
-			nodeCount = count
-		}
+	if nodeErr != nil {
+		s.Logger.Warn("cluster info: remote node list failed", "cluster", id, "error", nodeErr)
+		writeClusterInfoError(w, clusterInfoNodesMsg)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, api.Response{
 		Data: map[string]any{
 			"clusterID":         id,
-			"kubernetesVersion": serverVersion.GitVersion,
-			"platform":          serverVersion.Platform,
+			"kubernetesVersion": gitVersion,
+			"platform":          platform,
 			"nodeCount":         nodeCount,
 			"kubecenter":        version.Get(),
 		},
 	})
 }
 
-// countRemoteNodes pages through nodes. complete is false when the page cap
-// was reached with more left to read, so a partial count is never reported.
-func countRemoteNodes(ctx context.Context, cs kubernetes.Interface) (count int, complete bool, err error) {
-	opts := metav1.ListOptions{Limit: clusterInfoPageSize}
-	for page := 0; page < clusterInfoMaxPages; page++ {
+// remoteNodeCount counts the nodes on a remote cluster as the user. The
+// count stays nil (JSON null) unless the user was proven allowed to list
+// nodes and the whole list was read: the body never carries a count it did
+// not observe. err is set only for a list failure other than the cluster's
+// own refusal, which is unknown rather than zero.
+func (s *Server) remoteNodeCount(ctx context.Context, id string, user *auth.User, cs kubernetes.Interface) (any, error) {
+	allowed := false
+	if s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil {
+		var err error
+		allowed, err = s.ResourceHandler.AccessChecker.CanAccess(ctx, id, user.KubernetesUsername, user.KubernetesGroups, "list", "nodes", "")
+		if err != nil {
+			s.Logger.Warn("cluster info: node access check failed", "cluster", id, "error", err)
+			allowed = false
+		}
+	}
+	if !allowed {
+		return nil, nil
+	}
+	nodes, truncated, err := k8s.PageList(ctx, metav1.ListOptions{}, func(ctx context.Context, opts metav1.ListOptions) ([]corev1.Node, string, error) {
 		list, err := cs.CoreV1().Nodes().List(ctx, opts)
 		if err != nil {
-			return 0, false, err
+			return nil, "", err
 		}
-		count += len(list.Items)
-		if list.Continue == "" {
-			return count, true, nil
-		}
-		opts.Continue = list.Continue
+		return list.Items, list.Continue, nil
+	})
+	switch {
+	case err != nil && apierrors.IsForbidden(err):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case truncated:
+		return nil, nil
 	}
-	return count, false, nil
+	return len(nodes), nil
 }
 
 func writeClusterInfoError(w http.ResponseWriter, message string) {

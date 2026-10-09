@@ -256,8 +256,8 @@ func TestListResource_RemoteTruncatedListIsFlagged(t *testing.T) {
 	pages := 0
 	remote.PrependReactor("list", "deployments", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		pages++
-		if l := a.(k8stesting.ListActionImpl).ListOptions.Limit; l != remoteListPageSize {
-			t.Errorf("page %d requested Limit=%d, want %d", pages, l, remoteListPageSize)
+		if l := a.(k8stesting.ListActionImpl).ListOptions.Limit; l != k8s.RemoteListPageSize {
+			t.Errorf("page %d requested Limit=%d, want %d", pages, l, k8s.RemoteListPageSize)
 		}
 		return true, &appsv1.DeploymentList{
 			ListMeta: metav1.ListMeta{Continue: fmt.Sprintf("tok-%d", pages)},
@@ -267,11 +267,11 @@ func TestListResource_RemoteTruncatedListIsFlagged(t *testing.T) {
 
 	rr := listResource(h, remoteTestClusterID, "deployments", url.Values{"limit": {"100"}}, "default")
 	total, _, truncated := listMetadata(t, rr)
-	if pages != remoteListMaxPages {
-		t.Errorf("pager fetched %d pages, want cap %d", pages, remoteListMaxPages)
+	if pages != k8s.RemoteListMaxPages {
+		t.Errorf("pager fetched %d pages, want cap %d", pages, k8s.RemoteListMaxPages)
 	}
-	if total != remoteListMaxPages {
-		t.Errorf("total = %d, want the %d items actually read", total, remoteListMaxPages)
+	if total != k8s.RemoteListMaxPages {
+		t.Errorf("total = %d, want the %d items actually read", total, k8s.RemoteListMaxPages)
 	}
 	if !truncated {
 		t.Error("a list stopped at the page cap is not flagged truncated")
