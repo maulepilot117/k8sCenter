@@ -732,12 +732,17 @@ func main() {
 		Discoverer:    scanDiscoverer,
 		AccessChecker: accessChecker,
 		Logger:        logger,
+		Clients:       clusterRouter,
+		Presence:      remotePresence,
 	}
 	scanHandler.InitCache()
+	clusterRouter.RegisterEvictHook(scanHandler.EvictRemoteCache)
 
 	// Namespace limits handler (ResourceQuota + LimitRange management)
 	// Note: Limits checker is created after notification center to enable threshold alerts
 	limitsHandler := limits.NewHandler(informerMgr, accessChecker, logger)
+	limitsHandler.Clients = clusterRouter
+	clusterRouter.RegisterEvictHook(limitsHandler.EvictRemoteCache)
 
 	// Velero backup/restore handler
 	veleroDiscoverer := velero.NewDiscoverer(k8sClient, logger)
