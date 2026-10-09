@@ -4,16 +4,26 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/pkg/api"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/kubernetes"
 )
 
-// HandleResourceCounts returns counts for all informer-tracked resource types.
-// For remote clusters (non-local), returns an error since informer cache is local only.
-// Each resource kind is only included if the user has RBAC "list" permission for it.
+// HandleResourceCounts returns per-kind object counts for the selected
+// cluster. Each kind is only included if the user has RBAC "list" permission
+// for it on that cluster.
+//
+// The local cluster is counted from the informer cache. A remote cluster has
+// no informers, so its kinds are listed directly from its API server, as the
+// user; a failure there is never answered from the local cluster.
 // GET /api/v1/resources/counts[?namespace=default]
 func (h *Handler) HandleResourceCounts(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
@@ -21,56 +31,55 @@ func (h *Handler) HandleResourceCounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resource counts rely on the local informer cache — remote clusters
-	// use direct API calls and do not populate informers.
 	clusterID := middleware.ClusterIDFromContext(r.Context())
+	namespace := r.URL.Query().Get("namespace")
 	if !k8s.IsLocalClusterID(clusterID) {
-		writeError(w, http.StatusBadRequest, "resource counts are only available for the local cluster", "")
+		h.handleRemoteResourceCounts(w, r, user, clusterID, namespace)
 		return
 	}
 
-	namespace := r.URL.Query().Get("namespace")
 	counts := h.countResources(r.Context(), user, namespace)
 	writeData(w, counts)
 }
 
-// canList checks if the user has "list" permission for the given resource in the namespace.
-// HandleResourceCounts gates non-local clusters at the route entrance, so this
-// path is local-only — pass k8s.LocalClusterID to satisfy F#9's clusterID
-// requirement without threading the request context all the way down. F#20
-// removes the prior hardcoded "local" literal so cache-key drift across
-// counts.go / websocket/hub.go / websocket/client.go is impossible.
+// canList checks "list" permission on the local cluster. It serves the local
+// dashboard (dashboard.go), whose reads all come from the local informers.
 func (h *Handler) canList(ctx context.Context, user *auth.User, resource, namespace string) bool {
-	allowed, _ := h.AccessChecker.CanAccess(ctx, k8s.LocalClusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
+	return h.canListOn(ctx, k8s.LocalClusterID, user, resource, namespace)
+}
+
+// canListOn checks if the user has "list" permission for the given resource
+// in the namespace on clusterID. The SAR runs on the selected cluster, exactly
+// as checkAccess does. A check that fails counts as a denial (the kind is
+// omitted) but is logged, so a broken check is not silent.
+func (h *Handler) canListOn(ctx context.Context, clusterID string, user *auth.User, resource, namespace string) bool {
+	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
+	if err != nil {
+		h.Logger.Warn("resource counts: list permission check failed",
+			"cluster", clusterID, "resource", resource, "namespace", namespace, "error", err)
+		return false
+	}
 	return allowed
 }
 
-// countResources queries the informer cache for each tracked resource kind
-// and returns a map of kind -> count. Only includes resources the user has
-// RBAC "list" permission for.
-//
-// RBAC checks are parallelized — all SelfSubjectAccessReview calls run
-// concurrently, then the fast informer cache reads happen sequentially.
-func (h *Handler) countResources(ctx context.Context, user *auth.User, namespace string) map[string]int {
-	sel := labels.Everything()
+// countCheck is one kind the counts endpoint reports, with the namespace its
+// RBAC check and list use ("" for a cluster-scoped kind or all namespaces).
+type countCheck struct {
+	kind string // lowercase plural: the response key and the RBAC resource
+	ns   string
+}
 
-	// Build the list of resources to check. Cluster-scoped resources always
-	// use namespace="" for RBAC; namespace-scoped use the provided namespace.
-	type resourceCheck struct {
-		kind string
-		ns   string // namespace for RBAC check
-	}
-
-	clusterScoped := []resourceCheck{
+// countedKinds returns every kind the counts endpoint reports. Cluster-scoped
+// kinds always use namespace "" for RBAC; namespaced kinds use namespace.
+func countedKinds(namespace string) []countCheck {
+	return []countCheck{
 		{"nodes", ""},
 		{"namespaces", ""},
 		{"persistentvolumes", ""},
 		{"storageclasses", ""},
 		{"clusterroles", ""},
 		{"clusterrolebindings", ""},
-	}
 
-	nsScoped := []resourceCheck{
 		{"deployments", namespace},
 		{"statefulsets", namespace},
 		{"daemonsets", namespace},
@@ -94,26 +103,40 @@ func (h *Handler) countResources(ctx context.Context, user *auth.User, namespace
 		{"endpoints", namespace},
 		{"endpointslices", namespace},
 	}
+}
 
-	allChecks := append(clusterScoped, nsScoped...)
-
-	// Run all RBAC checks concurrently.
-	allowed := make([]bool, len(allChecks))
+// listableKinds runs every kind's RBAC check on clusterID concurrently and
+// returns the set of kinds the user may list.
+func (h *Handler) listableKinds(ctx context.Context, clusterID string, user *auth.User, checks []countCheck) map[string]bool {
+	allowed := make([]bool, len(checks))
 	var wg sync.WaitGroup
-	wg.Add(len(allChecks))
-	for i, rc := range allChecks {
-		go func(idx int, kind, ns string) {
+	for i, c := range checks {
+		wg.Add(1)
+		go func() {
 			defer wg.Done()
-			allowed[idx] = h.canList(ctx, user, kind, ns)
-		}(i, rc.kind, rc.ns)
+			recoverutil.Safe(h.Logger, "resources counts rbac "+c.kind, func() {
+				allowed[i] = h.canListOn(ctx, clusterID, user, c.kind, c.ns)
+			})
+		}()
 	}
 	wg.Wait()
 
-	// Build permission set from parallel results.
-	canListKind := make(map[string]bool, len(allChecks))
-	for i, rc := range allChecks {
-		canListKind[rc.kind] = allowed[i]
+	out := make(map[string]bool, len(checks))
+	for i, c := range checks {
+		out[c.kind] = allowed[i]
 	}
+	return out
+}
+
+// countResources queries the informer cache for each tracked resource kind
+// and returns a map of kind -> count. Only includes resources the user has
+// RBAC "list" permission for. Local cluster only.
+//
+// RBAC checks are parallelized — all SelfSubjectAccessReview calls run
+// concurrently, then the fast informer cache reads happen sequentially.
+func (h *Handler) countResources(ctx context.Context, user *auth.User, namespace string) map[string]int {
+	sel := labels.Everything()
+	canListKind := h.listableKinds(ctx, k8s.LocalClusterID, user, countedKinds(namespace))
 
 	counts := make(map[string]int)
 
@@ -367,4 +390,128 @@ func (h *Handler) countResources(ctx context.Context, user *auth.User, namespace
 	}
 
 	return counts
+}
+
+// remoteCountsBudget is the shared deadline for one remote counts request:
+// client resolution, every kind's RBAC check and every kind's paged list. A
+// variable only so a test can shorten it; nothing in production writes it.
+var remoteCountsBudget = 10 * time.Second
+
+// remoteCountsWorkers bounds how many kinds are listed on a remote API server
+// at once.
+const remoteCountsWorkers = 6
+
+// adapterKindForCount maps a counts key (the lowercase plural API resource)
+// to the registry kind of the adapter that lists it.
+func adapterKindForCount(kind string) string {
+	switch kind {
+	case "persistentvolumes":
+		return "pvs"
+	case "persistentvolumeclaims":
+		return "pvcs"
+	case "horizontalpodautoscalers":
+		return "hpas"
+	case "poddisruptionbudgets":
+		return "pdbs"
+	default:
+		return kind
+	}
+}
+
+// handleRemoteResourceCounts counts every kind the user may list on a remote
+// cluster by paging that cluster's API server as the user. A kind whose list
+// is refused or fails is omitted, as a denied kind is; raw errors reach only
+// the log. A kind still carrying a continue token at the paging cap reports
+// the count read, and the response then sets metadata.truncated.
+func (h *Handler) handleRemoteResourceCounts(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID, namespace string) {
+	// The budget starts before client resolution: the cluster-store read,
+	// credential decrypt and dial are part of this request too.
+	ctx, cancel := context.WithTimeout(r.Context(), remoteCountsBudget)
+	defer cancel()
+
+	cs, err := h.remoteClientFor(ctx, clusterID, user)
+	if err != nil {
+		// No local fallback: an unresolvable remote target fails the request.
+		h.Logger.Error("remote counts: resolve cluster client", "cluster", clusterID, "error", err)
+		writeError(w, http.StatusBadGateway, "failed to reach the selected cluster", "")
+		return
+	}
+
+	counts, truncated := h.countRemoteResources(ctx, cs, clusterID, user, namespace)
+	if truncated {
+		writeJSON(w, http.StatusOK, api.Response{Data: counts, Metadata: &api.Metadata{Truncated: true}})
+		return
+	}
+	// Same envelope as the local path: no metadata object on a complete read.
+	writeData(w, counts)
+}
+
+// countRemoteResources lists every kind the user may list on cs, at most
+// remoteCountsWorkers at a time, and returns the counts and whether any kind
+// was cut off at the paging cap.
+func (h *Handler) countRemoteResources(
+	ctx context.Context, cs kubernetes.Interface, clusterID string, user *auth.User, namespace string,
+) (map[string]int, bool) {
+	checks := countedKinds(namespace)
+	canListKind := h.listableKinds(ctx, clusterID, user, checks)
+
+	var (
+		mu        sync.Mutex
+		counts    = make(map[string]int)
+		truncated bool
+		wg        sync.WaitGroup
+	)
+	sem := make(chan struct{}, remoteCountsWorkers)
+	for _, c := range checks {
+		if !canListKind[c.kind] {
+			continue
+		}
+		adapter := GetAdapter(adapterKindForCount(c.kind))
+		if adapter == nil {
+			// Guarded by TestResourceCounts_EveryKindHasAnAdapter.
+			h.Logger.Error("remote counts: no adapter for kind", "kind", c.kind)
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			recoverutil.Safe(h.Logger, "resources remote counts "+c.kind, func() {
+				n, cut, ok := h.countRemoteKind(ctx, cs, clusterID, adapter, c)
+				if !ok {
+					return
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				counts[c.kind] = n
+				truncated = truncated || cut
+			})
+		}()
+	}
+	wg.Wait()
+	return counts, truncated
+}
+
+// countRemoteKind pages one kind's list on cs and returns its count. ok is
+// false when the kind must be omitted: the list was refused (treated like a
+// denied RBAC check) or failed.
+func (h *Handler) countRemoteKind(
+	ctx context.Context, cs kubernetes.Interface, clusterID string, adapter ResourceAdapter, c countCheck,
+) (n int, truncated, ok bool) {
+	items, truncated, err := pageRemoteList(ctx, metav1.ListOptions{}, func(ctx context.Context, opts metav1.ListOptions) ([]any, string, error) {
+		return adapter.ListDirect(ctx, cs, c.ns, opts)
+	})
+	if err != nil {
+		if !apierrors.IsForbidden(err) {
+			h.Logger.Error("remote counts: list",
+				"cluster", clusterID, "resource", c.kind, "namespace", c.ns, "error", err)
+		}
+		return 0, false, false
+	}
+	if truncated {
+		h.Logger.Warn("remote counts: truncated",
+			"cluster", clusterID, "resource", c.kind, "namespace", c.ns, "items", len(items))
+	}
+	return len(items), truncated, true
 }
