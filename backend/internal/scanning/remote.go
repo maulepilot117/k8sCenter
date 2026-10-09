@@ -1,6 +1,6 @@
 package scanning
 
-// Cluster routing for the scanning routes (#608). The local cluster's
+// Cluster routing for the scanning routes. The local cluster's
 // scanner presence comes from the Discoverer; a remote cluster's comes from
 // its own discovery, read as the requesting user through Presence. No
 // namespace probe runs on a remote cluster, so a remote status never names

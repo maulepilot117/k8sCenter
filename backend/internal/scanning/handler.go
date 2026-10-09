@@ -19,25 +19,20 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
-	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // Handler serves security scanning HTTP endpoints for the cluster a request
-// selects (#608). Every vulnerability read impersonates the requesting user
+// selects. Every vulnerability read impersonates the requesting user
 // through Clients, on the local cluster and a remote one alike, so a read is
 // exactly what the access reviews authorised. Scanner presence comes from
 // the local Discoverer for the local cluster and from Presence, as the user,
 // for a remote one: the local Discoverer is never consulted for a remote
 // selection, and a remote read never falls back to the local cluster.
 type Handler struct {
-	// K8sClient is not used by any read; the Discoverer holds its own.
-	// Deprecated: kept only so existing wiring compiles.
-	K8sClient     *k8s.ClientFactory
 	Discoverer    *ScannerDiscoverer
 	AccessChecker *resources.AccessChecker
-	NotifService  *notifications.NotificationService
 	Logger        *slog.Logger
 	// Clients resolves the impersonated client for the request's cluster.
 	// Nil means scanning reads are not wired; they answer 500.
@@ -116,25 +111,6 @@ func (s scannerSet) String() string {
 func (h *Handler) InitCache() {
 	h.nsCache = make(map[cacheKey]*cachedNSData)
 	h.detailCache = make(map[cacheKey]*cachedDetailData)
-}
-
-// InvalidateCache clears all cached scan data so subsequent requests re-fetch.
-func (h *Handler) InvalidateCache() {
-	h.cacheMu.Lock()
-	h.cacheGen++
-	h.nsCache = make(map[cacheKey]*cachedNSData)
-	h.detailCache = make(map[cacheKey]*cachedDetailData)
-	h.cacheMu.Unlock()
-	if h.NotifService != nil {
-		go recoverutil.Safe(h.Logger, "scanning notify", func() {
-			h.NotifService.Emit(context.Background(), notifications.Notification{
-				Source:   notifications.SourceScan,
-				Severity: notifications.SeverityInfo,
-				Title:    "Security scan results updated",
-				Message:  "New vulnerability scan results available. Check the security dashboard for details.",
-			})
-		})
-	}
 }
 
 // EvictRemoteCache drops every identity's cached scan data for clusterID and

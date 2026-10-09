@@ -82,10 +82,8 @@ func remoteFake(nodes int) *fakekube.Clientset {
 	return cs
 }
 
-func setRemote(t *testing.T, fn func(context.Context, string, *auth.User) (kubernetes.Interface, error)) {
-	t.Helper()
-	clusterInfoRemoteClient = fn
-	t.Cleanup(func() { clusterInfoRemoteClient = nil })
+func setRemote(srv *Server, fn func(context.Context, string, *auth.User) (kubernetes.Interface, error)) {
+	srv.remoteInfoClient = fn
 }
 
 func doInfo(t *testing.T, srv *Server, clusterID string, withUser bool) (*httptest.ResponseRecorder, infoBody) {
@@ -106,7 +104,7 @@ func doInfo(t *testing.T, srv *Server, clusterID string, withUser bool) (*httpte
 
 func TestClusterInfo_RemoteAnswersFromRemote(t *testing.T) {
 	srv := newInfoServer(t, resources.NewAlwaysAllowAccessChecker())
-	setRemote(t, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+	setRemote(srv, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
 		return remoteFake(2), nil
 	})
 	w, b := doInfo(t, srv, "remote-1", true)
@@ -130,7 +128,7 @@ func TestClusterInfo_RemoteNodesForbiddenIsNull(t *testing.T) {
 	for name, ac := range cases {
 		t.Run(name, func(t *testing.T) {
 			srv := newInfoServer(t, ac)
-			setRemote(t, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+			setRemote(srv, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
 				cs := remoteFake(2)
 				cs.PrependReactor("list", "nodes", func(clienttesting.Action) (bool, runtime.Object, error) {
 					return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "nodes"}, "", errors.New("no"))
@@ -153,7 +151,7 @@ func TestClusterInfo_RemoteNodesForbiddenIsNull(t *testing.T) {
 
 func TestClusterInfo_RemoteNodeListFailureIs502(t *testing.T) {
 	srv := newInfoServer(t, resources.NewAlwaysAllowAccessChecker())
-	setRemote(t, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+	setRemote(srv, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
 		cs := remoteFake(2)
 		cs.PrependReactor("list", "nodes", func(clienttesting.Action) (bool, runtime.Object, error) {
 			return true, nil, errors.New("secret-internal-boom")
@@ -171,7 +169,7 @@ func TestClusterInfo_RemoteNodeListFailureIs502(t *testing.T) {
 
 func TestClusterInfo_RemoteResolveFailureIs502NoLocalFallback(t *testing.T) {
 	srv := newInfoServer(t, resources.NewAlwaysAllowAccessChecker())
-	setRemote(t, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+	setRemote(srv, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
 		return nil, errors.New("dial tcp 10.0.0.1: secret-internal")
 	})
 	w, b := doInfo(t, srv, "remote-1", true)
@@ -193,7 +191,7 @@ func TestClusterInfo_Unauthenticated401(t *testing.T) {
 
 func TestClusterInfo_LocalUnchangedAndNeverResolvesRemote(t *testing.T) {
 	srv := newInfoServer(t, resources.NewAlwaysAllowAccessChecker())
-	setRemote(t, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+	setRemote(srv, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
 		t.Error("local path resolved a remote client")
 		return nil, errors.New("unexpected")
 	})

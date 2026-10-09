@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -106,7 +107,8 @@ func countedKinds(namespace string) []countCheck {
 }
 
 // listableKinds runs every kind's RBAC check on clusterID concurrently and
-// returns the set of kinds the user may list.
+// returns the set of kinds the user may list. Local path only: the remote
+// path checks each kind inside its own worker.
 func (h *Handler) listableKinds(ctx context.Context, clusterID string, user *auth.User, checks []countCheck) map[string]bool {
 	allowed := make([]bool, len(checks))
 	var wg sync.WaitGroup
@@ -446,15 +448,46 @@ func (h *Handler) handleRemoteResourceCounts(w http.ResponseWriter, r *http.Requ
 	writeData(w, counts)
 }
 
-// countRemoteResources lists every kind the user may list on cs, at most
-// remoteCountsWorkers at a time, and returns the counts and whether any kind
-// was cut off at the paging cap.
+// remoteCountsHeavyFirst names the kinds that usually take longest to page on
+// a busy cluster. They start first so the cheap kinds, not these, are the
+// ones waiting on a free worker when the budget runs low.
+var remoteCountsHeavyFirst = []string{
+	"pods", "configmaps", "replicasets", "endpointslices", "endpoints", "clusterroles",
+}
+
+// remoteCountOrder returns checks with the remoteCountsHeavyFirst kinds moved
+// to the front, the rest keeping their order. The response map does not
+// depend on it.
+func remoteCountOrder(checks []countCheck) []countCheck {
+	rank := make(map[string]int, len(remoteCountsHeavyFirst))
+	for i, kind := range remoteCountsHeavyFirst {
+		rank[kind] = i
+	}
+	ordered := slices.Clone(checks)
+	slices.SortStableFunc(ordered, func(a, b countCheck) int {
+		ra, aHeavy := rank[a.kind]
+		rb, bHeavy := rank[b.kind]
+		switch {
+		case aHeavy && bHeavy:
+			return ra - rb
+		case aHeavy:
+			return -1
+		case bHeavy:
+			return 1
+		}
+		return 0
+	})
+	return ordered
+}
+
+// countRemoteResources counts every kind the user may list on cs, at most
+// remoteCountsWorkers kinds at a time, and returns the counts and whether any
+// kind was cut off at the paging cap. Each worker runs its kind's RBAC check
+// just before the list, so a list never waits on every other kind's check; a
+// denied or failed check omits the kind.
 func (h *Handler) countRemoteResources(
 	ctx context.Context, cs kubernetes.Interface, clusterID string, user *auth.User, namespace string,
 ) (map[string]int, bool) {
-	checks := countedKinds(namespace)
-	canListKind := h.listableKinds(ctx, clusterID, user, checks)
-
 	var (
 		mu        sync.Mutex
 		counts    = make(map[string]int)
@@ -462,10 +495,7 @@ func (h *Handler) countRemoteResources(
 		wg        sync.WaitGroup
 	)
 	sem := make(chan struct{}, remoteCountsWorkers)
-	for _, c := range checks {
-		if !canListKind[c.kind] {
-			continue
-		}
+	for _, c := range remoteCountOrder(countedKinds(namespace)) {
 		adapter := GetAdapter(adapterKindForCount(c.kind))
 		if adapter == nil {
 			// Guarded by TestResourceCounts_EveryKindHasAnAdapter.
@@ -478,6 +508,9 @@ func (h *Handler) countRemoteResources(
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			recoverutil.Safe(h.Logger, "resources remote counts "+c.kind, func() {
+				if !h.canListOn(ctx, clusterID, user, c.kind, c.ns) {
+					return
+				}
 				n, cut, ok := h.countRemoteKind(ctx, cs, clusterID, adapter, c)
 				if !ok {
 					return
@@ -499,7 +532,7 @@ func (h *Handler) countRemoteResources(
 func (h *Handler) countRemoteKind(
 	ctx context.Context, cs kubernetes.Interface, clusterID string, adapter ResourceAdapter, c countCheck,
 ) (n int, truncated, ok bool) {
-	items, truncated, err := pageRemoteList(ctx, metav1.ListOptions{}, func(ctx context.Context, opts metav1.ListOptions) ([]any, string, error) {
+	items, truncated, err := k8s.PageList(ctx, metav1.ListOptions{}, func(ctx context.Context, opts metav1.ListOptions) ([]any, string, error) {
 		return adapter.ListDirect(ctx, cs, c.ns, opts)
 	})
 	if err != nil {

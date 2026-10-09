@@ -728,7 +728,6 @@ func main() {
 	go scanDiscoverer.RunDiscoveryLoop(ctx)
 
 	scanHandler := &scanning.Handler{
-		K8sClient:     k8sClient,
 		Discoverer:    scanDiscoverer,
 		AccessChecker: accessChecker,
 		Logger:        logger,
@@ -797,7 +796,6 @@ func main() {
 			policyHandler.NotifService = notifService
 		}
 		gitopsHandler.NotifService = notifService
-		scanHandler.NotifService = notifService
 		diagHandler.NotifService = notifService
 		veleroHandler.NotifService = notifService
 

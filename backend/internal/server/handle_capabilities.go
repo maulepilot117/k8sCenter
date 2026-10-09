@@ -295,12 +295,11 @@ var capabilityOperations = []capabilityOp{
 		ClusterScoped: true,
 	},
 	{
-		// Remote since #608: the generic list and detail routes
-		// (k8s/resources/crud.go HandleListResource/HandleGetResource) read
-		// the selected cluster as the user instead of the local informer
-		// cache. A remote list is bounded by remoteListPageSize x
-		// remoteListMaxPages in k8s/resources and flagged metadata.truncated
-		// past the cap. Secrets are excluded: they keep their own masked
+		// The generic list and detail routes (k8s/resources/crud.go
+		// HandleListResource/HandleGetResource) read the selected cluster as
+		// the user instead of the local informer cache. A remote list is
+		// bounded by k8s.RemoteListPageSize x k8s.RemoteListMaxPages and
+		// flagged metadata.truncated past the cap. Secrets are excluded: they keep their own masked
 		// route. No Probe: the core kinds this row stands for are always
 		// served. Namespaced, so a denial reports as authz_namespace_scoped.
 		ID: "resources.read", Label: "Resource lists and detail",
@@ -308,7 +307,7 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
-		// Remote since #608: GET /resources/counts runs a per-kind access
+		// GET /resources/counts runs a per-kind access
 		// check on the selected cluster and counts each kind the user may list
 		// with a bounded direct read as the user (k8s/resources/counts.go). A
 		// kind cut off at the cap is counted as read and the response carries
@@ -320,7 +319,7 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
-		// Remote since #608: GET /cluster/info reads the version, platform and
+		// GET /cluster/info reads the version, platform and
 		// node count from the selected cluster as the user. The node count is
 		// omitted rather than guessed when the user may not list nodes.
 		// Cluster-scoped like dashboard.summary: nodes are not namespaced, so
@@ -331,7 +330,7 @@ var capabilityOperations = []capabilityOp{
 		ClusterScoped: true,
 	},
 	{
-		// Remote since #608: ResourceQuotas and LimitRanges are read from the
+		// ResourceQuotas and LimitRanges are read from the
 		// selected cluster as the user and cached briefly per user. Known gap:
 		// the remote read is a cluster-wide list as the user, so an account
 		// allowed in only some namespaces is refused on remote where the
@@ -342,7 +341,7 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "", AuthResource: "resourcequotas",
 	},
 	{
-		// Remote since #608: Trivy and Kubescape vulnerability reports are
+		// Trivy and Kubescape vulnerability reports are
 		// read as the user on the selected cluster, with scanner presence
 		// detected there. The local discovery loop still probes scanner
 		// namespaces with the service account, for the local status only.

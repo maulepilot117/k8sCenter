@@ -638,8 +638,8 @@ func TestRemoteSummary_TruncatedListIsPartial(t *testing.T) {
 	remote.PrependReactor("list", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		pages++
 		opts := a.(k8stesting.ListActionImpl).ListOptions
-		if opts.Limit != remoteListPageSize {
-			t.Errorf("page %d requested Limit=%d, want %d", pages, opts.Limit, remoteListPageSize)
+		if opts.Limit != k8s.RemoteListPageSize {
+			t.Errorf("page %d requested Limit=%d, want %d", pages, opts.Limit, k8s.RemoteListPageSize)
 		}
 		// Every page claims there is more — the pager must stop at its cap.
 		return true, &corev1.NodeList{
@@ -657,11 +657,11 @@ func TestRemoteSummary_TruncatedListIsPartial(t *testing.T) {
 	if row.Detail == "" {
 		t.Error("partial row has no detail explaining the truncation")
 	}
-	if pages != remoteListMaxPages {
-		t.Errorf("pager fetched %d pages, want cap %d", pages, remoteListMaxPages)
+	if pages != k8s.RemoteListMaxPages {
+		t.Errorf("pager fetched %d pages, want cap %d", pages, k8s.RemoteListMaxPages)
 	}
-	if s.Nodes.Total != remoteListMaxPages {
-		t.Errorf("nodes.total = %d, want the %d items actually read", s.Nodes.Total, remoteListMaxPages)
+	if s.Nodes.Total != k8s.RemoteListMaxPages {
+		t.Errorf("nodes.total = %d, want the %d items actually read", s.Nodes.Total, k8s.RemoteListMaxPages)
 	}
 }
 
@@ -852,7 +852,7 @@ func TestRemoteSummary_PartialPodsQualifyReservations(t *testing.T) {
 	// are kept, but the cpu/memory rows must say so.
 	wantCPU := Utilization{Percentage: 0, Used: "N/A", Total: "4.0 cores", Requests: "1.0 cores", Limits: "2.0 cores"}
 	if s.CPU == nil || *s.CPU != wantCPU {
-		t.Errorf("cpu = %+v, want %+v (sums over the %d pods read)", s.CPU, wantCPU, remoteListMaxPages)
+		t.Errorf("cpu = %+v, want %+v (sums over the %d pods read)", s.CPU, wantCPU, k8s.RemoteListMaxPages)
 	}
 	for _, sec := range []string{"cpu", "memory"} {
 		if d := coverageRow(t, s, sec).Detail; !strings.Contains(d, "truncated pod list") {
@@ -873,7 +873,7 @@ func TestRemoteSummary_PartialNodesQualifyAllocatable(t *testing.T) {
 	s := remoteSummaryOK(t, h)
 
 	if s.CPU == nil || s.CPU.Total != "10.0 cores" {
-		t.Errorf("cpu = %+v, want total over the %d nodes read", s.CPU, remoteListMaxPages)
+		t.Errorf("cpu = %+v, want total over the %d nodes read", s.CPU, k8s.RemoteListMaxPages)
 	}
 	for _, sec := range []string{"cpu", "memory"} {
 		if d := coverageRow(t, s, sec).Detail; !strings.Contains(d, "nodes that loaded") {

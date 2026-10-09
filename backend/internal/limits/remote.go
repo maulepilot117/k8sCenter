@@ -1,6 +1,6 @@
 package limits
 
-// Remote-cluster reads of ResourceQuotas and LimitRanges (#608). A remote
+// Remote-cluster reads of ResourceQuotas and LimitRanges. A remote
 // cluster has no informers, so its quotas and LimitRanges are listed live as
 // the requesting identity. The dashboard summaries are held briefly in a
 // per-(cluster, identity) cache; the namespace detail is read fresh. Nothing
@@ -16,20 +16,21 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 const (
 	// remoteListTimeout bounds one remote fetch, all of its pages included.
+	// A cluster-wide list still continuing after k8s.RemoteListMaxPages pages
+	// is served as read.
 	remoteListTimeout = 10 * time.Second
-	// remotePageSize and remoteMaxPages bound a cluster-wide list: a list
-	// still continuing after remoteMaxPages pages is served as read.
-	remotePageSize = 500
-	remoteMaxPages = 10
 
 	resourceQuotasNoun = "resource quotas"
 	limitRangesNoun    = "limit ranges"
@@ -100,32 +101,47 @@ func (h *Handler) fetchRemoteSummaries(ctx context.Context, clusterID string, us
 	ctx, cancel := context.WithTimeout(ctx, remoteListTimeout)
 	defer cancel()
 
-	quotas, truncated, err := pageList(ctx, func(ctx context.Context, opts metav1.ListOptions) ([]*corev1.ResourceQuota, string, error) {
-		list, err := client.CoreV1().ResourceQuotas(metav1.NamespaceAll).List(ctx, opts)
+	// Both lists run at once under the shared budget; the first failure
+	// cancels the other and is the one reported.
+	var quotas []*corev1.ResourceQuota
+	var limitRanges []*corev1.LimitRange
+	g, gctx := errgroup.WithContext(ctx)
+	recoverutil.Go(g, h.Logger, "limits remote list resourcequotas", func() error {
+		items, truncated, err := k8s.PageList(gctx, metav1.ListOptions{}, func(ctx context.Context, opts metav1.ListOptions) ([]*corev1.ResourceQuota, string, error) {
+			list, err := client.CoreV1().ResourceQuotas(metav1.NamespaceAll).List(ctx, opts)
+			if err != nil {
+				return nil, "", err
+			}
+			return pointers(list.Items), list.Continue, nil
+		})
 		if err != nil {
-			return nil, "", err
+			return remoteListError{noun: resourceQuotasNoun, err: err}
 		}
-		return pointers(list.Items), list.Continue, nil
+		if truncated {
+			h.Logger.Warn("remote resource quota list truncated; serving what was read", "cluster", clusterID, "items", len(items))
+		}
+		quotas = items
+		return nil
 	})
-	if err != nil {
-		return nil, remoteListError{noun: resourceQuotasNoun, err: err}
-	}
-	if truncated {
-		h.Logger.Warn("remote resource quota list truncated; serving what was read", "cluster", clusterID, "items", len(quotas))
-	}
-
-	limitRanges, truncated, err := pageList(ctx, func(ctx context.Context, opts metav1.ListOptions) ([]*corev1.LimitRange, string, error) {
-		list, err := client.CoreV1().LimitRanges(metav1.NamespaceAll).List(ctx, opts)
+	recoverutil.Go(g, h.Logger, "limits remote list limitranges", func() error {
+		items, truncated, err := k8s.PageList(gctx, metav1.ListOptions{}, func(ctx context.Context, opts metav1.ListOptions) ([]*corev1.LimitRange, string, error) {
+			list, err := client.CoreV1().LimitRanges(metav1.NamespaceAll).List(ctx, opts)
+			if err != nil {
+				return nil, "", err
+			}
+			return pointers(list.Items), list.Continue, nil
+		})
 		if err != nil {
-			return nil, "", err
+			return remoteListError{noun: limitRangesNoun, err: err}
 		}
-		return pointers(list.Items), list.Continue, nil
+		if truncated {
+			h.Logger.Warn("remote limit range list truncated; serving what was read", "cluster", clusterID, "items", len(items))
+		}
+		limitRanges = items
+		return nil
 	})
-	if err != nil {
-		return nil, remoteListError{noun: limitRangesNoun, err: err}
-	}
-	if truncated {
-		h.Logger.Warn("remote limit range list truncated; serving what was read", "cluster", clusterID, "items", len(limitRanges))
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	return h.summarize(quotas, limitRanges), nil
@@ -155,14 +171,29 @@ func (h *Handler) fetchRemoteNamespaceDetail(ctx context.Context, clusterID stri
 
 	// One namespace holds a handful of each, so one page is enough; a longer
 	// list is served as read.
-	opts := metav1.ListOptions{Limit: remotePageSize}
-	quotas, err := client.CoreV1().ResourceQuotas(namespace).List(ctx, opts)
-	if err != nil {
-		return nil, remoteListError{noun: resourceQuotasNoun, err: err}
-	}
-	limitRanges, err := client.CoreV1().LimitRanges(namespace).List(ctx, opts)
-	if err != nil {
-		return nil, remoteListError{noun: limitRangesNoun, err: err}
+	// Both run at once; the first failure cancels the other and is reported.
+	opts := metav1.ListOptions{Limit: k8s.RemoteListPageSize}
+	var quotas *corev1.ResourceQuotaList
+	var limitRanges *corev1.LimitRangeList
+	g, gctx := errgroup.WithContext(ctx)
+	recoverutil.Go(g, h.Logger, "limits remote namespace resourcequotas", func() error {
+		list, err := client.CoreV1().ResourceQuotas(namespace).List(gctx, opts)
+		if err != nil {
+			return remoteListError{noun: resourceQuotasNoun, err: err}
+		}
+		quotas = list
+		return nil
+	})
+	recoverutil.Go(g, h.Logger, "limits remote namespace limitranges", func() error {
+		list, err := client.CoreV1().LimitRanges(namespace).List(gctx, opts)
+		if err != nil {
+			return remoteListError{noun: limitRangesNoun, err: err}
+		}
+		limitRanges = list
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	if quotas.Continue != "" || limitRanges.Continue != "" {
 		h.Logger.Warn("remote namespace limits truncated; serving what was read", "cluster", clusterID, "namespace", namespace)
@@ -193,26 +224,6 @@ func (h *Handler) writeRemoteFailure(w http.ResponseWriter, clusterID, namespace
 	default:
 		httputil.WriteRemoteError(w, err)
 	}
-}
-
-// pageList reads list in pages of remotePageSize, following continue
-// tokens, for at most remoteMaxPages pages. truncated reports that the list
-// still continued after the last allowed page. A failing page fails the
-// whole read.
-func pageList[T any](ctx context.Context, list func(context.Context, metav1.ListOptions) ([]T, string, error)) (items []T, truncated bool, err error) {
-	opts := metav1.ListOptions{Limit: remotePageSize}
-	for page := 0; page < remoteMaxPages; page++ {
-		batch, next, err := list(ctx, opts)
-		if err != nil {
-			return nil, false, err
-		}
-		items = append(items, batch...)
-		if next == "" {
-			return items, false, nil
-		}
-		opts.Continue = next
-	}
-	return items, true, nil
 }
 
 // pointers returns a pointer to each element of items.

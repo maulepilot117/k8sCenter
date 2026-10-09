@@ -39,6 +39,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/velero"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	"github.com/kubecenter/kubecenter/internal/wizard"
+	"k8s.io/client-go/kubernetes"
 	yamlpkg "github.com/kubecenter/kubecenter/internal/yaml"
 )
 
@@ -96,6 +97,11 @@ type Server struct {
 	WebhookRateLimiter *middleware.RateLimiter
 	ready              func() bool
 	dbPing             func(context.Context) error // PostgreSQL health check (nil if no DB)
+	// remoteInfoClient resolves the impersonating clientset for a remote
+	// cluster on /cluster/info. Nil in production, which routes through
+	// ClusterRouter; tests set it because a real resolution needs a cluster
+	// registry and a reachable API server.
+	remoteInfoClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
 }
 
 // Deps holds all dependencies needed to create a Server.
