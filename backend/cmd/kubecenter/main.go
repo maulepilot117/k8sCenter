@@ -394,6 +394,7 @@ func main() {
 	topoHandler := &topology.Handler{
 		Builder:       topoBuilder,
 		AccessChecker: accessChecker,
+		Clients:       clusterRouter,
 		Logger:        logger,
 	}
 
@@ -402,6 +403,7 @@ func main() {
 		Lister:        topoLister,
 		TopoBuilder:   topoBuilder,
 		AccessChecker: accessChecker,
+		Clients:       clusterRouter,
 		Logger:        logger,
 	}
 

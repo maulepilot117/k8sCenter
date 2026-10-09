@@ -256,7 +256,7 @@ func Resolve(ctx context.Context, lister topology.ResourceLister, namespace, kin
 		switch {
 		case err != nil:
 			slog.Warn("failed to resolve related pods", "kind", kind, "name", name, "error", err)
-			target.Limitations = append(target.Limitations, Limitation{Kind: limitPods, Reason: ReasonSourceUnavailable})
+			target.Limitations = append(target.Limitations, relatedLimitation(err))
 		case kind == "Deployment" && !related.allowsReplicaSets():
 			// resolveRelatedPods returns no pods for a Deployment whose ReplicaSets
 			// the user cannot list.
@@ -274,92 +274,103 @@ func Resolve(ctx context.Context, lister topology.ResourceLister, namespace, kin
 }
 
 // fetchObject retrieves a single resource by kind and name from the lister.
+// A list that hit a remote read cap (*topology.TruncatedError) still yields
+// the target when the items read include it; otherwise the truncation is
+// returned, since the target may lie beyond the cap and cannot be called
+// absent.
 func fetchObject(ctx context.Context, lister topology.ResourceLister, namespace, kind, name string) (runtime.Object, error) {
 	switch kind {
 	case "Deployment":
 		items, err := lister.ListDeployments(ctx, namespace)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range items {
-			if item.Name == name {
-				return item, nil
-			}
-		}
+		return findNamed(items, err, name)
 	case "StatefulSet":
 		items, err := lister.ListStatefulSets(ctx, namespace)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range items {
-			if item.Name == name {
-				return item, nil
-			}
-		}
+		return findNamed(items, err, name)
 	case "DaemonSet":
 		items, err := lister.ListDaemonSets(ctx, namespace)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range items {
-			if item.Name == name {
-				return item, nil
-			}
-		}
+		return findNamed(items, err, name)
 	case "Pod":
 		items, err := lister.ListPods(ctx, namespace)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range items {
-			if item.Name == name {
-				return item, nil
-			}
-		}
+		return findNamed(items, err, name)
 	case "Service":
 		items, err := lister.ListServices(ctx, namespace)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range items {
-			if item.Name == name {
-				return item, nil
-			}
-		}
+		return findNamed(items, err, name)
 	case "PersistentVolumeClaim":
 		items, err := lister.ListPVCs(ctx, namespace)
-		if err != nil {
-			return nil, err
-		}
-		for _, item := range items {
-			if item.Name == name {
-				return item, nil
-			}
-		}
+		return findNamed(items, err, name)
 	default:
 		return nil, fmt.Errorf("unsupported kind %q", kind)
 	}
-	return nil, nil
+}
+
+// namedObject is a typed lister item: a runtime.Object with a name.
+type namedObject interface {
+	runtime.Object
+	GetName() string
+}
+
+// findNamed returns the item called name from a lister result. A non-nil
+// object is returned only when found; (nil, nil) means absent from a
+// complete list.
+func findNamed[T namedObject](items []T, err error, name string) (runtime.Object, error) {
+	if err != nil && !isTruncated(err) {
+		return nil, err
+	}
+	for _, item := range items {
+		if item.GetName() == name {
+			return item, nil
+		}
+	}
+	return nil, err
+}
+
+// isTruncated reports whether err is a remote list that exceeded its read cap.
+func isTruncated(err error) bool {
+	var te *topology.TruncatedError
+	return errors.As(err, &te)
+}
+
+// relatedLimitation records a failed related resolution: a read cap names
+// the list it cut short (pods or replicasets) with ReasonTruncated, and any
+// other failure is the pods resolution being unavailable.
+func relatedLimitation(err error) Limitation {
+	var te *topology.TruncatedError
+	if errors.As(err, &te) {
+		kind := limitPods
+		if te.Kind == limitReplicaSets {
+			kind = limitReplicaSets
+		}
+		return Limitation{Kind: kind, Reason: ReasonTruncated}
+	}
+	return Limitation{Kind: limitPods, Reason: ReasonSourceUnavailable}
 }
 
 // resolveRelatedPods finds pods associated with the target resource.
 // related gates which owner-chain kinds may be traversed (P3-3 security audit
 // 2026-05-22). The caller has already confirmed pod access is permitted.
+//
+// A pod or ReplicaSet list cut short by a remote read cap
+// (*topology.TruncatedError) is matched as far as it was read: the pods found
+// are returned together with the truncation, so a finding on an observed pod
+// stands while a pass is reported as inconclusive. Any other list error
+// returns no pods.
 func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, namespace, kind, name string, obj runtime.Object, related *RelatedRBAC) ([]*corev1.Pod, error) {
 	allPods, err := lister.ListPods(ctx, namespace)
-	if err != nil {
+	if err != nil && !isTruncated(err) {
 		return nil, err
 	}
+	partial := err // nil, or the truncation of a list matched as far as read
 
 	switch kind {
 	case "Pod":
 		// The target itself is a pod
 		for _, p := range allPods {
 			if p.Name == name {
+				// The target itself was observed: nothing related is missing.
 				return []*corev1.Pod{p}, nil
 			}
 		}
-		return nil, nil
+		return nil, partial
 
 	case "Deployment":
 		// Deployment -> ReplicaSet -> Pod (match via ownerReference chain).
@@ -370,8 +381,11 @@ func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, nam
 			return nil, nil
 		}
 		replicaSets, err := lister.ListReplicaSets(ctx, namespace)
-		if err != nil {
+		if err != nil && !isTruncated(err) {
 			return nil, err
+		}
+		if partial == nil {
+			partial = err
 		}
 		// Find ReplicaSets owned by this Deployment
 		rsNames := make(map[string]bool)
@@ -392,7 +406,7 @@ func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, nam
 				}
 			}
 		}
-		return pods, nil
+		return pods, partial
 
 	case "StatefulSet", "DaemonSet":
 		// Direct ownerReference from Pod to StatefulSet/DaemonSet
@@ -405,7 +419,7 @@ func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, nam
 				}
 			}
 		}
-		return pods, nil
+		return pods, partial
 
 	case "Service":
 		// Match pods by service selector
@@ -420,7 +434,7 @@ func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, nam
 				pods = append(pods, p)
 			}
 		}
-		return pods, nil
+		return pods, partial
 
 	default:
 		return nil, nil

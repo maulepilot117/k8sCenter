@@ -6,13 +6,15 @@ import "time"
 //
 // Overlay is OverlayNone (JSON-omitted) by default, preserving byte-identical
 // responses for callers that don't pass ?overlay=. See Overlay docs for the
-// other values. Truncated signals that some Nodes were dropped at the
-// maxNodes cap; EdgesTruncated signals that some mesh-overlay edges were
+// other values. Truncated signals that some Nodes are missing: dropped at
+// the maxNodes cap, or a whole kind left out because its remote list
+// exceeded the read cap (Errors then names the kind); EdgesTruncated signals that some mesh-overlay edges were
 // dropped at the maxMeshEdges cap. The two flags are independent so
 // consumers (e.g. blast-radius BFS) can tell "graph missing nodes" from
 // "graph complete, only some mesh edges capped". Errors carries any
-// per-stage warnings the build accumulated (currently: mesh-overlay
-// host-resolution drops); never holds raw Kubernetes error bodies.
+// per-stage warnings the build accumulated (mesh-overlay host-resolution
+// drops, and kinds left out at the remote read cap, keyed by plural
+// resource); never holds raw Kubernetes error bodies.
 type Graph struct {
 	Nodes          []Node            `json:"nodes"`
 	Edges          []Edge            `json:"edges"`

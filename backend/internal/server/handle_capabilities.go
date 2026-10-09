@@ -595,24 +595,25 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "get", AuthGroup: "external-secrets.io", AuthResource: "secretstores",
 	},
 	{
-		// The graph is built from the local cluster's informers, which
-		// remote clusters do not have (#532). topology/handler.go
-		// HandleNamespaceGraph answers 501 unsupported_platform before the
-		// builder reads anything. AuthResource pods stands in for the
+		// Remote clusters are served by bounded direct reads as the user
+		// through a per-request remote topology lister (#608); a kind the
+		// user may not list, or one past the read cap, degrades the graph the
+		// way a forbidden kind does locally. The mesh overlay reads local
+		// providers, so ?overlay=mesh on a remote selection answers 400
+		// overlay_unsupported_remote. AuthResource pods stands in for the
 		// per-kind list checks the builder makes on each node it adds.
 		ID: "topology.graph", Label: "Resource topology graph",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
 		// Diagnostics resolve the target, its related pods and the
-		// blast-radius graph from the local cluster's informers (#532).
-		// diagnostics/handler.go refuseRemote answers 501
-		// unsupported_platform for both diagnostics routes before any read,
-		// SAR or notification. AuthResource pods mirrors the namespace
-		// summary's own check.
+		// blast-radius graph from the selected cluster with bounded direct
+		// reads as the user (#608); a pod list past the read cap is reported
+		// as a limitation rather than undercounted. AuthResource pods
+		// mirrors the namespace summary's own check.
 		ID: "diagnostics.read", Label: "Resource diagnostics and blast radius",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{

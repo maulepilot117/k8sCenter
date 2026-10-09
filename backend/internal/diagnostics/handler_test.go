@@ -20,9 +20,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
-	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -156,51 +156,6 @@ var diagPaths = map[string]string{
 	"summary":  "/diagnostics/team-a/summary",
 }
 
-// TestDiagnostics_RemoteRefused pins #532 for diagnostics: a remote cluster
-// selection gets 501 unsupported_platform from both routes, with no lister or
-// blast-radius graph read and no notification emitted, even for a target the
-// local cluster would report as failing.
-func TestDiagnostics_RemoteRefused(t *testing.T) {
-	for name, path := range diagPaths {
-		t.Run(name, func(t *testing.T) {
-			lister := &countingLister{pods: []*corev1.Pod{testPod(true)}}
-			h := newDiagHandler(lister, true)
-			// A real checker with no ClusterRouter: any SAR attempted for the
-			// remote cluster errors, turning the 501 into a 500, so moving the
-			// refusal below an access check fails this test.
-			h.AccessChecker = resources.NewAccessChecker(nil, slog.Default())
-
-			w := callDiag(t, h, "remote-cluster-1", path)
-
-			if w.Code != http.StatusNotImplemented {
-				t.Fatalf("status = %d, want 501; body: %s", w.Code, w.Body.String())
-			}
-			var body struct {
-				Data  any `json:"data"`
-				Error struct {
-					Code    int    `json:"code"`
-					Message string `json:"message"`
-					Reason  string `json:"reason"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-				t.Fatalf("decode body: %v; body: %s", err, w.Body.String())
-			}
-			if body.Data != nil {
-				t.Errorf("data = %v, want absent on a refusal", body.Data)
-			}
-			if body.Error.Code != http.StatusNotImplemented ||
-				body.Error.Reason != string(k8s.ReasonUnsupportedPlatform) ||
-				body.Error.Message != remoteUnsupportedMessage {
-				t.Errorf("error = %+v, want 501 %q %q", body.Error, k8s.ReasonUnsupportedPlatform, remoteUnsupportedMessage)
-			}
-			if n := lister.calls.Load(); n != 0 {
-				t.Errorf("lister/topology builder read %d times on a remote request, want 0", n)
-			}
-		})
-	}
-}
-
 // TestDiagnostics_LocalUnchanged confirms both routes still answer from the
 // lister for the implicit (no header) and explicit local cluster id.
 func TestDiagnostics_LocalUnchanged(t *testing.T) {
@@ -223,20 +178,25 @@ func TestDiagnostics_LocalUnchanged(t *testing.T) {
 	}
 }
 
-// TestDiagnostics_NotificationTripwireHasTeeth proves the tripwire used by
-// TestDiagnostics_RemoteRefused would catch an emission: the same failing
-// target on the local cluster reaches Emit, which panics on the store-less
-// service. Without this, a tripwire that never fires would pass vacuously.
-func TestDiagnostics_NotificationTripwireHasTeeth(t *testing.T) {
-	lister := &countingLister{pods: []*corev1.Pod{testPod(true)}}
-	h := newDiagHandler(lister, true)
+// TestDiagnostics_FailingTargetReachesNotifications: a failing target is
+// reported to NotifService on the local cluster and on a remote one (whose
+// notification carries the remote cluster id). The store-less service panics
+// on Emit, so reaching it is observable.
+func TestDiagnostics_FailingTargetReachesNotifications(t *testing.T) {
+	for _, clusterID := range []string{"local", "remote-1"} {
+		t.Run(clusterID, func(t *testing.T) {
+			lister := &countingLister{pods: []*corev1.Pod{testPod(true)}}
+			h := newDiagHandler(lister, true)
+			h.Clients = &fakeClients{cs: kfake.NewSimpleClientset(testPod(true))}
 
-	defer func() {
-		if recover() == nil {
-			t.Fatal("local request for a failing target did not reach NotifService.Emit; the remote no-emission assertion is vacuous")
-		}
-	}()
-	callDiag(t, h, "local", diagPaths["resource"])
+			defer func() {
+				if recover() == nil {
+					t.Fatal("request for a failing target did not reach NotifService.Emit")
+				}
+			}()
+			callDiag(t, h, clusterID, diagPaths["resource"])
+		})
+	}
 }
 
 // TestResolveNotFoundIsASentinel: an absent target is classified with
