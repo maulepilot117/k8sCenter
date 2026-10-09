@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -62,6 +63,10 @@ type clientCall struct {
 type fakeClients struct {
 	clusters  map[string]*fakeCluster
 	targetErr error
+	// dynHook, when set, runs on every dynamic client resolution with the
+	// context the read was given; an error fails the resolution. The fake
+	// clients ignore their context, so this is where a test observes it.
+	dynHook func(context.Context) error
 
 	mu       sync.Mutex
 	dynCalls []clientCall
@@ -86,10 +91,15 @@ func (f *fakeClients) ClientForCluster(_ context.Context, id, _ string, _ []stri
 	return c.kube, nil
 }
 
-func (f *fakeClients) DynamicClientForCluster(_ context.Context, id, username string, _ []string) (dynamic.Interface, error) {
+func (f *fakeClients) DynamicClientForCluster(ctx context.Context, id, username string, _ []string) (dynamic.Interface, error) {
 	f.mu.Lock()
 	f.dynCalls = append(f.dynCalls, clientCall{cluster: k8s.NormalizedClusterID(id), username: username})
 	f.mu.Unlock()
+	if f.dynHook != nil {
+		if err := f.dynHook(ctx); err != nil {
+			return nil, err
+		}
+	}
 	c, err := f.cluster(id)
 	if err != nil {
 		return nil, err
@@ -542,5 +552,170 @@ func TestRemote_EvictRemoteCacheDropsTheClusterEntries(t *testing.T) {
 	hs.h.EvictRemoteCache(remoteCluster)
 	if got := list(); len(got) != 2 {
 		t.Errorf("list after evict = %v, want both workloads re-read from the cluster", got)
+	}
+}
+
+// blockingDynHook returns a dynHook that signals started on its first call
+// and then blocks until release is called (the read proceeds) or the read's
+// context ends (the read fails with the context's error). release also runs
+// at cleanup so no read outlives the test.
+func blockingDynHook(t *testing.T) (hook func(context.Context) error, started <-chan struct{}, release func()) {
+	t.Helper()
+	startedCh := make(chan struct{})
+	released := make(chan struct{})
+	var once, closeOnce sync.Once
+	release = func() { closeOnce.Do(func() { close(released) }) }
+	t.Cleanup(release)
+	hook = func(ctx context.Context) error {
+		once.Do(func() { close(startedCh) })
+		select {
+		case <-released:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return hook, startedCh, release
+}
+
+// A read coalesced with another caller's must not inherit that caller's
+// cancellation: when the first caller goes away mid-read, a second caller
+// for the same key still gets the result.
+func TestRemote_SharedReadSurvivesTheFirstCallerCancelling(t *testing.T) {
+	type read func(ctx context.Context, h *Handler) (any, error)
+	reads := map[string]read{
+		"list": func(ctx context.Context, h *Handler) (any, error) {
+			return h.fetchVulns(ctx, remoteCluster, devUser, "apps", scannerSet{trivy: true})
+		},
+		"detail": func(ctx context.Context, h *Handler) (any, error) {
+			return h.fetchVulnDetail(ctx, remoteCluster, devUser, "apps", "Deployment", "remote-app")
+		},
+	}
+	for name, do := range reads {
+		t.Run(name, func(t *testing.T) {
+			hs := newHarness(t, newFakeCluster(t, true, false, trivyReport("apps", "Deployment", "remote-app", "CVE-REMOTE-1")))
+			hook, started, release := blockingDynHook(t)
+			hs.clients.dynHook = hook
+
+			base := middleware.WithClusterID(context.Background(), remoteCluster)
+			ctx1, cancel1 := context.WithCancel(base)
+			defer cancel1()
+			first := make(chan error, 1)
+			go func() {
+				_, err := do(ctx1, hs.h)
+				first <- err
+			}()
+			<-started
+
+			second := make(chan error, 1)
+			var got any
+			go func() {
+				v, err := do(base, hs.h)
+				got = v
+				second <- err
+			}()
+			// Let the second caller join the flight before the first leaves.
+			time.Sleep(50 * time.Millisecond)
+			cancel1()
+			if err := <-first; !errors.Is(err, context.Canceled) {
+				t.Errorf("first caller err = %v, want context.Canceled", err)
+			}
+			release()
+
+			select {
+			case err := <-second:
+				if err != nil {
+					t.Fatalf("second caller failed with %v after the first cancelled", err)
+				}
+				if got == nil {
+					t.Fatal("second caller got no result")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("second caller never returned")
+			}
+			if n := len(hs.clients.calls()); n != 1 {
+				t.Errorf("%d client resolutions, want 1 (the second caller joins the first's read)", n)
+			}
+		})
+	}
+}
+
+// A detail read that outlives the caller's deadline answers 504 with a fixed
+// message, without waiting for the stalled read.
+func TestRemote_DetailDeadlineIs504(t *testing.T) {
+	hs := newHarness(t, newFakeCluster(t, true, false, trivyReport("apps", "Deployment", "remote-app", "CVE-REMOTE-1")))
+	hook, _, _ := blockingDynHook(t)
+	hs.clients.dynHook = hook
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rctx := chi.NewRouteContext()
+	for k, v := range detailParams {
+		rctx.URLParams.Add(k, v)
+	}
+	ctx, cancel := context.WithTimeout(context.WithValue(req.Context(), chi.RouteCtxKey, rctx), 150*time.Millisecond)
+	defer cancel()
+	ctx = middleware.WithClusterID(auth.ContextWithUser(ctx, devUser), remoteCluster)
+	rr := httptest.NewRecorder()
+	start := time.Now()
+	hs.h.HandleVulnerabilityDetail(rr, req.WithContext(ctx))
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("handler took %v, want it bounded by the caller's deadline", elapsed)
+	}
+	if rr.Code != http.StatusGatewayTimeout || !strings.Contains(rr.Body.String(), "timed out fetching vulnerability details") {
+		t.Errorf("status %d body %s, want 504 with the fixed message", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "deadline") {
+		t.Errorf("body relays the context error: %s", rr.Body.String())
+	}
+}
+
+// One scanner failing fails the read: a cluster running both scanners never
+// renders as a clean scan of the one that answered.
+func TestRemote_OneScannerFailingFailsTheList(t *testing.T) {
+	remote := newFakeCluster(t, true, true,
+		trivyReport("apps", "Deployment", "remote-app", "CVE-REMOTE-1"),
+		kubescapeSummary("apps", "Deployment", "remote-app"))
+	remote.dyn.PrependReactor("list", "vulnerabilitysummaries", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New(leakMarker))
+	})
+	hs := newHarness(t, remote)
+
+	rr := doAs(t, devUser, remoteCluster, hs.h.HandleVulnerabilities, listTarget, nil)
+	body := rr.Body.String()
+	if rr.Code == http.StatusOK {
+		t.Fatalf("status 200 with one scanner failing: %s", body)
+	}
+	if strings.Contains(body, "remote-app") || strings.Contains(body, "vulnerabilities") {
+		t.Errorf("failed read carries workloads: %s", body)
+	}
+	if strings.Contains(body, leakMarker) {
+		t.Errorf("body relays the cluster's error: %s", body)
+	}
+}
+
+// Discovery failing on a cluster that does resolve is a discovery-unavailable
+// answer, not "no scanner installed" and not a target error.
+func TestRemote_DiscoveryFailureIsDiscoveryUnavailable(t *testing.T) {
+	remote := newFakeCluster(t, true, true)
+	remote.disc.PrependReactor("get", "group", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New(leakMarker)
+	})
+	hs := newHarness(t, remote)
+
+	for name, rr := range map[string]*httptest.ResponseRecorder{
+		"status": doAs(t, devUser, remoteCluster, hs.h.HandleStatus, "/scanning/status", nil),
+		"list":   doAs(t, devUser, remoteCluster, hs.h.HandleVulnerabilities, listTarget, nil),
+		"detail": doAs(t, devUser, remoteCluster, hs.h.HandleVulnerabilityDetail, "/", detailParams),
+	} {
+		body := rr.Body.String()
+		if rr.Code != http.StatusBadGateway || !strings.Contains(body, `"reason":"discovery_unavailable"`) {
+			t.Errorf("%s: status %d body %s, want 502 discovery_unavailable", name, rr.Code, body)
+		}
+		if strings.Contains(body, leakMarker) {
+			t.Errorf("%s: body relays the cluster's error: %s", name, body)
+		}
+	}
+	if n := hs.localActions(); n != 0 {
+		t.Errorf("local cluster recorded %d actions, want 0", n)
 	}
 }

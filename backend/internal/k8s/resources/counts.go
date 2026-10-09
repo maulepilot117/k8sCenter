@@ -2,6 +2,8 @@ package resources
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"sync"
@@ -52,7 +54,9 @@ func (h *Handler) canList(ctx context.Context, user *auth.User, resource, namesp
 // canListOn checks if the user has "list" permission for the given resource
 // in the namespace on clusterID. The SAR runs on the selected cluster, exactly
 // as checkAccess does. A check that fails counts as a denial (the kind is
-// omitted) but is logged, so a broken check is not silent.
+// omitted) but is logged, so a broken check is not silent. Local path only:
+// the remote counts path treats a failed check as a failed read instead
+// (countRemoteResources).
 func (h *Handler) canListOn(ctx context.Context, clusterID string, user *auth.User, resource, namespace string) bool {
 	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
 	if err != nil {
@@ -399,6 +403,13 @@ func (h *Handler) countResources(ctx context.Context, user *auth.User, namespace
 // variable only so a test can shorten it; nothing in production writes it.
 var remoteCountsBudget = 10 * time.Second
 
+// The fixed messages a failed remote counts read answers with. The raw error
+// reaches only the log.
+const (
+	remoteCountsFailedMsg  = "failed to read counts on the selected cluster"
+	remoteCountsTimeoutMsg = "timed out reading counts on the selected cluster"
+)
+
 // remoteCountsWorkers bounds how many kinds are listed on a remote API server
 // at once.
 const remoteCountsWorkers = 6
@@ -421,10 +432,14 @@ func adapterKindForCount(kind string) string {
 }
 
 // handleRemoteResourceCounts counts every kind the user may list on a remote
-// cluster by paging that cluster's API server as the user. A kind whose list
-// is refused or fails is omitted, as a denied kind is; raw errors reach only
-// the log. A kind still carrying a continue token at the paging cap reports
-// the count read, and the response then sets metadata.truncated.
+// cluster by paging that cluster's API server as the user. A kind the user is
+// denied, by the access review or by the cluster refusing the list, is
+// omitted. Any other failure (a check that could not run, a transport error,
+// the budget running out) fails the whole request: an omitted kind renders as
+// zero, so a partial map would be served as if it were complete. Raw errors
+// reach only the log. A kind still carrying a continue token at the paging cap
+// reports the count read, and the response then sets metadata.truncated, with
+// metadata.total the sum of the counts read.
 func (h *Handler) handleRemoteResourceCounts(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID, namespace string) {
 	// The budget starts before client resolution: the cluster-store read,
 	// credential decrypt and dial are part of this request too.
@@ -439,9 +454,22 @@ func (h *Handler) handleRemoteResourceCounts(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	counts, truncated := h.countRemoteResources(ctx, cs, clusterID, user, namespace)
+	counts, truncated, err := h.countRemoteResources(ctx, cs, clusterID, user, namespace)
+	if err != nil {
+		h.Logger.Error("remote counts: read failed", "cluster", clusterID, "namespace", namespace, "error", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeError(w, http.StatusGatewayTimeout, remoteCountsTimeoutMsg, "")
+			return
+		}
+		writeError(w, http.StatusBadGateway, remoteCountsFailedMsg, "")
+		return
+	}
 	if truncated {
-		writeJSON(w, http.StatusOK, api.Response{Data: counts, Metadata: &api.Metadata{Truncated: true}})
+		total := 0
+		for _, n := range counts {
+			total += n
+		}
+		writeJSON(w, http.StatusOK, api.Response{Data: counts, Metadata: &api.Metadata{Total: total, Truncated: true}})
 		return
 	}
 	// Same envelope as the local path: no metadata object on a complete read.
@@ -484,16 +512,24 @@ func remoteCountOrder(checks []countCheck) []countCheck {
 // remoteCountsWorkers kinds at a time, and returns the counts and whether any
 // kind was cut off at the paging cap. Each worker runs its kind's RBAC check
 // just before the list, so a list never waits on every other kind's check; a
-// denied or failed check omits the kind.
+// denied kind is omitted. err is the first failure that was not a denial (a
+// check that could not run, a list that failed, the budget expiring before a
+// kind started); the counts are then incomplete and are not returned.
 func (h *Handler) countRemoteResources(
 	ctx context.Context, cs kubernetes.Interface, clusterID string, user *auth.User, namespace string,
-) (map[string]int, bool) {
+) (counts map[string]int, truncated bool, err error) {
 	var (
-		mu        sync.Mutex
-		counts    = make(map[string]int)
-		truncated bool
-		wg        sync.WaitGroup
+		mu sync.Mutex
+		wg sync.WaitGroup
 	)
+	counts = make(map[string]int)
+	fail := func(e error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err == nil {
+			err = e
+		}
+	}
 	sem := make(chan struct{}, remoteCountsWorkers)
 	for _, c := range remoteCountOrder(countedKinds(namespace)) {
 		adapter := GetAdapter(adapterKindForCount(c.kind))
@@ -507,12 +543,31 @@ func (h *Handler) countRemoteResources(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			finished := false
 			recoverutil.Safe(h.Logger, "resources remote counts "+c.kind, func() {
-				if !h.canListOn(ctx, clusterID, user, c.kind, c.ns) {
+				defer func() { finished = true }()
+				// An expired budget stops the fan-out here rather than
+				// sending, and logging, a doomed check per remaining kind.
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					fail(ctxErr)
 					return
 				}
-				n, cut, ok := h.countRemoteKind(ctx, cs, clusterID, adapter, c)
-				if !ok {
+				// Unlike canListOn, a check that could not run is a failure,
+				// not a denial: the kind's count is unknown, not absent.
+				allowed, checkErr := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", c.kind, c.ns)
+				if checkErr != nil {
+					fail(fmt.Errorf("list permission check for %s: %w", c.kind, checkErr))
+					return
+				}
+				if !allowed {
+					return
+				}
+				n, cut, denied, listErr := h.countRemoteKind(ctx, cs, clusterID, adapter, c)
+				switch {
+				case listErr != nil:
+					fail(fmt.Errorf("list %s: %w", c.kind, listErr))
+					return
+				case denied:
 					return
 				}
 				mu.Lock()
@@ -520,31 +575,37 @@ func (h *Handler) countRemoteResources(
 				counts[c.kind] = n
 				truncated = truncated || cut
 			})
+			if !finished {
+				// recoverutil logged the panic; the kind's count is unknown.
+				fail(errors.New("count " + c.kind + " panicked"))
+			}
 		}()
 	}
 	wg.Wait()
-	return counts, truncated
+	if err != nil {
+		return nil, false, err
+	}
+	return counts, truncated, nil
 }
 
-// countRemoteKind pages one kind's list on cs and returns its count. ok is
-// false when the kind must be omitted: the list was refused (treated like a
-// denied RBAC check) or failed.
+// countRemoteKind pages one kind's list on cs and returns its count. denied
+// is set when the cluster refused the list, which omits the kind as a denied
+// RBAC check does; err is any other failure, which the caller logs.
 func (h *Handler) countRemoteKind(
 	ctx context.Context, cs kubernetes.Interface, clusterID string, adapter ResourceAdapter, c countCheck,
-) (n int, truncated, ok bool) {
+) (n int, truncated, denied bool, err error) {
 	items, truncated, err := k8s.PageList(ctx, metav1.ListOptions{}, func(ctx context.Context, opts metav1.ListOptions) ([]any, string, error) {
 		return adapter.ListDirect(ctx, cs, c.ns, opts)
 	})
 	if err != nil {
-		if !apierrors.IsForbidden(err) {
-			h.Logger.Error("remote counts: list",
-				"cluster", clusterID, "resource", c.kind, "namespace", c.ns, "error", err)
+		if apierrors.IsForbidden(err) {
+			return 0, false, true, nil
 		}
-		return 0, false, false
+		return 0, false, false, err
 	}
 	if truncated {
 		h.Logger.Warn("remote counts: truncated",
 			"cluster", clusterID, "resource", c.kind, "namespace", c.ns, "items", len(items))
 	}
-	return len(items), truncated, true
+	return len(items), truncated, false, nil
 }

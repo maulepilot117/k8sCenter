@@ -172,28 +172,43 @@ func (h *Handler) fetchRemoteNamespaceDetail(ctx context.Context, clusterID stri
 	// One namespace holds a handful of each, so one page is enough; a longer
 	// list is served as read.
 	// Both run at once; the first failure cancels the other and is reported.
+	// The gate admits a user who may read either type, so the cluster
+	// refusing one list is that section empty, not a failure; only both
+	// refused is a refusal.
 	opts := metav1.ListOptions{Limit: k8s.RemoteListPageSize}
-	var quotas *corev1.ResourceQuotaList
-	var limitRanges *corev1.LimitRangeList
+	quotas := &corev1.ResourceQuotaList{}
+	limitRanges := &corev1.LimitRangeList{}
+	var quotasRefused, limitRangesRefused error
 	g, gctx := errgroup.WithContext(ctx)
 	recoverutil.Go(g, h.Logger, "limits remote namespace resourcequotas", func() error {
 		list, err := client.CoreV1().ResourceQuotas(namespace).List(gctx, opts)
-		if err != nil {
+		switch {
+		case apierrors.IsForbidden(err):
+			quotasRefused = remoteListError{noun: resourceQuotasNoun, err: err}
+		case err != nil:
 			return remoteListError{noun: resourceQuotasNoun, err: err}
+		default:
+			quotas = list
 		}
-		quotas = list
 		return nil
 	})
 	recoverutil.Go(g, h.Logger, "limits remote namespace limitranges", func() error {
 		list, err := client.CoreV1().LimitRanges(namespace).List(gctx, opts)
-		if err != nil {
+		switch {
+		case apierrors.IsForbidden(err):
+			limitRangesRefused = remoteListError{noun: limitRangesNoun, err: err}
+		case err != nil:
 			return remoteListError{noun: limitRangesNoun, err: err}
+		default:
+			limitRanges = list
 		}
-		limitRanges = list
 		return nil
 	})
 	if err := g.Wait(); err != nil {
 		return nil, err
+	}
+	if quotasRefused != nil && limitRangesRefused != nil {
+		return nil, quotasRefused
 	}
 	if quotas.Continue != "" || limitRanges.Continue != "" {
 		h.Logger.Warn("remote namespace limits truncated; serving what was read", "cluster", clusterID, "namespace", namespace)

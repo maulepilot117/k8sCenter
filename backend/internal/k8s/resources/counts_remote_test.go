@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
@@ -202,7 +204,10 @@ func TestResourceCounts_RemoteForbiddenKindOmitted(t *testing.T) {
 	assertCount(t, counts, "nodes", 1)
 }
 
-func TestResourceCounts_RemoteListErrorOmittedWithoutLeak(t *testing.T) {
+// A list that fails for any reason other than the cluster's refusal fails
+// the whole request: a kind silently missing from the map would render as
+// zero, and a partial answer would be served as if it were complete.
+func TestResourceCounts_RemoteListErrorIs502WithoutLeak(t *testing.T) {
 	h, _, remote := remoteEventsHandler(t, nil, countsDeployment("a", "r1"), countsNode("r-n1"))
 	remote.PrependReactor("list", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("dial tcp 10.0.0.9:6443: i/o timeout")
@@ -210,17 +215,112 @@ func TestResourceCounts_RemoteListErrorOmittedWithoutLeak(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	h.HandleResourceCounts(rr, countsRequest(remoteTestClusterID, ""))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body: %s)", rr.Code, rr.Body.String())
 	}
-	counts, _, _ := decodeCounts(t, rr)
-	if _, ok := counts["deployments"]; ok {
-		t.Errorf("failed kind deployments was counted: %v", counts)
+	resp := decodeResponse(t, rr)
+	if resp.Error == nil || resp.Error.Message != remoteCountsFailedMsg || resp.Error.Detail != "" {
+		t.Errorf("error = %+v, want the fixed message with no detail", resp.Error)
 	}
-	assertCount(t, counts, "nodes", 1)
 	if body := rr.Body.String(); containsAny(body, "10.0.0.9", "i/o timeout") {
 		t.Errorf("raw list error reached the body: %s", body)
 	}
+}
+
+// A permission check that could not run is not a denial: the kind's count is
+// unknown, so the request fails rather than omitting it.
+func TestResourceCounts_RemoteSARErrorIs502(t *testing.T) {
+	h, _, _ := remoteEventsHandler(t, nil, countsDeployment("a", "r1"), countsNode("r-n1"))
+	h.AccessChecker = NewErroringAccessChecker(errors.New("sar: 401 Unauthorized from 10.0.0.9"))
+
+	rr := httptest.NewRecorder()
+	h.HandleResourceCounts(rr, countsRequest(remoteTestClusterID, ""))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body: %s)", rr.Code, rr.Body.String())
+	}
+	if body := rr.Body.String(); containsAny(body, "10.0.0.9", "Unauthorized") {
+		t.Errorf("raw check error reached the body: %s", body)
+	}
+}
+
+// When the shared budget runs out the request answers 504 with a fixed
+// message, promptly, and the context error stays in the log.
+func TestResourceCounts_RemoteBudgetExpiryIs504(t *testing.T) {
+	prev := remoteCountsBudget
+	remoteCountsBudget = 200 * time.Millisecond
+	t.Cleanup(func() { remoteCountsBudget = prev })
+
+	h, _, remote := remoteEventsHandler(t, nil, countsDeployment("a", "r1"), countsNode("r-n1"))
+	// The fake clientset ignores the request context, so the reactor stands
+	// in for a stalled API server: it answers only once the budget has gone,
+	// with the error client-go returns for an expired context.
+	remote.PrependReactor("list", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+		time.Sleep(remoteCountsBudget + 50*time.Millisecond)
+		return true, nil, fmt.Errorf("Get \"https://10.0.0.9:6443/apis/apps/v1/deployments\": %w", context.DeadlineExceeded)
+	})
+
+	start := time.Now()
+	rr := httptest.NewRecorder()
+	h.HandleResourceCounts(rr, countsRequest(remoteTestClusterID, ""))
+	if elapsed := time.Since(start); elapsed > remoteCountsBudget+2*time.Second {
+		t.Errorf("handler took %v, want it bounded by the %v budget", elapsed, remoteCountsBudget)
+	}
+	if rr.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504 (body: %s)", rr.Code, rr.Body.String())
+	}
+	resp := decodeResponse(t, rr)
+	if resp.Error == nil || resp.Error.Message != remoteCountsTimeoutMsg || resp.Error.Detail != "" {
+		t.Errorf("error = %+v, want the fixed timeout message with no detail", resp.Error)
+	}
+	if body := rr.Body.String(); containsAny(body, "deadline", "10.0.0.9") {
+		t.Errorf("context error reached the body: %s", body)
+	}
+}
+
+// Every permission check and the client itself are the user's, on the
+// selected cluster: a check against the local cluster, or a client resolved
+// without the user, would count with the wrong permissions.
+func TestResourceCounts_RemoteChecksAndReadsAsTheUserOnTheSelectedCluster(t *testing.T) {
+	h, _, remote := remoteEventsHandler(t, nil, countsDeployment("a", "r1"))
+	var (
+		mu    sync.Mutex
+		sars  []recordedCheck
+		users []*auth.User
+	)
+	h.AccessChecker = NewRecordingAccessChecker(func(clusterID, username string, groups []string, verb, resource, namespace string) {
+		mu.Lock()
+		defer mu.Unlock()
+		sars = append(sars, recordedCheck{clusterID, username, verb, resource})
+	})
+	h.remoteClient = func(_ context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		users = append(users, user)
+		return remote, nil
+	}
+
+	req := countsRequest(remoteTestClusterID, "")
+	want, _ := auth.UserFromContext(req.Context())
+	rr := httptest.NewRecorder()
+	h.HandleResourceCounts(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	if len(sars) != len(countedKinds("")) {
+		t.Errorf("%d permission checks, want one per counted kind (%d)", len(sars), len(countedKinds("")))
+	}
+	for _, c := range sars {
+		if c.clusterID != remoteTestClusterID || c.username != want.KubernetesUsername || c.verb != "list" {
+			t.Errorf("check %+v, want verb list on %q as %q", c, remoteTestClusterID, want.KubernetesUsername)
+		}
+	}
+	if len(users) != 1 || users[0] != want {
+		t.Errorf("remote client resolved for %v, want once for the request user", users)
+	}
+}
+
+type recordedCheck struct {
+	clusterID, username, verb, resource string
 }
 
 func TestResourceCounts_RemoteDeniedSAROmitsKind(t *testing.T) {
@@ -310,6 +410,22 @@ func TestResourceCounts_RemoteTruncatedAtCap(t *testing.T) {
 	assertCount(t, counts, "nodes", 1)
 	if !hasMetadata || !truncated {
 		t.Errorf("metadata.truncated missing on a capped count: %s", rr.Body.String()[:min(200, rr.Body.Len())])
+	}
+	// metadata.total is the sum of the counts read, not the zero value.
+	var md struct {
+		Metadata struct {
+			Total int `json:"total"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &md); err != nil {
+		t.Fatal(err)
+	}
+	sum := 0
+	for _, n := range counts {
+		sum += n
+	}
+	if md.Metadata.Total != sum {
+		t.Errorf("metadata.total = %d, want the sum of the counts %d", md.Metadata.Total, sum)
 	}
 }
 

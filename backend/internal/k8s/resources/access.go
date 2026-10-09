@@ -60,6 +60,9 @@ type AccessChecker struct {
 	predicate     AccessPredicate // for testing only
 	denyResources map[string]bool // for testing only — denies CanAccess for named resources
 	forcedErr     error           // for testing only — every check fails with this
+	// observe sees every CanAccess call before it is answered; for testing
+	// only (NewRecordingAccessChecker).
+	observe func(clusterID, username string, groups []string, verb, resource, namespace string)
 }
 
 // NewAccessChecker creates an AccessChecker that verifies user permissions.
@@ -95,6 +98,9 @@ func (ac *AccessChecker) SetClusterRouter(cr *k8s.ClusterRouter) {
 // clusters are checked against their own RBAC rather than the local
 // cluster's. F#9 security audit 2026-05-22.
 func (ac *AccessChecker) CanAccess(ctx context.Context, clusterID, username string, groups []string, verb, resource, namespace string) (bool, error) {
+	if ac.observe != nil {
+		ac.observe(clusterID, username, groups, verb, resource, namespace)
+	}
 	if ac.forcedErr != nil {
 		return false, ac.forcedErr
 	}
@@ -329,6 +335,19 @@ func NewErroringAccessChecker(err error) *AccessChecker {
 		clientFactory: nil,
 		logger:        slog.Default(),
 		forcedErr:     err,
+	}
+}
+
+// NewRecordingAccessChecker returns an AccessChecker that allows every
+// CanAccess call and passes each one's arguments to observe first. observe
+// may be called concurrently. Intended for tests asserting which cluster and
+// identity a permission check runs as; the deny fakes ignore both.
+func NewRecordingAccessChecker(observe func(clusterID, username string, groups []string, verb, resource, namespace string)) *AccessChecker {
+	return &AccessChecker{
+		clientFactory: nil,
+		logger:        slog.Default(),
+		alwaysAllow:   true,
+		observe:       observe,
 	}
 }
 

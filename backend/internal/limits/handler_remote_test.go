@@ -44,14 +44,33 @@ const (
 )
 
 // fakeClients is a k8s.ClusterClients over one typed fake clientset per
-// cluster id. targetErr makes every resolution fail. limits never uses the
-// dynamic client or the schema, so those always fail.
+// cluster id. It records every client resolution so a test can assert the
+// identity a read impersonated. targetErr makes every resolution fail.
+// limits never uses the dynamic client or the schema, so those always fail.
 type fakeClients struct {
 	clusters  map[string]*kfake.Clientset
 	targetErr error
+
+	mu    sync.Mutex
+	calls []clientCall
 }
 
-func (f *fakeClients) ClientForCluster(_ context.Context, id, _ string, _ []string) (kubernetes.Interface, error) {
+// clientCall records one client resolution: which cluster, as whom.
+type clientCall struct {
+	cluster, username string
+	groups            []string
+}
+
+func (f *fakeClients) recorded() []clientCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]clientCall(nil), f.calls...)
+}
+
+func (f *fakeClients) ClientForCluster(_ context.Context, id, username string, groups []string) (kubernetes.Interface, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, clientCall{cluster: id, username: username, groups: append([]string(nil), groups...)})
+	f.mu.Unlock()
 	if f.targetErr != nil {
 		return nil, f.targetErr
 	}
@@ -169,13 +188,18 @@ var remoteUser = &auth.User{Username: "alice@example.com", KubernetesUsername: "
 
 func doLimits(t *testing.T, clusterID string, h http.HandlerFunc, params map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
+	return doLimitsAs(t, remoteUser, clusterID, h, params)
+}
+
+func doLimitsAs(t *testing.T, user *auth.User, clusterID string, h http.HandlerFunc, params map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/limits", nil)
 	rctx := chi.NewRouteContext()
 	for k, v := range params {
 		rctx.URLParams.Add(k, v)
 	}
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
-	ctx = auth.ContextWithUser(ctx, remoteUser)
+	ctx = auth.ContextWithUser(ctx, user)
 	ctx = middleware.WithClusterID(ctx, clusterID)
 	rr := httptest.NewRecorder()
 	h(rr, req.WithContext(ctx))
@@ -359,34 +383,116 @@ func TestRBAC_ChecksUseTheKubernetesIdentity(t *testing.T) {
 	}
 }
 
-func TestRemote_ForbiddenListIsAFixed403(t *testing.T) {
-	for _, res := range []string{"resourcequotas", "limitranges"} {
-		t.Run(res, func(t *testing.T) {
-			hs := newRemoteHarness(t)
-			hs.remote().PrependReactor("list", res, func(k8stesting.Action) (bool, runtime.Object, error) {
-				return true, nil, apierrors.NewForbidden(corev1.Resource(res), "", errors.New(internalMarker))
-			})
+func forbidList(c *kfake.Clientset, res string) {
+	c.PrependReactor("list", res, func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(corev1.Resource(res), "", errors.New(internalMarker))
+	})
+}
 
-			for name, rr := range map[string]*httptest.ResponseRecorder{
-				"list":   doLimits(t, remoteCluster, hs.h.HandleListNamespaces, nil),
-				"detail": doLimits(t, remoteCluster, hs.h.HandleGetNamespace, map[string]string{"namespace": "remote-ns"}),
-			} {
-				if rr.Code != http.StatusForbidden {
-					t.Errorf("%s: status %d, want 403: %s", name, rr.Code, rr.Body.String())
-					continue
-				}
-				e := decodeErr(t, rr)
-				if !strings.HasPrefix(e.Message, "you do not have permission to list ") || !strings.HasSuffix(e.Message, " on the selected cluster") || e.Detail != "" {
-					t.Errorf("%s: error = %+v, want the fixed permission message and no detail", name, e)
-				}
-				if strings.Contains(rr.Body.String(), internalMarker) {
-					t.Errorf("%s: body leaks the remote error: %s", name, rr.Body.String())
-				}
+func TestRemote_ForbiddenListIsAFixed403(t *testing.T) {
+	// The detail refuses only when neither list is allowed; one refused list
+	// is an empty section (TestRemote_GetNamespaceOneRefusedListIsAnEmptySection).
+	cases := map[string]struct {
+		refused []string
+		detail  bool
+	}{
+		"list/resourcequotas": {refused: []string{"resourcequotas"}},
+		"list/limitranges":    {refused: []string{"limitranges"}},
+		"detail/both":         {refused: []string{"resourcequotas", "limitranges"}, detail: true},
+	}
+	for caseName, tc := range cases {
+		t.Run(caseName, func(t *testing.T) {
+			hs := newRemoteHarness(t)
+			for _, res := range tc.refused {
+				forbidList(hs.remote(), res)
+			}
+
+			var rr *httptest.ResponseRecorder
+			if tc.detail {
+				rr = doLimits(t, remoteCluster, hs.h.HandleGetNamespace, map[string]string{"namespace": "remote-ns"})
+			} else {
+				rr = doLimits(t, remoteCluster, hs.h.HandleListNamespaces, nil)
+			}
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status %d, want 403: %s", rr.Code, rr.Body.String())
+			}
+			e := decodeErr(t, rr)
+			if !strings.HasPrefix(e.Message, "you do not have permission to list ") || !strings.HasSuffix(e.Message, " on the selected cluster") || e.Detail != "" {
+				t.Errorf("error = %+v, want the fixed permission message and no detail", e)
+			}
+			if strings.Contains(rr.Body.String(), internalMarker) {
+				t.Errorf("body leaks the remote error: %s", rr.Body.String())
 			}
 			if hs.local.reads != 0 {
 				t.Errorf("local informers read %d times", hs.local.reads)
 			}
 		})
+	}
+}
+
+// The detail gate admits a user who may read either type. A cluster that
+// refuses one of the two lists answers that section empty and serves the
+// other, as the local detail does for the same identity.
+func TestRemote_GetNamespaceOneRefusedListIsAnEmptySection(t *testing.T) {
+	for _, refused := range []string{"resourcequotas", "limitranges"} {
+		t.Run(refused, func(t *testing.T) {
+			hs := newRemoteHarness(t)
+			forbidList(hs.remote(), refused)
+
+			rr := doLimits(t, remoteCluster, hs.h.HandleGetNamespace, map[string]string{"namespace": "remote-ns"})
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body.String())
+			}
+			got := decodeData[NamespaceLimits](t, rr)
+			wantQuotas, wantLRs := 1, 1
+			if refused == "resourcequotas" {
+				wantQuotas = 0
+			} else {
+				wantLRs = 0
+			}
+			if len(got.Quotas) != wantQuotas || len(got.LimitRanges) != wantLRs {
+				t.Errorf("detail = %d quotas, %d limit ranges; want %d and %d", len(got.Quotas), len(got.LimitRanges), wantQuotas, wantLRs)
+			}
+			if strings.Contains(rr.Body.String(), internalMarker) {
+				t.Errorf("body leaks the remote error: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
+// Every remote read resolves its client as the requesting identity, and the
+// summary cache is per identity: a second identity on the same cluster
+// triggers its own list instead of being served the first one's summaries.
+func TestRemote_ReadsImpersonateTheUserAndCachePerIdentity(t *testing.T) {
+	hs := newRemoteHarness(t)
+
+	if rr := doLimits(t, remoteCluster, hs.h.HandleListNamespaces, nil); rr.Code != http.StatusOK {
+		t.Fatalf("list: status %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr := doLimits(t, remoteCluster, hs.h.HandleGetNamespace, map[string]string{"namespace": "remote-ns"}); rr.Code != http.StatusOK {
+		t.Fatalf("detail: status %d: %s", rr.Code, rr.Body.String())
+	}
+	calls := hs.clients.recorded()
+	if len(calls) != 2 {
+		t.Fatalf("client resolutions = %+v, want one for the list and one for the detail", calls)
+	}
+	for _, c := range calls {
+		if c.cluster != remoteCluster || c.username != remoteUser.KubernetesUsername ||
+			len(c.groups) != 1 || c.groups[0] != remoteUser.KubernetesGroups[0] {
+			t.Errorf("client resolved as %+v, want %s as %s/%v", c, remoteCluster, remoteUser.KubernetesUsername, remoteUser.KubernetesGroups)
+		}
+	}
+
+	bob := &auth.User{Username: "bob@example.com", KubernetesUsername: "bob", KubernetesGroups: []string{"ops"}}
+	if rr := doLimitsAs(t, bob, remoteCluster, hs.h.HandleListNamespaces, nil); rr.Code != http.StatusOK {
+		t.Fatalf("second identity list: status %d: %s", rr.Code, rr.Body.String())
+	}
+	if q := countLists(hs.remote(), "resourcequotas"); q != 3 {
+		t.Errorf("quota lists after a second identity = %d, want 3 (its own list, not alice's cached summaries)", q)
+	}
+	calls = hs.clients.recorded()
+	if last := calls[len(calls)-1]; last.username != "bob" || len(last.groups) != 1 || last.groups[0] != "ops" {
+		t.Errorf("second identity's list resolved as %+v, want bob/[ops]", last)
 	}
 }
 

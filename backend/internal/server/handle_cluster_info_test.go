@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/version"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes"
 	fakekube "k8s.io/client-go/kubernetes/fake"
@@ -119,20 +121,68 @@ func TestClusterInfo_RemoteAnswersFromRemote(t *testing.T) {
 	}
 }
 
-func TestClusterInfo_RemoteNodesForbiddenIsNull(t *testing.T) {
+func nodeLists(cs *fakekube.Clientset) int {
+	n := 0
+	for _, a := range cs.Actions() {
+		if a.GetVerb() == "list" && a.GetResource().Resource == "nodes" {
+			n++
+		}
+	}
+	return n
+}
+
+// A user not proven allowed to list nodes gets a null count, and the gate
+// stops the list before it reaches the cluster: the remote here would answer
+// it, so only the gate can produce the null.
+func TestClusterInfo_RemoteNodesNotProvenAllowedIsNullWithoutAList(t *testing.T) {
 	cases := map[string]*resources.AccessChecker{
-		"sar denied":   resources.NewAlwaysDenyAccessChecker(),
-		"no checker":   nil,
-		"list refused": resources.NewAlwaysAllowAccessChecker(),
+		"sar denied": resources.NewAlwaysDenyAccessChecker(),
+		"no checker": nil,
 	}
 	for name, ac := range cases {
 		t.Run(name, func(t *testing.T) {
 			srv := newInfoServer(t, ac)
+			cs := remoteFake(2)
+			setRemote(srv, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+				return cs, nil
+			})
+			w, b := doInfo(t, srv, "remote-1", true)
+			if w.Code != 200 {
+				t.Fatalf("status %d body %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), `"nodeCount":null`) {
+				t.Errorf("nodeCount must be JSON null: %s", w.Body.String())
+			}
+			if n := nodeLists(cs); n != 0 {
+				t.Errorf("%d node lists reached the cluster for a user not proven allowed", n)
+			}
+			if b.Data.KubernetesVersion != "v1.99.0" {
+				t.Errorf("version = %q", b.Data.KubernetesVersion)
+			}
+		})
+	}
+}
+
+// The count is null whenever the whole list was not observed: the cluster
+// refused it, or it was still continuing at the paging cap.
+func TestClusterInfo_RemoteNodesUnobservedIsNull(t *testing.T) {
+	cases := map[string]clienttesting.ReactionFunc{
+		"list refused": func(clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "nodes"}, "", errors.New("no"))
+		},
+		"truncated": func(clienttesting.Action) (bool, runtime.Object, error) {
+			return true, &corev1.NodeList{
+				ListMeta: metav1.ListMeta{Continue: "more"},
+				Items:    []corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: "page"}}},
+			}, nil
+		},
+	}
+	for name, reaction := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := newInfoServer(t, resources.NewAlwaysAllowAccessChecker())
 			setRemote(srv, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
 				cs := remoteFake(2)
-				cs.PrependReactor("list", "nodes", func(clienttesting.Action) (bool, runtime.Object, error) {
-					return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "nodes"}, "", errors.New("no"))
-				})
+				cs.PrependReactor("list", "nodes", reaction)
 				return cs, nil
 			})
 			w, b := doInfo(t, srv, "remote-1", true)
@@ -146,6 +196,85 @@ func TestClusterInfo_RemoteNodesForbiddenIsNull(t *testing.T) {
 				t.Errorf("version = %q", b.Data.KubernetesVersion)
 			}
 		})
+	}
+}
+
+func TestClusterInfo_RemoteVersionFailureIs502(t *testing.T) {
+	srv := newInfoServer(t, resources.NewAlwaysAllowAccessChecker())
+	setRemote(srv, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+		cs := remoteFake(2)
+		cs.Discovery().(*fake.FakeDiscovery).PrependReactor("get", "version", func(clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("secret-internal-version")
+		})
+		return cs, nil
+	})
+	w, b := doInfo(t, srv, "remote-1", true)
+	if w.Code != 502 || b.Error == nil || b.Error.Message != clusterInfoReachMsg || b.Error.Detail != "" {
+		t.Fatalf("got %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "secret-internal") {
+		t.Errorf("raw error leaked: %s", w.Body.String())
+	}
+}
+
+// stalledClientset is a remote whose API server accepts the version request
+// and never answers it. The context-free ServerVersion stalls until release
+// (standing in for a TCP connection that never dies); the context-aware one
+// gives up when its context ends.
+type stalledClientset struct {
+	*fakekube.Clientset
+	disc *stalledDiscovery
+}
+
+func (c stalledClientset) Discovery() discovery.DiscoveryInterfaces { return c.disc }
+
+type stalledDiscovery struct {
+	*fake.FakeDiscovery
+	release <-chan struct{}
+}
+
+func (d *stalledDiscovery) ServerVersion() (*version.Info, error) {
+	<-d.release
+	return nil, errors.New("stalled")
+}
+
+func (d *stalledDiscovery) ServerVersionWithContext(ctx context.Context) (*version.Info, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-d.release:
+		return nil, errors.New("stalled")
+	}
+}
+
+func TestClusterInfo_RemoteStalledVersionIsBoundedByTheBudget(t *testing.T) {
+	prev := clusterInfoTimeout
+	clusterInfoTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { clusterInfoTimeout = prev })
+
+	release := make(chan struct{})
+	timer := time.AfterFunc(5*time.Second, func() { close(release) })
+	t.Cleanup(func() {
+		if timer.Stop() {
+			close(release)
+		}
+	})
+
+	srv := newInfoServer(t, resources.NewAlwaysAllowAccessChecker())
+	setRemote(srv, func(context.Context, string, *auth.User) (kubernetes.Interface, error) {
+		cs := remoteFake(2)
+		return stalledClientset{Clientset: cs, disc: &stalledDiscovery{FakeDiscovery: cs.Discovery().(*fake.FakeDiscovery), release: release}}, nil
+	})
+	start := time.Now()
+	w, b := doInfo(t, srv, "remote-1", true)
+	if elapsed := time.Since(start); elapsed > clusterInfoTimeout+time.Second {
+		t.Errorf("handler took %v, want it bounded by the %v budget", elapsed, clusterInfoTimeout)
+	}
+	if w.Code != 502 || b.Error == nil || b.Error.Message != clusterInfoReachMsg || b.Error.Detail != "" {
+		t.Fatalf("got %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "deadline") {
+		t.Errorf("context error leaked: %s", w.Body.String())
 	}
 }
 
