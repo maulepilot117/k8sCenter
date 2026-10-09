@@ -41,6 +41,27 @@ func (networkPolicyAdapter) GetFromCache(inf *k8s.InformerManager, ns, name stri
 	return inf.NetworkPolicies().NetworkPolicies(ns).Get(name)
 }
 
+// ListDirect lists one page from the API server as the caller, for a cluster
+// that has no informers. ns is ignored for cluster-scoped kinds. The returned
+// continue token is the API server's, passed through verbatim.
+func (networkPolicyAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
+	list, err := cs.NetworkingV1().NetworkPolicies(ns).List(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]any, len(list.Items))
+	for i := range list.Items {
+		out[i] = &list.Items[i]
+	}
+	return out, list.Continue, nil
+}
+
+// GetDirect reads one object from the API server as the caller. ns is ignored
+// for cluster-scoped kinds.
+func (networkPolicyAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
+	return cs.NetworkingV1().NetworkPolicies(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
 func (networkPolicyAdapter) Create(ctx context.Context, cs kubernetes.Interface, ns string, body []byte) (any, error) {
 	var obj networkingv1.NetworkPolicy
 	if err := json.Unmarshal(body, &obj); err != nil {

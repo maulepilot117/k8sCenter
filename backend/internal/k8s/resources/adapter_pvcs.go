@@ -41,6 +41,27 @@ func (pvcAdapter) GetFromCache(inf *k8s.InformerManager, ns, name string) (any, 
 	return inf.PersistentVolumeClaims().PersistentVolumeClaims(ns).Get(name)
 }
 
+// ListDirect lists one page from the API server as the caller, for a cluster
+// that has no informers. ns is ignored for cluster-scoped kinds. The returned
+// continue token is the API server's, passed through verbatim.
+func (pvcAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
+	list, err := cs.CoreV1().PersistentVolumeClaims(ns).List(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]any, len(list.Items))
+	for i := range list.Items {
+		out[i] = &list.Items[i]
+	}
+	return out, list.Continue, nil
+}
+
+// GetDirect reads one object from the API server as the caller. ns is ignored
+// for cluster-scoped kinds.
+func (pvcAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
+	return cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
 func (pvcAdapter) Create(ctx context.Context, cs kubernetes.Interface, ns string, body []byte) (any, error) {
 	var obj corev1.PersistentVolumeClaim
 	if err := json.Unmarshal(body, &obj); err != nil {
