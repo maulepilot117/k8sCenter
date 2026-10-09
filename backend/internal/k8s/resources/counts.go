@@ -543,9 +543,7 @@ func (h *Handler) countRemoteResources(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			finished := false
-			recoverutil.Safe(h.Logger, "resources remote counts "+c.kind, func() {
-				defer func() { finished = true }()
+			countOne := func() {
 				// An expired budget stops the fan-out here rather than
 				// sending, and logging, a doomed check per remaining kind.
 				if ctxErr := ctx.Err(); ctxErr != nil {
@@ -574,6 +572,14 @@ func (h *Handler) countRemoteResources(
 				defer mu.Unlock()
 				counts[c.kind] = n
 				truncated = truncated || cut
+			}
+			// finished is set only when countOne returns, early returns
+			// included; a panic skips the assignment, so the kind fails
+			// rather than going silently missing from the counts.
+			finished := false
+			recoverutil.Safe(h.Logger, "resources remote counts "+c.kind, func() {
+				countOne()
+				finished = true
 			})
 			if !finished {
 				// recoverutil logged the panic; the kind's count is unknown.

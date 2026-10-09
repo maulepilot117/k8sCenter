@@ -4,11 +4,7 @@ import PDBWizard from "@/src/islands/PDBWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import {
-  formatCount,
-  getCount,
-  resourceCounts,
-} from "@/src/lib/resource-counts.ts";
+import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 
 export default function PDBsDashboard() {
   const _ns = selectedNamespace.value;

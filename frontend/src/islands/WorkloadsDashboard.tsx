@@ -9,11 +9,7 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import StatefulSetWizard from "@/src/islands/StatefulSetWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import {
-  formatCount,
-  getCount,
-  resourceCounts,
-} from "@/src/lib/resource-counts.ts";
+import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 
 const workloadsSection = DOMAIN_SECTIONS.find((s) => s.id === "workloads")!;
 

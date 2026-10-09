@@ -8,11 +8,7 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import ServiceWizard from "@/src/islands/ServiceWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import {
-  formatCount,
-  getCount,
-  resourceCounts,
-} from "@/src/lib/resource-counts.ts";
+import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 
 type WizardComponent =
   | (({ onClose }: { onClose: () => void }) => preact.JSX.Element)
