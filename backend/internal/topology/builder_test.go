@@ -577,3 +577,35 @@ func callTopologyHandler(t *testing.T, h *Handler, namespace, overlay string) *h
 	h.HandleNamespaceGraph(w, req)
 	return w
 }
+
+// deadlineLister fails the deployment list with the request deadline, as a
+// remote list does when the read budget runs out mid-build.
+type deadlineLister struct{ fakeLister }
+
+func (deadlineLister) ListDeployments(context.Context, string) ([]*appsv1.Deployment, error) {
+	return nil, context.DeadlineExceeded
+}
+
+// A kind lost to the deadline is left out like a truncated one, and the graph
+// says so rather than looking complete.
+func TestBuilder_DeadlineLostKindIsMarked(t *testing.T) {
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "foo", UID: "svc-a"}}
+	b := NewBuilder(&deadlineLister{fakeLister{services: []*corev1.Service{svc}}}, nil, slog.Default())
+
+	graph, err := b.BuildNamespaceGraph(context.Background(), "foo", testUser(), resources.NewAlwaysAllowAccessChecker())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !graph.Truncated {
+		t.Error("truncated = false, want true when a kind ran out of time")
+	}
+	if msg := graph.Errors[KindDeployments]; msg == "" {
+		t.Errorf("errors = %v, want a %s entry", graph.Errors, KindDeployments)
+	}
+	if len(graph.Errors) != 1 {
+		t.Errorf("errors = %v, want only the deadline-lost kind", graph.Errors)
+	}
+	if len(graph.Nodes) != 1 || graph.Nodes[0].Name != "a" {
+		t.Errorf("nodes = %+v, want the service the other lists returned", graph.Nodes)
+	}
+}

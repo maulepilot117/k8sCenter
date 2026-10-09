@@ -60,10 +60,12 @@ type DiagnosticTarget struct {
 	Limitations []Limitation
 }
 
-// Related-resolution kinds a Limitation can name and a rule can depend on.
+// Related-resolution kinds a Limitation can name and a rule can depend on:
+// the plural resources topology lists them under, so a
+// topology.TruncatedError's Kind is directly a Limitation's.
 const (
-	limitPods        = "pods"
-	limitReplicaSets = "replicasets"
+	limitPods        = topology.KindPods
+	limitReplicaSets = topology.KindReplicaSets
 )
 
 // Limitation names one related resolution Resolve could not perform and why.
@@ -256,7 +258,7 @@ func Resolve(ctx context.Context, lister topology.ResourceLister, namespace, kin
 		switch {
 		case err != nil:
 			slog.Warn("failed to resolve related pods", "kind", kind, "name", name, "error", err)
-			target.Limitations = append(target.Limitations, relatedLimitation(err))
+			target.Limitations = append(target.Limitations, relatedLimitations(err)...)
 		case kind == "Deployment" && !related.allowsReplicaSets():
 			// resolveRelatedPods returns no pods for a Deployment whose ReplicaSets
 			// the user cannot list.
@@ -330,19 +332,41 @@ func isTruncated(err error) bool {
 	return errors.As(err, &te)
 }
 
-// relatedLimitation records a failed related resolution: a read cap names
-// the list it cut short (pods or replicasets) with ReasonTruncated, and any
+// relatedLimitations records a failed related resolution: each read cap
+// names the list it cut short (pods, replicasets or both, when
+// resolveRelatedPods joined two truncations) with ReasonTruncated, and any
 // other failure is the pods resolution being unavailable.
-func relatedLimitation(err error) Limitation {
-	var te *topology.TruncatedError
-	if errors.As(err, &te) {
+func relatedLimitations(err error) []Limitation {
+	var out []Limitation
+	for _, e := range leafErrors(err) {
+		var te *topology.TruncatedError
+		if !errors.As(e, &te) {
+			continue
+		}
 		kind := limitPods
 		if te.Kind == limitReplicaSets {
 			kind = limitReplicaSets
 		}
-		return Limitation{Kind: kind, Reason: ReasonTruncated}
+		out = append(out, Limitation{Kind: kind, Reason: ReasonTruncated})
 	}
-	return Limitation{Kind: limitPods, Reason: ReasonSourceUnavailable}
+	if len(out) == 0 {
+		return []Limitation{{Kind: limitPods, Reason: ReasonSourceUnavailable}}
+	}
+	return out
+}
+
+// leafErrors flattens errors.Join trees into their members; any other error
+// is its own single member.
+func leafErrors(err error) []error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return []error{err}
+	}
+	var out []error
+	for _, e := range joined.Unwrap() {
+		out = append(out, leafErrors(e)...)
+	}
+	return out
 }
 
 // resolveRelatedPods finds pods associated with the target resource.
@@ -352,8 +376,9 @@ func relatedLimitation(err error) Limitation {
 // A pod or ReplicaSet list cut short by a remote read cap
 // (*topology.TruncatedError) is matched as far as it was read: the pods found
 // are returned together with the truncation, so a finding on an observed pod
-// stands while a pass is reported as inconclusive. Any other list error
-// returns no pods.
+// stands while a pass is reported as inconclusive. When both lists were cut
+// short the two truncations are returned joined (errors.Join), so each is
+// reported. Any other list error returns no pods.
 func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, namespace, kind, name string, obj runtime.Object, related *RelatedRBAC) ([]*corev1.Pod, error) {
 	allPods, err := lister.ListPods(ctx, namespace)
 	if err != nil && !isTruncated(err) {
@@ -380,13 +405,11 @@ func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, nam
 		if !related.allowsReplicaSets() {
 			return nil, nil
 		}
-		replicaSets, err := lister.ListReplicaSets(ctx, namespace)
-		if err != nil && !isTruncated(err) {
-			return nil, err
+		replicaSets, rsErr := lister.ListReplicaSets(ctx, namespace)
+		if rsErr != nil && !isTruncated(rsErr) {
+			return nil, rsErr
 		}
-		if partial == nil {
-			partial = err
-		}
+		partial = errors.Join(partial, rsErr)
 		// Find ReplicaSets owned by this Deployment
 		rsNames := make(map[string]bool)
 		for _, rs := range replicaSets {
