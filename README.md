@@ -59,7 +59,10 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Apply YAML | Yes | Yes | Apply is pinned to the cluster the preview ran against. A mismatch is refused with 409 (`cluster_pin_mismatch` / `cluster_generation_mismatch`) and nothing is applied |
 | Dashboard summary | Yes | Partial | Node, pod and service counts and capacity, each with a per-section coverage row (opt-in `?coverage=1`). CPU/memory usage, alert counts and the health score are shown as unavailable, never as 0: there is no remote metrics binding yet |
 | Resource lists and detail | Yes | Yes | Every kind on the resource pages (Deployments, Pods, Nodes, Services, ...) and the dashboard list widgets are read from the selected cluster as the user. A remote list is read whole, up to 5,000 objects, and paged by k8sCenter; a longer list is served up to that cap and marked truncated. Secrets keep their own masked route |
-| Resource counts | Yes | No | `k8s/resources/counts.go` (400: counts read the local informer cache). List pages say so instead of loading |
+| Resource counts | Yes | Yes | Per-kind access checks run on the selected cluster and each kind the user may list is counted by a bounded direct read; a kind cut off at the cap is reported as read with the response marked truncated |
+| Cluster info | Yes | Yes | Version, platform and node count read from the selected cluster as the user; the node count is omitted rather than guessed when the user may not list nodes |
+| Namespace limits | Yes | Yes | ResourceQuotas and LimitRanges read from the selected cluster as the user and cached briefly per user. The remote read is cluster-wide, so an account allowed only in some namespaces is refused there where the local path filters per namespace |
+| Vulnerability reports | Yes | Yes | Trivy and Kubescape reports read as the user on the selected cluster, with scanner presence detected there. The local discovery loop still probes scanner namespaces with the service account for the local status only |
 | Pod exec | Yes | No | `k8s/resources/pods.go` (501) |
 | Live log stream | Yes | No | `server/handle_ws_logs.go` (WebSocket close) |
 | Log search | Yes | No | `server/handle_ws_logs_search.go` (WebSocket close) |
