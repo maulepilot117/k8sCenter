@@ -723,7 +723,7 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * what the card should show.
  *
  * `diagnostics-summary` is deliberately absent: the route serves remote
- * clusters (#608), so a 501 from it is an ordinary failure, not a refusal.
+ * clusters, so a 501 from it is an ordinary failure, not a refusal.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
   {

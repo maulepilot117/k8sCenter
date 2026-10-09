@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -260,8 +261,8 @@ func TestDiagnosticsRemote_SummaryTruncatedIs502(t *testing.T) {
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502; body: %s", w.Code, w.Body.String())
 	}
-	if e := decodeError(t, w.Body.Bytes()); e.Error.Message != summaryTruncatedMessage {
-		t.Errorf("message = %q, want %q", e.Error.Message, summaryTruncatedMessage)
+	if e, want := decodeError(t, w.Body.Bytes()), "too many pods in namespace team-a on the selected cluster"; e.Error.Message != want {
+		t.Errorf("message = %q, want %q", e.Error.Message, want)
 	}
 	assertNoLocalRead(t, lister)
 }
@@ -272,6 +273,7 @@ func TestDiagnosticsRemote_SummaryListErrors(t *testing.T) {
 		err     error
 		status  int
 		message string
+		reason  string
 	}{
 		{
 			name:    "forbidden",
@@ -280,10 +282,26 @@ func TestDiagnosticsRemote_SummaryListErrors(t *testing.T) {
 			message: "you do not have permission to list pods in namespace team-a on the selected cluster",
 		},
 		{
-			name:    "transport",
+			name:    "other",
 			err:     errors.New(rawRemoteText),
 			status:  http.StatusBadGateway,
-			message: "failed to list pods on the selected cluster",
+			message: "the cluster request failed",
+		},
+		{
+			// An upstream 401 is the cluster rejecting its stored
+			// credentials, never this user's session.
+			name:    "unauthorized",
+			err:     apierrors.NewUnauthorized(rawRemoteText),
+			status:  http.StatusBadGateway,
+			message: "could not connect to the selected cluster with its stored credentials",
+			reason:  string(k8s.ReasonCredentialsInvalid),
+		},
+		{
+			name:    "deadline",
+			err:     fmt.Errorf("%s: %w", rawRemoteText, context.DeadlineExceeded),
+			status:  http.StatusBadGateway,
+			message: "the selected cluster could not be reached",
+			reason:  string(k8s.ReasonUnreachable),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -296,8 +314,8 @@ func TestDiagnosticsRemote_SummaryListErrors(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body: %s", w.Code, tc.status, w.Body.String())
 			}
 			e := decodeError(t, w.Body.Bytes())
-			if e.Error.Message != tc.message || e.Error.Detail != "" {
-				t.Errorf("error = %+v, want message %q and no detail", e.Error, tc.message)
+			if e.Error.Message != tc.message || e.Error.Detail != "" || e.Error.Reason != tc.reason {
+				t.Errorf("error = %+v, want message %q, reason %q and no detail", e.Error, tc.message, tc.reason)
 			}
 			if strings.Contains(w.Body.String(), "10.9.8.7") {
 				t.Errorf("raw remote error leaked: %s", w.Body.String())
@@ -431,5 +449,27 @@ func TestDiagnosticsLocal_NeverResolvesClients(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// When both the pod and the ReplicaSet lists hit the read cap, each is
+// reported as a truncated limitation.
+func TestDiagnosticsRemote_BothRelatedListsTruncated(t *testing.T) {
+	cs := kfake.NewSimpleClientset(remoteObjects()...)
+	endlessPods(cs)
+	cs.PrependReactor("list", "replicasets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, &appsv1.ReplicaSetList{
+			ListMeta: metav1.ListMeta{Continue: "more"},
+			Items:    []appsv1.ReplicaSet{{ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "team-a"}}},
+		}, nil
+	})
+
+	target, err := Resolve(context.Background(), topology.NewRemoteLister(cs, nil), "team-a", "Deployment", "api", &RelatedRBAC{Pods: true, ReplicaSets: true})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	want := []Limitation{{Kind: limitPods, Reason: ReasonTruncated}, {Kind: limitReplicaSets, Reason: ReasonTruncated}}
+	if len(target.Limitations) != len(want) || target.Limitations[0] != want[0] || target.Limitations[1] != want[1] {
+		t.Errorf("limitations = %+v, want %+v", target.Limitations, want)
 	}
 }

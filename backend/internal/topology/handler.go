@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -14,10 +13,6 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
-
-// remoteReadTimeout bounds a remote graph request: client resolution and
-// every list. A var so tests can shorten it.
-var remoteReadTimeout = 10 * time.Second
 
 // reasonOverlayUnsupportedRemote and overlayUnsupportedRemoteMessage answer
 // an overlay request under a remote cluster selection: the mesh and ESO
@@ -47,10 +42,10 @@ type Handler struct {
 //	  is byte-identical to the no-overlay path.
 //
 // On a remote cluster the graph is built from direct, bounded reads of that
-// cluster as the user (RemoteLister, within remoteReadTimeout), never from the
+// cluster as the user (RemoteLister, within RemoteReadTimeout), never from the
 // local informers. The builder's per-kind RBAC gate applies unchanged; a kind
-// that is forbidden or exceeds the read cap is left out, the latter marked in
-// Truncated and Errors. Overlays read local-cluster inventories, so ?overlay=
+// that is forbidden, exceeds the read cap or runs out of time is left out, the
+// latter two marked in Truncated and Errors. Overlays read local-cluster inventories, so ?overlay=
 // with a known overlay on a remote cluster is a 400 with reason
 // overlay_unsupported_remote.
 func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +61,8 @@ func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
 	overlay := r.URL.Query().Get("overlay")
 	builder := h.Builder
 
-	if clusterID := middleware.ClusterIDFromContext(ctx); !k8s.IsLocalClusterID(clusterID) {
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	if !k8s.IsLocalClusterID(clusterID) {
 		// Every overlay is answered before the cluster is contacted: an
 		// unknown value gets the same 400 the builder gives locally, without
 		// a dozen remote lists first.
@@ -80,20 +76,20 @@ func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusBadRequest, "unsupported overlay value", overlay)
 			return
 		}
-		if h.Clients == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = WithRemoteTimeout(ctx, clusterID)
+		defer cancel()
+		var err error
+		builder, _, err = NewRemoteBuilder(ctx, h.Clients, clusterID, user, h.Logger)
+		if errors.Is(err, ErrNoClusterClients) {
 			h.Logger.Error("topology: remote cluster requested but no cluster clients are wired", "clusterID", clusterID)
 			httputil.WriteError(w, http.StatusInternalServerError, "topology is not configured", "")
 			return
 		}
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, remoteReadTimeout)
-		defer cancel()
-		cs, err := h.Clients.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 		if err != nil {
 			httputil.WriteTargetError(w, err)
 			return
 		}
-		builder = NewBuilder(NewRemoteLister(cs, h.Logger), nil, h.Logger)
 	}
 
 	graph, err := builder.BuildNamespaceGraphWithOverlay(ctx, namespace, user, h.AccessChecker, overlay)
