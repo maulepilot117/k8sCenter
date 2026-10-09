@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import {
-  countsPendingText,
-  fetchCounts,
-  resourceCounts,
-  resourceCountsUnavailable,
-} from "./resource-counts.ts";
+import { fetchCounts, resourceCounts } from "./resource-counts.ts";
 
 /**
  * The counts store's fetch outcome handling.
@@ -43,19 +38,11 @@ function answer(status: number, payload: unknown) {
 beforeEach(() => {
   calls = [];
   resourceCounts.value = null;
-  resourceCountsUnavailable.value = null;
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   resourceCounts.value = null;
-  resourceCountsUnavailable.value = null;
-});
-
-describe("countsPendingText", () => {
-  test("falls back to the caller's loading copy when nothing is unavailable", () => {
-    expect(countsPendingText("Loading pods…")).toBe("Loading pods…");
-  });
 });
 
 describe("fetchCounts", () => {
@@ -64,7 +51,6 @@ describe("fetchCounts", () => {
     await fetchCounts("all", "abc123");
     expect(calls).toHaveLength(1);
     expect(calls[0].clusterHeader).toBe("abc123");
-    expect(resourceCountsUnavailable.value).toBeNull();
   });
 
   test("a failed read for another cluster clears the previous cluster's counts", async () => {
@@ -92,6 +78,5 @@ describe("fetchCounts", () => {
     expect(calls[0].url).toContain("/v1/resources/counts?namespace=default");
     expect(calls[0].clusterHeader).toBe("local");
     expect(resourceCounts.value).toEqual({ pods: 3 });
-    expect(resourceCountsUnavailable.value).toBeNull();
   });
 });

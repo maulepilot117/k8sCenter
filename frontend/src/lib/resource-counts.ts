@@ -21,16 +21,6 @@ export const resourceCounts = signal<Record<string, number> | null>(null);
 /** True while a fetch is in flight. */
 export const resourceCountsLoading = signal(false);
 
-/**
- * Why counts cannot be shown for the selected cluster, or null when they can.
- *
- * Nothing sets this today: the counts route reads the selected cluster as the
- * user (#608), so no cluster is refused outright any more. The signal and its
- * consumers (SecondaryNav, the list-page dashboards via `countsPendingText`)
- * stay so a future standing refusal has somewhere to be published.
- */
-export const resourceCountsUnavailable = signal<string | null>(null);
-
 /** Derived: total items with counts across the current signal value. */
 export const resourceCountsTotal = computed(() => {
   const c = resourceCounts.value;
@@ -46,19 +36,6 @@ export function getCount(kind: string): number | null {
   const c = resourceCounts.value;
   if (!c) return null;
   return c[kind] ?? 0;
-}
-
-/**
- * What a loading-state consumer should print while counts are pending: the
- * unavailability reason when the selected cluster refused counts outright, or
- * the caller's own "Loading…" copy while a real fetch is still in flight.
- *
- * Reads `resourceCountsUnavailable.value` so callers subscribe to it like any
- * other signal read in a render body -- this must not be called outside a
- * reactive context if the caller wants updates.
- */
-export function countsPendingText(loading: string): string {
-  return resourceCountsUnavailable.value ?? loading;
 }
 
 /** The cluster `resourceCounts` was last read from, or null before any read. */
@@ -92,7 +69,6 @@ export async function fetchCounts(
       `/v1/resources/counts${nsParam}`,
       { method: "GET", signal, clusterId: cluster },
     );
-    resourceCountsUnavailable.value = null;
     resourceCounts.value = res.data ?? {};
     countsCluster = cluster;
   } catch (err) {
