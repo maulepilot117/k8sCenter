@@ -207,6 +207,8 @@ test.describe.serial("Remote cluster capabilities", () => {
       "certmanager.certificates",
       "policy.read",
       "changes.receipts",
+      "topology.graph",
+      "diagnostics.read",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
@@ -216,8 +218,6 @@ test.describe.serial("Remote cluster capabilities", () => {
       "mesh.golden_signals",
       "eso.history",
       "eso.metrics",
-      "topology.graph",
-      "diagnostics.read",
       "policy.compliance_history",
       "velero.assurance",
       "incidents.capture",
@@ -564,6 +564,41 @@ test.describe.serial("Remote cluster capabilities", () => {
     expect(["none", "trivy", "kubescape", "both"]).toContain(data.detected);
     // The fixture cluster runs no scanner.
     expect(data.detected).toBe("none");
+  });
+
+  test("diagnostics summary under a remote selection reads the remote cluster", async ({
+    page,
+  }) => {
+    const res = await page.request.get(
+      `/api/v1/diagnostics/${FIXTURE_NS}/summary`,
+      { headers: await headersFor(page, REMOTE!) },
+    );
+    expect(res.status()).toBe(200);
+    const { data } = await res.json();
+    expect(typeof data.total).toBe("number");
+    expect(data.total).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(data.failing)).toBe(true);
+  });
+
+  test("topology graph under a remote selection is built from the remote cluster", async ({
+    page,
+  }) => {
+    const res = await page.request.get(`/api/v1/topology/${FIXTURE_NS}`, {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(res.status()).toBe(200);
+    const { data } = await res.json();
+    expect(Array.isArray(data.nodes)).toBe(true);
+    expect(Array.isArray(data.edges)).toBe(true);
+  });
+
+  test("the mesh overlay is refused on a remote selection", async ({ page }) => {
+    const res = await page.request.get(
+      `/api/v1/topology/${FIXTURE_NS}?overlay=mesh`,
+      { headers: await headersFor(page, REMOTE!) },
+    );
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error.reason).toBe("overlay_unsupported_remote");
   });
 
   // Must stay last: see the header.

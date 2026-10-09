@@ -85,8 +85,8 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Service mesh golden signals | Yes | No | `servicemesh/handler.go` (reported unavailable: the signals come from the local Prometheus) |
 | External Secrets sync history | Yes | No | `externalsecrets/history_handler.go` and `externalsecrets/detail_evidence.go` (501: recorded for the local cluster only) |
 | External Secrets store metrics | Yes | No | `externalsecrets/metrics.go` (reported unavailable: the rate comes from the local Prometheus) |
-| Resource topology graph | Yes | No | `topology/handler.go` (501: the graph is built from the local cluster's informers) |
-| Resource diagnostics and blast radius | Yes | No | `diagnostics/handler.go` (501: the target, its pods and the blast-radius graph come from the local cluster's informers) |
+| Resource topology graph | Yes | Yes | Built from the selected cluster's objects as the user; a kind the user may not list, or one past the read cap, is left out as it is locally. The mesh overlay is local-only and is refused on a remote selection |
+| Resource diagnostics and blast radius | Yes | Yes | The target, its pods and the blast-radius graph are read from the selected cluster as the user; a pod list past the read cap is reported as a limitation rather than undercounted |
 | Policy compliance history | Yes | No | `policy/handler.go` (501: daily snapshots are recorded for the local cluster only) |
 | Tracked change receipts | Yes | Yes | Receipts are stored by this installation and listed or read for any cluster by their owner. Verifying a receipt and resolving GitOps ownership run against the cluster the receipt recorded, not the selected one, and live access to a remote cluster needs admin (a non-admin still reads a stored final verdict, redacted). Cluster IDs are random per registration, so a receipt is never verified against a re-registered cluster |
 | Backup assurance | Yes | No | `velero/assurance_handler.go` (501 `remote_assurance_unsupported`: status, exceptions and policies are collected and stored for the local cluster only) |
