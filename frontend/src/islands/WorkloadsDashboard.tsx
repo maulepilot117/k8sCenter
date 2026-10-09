@@ -9,7 +9,11 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import StatefulSetWizard from "@/src/islands/StatefulSetWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import {
+  formatCount,
+  getCount,
+  resourceCounts,
+} from "@/src/lib/resource-counts.ts";
 
 const workloadsSection = DOMAIN_SECTIONS.find((s) => s.id === "workloads")!;
 
@@ -85,13 +89,12 @@ export default function WorkloadsDashboard({
   }, []);
 
   // Derive subtitle from live counts in the shared store.
-  const total = getCount(kind) ?? 0;
   const countsReady = resourceCounts.value !== null;
 
   // Build subtitle: "N deployments" — omit degraded clause until we have
   // real degraded data (not invented). The resource table itself shows status.
   const subtitle = countsReady
-    ? `${total} ${title.toLowerCase()}`
+    ? `${formatCount(kind) ?? 0} ${title.toLowerCase()}`
     : `Loading ${title.toLowerCase()}…`;
 
   return (

@@ -8,7 +8,11 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import ServiceWizard from "@/src/islands/ServiceWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import {
+  formatCount,
+  getCount,
+  resourceCounts,
+} from "@/src/lib/resource-counts.ts";
 
 type WizardComponent =
   | (({ onClose }: { onClose: () => void }) => preact.JSX.Element)
@@ -127,7 +131,6 @@ export default function NetworkingDashboard({
     }
   }, []);
 
-  const total = kind ? (getCount(kind) ?? 0) : 0;
   const countsReady = resourceCounts.value !== null;
   const pageTitle = isCni ? "Network" : title;
 
@@ -136,7 +139,7 @@ export default function NetworkingDashboard({
     : isFlows
       ? "Live network flow visualization"
       : countsReady
-        ? `${total} ${title.toLowerCase()}`
+        ? `${formatCount(kind) ?? 0} ${title.toLowerCase()}`
         : `Loading ${title.toLowerCase()}…`;
 
   return (

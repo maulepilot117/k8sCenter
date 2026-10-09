@@ -8,7 +8,11 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import SnapshotList from "@/src/islands/SnapshotList.tsx";
 import StorageClassWizard from "@/src/islands/StorageClassWizard.tsx";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import {
+  formatCount,
+  getCount,
+  resourceCounts,
+} from "@/src/lib/resource-counts.ts";
 
 function resolveTab(currentPath: string): {
   kind: string;
@@ -115,7 +119,6 @@ export default function StorageDashboard({
   // For the PVC donut we need phase breakdown — that requires a list fetch.
   // On the Overview we keep the donut with totals only (no invented phase split).
   // The subtitle for list pages derives from the relevant count.
-  const listCount = kind ? (getCount(kind) ?? 0) : 0;
 
   const pageTitle = isOverview ? "Storage" : title;
   const subtitle = isOverview
@@ -123,7 +126,7 @@ export default function StorageDashboard({
     : isSnapshots
       ? "Volume snapshots"
       : countsReady
-        ? `${listCount} ${title.toLowerCase()}`
+        ? `${formatCount(kind) ?? 0} ${title.toLowerCase()}`
         : `Loading ${title.toLowerCase()}…`;
 
   // Overview donut: show total PVCs as a single neutral segment
