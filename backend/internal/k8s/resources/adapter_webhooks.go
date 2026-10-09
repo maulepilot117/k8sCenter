@@ -35,9 +35,7 @@ func (validatingWebhookAdapter) GetFromCache(inf *k8s.InformerManager, _, name s
 	return inf.ValidatingWebhookConfigurations().Get(name)
 }
 
-// ListDirect lists one page from the API server as the caller, for a cluster
-// that has no informers. ns is ignored for cluster-scoped kinds. The returned
-// continue token is the API server's, passed through verbatim.
+// ListDirect implements ResourceAdapter.
 func (validatingWebhookAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, _ string, opts metav1.ListOptions) ([]any, string, error) {
 	list, err := cs.AdmissionregistrationV1().ValidatingWebhookConfigurations().List(ctx, opts)
 	if err != nil {
@@ -50,8 +48,7 @@ func (validatingWebhookAdapter) ListDirect(ctx context.Context, cs kubernetes.In
 	return out, list.Continue, nil
 }
 
-// GetDirect reads one object from the API server as the caller. ns is ignored
-// for cluster-scoped kinds.
+// GetDirect implements ResourceAdapter.
 func (validatingWebhookAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, _, name string) (any, error) {
 	return cs.AdmissionregistrationV1().ValidatingWebhookConfigurations().Get(ctx, name, metav1.GetOptions{})
 }
@@ -83,9 +80,7 @@ func (mutatingWebhookAdapter) GetFromCache(inf *k8s.InformerManager, _, name str
 	return inf.MutatingWebhookConfigurations().Get(name)
 }
 
-// ListDirect lists one page from the API server as the caller, for a cluster
-// that has no informers. ns is ignored for cluster-scoped kinds. The returned
-// continue token is the API server's, passed through verbatim.
+// ListDirect implements ResourceAdapter.
 func (mutatingWebhookAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, _ string, opts metav1.ListOptions) ([]any, string, error) {
 	list, err := cs.AdmissionregistrationV1().MutatingWebhookConfigurations().List(ctx, opts)
 	if err != nil {
@@ -98,8 +93,7 @@ func (mutatingWebhookAdapter) ListDirect(ctx context.Context, cs kubernetes.Inte
 	return out, list.Continue, nil
 }
 
-// GetDirect reads one object from the API server as the caller. ns is ignored
-// for cluster-scoped kinds.
+// GetDirect implements ResourceAdapter.
 func (mutatingWebhookAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, _, name string) (any, error) {
 	return cs.AdmissionregistrationV1().MutatingWebhookConfigurations().Get(ctx, name, metav1.GetOptions{})
 }

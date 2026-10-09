@@ -41,9 +41,7 @@ func (pdbAdapter) GetFromCache(inf *k8s.InformerManager, ns, name string) (any, 
 	return inf.PodDisruptionBudgets().PodDisruptionBudgets(ns).Get(name)
 }
 
-// ListDirect lists one page from the API server as the caller, for a cluster
-// that has no informers. ns is ignored for cluster-scoped kinds. The returned
-// continue token is the API server's, passed through verbatim.
+// ListDirect implements ResourceAdapter.
 func (pdbAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
 	list, err := cs.PolicyV1().PodDisruptionBudgets(ns).List(ctx, opts)
 	if err != nil {
@@ -56,8 +54,7 @@ func (pdbAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns st
 	return out, list.Continue, nil
 }
 
-// GetDirect reads one object from the API server as the caller. ns is ignored
-// for cluster-scoped kinds.
+// GetDirect implements ResourceAdapter.
 func (pdbAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
 	return cs.PolicyV1().PodDisruptionBudgets(ns).Get(ctx, name, metav1.GetOptions{})
 }

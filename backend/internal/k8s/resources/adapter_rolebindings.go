@@ -41,9 +41,7 @@ func (roleBindingAdapter) GetFromCache(inf *k8s.InformerManager, ns, name string
 	return inf.RoleBindings().RoleBindings(ns).Get(name)
 }
 
-// ListDirect lists one page from the API server as the caller, for a cluster
-// that has no informers. ns is ignored for cluster-scoped kinds. The returned
-// continue token is the API server's, passed through verbatim.
+// ListDirect implements ResourceAdapter.
 func (roleBindingAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
 	list, err := cs.RbacV1().RoleBindings(ns).List(ctx, opts)
 	if err != nil {
@@ -56,8 +54,7 @@ func (roleBindingAdapter) ListDirect(ctx context.Context, cs kubernetes.Interfac
 	return out, list.Continue, nil
 }
 
-// GetDirect reads one object from the API server as the caller. ns is ignored
-// for cluster-scoped kinds.
+// GetDirect implements ResourceAdapter.
 func (roleBindingAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
 	return cs.RbacV1().RoleBindings(ns).Get(ctx, name, metav1.GetOptions{})
 }

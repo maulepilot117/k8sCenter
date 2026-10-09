@@ -29,17 +29,18 @@ func (secretAdapter) ListFromCache(_ *k8s.InformerManager, _ string, _ labels.Se
 	return nil, errSecretsNotCached
 }
 
-// The generic route never serves Secrets on any cluster; the masked secret
+func (secretAdapter) GetFromCache(_ *k8s.InformerManager, _, _ string) (any, error) {
+	return nil, errSecretsNotCached
+}
+
+// ListDirect and GetDirect refuse Secrets on every cluster, exactly as the
+// cache methods do: the generic route never serves them, the masked secret
 // handlers own them.
 func (secretAdapter) ListDirect(_ context.Context, _ kubernetes.Interface, _ string, _ metav1.ListOptions) ([]any, string, error) {
 	return nil, "", errSecretsNotCached
 }
 
 func (secretAdapter) GetDirect(_ context.Context, _ kubernetes.Interface, _, _ string) (any, error) {
-	return nil, errSecretsNotCached
-}
-
-func (secretAdapter) GetFromCache(_ *k8s.InformerManager, _, _ string) (any, error) {
 	return nil, errSecretsNotCached
 }
 

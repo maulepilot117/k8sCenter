@@ -33,10 +33,8 @@ func (storageClassAdapter) GetFromCache(inf *k8s.InformerManager, _, name string
 	return inf.StorageClasses().Get(name)
 }
 
-// ListDirect lists one page from the API server as the caller, for a cluster
-// that has no informers. ns is ignored for cluster-scoped kinds. The returned
-// continue token is the API server's, passed through verbatim.
-func (storageClassAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
+// ListDirect implements ResourceAdapter.
+func (storageClassAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, _ string, opts metav1.ListOptions) ([]any, string, error) {
 	list, err := cs.StorageV1().StorageClasses().List(ctx, opts)
 	if err != nil {
 		return nil, "", err
@@ -48,9 +46,8 @@ func (storageClassAdapter) ListDirect(ctx context.Context, cs kubernetes.Interfa
 	return out, list.Continue, nil
 }
 
-// GetDirect reads one object from the API server as the caller. ns is ignored
-// for cluster-scoped kinds.
-func (storageClassAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
+// GetDirect implements ResourceAdapter.
+func (storageClassAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, _, name string) (any, error) {
 	return cs.StorageV1().StorageClasses().Get(ctx, name, metav1.GetOptions{})
 }
 

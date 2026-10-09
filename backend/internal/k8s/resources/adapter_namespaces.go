@@ -35,9 +35,7 @@ func (namespaceAdapter) GetFromCache(inf *k8s.InformerManager, _, name string) (
 	return inf.Namespaces().Get(name)
 }
 
-// ListDirect lists one page from the API server as the caller, for a cluster
-// that has no informers. ns is ignored for cluster-scoped kinds. The returned
-// continue token is the API server's, passed through verbatim.
+// ListDirect implements ResourceAdapter.
 func (namespaceAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, _ string, opts metav1.ListOptions) ([]any, string, error) {
 	list, err := cs.CoreV1().Namespaces().List(ctx, opts)
 	if err != nil {
@@ -50,8 +48,7 @@ func (namespaceAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface,
 	return out, list.Continue, nil
 }
 
-// GetDirect reads one object from the API server as the caller. ns is ignored
-// for cluster-scoped kinds.
+// GetDirect implements ResourceAdapter.
 func (namespaceAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, _, name string) (any, error) {
 	return cs.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
 }
