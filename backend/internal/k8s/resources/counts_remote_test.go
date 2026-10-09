@@ -245,25 +245,48 @@ func TestResourceCounts_RemoteSARErrorIs502(t *testing.T) {
 
 // When the shared budget runs out the request answers 504 with a fixed
 // message, promptly, and the context error stays in the log.
+//
+// The budget itself ends the stalled list. The fake clientset hands its
+// reactors no context, so the test captures the context the handler resolves
+// the client with (the budgeted one) and the deployments list waits on it,
+// returning what client-go returns for an expired context. If the handler
+// applied no budget, that context would never end: the list would give up on
+// the test's own fallback timer with a plain error, and the request would
+// answer a late 502, failing both the status and the elapsed-time check.
 func TestResourceCounts_RemoteBudgetExpiryIs504(t *testing.T) {
 	prev := remoteCountsBudget
 	remoteCountsBudget = 200 * time.Millisecond
 	t.Cleanup(func() { remoteCountsBudget = prev })
+	fallback := remoteCountsBudget + 3*time.Second
 
 	h, _, remote := remoteEventsHandler(t, nil, countsDeployment("a", "r1"), countsNode("r-n1"))
-	// The fake clientset ignores the request context, so the reactor stands
-	// in for a stalled API server: it answers only once the budget has gone,
-	// with the error client-go returns for an expired context.
+	var (
+		ctxMu      sync.Mutex
+		handlerCtx context.Context
+	)
+	h.remoteClient = func(ctx context.Context, _ string, _ *auth.User) (kubernetes.Interface, error) {
+		ctxMu.Lock()
+		defer ctxMu.Unlock()
+		handlerCtx = ctx
+		return remote, nil
+	}
 	remote.PrependReactor("list", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
-		time.Sleep(remoteCountsBudget + 50*time.Millisecond)
-		return true, nil, fmt.Errorf("Get \"https://10.0.0.9:6443/apis/apps/v1/deployments\": %w", context.DeadlineExceeded)
+		ctxMu.Lock()
+		ctx := handlerCtx
+		ctxMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return true, nil, fmt.Errorf("Get \"https://10.0.0.9:6443/apis/apps/v1/deployments\": %w", ctx.Err())
+		case <-time.After(fallback):
+			return true, nil, errors.New("stalled list outlived the test fallback: no budget ended it")
+		}
 	})
 
 	start := time.Now()
 	rr := httptest.NewRecorder()
 	h.HandleResourceCounts(rr, countsRequest(remoteTestClusterID, ""))
-	if elapsed := time.Since(start); elapsed > remoteCountsBudget+2*time.Second {
-		t.Errorf("handler took %v, want it bounded by the %v budget", elapsed, remoteCountsBudget)
+	if elapsed := time.Since(start); elapsed >= fallback {
+		t.Errorf("handler took %v, want it ended by the %v budget", elapsed, remoteCountsBudget)
 	}
 	if rr.Code != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want 504 (body: %s)", rr.Code, rr.Body.String())
@@ -274,6 +297,39 @@ func TestResourceCounts_RemoteBudgetExpiryIs504(t *testing.T) {
 	}
 	if body := rr.Body.String(); containsAny(body, "deadline", "10.0.0.9") {
 		t.Errorf("context error reached the body: %s", body)
+	}
+}
+
+// A kind whose count panics fails the request: recoverutil keeps the process
+// alive, but the kind's count is unknown, so it must not be silently omitted
+// from a 200. The panic text stays in the log.
+func TestResourceCounts_RemotePanickingKindIs502(t *testing.T) {
+	h, _, remote := remoteEventsHandler(t, nil, countsDeployment("a", "r1"), countsNode("r-n1"))
+	remote.PrependReactor("list", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+		panic("boom: adapter exploded at 10.0.0.9")
+	})
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rr := httptest.NewRecorder()
+		h.HandleResourceCounts(rr, countsRequest(remoteTestClusterID, ""))
+		done <- rr
+	}()
+	var rr *httptest.ResponseRecorder
+	select {
+	case rr = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not complete after a kind panicked")
+	}
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body: %s)", rr.Code, rr.Body.String())
+	}
+	resp := decodeResponse(t, rr)
+	if resp.Error == nil || resp.Error.Message != remoteCountsFailedMsg || resp.Error.Detail != "" {
+		t.Errorf("error = %+v, want the fixed message with no detail", resp.Error)
+	}
+	if body := rr.Body.String(); containsAny(body, "boom", "panic", "10.0.0.9") {
+		t.Errorf("panic text reached the body: %s", body)
 	}
 }
 

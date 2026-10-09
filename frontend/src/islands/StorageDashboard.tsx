@@ -8,11 +8,7 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import SnapshotList from "@/src/islands/SnapshotList.tsx";
 import StorageClassWizard from "@/src/islands/StorageClassWizard.tsx";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import {
-  formatCount,
-  getCount,
-  resourceCounts,
-} from "@/src/lib/resource-counts.ts";
+import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 
 function resolveTab(currentPath: string): {
   kind: string;

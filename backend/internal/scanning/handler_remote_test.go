@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -582,17 +583,53 @@ func blockingDynHook(t *testing.T) (hook func(context.Context) error, started <-
 // cancellation: when the first caller goes away mid-read, a second caller
 // for the same key still gets the result.
 func TestRemote_SharedReadSurvivesTheFirstCallerCancelling(t *testing.T) {
-	type read func(ctx context.Context, h *Handler) (any, error)
+	type read struct {
+		do func(ctx context.Context, h *Handler) (any, error)
+		// check fails the test unless got is the remote cluster's real
+		// content, so an empty shared result cannot pass as a success.
+		check func(t *testing.T, got any)
+	}
 	reads := map[string]read{
-		"list": func(ctx context.Context, h *Handler) (any, error) {
-			return h.fetchVulns(ctx, remoteCluster, devUser, "apps", scannerSet{trivy: true})
+		"list": {
+			do: func(ctx context.Context, h *Handler) (any, error) {
+				return h.fetchVulns(ctx, remoteCluster, devUser, "apps", scannerSet{trivy: true})
+			},
+			check: func(t *testing.T, got any) {
+				t.Helper()
+				list, ok := got.([]WorkloadVulnSummary)
+				if !ok {
+					t.Fatalf("second caller got %T, want []WorkloadVulnSummary", got)
+				}
+				if len(list) != 1 || list[0].Kind != "Deployment" || list[0].Name != "remote-app" || list[0].Total.Critical != 1 {
+					t.Fatalf("second caller got %+v, want one summary for Deployment remote-app with its critical CVE", list)
+				}
+			},
 		},
-		"detail": func(ctx context.Context, h *Handler) (any, error) {
-			return h.fetchVulnDetail(ctx, remoteCluster, devUser, "apps", "Deployment", "remote-app")
+		"detail": {
+			do: func(ctx context.Context, h *Handler) (any, error) {
+				return h.fetchVulnDetail(ctx, remoteCluster, devUser, "apps", "Deployment", "remote-app")
+			},
+			check: func(t *testing.T, got any) {
+				t.Helper()
+				detail, ok := got.(*WorkloadVulnDetail)
+				if !ok || detail == nil {
+					t.Fatalf("second caller got %T(%v), want a non-nil *WorkloadVulnDetail", got, got)
+				}
+				var ids []string
+				for _, img := range detail.Images {
+					for _, v := range img.Vulnerabilities {
+						ids = append(ids, v.ID)
+					}
+				}
+				if detail.Name != "remote-app" || !slices.Equal(ids, []string{"CVE-REMOTE-1"}) {
+					t.Fatalf("second caller got %s with CVEs %v, want remote-app carrying CVE-REMOTE-1", detail.Name, ids)
+				}
+			},
 		},
 	}
-	for name, do := range reads {
+	for name, rd := range reads {
 		t.Run(name, func(t *testing.T) {
+			do := rd.do
 			hs := newHarness(t, newFakeCluster(t, true, false, trivyReport("apps", "Deployment", "remote-app", "CVE-REMOTE-1")))
 			hook, started, release := blockingDynHook(t)
 			hs.clients.dynHook = hook
@@ -627,9 +664,7 @@ func TestRemote_SharedReadSurvivesTheFirstCallerCancelling(t *testing.T) {
 				if err != nil {
 					t.Fatalf("second caller failed with %v after the first cancelled", err)
 				}
-				if got == nil {
-					t.Fatal("second caller got no result")
-				}
+				rd.check(t, got)
 			case <-time.After(5 * time.Second):
 				t.Fatal("second caller never returned")
 			}
