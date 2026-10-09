@@ -715,12 +715,14 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * Saying plainly what is wrong is the cheaper honest answer, and it is what
  * the fetcher's comment always claimed the card did.
  *
- * `dashboard-trends` and `resource-counts` are the remote-cluster case (Release
- * C). Both read local-only sources -- Prometheus and the informer cache -- and
- * answer 400 for any other cluster (`dashboard.go`, `counts.go`); 400 is the
- * only status either handler writes itself. A remote cluster is not missing a
- * feature and a retry cannot change the answer, which is this set's meaning
- * exactly, and the handler's message is what the card should show.
+ * `dashboard-trends` is the remote-cluster case (Release C). It reads a
+ * local-only source -- Prometheus -- and answers 400 for any other cluster
+ * (`dashboard.go`); 400 is the only status that handler writes itself. A
+ * remote cluster is not missing a feature and a retry cannot change the
+ * answer, which is this set's meaning exactly, and the handler's message is
+ * what the card should show. `resource-counts` used to be listed here too and
+ * is not any more: the counts route reads the selected cluster as the user
+ * (#608), so a 400 from it is an ordinary failure.
  *
  * `diagnostics-summary` is the same case answered differently: the route reads
  * the local informer cache and refuses any other cluster with 501
@@ -731,7 +733,6 @@ export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
   {
     "mesh-golden-signals": [400],
     "dashboard-trends": [400],
-    "resource-counts": [400],
     "diagnostics-summary": [501],
   };
 

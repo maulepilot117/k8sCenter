@@ -261,9 +261,10 @@ var (
 		"node.drain", "gitops.applications", "velero.backups", "storage.snapshots",
 		"storage.classes", "flux.notifications", "alert.rules", "gateway.read", "mesh.routing",
 		"mesh.mtls", "eso.read", "certmanager.certificates", "policy.read", "changes.receipts",
+		"resources.counts", "cluster.info", "limits.read", "scanning.read",
 	}
 	wantRemoteUnsupported = []string{
-		"resources.counts", "pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
+		"pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
 		"cni.config", "mesh.golden_signals", "eso.history", "eso.metrics",
 		"topology.graph", "diagnostics.read", "policy.compliance_history", "velero.assurance",
 		"incidents.capture",
@@ -1345,6 +1346,7 @@ func TestCapabilityOperations_ScopePinned(t *testing.T) {
 	// CRD) is namespaced.
 	wantClusterScoped := map[string]bool{
 		"dashboard.summary": true,
+		"cluster.info":      true,
 		"node.drain":        true,
 		"storage.classes":   true,
 	}

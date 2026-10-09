@@ -1,15 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { ApiError } from "@/lib/api.ts";
 import {
   countsPendingText,
-  countsUnavailableReason,
   fetchCounts,
   resourceCounts,
   resourceCountsUnavailable,
 } from "./resource-counts.ts";
 
 /**
- * The counts store's refusal handling.
+ * The counts store's fetch outcome handling.
  *
  * `fetchCounts` is driven directly rather than through the module's debounced
  * effect: that effect is wired only when `IS_BROWSER` was true at import, and
@@ -54,93 +52,46 @@ afterEach(() => {
   resourceCountsUnavailable.value = null;
 });
 
-describe("countsUnavailableReason", () => {
-  test("a 400 on a remote cluster reports the known refusal", () => {
-    const err = new ApiError(
-      400,
-      400,
-      "resource counts are only available for the local cluster",
-    );
-    expect(countsUnavailableReason(err, "abc123")).toBe(
-      "Resource counts are only available for the local cluster.",
-    );
-  });
-
-  test("a 400 on the local cluster is still an error", () => {
-    expect(
-      countsUnavailableReason(new ApiError(400, 400, "bad namespace"), "local"),
-    ).toBeNull();
-  });
-
-  test("a remote 500 is still an error, not the known refusal", () => {
-    expect(
-      countsUnavailableReason(new ApiError(500, 500, "boom"), "abc123"),
-    ).toBeNull();
-  });
-
-  test("a plain Error is not the known refusal", () => {
-    expect(countsUnavailableReason(new Error("offline"), "abc123")).toBeNull();
-  });
-});
-
 describe("countsPendingText", () => {
   test("falls back to the caller's loading copy when nothing is unavailable", () => {
     expect(countsPendingText("Loading pods…")).toBe("Loading pods…");
   });
-
-  test("prefers the unavailability reason over the loading copy", () => {
-    resourceCountsUnavailable.value =
-      "Resource counts are only available for the local cluster.";
-    expect(countsPendingText("Loading pods…")).toBe(
-      "Resource counts are only available for the local cluster.",
-    );
-  });
 });
 
 describe("fetchCounts", () => {
-  const refusal = {
-    error: {
-      code: 400,
-      message: "resource counts are only available for the local cluster",
-    },
-  };
-
-  test("a 400 on a remote cluster clears counts and sets the reason", async () => {
-    // Counts left over from the local cluster: wrong data for this one.
-    resourceCounts.value = { pods: 7 };
-    answer(400, refusal);
+  test("a 400 on a remote cluster is an ordinary error: no reason is published", async () => {
+    answer(400, { error: { code: 400, message: "bad request" } });
     await fetchCounts("all", "abc123");
     expect(calls).toHaveLength(1);
     expect(calls[0].clusterHeader).toBe("abc123");
-    expect(resourceCounts.value).toBeNull();
-    expect(resourceCountsUnavailable.value).toBe(
-      "Resource counts are only available for the local cluster.",
-    );
+    expect(resourceCountsUnavailable.value).toBeNull();
   });
 
-  test("a later successful fetch clears the reason and sets counts", async () => {
-    resourceCountsUnavailable.value = "stale reason";
+  test("a failed read for another cluster clears the previous cluster's counts", async () => {
+    // Counts from the local cluster are wrong data for the one just selected,
+    // not stale data for it.
+    answer(200, { data: { pods: 7 } });
+    await fetchCounts("all", "local");
+    expect(resourceCounts.value).toEqual({ pods: 7 });
+    answer(500, { error: { code: 500, message: "boom" } });
+    await fetchCounts("all", "abc123");
+    expect(resourceCounts.value).toBeNull();
+  });
+
+  test("a failed read for the same cluster keeps its counts", async () => {
+    answer(200, { data: { pods: 7 } });
+    await fetchCounts("all", "abc123");
+    answer(500, { error: { code: 500, message: "boom" } });
+    await fetchCounts("default", "abc123");
+    expect(resourceCounts.value).toEqual({ pods: 7 });
+  });
+
+  test("a later successful fetch sets counts", async () => {
     answer(200, { data: { pods: 3 } });
     await fetchCounts("default", "local");
     expect(calls[0].url).toContain("/v1/resources/counts?namespace=default");
     expect(calls[0].clusterHeader).toBe("local");
     expect(resourceCounts.value).toEqual({ pods: 3 });
-    expect(resourceCountsUnavailable.value).toBeNull();
-  });
-
-  test("a non-400 error keeps prior counts and sets no reason", async () => {
-    resourceCounts.value = { pods: 7 };
-    answer(500, { error: { code: 500, message: "boom" } });
-    await fetchCounts("all", "abc123");
-    expect(resourceCounts.value).toEqual({ pods: 7 });
-    expect(resourceCountsUnavailable.value).toBeNull();
-  });
-
-  test("a 400 on the local cluster keeps prior counts and sets no reason", async () => {
-    resourceCounts.value = { pods: 7 };
-    answer(400, { error: { code: 400, message: "bad namespace" } });
-    await fetchCounts("all", "local");
-    expect(resourceCounts.value).toEqual({ pods: 7 });
     expect(resourceCountsUnavailable.value).toBeNull();
   });
 });

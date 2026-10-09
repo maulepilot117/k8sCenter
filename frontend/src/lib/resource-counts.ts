@@ -10,8 +10,8 @@
  * server-side would leak state across SSR requests.
  */
 import { computed, effect, signal } from "@preact/signals";
-import { ApiError, api } from "@/lib/api.ts";
-import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
+import { api } from "@/lib/api.ts";
+import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
 
@@ -24,12 +24,10 @@ export const resourceCountsLoading = signal(false);
 /**
  * Why counts cannot be shown for the selected cluster, or null when they can.
  *
- * The counts route reads the local informer cache and refuses every other
- * cluster with a 400 (`counts.go`). That is a standing fact about the target,
- * not a failed request, so it is published here as unavailability for a
- * consumer to explain, rather than swallowed like a transient error -- which
- * would leave `resourceCounts` null and every consumer waiting on a load that
- * is never coming.
+ * Nothing sets this today: the counts route reads the selected cluster as the
+ * user (#608), so no cluster is refused outright any more. The signal and its
+ * consumers (SecondaryNav, the list-page dashboards via `countsPendingText`)
+ * stay so a future standing refusal has somewhere to be published.
  */
 export const resourceCountsUnavailable = signal<string | null>(null);
 
@@ -51,25 +49,6 @@ export function getCount(kind: string): number | null {
 }
 
 /**
- * Why a resource-counts read failed, when the failure is the known remote
- * refusal rather than an error.
- *
- * `GET /v1/resources/counts` reads the local informer cache and answers 400
- * for any other cluster (`counts.go`). That is a standing fact about the
- * target, so it is reported as unavailability, not as a failed request. Keyed
- * on the status plus the cluster the request was pinned to, not on the
- * message: the handler's prose is not a contract.
- */
-export function countsUnavailableReason(
-  err: unknown,
-  clusterId: string,
-): string | null {
-  if (!(err instanceof ApiError) || err.status !== 400) return null;
-  if (clusterId === LOCAL_CLUSTER_ID) return null;
-  return "Resource counts are only available for the local cluster.";
-}
-
-/**
  * What a loading-state consumer should print while counts are pending: the
  * unavailability reason when the selected cluster refused counts outright, or
  * the caller's own "Loading…" copy while a real fetch is still in flight.
@@ -81,6 +60,9 @@ export function countsUnavailableReason(
 export function countsPendingText(loading: string): string {
   return resourceCountsUnavailable.value ?? loading;
 }
+
+/** The cluster `resourceCounts` was last read from, or null before any read. */
+let countsCluster: string | null = null;
 
 let lastNs = "";
 let lastCluster = "";
@@ -112,16 +94,17 @@ export async function fetchCounts(
     );
     resourceCountsUnavailable.value = null;
     resourceCounts.value = res.data ?? {};
+    countsCluster = cluster;
   } catch (err) {
     if ((err as Error)?.name === "AbortError") throw err;
-    const reason = countsUnavailableReason(err, cluster);
-    if (reason !== null) {
-      // Nothing kept: counts from another cluster are not stale data for this
-      // one, they are wrong data.
+    // Counts from another cluster are not stale data for this one, they are
+    // wrong data: a failed read after a cluster switch shows nothing rather
+    // than the previous cluster's numbers. A failed read on the same cluster
+    // keeps its last counts.
+    if (countsCluster !== cluster) {
       resourceCounts.value = null;
-      resourceCountsUnavailable.value = reason;
+      countsCluster = null;
     }
-    // Any other error keeps the stale data.
   }
 }
 
