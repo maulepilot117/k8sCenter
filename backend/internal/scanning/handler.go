@@ -149,7 +149,7 @@ func (h *Handler) fetchVulns(ctx context.Context, clusterID string, user *auth.U
 	gen := h.cacheGen
 	h.cacheMu.RUnlock()
 
-	result, err, _ := h.fetchGroup.Do(key.flightKey(gen), func() (any, error) {
+	result, err := h.sharedFetch(ctx, key.flightKey(gen), func(ctx context.Context) (any, error) {
 		vulns, err := h.doFetchNS(ctx, clusterID, user, namespace, want)
 		if err != nil {
 			return nil, err
@@ -171,6 +171,35 @@ func (h *Handler) fetchVulns(ctx context.Context, clusterID string, user *auth.U
 		return nil, err
 	}
 	return result.(*cachedNSData).vulns, nil
+}
+
+// sharedFetch runs fetch once for every concurrent caller of key and
+// returns its result. The shared read runs on a context that keeps ctx's
+// values but not its cancellation, bounded by readTimeout instead, and each
+// caller waits on its own ctx: one caller disconnecting or timing out returns
+// ctx.Err() to that caller only, never failing the others coalesced onto the
+// read. This is the contract remotecache.Cache.Get keeps. singleflight
+// re-panics a panicking fetch on a goroutine no middleware recovers, so the
+// fetch runs under recoverutil.
+func (h *Handler) sharedFetch(ctx context.Context, key string, fetch func(context.Context) (any, error)) (any, error) {
+	ch := h.fetchGroup.DoChan(key, func() (any, error) {
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readTimeout)
+		defer cancel()
+		var (
+			v   any
+			err = errFetchPanicked
+		)
+		recoverutil.Safe(h.Logger, "scanning shared fetch", func() {
+			v, err = fetch(fetchCtx)
+		})
+		return v, err
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		return res.Val, res.Err
+	}
 }
 
 // doFetchNS reads the wanted scanners' reports in namespace on clusterID as

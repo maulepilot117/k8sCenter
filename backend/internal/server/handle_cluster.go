@@ -20,8 +20,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// clusterInfoTimeout bounds one remote cluster-info request: client
+// resolution, the version read and the node count. A variable only so a test
+// can shorten it; nothing in production writes it.
+var clusterInfoTimeout = 10 * time.Second
+
 const (
-	clusterInfoTimeout   = 10 * time.Second
 	clusterInfoReachMsg  = "failed to reach the selected cluster"
 	clusterInfoNodesMsg  = "failed to list nodes on the selected cluster"
 	clusterInfoNoSession = "authentication required"
@@ -107,7 +111,11 @@ func (s *Server) handleRemoteClusterInfo(w http.ResponseWriter, r *http.Request,
 	var gitVersion, platform string
 	g, gctx := errgroup.WithContext(ctx)
 	recoverutil.Go(g, s.Logger, "cluster info remote server version", func() error {
-		v, err := cs.Discovery().ServerVersion()
+		// The context-aware read: ServerVersion() runs on
+		// context.Background(), and the router's remote rest.Config sets no
+		// transport timeout, so a server stalling on /version would hold
+		// this request past clusterInfoTimeout.
+		v, err := cs.Discovery().ServerVersionWithContext(gctx)
 		if err != nil {
 			return err
 		}
