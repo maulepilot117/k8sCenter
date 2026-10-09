@@ -722,16 +722,13 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * answer, which is this set's meaning exactly, and the handler's message is
  * what the card should show.
  *
- * `diagnostics-summary` is the same case answered differently: the route reads
- * the local informer cache and refuses any other cluster with 501
- * `unsupported_platform` (#532, `diagnostics/handler.go` `refuseRemote`). 501
- * is the only 5xx that handler writes deliberately; its 500s stay failures.
+ * `diagnostics-summary` is deliberately absent: the route serves remote
+ * clusters (#608), so a 501 from it is an ordinary failure, not a refusal.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
   {
     "mesh-golden-signals": [400],
     "dashboard-trends": [400],
-    "diagnostics-summary": [501],
   };
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
