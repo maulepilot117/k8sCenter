@@ -154,7 +154,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "pods", namespace) {
 		r, err := b.lister.ListPods(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list pods", "namespace", namespace, "error", err)
+			b.listFailed(graph, "pods", namespace, err)
 		} else {
 			pods = r
 			addResourceNodes(graph, "Pod", nameIndex, toMetas(pods, func(p *corev1.Pod) resourceMeta {
@@ -170,7 +170,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "services", namespace) {
 		r, err := b.lister.ListServices(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list services", "namespace", namespace, "error", err)
+			b.listFailed(graph, "services", namespace, err)
 		} else {
 			services = r
 			addResourceNodes(graph, "Service", nameIndex, toMetas(services, func(s *corev1.Service) resourceMeta {
@@ -187,7 +187,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "deployments", namespace) {
 		r, err := b.lister.ListDeployments(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list deployments", "namespace", namespace, "error", err)
+			b.listFailed(graph, "deployments", namespace, err)
 		} else {
 			deployments = r
 			addResourceNodes(graph, "Deployment", nameIndex, toMetas(deployments, func(d *appsv1.Deployment) resourceMeta {
@@ -203,7 +203,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "replicasets", namespace) {
 		r, err := b.lister.ListReplicaSets(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list replicasets", "namespace", namespace, "error", err)
+			b.listFailed(graph, "replicasets", namespace, err)
 		} else {
 			replicaSets = r
 			addResourceNodes(graph, "ReplicaSet", nameIndex, toMetas(replicaSets, func(rs *appsv1.ReplicaSet) resourceMeta {
@@ -218,7 +218,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "statefulsets", namespace) {
 		r, err := b.lister.ListStatefulSets(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list statefulsets", "namespace", namespace, "error", err)
+			b.listFailed(graph, "statefulsets", namespace, err)
 		} else {
 			addResourceNodes(graph, "StatefulSet", nameIndex, toMetas(r, func(s *appsv1.StatefulSet) resourceMeta {
 				return resourceMeta{uid: string(s.UID), name: s.Name, namespace: s.Namespace, ownerRefs: s.OwnerReferences, obj: s}
@@ -232,7 +232,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "daemonsets", namespace) {
 		r, err := b.lister.ListDaemonSets(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list daemonsets", "namespace", namespace, "error", err)
+			b.listFailed(graph, "daemonsets", namespace, err)
 		} else {
 			addResourceNodes(graph, "DaemonSet", nameIndex, toMetas(r, func(d *appsv1.DaemonSet) resourceMeta {
 				return resourceMeta{uid: string(d.UID), name: d.Name, namespace: d.Namespace, ownerRefs: d.OwnerReferences, obj: d}
@@ -247,7 +247,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "jobs", namespace) {
 		r, err := b.lister.ListJobs(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list jobs", "namespace", namespace, "error", err)
+			b.listFailed(graph, "jobs", namespace, err)
 		} else {
 			jobs = r
 			addResourceNodes(graph, "Job", nameIndex, toMetas(jobs, func(j *batchv1.Job) resourceMeta {
@@ -262,7 +262,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "cronjobs", namespace) {
 		r, err := b.lister.ListCronJobs(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list cronjobs", "namespace", namespace, "error", err)
+			b.listFailed(graph, "cronjobs", namespace, err)
 		} else {
 			addResourceNodes(graph, "CronJob", nameIndex, toMetas(r, func(c *batchv1.CronJob) resourceMeta {
 				return resourceMeta{uid: string(c.UID), name: c.Name, namespace: c.Namespace, obj: c}
@@ -278,7 +278,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "ingresses", namespace) {
 		r, err := b.lister.ListIngresses(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list ingresses", "namespace", namespace, "error", err)
+			b.listFailed(graph, "ingresses", namespace, err)
 		} else {
 			ingresses = r
 			addResourceNodes(graph, "Ingress", nameIndex, toMetas(ingresses, func(i *networkingv1.Ingress) resourceMeta {
@@ -300,7 +300,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "configmaps", namespace) {
 		r, err := b.lister.ListConfigMaps(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list configmaps", "namespace", namespace, "error", err)
+			b.listFailed(graph, "configmaps", namespace, err)
 		} else {
 			addResourceNodes(graph, "ConfigMap", nameIndex, toMetas(r, func(c *corev1.ConfigMap) resourceMeta {
 				return resourceMeta{uid: string(c.UID), name: c.Name, namespace: c.Namespace, obj: c}
@@ -315,7 +315,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "persistentvolumeclaims", namespace) {
 		r, err := b.lister.ListPVCs(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list pvcs", "namespace", namespace, "error", err)
+			b.listFailed(graph, "persistentvolumeclaims", namespace, err)
 		} else {
 			addResourceNodes(graph, "PersistentVolumeClaim", nameIndex, toMetas(r, func(p *corev1.PersistentVolumeClaim) resourceMeta {
 				return resourceMeta{uid: string(p.UID), name: p.Name, namespace: p.Namespace, obj: p}
@@ -331,7 +331,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	if canAccess(ctx, user, checker, "horizontalpodautoscalers", namespace) {
 		r, err := b.lister.ListHPAs(ctx, namespace)
 		if err != nil {
-			b.logger.Warn("failed to list hpas", "namespace", namespace, "error", err)
+			b.listFailed(graph, "horizontalpodautoscalers", namespace, err)
 		} else {
 			hpas = r
 			addResourceNodes(graph, "HorizontalPodAutoscaler", nameIndex, toMetas(hpas, func(h *autoscalingv2.HorizontalPodAutoscaler) resourceMeta {
@@ -372,6 +372,23 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	}
 
 	return graph, nil
+}
+
+// listFailed records a kind whose list failed: the kind is left out of the
+// graph, as for a kind the user may not list. A list cut short by a remote
+// read cap (*TruncatedError) additionally marks the graph Truncated and names
+// the kind in Errors, so a missing kind is never silent.
+func (b *Builder) listFailed(graph *Graph, resource, namespace string, err error) {
+	b.logger.Warn("failed to list "+resource, "namespace", namespace, "error", err)
+	var te *TruncatedError
+	if !errors.As(err, &te) {
+		return
+	}
+	graph.Truncated = true
+	if graph.Errors == nil {
+		graph.Errors = map[string]string{}
+	}
+	graph.Errors[resource] = fmt.Sprintf("more than %d %s in this namespace on the selected cluster; they are left out of this graph", te.Read, resource)
 }
 
 // applyOverlay layers optional edges on top of an already-built graph.

@@ -262,11 +262,12 @@ var (
 		"storage.classes", "flux.notifications", "alert.rules", "gateway.read", "mesh.routing",
 		"mesh.mtls", "eso.read", "certmanager.certificates", "policy.read", "changes.receipts",
 		"resources.counts", "cluster.info", "limits.read", "scanning.read",
+		"topology.graph", "diagnostics.read",
 	}
 	wantRemoteUnsupported = []string{
 		"pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
 		"cni.config", "mesh.golden_signals", "eso.history", "eso.metrics",
-		"topology.graph", "diagnostics.read", "policy.compliance_history", "velero.assurance",
+		"policy.compliance_history", "velero.assurance",
 		"incidents.capture",
 	}
 )
