@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -317,10 +318,11 @@ func (h *Handler) listRemote(
 }
 
 // getRemote reads one object of adapter's kind on a remote cluster, as the
-// user, under remoteGetTimeout, and writes the response. An API server status
-// (not found, forbidden, ...) maps as it does for every other k8s call; a
-// failure to reach the cluster at all is a 502 whose raw error reaches only
-// the log. It never falls back to the local cluster.
+// user, under remoteGetTimeout, and writes the response. Not found and
+// forbidden map to fixed 404 and 403 messages; every other failure, a remote
+// status or a failure to reach the cluster, is a 502. The remote API server's
+// own text reaches only the log, never the body, matching listRemote. It
+// never falls back to the local cluster.
 func (h *Handler) getRemote(
 	w http.ResponseWriter, r *http.Request, user *auth.User,
 	clusterID string, adapter ResourceAdapter, ns, name string,
@@ -338,15 +340,21 @@ func (h *Handler) getRemote(
 
 	item, err := adapter.GetDirect(ctx, cs, ns, name)
 	if err != nil {
-		var status *apierrors.StatusError
+		object := adapter.DisplayName() + " '" + name + "'"
+		where := inNamespace(ns) + " on the selected cluster"
 		switch {
-		case errors.As(err, &status):
-			mapK8sError(w, status, "get", adapter.DisplayName(), ns, name)
 		case errors.Is(err, errSecretsNotCached):
 			// The generic route never serves Secrets on any cluster; answer
 			// exactly as the local cluster does.
 			mapK8sError(w, err, "get", adapter.DisplayName(), ns, name)
+		case apierrors.IsNotFound(err):
+			writeError(w, http.StatusNotFound, object+" not found"+where, "")
+		case apierrors.IsForbidden(err):
+			writeError(w, http.StatusForbidden, "you do not have permission to get "+object+where, "")
 		default:
+			// A remote cluster's own 401 (its stored credential rejected) must
+			// not surface as a k8sCenter 401: the web client reads any 401 as
+			// its own session expiring.
 			h.Logger.Error("remote get",
 				"cluster", clusterID, "kind", adapter.Kind(), "namespace", ns, "error", err)
 			writeError(w, http.StatusBadGateway, "failed to get "+adapter.DisplayName()+" on the selected cluster", "")
@@ -421,9 +429,11 @@ func paginateAny(items []any, limit int, continueToken string) ([]any, string) {
 		return objectKey(items[i]) < objectKey(items[j])
 	})
 
+	// The token is an offset this function minted; anything that is not a
+	// positive integer (a negative or garbled token) starts at the first page.
 	start := 0
-	if continueToken != "" {
-		fmt.Sscanf(continueToken, "%d", &start)
+	if n, err := strconv.Atoi(continueToken); err == nil && n > 0 {
+		start = n
 	}
 
 	if start >= len(items) {

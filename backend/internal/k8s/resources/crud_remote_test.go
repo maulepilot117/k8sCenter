@@ -369,6 +369,45 @@ func TestListResource_RemoteOtherErrorIs502WithoutLocalFallback(t *testing.T) {
 	}
 }
 
+// A non-status failure after a full first page discards that page: a
+// partial list would be served as if it were complete.
+func TestListResource_RemoteSecondPageFailureIs502(t *testing.T) {
+	h, local, remote := remoteEventsHandler(t, []runtime.Object{crudDeployment("default", "local-web", nil)})
+	n := 0
+	remote.PrependReactor("list", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+		n++
+		if n == 1 {
+			return true, &appsv1.DeploymentList{
+				ListMeta: metav1.ListMeta{Continue: "tok-1"},
+				Items:    []appsv1.Deployment{*crudDeployment("default", "read-before-failure", nil)},
+			}, nil
+		}
+		return true, nil, errors.New("dial tcp 10.0.0.9:6443: i/o timeout")
+	})
+	local.ClearActions()
+
+	rr := listResource(h, remoteTestClusterID, "deployments", nil, "default")
+	body := rr.Body.String()
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: %s", rr.Code, body)
+	}
+	if n != 2 {
+		t.Errorf("remote list called %d times, want 2 (the failure is on page 2)", n)
+	}
+	msg, detail := errorMessage(t, rr)
+	if msg != "failed to list Deployment on the selected cluster" || detail != "" {
+		t.Errorf("message=%q detail=%q", msg, detail)
+	}
+	for _, leak := range []string{"10.0.0.9", "read-before-failure", "local-web", `"data"`} {
+		if strings.Contains(body, leak) {
+			t.Errorf("502 body contains %q: %s", leak, body)
+		}
+	}
+	if reads := readActions(local); len(reads) != 0 {
+		t.Errorf("a remote list failure read from the local clientset: %v", reads)
+	}
+}
+
 func TestListResource_RemoteClientResolveFailureIs502WithoutLocalFallback(t *testing.T) {
 	h, local := resolveFailingHandler(t, crudDeployment("default", "local-web", nil))
 
@@ -437,43 +476,95 @@ func TestGetResource_RemoteClusterScopedReadsRemote(t *testing.T) {
 	}
 }
 
+// TestGetResource_RemoteErrors pins the remote get error contract: not found
+// and forbidden map to fixed messages, everything else (a remote 401
+// included) is a 502, and the remote API server's own text never reaches the
+// body. Every fake error carries an internal marker to prove it.
 func TestGetResource_RemoteErrors(t *testing.T) {
+	deployGR := schema.GroupResource{Group: "apps", Resource: "deployments"}
+	nodeGR := schema.GroupResource{Group: "", Resource: "nodes"}
+	notFound := func(msg string) error {
+		return &apierrors.StatusError{ErrStatus: metav1.Status{
+			Status: metav1.StatusFailure, Code: http.StatusNotFound,
+			Reason: metav1.StatusReasonNotFound, Message: msg,
+		}}
+	}
+	const (
+		deployNotFound  = "Deployment 'web' not found in namespace default on the selected cluster"
+		deployForbidden = "you do not have permission to get Deployment 'web' in namespace default on the selected cluster"
+		deployFailed    = "failed to get Deployment on the selected cluster"
+	)
 	cases := []struct {
 		name       string
+		kind       string
+		resource   string
+		segs       []string
 		err        error
 		wantStatus int
+		wantMsg    string
 	}{
 		{
-			name:       "not found",
-			err:        apierrors.NewNotFound(schema.GroupResource{Group: "apps", Resource: "deployments"}, "web"),
-			wantStatus: http.StatusNotFound,
+			name: "not found", kind: "deployments", resource: "deployments", segs: []string{"default", "web"},
+			err:        notFound(`deployments.apps "web" not found (internal 10.0.0.9)`),
+			wantStatus: http.StatusNotFound, wantMsg: deployNotFound,
 		},
 		{
-			name: "forbidden",
-			err: apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "web",
-				errors.New("RBAC: denied")),
-			wantStatus: http.StatusForbidden,
+			name: "forbidden", kind: "deployments", resource: "deployments", segs: []string{"default", "web"},
+			err:        apierrors.NewForbidden(deployGR, "web", errors.New("RBAC: denied by 10.0.0.9")),
+			wantStatus: http.StatusForbidden, wantMsg: deployForbidden,
 		},
 		{
-			name:       "transport failure",
+			// A remote cluster's own 401 must not read as a k8sCenter 401: the
+			// web client treats any 401 as its session expiring.
+			name: "unauthorized", kind: "deployments", resource: "deployments", segs: []string{"default", "web"},
+			err:        apierrors.NewUnauthorized("token expired for 10.0.0.9"),
+			wantStatus: http.StatusBadGateway, wantMsg: deployFailed,
+		},
+		{
+			name: "too many requests", kind: "deployments", resource: "deployments", segs: []string{"default", "web"},
+			err:        apierrors.NewTooManyRequests("throttled by 10.0.0.9", 1),
+			wantStatus: http.StatusBadGateway, wantMsg: deployFailed,
+		},
+		{
+			name: "transport failure", kind: "deployments", resource: "deployments", segs: []string{"default", "web"},
 			err:        errors.New("dial tcp 10.0.0.9:6443: i/o timeout"),
-			wantStatus: http.StatusBadGateway,
+			wantStatus: http.StatusBadGateway, wantMsg: deployFailed,
+		},
+		{
+			name: "cluster-scoped not found", kind: "nodes", resource: "nodes", segs: []string{"node-x"},
+			err:        notFound(`nodes "node-x" not found (internal 10.0.0.9)`),
+			wantStatus: http.StatusNotFound, wantMsg: "Node 'node-x' not found on the selected cluster",
+		},
+		{
+			name: "cluster-scoped forbidden", kind: "nodes", resource: "nodes", segs: []string{"node-x"},
+			err:        apierrors.NewForbidden(nodeGR, "node-x", errors.New("RBAC: denied by 10.0.0.9")),
+			wantStatus: http.StatusForbidden, wantMsg: "you do not have permission to get Node 'node-x' on the selected cluster",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h, local, remote := remoteEventsHandler(t, []runtime.Object{crudDeployment("default", "web", map[string]string{"from": "local"})})
-			remote.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+			h, local, remote := remoteEventsHandler(t, []runtime.Object{
+				crudDeployment("default", "web", map[string]string{"from": "local"}),
+				readyNode("node-x"),
+			})
+			remote.PrependReactor("get", tc.resource, func(k8stesting.Action) (bool, runtime.Object, error) {
 				return true, nil, tc.err
 			})
 			local.ClearActions()
 
-			rr := getResource(h, remoteTestClusterID, "deployments", "default", "web")
+			rr := getResource(h, remoteTestClusterID, tc.kind, tc.segs...)
 			body := rr.Body.String()
 			if rr.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d: %s", rr.Code, tc.wantStatus, body)
 			}
-			for _, leak := range []string{"10.0.0.9", `"from"`} {
+			msg, detail := errorMessage(t, rr)
+			if msg != tc.wantMsg {
+				t.Errorf("message = %q, want %q", msg, tc.wantMsg)
+			}
+			if detail != "" {
+				t.Errorf("detail = %q, want empty", detail)
+			}
+			for _, leak := range []string{"10.0.0.9", "RBAC", "throttled", `"from"`} {
 				if strings.Contains(body, leak) {
 					t.Errorf("error body contains %q: %s", leak, body)
 				}
