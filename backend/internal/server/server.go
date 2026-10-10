@@ -102,6 +102,20 @@ type Server struct {
 	// ClusterRouter; tests set it because a real resolution needs a cluster
 	// registry and a reachable API server.
 	remoteInfoClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
+	// ClusterMetricsStore persists per-cluster metrics bindings
+	// (/clusters/{id}/metrics). Nil without a database: those routes answer 503.
+	ClusterMetricsStore clusterMetricsStore
+	// MetricsResolver is the resolver shared by the monitoring handler and
+	// the dashboard adapters; binding writes and cluster deletes evict from
+	// it. Nil-safe.
+	MetricsResolver metricsResolverEvicter
+	// probePrometheus checks a binding's Prometheus before it is stored. Nil
+	// in production, which uses monitoring.ProbePrometheus; tests stub it
+	// because the strict transport refuses loopback httptest servers.
+	probePrometheus func(ctx context.Context, url, token string) error
+	// metricsClusters confirms the cluster exists for the binding routes.
+	// Nil in production, which reads ClusterStore; tests set a fake.
+	metricsClusters clusterRecordGetter
 }
 
 // Deps holds all dependencies needed to create a Server.
