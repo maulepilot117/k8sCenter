@@ -159,6 +159,11 @@ export function coverageMessage(
     const base = detail ? capitalize(detail) : "Last observed value";
     return ago ? `${base} (observed ${ago}).` : `${base}.`;
   }
+  // The reason code is authoritative: a cluster with no Prometheus binding
+  // reads the same whatever wording the backend put in `detail`.
+  if (cov?.reasonCode === "metrics_not_configured") {
+    return "Metrics are not configured for this cluster.";
+  }
   if (detail) return `${capitalize(detail)}.`;
   switch (tone) {
     case "ok":
