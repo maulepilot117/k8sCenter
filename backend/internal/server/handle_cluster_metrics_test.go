@@ -60,11 +60,16 @@ func (f *fakeMetricsStore) Get(_ context.Context, id string) (store.MetricsBindi
 	return b, f.tokens[id], nil
 }
 
-func (f *fakeMetricsStore) Upsert(_ context.Context, id, promURL, amURL string, token *string) (store.MetricsBinding, error) {
+func (f *fakeMetricsStore) Upsert(_ context.Context, id, promURL, amURL string, token *string, keptFrom string) (store.MetricsBinding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.upsertCalled = true
 	f.lastUpsertToken = token
+	// The real store keeps the token only while the stored URL is still
+	// keptFrom ("" = no binding); the check and the write are atomic there.
+	if token == nil && f.bindings[id].PrometheusURL != keptFrom {
+		return store.MetricsBinding{}, store.ErrMetricsBindingChanged
+	}
 	if token != nil {
 		f.tokens[id] = *token
 	}
@@ -347,6 +352,86 @@ func TestClusterMetrics_PutNewHostWithTokenProceeds(t *testing.T) {
 	}
 	if f.store.tokens[testRemoteID] != "other-token" {
 		t.Errorf("stored token = %q; want the supplied one", f.store.tokens[testRemoteID])
+	}
+}
+
+// Two overlapping saves: A omits the token (keep) and passes the origin
+// check against the old URL; while A probes, B moves the binding to another
+// host with that host's token. A must not then write the old URL with B's
+// token, which would send B's token to a host it was not entered for. A is
+// refused with 409 and B's binding stands.
+func TestClusterMetrics_PutKeepTokenRacingMoveRefused(t *testing.T) {
+	cases := map[string]string{
+		"binding moved with a token":  `{"prometheusUrl":"https://1.1.1.1:9090","token":"b-token"}`,
+		"binding created meanwhile":   "",
+		"binding moved without token": `{"prometheusUrl":"https://1.1.1.1:9090","token":""}`,
+	}
+	for name, bodyB := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newMetricsFixture(t)
+			if bodyB != "" {
+				if rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+					`{"prometheusUrl":"`+testPublicProm+`","token":"`+testToken+`"}`); rec.Code != http.StatusOK {
+					t.Fatalf("seed PUT status = %d", rec.Code)
+				}
+			} else {
+				bodyB = `{"prometheusUrl":"https://1.1.1.1:9090","token":"b-token"}`
+			}
+			wantB := map[string]any{}
+			if err := json.Unmarshal([]byte(bodyB), &wantB); err != nil {
+				t.Fatal(err)
+			}
+
+			// B runs inside A's probe, after A's origin check.
+			raced := false
+			*f.probeFn = func(_ context.Context, url, token string) error {
+				if !raced {
+					raced = true
+					if rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, bodyB); rec.Code != http.StatusOK {
+						t.Fatalf("racing PUT status = %d, body %s", rec.Code, rec.Body.String())
+					}
+				}
+				return nil
+			}
+			f.evicter.evicted = nil
+
+			rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, `{"prometheusUrl":"`+testPublicProm+`"}`)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, body %s; want 409", rec.Code, rec.Body.String())
+			}
+			if got := decodeMetricsErr(t, rec).Error.Message; got != msgMetricsBindingChanged {
+				t.Errorf("message = %q; want %q", got, msgMetricsBindingChanged)
+			}
+			if b := f.store.bindings[testRemoteID]; b.PrometheusURL != wantB["prometheusUrl"] {
+				t.Errorf("stored URL = %q; want B's %v", b.PrometheusURL, wantB["prometheusUrl"])
+			}
+			if got := f.store.tokens[testRemoteID]; got != wantB["token"] {
+				t.Errorf("stored token = %q; want B's %v", got, wantB["token"])
+			}
+			// Only B's write evicted; the refused save did not.
+			if ev := f.evicter.list(); len(ev) != 1 {
+				t.Errorf("evictions = %v; want exactly one (B's)", ev)
+			}
+			if strings.Contains(rec.Body.String(), testToken) || strings.Contains(rec.Body.String(), "b-token") {
+				t.Errorf("response echoes a token: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+// A keep-token save with no concurrent writer is unaffected by the guard.
+func TestClusterMetrics_PutKeepTokenSameHostPassesKeptFrom(t *testing.T) {
+	f := newMetricsFixture(t)
+	if rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+		`{"prometheusUrl":"`+testPublicProm+`","token":"`+testToken+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed PUT status = %d", rec.Code)
+	}
+	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, `{"prometheusUrl":"`+testPublicProm+`/"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", rec.Code, rec.Body.String())
+	}
+	if f.store.tokens[testRemoteID] != testToken {
+		t.Errorf("stored token = %q; want it kept", f.store.tokens[testRemoteID])
 	}
 }
 
@@ -638,7 +723,7 @@ func TestClusterMetrics_NilResolverIsSafe(t *testing.T) {
 func TestMetricsBindingReader(t *testing.T) {
 	fs := newFakeMetricsStore()
 	tok := testToken
-	if _, err := fs.Upsert(context.Background(), testRemoteID, testPublicProm, "https://8.8.4.4:9093", &tok); err != nil {
+	if _, err := fs.Upsert(context.Background(), testRemoteID, testPublicProm, "https://8.8.4.4:9093", &tok, ""); err != nil {
 		t.Fatal(err)
 	}
 	r := metricsBindingReader{store: fs}

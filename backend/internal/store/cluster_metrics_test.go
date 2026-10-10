@@ -36,7 +36,7 @@ func TestMigration000027_RoundTripKeepsBindings(t *testing.T) {
 	insertMetricsTestCluster(ctx, t, pool, "c1")
 	s := NewClusterMetricsStore(pool, metricsTestKey)
 	tok := "secret"
-	if _, err := s.Upsert(ctx, "c1", "https://prom.example.com", "", &tok); err != nil {
+	if _, err := s.Upsert(ctx, "c1", "https://prom.example.com", "", &tok, ""); err != nil {
 		t.Fatalf("upsert at 27: %v", err)
 	}
 
@@ -84,10 +84,10 @@ func TestClusterMetricsStore_UpsertKeepsTokenOnNil(t *testing.T) {
 	s := NewClusterMetricsStore(pool, metricsTestKey)
 
 	tok := "first"
-	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", &tok); err != nil {
+	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", &tok, ""); err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.Upsert(ctx, id, "https://b.example.com", "https://am.example.com", nil)
+	b, err := s.Upsert(ctx, id, "https://b.example.com", "https://am.example.com", nil, "https://a.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +99,39 @@ func TestClusterMetricsStore_UpsertKeepsTokenOnNil(t *testing.T) {
 	}
 }
 
+// A keep-token write whose keptFrom no longer matches the stored URL (another
+// save moved the binding in between) is refused and leaves the row as the
+// other save wrote it, so a URL is never paired with another host's token.
+func TestClusterMetricsStore_UpsertKeepRefusedWhenURLMoved(t *testing.T) {
+	pool := testDB(t)
+	ctx := t.Context()
+	id := testOwnerID(t)
+	insertMetricsTestCluster(ctx, t, pool, id)
+	s := NewClusterMetricsStore(pool, metricsTestKey)
+
+	tok := "b-token"
+	if _, err := s.Upsert(ctx, id, "https://b.example.com", "", &tok, ""); err != nil {
+		t.Fatal(err)
+	}
+	// The caller checked the binding while it still pointed at a.example.com.
+	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", nil, "https://a.example.com"); !errors.Is(err, ErrMetricsBindingChanged) {
+		t.Fatalf("Upsert with a stale keptFrom = %v; want ErrMetricsBindingChanged", err)
+	}
+	// The caller saw no binding, but one was created meanwhile.
+	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", nil, ""); !errors.Is(err, ErrMetricsBindingChanged) {
+		t.Fatalf("Upsert with keptFrom empty over a new binding = %v; want ErrMetricsBindingChanged", err)
+	}
+	b, got, err := s.Get(ctx, id)
+	if err != nil || b.PrometheusURL != "https://b.example.com" || got != "b-token" {
+		t.Errorf("Get = (%+v, %q, %v); want b.example.com with b-token untouched", b, got, err)
+	}
+	// A supplied token ignores keptFrom.
+	other := "a-token"
+	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", &other, "stale"); err != nil {
+		t.Errorf("Upsert with a token and a stale keptFrom = %v; want success", err)
+	}
+}
+
 func TestClusterMetricsStore_ClearsTokenOnEmpty(t *testing.T) {
 	pool := testDB(t)
 	ctx := t.Context()
@@ -107,11 +140,11 @@ func TestClusterMetricsStore_ClearsTokenOnEmpty(t *testing.T) {
 	s := NewClusterMetricsStore(pool, metricsTestKey)
 
 	tok := "first"
-	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", &tok); err != nil {
+	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", &tok, ""); err != nil {
 		t.Fatal(err)
 	}
 	empty := ""
-	b, err := s.Upsert(ctx, id, "https://a.example.com", "", &empty)
+	b, err := s.Upsert(ctx, id, "https://a.example.com", "", &empty, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +164,7 @@ func TestClusterMetricsStore_GetDecryptsToken(t *testing.T) {
 	s := NewClusterMetricsStore(pool, metricsTestKey)
 
 	tok := "bearer-value"
-	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", &tok); err != nil {
+	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", &tok, ""); err != nil {
 		t.Fatal(err)
 	}
 	var raw []byte
@@ -154,7 +187,7 @@ func TestClusterMetricsStore_GetAfterDeleteNotFound(t *testing.T) {
 	insertMetricsTestCluster(ctx, t, pool, id)
 	s := NewClusterMetricsStore(pool, metricsTestKey)
 
-	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", nil); err != nil {
+	if _, err := s.Upsert(ctx, id, "https://a.example.com", "", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Delete(ctx, id); err != nil {

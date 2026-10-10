@@ -13,6 +13,12 @@ import (
 // ErrMetricsBindingNotFound is returned when a cluster has no metrics binding.
 var ErrMetricsBindingNotFound = errors.New("metrics binding not found")
 
+// ErrMetricsBindingChanged is returned by Upsert when it was asked to keep the
+// stored token but the binding's Prometheus URL is no longer the one the
+// caller checked: another write moved the binding in between, so the stored
+// token may belong to a different host. Nothing is written.
+var ErrMetricsBindingChanged = errors.New("metrics binding changed concurrently")
+
 // MetricsBinding is a remote cluster's Prometheus binding. The bearer token is
 // never part of it: Get returns the decrypted token separately and HasToken
 // only reports that one is stored.
@@ -85,7 +91,15 @@ func (s *ClusterMetricsStore) Get(ctx context.Context, clusterID string) (Metric
 // token, a pointer to "" clears it, and a non-empty value replaces it
 // (encrypted). updated_at is always refreshed. It returns the resulting
 // binding.
-func (s *ClusterMetricsStore) Upsert(ctx context.Context, clusterID, prometheusURL, alertmanagerURL string, token *string) (MetricsBinding, error) {
+//
+// keptFrom guards the keep case. With a nil token the write happens only if
+// the row's current Prometheus URL equals keptFrom ("" meaning no binding),
+// the URL the caller read when it decided the stored token may follow the new
+// one. The check and the write are one statement, so a concurrent save that
+// moved the binding (and its token) elsewhere in between yields
+// ErrMetricsBindingChanged instead of pairing this URL with that token.
+// keptFrom is ignored when a token is supplied.
+func (s *ClusterMetricsStore) Upsert(ctx context.Context, clusterID, prometheusURL, alertmanagerURL string, token *string, keptFrom string) (MetricsBinding, error) {
 	var (
 		encTok   []byte
 		setToken = token != nil
@@ -108,10 +122,16 @@ func (s *ClusterMetricsStore) Upsert(ctx context.Context, clusterID, prometheusU
 			prometheus_token = CASE WHEN $5::boolean THEN EXCLUDED.prometheus_token
 			                        ELSE cluster_monitoring.prometheus_token END,
 			updated_at       = now()
+		WHERE $5::boolean OR COALESCE(cluster_monitoring.prometheus_url, '') = $6
 		RETURNING cluster_id, prometheus_url, COALESCE(alertmanager_url, ''),
 		          prometheus_token IS NOT NULL, updated_at`,
-		clusterID, prometheusURL, alertmanagerURL, encTok, setToken).
+		clusterID, prometheusURL, alertmanagerURL, encTok, setToken, keptFrom).
 		Scan(&b.ClusterID, &b.PrometheusURL, &b.AlertmanagerURL, &b.HasToken, &b.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The conflict branch's WHERE refused the update: the stored URL is
+		// no longer keptFrom.
+		return MetricsBinding{}, ErrMetricsBindingChanged
+	}
 	if err != nil {
 		return MetricsBinding{}, fmt.Errorf("upserting metrics binding: %w", err)
 	}

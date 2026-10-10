@@ -25,7 +25,7 @@ import (
 // a fake for the PostgreSQL-backed store.
 type clusterMetricsStore interface {
 	Get(ctx context.Context, clusterID string) (store.MetricsBinding, string, error)
-	Upsert(ctx context.Context, clusterID, prometheusURL, alertmanagerURL string, token *string) (store.MetricsBinding, error)
+	Upsert(ctx context.Context, clusterID, prometheusURL, alertmanagerURL string, token *string, keptFrom string) (store.MetricsBinding, error)
 	Delete(ctx context.Context, clusterID string) error
 }
 
@@ -46,6 +46,7 @@ const (
 	msgMetricsStoreFailed     = "the metrics binding could not be read or saved"
 	msgClusterRegistryFailure = "the cluster registry is unavailable"
 	msgMetricsTokenReentry    = "the token must be re-entered when the Prometheus URL changes"
+	msgMetricsBindingChanged  = "the metrics binding was changed by another save; reload it and try again"
 )
 
 // maxMetricsTokenBytes matches the cluster-registration token limit.
@@ -229,11 +230,18 @@ func (s *Server) handlePutClusterMetrics(w http.ResponseWriter, r *http.Request)
 	// sent to the scheme and host it was entered for; moving the binding
 	// elsewhere requires the token again, refused before any probe so a
 	// changed URL cannot be used to exfiltrate it.
+	//
+	// keptFrom is the stored URL this check was made against. The write
+	// keeps the token only while the binding still has that URL, so a save
+	// that moved the binding and its token elsewhere during the probe makes
+	// this one fail with 409 rather than pair this URL with that token.
 	probeToken := ""
+	keptFrom := ""
 	if req.Token != nil {
 		probeToken = *req.Token
 	} else {
 		current, stored, err := s.ClusterMetricsStore.Get(r.Context(), id)
+		keptFrom = current.PrometheusURL
 		switch {
 		case errors.Is(err, store.ErrMetricsBindingNotFound):
 		case err != nil:
@@ -258,7 +266,11 @@ func (s *Server) handlePutClusterMetrics(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	b, err := s.ClusterMetricsStore.Upsert(r.Context(), id, req.PrometheusURL, req.AlertmanagerURL, req.Token)
+	b, err := s.ClusterMetricsStore.Upsert(r.Context(), id, req.PrometheusURL, req.AlertmanagerURL, req.Token, keptFrom)
+	if errors.Is(err, store.ErrMetricsBindingChanged) {
+		httputil.WriteError(w, http.StatusConflict, msgMetricsBindingChanged, "")
+		return
+	}
 	if err != nil {
 		s.Logger.Error("metrics binding: upsert failed", "cluster", id, "error", err)
 		httputil.WriteError(w, http.StatusServiceUnavailable, msgMetricsStoreFailed, "")
