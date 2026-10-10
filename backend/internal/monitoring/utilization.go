@@ -8,16 +8,27 @@ import (
 	"github.com/prometheus/common/model"
 )
 
-// UtilizationAdapter implements resources.UtilizationProvider using PrometheusClient.
+// UtilizationAdapter implements resources.UtilizationProvider (and
+// resources.TrendProvider, trends.go) over the Prometheus the Resolver picks
+// for the requested cluster.
 type UtilizationAdapter struct {
-	Discoverer *Discoverer
+	Resolver *ClientResolver
+}
+
+// client resolves the Prometheus for clusterID. A nil Resolver means
+// monitoring is not wired at all.
+func (a *UtilizationAdapter) client(ctx context.Context, clusterID string) (*PrometheusClient, error) {
+	if a.Resolver == nil {
+		return nil, ErrPrometheusUnavailable
+	}
+	return a.Resolver.PrometheusFor(ctx, clusterID)
 }
 
 // CPUPercent returns the cluster-wide CPU utilization percentage via PromQL.
-func (a *UtilizationAdapter) CPUPercent(ctx context.Context) (float64, error) {
-	pc := a.Discoverer.PrometheusClient()
-	if pc == nil {
-		return 0, fmt.Errorf("prometheus not available")
+func (a *UtilizationAdapter) CPUPercent(ctx context.Context, clusterID string) (float64, error) {
+	pc, err := a.client(ctx, clusterID)
+	if err != nil {
+		return 0, err
 	}
 	result, _, err := pc.Query(ctx, `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`, time.Now())
 	if err != nil {
@@ -27,10 +38,10 @@ func (a *UtilizationAdapter) CPUPercent(ctx context.Context) (float64, error) {
 }
 
 // MemoryPercent returns the cluster-wide memory utilization percentage via PromQL.
-func (a *UtilizationAdapter) MemoryPercent(ctx context.Context) (float64, error) {
-	pc := a.Discoverer.PrometheusClient()
-	if pc == nil {
-		return 0, fmt.Errorf("prometheus not available")
+func (a *UtilizationAdapter) MemoryPercent(ctx context.Context, clusterID string) (float64, error) {
+	pc, err := a.client(ctx, clusterID)
+	if err != nil {
+		return 0, err
 	}
 	result, _, err := pc.Query(ctx, `(1 - (avg(node_memory_MemAvailable_bytes) / avg(node_memory_MemTotal_bytes))) * 100`, time.Now())
 	if err != nil {

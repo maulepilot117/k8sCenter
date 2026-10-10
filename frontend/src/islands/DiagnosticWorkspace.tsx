@@ -18,6 +18,10 @@ interface DiagnosticResponse {
   blastRadius: {
     directlyAffected: AffectedResource[];
     potentiallyAffected: AffectedResource[];
+    // Set when the graph was built from a partial read: some kinds were
+    // capped or timed out, so the lists are not the whole radius.
+    truncated?: boolean;
+    errors?: Record<string, string>;
   };
 }
 
@@ -62,12 +66,16 @@ export default function DiagnosticWorkspace() {
   const results = useSignal<DiagnosticResult[]>([]);
   const directlyAffected = useSignal<AffectedResource[]>([]);
   const potentiallyAffected = useSignal<AffectedResource[]>([]);
+  const truncated = useSignal(false);
+  const truncationErrors = useSignal<Record<string, string>>({});
   const hasData = useSignal(false);
 
   const fetchDiagnostics = async (ns: string, k: string, n: string) => {
     loading.value = true;
     error.value = null;
     remoteUnsupported.value = false;
+    truncated.value = false;
+    truncationErrors.value = {};
     try {
       const resp = await apiGet<DiagnosticResponse>(
         `/v1/diagnostics/${ns}/${k}/${n}`,
@@ -76,6 +84,8 @@ export default function DiagnosticWorkspace() {
       results.value = data.results;
       directlyAffected.value = data.blastRadius.directlyAffected;
       potentiallyAffected.value = data.blastRadius.potentiallyAffected;
+      truncated.value = data.blastRadius.truncated === true;
+      truncationErrors.value = data.blastRadius.errors ?? {};
       hasData.value = true;
     } catch (err) {
       hasData.value = false;
@@ -276,11 +286,28 @@ export default function DiagnosticWorkspace() {
               results={results}
               namespace={namespace.value}
             />
-            <BlastRadiusPanel
-              directlyAffected={directlyAffected}
-              potentiallyAffected={potentiallyAffected}
-              namespace={namespace.value}
-            />
+            <div class="flex flex-col gap-3">
+              {truncated.value && (
+                <div
+                  data-testid="blast-radius-truncated"
+                  class={`rounded-lg border px-3 py-2 text-xs ${TONES.warning.banner} ${TONES.warning.text}`}
+                >
+                  <p class="font-semibold">
+                    {Object.keys(truncationErrors.value).length > 0
+                      ? "Blast radius is incomplete: some kinds could not be read from the selected cluster."
+                      : "Blast radius is incomplete: the namespace graph was capped, so some resources are left out."}
+                  </p>
+                  {Object.entries(truncationErrors.value).map(([k, msg]) => (
+                    <p key={k}>{msg}</p>
+                  ))}
+                </div>
+              )}
+              <BlastRadiusPanel
+                directlyAffected={directlyAffected}
+                potentiallyAffected={potentiallyAffected}
+                namespace={namespace.value}
+              />
+            </div>
           </div>
         </>
       )}

@@ -6,6 +6,8 @@ import {
   DASHBOARD_FETCHERS,
   DASHBOARD_REFRESH_MS,
   MAX_CONCURRENT_EXPENSIVE_FETCHES,
+  METRICS_NOT_CONFIGURED_MESSAGE,
+  REMOTE_BEHAVIOUR,
   sourceRefreshOffsetMs,
 } from "./data.ts";
 import { sourceKeyFor } from "./params.ts";
@@ -17,6 +19,7 @@ import {
   RANGE_SENSITIVE_KEYS,
   SOURCE_COST,
   sourceCost,
+  UNSUPPORTED_STATUSES,
 } from "./types.ts";
 
 // The cache exists so that N widgets declaring the same source produce one
@@ -812,31 +815,24 @@ test("errorKind: a 404 from the notification feed is an absence, a 503 is not", 
   expect(cache.state("audit-log").errorKind).toBe("failure");
 });
 
-test("errorKind: diagnostics-summary's remote refusal is unsupported, its 500 a failure", async () => {
-  // The route reads the local informer cache and answers 501
-  // unsupported_platform for a remote cluster (#532). Nothing is broken and a
-  // retry cannot change the answer, so the card must not offer one. A 500 is
-  // the server failing and keeps it.
-  const refused = sourceKeyFor("diagnostics-summary", { namespace: "team-a" });
+test("errorKind: diagnostics-summary serves remote clusters, so a 501 is an ordinary failure", async () => {
+  // The route now reads a remote cluster as the user (#608), so a 501 is no
+  // longer a declared refusal. It is a plain failure, and so is a 500.
+  const odd = sourceKeyFor("diagnostics-summary", { namespace: "team-a" });
   const failed = sourceKeyFor("diagnostics-summary", { namespace: "team-b" });
   const cache = createSourceCache({
     "diagnostics-summary": (_signal, _range, params) =>
       Promise.reject(
         params.namespace === "team-a"
-          ? new ApiError(
-              501,
-              501,
-              "resource diagnostics are available for the local cluster only",
-            )
+          ? new ApiError(501, 501, "not implemented")
           : new ApiError(500, 500, "failed to list pods"),
       ),
   });
 
-  cache.ensure([refused, failed], "1h");
+  cache.ensure([odd, failed], "1h");
   await cache.settled();
 
-  expect(cache.state(refused).errorKind).toBe("unsupported");
-  expect(cache.state(refused).error).toContain("local cluster only");
+  expect(cache.state(odd).errorKind).toBe("failure");
   expect(cache.state(failed).errorKind).toBe("failure");
 });
 
@@ -1761,4 +1757,59 @@ test("generic list sources fetch normally under a remote selection, scoped by X-
     selectedCluster.value = previous ?? LOCAL_CLUSTER_ID;
     globalThis.fetch = realFetch;
   }
+});
+
+// Every source declares what it does under a remote cluster selection, so a
+// new source cannot ship without someone deciding (#608).
+test("every dashboard fetcher declares its remote behaviour", () => {
+  const fetcherKeys = Object.keys(DASHBOARD_FETCHERS).sort();
+  expect(Object.keys(REMOTE_BEHAVIOUR).sort()).toEqual(fetcherKeys);
+  for (const key of fetcherKeys) {
+    expect(["remote", "binding", "installation", "unsupported"]).toContain(
+      REMOTE_BEHAVIOUR[key as DataSourceKey],
+    );
+  }
+});
+
+test("an unsupported key is named in UNSUPPORTED_STATUSES, a remote or binding key is not", () => {
+  for (const [key, behaviour] of Object.entries(REMOTE_BEHAVIOUR)) {
+    const listed = key in UNSUPPORTED_STATUSES;
+    if (behaviour === "unsupported") expect(listed).toBe(true);
+    if (behaviour === "remote" || behaviour === "binding") {
+      expect(listed).toBe(false);
+    }
+  }
+});
+
+test("a 404 metrics_not_configured answer is unsupported, with the not-configured message", async () => {
+  const fetchers: Partial<Record<DataSourceKey, SourceFetcher>> = {
+    "dashboard-trends": () =>
+      Promise.reject(
+        new ApiError(
+          404,
+          404,
+          "metrics are not configured for the selected cluster",
+          {
+            error: { reason: "metrics_not_configured" },
+          },
+        ),
+      ),
+    "cluster-info": () => Promise.reject(new ApiError(404, 404, "not found")),
+    // The slug route collapses forbidden into 404; the reason must still win.
+    "top-consumers-cpu": () =>
+      Promise.reject(
+        new ApiError(404, 404, "x", {
+          error: { reason: "metrics_not_configured" },
+        }),
+      ),
+  };
+  const cache = createSourceCache(fetchers);
+  cache.ensure(["dashboard-trends", "cluster-info", "top-consumers-cpu"], "1h");
+  await cache.settled();
+  const trends = cache.state("dashboard-trends");
+  expect(trends.errorKind).toBe("unsupported");
+  expect(trends.error).toBe(METRICS_NOT_CONFIGURED_MESSAGE);
+  // A bare 404 stays an ordinary failure: the reason is what says "binding".
+  expect(cache.state("cluster-info").errorKind).toBe("failure");
+  expect(cache.state("top-consumers-cpu").errorKind).toBe("unsupported");
 });

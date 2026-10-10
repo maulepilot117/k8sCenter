@@ -137,8 +137,15 @@ func (h *Handler) rejectNonLocal(w http.ResponseWriter, r *http.Request, feature
 
 // HandleCNIStatus returns the detected CNI plugin information.
 // GET /api/v1/networking/cni
+//
+// Detection reads the LOCAL cluster, so a remote selection is refused with
+// 501 rather than shown the local CNI (and Hubble presence) under the remote
+// cluster's name. A per-cluster binding is a later slice of #608.
 func (h *Handler) HandleCNIStatus(w http.ResponseWriter, r *http.Request) {
 	if _, ok := httputil.RequireUser(w, r); !ok {
+		return
+	}
+	if !h.rejectNonLocal(w, r, "CNI status") {
 		return
 	}
 
@@ -323,9 +330,16 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 
 // HandleHubbleFlows returns network flows from Hubble Relay filtered by namespace and verdict.
 // GET /api/v1/networking/hubble/flows?namespace=default&verdict=DROPPED&limit=100
+//
+// The relay is the LOCAL cluster's, so a remote selection is refused with 501
+// before any RBAC check or relay read (#608; the per-cluster Hubble binding
+// is a later slice).
 func (h *Handler) HandleHubbleFlows(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
+		return
+	}
+	if !h.rejectNonLocal(w, r, "Hubble flows") {
 		return
 	}
 

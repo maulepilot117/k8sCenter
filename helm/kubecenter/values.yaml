@@ -293,6 +293,12 @@ networkPolicy:
     # CIDRs that hold externally-deployed Prometheus / Grafana / similar.
     # Leave empty when monitoring runs in-cluster (the default rules
     # already cover the subchart pods via labelSelector).
+    # Also the place for the per-cluster Prometheus a remote cluster is bound
+    # to (PUT /clusters/{id}/metrics). The backend reaches it over https from
+    # its own pod, so it needs egress like any other external endpoint. The
+    # default API-server rule (0.0.0.0/0 minus link-local on 443/6443) already
+    # covers an https Prometheus on 443; one on 9090 (or 80/3000) needs its
+    # CIDR listed here, which opens 80, 443, 3000 and 9090 to that CIDR.
     monitoringCIDRs: []
     # - 10.10.20.0/24
     # CIDRs that hold LDAP / Active Directory servers. Only takes effect

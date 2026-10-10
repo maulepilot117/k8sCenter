@@ -595,24 +595,25 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "get", AuthGroup: "external-secrets.io", AuthResource: "secretstores",
 	},
 	{
-		// The graph is built from the local cluster's informers, which
-		// remote clusters do not have (#532). topology/handler.go
-		// HandleNamespaceGraph answers 501 unsupported_platform before the
-		// builder reads anything. AuthResource pods stands in for the
+		// Remote clusters are served by bounded direct reads as the user
+		// through a per-request remote topology lister (#608); a kind the
+		// user may not list, or one past the read cap, degrades the graph the
+		// way a forbidden kind does locally. The mesh overlay reads local
+		// providers, so ?overlay=mesh on a remote selection answers 400
+		// overlay_unsupported_remote. AuthResource pods stands in for the
 		// per-kind list checks the builder makes on each node it adds.
 		ID: "topology.graph", Label: "Resource topology graph",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
 		// Diagnostics resolve the target, its related pods and the
-		// blast-radius graph from the local cluster's informers (#532).
-		// diagnostics/handler.go refuseRemote answers 501
-		// unsupported_platform for both diagnostics routes before any read,
-		// SAR or notification. AuthResource pods mirrors the namespace
-		// summary's own check.
+		// blast-radius graph from the selected cluster with bounded direct
+		// reads as the user (#608); a pod list past the read cap is reported
+		// as a limitation rather than undercounted. AuthResource pods
+		// mirrors the namespace summary's own check.
 		ID: "diagnostics.read", Label: "Resource diagnostics and blast radius",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
@@ -670,6 +671,38 @@ var capabilityOperations = []capabilityOp{
 		ID: "incidents.capture", Label: "Incident evidence capture",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// Remote since #608 PR 4a, with a per-cluster metrics binding
+		// (PUT /clusters/{id}/metrics). monitoring/handler.go resolves the
+		// Prometheus per request through ClientResolver.PrometheusFor: the
+		// local Discoverer for the local cluster, the cluster's binding for a
+		// remote one, never the local Prometheus for a remote selection. A
+		// remote cluster without a binding answers 404 metrics_not_configured
+		// on the route itself; this row cannot report that (the capabilities
+		// endpoint does not read bindings), so metrics_not_configured is not
+		// one of its reason codes. Raw /query and /query_range are
+		// admin-only; slug queries check each slug's own resource, most of
+		// which are pods, so pods stands in. No Probe: Prometheus is not a
+		// Kubernetes resource. Namespaced, so a denial reports as
+		// authz_namespace_scoped.
+		ID: "monitoring.query", Label: "Prometheus queries",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// Remote since #608 PR 4a, with a per-cluster metrics binding:
+		// k8s/resources/dashboard.go HandleDashboardTrends reads the
+		// selected cluster's own Prometheus through the trends provider and
+		// answers 404 metrics_not_configured when the cluster has no binding
+		// (see monitoring.query for why this row cannot say so). The series
+		// are cluster-wide node metrics, so the probe mirrors
+		// dashboard.summary: cluster-scoped nodes, an exact SAR question. No
+		// Probe: the series come from Prometheus, not discovery.
+		ID: "dashboard.trends", Label: "Dashboard trends",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "nodes",
+		ClusterScoped: true,
 	},
 }
 

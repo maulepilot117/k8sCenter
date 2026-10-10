@@ -577,3 +577,77 @@ func callTopologyHandler(t *testing.T, h *Handler, namespace, overlay string) *h
 	h.HandleNamespaceGraph(w, req)
 	return w
 }
+
+// deadlineLister fails the deployment list with the request deadline, as a
+// remote list does when the read budget runs out mid-build.
+type deadlineLister struct{ fakeLister }
+
+func (deadlineLister) ListDeployments(context.Context, string) ([]*appsv1.Deployment, error) {
+	return nil, context.DeadlineExceeded
+}
+
+// A kind lost to the deadline is left out like a truncated one, and the graph
+// says so rather than looking complete.
+func TestBuilder_DeadlineLostKindIsMarked(t *testing.T) {
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "foo", UID: "svc-a"}}
+	b := NewBuilder(&deadlineLister{fakeLister{services: []*corev1.Service{svc}}}, nil, slog.Default())
+
+	graph, err := b.BuildNamespaceGraph(context.Background(), "foo", testUser(), resources.NewAlwaysAllowAccessChecker())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !graph.Truncated {
+		t.Error("truncated = false, want true when a kind ran out of time")
+	}
+	if msg := graph.Errors[KindDeployments]; msg == "" {
+		t.Errorf("errors = %v, want a %s entry", graph.Errors, KindDeployments)
+	}
+	if len(graph.Errors) != 1 {
+		t.Errorf("errors = %v, want only the deadline-lost kind", graph.Errors)
+	}
+	if len(graph.Nodes) != 1 || graph.Nodes[0].Name != "a" {
+		t.Errorf("nodes = %+v, want the service the other lists returned", graph.Nodes)
+	}
+}
+
+// transportLister fails the deployment list with a transport error, as an
+// informer-backed lister never does but a broken one could.
+type transportLister struct{ fakeLister }
+
+func (transportLister) ListDeployments(context.Context, string) ([]*appsv1.Deployment, error) {
+	return nil, errors.New("dial tcp 10.0.0.1:6443: connect: connection refused")
+}
+
+// The local path is unchanged by the remote failure policy: a permission
+// check that errors counts as a denial, and a list that fails with anything
+// but the read cap or the deadline leaves its kind out, unmarked, with no
+// build error.
+func TestBuilder_LocalFailuresDegradeAsBefore(t *testing.T) {
+	a := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "foo", UID: "svc-a"}}
+
+	t.Run("access check error is a denial", func(t *testing.T) {
+		b := NewBuilder(&fakeLister{services: []*corev1.Service{a}}, nil, slog.Default())
+		graph, err := b.BuildNamespaceGraph(context.Background(), "foo", testUser(),
+			resources.NewErroringAccessChecker(errors.New("SAR transport failure")))
+		if err != nil {
+			t.Fatalf("err = %v, want none on the local path", err)
+		}
+		if len(graph.Nodes) != 0 || graph.Truncated || len(graph.Errors) != 0 {
+			t.Errorf("graph = %+v, want empty and unmarked, as for a denial", graph)
+		}
+	})
+
+	t.Run("transport list error omits the kind", func(t *testing.T) {
+		b := NewBuilder(&transportLister{fakeLister{services: []*corev1.Service{a}}}, nil, slog.Default())
+		graph, err := b.BuildNamespaceGraph(context.Background(), "foo", testUser(), resources.NewAlwaysAllowAccessChecker())
+		if err != nil {
+			t.Fatalf("err = %v, want none on the local path", err)
+		}
+		if len(graph.Nodes) != 1 || graph.Nodes[0].Name != "a" {
+			t.Errorf("nodes = %+v, want the service the other lists returned", graph.Nodes)
+		}
+		if graph.Truncated || len(graph.Errors) != 0 {
+			t.Errorf("truncated = %v, errors = %v, want unmarked as before", graph.Truncated, graph.Errors)
+		}
+	})
+}

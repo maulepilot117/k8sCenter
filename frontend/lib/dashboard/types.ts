@@ -715,23 +715,22 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * Saying plainly what is wrong is the cheaper honest answer, and it is what
  * the fetcher's comment always claimed the card did.
  *
- * `dashboard-trends` is the remote-cluster case (Release C). It reads a
- * local-only source -- Prometheus -- and answers 400 for any other cluster
- * (`dashboard.go`); 400 is the only status that handler writes itself. A
- * remote cluster is not missing a feature and a retry cannot change the
- * answer, which is this set's meaning exactly, and the handler's message is
- * what the card should show.
+ * `dashboard-trends` used to be here, answering 400 for any remote cluster.
+ * It now reads the cluster's own Prometheus through a metrics binding; a
+ * cluster without one answers 404 `metrics_not_configured`, which `classify`
+ * in data.ts reads by reason rather than by status.
  *
- * `diagnostics-summary` is the same case answered differently: the route reads
- * the local informer cache and refuses any other cluster with 501
- * `unsupported_platform` (#532, `diagnostics/handler.go` `refuseRemote`). 501
- * is the only 5xx that handler writes deliberately; its 500s stay failures.
+ * `diagnostics-summary` is deliberately absent: the route serves remote
+ * clusters, so a 501 from it is an ordinary failure, not a refusal.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
   {
     "mesh-golden-signals": [400],
-    "dashboard-trends": [400],
-    "diagnostics-summary": [501],
+    // Remote clusters never answer these three: the backend refuses with 501
+    // (compliance history and Hubble are recorded for the local install only).
+    "policy-compliance-history": [501],
+    "hubble-flows": [501],
+    "hubble-status": [501],
   };
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is

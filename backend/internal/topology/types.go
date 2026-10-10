@@ -6,13 +6,19 @@ import "time"
 //
 // Overlay is OverlayNone (JSON-omitted) by default, preserving byte-identical
 // responses for callers that don't pass ?overlay=. See Overlay docs for the
-// other values. Truncated signals that some Nodes were dropped at the
-// maxNodes cap; EdgesTruncated signals that some mesh-overlay edges were
-// dropped at the maxMeshEdges cap. The two flags are independent so
-// consumers (e.g. blast-radius BFS) can tell "graph missing nodes" from
-// "graph complete, only some mesh edges capped". Errors carries any
-// per-stage warnings the build accumulated (currently: mesh-overlay
-// host-resolution drops); never holds raw Kubernetes error bodies.
+// other values.
+//
+// Truncated signals that some Nodes are missing: dropped at the maxNodes cap,
+// or a whole kind left out because its remote list exceeded the read cap or
+// ran out of time (Errors then names the kind). EdgesTruncated signals that
+// some mesh-overlay edges were dropped at the maxMeshEdges cap. The two flags
+// are independent so consumers (e.g. blast-radius BFS) can tell "graph missing
+// nodes" from "graph complete, only some mesh edges capped".
+//
+// Errors carries any per-stage warnings the build accumulated: mesh-overlay
+// host-resolution drops, and kinds left out at the remote read cap or
+// deadline, keyed by plural resource (the Kind* constants). It never holds
+// raw Kubernetes error bodies.
 type Graph struct {
 	Nodes          []Node            `json:"nodes"`
 	Edges          []Edge            `json:"edges"`
@@ -22,6 +28,24 @@ type Graph struct {
 	Errors         map[string]string `json:"errors,omitempty"`
 	ComputedAt     string            `json:"computedAt"`
 }
+
+// Plural API resources of the kinds a namespace graph lists. They key
+// Graph.Errors, name TruncatedError.Kind and the RemoteLister memo, and are
+// what Prefetcher.Prefetch takes.
+const (
+	KindPods         = "pods"
+	KindServices     = "services"
+	KindDeployments  = "deployments"
+	KindReplicaSets  = "replicasets"
+	KindStatefulSets = "statefulsets"
+	KindDaemonSets   = "daemonsets"
+	KindJobs         = "jobs"
+	KindCronJobs     = "cronjobs"
+	KindIngresses    = "ingresses"
+	KindConfigMaps   = "configmaps"
+	KindPVCs         = "persistentvolumeclaims"
+	KindHPAs         = "horizontalpodautoscalers"
+)
 
 // Node represents a Kubernetes resource in the graph.
 type Node struct {
