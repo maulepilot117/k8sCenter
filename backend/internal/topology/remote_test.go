@@ -14,15 +14,18 @@ func TestWithRemoteTimeout(t *testing.T) {
 	t.Cleanup(func() { RemoteReadTimeout = saved })
 
 	t.Run("remote", func(t *testing.T) {
-		start := time.Now()
+		before := time.Now()
 		ctx, cancel := WithRemoteTimeout(context.Background(), "remote-1")
+		after := time.Now()
 		defer cancel()
 		deadline, ok := ctx.Deadline()
 		if !ok {
 			t.Fatal("remote ctx has no deadline")
 		}
-		if d := deadline.Sub(start); d <= 0 || d > RemoteReadTimeout {
-			t.Errorf("deadline in %s, want within (0, %s]", d, RemoteReadTimeout)
+		// The deadline is set some instant between before and after, so it
+		// lies in [before+timeout, after+timeout].
+		if deadline.Before(before.Add(RemoteReadTimeout)) || deadline.After(after.Add(RemoteReadTimeout)) {
+			t.Errorf("deadline %s, want within [%s, %s]", deadline, before.Add(RemoteReadTimeout), after.Add(RemoteReadTimeout))
 		}
 	})
 
