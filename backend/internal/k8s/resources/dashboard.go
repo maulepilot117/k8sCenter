@@ -271,7 +271,9 @@ func (h *Handler) gatherHealthInputs(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			states, err := h.ControlPlane.ControlPlaneStatus(promCtx)
+			// gatherHealthInputs runs on the local path only (HandleDashboardSummary
+			// sends remote clusters to handleRemoteDashboardSummary first).
+			states, err := h.ControlPlane.ControlPlaneStatus(promCtx, k8s.LocalClusterID)
 			*cpErr = err
 			*cpResult = states
 		}()
@@ -764,11 +766,11 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 			wg.Add(2)
 			go func() {
 				defer wg.Done()
-				cpuPct, cpuErr = h.Utilization.CPUPercent(promCtx)
+				cpuPct, cpuErr = h.Utilization.CPUPercent(promCtx, clusterID)
 			}()
 			go func() {
 				defer wg.Done()
-				memPct, memErr = h.Utilization.MemoryPercent(promCtx)
+				memPct, memErr = h.Utilization.MemoryPercent(promCtx, clusterID)
 			}()
 		}
 
@@ -848,29 +850,46 @@ func dashboardTrendRange(rangeKey string) (window, step time.Duration) {
 // HandleDashboardTrends returns short historical series for the dashboard metric
 // cards (node/pod/service/alert counts) sourced from Prometheus range queries.
 // Kept separate from HandleDashboardSummary so its multi-second range queries do
-// not eat into that endpoint's 1-second Prometheus budget. Local cluster only.
+// not eat into that endpoint's 1-second Prometheus budget.
 //
-// When monitoring is unavailable (h.Trends == nil) or a query fails, the
-// response carries empty series and HTTP 200 — the dashboard degrades to no
-// sparklines rather than erroring.
+// Local cluster: when monitoring is unavailable (h.Trends == nil) or a query
+// fails, the response carries empty series and HTTP 200 — the dashboard
+// degrades to no sparklines rather than erroring.
+//
+// Remote cluster: the series come from the cluster's own Prometheus through
+// its metrics binding. Without a binding the answer is 404
+// metrics_not_configured; a failure to resolve the binding is a fixed 502.
+// The local Prometheus never answers for a remote cluster.
 func (h *Handler) HandleDashboardTrends(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireUser(w, r); !ok {
 		return
 	}
 
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	if clusterID != "" && clusterID != "local" {
-		writeError(w, http.StatusBadRequest, "dashboard trends are only available for the local cluster", "")
-		return
-	}
+	remote := !k8s.IsLocalClusterID(clusterID)
 
 	if h.Trends == nil {
+		if remote {
+			writeMetricsNotConfigured(w)
+			return
+		}
 		writeJSON(w, http.StatusOK, api.Response{Data: DashboardTrends{}})
 		return
 	}
 
 	window, step := dashboardTrendRange(r.URL.Query().Get("range"))
-	trends, err := h.Trends.DashboardTrends(r.Context(), window, step)
+	trends, err := h.Trends.DashboardTrends(r.Context(), clusterID, window, step)
+	if err != nil && remote {
+		if errors.Is(err, ErrNoMetricsBinding) {
+			writeMetricsNotConfigured(w)
+			return
+		}
+		if h.Logger != nil {
+			h.Logger.Warn("remote dashboard trends failed", "cluster", clusterID, "error", err)
+		}
+		writeError(w, http.StatusBadGateway, msgRemoteMetricsQueryFailed, "")
+		return
+	}
 	if err != nil {
 		// Prometheus hiccups should not surface as a dashboard error — log and
 		// return empty series so the cards still render their current counts.

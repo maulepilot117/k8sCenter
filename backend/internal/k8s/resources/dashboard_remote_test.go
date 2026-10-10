@@ -307,9 +307,10 @@ func TestRemoteSummary_CountsWithoutMetrics(t *testing.T) {
 		podWithResources("r-p1", corev1.PodRunning, "1", "2", "1Gi", "2Gi"),
 		service("r-s1"),
 	)
-	// A wired Prometheus provider must not leak into a remote response: it
-	// is bound to the local cluster.
-	h.Utilization = &fakeUtilization{cpu: 42, mem: 42}
+	// The cluster has no metrics binding: the provider says so for the
+	// remote id, and the rows must report "not configured", not a number.
+	fu := &fakeUtilization{cpu: 42, mem: 42, err: ErrNoMetricsBinding}
+	h.Utilization = fu
 
 	s := remoteSummaryOK(t, h)
 
@@ -332,12 +333,146 @@ func TestRemoteSummary_CountsWithoutMetrics(t *testing.T) {
 	if s.Memory == nil || *s.Memory != wantMem {
 		t.Errorf("memory = %+v, want %+v", s.Memory, wantMem)
 	}
-	assertRow(t, s, "cpu", "unavailable", "unsupported_platform")
-	assertRow(t, s, "memory", "unavailable", "unsupported_platform")
+	assertRow(t, s, "cpu", "unavailable", "metrics_not_configured")
+	assertRow(t, s, "memory", "unavailable", "metrics_not_configured")
+	for _, sec := range []string{"cpu", "memory"} {
+		if d := coverageRow(t, s, sec).Detail; d != "metrics are not configured for this cluster" {
+			t.Errorf("%s detail = %q, want the not-configured sentence", sec, d)
+		}
+	}
 	assertRow(t, s, "alerts", "unavailable", "unsupported_platform")
 	assertRow(t, s, "nodes", "ok", "ok")
 	assertRow(t, s, "pods", "ok", "ok")
 	assertRow(t, s, "services", "ok", "ok")
+	fu.assertOnlyCluster(t, remoteTestClusterID)
+}
+
+func TestRemoteSummary_NilProviderIsNotConfigured(t *testing.T) {
+	h, _ := remoteDashboardHandler(t, nil, nodeWithAllocatable("r-n1", "4", "8Gi"))
+
+	s := remoteSummaryOK(t, h)
+
+	assertRow(t, s, "cpu", "unavailable", "metrics_not_configured")
+	assertRow(t, s, "memory", "unavailable", "metrics_not_configured")
+	if s.CPU == nil || s.CPU.Used != "N/A" {
+		t.Errorf("cpu = %+v, want the N/A usage sentinel", s.CPU)
+	}
+}
+
+func TestRemoteSummary_MetricsFromBinding(t *testing.T) {
+	h, _ := remoteDashboardHandler(t, nil,
+		nodeWithAllocatable("r-n1", "4", "8Gi"),
+		nodeWithAllocatable("r-n2", "4", "8Gi"),
+		podWithResources("r-p1", corev1.PodRunning, "1", "2", "1Gi", "2Gi"),
+	)
+	fu := &fakeUtilization{cpu: 42, mem: 42}
+	h.Utilization = fu
+
+	s := remoteSummaryOK(t, h)
+
+	// 42% of the remote cluster's 8 cores / 16 Gi allocatable.
+	wantCPU := Utilization{Percentage: 42, Used: "3.4 cores", Total: "8.0 cores", Requests: "1.0 cores", Limits: "2.0 cores"}
+	if s.CPU == nil || *s.CPU != wantCPU {
+		t.Errorf("cpu = %+v, want %+v", s.CPU, wantCPU)
+	}
+	wantMem := Utilization{Percentage: 42, Used: "6.7 Gi", Total: "16.0 Gi", Requests: "1.0 Gi", Limits: "2.0 Gi"}
+	if s.Memory == nil || *s.Memory != wantMem {
+		t.Errorf("memory = %+v, want %+v", s.Memory, wantMem)
+	}
+	for _, sec := range []string{"cpu", "memory"} {
+		row := coverageRow(t, s, sec)
+		if row.Status != "ok" || row.ReasonCode != "ok" || row.ObservedAt == "" || row.Detail != "" {
+			t.Errorf("%s row = %+v, want ok/ok with observedAt and no detail", sec, row)
+		}
+	}
+	if s.Health != nil {
+		t.Errorf("Health = %+v, want nil: a metrics binding does not enable remote health scoring", s.Health)
+	}
+	assertRow(t, s, "health", "unavailable", "unsupported_platform")
+	fu.assertOnlyCluster(t, remoteTestClusterID)
+}
+
+func TestRemoteSummary_ProviderErrorIsUnreachable(t *testing.T) {
+	h, _ := remoteDashboardHandler(t, nil, nodeWithAllocatable("r-n1", "4", "8Gi"))
+	h.Utilization = &fakeUtilization{cpu: 42, mem: 42, err: errors.New("dial tcp 203.0.113.9:443: i/o timeout")}
+
+	rr := callRemoteDashboard(t, h, "coverage=1")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "203.0.113.9") {
+		t.Errorf("response leaks the provider error: %s", rr.Body.String())
+	}
+	s := decodeDashboard(t, rr)
+
+	for _, sec := range []string{"cpu", "memory"} {
+		row := coverageRow(t, s, sec)
+		if row.Status != "unavailable" || row.ReasonCode != "unreachable" || row.Detail != "the cluster's Prometheus could not be read" {
+			t.Errorf("%s row = %+v, want unavailable/unreachable with the unreadable detail", sec, row)
+		}
+	}
+	if s.CPU == nil || s.CPU.Used != "N/A" || s.CPU.Percentage != 0 {
+		t.Errorf("cpu = %+v, want the N/A usage sentinel", s.CPU)
+	}
+}
+
+func TestRemoteSummary_ProviderPanicIsUnreachable(t *testing.T) {
+	h, _ := remoteDashboardHandler(t, nil, nodeWithAllocatable("r-n1", "4", "8Gi"))
+	h.Utilization = &fakeUtilization{panics: true}
+
+	s := remoteSummaryOK(t, h)
+
+	assertRow(t, s, "cpu", "unavailable", "unreachable")
+	assertRow(t, s, "memory", "unavailable", "unreachable")
+	assertRow(t, s, "nodes", "ok", "ok")
+}
+
+func TestRemoteSummary_MetricsWithUnreadPodsIsPartial(t *testing.T) {
+	h, _ := remoteDashboardHandler(t, nil,
+		nodeWithAllocatable("r-n1", "4", "8Gi"),
+		podWithResources("r-p1", corev1.PodRunning, "1", "2", "1Gi", "2Gi"),
+	)
+	h.AccessChecker = NewDenyResourcesAccessChecker("pods")
+	h.Utilization = &fakeUtilization{cpu: 50, mem: 50}
+
+	s := remoteSummaryOK(t, h)
+
+	wantCPU := Utilization{Percentage: 50, Used: "2.0 cores", Total: "4.0 cores", Requests: "N/A", Limits: "N/A"}
+	if s.CPU == nil || *s.CPU != wantCPU {
+		t.Errorf("cpu = %+v, want %+v", s.CPU, wantCPU)
+	}
+	for _, sec := range []string{"cpu", "memory"} {
+		row := coverageRow(t, s, sec)
+		if row.Status != "partial" || row.ReasonCode != "ok" || row.ObservedAt == "" {
+			t.Errorf("%s row = %+v, want partial/ok with observedAt", sec, row)
+		}
+		if row.Detail != "requests and limits need the pods section, which did not load" {
+			t.Errorf("%s detail = %q, want the pods amendment without a leading separator", sec, row.Detail)
+		}
+	}
+}
+
+func TestRemoteSummary_MetricsWithUnreadNodesHasNoAmount(t *testing.T) {
+	h, _ := remoteDashboardHandler(t, nil,
+		nodeWithAllocatable("r-n1", "4", "8Gi"),
+		podWithResources("r-p1", corev1.PodRunning, "1", "2", "1Gi", "2Gi"),
+	)
+	h.AccessChecker = NewDenyResourcesAccessChecker("nodes")
+	h.Utilization = &fakeUtilization{cpu: 50, mem: 50}
+
+	s := remoteSummaryOK(t, h)
+
+	// The percentage is real; with no allocatable it is not an amount.
+	wantCPU := Utilization{Percentage: 50, Used: "N/A", Total: "N/A", Requests: "1.0 cores", Limits: "2.0 cores"}
+	if s.CPU == nil || *s.CPU != wantCPU {
+		t.Errorf("cpu = %+v, want %+v", s.CPU, wantCPU)
+	}
+	for _, sec := range []string{"cpu", "memory"} {
+		row := coverageRow(t, s, sec)
+		if row.Status != "partial" || !strings.Contains(row.Detail, "nodes section") {
+			t.Errorf("%s row = %+v, want partial naming the nodes section", sec, row)
+		}
+	}
 }
 
 func TestRemoteSummary_NeverSynthesizesHealth(t *testing.T) {
@@ -369,6 +504,9 @@ func TestRemoteSummary_NeverSynthesizesHealth(t *testing.T) {
 				t.Errorf("Health = %+v, want nil on every remote response", s.Health)
 			}
 			assertRow(t, s, "health", "unavailable", "unsupported_platform")
+			if d := coverageRow(t, s, "health").Detail; d != "remote health scoring is not available yet" {
+				t.Errorf("health detail = %q", d)
+			}
 			// The wire carries an explicit null, not a synthesised object.
 			if !strings.Contains(raw, `"health":null`) {
 				t.Errorf("body lacks \"health\":null: %s", raw)
@@ -602,8 +740,8 @@ func TestRemoteSummary_PodsUnreadReservationsUnknown(t *testing.T) {
 			}
 			for _, sec := range []string{"cpu", "memory"} {
 				row := coverageRow(t, s, sec)
-				if row.Status != "unavailable" || row.ReasonCode != "unsupported_platform" {
-					t.Errorf("%s row = %+v, want unavailable/unsupported_platform", sec, row)
+				if row.Status != "unavailable" || row.ReasonCode != "metrics_not_configured" {
+					t.Errorf("%s row = %+v, want unavailable/metrics_not_configured", sec, row)
 				}
 				if !strings.Contains(row.Detail, "pods") {
 					t.Errorf("%s row detail %q does not say requests/limits need the pods section", sec, row.Detail)
@@ -789,11 +927,53 @@ func TestRemoteSummary_ProductionRouterFailsClosed(t *testing.T) {
 	}
 }
 
-// fakeUtilization implements UtilizationProvider with fixed percentages.
-type fakeUtilization struct{ cpu, mem float64 }
+// fakeUtilization implements UtilizationProvider with fixed percentages (or
+// err, or a panic) and records every cluster id it was asked about.
+type fakeUtilization struct {
+	cpu, mem float64
+	err      error
+	panics   bool
 
-func (f *fakeUtilization) CPUPercent(context.Context) (float64, error)    { return f.cpu, nil }
-func (f *fakeUtilization) MemoryPercent(context.Context) (float64, error) { return f.mem, nil }
+	mu       sync.Mutex
+	clusters []string
+}
+
+func (f *fakeUtilization) read(clusterID string, v float64) (float64, error) {
+	f.mu.Lock()
+	f.clusters = append(f.clusters, clusterID)
+	f.mu.Unlock()
+	if f.panics {
+		panic("boom")
+	}
+	if f.err != nil {
+		return 0, f.err
+	}
+	return v, nil
+}
+
+func (f *fakeUtilization) CPUPercent(_ context.Context, clusterID string) (float64, error) {
+	return f.read(clusterID, f.cpu)
+}
+
+func (f *fakeUtilization) MemoryPercent(_ context.Context, clusterID string) (float64, error) {
+	return f.read(clusterID, f.mem)
+}
+
+// assertOnlyCluster fails unless every read named clusterID, and there was
+// at least one.
+func (f *fakeUtilization) assertOnlyCluster(t *testing.T, clusterID string) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.clusters) == 0 {
+		t.Fatal("the utilization provider was never asked")
+	}
+	for _, c := range f.clusters {
+		if c != clusterID {
+			t.Errorf("the utilization provider was asked about cluster %q, want only %q", c, clusterID)
+		}
+	}
+}
 
 // ── Review round 2 follow-ups ──────────────────────────────────────────────
 

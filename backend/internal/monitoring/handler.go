@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
@@ -32,22 +34,110 @@ const (
 	minQueryStep          = 10 * time.Second
 )
 
+// Fixed client-facing messages for the per-cluster Prometheus paths. A
+// remote failure's raw error is only logged: it can carry the address of
+// the cluster's Prometheus.
+const (
+	msgMetricsNotConfigured     = "metrics are not configured for the selected cluster"
+	msgRemoteMetricsQueryFailed = "the metrics query failed on the selected cluster"
+)
+
 // Handler serves monitoring HTTP endpoints.
 type Handler struct {
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
 	Logger        *slog.Logger
+	// Resolver picks the Prometheus for the request's cluster: the local
+	// Discoverer's, or a remote cluster's metrics binding. When nil, the
+	// handler resolves over Discoverer with no bindings, so the local
+	// cluster is served as before and every remote cluster reads as "not
+	// configured" — never from the local Prometheus.
+	Resolver *ClientResolver
+}
+
+// resolver returns h.Resolver, or a binding-less resolver over the
+// Discoverer when none is wired.
+func (h *Handler) resolver() *ClientResolver {
+	if h.Resolver != nil {
+		return h.Resolver
+	}
+	return &ClientResolver{Discoverer: h.Discoverer, Logger: h.Logger}
+}
+
+// promFor resolves the Prometheus client for the request's cluster. On
+// failure it writes the response and returns ok=false: no binding is 404
+// metrics_not_configured, an undiscovered local Prometheus the existing 503,
+// and any other failure a target error (unknown cluster, registry down).
+func (h *Handler) promFor(w http.ResponseWriter, r *http.Request) (*PrometheusClient, string, bool) {
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pc, err := h.resolver().PrometheusFor(r.Context(), clusterID)
+	switch {
+	case err == nil:
+		return pc, clusterID, true
+	case errors.Is(err, ErrNoMetricsBinding):
+		writeMetricsNotConfigured(w)
+	case errors.Is(err, ErrPrometheusUnavailable):
+		httputil.WriteError(w, http.StatusServiceUnavailable, "Prometheus is not available", "")
+	default:
+		httputil.WriteTargetError(w, err)
+	}
+	return nil, clusterID, false
+}
+
+// writeQueryError answers a failed query. The local cluster keeps its
+// existing response; a remote cluster gets a fixed 502 and the raw error
+// (which can name the cluster's Prometheus) is only logged.
+func (h *Handler) writeQueryError(w http.ResponseWriter, clusterID, localMessage string, err error) {
+	if k8s.IsLocalClusterID(clusterID) {
+		httputil.WriteError(w, http.StatusBadGateway, localMessage, err.Error())
+		return
+	}
+	if h.Logger != nil {
+		h.Logger.Warn("remote prometheus query failed", "cluster", clusterID, "error", err)
+	}
+	httputil.WriteError(w, http.StatusBadGateway, msgRemoteMetricsQueryFailed, "")
+}
+
+func writeMetricsNotConfigured(w http.ResponseWriter) {
+	httputil.WriteErrorWithReason(w, http.StatusNotFound, msgMetricsNotConfigured, string(k8s.ReasonMetricsNotConfigured), nil)
 }
 
 // HandleStatus returns the current monitoring discovery status.
 // GET /api/v1/monitoring/status
+//
+// For a remote cluster the status comes from its metrics binding alone:
+// Prometheus is available when a binding resolves, and Grafana, dashboards
+// and the operator are reported absent. The local Discoverer's status never
+// answers for a remote cluster.
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
-	httputil.WriteData(w, h.Discoverer.Status())
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	if k8s.IsLocalClusterID(clusterID) {
+		httputil.WriteData(w, h.Discoverer.Status())
+		return
+	}
+
+	_, err := h.resolver().PrometheusFor(r.Context(), clusterID)
+	if err != nil && !errors.Is(err, ErrNoMetricsBinding) {
+		httputil.WriteTargetError(w, err)
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	httputil.WriteData(w, &MonitoringStatus{
+		Prometheus: ComponentStatus{Available: err == nil, LastChecked: now},
+		Grafana:    ComponentStatus{LastChecked: now},
+	})
 }
 
 // HandleRediscover forces an immediate re-discovery.
 // POST /api/v1/monitoring/rediscover
+//
+// Discovery probes the local cluster only; a remote cluster's Prometheus is
+// registered through its metrics binding instead.
 func (h *Handler) HandleRediscover(w http.ResponseWriter, r *http.Request) {
+	if !k8s.IsLocalClusterID(middleware.ClusterIDFromContext(r.Context())) {
+		httputil.WriteError(w, http.StatusBadRequest, "monitoring discovery is only available for the local cluster", "")
+		return
+	}
 	h.Discoverer.Discover(r.Context())
 	httputil.WriteData(w, h.Discoverer.Status())
 }
@@ -56,11 +146,8 @@ func (h *Handler) HandleRediscover(w http.ResponseWriter, r *http.Request) {
 // Requires admin role — see routes.go. Raw PromQL access is admin-only (P2-4).
 // GET /api/v1/monitoring/query?query=...&time=...
 func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
-	pc := h.Discoverer.PrometheusClient()
-	if pc == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable,
-			"Prometheus is not available",
-			"Monitoring has not been configured. Deploy kube-prometheus-stack or configure an external Prometheus endpoint.")
+	pc, clusterID, ok := h.promFor(w, r)
+	if !ok {
 		return
 	}
 
@@ -86,7 +173,7 @@ func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	result, warnings, err := pc.Query(r.Context(), query, ts)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadGateway, "Prometheus query failed", err.Error())
+		h.writeQueryError(w, clusterID, "Prometheus query failed", err)
 		return
 	}
 
@@ -101,10 +188,8 @@ func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 // Requires admin role — see routes.go. Raw PromQL access is admin-only (P2-4).
 // GET /api/v1/monitoring/query_range?query=...&start=...&end=...&step=...
 func (h *Handler) HandleQueryRange(w http.ResponseWriter, r *http.Request) {
-	pc := h.Discoverer.PrometheusClient()
-	if pc == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable,
-			"Prometheus is not available", "")
+	pc, clusterID, ok := h.promFor(w, r)
+	if !ok {
 		return
 	}
 
@@ -143,7 +228,7 @@ func (h *Handler) HandleQueryRange(w http.ResponseWriter, r *http.Request) {
 
 	result, warnings, err := pc.QueryRange(r.Context(), query, start, end, step)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadGateway, "Prometheus range query failed", err.Error())
+		h.writeQueryError(w, clusterID, "Prometheus range query failed", err)
 		return
 	}
 
@@ -259,10 +344,8 @@ func (h *Handler) HandleTemplates(w http.ResponseWriter, r *http.Request) {
 // HandleTemplateQuery renders a named template with variables and executes it.
 // GET /api/v1/monitoring/templates/query?name=pod_cpu_usage&namespace=default&pod=my-pod
 func (h *Handler) HandleTemplateQuery(w http.ResponseWriter, r *http.Request) {
-	pc := h.Discoverer.PrometheusClient()
-	if pc == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable,
-			"Prometheus is not available", "")
+	pc, clusterID, ok := h.promFor(w, r)
+	if !ok {
 		return
 	}
 
@@ -291,7 +374,7 @@ func (h *Handler) HandleTemplateQuery(w http.ResponseWriter, r *http.Request) {
 
 	result, warnings, err := pc.Query(r.Context(), query, time.Now())
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadGateway, "Prometheus query failed", err.Error())
+		h.writeQueryError(w, clusterID, "Prometheus query failed", err)
 		return
 	}
 
@@ -317,10 +400,8 @@ func (h *Handler) HandleTemplateQuery(w http.ResponseWriter, r *http.Request) {
 //     ClusterWide slugs).
 //   - start / end / step: Optional; omitting runs an instant query at Now().
 func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
-	pc := h.Discoverer.PrometheusClient()
-	if pc == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable,
-			"Prometheus is not available", "")
+	pc, clusterID, ok := h.promFor(w, r)
+	if !ok {
 		return
 	}
 
@@ -421,7 +502,6 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 			rbacNS = ""
 		}
 
-		clusterID := middleware.ClusterIDFromContext(r.Context())
 		for _, verb := range def.RequiredVerbs {
 			allowed, err := h.AccessChecker.CanAccessGroupResource(
 				r.Context(),
@@ -475,7 +555,7 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		result, warnings, err := pc.Query(r.Context(), rendered, ts)
 		if err != nil {
-			httputil.WriteError(w, http.StatusBadGateway, "Prometheus query failed", err.Error())
+			h.writeQueryError(w, clusterID, "Prometheus query failed", err)
 			return
 		}
 		// F#23 — match the /query_range data envelope shape exactly so the
@@ -517,7 +597,7 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 
 	result, warnings, err := pc.QueryRange(r.Context(), rendered, start, end, step)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadGateway, "Prometheus range query failed", err.Error())
+		h.writeQueryError(w, clusterID, "Prometheus range query failed", err)
 		return
 	}
 	// F#23 — same shape match as the instant branch above.
@@ -612,4 +692,3 @@ func renderSlugTemplate(tmplStr, namespace, name string) (string, error) {
 	}
 	return buf.String(), nil
 }
-

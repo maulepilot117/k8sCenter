@@ -2,7 +2,6 @@ package monitoring
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -52,15 +51,19 @@ var trendQueries = []struct {
 // Prometheus for the metric-card series concurrently and returns whatever
 // resolved; individual query failures yield an empty series for that metric
 // rather than failing the whole request.
-func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step time.Duration) (resources.DashboardTrends, error) {
+//
+// A resolution failure (no binding for a remote cluster, local Prometheus not
+// discovered, binding unreadable) is returned as the error, so the caller can
+// tell "not configured" from "failed".
+func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, clusterID string, window, step time.Duration) (resources.DashboardTrends, error) {
 	out := resources.DashboardTrends{
 		Window: window.String(),
 		Step:   step.String(),
 	}
 
-	pc := a.Discoverer.PrometheusClient()
-	if pc == nil {
-		return out, fmt.Errorf("prometheus not available")
+	pc, err := a.client(ctx, clusterID)
+	if err != nil {
+		return out, err
 	}
 
 	// Bound the whole fan-out; QueryRange also applies its own per-call timeout.
@@ -86,7 +89,7 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step t
 	for i, q := range trendQueries {
 		go func(i int, query string) {
 			defer wg.Done()
-			recoverutil.Safe(a.Discoverer.logger, "monitoring trends-query", func() {
+			recoverutil.Safe(a.Resolver.Logger, "monitoring trends-query", func() {
 				val, _, err := pc.QueryRange(ctx, query, start, end, step)
 				if err != nil {
 					return // leave series[i] nil → empty slice in JSON
