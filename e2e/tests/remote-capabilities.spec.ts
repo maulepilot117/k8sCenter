@@ -566,30 +566,81 @@ test.describe.serial("Remote cluster capabilities", () => {
     expect(data.detected).toBe("none");
   });
 
+  // The fixture identity can neither create nor read ConfigMaps and holds no
+  // write verb on pods, so a seeded object cannot carry these two cases. They
+  // use kube-system instead: it exists on both clusters, the identity may list
+  // its pods cluster-wide, and kind static-pod names embed the node name
+  // (etcd-<node>, kube-apiserver-<node>). Node names are disjoint between the
+  // two clusters (asserted above), so a pod named after a remote node can only
+  // come from the remote cluster.
+  const SYSTEM_NS = "kube-system";
+
   test("diagnostics summary under a remote selection reads the remote cluster", async ({
     page,
   }) => {
-    const res = await page.request.get(
-      `/api/v1/diagnostics/${FIXTURE_NS}/summary`,
-      { headers: await headersFor(page, REMOTE!) },
-    );
-    expect(res.status()).toBe(200);
-    const { data } = await res.json();
-    expect(typeof data.total).toBe("number");
-    expect(data.total).toBeGreaterThanOrEqual(0);
-    expect(Array.isArray(data.failing)).toBe(true);
+    const podsIn = async (clusterId: string) => {
+      const res = await page.request.get(
+        `/api/v1/resources/pods/${SYSTEM_NS}`,
+        { headers: await headersFor(page, clusterId) },
+      );
+      expect(res.status()).toBe(200);
+      return (await res.json()).data as Array<{ metadata: { name: string } }>;
+    };
+    const summaryFor = async (clusterId: string) => {
+      const res = await page.request.get(
+        `/api/v1/diagnostics/${SYSTEM_NS}/summary`,
+        { headers: await headersFor(page, clusterId) },
+      );
+      expect(res.status()).toBe(200);
+      return (await res.json()).data as {
+        total: number;
+        failing: Array<{ name: string }>;
+      };
+    };
+
+    const remotePods = await podsIn(REMOTE!);
+    const remoteNode = (await nodeNames(page, REMOTE!))[0];
+    // A kind cluster always runs control-plane pods, and the ones named after
+    // the remote node exist only there.
+    expect(remotePods.length).toBeGreaterThan(0);
+    expect(
+      remotePods.some((p) => p.metadata.name.includes(remoteNode)),
+    ).toBe(true);
+
+    const remote = await summaryFor(REMOTE!);
+    // The summary counts the pods it evaluated: the remote cluster's.
+    expect(remote.total).toBe(remotePods.length);
+    expect(Array.isArray(remote.failing)).toBe(true);
+    // Nothing the local cluster runs can be reported as failing here.
+    const localPodNames = (await podsIn("local")).map((p) => p.metadata.name);
+    for (const f of remote.failing) {
+      expect(localPodNames).not.toContain(f.name);
+    }
   });
 
   test("topology graph under a remote selection is built from the remote cluster", async ({
     page,
   }) => {
-    const res = await page.request.get(`/api/v1/topology/${FIXTURE_NS}`, {
-      headers: await headersFor(page, REMOTE!),
-    });
-    expect(res.status()).toBe(200);
-    const { data } = await res.json();
-    expect(Array.isArray(data.nodes)).toBe(true);
-    expect(Array.isArray(data.edges)).toBe(true);
+    const podNodesIn = async (clusterId: string) => {
+      const res = await page.request.get(`/api/v1/topology/${SYSTEM_NS}`, {
+        headers: await headersFor(page, clusterId),
+      });
+      expect(res.status()).toBe(200);
+      const { data } = await res.json();
+      expect(Array.isArray(data.nodes)).toBe(true);
+      expect(Array.isArray(data.edges)).toBe(true);
+      return (data.nodes as Array<{ kind: string; name: string }>)
+        .filter((n) => n.kind === "Pod")
+        .map((n) => n.name);
+    };
+
+    const remoteNode = (await nodeNames(page, REMOTE!))[0];
+    const remotePods = await podNodesIn(REMOTE!);
+    expect(remotePods.some((n) => n.includes(remoteNode))).toBe(true);
+    // The same request against the local cluster has no pod of that name, so
+    // a silent fall back to the local informers fails the assertion above.
+    const localPods = await podNodesIn("local");
+    expect(localPods.some((n) => n.includes(remoteNode))).toBe(false);
   });
 
   test("the mesh overlay is refused on a remote selection", async ({ page }) => {
