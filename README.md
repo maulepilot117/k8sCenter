@@ -57,7 +57,7 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Diff YAML against live state | Yes | Yes | Same target-scoped discovery; Secrets are refused on both |
 | Export YAML | Yes | Yes | Same; Secrets are refused on both |
 | Apply YAML | Yes | Yes | Apply is pinned to the cluster the preview ran against. A mismatch is refused with 409 (`cluster_pin_mismatch` / `cluster_generation_mismatch`) and nothing is applied |
-| Dashboard summary | Yes | Partial | Node, pod and service counts and capacity, each with a per-section coverage row (opt-in `?coverage=1`). CPU/memory usage, alert counts and the health score are shown as unavailable, never as 0: there is no remote metrics binding yet |
+| Dashboard summary | Yes | Partial | Node, pod and service counts and capacity, each with a per-section coverage row (opt-in `?coverage=1`). CPU/memory usage comes from the cluster's metrics binding (`PUT /clusters/{id}/metrics`) and reads `metrics_not_configured` without one. Alert counts and the health score are shown as unavailable, never as 0 |
 | Resource lists and detail | Yes | Yes | Every kind on the resource pages (Deployments, Pods, Nodes, Services, ...) and the dashboard list widgets are read from the selected cluster as the user. A remote list is read whole, up to 5,000 objects, and paged by k8sCenter; a longer list is served up to that cap and marked truncated. Secrets keep their own masked route |
 | Resource counts | Yes | Yes | Per-kind access checks run on the selected cluster and each kind the user may list is counted by a bounded direct read; a kind cut off at the cap is reported as read with the response marked truncated |
 | Cluster info | Yes | Yes | Version, platform and node count read from the selected cluster as the user; the node count is omitted rather than guessed when the user may not list nodes |
@@ -91,8 +91,8 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Tracked change receipts | Yes | Yes | Receipts are stored by this installation and listed or read for any cluster by their owner. Verifying a receipt and resolving GitOps ownership run against the cluster the receipt recorded, not the selected one, and live access to a remote cluster needs admin (a non-admin still reads a stored final verdict, redacted). Cluster IDs are random per registration, so a receipt is never verified against a re-registered cluster |
 | Backup assurance | Yes | No | `velero/assurance_handler.go` (501 `remote_assurance_unsupported`: status, exceptions and policies are collected and stored for the local cluster only) |
 | Incident evidence capture | Yes | No | `incidents/handler_capture.go` (400 `remote_capture_unsupported`: evidence is collected from the local cluster's diagnostics, objects and events). Reading, sharing and exporting an incident work under any selection: every evidence item is re-authorized against the cluster recorded on it, never the selected one |
-
-Dashboard trends (the sparklines) are local-only as well; the cards render without them.
+| Prometheus queries | Yes | Yes | With a per-cluster metrics binding (`PUT /clusters/{id}/metrics`); without one the route answers 404 `metrics_not_configured`. A remote cluster is never answered from the local Prometheus |
+| Dashboard trends | Yes | Yes | With a per-cluster metrics binding (`PUT /clusters/{id}/metrics`); without one the route answers 404 `metrics_not_configured` and the cards render without sparklines |
 
 Remote pages get no live updates: the WebSocket feed carries the local cluster's informer events only. Refresh the page to see changes on a remote cluster.
 

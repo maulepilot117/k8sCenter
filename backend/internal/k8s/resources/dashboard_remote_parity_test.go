@@ -22,6 +22,7 @@ func TestRemoteDashboardReasonCodeParity(t *testing.T) {
 		{"ReasonForbidden", reasonForbidden, k8s.ReasonForbidden},
 		{"ReasonAuthzUnknown", reasonAuthzUnknown, k8s.ReasonAuthzUnknown},
 		{"ReasonAuthzNamespaceScoped", reasonAuthzNamespaced, k8s.ReasonAuthzNamespaceScoped},
+		{"ReasonMetricsNotConfigured", reasonMetricsNotConfigured, k8s.ReasonMetricsNotConfigured},
 	}
 	for _, m := range mirrored {
 		if m.mirror != string(m.canonical) {

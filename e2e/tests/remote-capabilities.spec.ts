@@ -669,6 +669,60 @@ test.describe.serial("Remote cluster capabilities", () => {
     expect((await res.json()).error.reason).toBe("overlay_unsupported_remote");
   });
 
+  // Per-cluster metrics binding (#608 PR-4a). The /clusters/{id}/metrics routes
+  // are admin-only; the page session is the admin the suite registers and
+  // deletes the cluster with, so these calls use its plain auth headers (no
+  // X-Cluster-ID: the cluster is named in the path). No case here writes a
+  // binding that succeeds, so nothing needs cleaning up.
+
+  test("metrics binding rejects a private Prometheus URL", async ({ page }) => {
+    const res = await page.request.put(`/api/v1/clusters/${REMOTE}/metrics`, {
+      headers: { ...(await getAuthHeaders(page)), "Content-Type": "application/json" },
+      data: { prometheusUrl: "https://10.0.0.5:9090" },
+    });
+    expect(res.status()).toBe(400);
+  });
+
+  test("metrics binding reports an unreachable Prometheus", async ({ page }) => {
+    // 203.0.113.0/24 is TEST-NET-3: public per the SSRF check, never routable.
+    // The backend probe has its own timeout, so allow it to run out.
+    const res = await page.request.put(`/api/v1/clusters/${REMOTE}/metrics`, {
+      headers: { ...(await getAuthHeaders(page)), "Content-Type": "application/json" },
+      data: { prometheusUrl: "https://203.0.113.10:9090" },
+      timeout: 30_000,
+    });
+    expect(res.status()).toBe(502);
+    expect((await res.json()).error.message).toBe(
+      "could not reach Prometheus at the given URL",
+    );
+  });
+
+  test("no metrics binding is an explicit state, not local data", async ({
+    page,
+  }) => {
+    const binding = await page.request.get(`/api/v1/clusters/${REMOTE}/metrics`, {
+      headers: await getAuthHeaders(page),
+    });
+    expect(binding.status()).toBe(404);
+    expect((await binding.json()).error.reason).toBe("metrics_not_configured");
+
+    // Trends under a remote selection without a binding say so rather than
+    // answering with the local cluster's series.
+    const remote = await page.request.get(
+      "/api/v1/cluster/dashboard-trends?range=1h",
+      { headers: await headersFor(page, REMOTE!) },
+    );
+    expect(remote.status()).toBe(404);
+    expect((await remote.json()).error.reason).toBe("metrics_not_configured");
+
+    // The local selection is unaffected.
+    const local = await page.request.get(
+      "/api/v1/cluster/dashboard-trends?range=1h",
+      { headers: await headersFor(page, "local") },
+    );
+    expect(local.status()).toBe(200);
+  });
+
   // Must stay last: see the header.
   test("deleting the cluster invalidates cached discovery", async ({ page }) => {
     test.skip(

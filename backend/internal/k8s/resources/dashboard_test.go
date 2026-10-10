@@ -104,9 +104,9 @@ func (f *fakeAlertCounter) ActiveAlertCountsExcluding(_ context.Context, _ ...st
 // fakeAlertCounterCapture records the excludeAlertNames passed to
 // ActiveAlertCountsExcluding so tests can assert the exact names forwarded.
 type fakeAlertCounterCapture struct {
-	active         int
-	critical       int
-	err            error
+	active          int
+	critical        int
+	err             error
 	capturedExclude []string
 }
 
@@ -124,7 +124,7 @@ type fakeControlPlane struct {
 	err    error
 }
 
-func (f *fakeControlPlane) ControlPlaneStatus(_ context.Context) (ControlPlaneStates, error) {
+func (f *fakeControlPlane) ControlPlaneStatus(_ context.Context, _ string) (ControlPlaneStates, error) {
 	return f.states, f.err
 }
 
@@ -464,7 +464,7 @@ func TestDashboardHealth_WFFCPVCExcluded(t *testing.T) {
 func TestDashboardHealth_WFFCPVCWithAnnotationDegraded(t *testing.T) {
 	wffc := storagev1.VolumeBindingWaitForFirstConsumer
 	sc := &storagev1.StorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "fast"},
+		ObjectMeta:        metav1.ObjectMeta{Name: "fast"},
 		VolumeBindingMode: &wffc,
 	}
 	pendingPVC := &corev1.PersistentVolumeClaim{

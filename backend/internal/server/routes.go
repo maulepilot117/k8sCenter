@@ -290,15 +290,24 @@ func (s *Server) registerRoutes() {
 			})
 
 			// Cluster management — admin only
-			ar.Route("/clusters", func(cr chi.Router) {
-				cr.Use(middleware.RequireAdmin)
-				cr.Get("/", s.handleListClusters)
-				cr.Post("/", s.handleCreateCluster)
-				cr.Get("/{clusterID}", s.handleGetCluster)
-				cr.Delete("/{clusterID}", s.handleDeleteCluster)
-				cr.Post("/{clusterID}/test", s.handleTestCluster)
-			})
+			s.registerClusterRoutes(ar)
 		})
+	})
+}
+
+// registerClusterRoutes mounts the admin-only cluster registry, including
+// each remote cluster's metrics binding.
+func (s *Server) registerClusterRoutes(ar chi.Router) {
+	ar.Route("/clusters", func(cr chi.Router) {
+		cr.Use(middleware.RequireAdmin)
+		cr.Get("/", s.handleListClusters)
+		cr.Post("/", s.handleCreateCluster)
+		cr.Get("/{clusterID}", s.handleGetCluster)
+		cr.Delete("/{clusterID}", s.handleDeleteCluster)
+		cr.Post("/{clusterID}/test", s.handleTestCluster)
+		cr.Get("/{clusterID}/metrics", s.handleGetClusterMetrics)
+		cr.Put("/{clusterID}/metrics", s.handlePutClusterMetrics)
+		cr.Delete("/{clusterID}/metrics", s.handleDeleteClusterMetrics)
 	})
 }
 

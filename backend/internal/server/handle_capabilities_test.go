@@ -263,6 +263,8 @@ var (
 		"mesh.mtls", "eso.read", "certmanager.certificates", "policy.read", "changes.receipts",
 		"resources.counts", "cluster.info", "limits.read", "scanning.read",
 		"topology.graph", "diagnostics.read",
+		// #608 PR 4a: served from the cluster's metrics binding.
+		"monitoring.query", "dashboard.trends",
 	}
 	wantRemoteUnsupported = []string{
 		"pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
@@ -1347,6 +1349,7 @@ func TestCapabilityOperations_ScopePinned(t *testing.T) {
 	// CRD) is namespaced.
 	wantClusterScoped := map[string]bool{
 		"dashboard.summary": true,
+		"dashboard.trends":  true,
 		"cluster.info":      true,
 		"node.drain":        true,
 		"storage.classes":   true,

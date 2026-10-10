@@ -672,6 +672,38 @@ var capabilityOperations = []capabilityOp{
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "pods",
 	},
+	{
+		// Remote since #608 PR 4a, with a per-cluster metrics binding
+		// (PUT /clusters/{id}/metrics). monitoring/handler.go resolves the
+		// Prometheus per request through ClientResolver.PrometheusFor: the
+		// local Discoverer for the local cluster, the cluster's binding for a
+		// remote one, never the local Prometheus for a remote selection. A
+		// remote cluster without a binding answers 404 metrics_not_configured
+		// on the route itself; this row cannot report that (the capabilities
+		// endpoint does not read bindings), so metrics_not_configured is not
+		// one of its reason codes. Raw /query and /query_range are
+		// admin-only; slug queries check each slug's own resource, most of
+		// which are pods, so pods stands in. No Probe: Prometheus is not a
+		// Kubernetes resource. Namespaced, so a denial reports as
+		// authz_namespace_scoped.
+		ID: "monitoring.query", Label: "Prometheus queries",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// Remote since #608 PR 4a, with a per-cluster metrics binding:
+		// k8s/resources/dashboard.go HandleDashboardTrends reads the
+		// selected cluster's own Prometheus through the trends provider and
+		// answers 404 metrics_not_configured when the cluster has no binding
+		// (see monitoring.query for why this row cannot say so). The series
+		// are cluster-wide node metrics, so the probe mirrors
+		// dashboard.summary: cluster-scoped nodes, an exact SAR question. No
+		// Probe: the series come from Prometheus, not discovery.
+		ID: "dashboard.trends", Label: "Dashboard trends",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "nodes",
+		ClusterScoped: true,
+	},
 }
 
 // supportedFor returns the static platformSupported value for this

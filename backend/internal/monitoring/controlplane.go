@@ -31,22 +31,26 @@ const (
 // is "up" when at least one replica reports up==1; "down" when all report 0.
 const controlPlaneQuery = `max by (job) (up{job=~"kube-scheduler|kube-controller-manager|etcd|kube-etcd"})`
 
-// ControlPlaneAdapter implements resources.ControlPlaneChecker using PrometheusClient.
+// ControlPlaneAdapter implements resources.ControlPlaneChecker over the
+// Prometheus the Resolver picks for the requested cluster.
 type ControlPlaneAdapter struct {
-	Discoverer *Discoverer
+	Resolver *ClientResolver
 }
 
 // ControlPlaneStatus queries Prometheus for scheduler, controller-manager, and etcd
 // up/down states. Components absent from the result vector are treated as not-scraped
 // (e.g. k3s embedded control plane, no scrape config, managed-cloud control planes).
 //
-// Returns an error when the Prometheus client is nil or the query fails; the caller
-// maps errors to resources.ControlPlaneStates with all components set to
-// ComponentUnscraped and surfaces the signal as SignalStatusUnknown.
-func (a *ControlPlaneAdapter) ControlPlaneStatus(ctx context.Context) (resources.ControlPlaneStates, error) {
-	pc := a.Discoverer.PrometheusClient()
-	if pc == nil {
-		return resources.ControlPlaneStates{}, fmt.Errorf("prometheus not available")
+// Returns an error when no Prometheus resolves for clusterID or the query fails;
+// the caller maps errors to resources.ControlPlaneStates with all components set
+// to ComponentUnscraped and surfaces the signal as SignalStatusUnknown.
+func (a *ControlPlaneAdapter) ControlPlaneStatus(ctx context.Context, clusterID string) (resources.ControlPlaneStates, error) {
+	if a.Resolver == nil {
+		return resources.ControlPlaneStates{}, ErrPrometheusUnavailable
+	}
+	pc, err := a.Resolver.PrometheusFor(ctx, clusterID)
+	if err != nil {
+		return resources.ControlPlaneStates{}, err
 	}
 
 	result, _, err := pc.Query(ctx, controlPlaneQuery, time.Now())

@@ -102,6 +102,20 @@ type Server struct {
 	// ClusterRouter; tests set it because a real resolution needs a cluster
 	// registry and a reachable API server.
 	remoteInfoClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
+	// ClusterMetricsStore persists per-cluster metrics bindings
+	// (/clusters/{id}/metrics). Nil without a database: those routes answer 503.
+	ClusterMetricsStore clusterMetricsStore
+	// MetricsResolver is the resolver shared by the monitoring handler and
+	// the dashboard adapters; binding writes and cluster deletes evict from
+	// it. Nil-safe.
+	MetricsResolver metricsResolverEvicter
+	// probePrometheus checks a binding's Prometheus before it is stored. Nil
+	// in production, which uses monitoring.ProbePrometheus; tests stub it
+	// because the strict transport refuses loopback httptest servers.
+	probePrometheus func(ctx context.Context, url, token string) error
+	// metricsClusters confirms the cluster exists for the binding routes.
+	// Nil in production, which reads ClusterStore; tests set a fake.
+	metricsClusters clusterRecordGetter
 }
 
 // Deps holds all dependencies needed to create a Server.
@@ -157,6 +171,26 @@ type Deps struct {
 	DBPing             func(context.Context) error // nil if no database
 }
 
+// monitoringResolver returns the metrics client resolver shared by the
+// monitoring handler and the dashboard adapters, or nil when monitoring is
+// not wired. When the caller did not set MonitoringHandler.Resolver (no
+// metrics-binding store), one is built over the Discoverer with no bindings
+// reader — every remote cluster then reads as "metrics not configured" — and
+// stored on the handler so both sides use the same instance.
+func monitoringResolver(deps Deps) *monitoring.ClientResolver {
+	mh := deps.MonitoringHandler
+	if mh == nil {
+		return nil
+	}
+	if mh.Resolver == nil {
+		if mh.Discoverer == nil {
+			return nil
+		}
+		mh.Resolver = monitoring.NewClientResolver(mh.Discoverer, nil, deps.Logger)
+	}
+	return mh.Resolver
+}
+
 // New creates a configured HTTP server with middleware and routes.
 func New(deps Deps) *Server {
 	s := &Server{
@@ -185,6 +219,14 @@ func New(deps Deps) *Server {
 		dbPing:          deps.DBPing,
 	}
 
+	// One metrics resolver serves the monitoring handler, the dashboard
+	// adapters and the binding routes' Evict, so a binding edit reaches
+	// every cache. A nil resolver stays a nil interface (no typed nil).
+	metricsResolver := monitoringResolver(deps)
+	if metricsResolver != nil {
+		s.MetricsResolver = metricsResolver
+	}
+
 	// Build resource handler if k8s dependencies are available (not in auth-only tests)
 	if deps.K8sClient != nil && deps.Informers != nil {
 		ac := deps.AccessChecker
@@ -193,14 +235,20 @@ func New(deps Deps) *Server {
 			ac = resources.NewAccessChecker(deps.K8sClient, deps.Logger)
 		}
 		// Build optional UtilizationProvider + TrendProvider if monitoring is
-		// available. The same adapter implements both — one wraps the Prometheus
-		// Discoverer for instant utilization queries and range trend queries.
+		// available. The same adapter implements both — instant utilization
+		// queries and range trend queries — over the Prometheus the metrics
+		// resolver picks per cluster. The adapters and the monitoring handler
+		// share ONE resolver, so a binding edit's Evict reaches every cache.
 		var utilProvider resources.UtilizationProvider
 		var trendProvider resources.TrendProvider
-		if deps.MonitoringHandler != nil && deps.MonitoringHandler.Discoverer != nil {
-			adapter := &monitoring.UtilizationAdapter{Discoverer: deps.MonitoringHandler.Discoverer}
+		var controlPlaneChecker resources.ControlPlaneChecker
+		if metricsResolver != nil {
+			adapter := &monitoring.UtilizationAdapter{Resolver: metricsResolver}
 			utilProvider = adapter
 			trendProvider = adapter
+			// Control-plane health reads the same resolver (local only in
+			// practice: the health score runs on the local path).
+			controlPlaneChecker = &monitoring.ControlPlaneAdapter{Resolver: metricsResolver}
 		}
 
 		// Build optional AlertCounter if alerting is available
@@ -213,13 +261,6 @@ func New(deps Deps) *Server {
 		var certExpiryCounter resources.CertExpiryCounter
 		if deps.CertManagerHandler != nil {
 			certExpiryCounter = &certmanager.CertExpiryAdapter{Handler: deps.CertManagerHandler}
-		}
-
-		// Build optional ControlPlaneChecker if monitoring is available.
-		// Mirrors UtilizationAdapter wiring above — same Discoverer, separate adapter.
-		var controlPlaneChecker resources.ControlPlaneChecker
-		if deps.MonitoringHandler != nil && deps.MonitoringHandler.Discoverer != nil {
-			controlPlaneChecker = &monitoring.ControlPlaneAdapter{Discoverer: deps.MonitoringHandler.Discoverer}
 		}
 
 		// Deregistering a cluster or replacing its credentials evicts it from

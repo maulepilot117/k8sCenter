@@ -34,10 +34,14 @@ func NewPrometheusClient(address string) (*PrometheusClient, error) {
 // safe-by-default transport rejects). Production code MUST use
 // NewPrometheusClient so the SSRF defense stays wired by default.
 func NewPrometheusClientWithTransport(address string, rt http.RoundTripper) (*PrometheusClient, error) {
-	client, err := api.NewClient(api.Config{
+	return newPrometheusClient(api.Config{
 		Address:      address,
 		RoundTripper: rt,
 	})
+}
+
+func newPrometheusClient(cfg api.Config) (*PrometheusClient, error) {
+	client, err := api.NewClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating prometheus client: %w", err)
 	}
