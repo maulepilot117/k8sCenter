@@ -293,8 +293,9 @@ export default function DiagnosticWorkspace() {
                   class={`rounded-lg border px-3 py-2 text-xs ${TONES.warning.banner} ${TONES.warning.text}`}
                 >
                   <p class="font-semibold">
-                    Blast radius is incomplete: some kinds could not be read
-                    from the selected cluster.
+                    {Object.keys(truncationErrors.value).length > 0
+                      ? "Blast radius is incomplete: some kinds could not be read from the selected cluster."
+                      : "Blast radius is incomplete: the namespace graph was capped, so some resources are left out."}
                   </p>
                   {Object.entries(truncationErrors.value).map(([k, msg]) => (
                     <p key={k}>{msg}</p>
