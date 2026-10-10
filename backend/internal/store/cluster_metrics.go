@@ -38,23 +38,37 @@ func NewClusterMetricsStore(pool *pgxpool.Pool, encryptionKey string) *ClusterMe
 }
 
 // Get returns the binding for a cluster and its decrypted bearer token (empty
-// when none is stored). A missing row, or a row without a Prometheus URL (a
-// legacy grafana-only row), is ErrMetricsBindingNotFound.
+// when none is stored). It reads from the cluster registry outward, so the two
+// "nothing to read" cases stay apart: a cluster that is not registered is a
+// wrapped pgx.ErrNoRows (classified as cluster_unknown, like every other
+// registry lookup), and a registered cluster with no binding row, or a row
+// without a Prometheus URL (a legacy grafana-only row), is
+// ErrMetricsBindingNotFound.
 func (s *ClusterMetricsStore) Get(ctx context.Context, clusterID string) (MetricsBinding, string, error) {
 	var (
-		b      MetricsBinding
-		encTok []byte
+		b         MetricsBinding
+		promURL   *string
+		updatedAt *time.Time
+		encTok    []byte
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT cluster_id, prometheus_url, COALESCE(alertmanager_url, ''), prometheus_token, updated_at
-		FROM cluster_monitoring
-		WHERE cluster_id = $1 AND COALESCE(prometheus_url, '') <> ''`, clusterID).
-		Scan(&b.ClusterID, &b.PrometheusURL, &b.AlertmanagerURL, &encTok, &b.UpdatedAt)
+		SELECT c.id, m.prometheus_url, COALESCE(m.alertmanager_url, ''), m.prometheus_token, m.updated_at
+		FROM clusters c
+		LEFT JOIN cluster_monitoring m ON m.cluster_id = c.id
+		WHERE c.id = $1`, clusterID).
+		Scan(&b.ClusterID, &promURL, &b.AlertmanagerURL, &encTok, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return MetricsBinding{}, "", ErrMetricsBindingNotFound
+		return MetricsBinding{}, "", fmt.Errorf("getting metrics binding: cluster %s: %w", clusterID, err)
 	}
 	if err != nil {
 		return MetricsBinding{}, "", fmt.Errorf("getting metrics binding: %w", err)
+	}
+	if promURL == nil || *promURL == "" {
+		return MetricsBinding{}, "", ErrMetricsBindingNotFound
+	}
+	b.PrometheusURL = *promURL
+	if updatedAt != nil {
+		b.UpdatedAt = *updatedAt
 	}
 	b.HasToken = len(encTok) > 0
 	if !b.HasToken {

@@ -219,6 +219,14 @@ func New(deps Deps) *Server {
 		dbPing:          deps.DBPing,
 	}
 
+	// One metrics resolver serves the monitoring handler, the dashboard
+	// adapters and the binding routes' Evict, so a binding edit reaches
+	// every cache. A nil resolver stays a nil interface (no typed nil).
+	metricsResolver := monitoringResolver(deps)
+	if metricsResolver != nil {
+		s.MetricsResolver = metricsResolver
+	}
+
 	// Build resource handler if k8s dependencies are available (not in auth-only tests)
 	if deps.K8sClient != nil && deps.Informers != nil {
 		ac := deps.AccessChecker
@@ -234,7 +242,7 @@ func New(deps Deps) *Server {
 		var utilProvider resources.UtilizationProvider
 		var trendProvider resources.TrendProvider
 		var controlPlaneChecker resources.ControlPlaneChecker
-		if metricsResolver := monitoringResolver(deps); metricsResolver != nil {
+		if metricsResolver != nil {
 			adapter := &monitoring.UtilizationAdapter{Resolver: metricsResolver}
 			utilProvider = adapter
 			trendProvider = adapter

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -179,5 +180,28 @@ func TestClusterMetricsStore_LegacyRowWithoutURLIsNotFound(t *testing.T) {
 	}
 	if _, _, err := s.Get(ctx, id); !errors.Is(err, ErrMetricsBindingNotFound) {
 		t.Errorf("Get on a grafana-only row = %v; want ErrMetricsBindingNotFound", err)
+	}
+}
+
+// An unregistered cluster is not "metrics not configured": Get answers a
+// wrapped pgx.ErrNoRows, which callers classify as cluster_unknown. A
+// registered cluster without a binding row stays ErrMetricsBindingNotFound.
+func TestClusterMetricsStore_GetUnregisteredClusterIsErrNoRows(t *testing.T) {
+	pool := testDB(t)
+	ctx := t.Context()
+	s := NewClusterMetricsStore(pool, metricsTestKey)
+
+	_, _, err := s.Get(ctx, testOwnerID(t)+"-unregistered")
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("Get on an unregistered cluster = %v; want a wrapped pgx.ErrNoRows", err)
+	}
+	if errors.Is(err, ErrMetricsBindingNotFound) {
+		t.Errorf("Get on an unregistered cluster = %v; must not read as ErrMetricsBindingNotFound", err)
+	}
+
+	id := testOwnerID(t)
+	insertMetricsTestCluster(ctx, t, pool, id)
+	if _, _, err := s.Get(ctx, id); !errors.Is(err, ErrMetricsBindingNotFound) || errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("Get on a registered cluster without a binding = %v; want ErrMetricsBindingNotFound only", err)
 	}
 }

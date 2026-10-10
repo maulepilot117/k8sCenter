@@ -45,6 +45,7 @@ const (
 	msgMetricsUnreachable     = "could not reach Prometheus at the given URL"
 	msgMetricsStoreFailed     = "the metrics binding could not be read or saved"
 	msgClusterRegistryFailure = "the cluster registry is unavailable"
+	msgMetricsTokenReentry    = "the token must be re-entered when the Prometheus URL changes"
 )
 
 // maxMetricsTokenBytes matches the cluster-registration token limit.
@@ -170,6 +171,22 @@ func validateMetricsURL(field, raw string) string {
 	return ""
 }
 
+// sameMetricsOrigin reports whether two Prometheus URLs share a scheme and a
+// host (port included), compared case-insensitively. A stored token may only
+// follow a binding edit that stays on the same origin. An unparsable or
+// host-less URL never matches.
+func sameMetricsOrigin(stored, next string) bool {
+	a, err := url.Parse(stored)
+	if err != nil || a.Host == "" {
+		return false
+	}
+	b, err := url.Parse(next)
+	if err != nil || b.Host == "" {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
 // handlePutClusterMetrics answers PUT /clusters/{clusterID}/metrics: it
 // validates the binding, probes the Prometheus it names, then stores it.
 func (s *Server) handlePutClusterMetrics(w http.ResponseWriter, r *http.Request) {
@@ -208,17 +225,23 @@ func (s *Server) handlePutClusterMetrics(w http.ResponseWriter, r *http.Request)
 	}
 
 	// The probe uses the token the binding will hold after the write: the
-	// stored one when the request omits it.
+	// stored one when the request omits it. The stored token is only ever
+	// sent to the scheme and host it was entered for; moving the binding
+	// elsewhere requires the token again, refused before any probe so a
+	// changed URL cannot be used to exfiltrate it.
 	probeToken := ""
 	if req.Token != nil {
 		probeToken = *req.Token
 	} else {
-		_, stored, err := s.ClusterMetricsStore.Get(r.Context(), id)
+		current, stored, err := s.ClusterMetricsStore.Get(r.Context(), id)
 		switch {
 		case errors.Is(err, store.ErrMetricsBindingNotFound):
 		case err != nil:
 			s.Logger.Error("metrics binding: reading stored token failed", "cluster", id, "error", err)
 			httputil.WriteError(w, http.StatusServiceUnavailable, msgMetricsStoreFailed, "")
+			return
+		case stored != "" && !sameMetricsOrigin(current.PrometheusURL, req.PrometheusURL):
+			httputil.WriteError(w, http.StatusBadRequest, msgMetricsTokenReentry, "")
 			return
 		default:
 			probeToken = stored

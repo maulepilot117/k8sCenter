@@ -256,14 +256,16 @@ func TestClusterMetrics_PutWithTokenStoresProbesEvictsAudits(t *testing.T) {
 	}
 }
 
-func TestClusterMetrics_PutWithoutTokenKeepsStoredToken(t *testing.T) {
+// An omitted token keeps the stored one only while the Prometheus stays on
+// the same scheme and host: a path edit probes with, and keeps, the token.
+func TestClusterMetrics_PutWithoutTokenSameHostKeepsStoredToken(t *testing.T) {
 	f := newMetricsFixture(t)
 	if rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
 		`{"prometheusUrl":"`+testPublicProm+`","token":"`+testToken+`"}`); rec.Code != http.StatusOK {
 		t.Fatalf("seed PUT status = %d", rec.Code)
 	}
 
-	newURL := "https://1.1.1.1:9090"
+	newURL := testPublicProm + "/prometheus"
 	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, `{"prometheusUrl":"`+newURL+`"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s; want 200", rec.Code, rec.Body.String())
@@ -281,6 +283,109 @@ func TestClusterMetrics_PutWithoutTokenKeepsStoredToken(t *testing.T) {
 	probes := *f.probes
 	if last := probes[len(probes)-1]; last != (probeCall{newURL, testToken}) {
 		t.Errorf("probe = %+v; want the new URL with the stored token", last)
+	}
+}
+
+// Moving the binding to another host without re-entering the token is
+// refused before any probe: the stored token must never be sent to a host
+// it was not entered for (credential retargeting, CWE-522).
+func TestClusterMetrics_PutWithoutTokenNewHostRefused(t *testing.T) {
+	cases := map[string]string{
+		"other host": "https://1.1.1.1:9090",
+		"other port": "https://8.8.8.8:9091",
+	}
+	for name, newURL := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newMetricsFixture(t)
+			if rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+				`{"prometheusUrl":"`+testPublicProm+`","token":"`+testToken+`"}`); rec.Code != http.StatusOK {
+				t.Fatalf("seed PUT status = %d", rec.Code)
+			}
+			seedProbes := len(*f.probes)
+			f.store.upsertCalled = false
+			f.store.lastUpsertToken = nil
+
+			rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, `{"prometheusUrl":"`+newURL+`"}`)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body %s; want 400", rec.Code, rec.Body.String())
+			}
+			if got := decodeMetricsErr(t, rec).Error.Message; got != msgMetricsTokenReentry {
+				t.Errorf("message = %q; want %q", got, msgMetricsTokenReentry)
+			}
+			if n := len(*f.probes); n != seedProbes {
+				t.Errorf("probe calls = %d after the refused PUT; want %d (no probe)", n, seedProbes)
+			}
+			if f.store.upsertCalled {
+				t.Error("store was written on a refused PUT")
+			}
+			if b := f.store.bindings[testRemoteID]; b.PrometheusURL != testPublicProm || f.store.tokens[testRemoteID] != testToken {
+				t.Errorf("stored binding = %+v token %q; want it untouched", b, f.store.tokens[testRemoteID])
+			}
+			if strings.Contains(rec.Body.String(), testToken) {
+				t.Errorf("response echoes the token: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+// A new host with a token supplied proceeds and probes with the new token.
+func TestClusterMetrics_PutNewHostWithTokenProceeds(t *testing.T) {
+	f := newMetricsFixture(t)
+	if rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+		`{"prometheusUrl":"`+testPublicProm+`","token":"`+testToken+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed PUT status = %d", rec.Code)
+	}
+
+	newURL := "https://1.1.1.1:9090"
+	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, `{"prometheusUrl":"`+newURL+`","token":"other-token"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", rec.Code, rec.Body.String())
+	}
+	probes := *f.probes
+	if last := probes[len(probes)-1]; last != (probeCall{newURL, "other-token"}) {
+		t.Errorf("probe = %+v; want the new URL with the supplied token", last)
+	}
+	if f.store.tokens[testRemoteID] != "other-token" {
+		t.Errorf("stored token = %q; want the supplied one", f.store.tokens[testRemoteID])
+	}
+}
+
+// With no stored token there is nothing to retarget, so a host change with
+// the token omitted proceeds and probes without one.
+func TestClusterMetrics_PutWithoutTokenNewHostNoStoredTokenProceeds(t *testing.T) {
+	f := newMetricsFixture(t)
+	if rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, `{"prometheusUrl":"`+testPublicProm+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed PUT status = %d", rec.Code)
+	}
+	newURL := "https://1.1.1.1:9090"
+	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, `{"prometheusUrl":"`+newURL+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", rec.Code, rec.Body.String())
+	}
+	probes := *f.probes
+	if last := probes[len(probes)-1]; last != (probeCall{newURL, ""}) {
+		t.Errorf("probe = %+v; want the new URL with no token", last)
+	}
+}
+
+func TestSameMetricsOrigin(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"https://prom.example.com:9090", "https://prom.example.com:9090/api", true},
+		{"https://Prom.Example.com:9090", "HTTPS://prom.example.COM:9090", true},
+		{"https://prom.example.com:9090", "https://prom.example.com:9091", false},
+		{"https://prom.example.com", "https://prom.example.com:443", false},
+		{"https://prom.example.com", "https://evil.example.com", false},
+		{"https://prom.example.com", "http://prom.example.com", false},
+		{"https://prom.example.com", "::not a url", false},
+		{"", "https://prom.example.com", false},
+	}
+	for _, c := range cases {
+		if got := sameMetricsOrigin(c.a, c.b); got != c.want {
+			t.Errorf("sameMetricsOrigin(%q, %q) = %v; want %v", c.a, c.b, got, c.want)
+		}
 	}
 }
 
