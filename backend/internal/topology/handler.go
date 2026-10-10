@@ -45,9 +45,11 @@ type Handler struct {
 // cluster as the user (RemoteLister, within RemoteReadTimeout), never from the
 // local informers. The builder's per-kind RBAC gate applies unchanged; a kind
 // that is forbidden, exceeds the read cap or runs out of time is left out, the
-// latter two marked in Truncated and Errors. Overlays read local-cluster inventories, so ?overlay=
-// with a known overlay on a remote cluster is a 400 with reason
-// overlay_unsupported_remote.
+// latter two marked in Truncated and Errors. A permission check or list that
+// fails any other way fails the request through httputil.WriteRemoteError, so
+// an unreachable cluster never reads as an empty namespace. Overlays read
+// local-cluster inventories, so ?overlay= with a known overlay on a remote
+// cluster is a 400 with reason overlay_unsupported_remote.
 func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	namespace := chi.URLParam(r, "namespace")
@@ -62,7 +64,8 @@ func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
 	builder := h.Builder
 
 	clusterID := middleware.ClusterIDFromContext(ctx)
-	if !k8s.IsLocalClusterID(clusterID) {
+	remote := !k8s.IsLocalClusterID(clusterID)
+	if remote {
 		// Every overlay is answered before the cluster is contacted: an
 		// unknown value gets the same 400 the builder gives locally, without
 		// a dozen remote lists first.
@@ -79,8 +82,7 @@ func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
 		var cancel context.CancelFunc
 		ctx, cancel = WithRemoteTimeout(ctx, clusterID)
 		defer cancel()
-		var err error
-		builder, _, err = NewRemoteBuilder(ctx, h.Clients, clusterID, user, h.Logger)
+		lister, err := NewRemoteListerFor(ctx, h.Clients, clusterID, user, h.Logger)
 		if errors.Is(err, ErrNoClusterClients) {
 			h.Logger.Error("topology: remote cluster requested but no cluster clients are wired", "clusterID", clusterID)
 			httputil.WriteError(w, http.StatusInternalServerError, "topology is not configured", "")
@@ -90,16 +92,23 @@ func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteTargetError(w, err)
 			return
 		}
+		builder = NewBuilder(lister, nil, h.Logger)
 	}
 
 	graph, err := builder.BuildNamespaceGraphWithOverlay(ctx, namespace, user, h.AccessChecker, overlay)
 	if err != nil {
 		// Validation errors (unsupported overlay value) surface as 400
 		// with a stable user-message and the offending value in detail —
-		// matching the envelope shape used by /mesh/* peers. Everything
-		// else is a 500.
+		// matching the envelope shape used by /mesh/* peers. A remote
+		// cluster's failure is answered with a fixed message (the raw error
+		// can carry its API server's address); everything else is a 500.
 		if errors.Is(err, ErrUnsupportedOverlay) {
 			httputil.WriteError(w, http.StatusBadRequest, "unsupported overlay value", overlay)
+			return
+		}
+		if remote {
+			h.Logger.Error("failed to build remote namespace graph", "clusterID", clusterID, "namespace", namespace, "error", err)
+			httputil.WriteRemoteError(w, err)
 			return
 		}
 		h.Logger.Error("failed to build namespace graph", "namespace", namespace, "error", err)

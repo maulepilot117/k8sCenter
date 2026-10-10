@@ -21,13 +21,19 @@ import (
 	"github.com/kubecenter/kubecenter/internal/topology"
 )
 
+// NotificationEmitter is the part of the notification service diagnostics
+// uses. *notifications.NotificationService implements it.
+type NotificationEmitter interface {
+	Emit(ctx context.Context, n notifications.Notification)
+}
+
 // Handler serves diagnostic HTTP endpoints.
 type Handler struct {
 	Lister        topology.ResourceLister
 	TopoBuilder   *topology.Builder
 	AccessChecker *resources.AccessChecker
 	Clients       k8s.ClusterClients
-	NotifService  *notifications.NotificationService
+	NotifService  NotificationEmitter
 	Logger        *slog.Logger
 }
 
@@ -156,13 +162,13 @@ func tooManyMessage(resource, namespace string) string {
 // sources returns the lister for the request's cluster. The local cluster
 // uses the informer-backed Lister. A remote cluster gets a per-request
 // topology.RemoteLister over a client impersonating the user
-// (topology.NewRemoteBuilder); there is never a local fallback. On failure
+// (topology.NewRemoteListerFor); there is never a local fallback. On failure
 // the response is written and ok is false.
 func (h *Handler) sources(ctx context.Context, w http.ResponseWriter, user *auth.User, clusterID string) (topology.ResourceLister, bool) {
 	if k8s.IsLocalClusterID(clusterID) {
 		return h.Lister, true
 	}
-	_, lister, err := topology.NewRemoteBuilder(ctx, h.Clients, clusterID, user, h.Logger)
+	lister, err := topology.NewRemoteListerFor(ctx, h.Clients, clusterID, user, h.Logger)
 	if errors.Is(err, topology.ErrNoClusterClients) {
 		h.Logger.Error("diagnostics: remote cluster requested but no cluster clients are wired", "clusterID", clusterID)
 		httputil.WriteError(w, http.StatusInternalServerError, "diagnostics are not configured", "")
@@ -188,6 +194,19 @@ func (h *Handler) writeRemoteListError(w http.ResponseWriter, err error, cluster
 		return
 	}
 	httputil.WriteRemoteError(w, err)
+}
+
+// writeAccessCheckError answers a permission check that could not be
+// answered. On a remote cluster the SAR ran on that cluster, so its failure
+// goes through httputil.WriteRemoteError (a transport failure is 502
+// unreachable); locally it is a 500. The raw error reaches only the log.
+func (h *Handler) writeAccessCheckError(w http.ResponseWriter, err error, remote bool, clusterID string) {
+	h.Logger.Error("RBAC check failed", "clusterID", clusterID, "error", err)
+	if remote {
+		httputil.WriteRemoteError(w, err)
+		return
+	}
+	httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
 }
 
 // writeResolveError answers a Resolve failure: an absent target is 404; on a
@@ -216,7 +235,11 @@ func (h *Handler) writeResolveError(w http.ResponseWriter, err error, remote boo
 // are read directly from that cluster as the user (see sources), within
 // topology.RemoteReadTimeout. A target list cut short by the read cap without the
 // target in it is a 502, never a 404; related pods cut short are a
-// ReasonTruncated limitation.
+// ReasonTruncated limitation. A permission check or graph read that fails
+// (other than a refusal, the read cap or the deadline) is answered through
+// httputil.WriteRemoteError. A graph missing kinds marks the blast radius
+// truncated, naming the kinds in errors. Findings are not sent to the
+// notification feed.
 func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// Request-scoped timeout for the entire diagnostics + topology build
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -246,8 +269,7 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 
 	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
 	if err != nil {
-		h.Logger.Error("RBAC check failed", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		h.writeAccessCheckError(w, err, remote, clusterID)
 		return
 	}
 	if !allowed {
@@ -288,13 +310,22 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	results := RunDiagnostics(ctx, target)
 	checks := Normalize(clusterID, target, time.Now().UTC(), results)
 
-	// Build topology graph for blast radius analysis
+	// Build topology graph for blast radius analysis. A remote graph that
+	// could not be read fails the request: an empty blast radius would read
+	// as "nothing else is affected". Locally the graph is best effort.
 	var blast *BlastResult
+	var graph *topology.Graph
 	if builder != nil {
-		graph, err := builder.BuildNamespaceGraph(ctx, namespace, user, h.AccessChecker)
-		if err != nil {
+		g, err := builder.BuildNamespaceGraph(ctx, namespace, user, h.AccessChecker)
+		switch {
+		case err != nil && remote:
+			h.Logger.Error("diagnostics: remote blast-radius graph failed", "clusterID", clusterID, "namespace", namespace, "error", err)
+			httputil.WriteRemoteError(w, err)
+			return
+		case err != nil:
 			h.Logger.Warn("failed to build topology graph for blast radius", "error", err)
-		} else {
+		default:
+			graph = g
 			// Find the target node ID in the graph
 			targetID := findNodeID(graph, kind, name)
 			if targetID != "" {
@@ -309,9 +340,19 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 			PotentiallyAffected: []AffectedResource{},
 		}
 	}
+	// A graph missing nodes makes the blast radius a lower bound. Its Errors
+	// are fixed sentences naming a kind, never a raw error.
+	if graph != nil {
+		blast.Truncated = graph.Truncated
+		blast.Errors = graph.Errors
+	}
 
-	// Emit notifications for critical/warning diagnostic findings
-	if h.NotifService != nil {
+	// Emit notifications for critical/warning diagnostic findings, for the
+	// local cluster only. The feed shows a non-admin the notifications of the
+	// local namespaces they can read, matched by namespace name alone, so a
+	// remote finding would reach whoever can read a same-named local
+	// namespace. Remote clusters are admin-only.
+	if h.NotifService != nil && !remote {
 		for _, result := range results {
 			if result.Status == "fail" {
 				h.NotifService.Emit(ctx, findingNotification(clusterID, target, result))
@@ -354,8 +395,7 @@ func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request)
 
 	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", topology.KindPods, namespace)
 	if err != nil {
-		h.Logger.Error("RBAC check failed", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		h.writeAccessCheckError(w, err, remote, clusterID)
 		return
 	}
 	if !allowed {

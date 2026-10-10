@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -115,21 +116,37 @@ func testPod(crashing bool) *corev1.Pod {
 	return p
 }
 
+// recordingEmitter stands in for the notification service and records every
+// notification the handler emits.
+type recordingEmitter struct {
+	mu   sync.Mutex
+	sent []notifications.Notification
+}
+
+func (e *recordingEmitter) Emit(_ context.Context, n notifications.Notification) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sent = append(e.sent, n)
+}
+
+func (e *recordingEmitter) emitted() []notifications.Notification {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]notifications.Notification(nil), e.sent...)
+}
+
+// The production service satisfies the handler's emitter seam.
+var _ NotificationEmitter = (*notifications.NotificationService)(nil)
+
 // newDiagHandler wires a handler whose Lister and TopoBuilder both read the
-// counting lister. With tripwire set, NotifService has no store, so any Emit
-// panics (Store.InsertDeduped dereferences its nil pool): reaching the
-// notification step at all fails the test.
-func newDiagHandler(lister *countingLister, tripwire bool) *Handler {
-	h := &Handler{
+// counting lister, with no notification service.
+func newDiagHandler(lister *countingLister) *Handler {
+	return &Handler{
 		Lister:        lister,
 		TopoBuilder:   topology.NewBuilder(lister, nil, slog.Default()),
 		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
 		Logger:        slog.Default(),
 	}
-	if tripwire {
-		h.NotifService = notifications.NewService(nil, nil, nil, nil, slog.Default())
-	}
-	return h
 }
 
 // callDiag serves one request through a chi router carrying the production
@@ -163,7 +180,7 @@ func TestDiagnostics_LocalUnchanged(t *testing.T) {
 		for name, path := range diagPaths {
 			t.Run(name+"/cluster="+clusterID, func(t *testing.T) {
 				lister := &countingLister{pods: []*corev1.Pod{testPod(false)}}
-				h := newDiagHandler(lister, false)
+				h := newDiagHandler(lister)
 
 				w := callDiag(t, h, clusterID, path)
 
@@ -178,24 +195,71 @@ func TestDiagnostics_LocalUnchanged(t *testing.T) {
 	}
 }
 
-// TestDiagnostics_FailingTargetReachesNotifications: a failing target is
-// reported to NotifService on the local cluster and on a remote one (whose
-// notification carries the remote cluster id). The store-less service panics
-// on Emit, so reaching it is observable.
-func TestDiagnostics_FailingTargetReachesNotifications(t *testing.T) {
-	for _, clusterID := range []string{"local", "remote-1"} {
-		t.Run(clusterID, func(t *testing.T) {
-			lister := &countingLister{pods: []*corev1.Pod{testPod(true)}}
-			h := newDiagHandler(lister, true)
-			h.Clients = &fakeClients{cs: kfake.NewSimpleClientset(testPod(true))}
+// failingChecks returns the rule names of the failing checks in a resource
+// diagnostics response.
+func failingChecks(t *testing.T, body []byte) []string {
+	t.Helper()
+	var resp struct {
+		Data struct {
+			Results []Result `json:"results"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode: %v; body: %s", err, body)
+	}
+	var failing []string
+	for _, r := range resp.Data.Results {
+		if r.Status == "fail" {
+			failing = append(failing, r.RuleName)
+		}
+	}
+	return failing
+}
 
-			defer func() {
-				if recover() == nil {
-					t.Fatal("request for a failing target did not reach NotifService.Emit")
-				}
-			}()
-			callDiag(t, h, clusterID, diagPaths["resource"])
-		})
+// TestDiagnostics_FailingTargetNotifiesLocally: a failing check on the local
+// cluster is emitted to the notification feed, once per failing check.
+func TestDiagnostics_FailingTargetNotifiesLocally(t *testing.T) {
+	h := newDiagHandler(&countingLister{pods: []*corev1.Pod{testPod(true)}})
+	emitter := &recordingEmitter{}
+	h.NotifService = emitter
+
+	w := callDiag(t, h, "local", diagPaths["resource"])
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if failing := failingChecks(t, w.Body.Bytes()); len(failing) != 1 || failing[0] != "CrashLoopBackOff" {
+		t.Fatalf("failing checks = %v, want [CrashLoopBackOff]", failing)
+	}
+	sent := emitter.emitted()
+	if len(sent) != 1 {
+		t.Fatalf("emitted %d notifications, want 1: %+v", len(sent), sent)
+	}
+	if sent[0].Title != "CrashLoopBackOff: web" || sent[0].ClusterID != "local" || sent[0].ResourceNS != "team-a" {
+		t.Errorf("notification = %+v, want CrashLoopBackOff for local team-a/web", sent[0])
+	}
+}
+
+// TestDiagnostics_FailingRemoteTargetIsNotNotified: a failing check on a
+// remote cluster is answered but never emitted. The feed filters non-admin
+// readers by local namespace name only, so a remote finding would reach
+// whoever can read the same-named local namespace.
+func TestDiagnostics_FailingRemoteTargetIsNotNotified(t *testing.T) {
+	h := newDiagHandler(&countingLister{})
+	h.Clients = &fakeClients{cs: kfake.NewSimpleClientset(testPod(true))}
+	emitter := &recordingEmitter{}
+	h.NotifService = emitter
+
+	w := callDiag(t, h, "remote-1", diagPaths["resource"])
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if failing := failingChecks(t, w.Body.Bytes()); len(failing) == 0 {
+		t.Fatal("the remote target has no failing check, so the test proves nothing")
+	}
+	if sent := emitter.emitted(); len(sent) != 0 {
+		t.Errorf("emitted %d notifications for a remote cluster, want 0: %+v", len(sent), sent)
 	}
 }
 
@@ -219,7 +283,7 @@ func TestResolveNotFoundIsASentinel(t *testing.T) {
 // endpoint's contract for an absent target after the sentinel change: 404,
 // and the message text byte-for-byte as it has always been.
 func TestDiagnostics_MissingTargetIs404WithTheHistoricalMessage(t *testing.T) {
-	h := newDiagHandler(&countingLister{}, false)
+	h := newDiagHandler(&countingLister{})
 	w := callDiag(t, h, "local", "/diagnostics/team-a/Pod/ghost")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
@@ -247,7 +311,7 @@ func TestDiagnostics_MissingTargetIs404WithTheHistoricalMessage(t *testing.T) {
 // pure addition.
 func TestDiagnostics_ResultsCarryObservedAt(t *testing.T) {
 	lister := &countingLister{pods: []*corev1.Pod{testPod(false)}}
-	h := newDiagHandler(lister, false)
+	h := newDiagHandler(lister)
 
 	// observedAt is truncated to the millisecond, so the lower bound is too.
 	before := time.Now().UTC().Truncate(time.Millisecond)

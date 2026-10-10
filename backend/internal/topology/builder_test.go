@@ -609,3 +609,45 @@ func TestBuilder_DeadlineLostKindIsMarked(t *testing.T) {
 		t.Errorf("nodes = %+v, want the service the other lists returned", graph.Nodes)
 	}
 }
+
+// transportLister fails the deployment list with a transport error, as an
+// informer-backed lister never does but a broken one could.
+type transportLister struct{ fakeLister }
+
+func (transportLister) ListDeployments(context.Context, string) ([]*appsv1.Deployment, error) {
+	return nil, errors.New("dial tcp 10.0.0.1:6443: connect: connection refused")
+}
+
+// The local path is unchanged by the remote failure policy: a permission
+// check that errors counts as a denial, and a list that fails with anything
+// but the read cap or the deadline leaves its kind out, unmarked, with no
+// build error.
+func TestBuilder_LocalFailuresDegradeAsBefore(t *testing.T) {
+	a := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "foo", UID: "svc-a"}}
+
+	t.Run("access check error is a denial", func(t *testing.T) {
+		b := NewBuilder(&fakeLister{services: []*corev1.Service{a}}, nil, slog.Default())
+		graph, err := b.BuildNamespaceGraph(context.Background(), "foo", testUser(),
+			resources.NewErroringAccessChecker(errors.New("SAR transport failure")))
+		if err != nil {
+			t.Fatalf("err = %v, want none on the local path", err)
+		}
+		if len(graph.Nodes) != 0 || graph.Truncated || len(graph.Errors) != 0 {
+			t.Errorf("graph = %+v, want empty and unmarked, as for a denial", graph)
+		}
+	})
+
+	t.Run("transport list error omits the kind", func(t *testing.T) {
+		b := NewBuilder(&transportLister{fakeLister{services: []*corev1.Service{a}}}, nil, slog.Default())
+		graph, err := b.BuildNamespaceGraph(context.Background(), "foo", testUser(), resources.NewAlwaysAllowAccessChecker())
+		if err != nil {
+			t.Fatalf("err = %v, want none on the local path", err)
+		}
+		if len(graph.Nodes) != 1 || graph.Nodes[0].Name != "a" {
+			t.Errorf("nodes = %+v, want the service the other lists returned", graph.Nodes)
+		}
+		if graph.Truncated || len(graph.Errors) != 0 {
+			t.Errorf("truncated = %v, errors = %v, want unmarked as before", graph.Truncated, graph.Errors)
+		}
+	})
+}

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -108,7 +110,7 @@ func remoteObjects() []runtime.Object {
 // remote fake.
 func newRemoteDiagHandler(objs ...runtime.Object) (*Handler, *countingLister, *fakeClients) {
 	lister := &countingLister{pods: []*corev1.Pod{testPod(true)}}
-	h := newDiagHandler(lister, false)
+	h := newDiagHandler(lister)
 	fc := &fakeClients{cs: kfake.NewSimpleClientset(objs...)}
 	h.Clients = fc
 	return h, lister, fc
@@ -404,11 +406,13 @@ func TestDiagnosticsRemote_DetailTargetBeyondCapIs502(t *testing.T) {
 	assertNoLocalRead(t, lister)
 }
 
-// Related pods that hit the read cap are a truncated limitation, not
-// "unavailable", and the request still answers.
+// Related pods that hit the read cap leave the request answering, and the
+// response says the blast radius is incomplete: it is marked truncated and
+// names pods, with the fixed read-cap sentence rather than any remote error.
+// (The related-pods Limitation itself is not on this route's wire; Resolve's
+// truncated limitation is pinned by TestDiagnosticsRemote_BothRelatedListsTruncated.)
 func TestDiagnosticsRemote_DetailTruncatedRelatedPods(t *testing.T) {
-	objs := remoteObjects()
-	h, lister, fc := newRemoteDiagHandler(objs...)
+	h, lister, fc := newRemoteDiagHandler(remoteObjects()...)
 	endlessPods(fc.cs)
 
 	w := callDiag(t, h, "remote-1", "/diagnostics/team-a/Deployment/api")
@@ -417,15 +421,91 @@ func TestDiagnosticsRemote_DetailTruncatedRelatedPods(t *testing.T) {
 	}
 	assertNoLocalRead(t, lister)
 
-	cs := kfake.NewSimpleClientset(objs...)
-	endlessPods(cs)
-	target, err := Resolve(context.Background(), topology.NewRemoteLister(cs, h.Logger), "team-a", "Deployment", "api", &RelatedRBAC{Pods: true, ReplicaSets: true})
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
+	var body struct {
+		Data struct {
+			BlastRadius map[string]json.RawMessage `json:"blastRadius"`
+		} `json:"data"`
 	}
-	want := Limitation{Kind: limitPods, Reason: ReasonTruncated}
-	if len(target.Limitations) != 1 || target.Limitations[0] != want {
-		t.Errorf("limitations = %+v, want [%+v]", target.Limitations, want)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v; body: %s", err, w.Body.String())
+	}
+	blast := body.Data.BlastRadius
+	if string(blast["truncated"]) != "true" {
+		t.Errorf("blastRadius.truncated = %s, want true; body: %s", blast["truncated"], w.Body.String())
+	}
+	var errs map[string]string
+	if raw, ok := blast["errors"]; !ok || json.Unmarshal(raw, &errs) != nil {
+		t.Fatalf("blastRadius.errors = %s, want a map naming pods; body: %s", raw, w.Body.String())
+	}
+	if msg := errs[topology.KindPods]; !strings.HasPrefix(msg, "more than ") || !strings.Contains(msg, "pods in this namespace on the selected cluster") {
+		t.Errorf("blastRadius.errors = %v, want the pods read-cap sentence", errs)
+	}
+	if len(errs) != 1 {
+		t.Errorf("blastRadius.errors = %v, want only pods", errs)
+	}
+}
+
+// A permission check that could not be answered fails the request: through
+// the fixed remote error mapping on a remote cluster, as a 500 locally.
+func TestDiagnostics_AccessCheckErrorIsAFailure(t *testing.T) {
+	sarErr := fmt.Errorf("SelfSubjectAccessReview for list/pods in %q on cluster %q: %w", "team-a", "remote-1", remoteTransportErr())
+	for name, path := range diagPaths {
+		t.Run(name+"/remote", func(t *testing.T) {
+			h, lister, _ := newRemoteDiagHandler(remoteObjects()...)
+			h.AccessChecker = resources.NewErroringAccessChecker(sarErr)
+
+			w := callDiag(t, h, "remote-1", path)
+
+			assertRemoteFailure(t, w, http.StatusBadGateway, "the selected cluster could not be reached", string(k8s.ReasonUnreachable))
+			assertNoLocalRead(t, lister)
+		})
+		t.Run(name+"/local", func(t *testing.T) {
+			h, _, _ := newRemoteDiagHandler(remoteObjects()...)
+			h.AccessChecker = resources.NewErroringAccessChecker(sarErr)
+
+			w := callDiag(t, h, "local", path)
+
+			assertRemoteFailure(t, w, http.StatusInternalServerError, "permission check failed", "")
+		})
+	}
+}
+
+// A blast-radius list that fails with anything but a refusal, the read cap or
+// the deadline fails the request rather than answering with a blast radius
+// that looks complete. ConfigMaps are read only by the graph, so the target
+// and its pods resolve and the failure is the graph's.
+func TestDiagnosticsRemote_DetailGraphListErrorIs502(t *testing.T) {
+	h, lister, fc := newRemoteDiagHandler(remoteObjects()...)
+	fc.cs.PrependReactor("list", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, remoteTransportErr()
+	})
+
+	w := callDiag(t, h, "remote-1", "/diagnostics/team-a/Deployment/api")
+
+	assertRemoteFailure(t, w, http.StatusBadGateway, "the selected cluster could not be reached", string(k8s.ReasonUnreachable))
+	assertNoLocalRead(t, lister)
+}
+
+// remoteTransportErr is a transport failure as client-go reports one: a
+// net.Error under the request's own wrapping, carrying rawRemoteText.
+func remoteTransportErr() error {
+	return fmt.Errorf("Get \"https://secret-apiserver.internal:6443/api/v1\": %w",
+		&net.OpError{Op: "dial", Net: "tcp", Err: errors.New(rawRemoteText)})
+}
+
+// assertRemoteFailure checks a failure answer: the status, the fixed message
+// and reason, no detail, and no trace of the raw remote error.
+func assertRemoteFailure(t *testing.T, w *httptest.ResponseRecorder, status int, message, reason string) {
+	t.Helper()
+	if w.Code != status {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, status, w.Body.String())
+	}
+	e := decodeError(t, w.Body.Bytes())
+	if e.Error.Message != message || e.Error.Reason != reason || e.Error.Detail != "" {
+		t.Errorf("error = %+v, want message %q, reason %q and no detail", e.Error, message, reason)
+	}
+	if strings.Contains(w.Body.String(), "10.9.8.7") || strings.Contains(w.Body.String(), "secret-apiserver") {
+		t.Errorf("raw remote error leaked: %s", w.Body.String())
 	}
 }
 

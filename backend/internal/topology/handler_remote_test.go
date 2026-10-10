@@ -4,21 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	kfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 )
 
 // fakeClients is a k8s.ClusterClients over one typed fake clientset. It
@@ -267,5 +273,113 @@ func TestHandleNamespaceGraph_RemoteUnknownOverlayIs400WithoutReads(t *testing.T
 	}
 	if lister.calls.Load() != 0 || len(fc.recorded()) != 0 || len(fc.cs.Actions()) != 0 {
 		t.Error("an unknown overlay on a remote cluster read a lister or contacted the cluster")
+	}
+}
+
+// remoteSecretHost is planted in every failure the fake remote cluster
+// returns. It must never reach a response body.
+const remoteSecretHost = "secret-apiserver.internal"
+
+// remoteTransportErr is a transport failure as client-go reports one: a
+// net.Error under the request's own wrapping, carrying the server's address.
+func remoteTransportErr() error {
+	return fmt.Errorf("Get \"https://%s:6443/api/v1/namespaces/foo/pods\": %w", remoteSecretHost,
+		&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")})
+}
+
+type remoteErrorBody struct {
+	Error struct {
+		Message string `json:"message"`
+		Detail  string `json:"detail"`
+		Reason  string `json:"reason"`
+	} `json:"error"`
+}
+
+// assertRemoteFailure checks a remote failure answer: the status, the fixed
+// message and reason, and no trace of the raw error.
+func assertRemoteFailure(t *testing.T, w *httptest.ResponseRecorder, status int, message, reason string) {
+	t.Helper()
+	if w.Code != status {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, status, w.Body.String())
+	}
+	var body remoteErrorBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body: %v; body: %s", err, w.Body.String())
+	}
+	if body.Error.Message != message || body.Error.Reason != reason || body.Error.Detail != "" {
+		t.Errorf("error = %+v, want message %q, reason %q and no detail", body.Error, message, reason)
+	}
+	if strings.Contains(w.Body.String(), remoteSecretHost) {
+		t.Errorf("raw remote error leaked: %s", w.Body.String())
+	}
+}
+
+// A permission check that could not be answered is not a denial: on a remote
+// cluster it fails the request instead of leaving the kind out of a graph
+// that would then look complete.
+func TestHandleNamespaceGraph_RemoteAccessCheckErrorIs502(t *testing.T) {
+	h, lister, _, _ := newRemoteTopologyHandler(remoteTopologyObjects()...)
+	h.AccessChecker = resources.NewErroringAccessChecker(
+		fmt.Errorf("SelfSubjectAccessReview for list/pods in \"foo\" on cluster \"remote-1\": %w", remoteTransportErr()))
+
+	w := callTopologyHandlerForCluster(t, h, "remote-1", "foo", "")
+
+	assertRemoteFailure(t, w, http.StatusBadGateway, "the selected cluster could not be reached", string(k8s.ReasonUnreachable))
+	if lister.calls.Load() != 0 {
+		t.Error("local lister read after a remote permission check failed")
+	}
+}
+
+// A remote list that fails for any reason other than a refusal, the read cap
+// or the request's own deadline fails the request through the fixed remote
+// error mapping.
+func TestHandleNamespaceGraph_RemoteListErrorIs502(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		message string
+		reason  string
+	}{
+		{"transport", remoteTransportErr(), "the selected cluster could not be reached", string(k8s.ReasonUnreachable)},
+		{"unauthorized", apierrors.NewUnauthorized(remoteSecretHost), "could not connect to the selected cluster with its stored credentials", string(k8s.ReasonCredentialsInvalid)},
+		{"server timeout", apierrors.NewTimeoutError(remoteSecretHost, 1), "the cluster returned an error", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, lister, _, fc := newRemoteTopologyHandler(remoteTopologyObjects()...)
+			fc.cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, tc.err
+			})
+
+			w := callTopologyHandlerForCluster(t, h, "remote-1", "foo", "")
+
+			assertRemoteFailure(t, w, http.StatusBadGateway, tc.message, tc.reason)
+			if lister.calls.Load() != 0 {
+				t.Error("local lister read after a remote list failed")
+			}
+		})
+	}
+}
+
+// A kind the remote cluster refuses to list is left out, as on the local
+// cluster, and the request still answers.
+func TestHandleNamespaceGraph_RemoteForbiddenKindIsOmitted(t *testing.T) {
+	h, _, _, fc := newRemoteTopologyHandler(remoteTopologyObjects()...)
+	fc.cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New(remoteSecretHost))
+	})
+
+	w := callTopologyHandlerForCluster(t, h, "remote-1", "foo", "")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	g := decodeGraph(t, w.Body.Bytes())
+	for _, n := range g.Nodes {
+		if n.Kind == "Pod" {
+			t.Errorf("forbidden pods still in the graph: %+v", n)
+		}
+	}
+	if g.Truncated || len(g.Errors) != 0 {
+		t.Errorf("truncated = %v, errors = %v; a refused kind is left out unmarked, as locally", g.Truncated, g.Errors)
 	}
 }
