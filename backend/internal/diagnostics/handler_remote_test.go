@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -466,6 +467,25 @@ func TestDiagnostics_AccessCheckErrorIsAFailure(t *testing.T) {
 			w := callDiag(t, h, "local", path)
 
 			assertRemoteFailure(t, w, http.StatusInternalServerError, "permission check failed", "")
+		})
+	}
+}
+
+// An unregistered cluster id is answered by the client resolution, which comes
+// before the permission check: the check's own client resolution would
+// otherwise be the first remote contact and surface as a reasonless 502.
+func TestDiagnosticsRemote_UnknownClusterIs404BeforeAccessCheck(t *testing.T) {
+	unknown := fmt.Errorf("resolving cluster %q: %w", "gone-1", pgx.ErrNoRows)
+	for name, path := range diagPaths {
+		t.Run(name, func(t *testing.T) {
+			h, lister, fc := newRemoteDiagHandler(remoteObjects()...)
+			fc.targetErr = unknown
+			h.AccessChecker = resources.NewErroringAccessChecker(fmt.Errorf("creating client for access check: %w", unknown))
+
+			w := callDiag(t, h, "gone-1", path)
+
+			assertRemoteFailure(t, w, http.StatusNotFound, "the selected cluster is not registered", string(k8s.ReasonClusterUnknown))
+			assertNoLocalRead(t, lister)
 		})
 	}
 }

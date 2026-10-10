@@ -267,6 +267,15 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the cluster before the first permission check: on a remote
+	// selection the check's own client resolution would be the first contact
+	// and an unregistered cluster or registry outage would read as a
+	// reasonless 502 instead of 404 cluster_unknown / 503 db_unavailable.
+	lister, ok := h.sources(ctx, w, user, clusterID)
+	if !ok {
+		return
+	}
+
 	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
 	if err != nil {
 		h.writeAccessCheckError(w, err, remote, clusterID)
@@ -286,10 +295,6 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// treated as denial inside resolveRelatedRBAC (review-fix REL-003 / adv-5).
 	related := h.resolveRelatedRBAC(ctx, user, clusterID, kind, namespace)
 
-	lister, ok := h.sources(ctx, w, user, clusterID)
-	if !ok {
-		return
-	}
 	// The blast-radius graph reads the same lister, so on a remote cluster
 	// it reuses the lists Resolve made. It has no overlay providers: those
 	// read local-cluster inventories.
@@ -393,6 +398,14 @@ func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := topology.WithRemoteTimeout(ctx, clusterID)
 	defer cancel()
 
+	// Resolve the cluster first so an unknown cluster is a target error, not
+	// a failure of the permission check's client resolution (see
+	// HandleDiagnostics).
+	lister, ok := h.sources(ctx, w, user, clusterID)
+	if !ok {
+		return
+	}
+
 	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", topology.KindPods, namespace)
 	if err != nil {
 		h.writeAccessCheckError(w, err, remote, clusterID)
@@ -400,11 +413,6 @@ func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request)
 	}
 	if !allowed {
 		httputil.WriteError(w, http.StatusForbidden, "insufficient permissions", "")
-		return
-	}
-
-	lister, ok := h.sources(ctx, w, user, clusterID)
-	if !ok {
 		return
 	}
 
