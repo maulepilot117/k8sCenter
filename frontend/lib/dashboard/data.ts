@@ -258,8 +258,9 @@ function messageOf(err: unknown): string {
  * catalog cannot be enumerated. `NOT_FOUND_IS_REFUSAL` in types.ts names the
  * sources that read it, and carries the full reasoning.
  */
-function classify(err: unknown, base: string): SourceErrorKind {
+export function classify(err: unknown, base: string): SourceErrorKind {
   if (!(err instanceof ApiError)) return "failure";
+  if (isMetricsNotConfigured(err)) return "unsupported";
   if (err.status === 403) return "permission";
   if (err.status === 404 && NOT_FOUND_IS_REFUSAL.has(base)) return "permission";
   // Checked after the refusal branch, so a source that ever appeared in both
@@ -273,6 +274,26 @@ function classify(err: unknown, base: string): SourceErrorKind {
   // "this request cannot be answered".
   if (UNSUPPORTED_STATUSES[base]?.includes(err.status)) return "unsupported";
   return "failure";
+}
+
+/** The wire reason a remote cluster without a Prometheus binding answers with. */
+export const METRICS_NOT_CONFIGURED_REASON = "metrics_not_configured";
+
+/** What the card says when the selected cluster has no metrics binding. */
+export const METRICS_NOT_CONFIGURED_MESSAGE =
+  "Metrics are not configured for this cluster. Add a Prometheus binding in Clusters.";
+
+/**
+ * A 404 carrying the `metrics_not_configured` reason. Reason-aware rather than
+ * status-only: an ordinary 404 means the object is gone, and only this body
+ * says the cluster is missing its metrics binding.
+ */
+function isMetricsNotConfigured(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 404 &&
+    err.reason === METRICS_NOT_CONFIGURED_REASON
+  );
 }
 
 function isAbort(err: unknown): boolean {
@@ -560,7 +581,9 @@ export function createSourceCache(
         // describes the data, and the data did not change.
         s.value = {
           ...s.value,
-          error: messageOf(err),
+          error: isMetricsNotConfigured(err)
+            ? METRICS_NOT_CONFIGURED_MESSAGE
+            : messageOf(err),
           errorKind: classify(err, base),
           loading: false,
         };
@@ -1388,6 +1411,74 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
       detected: (features as { hubble?: unknown } | undefined)?.hubble === true,
     };
   },
+};
+
+/**
+ * How each source behaves under a remote cluster selection.
+ *
+ * - `remote`: served by the selected cluster itself.
+ * - `binding`: served from the cluster's own Prometheus through its metrics
+ *   binding; without one the answer is `metrics_not_configured`.
+ * - `installation`: reads this k8sCenter install, not the selected cluster.
+ * - `unsupported`: refused for a remote cluster; must be named in
+ *   `UNSUPPORTED_STATUSES` so the card says so instead of showing a failure.
+ *
+ * A `Record` over `DataSourceKey`, so a new source cannot compile without
+ * declaring which one it is.
+ */
+export const REMOTE_BEHAVIOUR: Record<
+  DataSourceKey,
+  "remote" | "binding" | "installation" | "unsupported"
+> = {
+  "dashboard-summary": "binding",
+  "dashboard-trends": "binding",
+  "top-consumers-cpu": "binding",
+  "top-consumers-memory": "binding",
+  "volume-capacity": "binding",
+  "cluster-info": "remote",
+  "recent-events": "remote",
+  "diagnostics-summary": "remote",
+  "resource-counts": "remote",
+  "deployments-list": "remote",
+  "statefulsets-list": "remote",
+  "daemonsets-list": "remote",
+  "pods-list": "remote",
+  "hpas-list": "remote",
+  "pdbs-list": "remote",
+  "nodes-list": "remote",
+  "limits-namespaces": "remote",
+  "storage-classes": "remote",
+  "services-list": "remote",
+  "pvcs-list": "remote",
+  "policy-compliance-score": "remote",
+  "policy-violations-list": "remote",
+  "vulnerability-reports": "remote",
+  "certificates-list": "remote",
+  "external-secrets-list": "remote",
+  "velero-backups-list": "remote",
+  "snapshots-list": "remote",
+  "gitops-applications": "remote",
+  "mesh-mtls": "remote",
+  "gateway-gateways": "remote",
+  "gateway-httproutes": "remote",
+  "policies-status": "remote",
+  "gitops-status": "remote",
+  "certificates-status": "remote",
+  "mesh-status": "remote",
+  "external-secrets-status": "remote",
+  "velero-status": "remote",
+  "scanning-status": "remote",
+  "snapshots-status": "remote",
+  "gateway-status": "remote",
+  "mesh-golden-signals": "unsupported",
+  "hubble-flows": "unsupported",
+  "hubble-status": "unsupported",
+  "policy-compliance-history": "unsupported",
+  "clusters-list": "installation",
+  "audit-log": "installation",
+  "unread-notifications": "installation",
+  "preference-views": "installation",
+  "preference-pins": "installation",
 };
 
 export const dashboardData: SourceCache = createSourceCache(DASHBOARD_FETCHERS);

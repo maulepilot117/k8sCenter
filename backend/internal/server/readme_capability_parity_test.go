@@ -21,9 +21,10 @@ const readmeCapabilityHeading = "## Remote cluster support"
 // the remote path genuinely returns less than the local one.
 //
 // dashboard.summary: the remote summary serves node/pod/service counts and
-// capacity, but omits CPU/memory usage, alert counts and the health score
-// because there is no remote metrics (Prometheus) binding yet. Those fields
-// render as unavailable, so "Yes" would overstate it.
+// capacity, and CPU/memory usage from the cluster's metrics binding, but
+// omits alert counts and the health score (Alertmanager-backed counts and
+// remote health scoring are not built yet). Those fields render as
+// unavailable, so "Yes" would overstate it.
 //
 // mesh.mtls: remote posture is derived from the target's pods and policies
 // only. The Prometheus metric cross-check the local path applies to Istio

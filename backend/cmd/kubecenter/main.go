@@ -199,6 +199,7 @@ func main() {
 	var complianceStore *appstore.ComplianceStore
 	var dbPing func(context.Context) error
 	var dbPool *pgxpool.Pool
+	var clusterMetricsStore *appstore.ClusterMetricsStore
 	if cfg.Database.URL != "" {
 		db, err := appstore.New(ctx, cfg.Database.URL, int32(cfg.Database.MaxConns), int32(cfg.Database.MinConns), logger)
 		if err != nil {
@@ -220,6 +221,9 @@ func main() {
 			}
 			settingsService = appstore.NewSettingsService(db.Pool, encKey)
 			clusterStore = appstore.NewClusterStore(db.Pool, encKey)
+			// Metrics binding tokens use the same master secret as cluster
+			// credentials.
+			clusterMetricsStore = appstore.NewClusterMetricsStore(db.Pool, encKey)
 			complianceStore = appstore.NewComplianceStore(db.Pool)
 
 			// Register local cluster
@@ -327,6 +331,12 @@ func main() {
 		Discoverer:    monDiscoverer,
 		AccessChecker: accessChecker,
 		Logger:        logger,
+	}
+	// With a database, remote clusters resolve Prometheus through their
+	// metrics bindings. Set before server.New so the server's dashboard
+	// adapters reuse this resolver instead of building a binding-less one.
+	if clusterMetricsStore != nil {
+		monHandler.Resolver = monitoring.NewClientResolver(monDiscoverer, server.NewMetricsBindingReader(clusterMetricsStore), logger)
 	}
 
 	// Initialize Loki discoverer and start background discovery
@@ -1115,6 +1125,13 @@ func main() {
 		ReadyFn:                ready.Load,
 		DBPing:                 dbPing,
 	})
+	// The binding admin API writes through the store and evicts from the
+	// resolver every metrics consumer shares. Without a database both stay
+	// nil and the binding routes answer 503.
+	if clusterMetricsStore != nil {
+		srv.ClusterMetricsStore = clusterMetricsStore
+		srv.MetricsResolver = monHandler.Resolver
+	}
 	httpServer := srv.HTTPServer()
 
 	// Start HTTP server — use errCh instead of os.Exit in goroutine

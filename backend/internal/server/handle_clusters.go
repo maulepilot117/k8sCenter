@@ -304,6 +304,9 @@ func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 	if s.ClusterRouter != nil {
 		s.ClusterRouter.EvictCluster(id)
 	}
+	// The binding row goes with the cluster (FK cascade); drop its cached
+	// Prometheus client too.
+	s.evictMetricsClient(id)
 
 	// Audit log
 	user, _ := auth.UserFromContext(r.Context())

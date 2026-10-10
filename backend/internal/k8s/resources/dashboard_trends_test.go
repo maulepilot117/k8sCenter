@@ -3,20 +3,29 @@ package resources
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
-// stubTrendProvider is a test double for the TrendProvider interface.
+// stubTrendProvider is a test double for the TrendProvider interface. When
+// gotCluster is set it records the cluster id it was asked about.
 type stubTrendProvider struct {
-	result DashboardTrends
-	err    error
+	result     DashboardTrends
+	err        error
+	gotCluster *string
 }
 
-func (s stubTrendProvider) DashboardTrends(_ context.Context, _, _ time.Duration) (DashboardTrends, error) {
+func (s stubTrendProvider) DashboardTrends(_ context.Context, clusterID string, _, _ time.Duration) (DashboardTrends, error) {
+	if s.gotCluster != nil {
+		*s.gotCluster = clusterID
+	}
 	return s.result, s.err
 }
 
@@ -136,17 +145,108 @@ func TestDashboardTrendRange_FrontendTabsResolve(t *testing.T) {
 	}
 }
 
-func TestHandleDashboardTrends_RemoteClusterRejected(t *testing.T) {
+func remoteTrendsRequest() *http.Request {
+	req := requestWithUser("GET", "/api/v1/cluster/dashboard-trends?range=6h", "")
+	return req.WithContext(middleware.WithClusterID(req.Context(), "remote-1"))
+}
+
+func TestHandleDashboardTrends_RemoteWithBindingReturnsTrends(t *testing.T) {
 	h, _ := testHandler(t)
-	h.Trends = stubTrendProvider{result: DashboardTrends{Nodes: []float64{1, 2}}}
-	req := requestWithUser("GET", "/api/v1/cluster/dashboard-trends", "")
-	// Non-local cluster: trends are informer/Prometheus-local only.
-	req = req.WithContext(middleware.WithClusterID(req.Context(), "remote-1"))
+	var asked string
+	h.Trends = stubTrendProvider{result: DashboardTrends{Nodes: []float64{1, 2}, CPU: []float64{40, 42}}, gotCluster: &asked}
 	rr := httptest.NewRecorder()
 
-	h.HandleDashboardTrends(rr, req)
+	h.HandleDashboardTrends(rr, remoteTrendsRequest())
 
-	if rr.Code != 400 {
-		t.Fatalf("remote cluster: want 400, got %d (%s)", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("remote with binding: want 200, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	if asked != "remote-1" {
+		t.Fatalf("provider asked about cluster %q, want remote-1", asked)
+	}
+	got := decodeTrends(t, rr)
+	if len(got.Nodes) != 2 || len(got.CPU) != 2 || got.CPU[1] != 42 {
+		t.Fatalf("want the remote series, got %+v", got)
+	}
+}
+
+func assertTrendsNotConfigured(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+			Reason  string `json:"reason"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Reason != "metrics_not_configured" || body.Error.Message != "metrics are not configured for the selected cluster" {
+		t.Fatalf("want metrics_not_configured with the fixed message, got %+v", body.Error)
+	}
+}
+
+func TestHandleDashboardTrends_RemoteWithoutBindingIsNotConfigured(t *testing.T) {
+	h, _ := testHandler(t)
+	h.Trends = stubTrendProvider{err: fmt.Errorf("store: %w", ErrNoMetricsBinding)}
+	rr := httptest.NewRecorder()
+
+	h.HandleDashboardTrends(rr, remoteTrendsRequest())
+
+	assertTrendsNotConfigured(t, rr)
+}
+
+func TestHandleDashboardTrends_RemoteNilProviderIsNotConfigured(t *testing.T) {
+	h, _ := testHandler(t)
+	rr := httptest.NewRecorder()
+
+	h.HandleDashboardTrends(rr, remoteTrendsRequest())
+
+	assertTrendsNotConfigured(t, rr)
+}
+
+func TestHandleDashboardTrends_RemoteFailureIsFixed502(t *testing.T) {
+	h, _ := testHandler(t)
+	h.Trends = stubTrendProvider{err: errors.New("decrypt failed for https://prom.example.com")}
+	rr := httptest.NewRecorder()
+
+	h.HandleDashboardTrends(rr, remoteTrendsRequest())
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("want 502, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "prom.example.com") || strings.Contains(rr.Body.String(), "decrypt") {
+		t.Fatalf("response leaks the raw error: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "the metrics query failed on the selected cluster") {
+		t.Fatalf("want the fixed message, got %s", rr.Body.String())
+	}
+}
+
+func TestHandleDashboardTrends_LocalPassesLocalClusterID(t *testing.T) {
+	h, _ := testHandler(t)
+	asked := "unset"
+	h.Trends = stubTrendProvider{result: DashboardTrends{Nodes: []float64{1}}, gotCluster: &asked}
+	rr := httptest.NewRecorder()
+
+	h.HandleDashboardTrends(rr, requestWithUser("GET", "/api/v1/cluster/dashboard-trends", ""))
+
+	if rr.Code != http.StatusOK || asked != "local" {
+		t.Fatalf("local: want 200 asking about the local cluster, got %d asking %q", rr.Code, asked)
+	}
+}
+
+func TestHandleDashboardTrends_LocalNotConfiguredStaysEmpty200(t *testing.T) {
+	h, _ := testHandler(t)
+	h.Trends = stubTrendProvider{err: ErrNoMetricsBinding}
+	rr := httptest.NewRecorder()
+
+	h.HandleDashboardTrends(rr, requestWithUser("GET", "/api/v1/cluster/dashboard-trends", ""))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("local: any provider error stays 200 + empty, got %d", rr.Code)
 	}
 }
