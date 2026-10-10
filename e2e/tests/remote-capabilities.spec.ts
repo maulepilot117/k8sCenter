@@ -572,7 +572,9 @@ test.describe.serial("Remote cluster capabilities", () => {
   // its pods cluster-wide, and kind static-pod names embed the node name
   // (etcd-<node>, kube-apiserver-<node>). Node names are disjoint between the
   // two clusters (asserted above), so a pod named after a remote node can only
-  // come from the remote cluster.
+  // come from the remote cluster. The diagnostics case proves the cluster
+  // through the detail route (/diagnostics/<ns>/Pod/<name>, 200 remote and 404
+  // local for a remote-node-named pod), not through summary counts.
   const SYSTEM_NS = "kube-system";
 
   test("diagnostics summary under a remote selection reads the remote cluster", async ({
@@ -607,15 +609,30 @@ test.describe.serial("Remote cluster capabilities", () => {
       remotePods.some((p) => p.metadata.name.includes(remoteNode)),
     ).toBe(true);
 
+    // The summary must answer under the remote selection. Its counts cannot
+    // prove the cluster (both fixtures run the same kube-system pod set), so
+    // identity comes from the detail route below.
     const remote = await summaryFor(REMOTE!);
-    // The summary counts the pods it evaluated: the remote cluster's.
-    expect(remote.total).toBe(remotePods.length);
+    expect(typeof remote.total).toBe("number");
+    expect(remote.total).toBeGreaterThanOrEqual(1);
     expect(Array.isArray(remote.failing)).toBe(true);
-    // Nothing the local cluster runs can be reported as failing here.
-    const localPodNames = (await podsIn("local")).map((p) => p.metadata.name);
-    for (const f of remote.failing) {
-      expect(localPodNames).not.toContain(f.name);
-    }
+
+    // A pod named after the remote node exists only on the remote cluster:
+    // the detail route resolves it under the remote selection and 404s under
+    // the local one.
+    const remotePod = remotePods
+      .map((p) => p.metadata.name)
+      .find((n) => n.includes(remoteNode))!;
+    const detailPath = `/api/v1/diagnostics/${SYSTEM_NS}/Pod/${remotePod}`;
+    const remoteDetail = await page.request.get(detailPath, {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(remoteDetail.status()).toBe(200);
+    expect((await remoteDetail.json()).data.target.name).toBe(remotePod);
+    const localDetail = await page.request.get(detailPath, {
+      headers: await headersFor(page, "local"),
+    });
+    expect(localDetail.status()).toBe(404);
   });
 
   test("topology graph under a remote selection is built from the remote cluster", async ({
