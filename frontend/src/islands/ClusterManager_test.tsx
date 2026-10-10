@@ -244,6 +244,79 @@ test("a blank token is omitted from the body so the stored one is kept", async (
   });
 });
 
+function clearTokenBox(root: HTMLElement): HTMLInputElement {
+  const label = Array.from(root.querySelectorAll("label")).find((el) =>
+    el.textContent?.includes("Clear the stored token"),
+  );
+  const box = label?.querySelector('input[type="checkbox"]');
+  if (!box) throw new Error("no clear-token checkbox");
+  return box as HTMLInputElement;
+}
+
+async function check(el: HTMLInputElement) {
+  await act(async () => {
+    el.click();
+  });
+  await settle();
+}
+
+test("the clear-token box sends an empty token, which clears the stored one", async () => {
+  metricsReplies.GET = { status: 200, body: { data: BINDING } };
+  metricsReplies.PUT = {
+    status: 200,
+    body: { data: { ...BINDING, hasToken: false } },
+  };
+  const root = await mount();
+  await click(button(root, "Metrics"));
+  await check(clearTokenBox(root));
+  await click(button(root, "Save"));
+  expect(metricsCalls("PUT")[0].body).toEqual({
+    prometheusUrl: "https://prom.example.com",
+    token: "",
+  });
+  // The binding no longer holds a token, so the control goes away.
+  expect(root.textContent).not.toContain("A token is stored");
+  expect(root.textContent).not.toContain("Clear the stored token");
+});
+
+test("a typed token wins over the clear-token box", async () => {
+  metricsReplies.GET = { status: 200, body: { data: BINDING } };
+  metricsReplies.PUT = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+  await click(button(root, "Metrics"));
+  await check(clearTokenBox(root));
+  await type(input(root, "leave blank"), "new-token");
+  await settle();
+  expect(clearTokenBox(root).disabled).toBe(true);
+  await click(button(root, "Save"));
+  expect(metricsCalls("PUT")[0].body).toEqual({
+    prometheusUrl: "https://prom.example.com",
+    token: "new-token",
+  });
+});
+
+test("a 409 toasts the server's message to reload and retry", async () => {
+  metricsReplies.GET = { status: 200, body: { data: BINDING } };
+  metricsReplies.PUT = {
+    status: 409,
+    body: {
+      error: {
+        code: 409,
+        message:
+          "the metrics binding was changed by another save; reload it and try again",
+      },
+    },
+  };
+  const root = await mount();
+  await click(button(root, "Metrics"));
+  await click(button(root, "Save"));
+  expect(toasts.at(-1)).toEqual({
+    message:
+      "the metrics binding was changed by another save; reload it and try again",
+    type: "error",
+  });
+});
+
 test("remove deletes the binding and flips the badge back", async () => {
   metricsReplies.GET = { status: 200, body: { data: BINDING } };
   metricsReplies.DELETE = { status: 204 };

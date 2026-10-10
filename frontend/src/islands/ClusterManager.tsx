@@ -63,13 +63,16 @@ type WizardStep = "list" | "connect";
  * Cluster management island — list clusters + add cluster wizard.
  */
 /**
- * The server's own message for a rejected binding (400), a fixed sentence for
- * an unreachable Prometheus (502, whose raw error never leaves the server).
+ * The server's own message for a rejected binding (400) or one another save
+ * changed meanwhile (409), a fixed sentence for an unreachable Prometheus
+ * (502, whose raw error never leaves the server).
  */
 function metricsErrorMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) {
     if (err.status === 502) return "Could not reach Prometheus at that URL";
-    if (err.status === 400) return err.detail || fallback;
+    if (err.status === 400 || err.status === 409) {
+      return err.detail || fallback;
+    }
   }
   return fallback;
 }
@@ -99,6 +102,9 @@ export default function ClusterManager() {
   const metricsBusy = useSignal(false);
   const promUrl = useSignal("");
   const promToken = useSignal("");
+  // A blank token field keeps the stored token; this sends the explicit
+  // empty token that clears it. A typed token still wins.
+  const clearToken = useSignal(false);
   const alertmanagerUrl = useSignal("");
   // Bumped by every load/save/remove and by closing/switching the form. A
   // response is applied only if its generation is still current AND the form
@@ -124,6 +130,7 @@ export default function ClusterManager() {
     alertmanagerUrl.value = b.alertmanagerUrl ?? "";
     metricsHasToken.value = b.hasToken;
     promToken.value = "";
+    clearToken.value = false;
     setMetricsState(id, "configured");
   }
 
@@ -137,6 +144,7 @@ export default function ClusterManager() {
     metricsFor.value = id;
     promUrl.value = "";
     promToken.value = "";
+    clearToken.value = false;
     alertmanagerUrl.value = "";
     metricsHasToken.value = false;
     metricsBusy.value = true;
@@ -166,7 +174,9 @@ export default function ClusterManager() {
       const body: Record<string, string> = {
         prometheusUrl: promUrl.value.trim(),
       };
+      // Omitted keeps the stored token, "" clears it, a value replaces it.
       if (promToken.value !== "") body.token = promToken.value;
+      else if (clearToken.value) body.token = "";
       if (alertmanagerUrl.value.trim() !== "") {
         body.alertmanagerUrl = alertmanagerUrl.value.trim();
       }
@@ -196,6 +206,7 @@ export default function ClusterManager() {
       if (!isCurrent(id, gen)) return;
       promUrl.value = "";
       promToken.value = "";
+      clearToken.value = false;
       alertmanagerUrl.value = "";
       metricsHasToken.value = false;
       setMetricsState(id, "not-configured");
@@ -583,9 +594,22 @@ export default function ClusterManager() {
                 />
               </Field>
               {metricsHasToken.value && (
-                <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                  A token is stored for this binding.
-                </span>
+                <div class="flex flex-col gap-1">
+                  <span class="text-xs text-text-muted">
+                    A token is stored for this binding.
+                  </span>
+                  <label class="inline-flex items-center gap-2 text-xs text-text-primary">
+                    <input
+                      type="checkbox"
+                      checked={clearToken.value}
+                      disabled={promToken.value !== ""}
+                      onChange={(ev) => {
+                        clearToken.value = ev.currentTarget.checked;
+                      }}
+                    />
+                    Clear the stored token on save
+                  </label>
+                </div>
               )}
               <div style={{ display: "flex", gap: "6px" }}>
                 <Button
