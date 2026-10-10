@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import Field from "@/components/ui/form/Field.tsx";
@@ -100,6 +100,11 @@ export default function ClusterManager() {
   const promUrl = useSignal("");
   const promToken = useSignal("");
   const alertmanagerUrl = useSignal("");
+  // Bumped by every load/save/remove and by closing/switching the form. A
+  // response is applied only if its generation is still current AND the form
+  // is still open for the same cluster; otherwise it is dropped, so a late
+  // answer for cluster A never fills (or is saved from) cluster B's form.
+  const metricsGen = useRef(0);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -108,6 +113,10 @@ export default function ClusterManager() {
 
   function setMetricsState(id: string, state: MetricsState) {
     metricsState.value = { ...metricsState.value, [id]: state };
+  }
+
+  function isCurrent(id: string, gen: number): boolean {
+    return metricsGen.current === gen && metricsFor.value === id;
   }
 
   function applyBinding(id: string, b: MetricsBinding) {
@@ -119,8 +128,10 @@ export default function ClusterManager() {
   }
 
   async function toggleMetrics(id: string) {
+    const gen = ++metricsGen.current;
     if (metricsFor.value === id) {
       metricsFor.value = null;
+      metricsBusy.value = false;
       return;
     }
     metricsFor.value = id;
@@ -131,8 +142,10 @@ export default function ClusterManager() {
     metricsBusy.value = true;
     try {
       const res = await apiGet<MetricsBinding>(`/v1/clusters/${id}/metrics`);
+      if (!isCurrent(id, gen)) return;
       applyBinding(id, res.data);
     } catch (err) {
+      if (!isCurrent(id, gen)) return;
       if (err instanceof ApiError && err.reason === "metrics_not_configured") {
         setMetricsState(id, "not-configured");
       } else {
@@ -142,11 +155,12 @@ export default function ClusterManager() {
         );
       }
     } finally {
-      metricsBusy.value = false;
+      if (metricsGen.current === gen) metricsBusy.value = false;
     }
   }
 
   async function saveMetrics(id: string) {
+    const gen = ++metricsGen.current;
     metricsBusy.value = true;
     try {
       const body: Record<string, string> = {
@@ -160,22 +174,26 @@ export default function ClusterManager() {
         `/v1/clusters/${id}/metrics`,
         body,
       );
+      if (!isCurrent(id, gen)) return;
       applyBinding(id, res.data);
       showToast("Metrics binding saved", "success");
     } catch (err) {
+      if (!isCurrent(id, gen)) return;
       showToast(
         metricsErrorMessage(err, "Failed to save the binding"),
         "error",
       );
     } finally {
-      metricsBusy.value = false;
+      if (metricsGen.current === gen) metricsBusy.value = false;
     }
   }
 
   async function removeMetrics(id: string) {
+    const gen = ++metricsGen.current;
     metricsBusy.value = true;
     try {
       await apiDelete(`/v1/clusters/${id}/metrics`);
+      if (!isCurrent(id, gen)) return;
       promUrl.value = "";
       promToken.value = "";
       alertmanagerUrl.value = "";
@@ -183,12 +201,13 @@ export default function ClusterManager() {
       setMetricsState(id, "not-configured");
       showToast("Metrics binding removed", "success");
     } catch (err) {
+      if (!isCurrent(id, gen)) return;
       showToast(
         metricsErrorMessage(err, "Failed to remove the binding"),
         "error",
       );
     } finally {
-      metricsBusy.value = false;
+      if (metricsGen.current === gen) metricsBusy.value = false;
     }
   }
 

@@ -83,11 +83,17 @@ const BINDING = {
 
 type Reply = { status: number; body?: unknown };
 let metricsReplies: Record<string, Reply> = {};
+// Per-path override (path -> method -> reply promise) so a test can hold a
+// response open; and an opt-in second remote cluster.
+let pathReplies: Record<string, Record<string, Promise<Reply>>> = {};
+let withSecondRemote = false;
 
 beforeEach(() => {
   toasts.length = 0;
   calls = [];
   metricsReplies = {};
+  pathReplies = {};
+  withSecondRemote = false;
   originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input).replace(/^https?:\/\/[^/]+/, "");
@@ -96,9 +102,17 @@ beforeEach(() => {
     calls.push({ method, path, body });
     let reply: Reply = { status: 404, body: {} };
     if (path.endsWith("/v1/clusters")) {
-      reply = { status: 200, body: { data: CLUSTERS } };
+      const list = withSecondRemote
+        ? [...CLUSTERS, { ...CLUSTERS[1], id: "c-other", name: "other" }]
+        : CLUSTERS;
+      reply = { status: 200, body: { data: list } };
     } else if (path.endsWith("/metrics")) {
-      reply = metricsReplies[method] ?? { status: 500, body: {} };
+      const held = Object.entries(pathReplies).find(([k]) =>
+        path.endsWith(k),
+      )?.[1][method];
+      reply = held
+        ? await held
+        : (metricsReplies[method] ?? { status: 500, body: {} });
     }
     if (reply.status === 204) return new Response(null, { status: 204 });
     return new Response(JSON.stringify(reply.body ?? {}), {
@@ -276,4 +290,35 @@ test("a 502 toasts a fixed sentence, not the server text", async () => {
     message: "Could not reach Prometheus at that URL",
     type: "error",
   });
+});
+
+test("a late GET for cluster A cannot fill the form now shown for cluster B", async () => {
+  withSecondRemote = true;
+  let resolveA: (r: Reply) => void = () => {};
+  pathReplies["/v1/clusters/c-remote/metrics"] = {
+    GET: new Promise<Reply>((r) => {
+      resolveA = r;
+    }),
+  };
+  metricsReplies.GET = NOT_CONFIGURED; // cluster B has no binding
+  metricsReplies.PUT = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+  const buttons = Array.from(root.querySelectorAll("button")).filter(
+    (b) => b.textContent?.trim() === "Metrics",
+  );
+  expect(buttons.length).toBe(2);
+  await click(buttons[0]); // A, GET held open
+  await click(buttons[1]); // B
+  await act(async () => {
+    resolveA({ status: 200, body: { data: BINDING } }); // A's late binding
+  });
+  await settle();
+  expect(input(root, "https://prometheus").value).toBe("");
+  expect(root.textContent).not.toContain("A token is stored");
+  await type(input(root, "https://prometheus"), "https://prom-b.example.com");
+  await click(button(root, "Save"));
+  const puts = metricsCalls("PUT");
+  expect(puts.length).toBe(1);
+  expect(puts[0].path).toContain("/v1/clusters/c-other/metrics");
+  expect(puts[0].body).toEqual({ prometheusUrl: "https://prom-b.example.com" });
 });
