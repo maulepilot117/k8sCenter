@@ -2,10 +2,12 @@ package monitoring
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,9 +48,9 @@ func (f *fakeBindings) set(clusterID string, b MetricsBinding) {
 	f.bindings[clusterID] = b
 }
 
-// fakePrometheus is an httptest Prometheus that answers every instant or
-// range query with value, records the Authorization header of the last
-// request, and counts requests.
+// fakePrometheus is an httptest Prometheus, served over TLS like a real
+// metrics binding, that answers every instant or range query with value,
+// records the Authorization header of the last request, and counts requests.
 type fakePrometheus struct {
 	srv      *httptest.Server
 	mu       sync.Mutex
@@ -59,7 +61,7 @@ type fakePrometheus struct {
 func newFakePrometheus(t *testing.T, value string) *fakePrometheus {
 	t.Helper()
 	fp := &fakePrometheus{}
-	fp.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fp.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fp.hits.Add(1)
 		fp.mu.Lock()
 		fp.lastAuth = r.Header.Get("Authorization")
@@ -84,17 +86,25 @@ func (fp *fakePrometheus) auth() string {
 	return fp.lastAuth
 }
 
+// testTransport dials loopback and trusts the httptest TLS certificate,
+// standing in for the production transports, which refuse both.
+func testTransport() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only: httptest certificate
+	return t
+}
+
 // newTestResolver returns a resolver whose remote base transport may dial
 // loopback, which the production strict transport refuses.
 func newTestResolver(d *Discoverer, b MetricsBindingReader) *ClientResolver {
 	r := NewClientResolver(d, b, testLogger())
-	r.base = http.DefaultTransport
+	r.base = testTransport()
 	return r
 }
 
 func localDiscoverer(t *testing.T, fp *fakePrometheus) *Discoverer {
 	t.Helper()
-	pc, err := NewPrometheusClientWithTransport(fp.srv.URL, http.DefaultTransport)
+	pc, err := NewPrometheusClientWithTransport(fp.srv.URL, testTransport())
 	if err != nil {
 		t.Fatalf("local client: %v", err)
 	}
@@ -294,7 +304,7 @@ func TestClientResolver_EvictDuringReadIsNotUndone(t *testing.T) {
 
 func TestBearerRoundTripper_DoesNotMutateCallerRequest(t *testing.T) {
 	remote := newFakePrometheus(t, "1")
-	rt := newBearerRoundTripper(http.DefaultTransport, remote.srv.URL, "tok")
+	rt := newBearerRoundTripper(testTransport(), remote.srv.URL, "tok")
 	req, _ := http.NewRequest(http.MethodGet, remote.srv.URL+"/api/v1/query", nil)
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
@@ -312,7 +322,7 @@ func TestBearerRoundTripper_DoesNotMutateCallerRequest(t *testing.T) {
 func TestBearerRoundTripper_OnlyBoundHostGetsToken(t *testing.T) {
 	bound := newFakePrometheus(t, "1")
 	other := newFakePrometheus(t, "1")
-	rt := newBearerRoundTripper(http.DefaultTransport, bound.srv.URL, "tok")
+	rt := newBearerRoundTripper(testTransport(), bound.srv.URL, "tok")
 	req, _ := http.NewRequest(http.MethodGet, other.srv.URL+"/api/v1/query", nil)
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
@@ -326,7 +336,7 @@ func TestBearerRoundTripper_OnlyBoundHostGetsToken(t *testing.T) {
 
 func TestProbePrometheus_Success(t *testing.T) {
 	remote := newFakePrometheus(t, "1")
-	if err := probePrometheus(context.Background(), http.DefaultTransport, remote.srv.URL, "tok"); err != nil {
+	if err := probePrometheus(context.Background(), testTransport(), remote.srv.URL, "tok"); err != nil {
 		t.Fatalf("probe: %v", err)
 	}
 	if remote.auth() != "Bearer tok" {
@@ -339,7 +349,7 @@ func TestProbePrometheus_NonSuccessStatusFails(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(srv.Close)
-	if err := probePrometheus(context.Background(), http.DefaultTransport, srv.URL, ""); err == nil {
+	if err := probePrometheus(context.Background(), testTransport(), srv.URL, ""); err == nil {
 		t.Fatal("a 401 must fail the probe")
 	}
 }
@@ -350,7 +360,7 @@ func TestProbePrometheus_RedirectFails(t *testing.T) {
 		http.Redirect(w, r, target.srv.URL+r.URL.Path, http.StatusFound)
 	}))
 	t.Cleanup(srv.Close)
-	if err := probePrometheus(context.Background(), http.DefaultTransport, srv.URL, "tok"); err == nil {
+	if err := probePrometheus(context.Background(), testTransport(), srv.URL, "tok"); err == nil {
 		t.Fatal("a redirect must fail the probe rather than be followed")
 	}
 	if target.hits.Load() != 0 {
@@ -362,7 +372,7 @@ func TestProbePrometheus_TransportErrorFails(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	url := srv.URL
 	srv.Close()
-	if err := probePrometheus(context.Background(), http.DefaultTransport, url, ""); err == nil {
+	if err := probePrometheus(context.Background(), testTransport(), url, ""); err == nil {
 		t.Fatal("an unreachable server must fail the probe")
 	}
 }
@@ -395,5 +405,143 @@ func TestClientResolver_ProductionTransportIsStrict(t *testing.T) {
 	}
 	if remote.hits.Load() != 0 {
 		t.Fatal("the remote client reached a loopback address")
+	}
+}
+
+// authRecorder is a plain-HTTP server that records the Authorization header
+// of every request it receives.
+func authRecorder(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+}
+
+// TestBearerRoundTripper_PlainHTTPSameHostGetsNoToken: the token is bound
+// to https on the bound host, so a request for http on that same host (a
+// scheme downgrade) carries no token.
+func TestBearerRoundTripper_PlainHTTPSameHostGetsNoToken(t *testing.T) {
+	plain, seen := authRecorder(t)
+	host := strings.TrimPrefix(plain.URL, "http://")
+	rt := newBearerRoundTripper(testTransport(), "https://"+host, "tok")
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+host+"/api/v1/query", nil)
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	resp.Body.Close()
+	if got := seen(); len(got) != 1 || got[0] != "" {
+		t.Fatalf("an http request to the bound host carried %q", got)
+	}
+}
+
+// TestBearerRoundTripper_HostMatchIgnoresCase: host names are
+// case-insensitive, so a differently cased bound host still gets the token.
+func TestBearerRoundTripper_HostMatchIgnoresCase(t *testing.T) {
+	remote := newFakePrometheus(t, "1")
+	u, _ := url.Parse(remote.srv.URL)
+	rt := newBearerRoundTripper(testTransport(), "https://LOCALHOST:"+u.Port(), "tok")
+
+	req, _ := http.NewRequest(http.MethodGet, "https://localhost:"+u.Port()+"/api/v1/query", nil)
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	resp.Body.Close()
+	if remote.auth() != "Bearer tok" {
+		t.Fatalf("Authorization = %q, want Bearer tok", remote.auth())
+	}
+}
+
+// recordingTransport records the scheme, host and Authorization header of
+// every request that reaches the network, so a test can prove a redirect
+// was not followed and no token left over plain HTTP.
+type recordingTransport struct {
+	base http.RoundTripper
+	mu   sync.Mutex
+	reqs []string // "scheme://host auth"
+}
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.reqs = append(rt.reqs, req.URL.Scheme+"://"+req.URL.Host+" "+req.Header.Get("Authorization"))
+	rt.mu.Unlock()
+	return rt.base.RoundTrip(req)
+}
+
+func (rt *recordingTransport) seen() []string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return append([]string(nil), rt.reqs...)
+}
+
+// redirectingResolver binds "remote-1" to an https Prometheus that answers
+// every request with a 302 to target(path), and dials through a recorder.
+func redirectingResolver(t *testing.T, target func(srvURL, path string) string) (*ClientResolver, *recordingTransport) {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target(srv.URL, r.URL.Path), http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	rec := &recordingTransport{base: testTransport()}
+	b := &fakeBindings{}
+	b.set("remote-1", MetricsBinding{ClusterID: "remote-1", PrometheusURL: srv.URL, Token: "s3cret"})
+	r := newTestResolver(nil, b)
+	r.base = rec
+	return r, rec
+}
+
+func TestClientResolver_RemoteDoesNotFollowRedirectToAnotherHost(t *testing.T) {
+	other := newFakePrometheus(t, "1")
+	r, rec := redirectingResolver(t, func(_, path string) string { return other.srv.URL + path })
+
+	pc, err := r.PrometheusFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, _, err := pc.Query(context.Background(), "up", time.Now()); err == nil {
+		t.Fatal("a redirect must fail the query rather than be followed")
+	}
+	if other.hits.Load() != 0 {
+		t.Fatalf("the redirect was followed to another host (Authorization %q)", other.auth())
+	}
+	if got := rec.seen(); len(got) != 1 {
+		t.Fatalf("want only the original request on the wire, got %q", got)
+	}
+}
+
+func TestClientResolver_RemoteDoesNotFollowRedirectToPlainHTTP(t *testing.T) {
+	r, rec := redirectingResolver(t, func(srvURL, path string) string {
+		return "http://" + strings.TrimPrefix(srvURL, "https://") + path
+	})
+
+	pc, err := r.PrometheusFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	_, _, _ = pc.Query(context.Background(), "up", time.Now())
+
+	got := rec.seen()
+	for _, s := range got {
+		if strings.HasPrefix(s, "http://") && strings.Contains(s, "s3cret") {
+			t.Fatalf("the bearer token went out over plain HTTP: %q", got)
+		}
+	}
+	if len(got) != 1 || !strings.HasPrefix(got[0], "https://") {
+		t.Fatalf("want only the original https request on the wire, got %q", got)
 	}
 }

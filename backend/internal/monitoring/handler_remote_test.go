@@ -1,9 +1,11 @@
 package monitoring
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -333,5 +335,45 @@ func TestHandleRediscover_RemoteRefused(t *testing.T) {
 	f.h.HandleRediscover(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d (%s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHandleQuery_LocalUnavailableKeepsConfigurationDetail pins the local
+// /query 503 to its pre-binding form: WriteError strips a 5xx detail from
+// the body and logs it, so the body is the bare message and the setup hint
+// reaches the log. The range route keeps its empty detail (nothing logged).
+func TestHandleQuery_LocalUnavailableKeepsConfigurationDetail(t *testing.T) {
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	h := &Handler{Discoverer: &Discoverer{status: &MonitoringStatus{}}, Logger: testLogger()}
+
+	rr := httptest.NewRecorder()
+	h.HandleQuery(rr, remoteRequest("/api/v1/monitoring/query?query=up", "local"))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	const wantBody = `{"error":{"code":503,"message":"Prometheus is not available"}}`
+	if got := strings.TrimSpace(rr.Body.String()); got != wantBody {
+		t.Fatalf("local /query 503 body = %s, want %s", got, wantBody)
+	}
+	const wantDetail = "Monitoring has not been configured. Deploy kube-prometheus-stack or configure an external Prometheus endpoint."
+	if !strings.Contains(logged.String(), wantDetail) {
+		t.Fatalf("local /query 503 must log its configuration detail; log: %s", logged.String())
+	}
+
+	logged.Reset()
+	rr = httptest.NewRecorder()
+	h.HandleQueryRange(rr, remoteRequest("/api/v1/monitoring/query_range?query=up", "local"))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("query_range: want 503, got %d (%s)", rr.Code, rr.Body.String())
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != wantBody {
+		t.Fatalf("local /query_range 503 body = %s, want %s", got, wantBody)
+	}
+	if logged.Len() != 0 {
+		t.Fatalf("local /query_range 503 has no detail to log, got: %s", logged.String())
 	}
 }

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/api"
+
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 )
@@ -132,7 +134,7 @@ func (r *ClientResolver) PrometheusFor(ctx context.Context, clusterID string) (*
 	if b.PrometheusURL == "" {
 		return nil, ErrNoMetricsBinding
 	}
-	pc, err := NewPrometheusClientWithTransport(b.PrometheusURL, newBearerRoundTripper(base, b.PrometheusURL, b.Token))
+	pc, err := newRemotePrometheusClient(b.PrometheusURL, newBearerRoundTripper(base, b.PrometheusURL, b.Token))
 	if err != nil {
 		return nil, err
 	}
@@ -181,9 +183,10 @@ func (r *ClientResolver) baseLocked() http.RoundTripper {
 	return r.base
 }
 
-// bearerRoundTripper adds the binding's bearer token to requests for the
-// bound Prometheus host only, so a redirect elsewhere never carries it. The
-// caller's request is cloned, never modified.
+// bearerRoundTripper adds the binding's bearer token to https requests for
+// the bound Prometheus host only (host and port, compared without regard to
+// case), so neither a request elsewhere nor a plain-HTTP request to the same
+// host ever carries it. The caller's request is cloned, never modified.
 type bearerRoundTripper struct {
 	base  http.RoundTripper
 	host  string
@@ -199,12 +202,28 @@ func newBearerRoundTripper(base http.RoundTripper, prometheusURL, token string) 
 }
 
 func (t *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.token == "" || t.host == "" || req.URL.Host != t.host {
+	if t.token == "" || t.host == "" || req.URL.Scheme != "https" || !strings.EqualFold(req.URL.Host, t.host) {
 		return t.base.RoundTrip(req)
 	}
 	out := req.Clone(req.Context())
 	out.Header.Set("Authorization", "Bearer "+t.token)
 	return t.base.RoundTrip(out)
+}
+
+// newRemotePrometheusClient builds a remote cluster's Prometheus client.
+// Unlike the local client it never follows a redirect: a 3xx is returned
+// as the response (and so fails the query), so a bound Prometheus, or a
+// proxy in front of it, cannot steer the request anywhere else.
+func newRemotePrometheusClient(address string, rt http.RoundTripper) (*PrometheusClient, error) {
+	return newPrometheusClient(api.Config{
+		Address: address,
+		Client: &http.Client{
+			Transport: rt,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+	})
 }
 
 // ProbePrometheus checks that prometheusURL answers the Prometheus HTTP API:

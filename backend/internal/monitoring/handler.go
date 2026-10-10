@@ -42,6 +42,10 @@ const (
 	msgRemoteMetricsQueryFailed = "the metrics query failed on the selected cluster"
 )
 
+// msgLocalMonitoringNotConfigured is the detail of the local /query 503 when
+// no Prometheus has been discovered. The other routes' 503 has no detail.
+const msgLocalMonitoringNotConfigured = "Monitoring has not been configured. Deploy kube-prometheus-stack or configure an external Prometheus endpoint."
+
 // Handler serves monitoring HTTP endpoints.
 type Handler struct {
 	Discoverer    *Discoverer
@@ -66,9 +70,10 @@ func (h *Handler) resolver() *ClientResolver {
 
 // promFor resolves the Prometheus client for the request's cluster. On
 // failure it writes the response and returns ok=false: no binding is 404
-// metrics_not_configured, an undiscovered local Prometheus the existing 503,
-// and any other failure a target error (unknown cluster, registry down).
-func (h *Handler) promFor(w http.ResponseWriter, r *http.Request) (*PrometheusClient, string, bool) {
+// metrics_not_configured, an undiscovered local Prometheus the route's
+// existing 503 (with unavailableDetail as its detail), and any other failure
+// a target error (unknown cluster, registry down).
+func (h *Handler) promFor(w http.ResponseWriter, r *http.Request, unavailableDetail string) (*PrometheusClient, string, bool) {
 	clusterID := middleware.ClusterIDFromContext(r.Context())
 	pc, err := h.resolver().PrometheusFor(r.Context(), clusterID)
 	switch {
@@ -77,7 +82,7 @@ func (h *Handler) promFor(w http.ResponseWriter, r *http.Request) (*PrometheusCl
 	case errors.Is(err, ErrNoMetricsBinding):
 		writeMetricsNotConfigured(w)
 	case errors.Is(err, ErrPrometheusUnavailable):
-		httputil.WriteError(w, http.StatusServiceUnavailable, "Prometheus is not available", "")
+		httputil.WriteError(w, http.StatusServiceUnavailable, "Prometheus is not available", unavailableDetail)
 	default:
 		httputil.WriteTargetError(w, err)
 	}
@@ -146,7 +151,7 @@ func (h *Handler) HandleRediscover(w http.ResponseWriter, r *http.Request) {
 // Requires admin role — see routes.go. Raw PromQL access is admin-only (P2-4).
 // GET /api/v1/monitoring/query?query=...&time=...
 func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
-	pc, clusterID, ok := h.promFor(w, r)
+	pc, clusterID, ok := h.promFor(w, r, msgLocalMonitoringNotConfigured)
 	if !ok {
 		return
 	}
@@ -188,7 +193,7 @@ func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 // Requires admin role — see routes.go. Raw PromQL access is admin-only (P2-4).
 // GET /api/v1/monitoring/query_range?query=...&start=...&end=...&step=...
 func (h *Handler) HandleQueryRange(w http.ResponseWriter, r *http.Request) {
-	pc, clusterID, ok := h.promFor(w, r)
+	pc, clusterID, ok := h.promFor(w, r, "")
 	if !ok {
 		return
 	}
@@ -344,7 +349,7 @@ func (h *Handler) HandleTemplates(w http.ResponseWriter, r *http.Request) {
 // HandleTemplateQuery renders a named template with variables and executes it.
 // GET /api/v1/monitoring/templates/query?name=pod_cpu_usage&namespace=default&pod=my-pod
 func (h *Handler) HandleTemplateQuery(w http.ResponseWriter, r *http.Request) {
-	pc, clusterID, ok := h.promFor(w, r)
+	pc, clusterID, ok := h.promFor(w, r, "")
 	if !ok {
 		return
 	}
@@ -400,7 +405,7 @@ func (h *Handler) HandleTemplateQuery(w http.ResponseWriter, r *http.Request) {
 //     ClusterWide slugs).
 //   - start / end / step: Optional; omitting runs an instant query at Now().
 func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
-	pc, clusterID, ok := h.promFor(w, r)
+	pc, clusterID, ok := h.promFor(w, r, "")
 	if !ok {
 		return
 	}
