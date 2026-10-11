@@ -79,4 +79,8 @@ type agentNodeResult struct {
 	podName  string
 	status   *ciliumAgentStatus
 	err      string
+	// execError is the exec-error state of a failed remote exec (forbidden,
+	// timeout, pod_gone, failed), kept apart from the node's health. The
+	// local collector leaves it empty.
+	execError string
 }
