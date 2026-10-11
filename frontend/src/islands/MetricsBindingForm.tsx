@@ -202,7 +202,11 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
     hasAmToken.value &&
     amUrl.value.trim() !== "" &&
     originOf(amUrl.value) !== originOf(storedAmUrl.value);
-  const amNeedsEntry = hasAmToken.value && (amStale.value || amUrlMoved);
+  // A stale token is reported with hasAlertmanagerToken false (the store
+  // withholds a token whose origin no longer matches), so staleness alone
+  // must prompt. Removing the Alertmanager URL clears the token server-side.
+  const amNeedsEntry =
+    amUrlMoved || (amStale.value && amUrl.value.trim() !== "");
   const amTokenMissing =
     amNeedsEntry && amToken.value === "" && !clearAmToken.value;
   const amMessageId = `${baseId}-am-token-msg`;
@@ -303,7 +307,7 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
             stored token will not be sent there.
           </p>
         )}
-        {hasAmToken.value && (
+        {(hasAmToken.value || amStale.value) && (
           <div class="mt-1.5 flex flex-col gap-1">
             {!amNeedsEntry && (
               <span class="text-xs text-text-muted">

@@ -49,6 +49,7 @@ jobs:
           - { pkg: ./internal/changes/, target: FuzzReceiptRedaction }
           - { pkg: ./internal/incidents/, target: FuzzIncidentRedaction }
           - { pkg: ./internal/incidents/, target: FuzzEventProjection }
+          - { pkg: ./internal/monitoring/, target: FuzzDecodeAlerts }
     name: ${{ matrix.target }}
     defaults:
       run:

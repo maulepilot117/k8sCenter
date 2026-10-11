@@ -219,7 +219,15 @@ test("editing the Alertmanager URL to another host requires the token before Sav
 test("a stale Alertmanager token shows the re-entry message and the clear box, and clearing sends an empty token", async () => {
   replies.GET = {
     status: 200,
-    body: { data: { ...BINDING, alertmanagerTokenStale: true } },
+    // The store's real stale shape: the token is withheld, so
+    // hasAlertmanagerToken is false while alertmanagerTokenStale is true.
+    body: {
+      data: {
+        ...BINDING,
+        hasAlertmanagerToken: false,
+        alertmanagerTokenStale: true,
+      },
+    },
   };
   replies.PUT = {
     status: 200,
@@ -236,6 +244,25 @@ test("a stale Alertmanager token shows the re-entry message and the clear box, a
   expect((puts()[0].body as Record<string, unknown>).alertmanagerToken).toBe(
     "",
   );
+});
+
+test("a stale Alertmanager token stops prompting once the Alertmanager URL is removed", async () => {
+  replies.GET = {
+    status: 200,
+    body: {
+      data: {
+        ...BINDING,
+        hasAlertmanagerToken: false,
+        alertmanagerTokenStale: true,
+      },
+    },
+  };
+  const root = await mount();
+  expect(button(root, "Save").disabled).toBe(true);
+
+  await type(byLabel(root, AM_URL), "");
+  expect(root.textContent).not.toContain(REENTRY);
+  expect(button(root, "Save").disabled).toBe(false);
 });
 
 test("the server's re-entry 400 and its 409 are shown as sent", async () => {
