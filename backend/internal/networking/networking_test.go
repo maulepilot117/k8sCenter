@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1182,6 +1183,9 @@ type fakeNetClients struct {
 	targetErr error
 	// generation is the TargetSchema generation every remote cluster reports.
 	generation string
+	// dynamic is the dynamic client per cluster id; a cluster without one
+	// fails dynamic client resolution.
+	dynamic map[string]*fakedynamic.FakeDynamicClient
 
 	mu    sync.Mutex
 	calls []string // "cluster/username"
@@ -1205,8 +1209,15 @@ func (f *fakeNetClients) ClientForCluster(_ context.Context, id, username string
 	return f.cluster(id, username)
 }
 
-func (f *fakeNetClients) DynamicClientForCluster(context.Context, string, string, []string) (dynamic.Interface, error) {
-	return nil, errors.New("not used by this test")
+func (f *fakeNetClients) DynamicClientForCluster(_ context.Context, id, username string, _ []string) (dynamic.Interface, error) {
+	if _, err := f.cluster(id, username); err != nil {
+		return nil, err
+	}
+	d, ok := f.dynamic[k8s.NormalizedClusterID(id)]
+	if !ok {
+		return nil, errors.New("no fake dynamic client for " + id)
+	}
+	return d, nil
 }
 
 func (f *fakeNetClients) TargetSchemaFor(_ context.Context, id, username string, _ []string) (*k8s.TargetSchema, error) {
@@ -1229,7 +1240,7 @@ func remoteCiliumCluster() *kfake.Clientset {
 	ds := testDaemonSet("kube-system", "cilium", "quay.io/cilium/cilium:v1.16.2", 3, 3)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: ciliumConfigMapName},
-		Data:       map[string]string{"enable-hubble": "true", "enable-encryption": "true", "encryption-type": "wireguard", "ipam": "cluster-pool"},
+		Data:       map[string]string{"enable-hubble": "true", "enable-encryption": "true", "encryption-type": "wireguard", "ipam": "multi-pool"},
 	}
 	c := kfake.NewSimpleClientset(&ds, cm)
 	c.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{{GroupVersion: "cilium.io/v2"}}
@@ -1241,7 +1252,9 @@ func remoteCiliumCluster() *kfake.Clientset {
 // a local fallback.
 func localDetectorWithFlannel() *Detector {
 	d := &Detector{}
-	d.cached = &CNIInfo{Name: CNIFlannel, Namespace: "kube-flannel"}
+	d.cached = &CNIInfo{Name: CNIFlannel, Namespace: "kube-flannel", Features: CNIFeatures{
+		Encryption: true, EncryptionMode: "ipsec", ClusterMesh: true, EnvoyEnabled: true, IPAMMode: "kubernetes",
+	}}
 	return d
 }
 
@@ -1280,8 +1293,8 @@ func TestHandleCNIStatus_RemoteCilium(t *testing.T) {
 	if !info.HasCRDs || info.DetectionMethod != "daemonset+crd" {
 		t.Errorf("hasCRDs=%v method=%q, want true daemonset+crd", info.HasCRDs, info.DetectionMethod)
 	}
-	if !info.Features.Hubble || !info.Features.WireGuard || info.Features.IPAMMode != "cluster-pool" {
-		t.Errorf("features = %+v, want Hubble, WireGuard and cluster-pool IPAM from the remote cilium-config", info.Features)
+	if !info.Features.Hubble || !info.Features.WireGuard || info.Features.IPAMMode != "multi-pool" {
+		t.Errorf("features = %+v, want Hubble, WireGuard and multi-pool IPAM from the remote cilium-config", info.Features)
 	}
 	if bytes.Contains(w.Body.Bytes(), []byte("hubbleRelayAddr")) {
 		t.Errorf("remote response carries a relay address: %s", w.Body.String())
@@ -1537,7 +1550,7 @@ func TestHandleCNIConfig_RemoteReturnsConfigAndPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := body.Data
-	if cfg.ConfigMapNamespace != "kube-system" || cfg.Config["ipam"] != "cluster-pool" {
+	if cfg.ConfigMapNamespace != "kube-system" || cfg.Config["ipam"] != "multi-pool" {
 		t.Errorf("got %+v, want the remote kube-system cilium-config", cfg)
 	}
 	if cfg.TargetCluster != netRemoteCluster || cfg.TargetGeneration != "gen-1" {
@@ -1667,7 +1680,7 @@ func TestHandleUpdateCNIConfig_RemoteSuccess(t *testing.T) {
 		t.Errorf("got %+v, want the updated remote config with its pin", body.Data)
 	}
 	cm, err := c.CoreV1().ConfigMaps("kube-system").Get(context.Background(), ciliumConfigMapName, metav1.GetOptions{})
-	if err != nil || cm.Data["debug"] != "true" || cm.Data["ipam"] != "cluster-pool" {
+	if err != nil || cm.Data["debug"] != "true" || cm.Data["ipam"] != "multi-pool" {
 		t.Errorf("remote cilium-config = %v (err %v), want debug=true merged in", cm.Data, err)
 	}
 
@@ -1764,5 +1777,232 @@ func TestHandleUpdateCNIConfig_LocalPinMismatchRefused(t *testing.T) {
 	}
 	if n := configWrites(c); n != 0 {
 		t.Errorf("wrote %d ConfigMaps, want 0", n)
+	}
+}
+
+// --- Remote BGP, IPAM and subsystems (#608 slice 5, U5) ---
+
+var ciliumListKinds = map[schema.GroupVersionResource]string{
+	bgpNodeConfigGVR:  "CiliumBGPNodeConfigList",
+	ciliumNodeGVR:     "CiliumNodeList",
+	ciliumEndpointGVR: "CiliumEndpointList",
+}
+
+// remoteCiliumCRDCluster is remoteCiliumCluster with the Cilium CRDs served
+// and a dynamic client holding one BGP node config, two CiliumNodes (one
+// encrypting) and three endpoints.
+func remoteCiliumCRDCluster() (*kfake.Clientset, *fakedynamic.FakeDynamicClient) {
+	c := remoteCiliumCluster()
+	c.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{
+		{GroupVersion: "cilium.io/v2", APIResources: []metav1.APIResource{{Name: "ciliumnodes"}, {Name: "ciliumendpoints"}}},
+		{GroupVersion: "cilium.io/v2alpha1", APIResources: []metav1.APIResource{{Name: "ciliumbgpnodeconfigs"}}},
+	}
+	dyn := fakedynamic.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), ciliumListKinds,
+		makeBGPNodeConfig("node-1", 64512, []bgpPeerData{{address: "10.0.0.1", asn: 65001, state: "established", received: 5, advertised: 3}}),
+		makeCiliumNode("node-1", []string{"10.244.0.0/24"}, 10, 4, 1),
+		makeCiliumNode("node-2", []string{"10.244.1.0/24"}, 10, 6, 0),
+		makeEndpoint("ep-1", "default", "ready"),
+		makeEndpoint("ep-2", "default", "ready"),
+		makeEndpoint("ep-3", "kube-system", "not-ready"),
+	)
+	return c, dyn
+}
+
+func remotePanelHandler(c *kfake.Clientset, dyn *fakedynamic.FakeDynamicClient) *Handler {
+	return remoteNetHandler(&fakeNetClients{
+		clusters: map[string]*kfake.Clientset{netRemoteCluster: c},
+		dynamic:  map[string]*fakedynamic.FakeDynamicClient{netRemoteCluster: dyn},
+	})
+}
+
+func panelGet(t *testing.T, serve func(http.ResponseWriter, *http.Request), path string, out any) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	serve(w, networkingRequest(http.MethodGet, path, netRemoteCluster))
+	if out != nil && w.Code == http.StatusOK {
+		var body struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decoding %s: %v", w.Body.String(), err)
+		}
+		if err := json.Unmarshal(body.Data, out); err != nil {
+			t.Fatalf("decoding data %s: %v", body.Data, err)
+		}
+	}
+	return w
+}
+
+func TestHandleCiliumBGP_Remote(t *testing.T) {
+	c, dyn := remoteCiliumCRDCluster()
+	h := remotePanelHandler(c, dyn)
+
+	var resp CiliumBGPResponse
+	w := panelGet(t, h.HandleCiliumBGP, "/api/v1/networking/cilium/bgp", &resp)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	if !resp.Configured || len(resp.Peers) != 1 || resp.Peers[0].PeerAddress != "10.0.0.1" {
+		t.Errorf("got %+v, want the remote BGP peer", resp)
+	}
+	if h.bgpCache != nil {
+		t.Error("a remote read filled the local BGP cache")
+	}
+}
+
+func TestHandleCiliumBGP_RemoteAbsenceAndUnknown(t *testing.T) {
+	t.Run("BGP CRD not served is not configured", func(t *testing.T) {
+		c, dyn := remoteCiliumCRDCluster()
+		c.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{
+			{GroupVersion: "cilium.io/v2", APIResources: []metav1.APIResource{{Name: "ciliumnodes"}}},
+		}
+		var resp CiliumBGPResponse
+		w := panelGet(t, remotePanelHandler(c, dyn).HandleCiliumBGP, "/api/v1/networking/cilium/bgp", &resp)
+		if w.Code != http.StatusOK || resp.Configured {
+			t.Fatalf("got %d %+v (body %s), want 200 configured:false", w.Code, resp, w.Body.String())
+		}
+	})
+	t.Run("non-Cilium cluster is not configured", func(t *testing.T) {
+		ds := testDaemonSet("calico-system", "calico-node", "calico/node:v3.28.0", 1, 1)
+		var resp CiliumBGPResponse
+		w := panelGet(t, remotePanelHandler(kfake.NewSimpleClientset(&ds), nil).HandleCiliumBGP, "/api/v1/networking/cilium/bgp", &resp)
+		if w.Code != http.StatusOK || resp.Configured {
+			t.Fatalf("got %d %+v (body %s), want 200 configured:false", w.Code, resp, w.Body.String())
+		}
+	})
+	t.Run("discovery failure is unknown, not absent", func(t *testing.T) {
+		c, dyn := remoteCiliumCRDCluster()
+		h := remotePanelHandler(c, dyn)
+		// Prime detection, then break discovery for the CRD check.
+		panelGet(t, h.HandleCNIStatus, "/api/v1/networking/cni", nil)
+		c.PrependReactor("get", "resource", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("discovery down")
+		})
+		w := panelGet(t, h.HandleCiliumBGP, "/api/v1/networking/cilium/bgp", nil)
+		if w.Code != http.StatusBadGateway || errorReason(t, w) != "discovery_unavailable" {
+			t.Fatalf("got %d %q (body %s), want 502 discovery_unavailable", w.Code, errorReason(t, w), w.Body.String())
+		}
+	})
+	t.Run("forbidden detection is not permitted, not absent", func(t *testing.T) {
+		c := kfake.NewSimpleClientset()
+		c.PrependReactor("list", "daemonsets", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "daemonsets"}, "", errors.New("denied"))
+		})
+		w := panelGet(t, remotePanelHandler(c, nil).HandleCiliumBGP, "/api/v1/networking/cilium/bgp", nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, body %s; want 403", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestHandleCiliumBGP_RemoteCachedPerIdentity(t *testing.T) {
+	c, dyn := remoteCiliumCRDCluster()
+	var lists atomic.Int32
+	dyn.PrependReactor("list", "ciliumbgpnodeconfigs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		lists.Add(1)
+		return false, nil, nil
+	})
+	h := remotePanelHandler(c, dyn)
+	get := func(user *auth.User) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/networking/cilium/bgp", nil)
+		ctx := middleware.WithClusterID(auth.ContextWithUser(req.Context(), user), netRemoteCluster)
+		w := httptest.NewRecorder()
+		h.HandleCiliumBGP(w, req.WithContext(ctx))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+		}
+	}
+	get(networkingTestUser)
+	get(networkingTestUser)
+	if n := lists.Load(); n != 1 {
+		t.Errorf("same identity listed %d times, want 1 (cached)", n)
+	}
+	get(&auth.User{ID: "u2", Username: "bob", KubernetesUsername: "bob"})
+	if n := lists.Load(); n != 2 {
+		t.Errorf("after a second identity listed %d times, want 2", n)
+	}
+	h.EvictRemoteCache(netRemoteCluster)
+	get(networkingTestUser)
+	if n := lists.Load(); n != 3 {
+		t.Errorf("after eviction listed %d times, want 3", n)
+	}
+}
+
+func TestHandleCiliumIPAM_Remote(t *testing.T) {
+	c, dyn := remoteCiliumCRDCluster()
+	h := remotePanelHandler(c, dyn)
+
+	var resp CiliumIPAMResponse
+	w := panelGet(t, h.HandleCiliumIPAM, "/api/v1/networking/cilium/ipam", &resp)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	if !resp.Configured || resp.Mode != "multi-pool" {
+		t.Errorf("configured=%v mode=%q, want the remote cilium-config's multi-pool, not the local detector's", resp.Configured, resp.Mode)
+	}
+	if resp.Allocated != 10 || len(resp.PerNode) != 2 {
+		t.Errorf("allocated=%d nodes=%d, want 10 across the two remote CiliumNodes", resp.Allocated, len(resp.PerNode))
+	}
+	if h.ipamCache != nil {
+		t.Error("a remote read filled the local IPAM cache")
+	}
+}
+
+func TestHandleCiliumSubsystems_Remote(t *testing.T) {
+	c, dyn := remoteCiliumCRDCluster()
+	h := remotePanelHandler(c, dyn)
+
+	var resp CiliumSubsystemsResponse
+	w := panelGet(t, h.HandleCiliumSubsystems, "/api/v1/networking/cilium/subsystems", &resp)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	if !resp.Configured || resp.Encryption == nil || resp.Encryption.Mode != "wireguard" || resp.Encryption.NodesTotal != 2 || resp.Encryption.NodesEncrypted != 1 {
+		t.Errorf("encryption = %+v, want the remote wireguard config across 2 nodes, 1 encrypting", resp.Encryption)
+	}
+	if resp.Mesh == nil || resp.Mesh.Engine != "none" || resp.ClusterMesh == nil || resp.ClusterMesh.Enabled {
+		t.Errorf("mesh=%+v clusterMesh=%+v, want the remote cluster's (none, disabled), not the local detector's", resp.Mesh, resp.ClusterMesh)
+	}
+	if resp.Endpoints == nil || resp.Endpoints.Total != 3 || resp.Endpoints.Ready != 2 {
+		t.Errorf("endpoints = %+v, want 3 with 2 ready", resp.Endpoints)
+	}
+	if len(resp.Coverage) != 0 {
+		t.Errorf("coverage = %+v, want none", resp.Coverage)
+	}
+	if h.subsystemCache != nil {
+		t.Error("a remote read filled the local subsystems cache")
+	}
+}
+
+func TestHandleCiliumSubsystems_RemotePartialCoverage(t *testing.T) {
+	c, dyn := remoteCiliumCRDCluster()
+	dyn.PrependReactor("list", "ciliumnodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "cilium.io", Resource: "ciliumnodes"}, "", errors.New("denied"))
+	})
+	dyn.PrependReactor("list", "ciliumendpoints", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("connection reset")
+	})
+	h := remotePanelHandler(c, dyn)
+	h.AgentCollector = &CiliumAgentCollector{} // remote must never run the local collector
+
+	var resp CiliumSubsystemsResponse
+	w := panelGet(t, h.HandleCiliumSubsystems, "/api/v1/networking/cilium/subsystems", &resp)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want a partial 200", w.Code, w.Body.String())
+	}
+	if resp.Encryption == nil || resp.Encryption.Mode != "wireguard" {
+		t.Errorf("encryption = %+v, want the config-derived section kept", resp.Encryption)
+	}
+	if resp.Endpoints != nil {
+		t.Errorf("endpoints = %+v, want omitted rather than zero counts when the list failed", resp.Endpoints)
+	}
+	got := map[string]string{}
+	for _, cov := range resp.Coverage {
+		got[cov.Source] = cov.Status
+	}
+	want := map[string]string{"ciliumnodes": "forbidden", "ciliumendpoints": "unavailable", "cilium-agents": "unavailable"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("coverage = %v, want %v", got, want)
 	}
 }

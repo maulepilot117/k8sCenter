@@ -17,6 +17,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -36,13 +38,19 @@ func isLocal(ctx context.Context) bool {
 
 // remoteCaches holds the per-(cluster, identity) caches of remote reads.
 type remoteCaches struct {
-	once sync.Once
-	cni  *remotecache.Cache[*CNIInfo]
+	once       sync.Once
+	cni        *remotecache.Cache[*CNIInfo]
+	bgp        *remotecache.Cache[*CiliumBGPResponse]
+	ipam       *remotecache.Cache[*CiliumIPAMResponse]
+	subsystems *remotecache.Cache[*CiliumSubsystemsResponse]
 }
 
 func (h *Handler) remote() *remoteCaches {
 	h.remoteState.once.Do(func() {
 		h.remoteState.cni = remotecache.New[*CNIInfo](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
+		h.remoteState.bgp = remotecache.New[*CiliumBGPResponse](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
+		h.remoteState.ipam = remotecache.New[*CiliumIPAMResponse](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
+		h.remoteState.subsystems = remotecache.New[*CiliumSubsystemsResponse](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
 	})
 	return &h.remoteState
 }
@@ -50,7 +58,11 @@ func (h *Handler) remote() *remoteCaches {
 // EvictRemoteCache drops every identity's cached networking reads for
 // clusterID. Registered as a ClusterRouter evict hook.
 func (h *Handler) EvictRemoteCache(clusterID string) {
-	h.remote().cni.EvictCluster(clusterID)
+	c := h.remote()
+	c.cni.EvictCluster(clusterID)
+	c.bgp.EvictCluster(clusterID)
+	c.ipam.EvictCluster(clusterID)
+	c.subsystems.EvictCluster(clusterID)
 }
 
 // remoteCNI returns the request cluster's CNI as the user sees it. refresh
@@ -389,4 +401,194 @@ func (h *Handler) writeRemoteUpdateFailure(w http.ResponseWriter, r *http.Reques
 	default:
 		httputil.WriteRemoteError(w, err)
 	}
+}
+
+// reasonAgentDataUnavailable marks agent exec data a remote subsystems
+// response could not include.
+const reasonAgentDataUnavailable = "agent_data_unavailable"
+
+// remoteServes reports whether a remote cluster serves gvr at its exact
+// version, as the user sees it. Only a NotFound for the group version is a
+// definite absence; any other discovery failure leaves the answer unknown
+// (k8s.ErrDiscoveryUnavailable).
+func (h *Handler) remoteServes(ctx context.Context, clusterID string, user *auth.User, gvr schema.GroupVersionResource) (bool, error) {
+	target, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		return false, k8s.TargetError{Err: err}
+	}
+	list, err := target.Discovery.ServerResourcesForGroupVersion(gvr.GroupVersion().String())
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", k8s.ErrDiscoveryUnavailable, err)
+	}
+	return k8s.ServesGVR([]*metav1.APIResourceList{list}, gvr), nil
+}
+
+// remoteCiliumDynamic resolves the dynamic client for a remote cluster known
+// to run Cilium. ok is false when detection definitely found another CNI;
+// the caller then answers "not configured".
+func (h *Handler) remoteCiliumDynamic(ctx context.Context, clusterID string, user *auth.User) (info *CNIInfo, dyn dynamic.Interface, ok bool, err error) {
+	info, err = h.remoteCNI(ctx, user, false)
+	if err != nil || info.Name != CNICilium {
+		return info, nil, false, err
+	}
+	dyn, err = h.Clients.DynamicClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		return info, nil, false, k8s.TargetError{Err: err}
+	}
+	return info, dyn, true, nil
+}
+
+// serveRemoteBGP answers GET /networking/cilium/bgp for a remote cluster.
+func (h *Handler) serveRemoteBGP(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	if h.Clients == nil {
+		h.writeRemoteFailure(w, r, "BGP status", errRemoteNotConfigured)
+		return
+	}
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	resp, err := h.remote().bgp.Get(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*CiliumBGPResponse, error) {
+		return h.fetchRemoteBGP(ctx, clusterID, user)
+	})
+	if err != nil {
+		h.writeRemoteFailure(w, r, "BGP status", err)
+		return
+	}
+	httputil.WriteData(w, resp)
+}
+
+func (h *Handler) fetchRemoteBGP(ctx context.Context, clusterID string, user *auth.User) (*CiliumBGPResponse, error) {
+	_, dyn, ok, err := h.remoteCiliumDynamic(ctx, clusterID, user)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return &CiliumBGPResponse{Configured: false}, nil
+	}
+	// BGP is read at one fixed CRD version, so presence is checked at it.
+	serves, err := h.remoteServes(ctx, clusterID, user, bgpNodeConfigGVR)
+	if err != nil {
+		return nil, err
+	}
+	if !serves {
+		return &CiliumBGPResponse{Configured: false}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, remoteReadTimeout)
+	defer cancel()
+	peers, err := readBGPNodeConfigs(ctx, dyn)
+	if err != nil {
+		return nil, err
+	}
+	if peers == nil {
+		peers = []BGPPeerStatus{}
+	}
+	return &CiliumBGPResponse{Configured: true, Peers: peers}, nil
+}
+
+// serveRemoteIPAM answers GET /networking/cilium/ipam for a remote cluster.
+// The IPAM mode comes from that cluster's cilium-config.
+func (h *Handler) serveRemoteIPAM(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	if h.Clients == nil {
+		h.writeRemoteFailure(w, r, "IPAM data", errRemoteNotConfigured)
+		return
+	}
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	resp, err := h.remote().ipam.Get(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*CiliumIPAMResponse, error) {
+		return h.fetchRemoteIPAM(ctx, clusterID, user)
+	})
+	if err != nil {
+		h.writeRemoteFailure(w, r, "IPAM data", err)
+		return
+	}
+	httputil.WriteData(w, resp)
+}
+
+func (h *Handler) fetchRemoteIPAM(ctx context.Context, clusterID string, user *auth.User) (*CiliumIPAMResponse, error) {
+	info, dyn, ok, err := h.remoteCiliumDynamic(ctx, clusterID, user)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return &CiliumIPAMResponse{Configured: false}, nil
+	}
+	serves, err := h.remoteServes(ctx, clusterID, user, ciliumNodeGVR)
+	if err != nil {
+		return nil, err
+	}
+	if !serves {
+		return &CiliumIPAMResponse{Configured: false}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, remoteReadTimeout)
+	defer cancel()
+	nodes, err := readCiliumNodes(ctx, dyn)
+	if err != nil {
+		return nil, err
+	}
+	return ipamResponseFor(nodes, info.Features.IPAMMode), nil
+}
+
+// serveRemoteSubsystems answers GET /networking/cilium/subsystems for a
+// remote cluster. Encryption, mesh and ClusterMesh settings come from its
+// cilium-config; a CiliumNode or CiliumEndpoint list the cluster refuses or
+// fails is reported as coverage, never as zero counts.
+func (h *Handler) serveRemoteSubsystems(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	if h.Clients == nil {
+		h.writeRemoteFailure(w, r, "Cilium subsystem status", errRemoteNotConfigured)
+		return
+	}
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	resp, err := h.remote().subsystems.Get(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*CiliumSubsystemsResponse, error) {
+		return h.fetchRemoteSubsystems(ctx, clusterID, user)
+	})
+	if err != nil {
+		h.writeRemoteFailure(w, r, "Cilium subsystem status", err)
+		return
+	}
+	httputil.WriteData(w, resp)
+}
+
+func (h *Handler) fetchRemoteSubsystems(ctx context.Context, clusterID string, user *auth.User) (*CiliumSubsystemsResponse, error) {
+	info, dyn, ok, err := h.remoteCiliumDynamic(ctx, clusterID, user)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return &CiliumSubsystemsResponse{Configured: false}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, remoteReadTimeout)
+	defer cancel()
+
+	const nodesSource, endpointsSource = "ciliumnodes", "ciliumendpoints"
+	var nodes []ciliumNodeIPAM
+	var endpoints EndpointCounts
+	errs := k8s.RunLists(h.Logger, []k8s.NamedList{
+		{Label: "networking remote list ciliumnodes", Run: func() (err error) {
+			nodes, err = readCiliumNodes(ctx, dyn)
+			return err
+		}},
+		{Label: "networking remote list ciliumendpoints", Run: func() (err error) {
+			endpoints, err = aggregateEndpoints(ctx, dyn)
+			return err
+		}},
+	})
+	failed := map[string]error{nodesSource: errs[0], endpointsSource: errs[1]}
+
+	engine := meshEngineFor(info.Features)
+	resp := &CiliumSubsystemsResponse{
+		Configured:  true,
+		Encryption:  encryptionInfoFor(info.Features, nodes),
+		Mesh:        &MeshInfo{Enabled: engine != "none", Engine: engine},
+		ClusterMesh: &ClusterMeshInfo{Enabled: info.Features.ClusterMesh},
+		Coverage:    k8s.CoverageOf(failed, nodesSource, endpointsSource),
+	}
+	if errs[1] == nil {
+		resp.Endpoints = &endpoints
+	}
+	if h.AgentCollector != nil {
+		// Agent exec data is not read from a remote cluster yet; say so
+		// rather than leave it silently missing.
+		resp.Coverage = append(resp.Coverage, k8s.SourceCoverage{Source: "cilium-agents", Status: "unavailable", ReasonCode: reasonAgentDataUnavailable})
+	}
+	return resp, nil
 }

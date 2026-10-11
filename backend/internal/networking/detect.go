@@ -263,7 +263,16 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 // Istio/Linkerd detection is deferred to Phase C (needs per-mesh adapter + test environment).
 func (d *Detector) DetectMesh() string {
 	info := d.CachedInfo()
-	if info != nil && info.Features.EnvoyEnabled {
+	if info == nil {
+		return "none"
+	}
+	return meshEngineFor(info.Features)
+}
+
+// meshEngineFor returns the service mesh engine Cilium's features enable:
+// "cilium" when its Envoy-based mesh is on, "none" otherwise.
+func meshEngineFor(f CNIFeatures) string {
+	if f.EnvoyEnabled {
 		return "cilium"
 	}
 	return "none"

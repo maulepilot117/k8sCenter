@@ -446,7 +446,12 @@ func (h *Handler) HandleHubbleFlows(w http.ResponseWriter, r *http.Request) {
 // GET /api/v1/networking/cilium/bgp
 // Note: uses BaseDynamicClient for read-only CRD access, consistent with policy/gitops/notification handlers.
 func (h *Handler) HandleCiliumBGP(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	if !isLocal(r.Context()) {
+		h.serveRemoteBGP(w, r, user)
 		return
 	}
 
@@ -527,7 +532,12 @@ func (h *Handler) fetchBGP(ctx context.Context) (*CiliumBGPResponse, error) {
 // GET /api/v1/networking/cilium/ipam
 // Note: uses BaseDynamicClient for read-only CRD access, consistent with policy/gitops/notification handlers.
 func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	if !isLocal(r.Context()) {
+		h.serveRemoteIPAM(w, r, user)
 		return
 	}
 
@@ -585,6 +595,25 @@ func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 		return nil, err
 	}
 
+	// Determine IPAM mode from cached Cilium ConfigMap detection
+	mode := ""
+	if info := h.Detector.CachedInfo(); info != nil {
+		mode = info.Features.IPAMMode
+	}
+	resp := ipamResponseFor(nodes, mode)
+
+	if atomic.LoadUint64(&h.cacheGen) == gen {
+		h.ipamMu.Lock()
+		h.ipamCache = &cachedIPAM{data: resp, fetchedAt: time.Now()}
+		h.ipamMu.Unlock()
+	}
+
+	return resp, nil
+}
+
+// ipamResponseFor summarizes CiliumNode IPAM data. An empty mode reports
+// Cilium's default, cluster-pool.
+func ipamResponseFor(nodes []ciliumNodeIPAM, mode string) *CiliumIPAMResponse {
 	var totalAllocated, totalAvailable int
 	var allCIDRs []string
 	var perNode []NodeIPAM
@@ -615,11 +644,8 @@ func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 
 	total := totalAllocated + totalAvailable
 
-	// Determine IPAM mode from cached Cilium ConfigMap detection
-	mode := "cluster-pool" // default
-	info := h.Detector.CachedInfo()
-	if info != nil && info.Features.IPAMMode != "" {
-		mode = info.Features.IPAMMode
+	if mode == "" {
+		mode = "cluster-pool" // default
 	}
 
 	// Ensure non-nil slices for consistent JSON output
@@ -630,7 +656,7 @@ func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 		perNode = []NodeIPAM{}
 	}
 
-	resp := &CiliumIPAMResponse{
+	return &CiliumIPAMResponse{
 		Configured:     true,
 		Mode:           mode,
 		PodCIDRs:       allCIDRs,
@@ -640,21 +666,18 @@ func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 		ExhaustionRisk: computeExhaustionRisk(totalAllocated, total),
 		PerNode:        perNode,
 	}
-
-	if atomic.LoadUint64(&h.cacheGen) == gen {
-		h.ipamMu.Lock()
-		h.ipamCache = &cachedIPAM{data: resp, fetchedAt: time.Now()}
-		h.ipamMu.Unlock()
-	}
-
-	return resp, nil
 }
 
 // HandleCiliumSubsystems returns encryption, mesh, ClusterMesh, and endpoint health status.
 // GET /api/v1/networking/cilium/subsystems
 // Note: uses BaseDynamicClient for read-only CRD access, consistent with policy/gitops/notification handlers.
 func (h *Handler) HandleCiliumSubsystems(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	if !isLocal(r.Context()) {
+		h.serveRemoteSubsystems(w, r, user)
 		return
 	}
 
@@ -695,15 +718,6 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 
 	info := h.Detector.CachedInfo()
 
-	// Encryption from ConfigMap + CiliumNode CRDs
-	encInfo := &EncryptionInfo{
-		Enabled: info != nil && info.Features.Encryption,
-		Mode:    "",
-	}
-	if encInfo.Enabled && info != nil {
-		encInfo.Mode = info.Features.EncryptionMode
-	}
-
 	// Fetch CiliumNodes, CiliumEndpoints, and agent data concurrently
 	// nolint:cluster-routing local path: subsystems are read only when isCiliumLocal; a remote selection answers before this read
 	dynClient := h.K8sClient.BaseDynamicClient()
@@ -736,13 +750,12 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		h.Logger.Warn("partial failure fetching subsystem data", "error", err)
 	}
 
-	// Count encrypted nodes from CiliumNode data (nil-safe if readCiliumNodes failed)
-	encInfo.NodesTotal = len(nodes)
-	for _, n := range nodes {
-		if n.EncryptionKey > 0 {
-			encInfo.NodesEncrypted++
-		}
+	// Encryption from ConfigMap + CiliumNode CRDs (nil-safe if readCiliumNodes failed)
+	var features CNIFeatures
+	if info != nil {
+		features = info.Features
 	}
+	encInfo := encryptionInfoFor(features, nodes)
 
 	// Mesh from Detector
 	meshEngine := h.Detector.DetectMesh()
@@ -779,6 +792,21 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 	}
 
 	return resp, nil
+}
+
+// encryptionInfoFor reports Cilium's encryption from its config features and
+// counts the CiliumNodes carrying an encryption key.
+func encryptionInfoFor(f CNIFeatures, nodes []ciliumNodeIPAM) *EncryptionInfo {
+	enc := &EncryptionInfo{Enabled: f.Encryption, NodesTotal: len(nodes)}
+	if enc.Enabled {
+		enc.Mode = f.EncryptionMode
+	}
+	for _, n := range nodes {
+		if n.EncryptionKey > 0 {
+			enc.NodesEncrypted++
+		}
+	}
+	return enc
 }
 
 // mergeAgentIntoSubsystems enriches a CRD-based subsystems response with data
