@@ -49,7 +49,9 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, user := s.wsAuthAndUpgrade(w, r)
+	// A log stream reads the local cluster only: a remote in-band cluster is
+	// refused by the helper, a remote header by the gate below.
+	conn, user, reqCtx := s.wsAuthAndUpgradeFor(w, r, wsRoute{auditAction: audit.ActionReadLogs, auditKind: "Pod"})
 	if conn == nil {
 		return
 	}
@@ -99,7 +101,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	// Reject with an error frame BEFORE bumping the connection counter, running
 	// the RBAC check, emitting the audit "subscribed" entry, or opening the k8s
 	// stream — mirrors HandlePodExec ordering in pods.go.
-	wsLogsClusterID := middleware.ClusterIDFromContext(r.Context())
+	wsLogsClusterID := middleware.ClusterIDFromContext(reqCtx)
 	if !k8s.IsLocalClusterID(wsLogsClusterID) {
 		s.Logger.Warn("ws log stream rejected on remote cluster",
 			"user", user.Username,
@@ -119,7 +121,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 			entry.ResourceNamespace = ns
 			entry.ResourceName = pod
 			entry.Detail = "ws log stream rejected: remote clusters not supported"
-			s.AuditLogger.Log(r.Context(), entry)
+			s.AuditLogger.Log(reqCtx, entry)
 		}
 		conn.WriteJSON(map[string]any{
 			"type":    "error",
@@ -135,7 +137,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	// gated to a local cluster above, so we forward it explicitly rather than
 	// re-reading the context, keeping the F#9 plumbing visible.
 	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-		r.Context(), wsLogsClusterID, user.KubernetesUsername, user.KubernetesGroups,
+		reqCtx, wsLogsClusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"get", "pods/log", ns,
 	)
 	if err != nil {
@@ -160,7 +162,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	entry.ResourceKind = "Pod"
 	entry.ResourceNamespace = ns
 	entry.ResourceName = pod
-	s.AuditLogger.Log(r.Context(), entry)
+	s.AuditLogger.Log(reqCtx, entry)
 
 	s.Logger.Info("log stream started",
 		"user", user.Username,
@@ -179,7 +181,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set up context that cancels when WS closes
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(reqCtx)
 	defer cancel()
 
 	// Build log options
