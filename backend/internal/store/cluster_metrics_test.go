@@ -9,6 +9,7 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -73,6 +74,85 @@ func TestMigration000027_RoundTripKeepsBindings(t *testing.T) {
 	}
 	if b.PrometheusURL != "https://prom.example.com" || b.HasToken {
 		t.Errorf("binding after re-apply = %+v; want the URL kept and the token gone", b)
+	}
+}
+
+// The store's Go API does not know the 000028 columns yet, so this drives the
+// table with SQL only. HasAlertmanagerToken and the keep-save behaviour are
+// asserted where the store learns the columns.
+func TestMigration000028_RoundTripKeepsBindings(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+	if err := m.Migrate(28); err != nil {
+		t.Fatalf("migrating to 000028: %v", err)
+	}
+	insertMetricsTestCluster(ctx, t, pool, "c1")
+	hasCol := func(name string) bool {
+		var ok bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'cluster_monitoring' AND column_name = $1)`, name).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	newCols := []string{"alertmanager_token", "alertmanager_token_origin"}
+	for _, c := range newCols {
+		if !hasCol(c) {
+			t.Errorf("cluster_monitoring.%s missing after the up migration", c)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO cluster_monitoring (cluster_id, prometheus_url, prometheus_token, alertmanager_url,
+			alertmanager_token, alertmanager_token_origin)
+		VALUES ('c1', 'https://prom.example.com', '\x01', 'https://am.example.com', '\x02', 'https://am.example.com')`); err != nil {
+		t.Fatalf("writing a binding with both tokens: %v", err)
+	}
+
+	if err := m.Migrate(27); err != nil {
+		t.Fatalf("rolling back 000028: %v", err)
+	}
+	for _, c := range newCols {
+		if hasCol(c) {
+			t.Errorf("cluster_monitoring.%s survived the down migration", c)
+		}
+	}
+	var promURL, amURL string
+	var promTok []byte
+	if err := pool.QueryRow(ctx, `SELECT prometheus_url, alertmanager_url, prometheus_token
+		FROM cluster_monitoring WHERE cluster_id = 'c1'`).Scan(&promURL, &amURL, &promTok); err != nil {
+		t.Fatalf("binding row after rollback: %v", err)
+	}
+	if promURL != "https://prom.example.com" || amURL != "https://am.example.com" || len(promTok) == 0 {
+		t.Errorf("after rollback = (%q, %q, %d token bytes); want URLs and the Prometheus token kept", promURL, amURL, len(promTok))
+	}
+
+	if err := m.Migrate(28); err != nil {
+		t.Fatalf("re-applying 000028: %v", err)
+	}
+	var amTok []byte
+	var amOrigin *string
+	if err := pool.QueryRow(ctx, `SELECT alertmanager_token, alertmanager_token_origin
+		FROM cluster_monitoring WHERE cluster_id = 'c1'`).Scan(&amTok, &amOrigin); err != nil {
+		t.Fatalf("binding row after re-apply: %v", err)
+	}
+	if amTok != nil || amOrigin != nil {
+		t.Errorf("after re-apply token=%v origin=%v; want both NULL", amTok, amOrigin)
+	}
+}
+
+// Running the up file against a database already at 28 must not fail.
+func TestMigration000028_UpIsIdempotent(t *testing.T) {
+	m, pool := migrationScratchDB(t)
+	ctx := t.Context()
+	if err := m.Migrate(28); err != nil {
+		t.Fatalf("migrating to 000028: %v", err)
+	}
+	up, err := os.ReadFile("migrations/000028_cluster_alertmanager_token.up.sql")
+	if err != nil {
+		t.Fatalf("reading the up file: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(up)); err != nil {
+		t.Errorf("re-running 000028 up on a database at 28: %v", err)
 	}
 }
 
