@@ -32,11 +32,14 @@ var k8sNameRegexp = regexp.MustCompile(`^[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?$`
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
 	ClusterRouter *k8s.ClusterRouter
-	Detector      *Detector
-	HubbleClient  *HubbleClient
-	AuditLogger   audit.Logger
-	Logger        *slog.Logger
-	ClusterID     string
+	// Clients reads a remote cluster as the requesting user. Nil means no
+	// remote networking: a remote selection is refused.
+	Clients      k8s.ClusterClients
+	Detector     *Detector
+	HubbleClient *HubbleClient
+	AuditLogger  audit.Logger
+	Logger       *slog.Logger
+	ClusterID    string
 
 	// Generation counter — incremented on cache invalidation; fetch functions
 	// capture the value before starting work and discard the result if it changed.
@@ -59,6 +62,9 @@ type Handler struct {
 
 	// Phase B: opt-in Cilium agent exec collector (nil when disabled).
 	AgentCollector *CiliumAgentCollector
+
+	// Per-(cluster, identity) caches of remote reads (remote.go).
+	remoteState remoteCaches
 }
 
 const cacheTTL = 30 * time.Second
@@ -138,18 +144,25 @@ func (h *Handler) rejectNonLocal(w http.ResponseWriter, r *http.Request, feature
 // HandleCNIStatus returns the detected CNI plugin information.
 // GET /api/v1/networking/cni
 //
-// Detection reads the LOCAL cluster, so a remote selection is refused with
-// 501 rather than shown the local CNI (and Hubble presence) under the remote
-// cluster's name. A per-cluster binding is a later slice of #608.
+// A remote selection is detected on that cluster as the user (remote.go);
+// the local Detector only ever answers for the local cluster.
 func (h *Handler) HandleCNIStatus(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
-		return
-	}
-	if !h.rejectNonLocal(w, r, "CNI status") {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
 		return
 	}
 
 	refresh := r.URL.Query().Get("refresh") == "true"
+
+	if !isLocal(r.Context()) {
+		info, err := h.remoteCNI(r.Context(), user, refresh)
+		if err != nil {
+			h.writeRemoteFailure(w, r, "CNI", err)
+			return
+		}
+		httputil.WriteData(w, info)
+		return
+	}
 
 	var info *CNIInfo
 	if refresh {

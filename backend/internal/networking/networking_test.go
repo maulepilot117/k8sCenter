@@ -4,19 +4,35 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	fakediscovery "k8s.io/client-go/discovery/fake"
+	"k8s.io/client-go/dynamic"
 	fakedynamic "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/kubernetes"
+	kfake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -1011,12 +1027,11 @@ func TestRejectNonLocal_CNIConfigWrite(t *testing.T) {
 	}
 }
 
-// --- Remote refusal for CNI status and Hubble flows (#608, PR #612 #10) ---
+// --- Remote refusal for Hubble flows (#608, PR #612 #10) ---
 //
-// Both read the LOCAL cluster's CNI detection and Hubble Relay. Under a
-// remote selection they must refuse with 501 rather than show local data
-// under the remote cluster's name; the per-cluster Hubble binding is a later
-// slice of #608.
+// Hubble flows read the LOCAL cluster's relay. Under a remote selection they
+// must refuse with 501 rather than show local data under the remote
+// cluster's name, until #608 slice 5 PR 5b reaches the remote relay.
 
 var networkingTestUser = &auth.User{ID: "u1", Username: "alice", KubernetesUsername: "alice", Roles: []string{"admin"}}
 
@@ -1027,23 +1042,6 @@ func networkingRequest(method, path, clusterID string) *http.Request {
 		ctx = middleware.WithClusterID(ctx, clusterID)
 	}
 	return req.WithContext(ctx)
-}
-
-func TestHandleCNIStatus_RemoteIs501(t *testing.T) {
-	h := &Handler{Detector: &Detector{}}
-	h.Detector.cached = &CNIInfo{Name: CNICilium}
-
-	w := httptest.NewRecorder()
-	h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", "remoteCluster42"))
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, body %s; want 501", w.Code, w.Body.String())
-	}
-	if bytes.Contains(w.Body.Bytes(), []byte(CNICilium)) {
-		t.Errorf("remote refusal leaks the local CNI: %s", w.Body.String())
-	}
-	if !bytes.Contains(w.Body.Bytes(), []byte("CNI status is not supported for remote clusters")) {
-		t.Errorf("body = %s; want the fixed refusal message", w.Body.String())
-	}
 }
 
 func TestHandleCNIStatus_LocalUnchanged(t *testing.T) {
@@ -1096,5 +1094,305 @@ func TestHandleHubbleFlows_LocalUnchanged(t *testing.T) {
 		if !bytes.Contains(w.Body.Bytes(), []byte("Hubble is not available")) {
 			t.Errorf("cluster %q: body = %s; want the existing 503 message", id, w.Body.String())
 		}
+	}
+}
+
+// --- Remote CNI detection and status (#608 slice 5, U3) ---
+
+func testDaemonSet(ns, name, image string, ready, desired int32) appsv1.DaemonSet {
+	container := strings.TrimSuffix(name, "-ds")
+	if name == "cilium" {
+		container = "cilium-agent"
+	}
+	return appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		Spec: appsv1.DaemonSetSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: container, Image: image}},
+		}}},
+		Status: appsv1.DaemonSetStatus{NumberReady: ready, DesiredNumberScheduled: desired},
+	}
+}
+
+func TestCNIInfoFromDaemonSet(t *testing.T) {
+	tests := []struct {
+		name      string
+		ds        appsv1.DaemonSet
+		wantName  string
+		wantVer   string
+		healthy   bool
+		wantNoCNI bool
+	}{
+		{name: "cilium agent", ds: testDaemonSet("kube-system", "cilium", "quay.io/cilium/cilium:v1.16.2", 3, 3), wantName: CNICilium, wantVer: "1.16.2", healthy: true},
+		{name: "cilium-agent daemonset", ds: testDaemonSet("cilium", "cilium-agent", "quay.io/cilium/cilium:v1.16.2", 2, 3), wantName: CNICilium, wantVer: "1.16.2"},
+		{name: "cilium envoy is not the agent", ds: testDaemonSet("kube-system", "cilium-envoy", "quay.io/cilium/envoy:v1.29", 3, 3), wantNoCNI: true},
+		{name: "calico node", ds: testDaemonSet("calico-system", "calico-node", "calico/node:v3.28.0", 1, 1), wantName: CNICalico, wantVer: "3.28.0", healthy: true},
+		{name: "flannel", ds: testDaemonSet("kube-flannel", "kube-flannel-ds", "flannel/flannel:v0.25.1", 0, 1), wantName: CNIFlannel, wantVer: "0.25.1"},
+		{name: "unrelated daemonset", ds: testDaemonSet("kube-system", "kube-proxy", "registry.k8s.io/kube-proxy:v1.31.0", 3, 3), wantNoCNI: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := cniInfoFromDaemonSet(&tt.ds)
+			if tt.wantNoCNI {
+				if info != nil {
+					t.Fatalf("got %+v, want no CNI", info)
+				}
+				return
+			}
+			if info == nil {
+				t.Fatal("got no CNI")
+			}
+			if info.Name != tt.wantName || info.Version != tt.wantVer || info.Status.Healthy != tt.healthy {
+				t.Errorf("got name=%q version=%q healthy=%v, want %q %q %v", info.Name, info.Version, info.Status.Healthy, tt.wantName, tt.wantVer, tt.healthy)
+			}
+			if info.Namespace != tt.ds.Namespace || info.DaemonSet != tt.ds.Name || info.DetectionMethod != "daemonset" {
+				t.Errorf("got %+v, want namespace, daemonset and method from the daemonset", info)
+			}
+		})
+	}
+}
+
+func TestCiliumFeaturesFromConfig(t *testing.T) {
+	got := ciliumFeaturesFromConfig(map[string]string{
+		"enable-hubble":       "true",
+		"enable-encryption":   "true",
+		"encryption-type":     "wireguard",
+		"cluster-mesh-config": "/var/lib/cilium/clustermesh/",
+		"enable-envoy-config": "true",
+		"ipam":                "kubernetes",
+	})
+	want := CNIFeatures{Hubble: true, Encryption: true, EncryptionMode: "wireguard", ClusterMesh: true, WireGuard: true, EnvoyEnabled: true, IPAMMode: "kubernetes"}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if got := ciliumFeaturesFromConfig(nil); got != (CNIFeatures{}) {
+		t.Errorf("empty config: got %+v, want zero features", got)
+	}
+}
+
+const netRemoteCluster = "remote-net-1"
+
+// fakeNetClients is a k8s.ClusterClients over one typed fake clientset per
+// cluster id, recording every resolution so tests can assert the identity a
+// read impersonated. targetErr makes every resolution fail.
+type fakeNetClients struct {
+	clusters  map[string]*kfake.Clientset
+	targetErr error
+
+	mu    sync.Mutex
+	calls []string // "cluster/username"
+}
+
+func (f *fakeNetClients) cluster(id, username string) (*kfake.Clientset, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, k8s.NormalizedClusterID(id)+"/"+username)
+	f.mu.Unlock()
+	if f.targetErr != nil {
+		return nil, f.targetErr
+	}
+	c, ok := f.clusters[k8s.NormalizedClusterID(id)]
+	if !ok {
+		return nil, errors.New("no such fake cluster " + id)
+	}
+	return c, nil
+}
+
+func (f *fakeNetClients) ClientForCluster(_ context.Context, id, username string, _ []string) (kubernetes.Interface, error) {
+	return f.cluster(id, username)
+}
+
+func (f *fakeNetClients) DynamicClientForCluster(context.Context, string, string, []string) (dynamic.Interface, error) {
+	return nil, errors.New("not used by this test")
+}
+
+func (f *fakeNetClients) TargetSchemaFor(_ context.Context, id, username string, _ []string) (*k8s.TargetSchema, error) {
+	c, err := f.cluster(id, username)
+	if err != nil {
+		return nil, err
+	}
+	return &k8s.TargetSchema{ClusterID: id, Discovery: c.Discovery(), Invalidate: func() {}}, nil
+}
+
+func (f *fakeNetClients) recorded() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+// remoteCiliumCluster is a fake remote cluster running Cilium in kube-system
+// with Hubble and WireGuard enabled and the cilium.io API group served.
+func remoteCiliumCluster() *kfake.Clientset {
+	ds := testDaemonSet("kube-system", "cilium", "quay.io/cilium/cilium:v1.16.2", 3, 3)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: ciliumConfigMapName},
+		Data:       map[string]string{"enable-hubble": "true", "enable-encryption": "true", "encryption-type": "wireguard", "ipam": "cluster-pool"},
+	}
+	c := kfake.NewSimpleClientset(&ds, cm)
+	c.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{{GroupVersion: "cilium.io/v2"}}
+	return c
+}
+
+// localDetectorWithFlannel is a local detector that reports flannel. A remote
+// response carrying flannel, or a call to Detect (its nil clients panic), is
+// a local fallback.
+func localDetectorWithFlannel() *Detector {
+	d := &Detector{}
+	d.cached = &CNIInfo{Name: CNIFlannel, Namespace: "kube-flannel"}
+	return d
+}
+
+func decodeCNIInfo(t *testing.T, w *httptest.ResponseRecorder) CNIInfo {
+	t.Helper()
+	var body struct {
+		Data CNIInfo `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding %s: %v", w.Body.String(), err)
+	}
+	return body.Data
+}
+
+func remoteNetHandler(clients *fakeNetClients) *Handler {
+	return &Handler{
+		Detector: localDetectorWithFlannel(),
+		Clients:  clients,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
+func TestHandleCNIStatus_RemoteCilium(t *testing.T) {
+	clients := &fakeNetClients{clusters: map[string]*kfake.Clientset{netRemoteCluster: remoteCiliumCluster()}}
+	h := remoteNetHandler(clients)
+
+	w := httptest.NewRecorder()
+	h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", netRemoteCluster))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	info := decodeCNIInfo(t, w)
+	if info.Name != CNICilium || info.Namespace != "kube-system" || info.Version != "1.16.2" || !info.Status.Healthy {
+		t.Errorf("got %+v, want healthy Cilium 1.16.2 in kube-system", info)
+	}
+	if !info.HasCRDs || info.DetectionMethod != "daemonset+crd" {
+		t.Errorf("hasCRDs=%v method=%q, want true daemonset+crd", info.HasCRDs, info.DetectionMethod)
+	}
+	if !info.Features.Hubble || !info.Features.WireGuard || info.Features.IPAMMode != "cluster-pool" {
+		t.Errorf("features = %+v, want Hubble, WireGuard and cluster-pool IPAM from the remote cilium-config", info.Features)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("hubbleRelayAddr")) {
+		t.Errorf("remote response carries a relay address: %s", w.Body.String())
+	}
+	for _, call := range clients.recorded() {
+		if call != netRemoteCluster+"/alice" {
+			t.Errorf("resolution %q, want %s as alice", call, netRemoteCluster)
+		}
+	}
+}
+
+func TestHandleCNIStatus_RemoteNonCilium(t *testing.T) {
+	ds := testDaemonSet("calico-system", "calico-node", "calico/node:v3.28.0", 2, 2)
+	clients := &fakeNetClients{clusters: map[string]*kfake.Clientset{netRemoteCluster: kfake.NewSimpleClientset(&ds)}}
+	h := remoteNetHandler(clients)
+
+	w := httptest.NewRecorder()
+	h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", netRemoteCluster))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	if info := decodeCNIInfo(t, w); info.Name != CNICalico || info.Features != (CNIFeatures{}) {
+		t.Errorf("got %+v, want Calico with no Cilium features", info)
+	}
+}
+
+func TestHandleCNIStatus_RemoteForbiddenIsNotUnknown(t *testing.T) {
+	c := kfake.NewSimpleClientset()
+	c.PrependReactor("list", "daemonsets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "daemonsets"}, "", errors.New("denied internal-marker-9c1e"))
+	})
+	h := remoteNetHandler(&fakeNetClients{clusters: map[string]*kfake.Clientset{netRemoteCluster: c}})
+
+	w := httptest.NewRecorder()
+	h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", netRemoteCluster))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body %s; want 403", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"forbidden"`) || strings.Contains(body, "internal-marker-9c1e") {
+		t.Errorf("body = %s; want reason forbidden and no remote error text", body)
+	}
+	if strings.Contains(body, CNIUnknown) || strings.Contains(body, CNIFlannel) {
+		t.Errorf("forbidden read reported a CNI: %s", body)
+	}
+}
+
+func TestHandleCNIStatus_RemoteCiliumConfigForbidden(t *testing.T) {
+	c := remoteCiliumCluster()
+	c.PrependReactor("get", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, ciliumConfigMapName, errors.New("denied"))
+	})
+	h := remoteNetHandler(&fakeNetClients{clusters: map[string]*kfake.Clientset{netRemoteCluster: c}})
+
+	w := httptest.NewRecorder()
+	h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", netRemoteCluster))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body %s; want 403 rather than Cilium with every feature reported off", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleCNIStatus_RemoteUnreachable(t *testing.T) {
+	h := remoteNetHandler(&fakeNetClients{targetErr: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect 10.20.30.40: connection refused")}})
+
+	w := httptest.NewRecorder()
+	h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", netRemoteCluster))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body %s; want 502", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "10.20.30.40") {
+		t.Errorf("body leaks the remote address: %s", w.Body.String())
+	}
+}
+
+func TestHandleCNIStatus_RemoteCachedPerIdentityAndEvicted(t *testing.T) {
+	c := remoteCiliumCluster()
+	var lists atomic.Int32
+	c.PrependReactor("list", "daemonsets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		lists.Add(1)
+		return false, nil, nil
+	})
+	h := remoteNetHandler(&fakeNetClients{clusters: map[string]*kfake.Clientset{netRemoteCluster: c}})
+
+	get := func(user *auth.User, query string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/networking/cni"+query, nil)
+		ctx := middleware.WithClusterID(auth.ContextWithUser(req.Context(), user), netRemoteCluster)
+		w := httptest.NewRecorder()
+		h.HandleCNIStatus(w, req.WithContext(ctx))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+		}
+	}
+	bob := &auth.User{ID: "u2", Username: "bob", KubernetesUsername: "bob"}
+
+	get(networkingTestUser, "")
+	afterFirst := lists.Load()
+	get(networkingTestUser, "")
+	if lists.Load() != afterFirst {
+		t.Error("a second read by the same identity was not served from cache")
+	}
+	get(bob, "")
+	if lists.Load() == afterFirst {
+		t.Error("another identity was served the first identity's cached detection")
+	}
+	afterBob := lists.Load()
+	h.EvictRemoteCache(netRemoteCluster)
+	get(networkingTestUser, "")
+	if lists.Load() == afterBob {
+		t.Error("evicting the cluster did not clear its cached detection")
+	}
+	afterEvict := lists.Load()
+	// A remote refresh re-reads the remote cluster; it must never run the
+	// local detector, whose nil clients would panic.
+	get(networkingTestUser, "?refresh=true")
+	if lists.Load() == afterEvict {
+		t.Error("refresh=true served the cached detection")
 	}
 }
