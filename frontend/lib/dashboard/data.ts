@@ -14,6 +14,10 @@
 import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import { ApiError, api } from "@/lib/api.ts";
+import {
+  METRICS_NOT_CONFIGURED_MESSAGE,
+  METRICS_NOT_CONFIGURED_REASON,
+} from "@/lib/metrics-reasons.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { HUBBLE_FLOW_BATCH } from "./networking.ts";
 import { decodeSourceKey } from "./params.ts";
@@ -282,12 +286,12 @@ export function classify(err: unknown, base: string): SourceErrorKind {
   return "failure";
 }
 
-/** The wire reason a remote cluster without a Prometheus binding answers with. */
-export const METRICS_NOT_CONFIGURED_REASON = "metrics_not_configured";
-
-/** What the card says when the selected cluster has no metrics binding. */
-export const METRICS_NOT_CONFIGURED_MESSAGE =
-  "Metrics are not configured for this cluster. Add a Prometheus binding in Clusters.";
+// The metrics reason copy lives in lib/metrics-reasons.ts, shared with the
+// mesh pages; it is re-exported for the dashboard's existing importers.
+export {
+  METRICS_NOT_CONFIGURED_MESSAGE,
+  METRICS_NOT_CONFIGURED_REASON,
+} from "@/lib/metrics-reasons.ts";
 
 /**
  * A 404 carrying the `metrics_not_configured` reason. Reason-aware rather than

@@ -26,9 +26,9 @@
 
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
-import { METRICS_NOT_CONFIGURED_MESSAGE } from "@/lib/dashboard/data.ts";
 import { meshApi } from "@/lib/mesh-api.ts";
 import type { GoldenSignals, MeshType } from "@/lib/mesh-types.ts";
+import { goldenSignalsReasonCopy } from "@/lib/metrics-reasons.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const REFRESH_INTERVAL_MS = 30_000;
@@ -266,14 +266,10 @@ function Metric({
   );
 }
 
-/** Remote reasons get plain copy; the raw code is shown only for the rest. */
+/** Known reasons get the shared plain copy; the raw code is shown only for the rest. */
 function offlineCopy(reason: string) {
-  if (reason === "metrics_not_configured") {
-    return METRICS_NOT_CONFIGURED_MESSAGE;
-  }
-  if (reason === "unreachable") {
-    return "This cluster's Prometheus could not be read.";
-  }
+  const copy = goldenSignalsReasonCopy(reason);
+  if (copy !== null) return copy;
   return (
     <>
       Metrics unavailable

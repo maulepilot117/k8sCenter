@@ -1,8 +1,5 @@
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import {
-  dashboardData,
-  METRICS_NOT_CONFIGURED_MESSAGE,
-} from "@/lib/dashboard/data.ts";
+import { dashboardData } from "@/lib/dashboard/data.ts";
 // The partial-answer accounting, the zero-versus-absent rule and the error-rate
 // rounding live in lib/, under test (D-10, KTD8). The first of those especially:
 // the route answers with a zero for every query Prometheus refused, and a card
@@ -18,6 +15,7 @@ import {
 } from "@/lib/dashboard/params.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
+import { goldenSignalsReasonCopy } from "@/lib/metrics-reasons.ts";
 
 /**
  * The four golden signals for one mesh-managed service.
@@ -150,21 +148,14 @@ function MeshGoldenSignals({ params }: WidgetProps) {
 }
 
 /**
- * What the card says when the signals are unavailable, by the route's reason.
- * A remote cluster answers 200 with `metrics_not_configured` (no binding) or
- * `unreachable` (bound, every query failed); the raw code is never printed.
+ * What the card says when the signals are unavailable, by the route's reason
+ * (the shared copy in lib/metrics-reasons.ts); the raw code is never printed.
  */
 function unmeasuredCopy(reason: string): string {
-  switch (reason) {
-    case "metrics_not_configured":
-      return METRICS_NOT_CONFIGURED_MESSAGE;
-    case "unreachable":
-      return "This cluster's Prometheus could not be read, so there are no signals to show.";
-    case "metrics_unavailable":
-      return "A service mesh is installed but no Prometheus is wired up, so there are no signals to read.";
-    default:
-      return "The mesh could not measure this service.";
-  }
+  return (
+    goldenSignalsReasonCopy(reason) ??
+    "The mesh could not measure this service."
+  );
 }
 
 /**
