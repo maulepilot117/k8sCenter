@@ -30,8 +30,9 @@ var ErrNoMetricsBinding = resources.ErrNoMetricsBinding
 var ErrPrometheusUnavailable = errors.New("prometheus not available")
 
 // defaultResolverTTL bounds how long a remote cluster's client is reused
-// before its binding is read again. Edits through the admin API evict
-// immediately; the TTL covers any write that bypassed Evict.
+// before its binding is read again. Edits through this pod's admin API evict
+// immediately, and a reader that reports revisions makes a write by another
+// pod visible on the next read; the TTL covers any other write.
 const defaultResolverTTL = 30 * time.Second
 
 // probeTimeout bounds ProbePrometheus end to end.
@@ -51,6 +52,9 @@ type MetricsBinding struct {
 	Token                  string
 	AlertmanagerToken      string
 	AlertmanagerTokenStale bool
+	// Revision changes on every write of the binding (the store's
+	// updated_at). The zero value means the reader does not track revisions.
+	Revision time.Time
 }
 
 // MetricsBindingReader reads a remote cluster's metrics binding. A cluster
@@ -60,15 +64,26 @@ type MetricsBindingReader interface {
 	GetMetricsBinding(ctx context.Context, clusterID string) (MetricsBinding, error)
 }
 
+// MetricsBindingRevisionReader is implemented by a MetricsBindingReader that
+// can report a binding's current revision without decrypting its tokens. The
+// resolver checks it before reusing cached clients, so a binding written by
+// another pod (which cannot call this pod's Evict) is picked up on the next
+// read instead of after the TTL. Errors follow GetMetricsBinding. A reader
+// without it relies on Evict and the TTL alone.
+type MetricsBindingRevisionReader interface {
+	MetricsBindingRevision(ctx context.Context, clusterID string) (time.Time, error)
+}
+
 // cachedClient is one remote cluster's clients, built from one binding read.
 // The Alertmanager half has its own state: amErr (ErrNoAlertmanager,
 // ErrAlertmanagerTokenReentry) is set when there is no Alertmanager client,
 // and never affects the Prometheus client.
 type cachedClient struct {
-	client  *PrometheusClient
-	am      *AlertmanagerClient
-	amErr   error
-	expires time.Time
+	client   *PrometheusClient
+	am       *AlertmanagerClient
+	amErr    error
+	revision time.Time
+	expires  time.Time
 }
 
 // ClientResolver answers which Prometheus and Alertmanager serve a cluster:
@@ -155,7 +170,8 @@ func (r *ClientResolver) AlertmanagerFor(ctx context.Context, clusterID string) 
 }
 
 // remote returns a remote cluster's cached clients, reading its binding
-// when the entry is missing or expired.
+// when the entry is missing or expired, or when its revision moved since
+// the entry was built (a write by another pod, which cannot Evict here).
 func (r *ClientResolver) remote(ctx context.Context, clusterID string) (cachedClient, error) {
 	if r.Bindings == nil {
 		return cachedClient{}, ErrNoMetricsBinding
@@ -163,13 +179,21 @@ func (r *ClientResolver) remote(ctx context.Context, clusterID string) (cachedCl
 
 	now := r.clock()
 	r.mu.Lock()
-	if c, ok := r.cache[clusterID]; ok && now.Before(c.expires) {
-		r.mu.Unlock()
-		return c, nil
-	}
+	c, hit := r.cache[clusterID]
+	hit = hit && now.Before(c.expires)
 	epoch := r.epoch
 	base := r.baseLocked()
 	r.mu.Unlock()
+
+	if hit {
+		current, err := r.cachedStillCurrent(ctx, clusterID, c)
+		if err != nil {
+			return cachedClient{}, err
+		}
+		if current {
+			return c, nil
+		}
+	}
 
 	b, err := r.Bindings.GetMetricsBinding(ctx, clusterID)
 	if err != nil {
@@ -182,7 +206,7 @@ func (r *ClientResolver) remote(ctx context.Context, clusterID string) (cachedCl
 	if err != nil {
 		return cachedClient{}, err
 	}
-	entry := cachedClient{client: pc, expires: now.Add(r.ttl())}
+	entry := cachedClient{client: pc, revision: b.Revision, expires: now.Add(r.ttl())}
 	switch {
 	case b.AlertmanagerURL == "":
 		entry.amErr = ErrNoAlertmanager
@@ -203,6 +227,37 @@ func (r *ClientResolver) remote(ctx context.Context, clusterID string) (cachedCl
 	}
 	r.mu.Unlock()
 	return entry, nil
+}
+
+// cachedStillCurrent reports whether cached entry c still matches the stored
+// binding. A reader without revisions trusts the entry until its TTL. When
+// the binding is gone the entry is dropped and the read answers as an
+// unbound cluster; a revision that cannot be read fails the read, as a cold
+// binding read would, rather than serving a client the binding may no longer
+// name.
+func (r *ClientResolver) cachedStillCurrent(ctx context.Context, clusterID string, c cachedClient) (bool, error) {
+	rr, ok := r.Bindings.(MetricsBindingRevisionReader)
+	if !ok {
+		return true, nil
+	}
+	rev, err := rr.MetricsBindingRevision(ctx, clusterID)
+	if err != nil {
+		if errors.Is(err, ErrNoMetricsBinding) {
+			r.dropIfCached(clusterID, c)
+		}
+		return false, err
+	}
+	return rev.Equal(c.revision), nil
+}
+
+// dropIfCached removes clusterID's entry only while it is still c, so a
+// fresher entry cached by a concurrent read survives.
+func (r *ClientResolver) dropIfCached(clusterID string, c cachedClient) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cur, ok := r.cache[clusterID]; ok && cur.client == c.client {
+		delete(r.cache, clusterID)
+	}
 }
 
 // Evict drops the cached clients for clusterID, so the next request reads

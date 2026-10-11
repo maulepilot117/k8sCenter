@@ -139,6 +139,36 @@ func (s *ClusterMetricsStore) Get(ctx context.Context, clusterID string) (Metric
 	return b, toks, nil
 }
 
+// Revision returns the binding's updated_at, which every Upsert refreshes
+// (a delete and re-insert gets a new one too), without decrypting anything.
+// Callers that cache clients built from Get compare it with the UpdatedAt of
+// the binding they built from, so a write made by another pod, which cannot
+// evict this pod's cache, is noticed on the next read. Its errors match Get:
+// an unregistered cluster is a wrapped pgx.ErrNoRows, and no binding (or a
+// row without a Prometheus URL) is ErrMetricsBindingNotFound.
+func (s *ClusterMetricsStore) Revision(ctx context.Context, clusterID string) (time.Time, error) {
+	var (
+		id        string
+		promURL   *string
+		updatedAt *time.Time
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT c.id, m.prometheus_url, m.updated_at
+		FROM clusters c
+		LEFT JOIN cluster_monitoring m ON m.cluster_id = c.id
+		WHERE c.id = $1`, clusterID).Scan(&id, &promURL, &updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, fmt.Errorf("getting metrics binding revision: cluster %s: %w", clusterID, err)
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("getting metrics binding revision: %w", err)
+	}
+	if promURL == nil || *promURL == "" || updatedAt == nil {
+		return time.Time{}, ErrMetricsBindingNotFound
+	}
+	return *updatedAt, nil
+}
+
 // MetricsBindingWrite is one Upsert. Each token is nil to keep the stored
 // token, a pointer to "" to clear it, or a value to replace it (encrypted).
 type MetricsBindingWrite struct {

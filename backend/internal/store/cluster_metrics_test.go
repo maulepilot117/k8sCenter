@@ -405,6 +405,55 @@ func TestClusterMetricsStore_GetUnregisteredClusterIsErrNoRows(t *testing.T) {
 	}
 }
 
+// Revision is what lets a pod notice a binding write made by another pod: it
+// equals Get's UpdatedAt, moves on every write (the previous release's upsert
+// included), and fails the same way Get does.
+func TestClusterMetricsStore_RevisionTracksEveryWrite(t *testing.T) {
+	pool := testDB(t)
+	ctx := t.Context()
+	id := testOwnerID(t)
+	insertMetricsTestCluster(ctx, t, pool, id)
+	s := NewClusterMetricsStore(pool, metricsTestKey)
+
+	if _, err := s.Revision(ctx, id); !errors.Is(err, ErrMetricsBindingNotFound) {
+		t.Errorf("Revision without a binding = %v; want ErrMetricsBindingNotFound", err)
+	}
+	if _, err := s.Revision(ctx, id+"-unregistered"); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("Revision on an unregistered cluster = %v; want a wrapped pgx.ErrNoRows", err)
+	}
+
+	if _, err := s.Upsert(ctx, id, MetricsBindingWrite{PrometheusURL: "https://a.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Revision(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := s.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Equal(b.UpdatedAt) {
+		t.Errorf("Revision = %v; want Get's UpdatedAt %v", first, b.UpdatedAt)
+	}
+
+	prevReleaseUpsert(ctx, t, pool, id, "https://a.example.com", "https://am-moved.example.com", nil, false, "https://a.example.com")
+	second, err := s.Revision(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.After(first) {
+		t.Errorf("Revision after a previous-release write = %v; want it after %v", second, first)
+	}
+
+	if err := s.Delete(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Revision(ctx, id); !errors.Is(err, ErrMetricsBindingNotFound) {
+		t.Errorf("Revision after delete = %v; want ErrMetricsBindingNotFound", err)
+	}
+}
+
 // --- Alertmanager token (#608 PR 4b, KTD1 + KTD8) ---
 
 const (

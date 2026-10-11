@@ -96,6 +96,20 @@ func (f *fakeMetricsStore) Get(_ context.Context, id string) (store.MetricsBindi
 	return b, toks, nil
 }
 
+// Revision mirrors the store: the binding's UpdatedAt, with Get's errors.
+func (f *fakeMetricsStore) Revision(_ context.Context, id string) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return time.Time{}, f.getErr
+	}
+	b, ok := f.bindings[id]
+	if !ok {
+		return time.Time{}, store.ErrMetricsBindingNotFound
+	}
+	return b.UpdatedAt, nil
+}
+
 func (f *fakeMetricsStore) Upsert(_ context.Context, id string, w store.MetricsBindingWrite) (store.MetricsBinding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -787,7 +801,8 @@ func TestMetricsBindingReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMetricsBinding: %v", err)
 	}
-	want := monitoring.MetricsBinding{ClusterID: testRemoteID, PrometheusURL: testPublicProm, AlertmanagerURL: "https://8.8.4.4:9093", Token: testToken}
+	want := monitoring.MetricsBinding{ClusterID: testRemoteID, PrometheusURL: testPublicProm, AlertmanagerURL: "https://8.8.4.4:9093", Token: testToken,
+		Revision: time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)}
 	if b != want {
 		t.Errorf("binding = %+v; want %+v", b, want)
 	}

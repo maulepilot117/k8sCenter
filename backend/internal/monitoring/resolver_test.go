@@ -752,3 +752,105 @@ func TestClientResolver_ProductionAlertmanagerTransportIsStrict(t *testing.T) {
 		t.Fatal("the Alertmanager client reached a loopback address")
 	}
 }
+
+// revisionBindings is fakeBindings that also reports revisions, like the
+// production store adapter. A binding's revision is its Revision field;
+// revErr, when set, fails every revision read.
+type revisionBindings struct {
+	*fakeBindings
+	revReads atomic.Int32
+	revErr   error
+}
+
+func (b *revisionBindings) MetricsBindingRevision(ctx context.Context, clusterID string) (time.Time, error) {
+	b.revReads.Add(1)
+	if b.revErr != nil {
+		return time.Time{}, b.revErr
+	}
+	got, err := b.fakeBindings.GetMetricsBinding(ctx, clusterID)
+	b.fakeBindings.reads.Add(-1) // a revision read is not a binding read
+	if err != nil {
+		return time.Time{}, err
+	}
+	return got.Revision, nil
+}
+
+// A binding written by another pod (no Evict here) is picked up on the next
+// read: while the revision is unchanged the cached clients are reused with
+// no binding read; once it moves, the next read rebuilds from the new binding
+// and the old Alertmanager gets no further request.
+func TestClientResolver_RevisionChangeFromAnotherPodRebuildsClients(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	oldAM := newFakeAlertmanager(t, "[]")
+	newAM := newFakeAlertmanager(t, amList(amAlert("A", "critical", "active")))
+	rev1 := time.Unix(1_700_000_000, 0)
+	b := &revisionBindings{fakeBindings: &fakeBindings{}}
+	bind := twoTokenBinding(prom, oldAM)
+	bind.Revision = rev1
+	b.set("remote-1", bind)
+	r := newTestResolver(nil, b)
+
+	first, err := r.AlertmanagerFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("AlertmanagerFor: %v", err)
+	}
+	again, err := r.AlertmanagerFor(context.Background(), "remote-1")
+	if err != nil || again != first {
+		t.Fatalf("unchanged revision: got (%p, %v); want the cached client %p", again, err, first)
+	}
+	if b.reads.Load() != 1 || b.revReads.Load() != 1 {
+		t.Fatalf("unchanged revision: binding reads=%d revision reads=%d; want 1 and 1", b.reads.Load(), b.revReads.Load())
+	}
+
+	moved := twoTokenBinding(prom, newAM)
+	moved.Revision = rev1.Add(time.Millisecond)
+	b.set("remote-1", moved)
+
+	ac, err := r.AlertmanagerFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("AlertmanagerFor after the move: %v", err)
+	}
+	if ac == first || b.reads.Load() != 2 {
+		t.Fatalf("moved revision: want a rebuilt client and a second binding read, got reads=%d same=%v", b.reads.Load(), ac == first)
+	}
+	if counts, err := ac.Counts(context.Background()); err != nil || counts.Active != 1 {
+		t.Fatalf("Counts = (%+v, %v); want the new Alertmanager's one alert", counts, err)
+	}
+	if hits := oldAM.hits.Load(); hits != 0 {
+		t.Errorf("the old Alertmanager received %d requests after the binding moved", hits)
+	}
+}
+
+// A binding deleted by another pod answers as unbound on the next read and
+// drops the cached entry; a revision that cannot be read fails the read
+// rather than serving a client the binding may no longer name.
+func TestClientResolver_RevisionReadFailsClosed(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	b := &revisionBindings{fakeBindings: &fakeBindings{}}
+	b.set("remote-1", MetricsBinding{ClusterID: "remote-1", PrometheusURL: prom.srv.URL, Revision: time.Unix(1_700_000_000, 0)})
+	r := newTestResolver(nil, b)
+
+	if _, err := r.PrometheusFor(context.Background(), "remote-1"); err != nil {
+		t.Fatalf("PrometheusFor: %v", err)
+	}
+
+	dbErr := errors.New("database unavailable")
+	b.revErr = dbErr
+	if pc, err := r.PrometheusFor(context.Background(), "remote-1"); !errors.Is(err, dbErr) || pc != nil {
+		t.Fatalf("revision read failure: got (%v, %v); want no client and the reader's error", pc, err)
+	}
+	b.revErr = nil
+
+	b.mu.Lock()
+	delete(b.bindings, "remote-1")
+	b.mu.Unlock()
+	if _, err := r.PrometheusFor(context.Background(), "remote-1"); !errors.Is(err, ErrNoMetricsBinding) {
+		t.Fatalf("deleted binding: err = %v; want ErrNoMetricsBinding", err)
+	}
+	r.mu.Lock()
+	_, cached := r.cache["remote-1"]
+	r.mu.Unlock()
+	if cached {
+		t.Error("the deleted binding's clients are still cached")
+	}
+}
