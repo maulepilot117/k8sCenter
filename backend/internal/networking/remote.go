@@ -43,6 +43,9 @@ type remoteCaches struct {
 	bgp        *remotecache.Cache[*CiliumBGPResponse]
 	ipam       *remotecache.Cache[*CiliumIPAMResponse]
 	subsystems *remotecache.Cache[*CiliumSubsystemsResponse]
+	// agents runs remote agent exec; nil when agent exec is disabled or no
+	// remote stream transport is wired.
+	agents *remoteAgentCollector
 }
 
 func (h *Handler) remote() *remoteCaches {
@@ -51,6 +54,11 @@ func (h *Handler) remote() *remoteCaches {
 		h.remoteState.bgp = remotecache.New[*CiliumBGPResponse](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
 		h.remoteState.ipam = remotecache.New[*CiliumIPAMResponse](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
 		h.remoteState.subsystems = remotecache.New[*CiliumSubsystemsResponse](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, h.Logger)
+		// Remote agent exec follows the local opt-in: it exists only when
+		// the local collector does.
+		if h.AgentCollector != nil && h.Streams != nil && h.Clients != nil {
+			h.remoteState.agents = newRemoteAgentCollector(h.Clients, h.Streams, h.AuditLogger, h.Logger, h.AgentCollector.maxConcurrent)
+		}
 	})
 	return &h.remoteState
 }
@@ -63,6 +71,9 @@ func (h *Handler) EvictRemoteCache(clusterID string) {
 	c.bgp.EvictCluster(clusterID)
 	c.ipam.EvictCluster(clusterID)
 	c.subsystems.EvictCluster(clusterID)
+	if c.agents != nil {
+		c.agents.EvictCluster(clusterID)
+	}
 }
 
 // remoteCNI returns the request cluster's CNI as the user sees it. refresh
@@ -403,9 +414,65 @@ func (h *Handler) writeRemoteUpdateFailure(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// agentsSource is the coverage source for remote agent exec data.
+const agentsSource = "cilium-agents"
+
 // reasonAgentDataUnavailable marks agent exec data a remote subsystems
-// response could not include.
+// response cannot include because no remote stream transport is wired.
 const reasonAgentDataUnavailable = "agent_data_unavailable"
+
+// agentNamespace is where to look for a remote cluster's Cilium agent pods:
+// where detection found the agent, else kube-system, Cilium's default.
+func agentNamespace(info *CNIInfo) string {
+	if info.Namespace != "" {
+		return info.Namespace
+	}
+	return ciliumSearchNamespaces()[0]
+}
+
+// serveRemoteConnectivity answers GET /networking/cilium/connectivity for a
+// remote cluster by exec into its agent pods as the user (KTD7), under the
+// same opt-in as local. A user who may not exec into the agents gets one
+// "not permitted" answer, not a failed row per node.
+func (h *Handler) serveRemoteConnectivity(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	const what = "Cilium agent connectivity"
+	if h.Clients == nil {
+		h.writeRemoteFailure(w, r, what, errRemoteNotConfigured)
+		return
+	}
+	ctx := r.Context()
+	info, err := h.remoteCNI(ctx, user, false)
+	if err != nil {
+		h.writeRemoteFailure(w, r, what, err)
+		return
+	}
+	if info.Name != CNICilium {
+		httputil.WriteData(w, CiliumConnectivityResponse{Configured: false, Nodes: []NodeConnectivity{}})
+		return
+	}
+	if h.AgentCollector == nil {
+		httputil.WriteData(w, CiliumConnectivityResponse{Configured: true, Nodes: []NodeConnectivity{}})
+		return
+	}
+	agents := h.remote().agents
+	if agents == nil {
+		h.writeRemoteFailure(w, r, what, errRemoteNotConfigured)
+		return
+	}
+	res, err := agents.Collect(ctx, middleware.ClusterIDFromContext(ctx), user, agentNamespace(info))
+	switch {
+	case err == nil:
+		httputil.WriteData(w, connectivityResponseFor(res))
+	case apierrors.IsForbidden(err):
+		h.Logger.Warn("remote agent exec refused", "cluster", middleware.ClusterIDFromContext(ctx), "error", err)
+		httputil.WriteErrorWithReason(w, http.StatusForbidden,
+			"you do not have permission to exec into Cilium agents on the selected cluster", string(k8s.ReasonForbidden), nil)
+	case errors.Is(err, errNoAgentPods):
+		httputil.WriteError(w, http.StatusBadGateway, "no running Cilium agent pods were found on the selected cluster", "")
+	default:
+		h.writeRemoteFailure(w, r, what, err)
+	}
+}
 
 // remoteServes reports whether a remote cluster serves gvr at its exact
 // version, as the user sees it. Only a NotFound for the group version is a
@@ -562,7 +629,8 @@ func (h *Handler) fetchRemoteSubsystems(ctx context.Context, clusterID string, u
 	const nodesSource, endpointsSource = "ciliumnodes", "ciliumendpoints"
 	var nodes []ciliumNodeIPAM
 	var endpoints EndpointCounts
-	errs := k8s.RunLists(h.Logger, []k8s.NamedList{
+	var agentResult *agentCollectionResult
+	lists := []k8s.NamedList{
 		{Label: "networking remote list ciliumnodes", Run: func() (err error) {
 			nodes, err = readCiliumNodes(ctx, dyn)
 			return err
@@ -571,7 +639,15 @@ func (h *Handler) fetchRemoteSubsystems(ctx context.Context, clusterID string, u
 			endpoints, err = aggregateEndpoints(ctx, dyn)
 			return err
 		}},
-	})
+	}
+	agents := h.remote().agents
+	if agents != nil {
+		lists = append(lists, k8s.NamedList{Label: "networking remote agent collect", Run: func() (err error) {
+			agentResult, err = agents.Collect(ctx, clusterID, user, agentNamespace(info))
+			return err
+		}})
+	}
+	errs := k8s.RunLists(h.Logger, lists)
 	failed := map[string]error{nodesSource: errs[0], endpointsSource: errs[1]}
 
 	engine := meshEngineFor(info.Features)
@@ -585,10 +661,14 @@ func (h *Handler) fetchRemoteSubsystems(ctx context.Context, clusterID string, u
 	if errs[1] == nil {
 		resp.Endpoints = &endpoints
 	}
-	if h.AgentCollector != nil {
-		// Agent exec data is not read from a remote cluster yet; say so
-		// rather than leave it silently missing.
-		resp.Coverage = append(resp.Coverage, k8s.SourceCoverage{Source: "cilium-agents", Status: "unavailable", ReasonCode: reasonAgentDataUnavailable})
+	switch {
+	case agents != nil && errs[2] == nil:
+		mergeAgentIntoSubsystems(resp, agentResult)
+	case agents != nil:
+		resp.Coverage = append(resp.Coverage, k8s.CoverageOf(map[string]error{agentsSource: errs[2]}, agentsSource)...)
+	case h.AgentCollector != nil:
+		// Agent exec is enabled but no remote stream transport is wired.
+		resp.Coverage = append(resp.Coverage, k8s.SourceCoverage{Source: agentsSource, Status: "unavailable", ReasonCode: reasonAgentDataUnavailable})
 	}
 	return resp, nil
 }

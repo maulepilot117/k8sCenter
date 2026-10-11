@@ -129,6 +129,11 @@ type NodeConnectivity struct {
 	NodeName    string `json:"nodeName"`
 	HealthState string `json:"healthState"` // Ok, Warning, Failure
 	Message     string `json:"message,omitempty"`
+	// ExecError is set when the agent on this node could not be reached by
+	// exec on a remote cluster (forbidden, timeout, pod_gone, failed). The
+	// node's health is then Unknown, not Failure: the exec failed, not the
+	// node.
+	ExecError string `json:"execError,omitempty"`
 }
 
 // computeExhaustionRisk returns the exhaustion risk level based on IPAM utilization.

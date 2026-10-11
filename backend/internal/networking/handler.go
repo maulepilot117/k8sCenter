@@ -63,6 +63,10 @@ type Handler struct {
 
 	// Phase B: opt-in Cilium agent exec collector (nil when disabled).
 	AgentCollector *CiliumAgentCollector
+	// Streams opens exec streams to remote clusters as the user. With
+	// AgentCollector set it enables remote agent exec under the same opt-in;
+	// nil means remote agent data is unavailable.
+	Streams RemoteExec
 
 	// Per-(cluster, identity) caches of remote reads (remote.go).
 	remoteState remoteCaches
@@ -879,7 +883,12 @@ func mergeAgentIntoSubsystems(resp *CiliumSubsystemsResponse, agent *agentCollec
 // HandleCiliumConnectivity returns per-node Cilium agent health status.
 // GET /api/v1/networking/cilium/connectivity
 func (h *Handler) HandleCiliumConnectivity(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	if !isLocal(r.Context()) {
+		h.serveRemoteConnectivity(w, r, user)
 		return
 	}
 
@@ -906,32 +915,39 @@ func (h *Handler) HandleCiliumConnectivity(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var nodes []NodeConnectivity
-	for _, node := range agentResult.nodes {
+	httputil.WriteData(w, connectivityResponseFor(agentResult))
+}
+
+// connectivityResponseFor builds the connectivity response from an agent
+// collection. A node whose remote exec failed carries its exec-error state
+// with an Unknown health; a local exec failure keeps its historical Failure.
+func connectivityResponseFor(res *agentCollectionResult) CiliumConnectivityResponse {
+	nodes := make([]NodeConnectivity, 0, len(res.nodes))
+	for _, node := range res.nodes {
 		nc := NodeConnectivity{
 			NodeName:    node.nodeName,
 			HealthState: "Unknown",
 		}
-		if node.status != nil && node.status.Cluster != nil && node.status.Cluster.CiliumHealth != nil {
+		switch {
+		case node.status != nil && node.status.Cluster != nil && node.status.Cluster.CiliumHealth != nil:
 			nc.HealthState = node.status.Cluster.CiliumHealth.State
 			nc.Message = node.status.Cluster.CiliumHealth.Msg
-		} else if node.err != "" {
+		case node.execError != "":
+			nc.ExecError = node.execError
+			nc.Message = "agent exec failed"
+		case node.err != "":
 			nc.HealthState = "Failure"
 			nc.Message = "agent exec failed"
 		}
 		nodes = append(nodes, nc)
 	}
-	if nodes == nil {
-		nodes = []NodeConnectivity{}
-	}
-
-	httputil.WriteData(w, CiliumConnectivityResponse{
+	return CiliumConnectivityResponse{
 		Configured:  true,
 		ExecEnabled: true,
 		Nodes:       nodes,
-		CollectedAt: agentResult.collected.UTC().Format(time.RFC3339),
-		Partial:     agentResult.partial,
-	})
+		CollectedAt: res.collected.UTC().Format(time.RFC3339),
+		Partial:     res.partial,
+	}
 }
 
 // formatChangedKeys returns a sorted, comma-separated list of changed key names for audit logging.

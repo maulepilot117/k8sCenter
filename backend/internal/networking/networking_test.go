@@ -2006,3 +2006,143 @@ func TestHandleCiliumSubsystems_RemotePartialCoverage(t *testing.T) {
 		t.Errorf("coverage = %v, want %v", got, want)
 	}
 }
+
+// --- Remote agent exec in the handlers (#608 slice 5, U6b) ---
+
+// healthStatus writes a cilium-dbg status reporting the given health and a
+// ClusterMesh remote cluster named for the identity.
+func healthStatus(username, state string, stdout io.Writer) error {
+	return json.NewEncoder(stdout).Encode(ciliumAgentStatus{
+		Cluster:     &agentCluster{CiliumHealth: &agentCiliumHealth{State: state, Msg: "probe " + state}},
+		ClusterMesh: &agentClusterMesh{Clusters: []agentRemoteCluster{{Name: "seen-by-" + username, Connected: true}}},
+	})
+}
+
+// remoteAgentHandler is a remote handler with agent exec enabled: two agent
+// pods on the remote Cilium cluster, exec answered by exec.
+func remoteAgentHandler(t *testing.T, exec *fakeExec) (*Handler, *recordingAudit) {
+	t.Helper()
+	c, dyn := remoteCiliumCRDCluster()
+	for _, p := range []*corev1.Pod{agentPod("cilium-a", "n1"), agentPod("cilium-b", "n2")} {
+		if _, err := c.CoreV1().Pods(p.Namespace).Create(context.Background(), p, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := remotePanelHandler(c, dyn)
+	rec := &recordingAudit{}
+	h.AuditLogger = rec
+	// The local collector exists only to switch agent exec on; its nil
+	// clients panic if a remote request ever reaches it.
+	h.AgentCollector = &CiliumAgentCollector{maxConcurrent: 4}
+	h.Streams = exec
+	return h, rec
+}
+
+func TestHandleCiliumConnectivity_Remote(t *testing.T) {
+	exec := &fakeExec{run: func(ctx context.Context, username, pod string, stdout, _ io.Writer) error {
+		if pod == "cilium-b" {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return healthStatus(username, "Ok", stdout)
+	}}
+	h, rec := remoteAgentHandler(t, exec)
+	h.remote().agents.execTimeout = 100 * time.Millisecond
+
+	var resp CiliumConnectivityResponse
+	w := panelGet(t, h.HandleCiliumConnectivity, "/api/v1/networking/cilium/connectivity", &resp)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	if !resp.Configured || !resp.ExecEnabled || !resp.Partial || len(resp.Nodes) != 2 {
+		t.Fatalf("got %+v, want a partial exec result for 2 nodes", resp)
+	}
+	byNode := map[string]NodeConnectivity{}
+	for _, n := range resp.Nodes {
+		byNode[n.NodeName] = n
+	}
+	if n1 := byNode["n1"]; n1.HealthState != "Ok" || n1.ExecError != "" {
+		t.Errorf("n1 = %+v, want healthy", n1)
+	}
+	if n2 := byNode["n2"]; n2.ExecError != execErrTimeout || n2.HealthState == "Failure" {
+		t.Errorf("n2 = %+v, want an exec timeout, not a node health failure", n2)
+	}
+	if entries := rec.all(); len(entries) != 1 || entries[0].ClusterID != netRemoteCluster || entries[0].Action != audit.ActionAgentExec {
+		t.Errorf("audit = %+v, want one agent exec row for %s", entries, netRemoteCluster)
+	}
+}
+
+func TestHandleCiliumConnectivity_RemoteExecForbidden(t *testing.T) {
+	exec := &fakeExec{run: func(context.Context, string, string, io.Writer, io.Writer) error {
+		return apierrors.NewForbidden(schema.GroupResource{Resource: "pods/exec"}, "cilium-a", errors.New("denied"))
+	}}
+	h, rec := remoteAgentHandler(t, exec)
+
+	w := panelGet(t, h.HandleCiliumConnectivity, "/api/v1/networking/cilium/connectivity", nil)
+	if w.Code != http.StatusForbidden || errorReason(t, w) != "forbidden" {
+		t.Fatalf("got %d %q (body %s), want 403 forbidden", w.Code, errorReason(t, w), w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "exec into Cilium agents") {
+		t.Errorf("body = %s, want the not-permitted-to-exec message", w.Body.String())
+	}
+	if n := exec.execCount(); n != 1 {
+		t.Errorf("ran %d execs, want 1", n)
+	}
+	if entries := rec.all(); len(entries) != 1 {
+		t.Errorf("audit = %+v, want one row", entries)
+	}
+}
+
+func TestHandleCiliumConnectivity_RemoteExecDisabled(t *testing.T) {
+	exec := &fakeExec{run: func(context.Context, string, string, io.Writer, io.Writer) error { return nil }}
+	h, _ := remoteAgentHandler(t, exec)
+	h.AgentCollector = nil
+
+	var resp CiliumConnectivityResponse
+	w := panelGet(t, h.HandleCiliumConnectivity, "/api/v1/networking/cilium/connectivity", &resp)
+	if w.Code != http.StatusOK || !resp.Configured || resp.ExecEnabled || len(resp.Nodes) != 0 {
+		t.Fatalf("got %d %+v (body %s), want the local not-enabled shape", w.Code, resp, w.Body.String())
+	}
+	if n := exec.execCount(); n != 0 {
+		t.Errorf("ran %d execs with agent exec disabled", n)
+	}
+}
+
+func TestHandleCiliumSubsystems_RemoteAgentData(t *testing.T) {
+	t.Run("merged when collected", func(t *testing.T) {
+		exec := &fakeExec{run: func(_ context.Context, username, _ string, stdout, _ io.Writer) error {
+			return healthStatus(username, "Ok", stdout)
+		}}
+		h, _ := remoteAgentHandler(t, exec)
+
+		var resp CiliumSubsystemsResponse
+		w := panelGet(t, h.HandleCiliumSubsystems, "/api/v1/networking/cilium/subsystems", &resp)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+		}
+		if resp.ClusterMesh == nil || len(resp.ClusterMesh.RemoteClusters) != 1 || resp.ClusterMesh.RemoteClusters[0].Name != "seen-by-alice" {
+			t.Errorf("clusterMesh = %+v, want the remote agents' data, as alice", resp.ClusterMesh)
+		}
+		if len(resp.Coverage) != 0 {
+			t.Errorf("coverage = %+v, want none", resp.Coverage)
+		}
+	})
+	t.Run("forbidden exec is a coverage row", func(t *testing.T) {
+		exec := &fakeExec{run: func(context.Context, string, string, io.Writer, io.Writer) error {
+			return apierrors.NewForbidden(schema.GroupResource{Resource: "pods/exec"}, "cilium-a", errors.New("denied"))
+		}}
+		h, _ := remoteAgentHandler(t, exec)
+
+		var resp CiliumSubsystemsResponse
+		w := panelGet(t, h.HandleCiliumSubsystems, "/api/v1/networking/cilium/subsystems", &resp)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s; want a partial 200", w.Code, w.Body.String())
+		}
+		if len(resp.Coverage) != 1 || resp.Coverage[0].Source != agentsSource || resp.Coverage[0].Status != k8s.CoverageStatusForbidden {
+			t.Errorf("coverage = %+v, want one forbidden cilium-agents row", resp.Coverage)
+		}
+		if resp.Endpoints == nil || resp.Encryption == nil {
+			t.Errorf("CRD sections lost when agent exec was refused: %+v", resp)
+		}
+	})
+}
