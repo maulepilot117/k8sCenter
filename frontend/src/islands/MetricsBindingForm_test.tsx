@@ -29,6 +29,10 @@ interface Call {
 
 type Reply = { status: number; body?: unknown };
 
+// putGate, when set, holds every PUT until it resolves, so a test can act
+// while a save is in flight.
+let putGate: Promise<void> | null = null;
+
 let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 let calls: Call[] = [];
@@ -50,6 +54,7 @@ beforeEach(() => {
   calls = [];
   replies = {};
   badges = [];
+  putGate = null;
   originalFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -57,6 +62,7 @@ beforeEach(() => {
       method,
       body: init?.body ? JSON.parse(String(init.body)) : null,
     });
+    if (method === "PUT" && putGate) await putGate;
     const reply = replies[method] ?? { status: 500, body: {} };
     if (reply.status === 204) return new Response(null, { status: 204 });
     return new Response(JSON.stringify(reply.body ?? {}), {
@@ -320,4 +326,57 @@ test("the remove confirmation names the Alertmanager URL and token", async () =>
   expect(asked).toContain("Alertmanager URL and token");
   expect(calls.some((c) => c.method === "DELETE")).toBe(true);
   expect(badges.at(-1)).toEqual(["c1", "not-configured"]);
+});
+
+test("a save that finishes after the form moved to another cluster badges its own cluster and leaves the new form alone", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+
+  let release = () => {};
+  putGate = new Promise<void>((r) => {
+    release = r;
+  });
+  replies.PUT = {
+    status: 200,
+    body: {
+      data: { ...BINDING, prometheusUrl: "https://saved-c1.example.com" },
+    },
+  };
+  await click(button(root, "Save"));
+
+  // The admin opens another cluster's binding while c1's save is in flight.
+  const c2 = {
+    ...BINDING,
+    clusterId: "c2",
+    prometheusUrl: "https://prom-c2.example.com",
+    alertmanagerUrl: "",
+    hasAlertmanagerToken: false,
+  };
+  replies.GET = { status: 200, body: { data: c2 } };
+  act(() =>
+    render(
+      <MetricsBindingForm
+        clusterId="c2"
+        onBinding={(id, state) => badges.push([id, state])}
+      />,
+      host as HTMLElement,
+    ),
+  );
+  await settle();
+  expect(byLabel(root, "Prometheus URL").value).toBe(
+    "https://prom-c2.example.com",
+  );
+
+  toasts.length = 0;
+  const before = badges.length;
+  release();
+  await settle();
+
+  // The late save still updates c1's badge, and only c1's.
+  expect(badges.slice(before)).toEqual([["c1", "configured"]]);
+  expect(byLabel(root, "Prometheus URL").value).toBe(
+    "https://prom-c2.example.com",
+  );
+  expect(toasts).toEqual([]);
+  expect(button(root, "Save").disabled).toBe(false);
 });
