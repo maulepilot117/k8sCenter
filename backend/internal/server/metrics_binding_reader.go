@@ -37,10 +37,15 @@ func (r metricsBindingReader) GetMetricsBinding(ctx context.Context, clusterID s
 	if err != nil {
 		return monitoring.MetricsBinding{}, err
 	}
+	// The store returns the Alertmanager token only when its stored origin
+	// is the current Alertmanager URL's origin, and flags a token that no
+	// longer matches as stale; both pass through unchanged.
 	return monitoring.MetricsBinding{
-		ClusterID:       b.ClusterID,
-		PrometheusURL:   b.PrometheusURL,
-		AlertmanagerURL: b.AlertmanagerURL,
-		Token:           tokens.Prometheus,
+		ClusterID:              b.ClusterID,
+		PrometheusURL:          b.PrometheusURL,
+		AlertmanagerURL:        b.AlertmanagerURL,
+		Token:                  tokens.Prometheus,
+		AlertmanagerToken:      tokens.Alertmanager,
+		AlertmanagerTokenStale: b.AlertmanagerTokenStale,
 	}, nil
 }

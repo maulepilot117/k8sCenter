@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/urlorigin"
 )
 
 // ErrNoMetricsBinding means the selected remote cluster has no metrics
@@ -37,14 +37,20 @@ const defaultResolverTTL = 30 * time.Second
 // probeTimeout bounds ProbePrometheus end to end.
 const probeTimeout = 5 * time.Second
 
-// MetricsBinding is a remote cluster's Prometheus registration. Token is
-// the decrypted bearer token ("" when none is stored); it must never be
-// logged or returned to a client.
+// MetricsBinding is a remote cluster's metrics registration. Token is the
+// decrypted Prometheus bearer token and AlertmanagerToken the decrypted
+// Alertmanager one ("" when none is usable); neither may be logged or
+// returned to a client. The reader has already checked AlertmanagerToken
+// against the Alertmanager URL's origin: AlertmanagerTokenStale reports a
+// stored token that no longer matches and must be entered again, in which
+// case AlertmanagerToken is "".
 type MetricsBinding struct {
-	ClusterID       string
-	PrometheusURL   string
-	AlertmanagerURL string
-	Token           string
+	ClusterID              string
+	PrometheusURL          string
+	AlertmanagerURL        string
+	Token                  string
+	AlertmanagerToken      string
+	AlertmanagerTokenStale bool
 }
 
 // MetricsBindingReader reads a remote cluster's metrics binding. A cluster
@@ -54,15 +60,21 @@ type MetricsBindingReader interface {
 	GetMetricsBinding(ctx context.Context, clusterID string) (MetricsBinding, error)
 }
 
+// cachedClient is one remote cluster's clients, built from one binding read.
+// The Alertmanager half has its own state: amErr (ErrNoAlertmanager,
+// ErrAlertmanagerTokenReentry) is set when there is no Alertmanager client,
+// and never affects the Prometheus client.
 type cachedClient struct {
 	client  *PrometheusClient
+	am      *AlertmanagerClient
+	amErr   error
 	expires time.Time
 }
 
-// ClientResolver answers which Prometheus serves a cluster: the local
-// cluster's discovered Prometheus, or a remote cluster's metrics binding.
-// A remote cluster is never answered from the local Prometheus. A nil
-// Bindings reader behaves as "no binding" for every remote cluster.
+// ClientResolver answers which Prometheus and Alertmanager serve a cluster:
+// the local cluster's discovered Prometheus, or a remote cluster's metrics
+// binding. A remote cluster is never answered from the local Prometheus. A
+// nil Bindings reader behaves as "no binding" for every remote cluster.
 type ClientResolver struct {
 	Discoverer *Discoverer
 	Bindings   MetricsBindingReader
@@ -113,15 +125,47 @@ func (r *ClientResolver) PrometheusFor(ctx context.Context, clusterID string) (*
 		return pc, nil
 	}
 
+	entry, err := r.remote(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	return entry.client, nil
+}
+
+// AlertmanagerFor returns the Alertmanager client for a remote cluster. It
+// answers ErrNoMetricsBinding when the cluster has no binding (or the
+// resolver has no binding reader), the reader's own error when the binding
+// could not be read, ErrNoAlertmanager when the binding has no Alertmanager
+// URL, and ErrAlertmanagerTokenReentry when its stored token no longer
+// matches the URL's origin; no request is sent in any of those cases. The
+// local cluster answers ErrNoAlertmanager: its alerts come from the webhook
+// alert store, not from a bound Alertmanager.
+func (r *ClientResolver) AlertmanagerFor(ctx context.Context, clusterID string) (*AlertmanagerClient, error) {
+	if k8s.IsLocalClusterID(clusterID) {
+		return nil, ErrNoAlertmanager
+	}
+	entry, err := r.remote(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	if entry.amErr != nil {
+		return nil, entry.amErr
+	}
+	return entry.am, nil
+}
+
+// remote returns a remote cluster's cached clients, reading its binding
+// when the entry is missing or expired.
+func (r *ClientResolver) remote(ctx context.Context, clusterID string) (cachedClient, error) {
 	if r.Bindings == nil {
-		return nil, ErrNoMetricsBinding
+		return cachedClient{}, ErrNoMetricsBinding
 	}
 
 	now := r.clock()
 	r.mu.Lock()
 	if c, ok := r.cache[clusterID]; ok && now.Before(c.expires) {
 		r.mu.Unlock()
-		return c.client, nil
+		return c, nil
 	}
 	epoch := r.epoch
 	base := r.baseLocked()
@@ -129,14 +173,25 @@ func (r *ClientResolver) PrometheusFor(ctx context.Context, clusterID string) (*
 
 	b, err := r.Bindings.GetMetricsBinding(ctx, clusterID)
 	if err != nil {
-		return nil, err
+		return cachedClient{}, err
 	}
 	if b.PrometheusURL == "" {
-		return nil, ErrNoMetricsBinding
+		return cachedClient{}, ErrNoMetricsBinding
 	}
 	pc, err := newRemotePrometheusClient(b.PrometheusURL, newBearerRoundTripper(base, b.PrometheusURL, b.Token))
 	if err != nil {
-		return nil, err
+		return cachedClient{}, err
+	}
+	entry := cachedClient{client: pc, expires: now.Add(r.ttl())}
+	switch {
+	case b.AlertmanagerURL == "":
+		entry.amErr = ErrNoAlertmanager
+	case b.AlertmanagerTokenStale:
+		// Build nothing: the stale token is never sent, and an
+		// unauthenticated read would only fail as refused.
+		entry.amErr = ErrAlertmanagerTokenReentry
+	default:
+		entry.am, entry.amErr = newAlertmanagerClient(b.AlertmanagerURL, newBearerRoundTripper(base, b.AlertmanagerURL, b.AlertmanagerToken))
 	}
 
 	r.mu.Lock()
@@ -144,13 +199,13 @@ func (r *ClientResolver) PrometheusFor(ctx context.Context, clusterID string) (*
 		if r.cache == nil {
 			r.cache = map[string]cachedClient{}
 		}
-		r.cache[clusterID] = cachedClient{client: pc, expires: now.Add(r.ttl())}
+		r.cache[clusterID] = entry
 	}
 	r.mu.Unlock()
-	return pc, nil
+	return entry, nil
 }
 
-// Evict drops the cached client for clusterID, so the next request reads
+// Evict drops the cached clients for clusterID, so the next request reads
 // the binding again. Call it after the binding is written or deleted, and
 // when the cluster is deregistered.
 func (r *ClientResolver) Evict(clusterID string) {
@@ -183,26 +238,28 @@ func (r *ClientResolver) baseLocked() http.RoundTripper {
 	return r.base
 }
 
-// bearerRoundTripper adds the binding's bearer token to https requests for
-// the bound Prometheus host only (host and port, compared without regard to
-// case), so neither a request elsewhere nor a plain-HTTP request to the same
-// host ever carries it. The caller's request is cloned, never modified.
+// bearerRoundTripper adds a bearer token to requests for the https origin of
+// the URL it is bound to (a Prometheus or an Alertmanager; scheme, host and
+// port as urlorigin.Of computes them), so neither a request elsewhere nor a
+// plain-HTTP request to the same host ever carries it, and a URL bound as
+// plain http never gets it at all. The caller's request is cloned, never
+// modified.
 type bearerRoundTripper struct {
-	base  http.RoundTripper
-	host  string
-	token string
+	base   http.RoundTripper
+	origin string
+	token  string
 }
 
-func newBearerRoundTripper(base http.RoundTripper, prometheusURL, token string) *bearerRoundTripper {
-	host := ""
-	if u, err := url.Parse(prometheusURL); err == nil {
-		host = u.Host
+func newBearerRoundTripper(base http.RoundTripper, boundURL, token string) *bearerRoundTripper {
+	origin := urlorigin.Of(boundURL)
+	if !strings.HasPrefix(origin, "https://") {
+		origin = ""
 	}
-	return &bearerRoundTripper{base: base, host: host, token: token}
+	return &bearerRoundTripper{base: base, origin: origin, token: token}
 }
 
 func (t *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.token == "" || t.host == "" || req.URL.Scheme != "https" || !strings.EqualFold(req.URL.Host, t.host) {
+	if t.token == "" || t.origin == "" || urlorigin.Of(req.URL.String()) != t.origin {
 		return t.base.RoundTrip(req)
 	}
 	out := req.Clone(req.Context())

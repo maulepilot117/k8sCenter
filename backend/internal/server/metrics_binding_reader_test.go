@@ -86,3 +86,44 @@ func TestMetricsBindingReader_ErrorMapping(t *testing.T) {
 		})
 	}
 }
+
+// The reader hands the resolver the Alertmanager token only as the store
+// returned it (origin-checked), and carries the store's stale flag so the
+// resolver can answer "token must be re-entered" without sending anything.
+func TestMetricsBindingReader_AlertmanagerToken(t *testing.T) {
+	const amURL = "https://8.8.4.4:9093/alertmanager"
+	cases := []struct {
+		name      string
+		amOrigin  string
+		wantToken string
+		wantStale bool
+	}{
+		{"origin matches", "https://8.8.4.4:9093", "am-tok", false},
+		{"origin moved", "https://1.1.1.1:9093", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fs := newFakeMetricsStore()
+			fs.bindings[testRemoteID] = store.MetricsBinding{ClusterID: testRemoteID, PrometheusURL: testPublicProm, AlertmanagerURL: amURL}
+			fs.tokens[testRemoteID] = "prom-tok"
+			fs.amTokens[testRemoteID] = "am-tok"
+			fs.amOrigins[testRemoteID] = c.amOrigin
+
+			b, err := metricsBindingReader{store: fs}.GetMetricsBinding(t.Context(), testRemoteID)
+			if err != nil {
+				t.Fatalf("GetMetricsBinding: %v", err)
+			}
+			want := monitoring.MetricsBinding{
+				ClusterID:              testRemoteID,
+				PrometheusURL:          testPublicProm,
+				AlertmanagerURL:        amURL,
+				Token:                  "prom-tok",
+				AlertmanagerToken:      c.wantToken,
+				AlertmanagerTokenStale: c.wantStale,
+			}
+			if b != want {
+				t.Errorf("binding = %+v; want %+v", b, want)
+			}
+		})
+	}
+}
