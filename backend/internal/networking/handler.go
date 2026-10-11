@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
@@ -185,10 +186,10 @@ func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cilium config is tied to the local cluster's installation; proxying it
-	// to a remote cluster via the generic ClusterRouter would read the wrong
-	// cluster's config or silently mutate the wrong target. Reject non-local.
-	if !h.rejectNonLocal(w, r, "Cilium CNI configuration") {
+	// A remote selection reads that cluster's cilium-config as the user
+	// (remote.go); the local Detector and client only answer for local.
+	if !isLocal(r.Context()) {
+		h.serveRemoteCNIConfig(w, r, user)
 		return
 	}
 
@@ -198,15 +199,11 @@ func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if info.Name != CNICilium {
-		httputil.WriteData(w, map[string]any{
-			"cniType":  info.Name,
-			"editable": false,
-			"message":  "Configuration editing is only supported for Cilium",
-		})
+		writeConfigNotCilium(w, info.Name)
 		return
 	}
 
-	// nolint:cluster-routing carve-out: Cilium config stays local-only (P2-5); remote clusters are refused above by rejectNonLocal.
+	// nolint:cluster-routing local path: the local cluster's config, read as the user; a remote selection is served by serveRemoteCNIConfig above.
 	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create impersonated client", "")
@@ -217,13 +214,79 @@ func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadGateway, "failed to read Cilium config", "")
 		return
 	}
+	config.TargetCluster, config.TargetGeneration = localGeneration, localGeneration
 	httputil.WriteData(w, config)
+}
+
+// localGeneration is the pin generation, and the normalized cluster id, of
+// the local cluster (see the YAML target-pin contract).
+const localGeneration = "local"
+
+// writeConfigNotCilium answers a config read on a cluster that does not run
+// Cilium.
+func writeConfigNotCilium(w http.ResponseWriter, cni string) {
+	httputil.WriteData(w, map[string]any{
+		"cniType":  cni,
+		"editable": false,
+		"message":  "Configuration editing is only supported for Cilium",
+	})
 }
 
 // CiliumConfigUpdate is the request body for PUT /api/v1/networking/cni/config.
 type CiliumConfigUpdate struct {
 	Changes   map[string]string `json:"changes"`
 	Confirmed bool              `json:"confirmed"`
+	// TargetCluster and TargetGeneration echo the pin from the config read.
+	// Required for a remote cluster; optional, but checked when present, for
+	// the local one.
+	TargetCluster    string `json:"targetCluster,omitempty"`
+	TargetGeneration string `json:"targetGeneration,omitempty"`
+}
+
+// decodeConfigUpdate reads a config update body, answering 400 itself when
+// it cannot.
+func decodeConfigUpdate(w http.ResponseWriter, r *http.Request) (CiliumConfigUpdate, bool) {
+	var req CiliumConfigUpdate
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return req, false
+	}
+	return req, true
+}
+
+// validateConfigUpdate checks confirmation and the change allowlist,
+// answering 400 itself when a check fails.
+func validateConfigUpdate(w http.ResponseWriter, req CiliumConfigUpdate) bool {
+	if !req.Confirmed {
+		httputil.WriteError(w, http.StatusBadRequest,
+			"CNI configuration changes require explicit confirmation", "Set confirmed: true to proceed")
+		return false
+	}
+	if len(req.Changes) == 0 {
+		httputil.WriteError(w, http.StatusBadRequest, "no changes provided", "")
+		return false
+	}
+	if err := ValidateCiliumChanges(req.Changes); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		return false
+	}
+	return true
+}
+
+// auditConfigUpdate records one Cilium config update attempt.
+func (h *Handler) auditConfigUpdate(r *http.Request, user *auth.User, clusterID, namespace string, result audit.Result, detail string) {
+	h.AuditLogger.Log(r.Context(), audit.Entry{
+		Timestamp:         time.Now().UTC(),
+		ClusterID:         clusterID,
+		User:              user.Username,
+		SourceIP:          r.RemoteAddr,
+		Action:            audit.ActionUpdate,
+		ResourceKind:      "CiliumConfig",
+		ResourceNamespace: namespace,
+		ResourceName:      ciliumConfigMapName,
+		Result:            result,
+		Detail:            detail,
+	})
 }
 
 // HandleUpdateCNIConfig applies CNI configuration changes (Cilium only).
@@ -234,24 +297,10 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Cilium config mutations target the local cluster's cilium-config ConfigMap.
-	// Allowing X-Cluster-ID here would cause the audit row to record the remote
-	// cluster ID while the write always hits local — silent desync. Reject non-local
-	// AND emit an audit row so the rejected write attempt is recorded.
-	if clusterID := middleware.ClusterIDFromContext(r.Context()); !k8s.IsLocalClusterID(clusterID) {
-		h.AuditLogger.Log(r.Context(), audit.Entry{
-			Timestamp:    time.Now().UTC(),
-			ClusterID:    clusterID,
-			User:         user.Username,
-			SourceIP:     r.RemoteAddr,
-			Action:       audit.ActionUpdate,
-			ResourceKind: "CiliumConfig",
-			ResourceName: "cilium-config",
-			Result:       audit.ResultFailure,
-			Detail:       "rejected: remote cluster not supported",
-		})
-	}
-	if !h.rejectNonLocal(w, r, "Cilium CNI configuration update") {
+	// A remote selection writes that cluster's cilium-config as the user,
+	// pinned to the cluster the config was read from (remote.go).
+	if !isLocal(r.Context()) {
+		h.updateRemoteCNIConfig(w, r, user)
 		return
 	}
 
@@ -262,31 +311,30 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var req CiliumConfigUpdate
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+	req, ok := decodeConfigUpdate(w, r)
+	if !ok {
 		return
 	}
 
-	if !req.Confirmed {
-		httputil.WriteError(w, http.StatusBadRequest,
-			"CNI configuration changes require explicit confirmation", "Set confirmed: true to proceed")
+	// A pin is optional on the local cluster, but one that names another
+	// cluster or registration is refused before anything is written.
+	if req.TargetCluster != "" && k8s.NormalizedClusterID(req.TargetCluster) != localGeneration {
+		h.auditConfigUpdate(r, user, h.ClusterID, "", audit.ResultFailure, "refused: "+reasonPinMismatch)
+		writePinMismatch(w)
+		return
+	}
+	if req.TargetGeneration != "" && req.TargetGeneration != localGeneration {
+		h.auditConfigUpdate(r, user, h.ClusterID, "", audit.ResultFailure, "refused: "+reasonGenerationMismatch)
+		writeGenerationMismatch(w)
 		return
 	}
 
-	if len(req.Changes) == 0 {
-		httputil.WriteError(w, http.StatusBadRequest, "no changes provided", "")
-		return
-	}
-
-	// Validate changes against allowlist
-	if err := ValidateCiliumChanges(req.Changes); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
+	if !validateConfigUpdate(w, req) {
 		return
 	}
 
 	// Use impersonated client to enforce Kubernetes RBAC
-	// nolint:cluster-routing carve-out: Cilium config stays local-only (P2-5); remote clusters are refused and audited above.
+	// nolint:cluster-routing local path: the local cluster's config, written as the user; a remote selection is served by updateRemoteCNIConfig above.
 	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create impersonated client", "")
@@ -296,34 +344,12 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 	// Apply changes to cilium-config ConfigMap
 	updatedNS, err := UpdateCiliumConfig(r.Context(), cs, req.Changes)
 	if err != nil {
-		h.AuditLogger.Log(r.Context(), audit.Entry{
-			Timestamp:         time.Now().UTC(),
-			ClusterID:         h.ClusterID,
-			User:              user.Username,
-			SourceIP:          r.RemoteAddr,
-			Action:            audit.ActionUpdate,
-			ResourceKind:      "CiliumConfig",
-			ResourceNamespace: updatedNS,
-			ResourceName:      "cilium-config",
-			Result:            audit.ResultFailure,
-			Detail:            formatChangedKeys(req.Changes),
-		})
+		h.auditConfigUpdate(r, user, h.ClusterID, updatedNS, audit.ResultFailure, formatChangedKeys(req.Changes))
 		httputil.WriteError(w, http.StatusBadGateway, "failed to update Cilium config", "")
 		return
 	}
 
-	h.AuditLogger.Log(r.Context(), audit.Entry{
-		Timestamp:         time.Now().UTC(),
-		ClusterID:         h.ClusterID,
-		User:              user.Username,
-		SourceIP:          r.RemoteAddr,
-		Action:            audit.ActionUpdate,
-		ResourceKind:      "CiliumConfig",
-		ResourceNamespace: updatedNS,
-		ResourceName:      "cilium-config",
-		Result:            audit.ResultSuccess,
-		Detail:            formatChangedKeys(req.Changes),
-	})
+	h.auditConfigUpdate(r, user, h.ClusterID, updatedNS, audit.ResultSuccess, formatChangedKeys(req.Changes))
 	h.Logger.Info("cilium config updated", "user", user.Username, "changedKeys", len(req.Changes))
 
 	// Return updated config by reading from the known namespace (avoids redundant probing)

@@ -14,9 +14,12 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 
+	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
@@ -181,5 +184,209 @@ func (h *Handler) writeRemoteFailure(w http.ResponseWriter, r *http.Request, wha
 			"you do not have permission to read the "+what+" on the selected cluster", string(k8s.ReasonForbidden), nil)
 	default:
 		httputil.WriteRemoteLoadError(w, err, what)
+	}
+}
+
+// Reasons a Cilium config update can be refused or fail (#608 KTD5/KTD6).
+const (
+	reasonPinRequired        = "cluster_pin_required"
+	reasonPinMismatch        = "cluster_pin_mismatch"
+	reasonGenerationMismatch = "cluster_generation_mismatch"
+	reasonConflict           = "conflict"
+	reasonOutcomeUnknown     = "outcome_unknown"
+)
+
+func writePinMismatch(w http.ResponseWriter) {
+	httputil.WriteErrorWithReason(w, http.StatusConflict,
+		"the cluster this configuration was loaded from is not the cluster this request targets; reload and try again", reasonPinMismatch, nil)
+}
+
+func writeGenerationMismatch(w http.ResponseWriter) {
+	httputil.WriteErrorWithReason(w, http.StatusConflict,
+		"the cluster has been re-registered since this configuration was loaded; reload and try again", reasonGenerationMismatch, nil)
+}
+
+// remoteCiliumConfigMap reads cilium-config on a remote cluster from the
+// namespace detection found the agent in. When detection named none (a
+// CRD-only answer) the search is kube-system, then cilium, and only a
+// NotFound moves it on: a refused or failed read stops the search, so a
+// leftover cilium-config elsewhere is never shown or written in its place.
+func remoteCiliumConfigMap(ctx context.Context, cs kubernetes.Interface, info *CNIInfo) (*corev1.ConfigMap, error) {
+	namespaces := ciliumSearchNamespaces()
+	if info.Namespace != "" {
+		namespaces = []string{info.Namespace}
+	}
+	var err error
+	for _, ns := range namespaces {
+		var cm *corev1.ConfigMap
+		cm, err = cs.CoreV1().ConfigMaps(ns).Get(ctx, ciliumConfigMapName, metav1.GetOptions{})
+		if err == nil {
+			return cm, nil
+		}
+		if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+	}
+	return nil, err
+}
+
+func ciliumConfigFrom(cm *corev1.ConfigMap, schema *k8s.TargetSchema) *CiliumConfig {
+	return &CiliumConfig{
+		CNIType:            CNICilium,
+		ConfigSource:       "configmap",
+		ConfigMapName:      ciliumConfigMapName,
+		ConfigMapNamespace: cm.Namespace,
+		Editable:           true,
+		Config:             cm.Data,
+		TargetCluster:      schema.ClusterID,
+		TargetGeneration:   schema.Generation,
+	}
+}
+
+// serveRemoteCNIConfig answers GET /networking/cni/config for a remote
+// cluster: its cilium-config as the user sees it, with the pin an edit must
+// echo back.
+func (h *Handler) serveRemoteCNIConfig(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	const what = "Cilium configuration"
+	ctx := r.Context()
+	info, err := h.remoteCNI(ctx, user, false)
+	if err != nil {
+		h.writeRemoteFailure(w, r, what, err)
+		return
+	}
+	if info.Name != CNICilium {
+		writeConfigNotCilium(w, info.Name)
+		return
+	}
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	schema, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.writeRemoteFailure(w, r, what, k8s.TargetError{Err: err})
+		return
+	}
+	cs, err := h.Clients.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.writeRemoteFailure(w, r, what, k8s.TargetError{Err: err})
+		return
+	}
+	cm, err := remoteCiliumConfigMap(ctx, cs, info)
+	if err != nil {
+		h.writeRemoteFailure(w, r, what, err)
+		return
+	}
+	httputil.WriteData(w, ciliumConfigFrom(cm, schema))
+}
+
+// updateRemoteCNIConfig answers PUT /networking/cni/config for a remote
+// cluster. The edit must carry the pin from the config read, and is
+// refused, before anything is read or written, when the pin is missing or
+// names another cluster or registration. Every attempt past validation is
+// audited with the remote cluster's id.
+func (h *Handler) updateRemoteCNIConfig(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	const what = "Cilium configuration"
+	ctx := r.Context()
+	clusterID := k8s.NormalizedClusterID(middleware.ClusterIDFromContext(ctx))
+
+	req, ok := decodeConfigUpdate(w, r)
+	if !ok {
+		return
+	}
+	refuse := func(detail string) {
+		h.auditConfigUpdate(r, user, clusterID, "", audit.ResultFailure, "refused: "+detail)
+	}
+	if h.Clients == nil {
+		h.writeRemoteFailure(w, r, what, errRemoteNotConfigured)
+		return
+	}
+	if req.TargetCluster == "" || req.TargetGeneration == "" {
+		refuse(reasonPinRequired)
+		httputil.WriteErrorWithReason(w, http.StatusPreconditionRequired,
+			"a remote configuration edit must name the cluster it was loaded from; reload and try again", reasonPinRequired, nil)
+		return
+	}
+	if k8s.NormalizedClusterID(req.TargetCluster) != clusterID {
+		refuse(reasonPinMismatch)
+		writePinMismatch(w)
+		return
+	}
+	if !validateConfigUpdate(w, req) {
+		return
+	}
+	schema, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		refuse("cluster could not be resolved")
+		h.writeRemoteFailure(w, r, what, k8s.TargetError{Err: err})
+		return
+	}
+	if req.TargetGeneration != schema.Generation {
+		refuse(reasonGenerationMismatch)
+		writeGenerationMismatch(w)
+		return
+	}
+	info, err := h.remoteCNI(ctx, user, false)
+	if err != nil {
+		refuse("CNI could not be detected")
+		h.writeRemoteFailure(w, r, what, err)
+		return
+	}
+	if info.Name != CNICilium {
+		httputil.WriteError(w, http.StatusBadRequest, "CNI configuration editing is only supported for Cilium", "")
+		return
+	}
+	cs, err := h.Clients.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		refuse("cluster could not be resolved")
+		h.writeRemoteFailure(w, r, what, k8s.TargetError{Err: err})
+		return
+	}
+	cm, err := remoteCiliumConfigMap(ctx, cs, info)
+	if err != nil {
+		refuse("cilium-config could not be read")
+		h.writeRemoteFailure(w, r, what, err)
+		return
+	}
+
+	if cm.Data == nil {
+		cm.Data = make(map[string]string)
+	}
+	for k, v := range req.Changes {
+		cm.Data[k] = v
+	}
+	detail := formatChangedKeys(req.Changes)
+	updated, err := cs.CoreV1().ConfigMaps(cm.Namespace).Update(ctx, cm, metav1.UpdateOptions{})
+	if err != nil {
+		h.writeRemoteUpdateFailure(w, r, user, clusterID, cm.Namespace, detail, err)
+		return
+	}
+	// A remote cluster sends no informer events: drop this cluster's cached
+	// detection, which reflects the config before the change.
+	h.EvictRemoteCache(clusterID)
+	h.auditConfigUpdate(r, user, clusterID, cm.Namespace, audit.ResultSuccess, detail)
+	h.Logger.Info("remote cilium config updated", "user", user.Username, "cluster", clusterID, "changedKeys", len(req.Changes))
+	httputil.WriteData(w, ciliumConfigFrom(updated, schema))
+}
+
+// writeRemoteUpdateFailure audits and answers a failed cilium-config
+// update. An API answer is classified; a transport failure leaves the
+// outcome unknown, since the write may have landed.
+func (h *Handler) writeRemoteUpdateFailure(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID, namespace, detail string, err error) {
+	h.Logger.Warn("remote cilium config update failed", "cluster", clusterID, "error", err)
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		h.auditConfigUpdate(r, user, clusterID, namespace, audit.ResultFailure, detail+"; outcome unknown")
+		httputil.WriteErrorWithReason(w, http.StatusBadGateway,
+			"the selected cluster stopped answering during the update; reload to check whether the change was applied", reasonOutcomeUnknown, nil)
+		return
+	}
+	h.auditConfigUpdate(r, user, clusterID, namespace, audit.ResultFailure, detail)
+	switch {
+	case apierrors.IsConflict(err):
+		httputil.WriteErrorWithReason(w, http.StatusConflict,
+			"the Cilium configuration changed on the cluster; reload and try again", reasonConflict, nil)
+	case apierrors.IsForbidden(err):
+		httputil.WriteErrorWithReason(w, http.StatusForbidden,
+			"you do not have permission to update the Cilium configuration on the selected cluster", string(k8s.ReasonForbidden), nil)
+	default:
+		httputil.WriteRemoteError(w, err)
 	}
 }

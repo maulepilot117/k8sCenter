@@ -31,6 +31,9 @@ import (
 	kfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -1177,6 +1180,8 @@ const netRemoteCluster = "remote-net-1"
 type fakeNetClients struct {
 	clusters  map[string]*kfake.Clientset
 	targetErr error
+	// generation is the TargetSchema generation every remote cluster reports.
+	generation string
 
 	mu    sync.Mutex
 	calls []string // "cluster/username"
@@ -1209,7 +1214,7 @@ func (f *fakeNetClients) TargetSchemaFor(_ context.Context, id, username string,
 	if err != nil {
 		return nil, err
 	}
-	return &k8s.TargetSchema{ClusterID: id, Discovery: c.Discovery(), Invalidate: func() {}}, nil
+	return &k8s.TargetSchema{ClusterID: k8s.NormalizedClusterID(id), Generation: f.generation, Discovery: c.Discovery(), Invalidate: func() {}}, nil
 }
 
 func (f *fakeNetClients) recorded() []string {
@@ -1394,5 +1399,370 @@ func TestHandleCNIStatus_RemoteCachedPerIdentityAndEvicted(t *testing.T) {
 	get(networkingTestUser, "?refresh=true")
 	if lists.Load() == afterEvict {
 		t.Error("refresh=true served the cached detection")
+	}
+}
+
+// --- Remote Cilium config view and edit (#608 slice 5, U4) ---
+
+// recordingAudit records every audit entry.
+type recordingAudit struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+}
+
+func (a *recordingAudit) Log(_ context.Context, e audit.Entry) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.entries = append(a.entries, e)
+	return nil
+}
+
+func (a *recordingAudit) all() []audit.Entry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]audit.Entry(nil), a.entries...)
+}
+
+// configWrites counts ConfigMap updates on a fake cluster.
+func configWrites(c *kfake.Clientset) int {
+	n := 0
+	for _, a := range c.Actions() {
+		if a.GetVerb() == "update" && a.GetResource().Resource == "configmaps" {
+			n++
+		}
+	}
+	return n
+}
+
+func remoteConfigHandler(c *kfake.Clientset) (*Handler, *recordingAudit) {
+	rec := &recordingAudit{}
+	h := remoteNetHandler(&fakeNetClients{clusters: map[string]*kfake.Clientset{netRemoteCluster: c}, generation: "gen-1"})
+	h.AuditLogger = rec
+	return h, rec
+}
+
+func configPut(t *testing.T, h *Handler, clusterID string, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/networking/cni/config", bytes.NewReader(raw))
+	ctx := auth.ContextWithUser(req.Context(), networkingTestUser)
+	if clusterID != "" {
+		ctx = middleware.WithClusterID(ctx, clusterID)
+	}
+	w := httptest.NewRecorder()
+	h.HandleUpdateCNIConfig(w, req.WithContext(ctx))
+	return w
+}
+
+func validRemotePut() map[string]any {
+	return map[string]any{
+		"changes":          map[string]string{"debug": "true"},
+		"confirmed":        true,
+		"targetCluster":    netRemoteCluster,
+		"targetGeneration": "gen-1",
+	}
+}
+
+func errorReason(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Reason string `json:"reason"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding %s: %v", w.Body.String(), err)
+	}
+	return body.Error.Reason
+}
+
+// crdOnlyCiliumWithLeftover is a remote cluster whose Cilium DaemonSet the
+// user cannot see, so detection is CRD-only, and where reading kube-system's
+// cilium-config is forbidden while a leftover cilium/cilium-config exists.
+func crdOnlyCiliumWithLeftover(t *testing.T) (*kfake.Clientset, *[]string) {
+	t.Helper()
+	leftover := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "cilium", Name: ciliumConfigMapName}, Data: map[string]string{"debug": "false"}}
+	c := kfake.NewSimpleClientset(leftover)
+	c.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{{GroupVersion: "cilium.io/v2"}}
+	var gets []string
+	c.PrependReactor("get", "configmaps", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		gets = append(gets, a.GetNamespace())
+		if a.GetNamespace() == "kube-system" {
+			return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, ciliumConfigMapName, errors.New("denied"))
+		}
+		return false, nil, nil
+	})
+	return c, &gets
+}
+
+func TestHandleCNIConfig_RemoteForbiddenNeverReadsLeftover(t *testing.T) {
+	c, gets := crdOnlyCiliumWithLeftover(t)
+	h, _ := remoteConfigHandler(c)
+
+	w := httptest.NewRecorder()
+	h.HandleCNIConfig(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni/config", netRemoteCluster))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body %s; want 403", w.Code, w.Body.String())
+	}
+	for _, ns := range *gets {
+		if ns == "cilium" {
+			t.Errorf("read cilium/cilium-config after a 403 in kube-system")
+		}
+	}
+
+	w = configPut(t, h, netRemoteCluster, validRemotePut())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("PUT status = %d, body %s; want 403", w.Code, w.Body.String())
+	}
+	if n := configWrites(c); n != 0 {
+		t.Errorf("PUT wrote %d ConfigMaps, want 0", n)
+	}
+}
+
+func TestHandleCNIConfig_RemoteReturnsConfigAndPin(t *testing.T) {
+	h, _ := remoteConfigHandler(remoteCiliumCluster())
+
+	w := httptest.NewRecorder()
+	h.HandleCNIConfig(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni/config", netRemoteCluster))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data CiliumConfig `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	cfg := body.Data
+	if cfg.ConfigMapNamespace != "kube-system" || cfg.Config["ipam"] != "cluster-pool" {
+		t.Errorf("got %+v, want the remote kube-system cilium-config", cfg)
+	}
+	if cfg.TargetCluster != netRemoteCluster || cfg.TargetGeneration != "gen-1" {
+		t.Errorf("pin = %q/%q, want %s/gen-1", cfg.TargetCluster, cfg.TargetGeneration, netRemoteCluster)
+	}
+}
+
+func TestHandleUpdateCNIConfig_RemotePinRefusals(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(map[string]any)
+		wantStatus int
+		wantReason string
+	}{
+		{"no pin", func(b map[string]any) { delete(b, "targetCluster"); delete(b, "targetGeneration") }, http.StatusPreconditionRequired, "cluster_pin_required"},
+		{"no generation", func(b map[string]any) { delete(b, "targetGeneration") }, http.StatusPreconditionRequired, "cluster_pin_required"},
+		{"other cluster", func(b map[string]any) { b["targetCluster"] = "remote-other" }, http.StatusConflict, "cluster_pin_mismatch"},
+		{"stale generation", func(b map[string]any) { b["targetGeneration"] = "gen-0" }, http.StatusConflict, "cluster_generation_mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := remoteCiliumCluster()
+			h, rec := remoteConfigHandler(c)
+			body := validRemotePut()
+			tt.mutate(body)
+			w := configPut(t, h, netRemoteCluster, body)
+			if w.Code != tt.wantStatus || errorReason(t, w) != tt.wantReason {
+				t.Fatalf("got %d %q (body %s), want %d %q", w.Code, errorReason(t, w), w.Body.String(), tt.wantStatus, tt.wantReason)
+			}
+			if n := configWrites(c); n != 0 {
+				t.Errorf("wrote %d ConfigMaps, want 0", n)
+			}
+			entries := rec.all()
+			if len(entries) != 1 || entries[0].Result != audit.ResultFailure || entries[0].ClusterID != netRemoteCluster {
+				t.Errorf("audit = %+v, want one failure row for %s", entries, netRemoteCluster)
+			}
+		})
+	}
+}
+
+func TestHandleUpdateCNIConfig_RemoteClusterGone(t *testing.T) {
+	h := remoteNetHandler(&fakeNetClients{targetErr: fmt.Errorf("cluster %s not found: %w", netRemoteCluster, pgx.ErrNoRows)})
+	h.AuditLogger = &recordingAudit{}
+	w := configPut(t, h, netRemoteCluster, validRemotePut())
+	if w.Code != http.StatusNotFound || errorReason(t, w) != "cluster_unknown" {
+		t.Fatalf("got %d %q (body %s), want 404 cluster_unknown", w.Code, errorReason(t, w), w.Body.String())
+	}
+}
+
+func TestHandleUpdateCNIConfig_RemoteValidatesBeforeWriting(t *testing.T) {
+	for name, mutate := range map[string]func(map[string]any){
+		"key outside allowlist": func(b map[string]any) { b["changes"] = map[string]string{"tunnel": "disabled"} },
+		"not confirmed":         func(b map[string]any) { b["confirmed"] = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := remoteCiliumCluster()
+			h, _ := remoteConfigHandler(c)
+			body := validRemotePut()
+			mutate(body)
+			w := configPut(t, h, netRemoteCluster, body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body %s; want 400", w.Code, w.Body.String())
+			}
+			if len(c.Actions()) != 0 {
+				t.Errorf("made %d API calls, want none", len(c.Actions()))
+			}
+		})
+	}
+}
+
+func TestHandleUpdateCNIConfig_RemoteWriteOutcomes(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantReason string
+	}{
+		{"conflict", apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, ciliumConfigMapName, errors.New("changed")), http.StatusConflict, "conflict"},
+		{"forbidden", apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, ciliumConfigMapName, errors.New("denied")), http.StatusForbidden, "forbidden"},
+		{"connection lost", &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by 10.20.30.40")}, http.StatusBadGateway, "outcome_unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := remoteCiliumCluster()
+			c.PrependReactor("update", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, tt.err
+			})
+			h, rec := remoteConfigHandler(c)
+			w := configPut(t, h, netRemoteCluster, validRemotePut())
+			if w.Code != tt.wantStatus || errorReason(t, w) != tt.wantReason {
+				t.Fatalf("got %d %q (body %s), want %d %q", w.Code, errorReason(t, w), w.Body.String(), tt.wantStatus, tt.wantReason)
+			}
+			if strings.Contains(w.Body.String(), "10.20.30.40") {
+				t.Errorf("body leaks the remote address: %s", w.Body.String())
+			}
+			entries := rec.all()
+			if len(entries) != 1 || entries[0].Result != audit.ResultFailure || entries[0].ClusterID != netRemoteCluster {
+				t.Fatalf("audit = %+v, want one failure row for %s", entries, netRemoteCluster)
+			}
+			if tt.wantReason == "outcome_unknown" && !strings.Contains(entries[0].Detail, "outcome unknown") {
+				t.Errorf("audit detail = %q, want it to note the unknown outcome", entries[0].Detail)
+			}
+		})
+	}
+}
+
+func TestHandleUpdateCNIConfig_RemoteSuccess(t *testing.T) {
+	c := remoteCiliumCluster()
+	var lists atomic.Int32
+	c.PrependReactor("list", "daemonsets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		lists.Add(1)
+		return false, nil, nil
+	})
+	h, rec := remoteConfigHandler(c)
+
+	w := configPut(t, h, netRemoteCluster, validRemotePut())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data CiliumConfig `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.Config["debug"] != "true" || body.Data.TargetCluster != netRemoteCluster {
+		t.Errorf("got %+v, want the updated remote config with its pin", body.Data)
+	}
+	cm, err := c.CoreV1().ConfigMaps("kube-system").Get(context.Background(), ciliumConfigMapName, metav1.GetOptions{})
+	if err != nil || cm.Data["debug"] != "true" || cm.Data["ipam"] != "cluster-pool" {
+		t.Errorf("remote cilium-config = %v (err %v), want debug=true merged in", cm.Data, err)
+	}
+
+	entries := rec.all()
+	if len(entries) != 1 {
+		t.Fatalf("audit = %+v, want one row", entries)
+	}
+	e := entries[0]
+	if e.Result != audit.ResultSuccess || e.Action != audit.ActionUpdate || e.ResourceKind != "CiliumConfig" ||
+		e.ClusterID != netRemoteCluster || e.ResourceNamespace != "kube-system" || !strings.Contains(e.Detail, "debug") {
+		t.Errorf("audit = %+v, want a successful CiliumConfig update on %s naming debug", e, netRemoteCluster)
+	}
+
+	// The write evicted the cluster's cached detection: the next status read
+	// detects again.
+	before := lists.Load()
+	sw := httptest.NewRecorder()
+	h.HandleCNIStatus(sw, networkingRequest(http.MethodGet, "/api/v1/networking/cni", netRemoteCluster))
+	if lists.Load() == before {
+		t.Error("CNI status after a config write was served from the pre-write cache")
+	}
+}
+
+func TestHandleUpdateCNIConfig_RemoteDetectionForbidden(t *testing.T) {
+	c := kfake.NewSimpleClientset()
+	c.PrependReactor("list", "daemonsets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "daemonsets"}, "", errors.New("denied"))
+	})
+	h, _ := remoteConfigHandler(c)
+	w := configPut(t, h, netRemoteCluster, validRemotePut())
+	if w.Code != http.StatusForbidden || errorReason(t, w) != "forbidden" {
+		t.Fatalf("got %d %q (body %s), want 403 forbidden rather than 400 only-Cilium", w.Code, errorReason(t, w), w.Body.String())
+	}
+}
+
+func localConfigHandler(t *testing.T) (*Handler, *kfake.Clientset, *recordingAudit) {
+	t.Helper()
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: ciliumConfigMapName}, Data: map[string]string{"debug": "false"}}
+	c := kfake.NewSimpleClientset(cm)
+	rec := &recordingAudit{}
+	d := &Detector{}
+	d.cached = &CNIInfo{Name: CNICilium, Namespace: "kube-system"}
+	return &Handler{
+		K8sClient:   k8s.NewFakeClientFactory(c),
+		Detector:    d,
+		AuditLogger: rec,
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ClusterID:   "local-cluster",
+	}, c, rec
+}
+
+func TestHandleCNIConfig_LocalAddsOnlyPin(t *testing.T) {
+	h, _, _ := localConfigHandler(t)
+	w := httptest.NewRecorder()
+	h.HandleCNIConfig(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni/config", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cniType", "configSource", "configMapName", "configMapNamespace", "editable", "config", "targetCluster", "targetGeneration"}
+	if len(body.Data) != len(want) {
+		t.Errorf("fields = %v, want exactly %v", body.Data, want)
+	}
+	if body.Data["targetCluster"] != "local" || body.Data["targetGeneration"] != "local" {
+		t.Errorf("pin = %v/%v, want local/local", body.Data["targetCluster"], body.Data["targetGeneration"])
+	}
+}
+
+func TestHandleUpdateCNIConfig_LocalWithoutPinUnchanged(t *testing.T) {
+	h, c, rec := localConfigHandler(t)
+	w := configPut(t, h, "", map[string]any{"changes": map[string]string{"debug": "true"}, "confirmed": true})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	if cm, _ := c.CoreV1().ConfigMaps("kube-system").Get(context.Background(), ciliumConfigMapName, metav1.GetOptions{}); cm.Data["debug"] != "true" {
+		t.Errorf("local cilium-config = %v, want debug=true", cm.Data)
+	}
+	entries := rec.all()
+	if len(entries) != 1 || entries[0].Result != audit.ResultSuccess || entries[0].ClusterID != "local-cluster" {
+		t.Errorf("audit = %+v, want one success row with the configured local cluster id", entries)
+	}
+}
+
+func TestHandleUpdateCNIConfig_LocalPinMismatchRefused(t *testing.T) {
+	h, c, _ := localConfigHandler(t)
+	w := configPut(t, h, "", map[string]any{"changes": map[string]string{"debug": "true"}, "confirmed": true, "targetCluster": netRemoteCluster, "targetGeneration": "gen-1"})
+	if w.Code != http.StatusConflict || errorReason(t, w) != "cluster_pin_mismatch" {
+		t.Fatalf("got %d %q (body %s), want 409 cluster_pin_mismatch", w.Code, errorReason(t, w), w.Body.String())
+	}
+	if n := configWrites(c); n != 0 {
+		t.Errorf("wrote %d ConfigMaps, want 0", n)
 	}
 }
