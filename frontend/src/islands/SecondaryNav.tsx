@@ -9,11 +9,7 @@ import {
 import { navCollapsed, toggleNav } from "@/lib/nav.ts";
 import PinnedResources from "@/src/islands/PinnedResources.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import {
-  getCount,
-  resourceCounts,
-  resourceCountsUnavailable,
-} from "@/src/lib/resource-counts.ts";
+import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 
 function dotColor(h?: Health): string {
   return h === "ok"
@@ -33,11 +29,7 @@ function CountBadge({ kind }: { kind: string }) {
   // This is the only place resourceCounts.value is read. Preact signals will
   // subscribe THIS component (not SecondaryNav) to count updates.
   const countsLoaded = resourceCounts.value !== null;
-  const liveCount = getCount(kind);
-  // A non-null reason means counts are never coming for this cluster (the
-  // remote-400 refusal) — not merely still loading — so it renders distinctly
-  // from the faded "·" placeholder, with the reason surfaced on hover/a11y.
-  const unavailableReason = resourceCountsUnavailable.value;
+  const liveCount = formatCount(kind);
 
   return (
     <span
@@ -46,19 +38,13 @@ function CountBadge({ kind }: { kind: string }) {
         fontWeight: 600,
         color: "var(--text-muted)",
         fontVariantNumeric: "tabular-nums",
-        opacity: countsLoaded || unavailableReason ? 1 : 0.4,
+        opacity: countsLoaded ? 1 : 0.4,
         minWidth: "16px",
         textAlign: "right",
       }}
       data-count-kind={kind}
-      title={unavailableReason ?? undefined}
-      aria-label={unavailableReason ?? undefined}
     >
-      {unavailableReason
-        ? "—"
-        : liveCount !== null && liveCount !== undefined
-          ? liveCount
-          : "·"}
+      {liveCount !== null && liveCount !== undefined ? liveCount : "·"}
     </span>
   );
 }

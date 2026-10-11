@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/pkg/api"
 	"golang.org/x/sync/errgroup"
@@ -47,16 +48,6 @@ const (
 	reasonForbidden           = "forbidden"
 	reasonAuthzUnknown        = "authz_unknown"
 	reasonAuthzNamespaced     = "authz_namespace_scoped"
-)
-
-const (
-	// remoteListPageSize matches the prober's node-list cap
-	// (cluster_prober.go) so one page never asks a remote API server for more
-	// than it already serves us elsewhere.
-	remoteListPageSize = 500
-	// remoteListMaxPages bounds one section to 5,000 items. A list still
-	// carrying a continue token after this many pages is reported as partial.
-	remoteListMaxPages = 10
 )
 
 // remoteDashboardBudget is the shared deadline for every section's SAR and
@@ -222,7 +213,7 @@ func readRemoteSection[T any](
 		return remoteSection[T]{coverage: forbiddenSection(resource)}
 	}
 
-	items, truncated, err := pageRemoteList(ctx, metav1.ListOptions{}, list)
+	items, truncated, err := k8s.PageList(ctx, metav1.ListOptions{}, list)
 	if err != nil {
 		if apierrors.IsForbidden(err) {
 			return remoteSection[T]{coverage: forbiddenSection(resource)}
@@ -241,40 +232,12 @@ func readRemoteSection[T any](
 	if truncated {
 		return remoteSection[T]{items: items, coverage: SectionCoverage{
 			Section: resource, Status: coveragePartial, ReasonCode: reasonOK, ObservedAt: observedNow(),
-			Detail: fmt.Sprintf("list truncated after %d items", remoteListPageSize*remoteListMaxPages),
+			Detail: fmt.Sprintf("list truncated after %d items", k8s.RemoteListPageSize*k8s.RemoteListMaxPages),
 		}}
 	}
 	return remoteSection[T]{items: items, coverage: SectionCoverage{
 		Section: resource, Status: coverageOK, ReasonCode: reasonOK, ObservedAt: observedNow(),
 	}}
-}
-
-// pageRemoteList is the one remote paging policy: it reads list in pages of
-// remoteListPageSize, following continue tokens, for at most
-// remoteListMaxPages pages. base carries the caller's selectors; its Limit and
-// Continue are overwritten. truncated reports that the list still had a
-// continue token after the last allowed page. On error it returns the error
-// together with the items read before it, and the caller decides whether
-// those may be shown (a refusal at a later page means they may not).
-func pageRemoteList[T any](
-	ctx context.Context, base metav1.ListOptions,
-	list func(context.Context, metav1.ListOptions) ([]T, string, error),
-) (items []T, truncated bool, err error) {
-	opts := base
-	opts.Limit = remoteListPageSize
-	opts.Continue = ""
-	for page := 0; page < remoteListMaxPages; page++ {
-		batch, next, err := list(ctx, opts)
-		if err != nil {
-			return items, false, err
-		}
-		items = append(items, batch...)
-		if next == "" {
-			return items, false, nil
-		}
-		opts.Continue = next
-	}
-	return items, true, nil
 }
 
 // forbiddenSection reports a denied cluster-wide list. Every section is

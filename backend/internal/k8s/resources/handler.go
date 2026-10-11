@@ -271,7 +271,7 @@ func writeList(w http.ResponseWriter, items any, total int, continueToken string
 }
 
 // writeListPage writes a paginated list response. truncated reports that the
-// read behind it stopped at a cap (a remote list past remoteListMaxPages), so
+// read behind it stopped at a cap (a remote list past k8s.RemoteListMaxPages), so
 // total counts only what was read; it is omitted from the body when false.
 func writeListPage(w http.ResponseWriter, items any, total int, continueToken string, truncated bool) {
 	writeJSON(w, http.StatusOK, api.Response{

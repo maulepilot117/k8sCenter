@@ -170,7 +170,7 @@ test.describe.serial("Remote cluster capabilities", () => {
     const byId = new Map(caps.map((c) => [c.operation, c]));
 
     // Unsupported on remote, and said so as unsupported -- not as an error.
-    for (const id of ["pod.exec", "resources.counts", "logs.stream"]) {
+    for (const id of ["pod.exec", "logs.stream"]) {
       expect(byId.get(id)?.platformSupported, id).toBe(false);
       expect(byId.get(id)?.reasonCode, id).toBe("unsupported_platform");
     }
@@ -181,6 +181,10 @@ test.describe.serial("Remote cluster capabilities", () => {
       "yaml.diff",
       "yaml.export",
       "dashboard.summary",
+      "resources.counts",
+      "cluster.info",
+      "limits.read",
+      "scanning.read",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
@@ -500,6 +504,66 @@ test.describe.serial("Remote cluster capabilities", () => {
     await seedClusterTarget(page, REMOTE!);
     await page.goto("/cluster/nodes");
     await expect(page.getByText(remoteName).first()).toBeVisible();
+  });
+
+  // The four sources that answered a remote selection with the local cluster's
+  // data, or a 400, before #608. The fixture identity may list nodes, pods and
+  // services cluster-wide and nothing else (scripts/test-remote-capabilities.sh),
+  // so these assert what that identity can legitimately read; a kind it may not
+  // list is skipped by counts, never invented.
+
+  test("resource counts under a remote selection are the remote cluster's", async ({
+    page,
+  }) => {
+    const res = await page.request.get("/api/v1/resources/counts", {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.data.nodes).toBeGreaterThanOrEqual(1);
+    // A fixture cluster is far below the read cap.
+    expect(body.metadata?.truncated).toBeFalsy();
+  });
+
+  test("cluster info under a remote selection describes the remote cluster", async ({
+    page,
+  }) => {
+    const res = await page.request.get("/api/v1/cluster/info", {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(res.status()).toBe(200);
+    const { data } = await res.json();
+    expect(data.clusterID).toBe(REMOTE);
+    // The fixture identity may list nodes, so the count is observed.
+    expect(typeof data.nodeCount).toBe("number");
+    expect(data.nodeCount).toBeGreaterThanOrEqual(1);
+  });
+
+  test("limits status under a remote selection is available", async ({
+    page,
+  }) => {
+    // Availability needs no RBAC: a remote cluster always serves the core
+    // quota APIs. Reading quotas (limits/namespaces) needs a cluster-wide
+    // list of resourcequotas, which the fixture identity does not hold, so
+    // that route is deliberately not asserted here.
+    const res = await page.request.get("/api/v1/limits/status", {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(res.status()).toBe(200);
+    expect((await res.json()).data.available).toBe(true);
+  });
+
+  test("scanning status under a remote selection is detected on the remote cluster", async ({
+    page,
+  }) => {
+    const res = await page.request.get("/api/v1/scanning/status", {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(res.status()).toBe(200);
+    const { data } = await res.json();
+    expect(["none", "trivy", "kubescape", "both"]).toContain(data.detected);
+    // The fixture cluster runs no scanner.
+    expect(data.detected).toBe("none");
   });
 
   // Must stay last: see the header.

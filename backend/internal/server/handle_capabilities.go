@@ -295,12 +295,11 @@ var capabilityOperations = []capabilityOp{
 		ClusterScoped: true,
 	},
 	{
-		// Remote since #608: the generic list and detail routes
-		// (k8s/resources/crud.go HandleListResource/HandleGetResource) read
-		// the selected cluster as the user instead of the local informer
-		// cache. A remote list is bounded by remoteListPageSize x
-		// remoteListMaxPages in k8s/resources and flagged metadata.truncated
-		// past the cap. Secrets are excluded: they keep their own masked
+		// The generic list and detail routes (k8s/resources/crud.go
+		// HandleListResource/HandleGetResource) read the selected cluster as
+		// the user instead of the local informer cache. A remote list is
+		// bounded by k8s.RemoteListPageSize x k8s.RemoteListMaxPages and
+		// flagged metadata.truncated past the cap. Secrets are excluded: they keep their own masked
 		// route. No Probe: the core kinds this row stands for are always
 		// served. Namespaced, so a denial reports as authz_namespace_scoped.
 		ID: "resources.read", Label: "Resource lists and detail",
@@ -308,12 +307,50 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
-		// Resource counts rely on the local informer cache; remote clusters
-		// use direct API calls and do not populate informers.
-		// k8s/resources/counts.go:28 (400).
+		// GET /resources/counts runs a per-kind access
+		// check on the selected cluster and counts each kind the user may list
+		// with a bounded direct read as the user (k8s/resources/counts.go). A
+		// kind cut off at the cap is counted as read and the response carries
+		// metadata.truncated; a count is never manufactured for a kind that
+		// was not read. No Probe: the core kinds are always served.
+		// Namespaced, so a denial reports as authz_namespace_scoped.
 		ID: "resources.counts", Label: "Resource counts",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// GET /cluster/info reads the version, platform and
+		// node count from the selected cluster as the user. The node count is
+		// omitted rather than guessed when the user may not list nodes.
+		// Cluster-scoped like dashboard.summary: nodes are not namespaced, so
+		// the cluster-wide SAR is an exact question. No Probe.
+		ID: "cluster.info", Label: "Cluster info",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "nodes",
+		ClusterScoped: true,
+	},
+	{
+		// ResourceQuotas and LimitRanges are read from the
+		// selected cluster as the user and cached briefly per user. Known gap:
+		// the remote read is a cluster-wide list as the user, so an account
+		// allowed in only some namespaces is refused on remote where the
+		// local path filters per namespace. No Probe; namespaced, so a denial
+		// reports as authz_namespace_scoped.
+		ID: "limits.read", Label: "Namespace limits",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "resourcequotas",
+	},
+	{
+		// Trivy and Kubescape vulnerability reports are
+		// read as the user on the selected cluster, with scanner presence
+		// detected there. The local discovery loop still probes scanner
+		// namespaces with the service account, for the local status only.
+		// Trivy's VulnerabilityReport stands in for both scanners. No Probe,
+		// like the other CRD rows: the status route reports whether the CRDs
+		// are installed on the target.
+		ID: "scanning.read", Label: "Vulnerability reports",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "aquasecurity.github.io", AuthResource: "vulnerabilityreports",
 	},
 	{
 		// Pod exec requires an SPDY stream upgrade against the target
