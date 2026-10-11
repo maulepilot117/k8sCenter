@@ -57,14 +57,14 @@ type stubCertExpiry struct {
 	panics bool
 }
 
-func (s *stubCertExpiry) ExpiringCountsForCluster(_ context.Context, clusterID string, _ *auth.User) (CertExpiry, error) {
+func (s *stubCertExpiry) ExpiringCountsForCluster(_ context.Context, clusterID string, _ *auth.User) CertExpiry {
 	if k8s.IsLocalClusterID(clusterID) {
-		return CertExpiry{Warning: 3, Critical: 1}, nil
+		return CertExpiry{Warning: 3, Critical: 1}
 	}
 	if s.panics {
 		panic("boom")
 	}
-	return s.remote, nil
+	return s.remote
 }
 
 // healthHarness serves one object set from both the local informers and the
@@ -502,17 +502,17 @@ type warmingCertExpiry struct {
 	calls int
 }
 
-func (w *warmingCertExpiry) ExpiringCountsForCluster(ctx context.Context, _ string, _ *auth.User) (CertExpiry, error) {
+func (w *warmingCertExpiry) ExpiringCountsForCluster(ctx context.Context, _ string, _ *auth.User) CertExpiry {
 	w.mu.Lock()
 	w.calls++
 	warm := w.warm
 	w.warm = true
 	w.mu.Unlock()
 	if warm {
-		return CertExpiry{Warning: 3, Critical: 1}, nil
+		return CertExpiry{Warning: 3, Critical: 1}
 	}
 	<-ctx.Done()
-	return CertExpiry{State: CertExpiryIncomplete, Cause: ErrCertCacheNotWarm}, nil
+	return CertExpiry{State: CertExpiryIncomplete, Cause: ErrCertCacheNotWarm}
 }
 
 func TestRemoteHealth_ColdCertificateFetch(t *testing.T) {

@@ -322,11 +322,7 @@ func remoteExpiry(t *testing.T, h *Handler) resources.CertExpiry {
 
 func remoteExpiryCtx(t *testing.T, ctx context.Context, h *Handler) resources.CertExpiry {
 	t.Helper()
-	got, err := (&CertExpiryAdapter{Handler: h}).ExpiringCountsForCluster(ctx, remoteCluster, alice)
-	if err != nil {
-		t.Fatalf("remote ExpiringCountsForCluster returned an error, want the verdict in State: %v", err)
-	}
-	return got
+	return (&CertExpiryAdapter{Handler: h}).ExpiringCountsForCluster(ctx, remoteCluster, alice)
 }
 
 // remoteExpiryOnceWarm is remoteExpiry, retried while a call reports the cache
@@ -499,15 +495,20 @@ func TestExpiringCountsForCluster_LocalIsUnchanged(t *testing.T) {
 		{Name: "c2", Namespace: "ns1", DaysRemaining: intPtr(20)},
 	})
 	adapter := &CertExpiryAdapter{Handler: h}
-	got, err := adapter.ExpiringCountsForCluster(context.Background(), k8s.LocalClusterID, testUser())
-	if err != nil || got != (resources.CertExpiry{Warning: 1, Critical: 1}) {
-		t.Errorf("warm local = %+v, %v; want warning=1 critical=1 complete", got, err)
+	if got := adapter.ExpiringCountsForCluster(context.Background(), k8s.LocalClusterID, testUser()); got != (resources.CertExpiry{Warning: 1, Critical: 1}) {
+		t.Errorf("warm local = %+v; want warning=1 critical=1 complete", got)
 	}
 
 	cold := newTestHandler(resources.NewAlwaysAllowAccessChecker())
-	_, err = (&CertExpiryAdapter{Handler: cold}).ExpiringCountsForCluster(context.Background(), k8s.LocalClusterID, testUser())
-	if !errors.Is(err, resources.ErrCertCacheNotWarm) {
-		t.Errorf("cold local err = %v, want ErrCertCacheNotWarm", err)
+	got := (&CertExpiryAdapter{Handler: cold}).ExpiringCountsForCluster(context.Background(), k8s.LocalClusterID, testUser())
+	if got.State != resources.CertExpiryIncomplete || !errors.Is(got.Cause, resources.ErrCertCacheNotWarm) {
+		t.Errorf("cold local = %+v; want incomplete caused by ErrCertCacheNotWarm", got)
+	}
+
+	absent := newTestHandler(resources.NewAlwaysAllowAccessChecker())
+	absent.Discoverer = newUnavailableDiscoverer()
+	if got := (&CertExpiryAdapter{Handler: absent}).ExpiringCountsForCluster(context.Background(), k8s.LocalClusterID, testUser()); got.State != resources.CertExpiryNotInstalled {
+		t.Errorf("local without cert-manager = %+v; want CertExpiryNotInstalled", got)
 	}
 }
 

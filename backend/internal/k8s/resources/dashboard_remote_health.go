@@ -230,10 +230,7 @@ func remoteCertOutcome(h *Handler, ctx context.Context, clusterID string, user *
 		o.setNoSource("cert-manager not configured")
 		return o
 	}
-	expiry, err := h.CertExpiry.ExpiringCountsForCluster(ctx, clusterID, user)
-	if err != nil {
-		expiry = CertExpiry{State: CertExpiryIncomplete, Cause: err}
-	}
+	expiry := h.CertExpiry.ExpiringCountsForCluster(ctx, clusterID, user)
 	switch expiry.State {
 	case CertExpiryComplete:
 		o.setOK(expiry.Critical)

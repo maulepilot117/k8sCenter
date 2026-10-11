@@ -114,12 +114,13 @@ type CertExpiry struct {
 // cluster health score. The calling user is passed so RBAC filtering can be
 // applied before bucketing. Can be nil if cert-manager is unavailable.
 //
-// For the local cluster the result is always CertExpiryComplete and errors are
-// typed: callers should errors.Is-check ErrCertManagerNotInstalled and
-// ErrCertCacheNotWarm to map them to non-fatal skipped signals. For a remote
-// cluster the error is always nil and the State carries the verdict.
+// The verdict is always in the result's State, for the local cluster and a
+// remote one alike: CertExpiryNotInstalled when cert-manager is absent, and
+// CertExpiryIncomplete with a Cause (ErrCertCacheNotWarm for a cold local
+// cache or a remote snapshot not yet filled) when the read did not complete.
+// Each caller decides what an incomplete read means for its own score.
 type CertExpiryCounter interface {
-	ExpiringCountsForCluster(ctx context.Context, clusterID string, user *auth.User) (CertExpiry, error)
+	ExpiringCountsForCluster(ctx context.Context, clusterID string, user *auth.User) CertExpiry
 }
 
 // ControlPlaneChecker abstracts best-effort control-plane component availability
