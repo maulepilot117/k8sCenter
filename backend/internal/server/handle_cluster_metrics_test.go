@@ -22,6 +22,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/store"
+	"github.com/kubecenter/kubecenter/internal/urlorigin"
 )
 
 const (
@@ -31,52 +32,100 @@ const (
 )
 
 // fakeMetricsStore is an in-memory clusterMetricsStore with the same token
-// semantics as the real one: nil keeps, "" clears, anything else replaces.
+// semantics as the real one: nil keeps, "" clears, anything else replaces;
+// each omitted token guards its own URL; an Alertmanager token is returned
+// only while its stored origin is the current Alertmanager URL's origin.
 type fakeMetricsStore struct {
 	mu       sync.Mutex
 	bindings map[string]store.MetricsBinding
 	tokens   map[string]string
-	// lastUpsertToken records the token argument of the last Upsert, and
-	// upsertCalled whether one happened at all.
+	// amTokens and amOrigins hold the Alertmanager token and the origin it
+	// was stored for. Tests may write them directly to stage a stale token.
+	amTokens  map[string]string
+	amOrigins map[string]string
+	// lastUpsertToken records the Prometheus token argument of the last
+	// Upsert, and upsertCalled whether one happened at all.
 	lastUpsertToken *string
 	upsertCalled    bool
 	getErr          error
 }
 
 func newFakeMetricsStore() *fakeMetricsStore {
-	return &fakeMetricsStore{bindings: map[string]store.MetricsBinding{}, tokens: map[string]string{}}
+	return &fakeMetricsStore{
+		bindings:  map[string]store.MetricsBinding{},
+		tokens:    map[string]string{},
+		amTokens:  map[string]string{},
+		amOrigins: map[string]string{},
+	}
 }
 
-func (f *fakeMetricsStore) Get(_ context.Context, id string) (store.MetricsBinding, string, error) {
+// withTokenState fills the binding's Has and Stale flags from the stored
+// tokens, applying the store's Alertmanager origin rule. Callers hold f.mu.
+func (f *fakeMetricsStore) withTokenState(id string, b store.MetricsBinding) (store.MetricsBinding, store.MetricsTokens) {
+	var toks store.MetricsTokens
+	toks.Prometheus = f.tokens[id]
+	b.HasToken = toks.Prometheus != ""
+	b.HasAlertmanagerToken, b.AlertmanagerTokenStale = false, false
+	if f.amTokens[id] != "" && b.AlertmanagerURL != "" {
+		cur := urlorigin.Of(b.AlertmanagerURL)
+		if cur != "" && f.amOrigins[id] == cur {
+			b.HasAlertmanagerToken = true
+			toks.Alertmanager = f.amTokens[id]
+		} else {
+			b.AlertmanagerTokenStale = true
+		}
+	}
+	return b, toks
+}
+
+func (f *fakeMetricsStore) Get(_ context.Context, id string) (store.MetricsBinding, store.MetricsTokens, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.getErr != nil {
-		return store.MetricsBinding{}, "", f.getErr
+		return store.MetricsBinding{}, store.MetricsTokens{}, f.getErr
 	}
 	b, ok := f.bindings[id]
 	if !ok {
-		return store.MetricsBinding{}, "", store.ErrMetricsBindingNotFound
+		return store.MetricsBinding{}, store.MetricsTokens{}, store.ErrMetricsBindingNotFound
 	}
-	return b, f.tokens[id], nil
+	b, toks := f.withTokenState(id, b)
+	return b, toks, nil
 }
 
-func (f *fakeMetricsStore) Upsert(_ context.Context, id, promURL, amURL string, token *string, keptFrom string) (store.MetricsBinding, error) {
+func (f *fakeMetricsStore) Upsert(_ context.Context, id string, w store.MetricsBindingWrite) (store.MetricsBinding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.upsertCalled = true
-	f.lastUpsertToken = token
-	// The real store keeps the token only while the stored URL is still
-	// keptFrom ("" = no binding); the check and the write are atomic there.
-	if token == nil && f.bindings[id].PrometheusURL != keptFrom {
+	f.lastUpsertToken = w.PrometheusToken
+	// The real store keeps a token only while its stored URL is still the
+	// one the caller read ("" = none); the checks and the write are one
+	// statement there.
+	cur := f.bindings[id]
+	if w.PrometheusToken == nil && cur.PrometheusURL != w.KeptFrom {
 		return store.MetricsBinding{}, store.ErrMetricsBindingChanged
 	}
-	if token != nil {
-		f.tokens[id] = *token
+	if w.AlertmanagerToken == nil && cur.AlertmanagerURL != w.KeptAMFrom {
+		return store.MetricsBinding{}, store.ErrMetricsBindingChanged
 	}
-	b := store.MetricsBinding{
-		ClusterID: id, PrometheusURL: promURL, AlertmanagerURL: amURL,
-		HasToken: f.tokens[id] != "", UpdatedAt: time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC),
+	if w.PrometheusToken != nil {
+		f.tokens[id] = *w.PrometheusToken
 	}
+	switch {
+	case w.AlertmanagerURL == "":
+		f.amTokens[id], f.amOrigins[id] = "", ""
+	case w.AlertmanagerToken != nil:
+		f.amTokens[id], f.amOrigins[id] = *w.AlertmanagerToken, w.AlertmanagerTokenOrigin
+		if *w.AlertmanagerToken == "" {
+			f.amOrigins[id] = ""
+		}
+	case cur.AlertmanagerURL == "" || w.AlertmanagerTokenOrigin == "" ||
+		f.amOrigins[id] != w.AlertmanagerTokenOrigin || f.amOrigins[id] != urlorigin.Of(w.KeptAMFrom):
+		f.amTokens[id], f.amOrigins[id] = "", ""
+	}
+	b, _ := f.withTokenState(id, store.MetricsBinding{
+		ClusterID: id, PrometheusURL: w.PrometheusURL, AlertmanagerURL: w.AlertmanagerURL,
+		UpdatedAt: time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC),
+	})
 	f.bindings[id] = b
 	return b, nil
 }
@@ -89,6 +138,8 @@ func (f *fakeMetricsStore) Delete(_ context.Context, id string) error {
 	}
 	delete(f.bindings, id)
 	delete(f.tokens, id)
+	delete(f.amTokens, id)
+	delete(f.amOrigins, id)
 	return nil
 }
 
@@ -723,7 +774,9 @@ func TestClusterMetrics_NilResolverIsSafe(t *testing.T) {
 func TestMetricsBindingReader(t *testing.T) {
 	fs := newFakeMetricsStore()
 	tok := testToken
-	if _, err := fs.Upsert(context.Background(), testRemoteID, testPublicProm, "https://8.8.4.4:9093", &tok, ""); err != nil {
+	if _, err := fs.Upsert(context.Background(), testRemoteID, store.MetricsBindingWrite{
+		PrometheusURL: testPublicProm, AlertmanagerURL: "https://8.8.4.4:9093", PrometheusToken: &tok,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	r := metricsBindingReader{store: fs}

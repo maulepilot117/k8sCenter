@@ -24,8 +24,8 @@ import (
 // metrics-binding handlers use. It is declared here so tests can substitute
 // a fake for the PostgreSQL-backed store.
 type clusterMetricsStore interface {
-	Get(ctx context.Context, clusterID string) (store.MetricsBinding, string, error)
-	Upsert(ctx context.Context, clusterID, prometheusURL, alertmanagerURL string, token *string, keptFrom string) (store.MetricsBinding, error)
+	Get(ctx context.Context, clusterID string) (store.MetricsBinding, store.MetricsTokens, error)
+	Upsert(ctx context.Context, clusterID string, w store.MetricsBindingWrite) (store.MetricsBinding, error)
 	Delete(ctx context.Context, clusterID string) error
 }
 
@@ -248,11 +248,11 @@ func (s *Server) handlePutClusterMetrics(w http.ResponseWriter, r *http.Request)
 			s.Logger.Error("metrics binding: reading stored token failed", "cluster", id, "error", err)
 			httputil.WriteError(w, http.StatusServiceUnavailable, msgMetricsStoreFailed, "")
 			return
-		case stored != "" && !sameMetricsOrigin(current.PrometheusURL, req.PrometheusURL):
+		case stored.Prometheus != "" && !sameMetricsOrigin(current.PrometheusURL, req.PrometheusURL):
 			httputil.WriteError(w, http.StatusBadRequest, msgMetricsTokenReentry, "")
 			return
 		default:
-			probeToken = stored
+			probeToken = stored.Prometheus
 		}
 	}
 
@@ -266,7 +266,16 @@ func (s *Server) handlePutClusterMetrics(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	b, err := s.ClusterMetricsStore.Upsert(r.Context(), id, req.PrometheusURL, req.AlertmanagerURL, req.Token, keptFrom)
+	// This handler does not accept an Alertmanager token yet, so a save
+	// clears any stored one rather than keeping a token it never checked.
+	noAlertmanagerToken := ""
+	b, err := s.ClusterMetricsStore.Upsert(r.Context(), id, store.MetricsBindingWrite{
+		PrometheusURL:     req.PrometheusURL,
+		AlertmanagerURL:   req.AlertmanagerURL,
+		PrometheusToken:   req.Token,
+		AlertmanagerToken: &noAlertmanagerToken,
+		KeptFrom:          keptFrom,
+	})
 	if errors.Is(err, store.ErrMetricsBindingChanged) {
 		httputil.WriteError(w, http.StatusConflict, msgMetricsBindingChanged, "")
 		return

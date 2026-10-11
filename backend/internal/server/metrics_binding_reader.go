@@ -11,7 +11,7 @@ import (
 
 // metricsBindingGetter is the read half of *store.ClusterMetricsStore.
 type metricsBindingGetter interface {
-	Get(ctx context.Context, clusterID string) (store.MetricsBinding, string, error)
+	Get(ctx context.Context, clusterID string) (store.MetricsBinding, store.MetricsTokens, error)
 }
 
 // metricsBindingReader adapts the binding store to
@@ -30,7 +30,7 @@ func NewMetricsBindingReader(s *store.ClusterMetricsStore) monitoring.MetricsBin
 }
 
 func (r metricsBindingReader) GetMetricsBinding(ctx context.Context, clusterID string) (monitoring.MetricsBinding, error) {
-	b, token, err := r.store.Get(ctx, clusterID)
+	b, tokens, err := r.store.Get(ctx, clusterID)
 	if errors.Is(err, store.ErrMetricsBindingNotFound) {
 		return monitoring.MetricsBinding{}, fmt.Errorf("cluster %s: %w", clusterID, monitoring.ErrNoMetricsBinding)
 	}
@@ -41,6 +41,6 @@ func (r metricsBindingReader) GetMetricsBinding(ctx context.Context, clusterID s
 		ClusterID:       b.ClusterID,
 		PrometheusURL:   b.PrometheusURL,
 		AlertmanagerURL: b.AlertmanagerURL,
-		Token:           token,
+		Token:           tokens.Prometheus,
 	}, nil
 }
