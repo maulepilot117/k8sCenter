@@ -1,6 +1,8 @@
 // Response types for Cilium networking overview endpoints.
 // Uses discriminated unions for proper TypeScript narrowing on `configured`.
 
+import type { SourceCoverage } from "@/lib/k8s-types.ts";
+
 export type CiliumBGPResponse =
   | { configured: false }
   | {
@@ -28,7 +30,13 @@ export type CiliumSubsystemsResponse =
       encryption: EncryptionInfo;
       mesh: MeshInfo;
       clusterMesh: ClusterMeshInfo;
-      endpoints: EndpointCounts;
+      /** Absent when a remote cluster could not provide the endpoint list. */
+      endpoints?: EndpointCounts;
+      /**
+       * Each source a remote cluster could not provide; the sections built
+       * from it are omitted or partial. Never set on the local cluster.
+       */
+      coverage?: SourceCoverage[];
     };
 
 export interface BGPPeerStatus {
@@ -120,4 +128,10 @@ export interface NodeConnectivity {
   nodeName: string;
   healthState: string;
   message?: string;
+  /**
+   * Set when a remote cluster's agent on this node could not be reached by
+   * exec (forbidden, timeout, pod_gone, failed). The node's health is then
+   * unknown: the exec failed, not the node.
+   */
+  execError?: string;
 }

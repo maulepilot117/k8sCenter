@@ -21,6 +21,8 @@ mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
 const { default: BgpStatus } = await import("./BgpStatus.tsx");
 const { default: IpamStatus } = await import("./IpamStatus.tsx");
 const { default: CniOverview } = await import("./CniOverview.tsx");
+const { default: CiliumSubsystems } = await import("./CiliumSubsystems.tsx");
+const { default: NodeConnectivity } = await import("./NodeConnectivity.tsx");
 
 afterAll(() => {
   mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
@@ -119,4 +121,70 @@ test("a CNI read for an unknown cluster asks for a reload", async () => {
   expect(root.textContent).toContain("registration changed");
   expect(buttons(root, "Reload")).toHaveLength(1);
   expect(root.textContent).not.toContain("No CNI Plugin Detected");
+});
+
+function ok(data: unknown): Reply {
+  return { status: 200, body: { data } };
+}
+
+test("subsystems name a list the cluster refused instead of breaking on it", async () => {
+  const root = await mount(
+    CiliumSubsystems,
+    ok({
+      configured: true,
+      encryption: {
+        enabled: false,
+        mode: "",
+        nodesEncrypted: 0,
+        nodesTotal: 0,
+      },
+      mesh: { enabled: false, engine: "none" },
+      clusterMesh: { enabled: false },
+      // No endpoints: the remote CiliumEndpoint list was refused.
+      coverage: [
+        {
+          source: "ciliumendpoints",
+          status: "forbidden",
+          reasonCode: "forbidden",
+        },
+      ],
+    }),
+  );
+  expect(root.textContent).toContain(
+    "You are not allowed to list Cilium endpoints",
+  );
+  // The other sections still render, and the endpoints are not zeros.
+  expect(root.textContent).toContain("Encryption");
+  const endpoints = [...root.querySelectorAll("div")].find(
+    (d) => d.firstElementChild?.textContent?.trim() === "Endpoints",
+  ) as HTMLElement;
+  expect(endpoints.textContent).toContain("Not available");
+  expect(endpoints.textContent).not.toContain("Total");
+});
+
+test("a node whose agent exec timed out shows an exec problem, not ill health", async () => {
+  const root = await mount(
+    NodeConnectivity,
+    ok({
+      configured: true,
+      execEnabled: true,
+      partial: true,
+      nodes: [
+        { nodeName: "node-a", healthState: "Ok" },
+        { nodeName: "node-b", healthState: "Unknown", execError: "timeout" },
+        { nodeName: "node-c", healthState: "Failure", message: "unreachable" },
+      ],
+    }),
+  );
+  const row = (name: string) =>
+    [...root.querySelectorAll("[data-node]")].find(
+      (el) => el.getAttribute("data-node") === name,
+    ) as HTMLElement;
+
+  expect(row("node-b").textContent).toContain("Exec problem");
+  expect(row("node-b").textContent).toContain("timed out");
+  expect(row("node-b").textContent).not.toContain("Unknown");
+  // A node that is really unhealthy still reads as health, not exec.
+  expect(row("node-c").textContent).toContain("Failure");
+  expect(row("node-c").textContent).not.toContain("Exec problem");
 });

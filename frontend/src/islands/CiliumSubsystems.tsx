@@ -1,8 +1,13 @@
 import { Card } from "@/components/ui/Card.tsx";
-import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
-import type { CiliumSubsystemsResponse } from "@/lib/cilium-types.ts";
+import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
+import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
+import type {
+  CiliumSubsystemsResponse,
+  EndpointCounts,
+} from "@/lib/cilium-types.ts";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
+import { panelState } from "@/lib/networking-state.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 function formatBytes(bytes: number): string {
@@ -14,8 +19,15 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+/** Display names for the sources a remote cluster may not provide. */
+const COVERAGE_LABELS = {
+  ciliumnodes: "Cilium nodes",
+  ciliumendpoints: "Cilium endpoints",
+  "cilium-agents": "Cilium agent data",
+} as const;
+
 export default function CiliumSubsystems() {
-  const { data, loading, error, lastFetchedAt } =
+  const { data, loading, error, failure, refetch, lastFetchedAt } =
     usePoll<CiliumSubsystemsResponse>("/v1/networking/cilium/subsystems", {
       interval: 60_000,
       shouldContinuePolling: (d) => d.configured,
@@ -28,7 +40,10 @@ export default function CiliumSubsystems() {
   if (error.value) {
     return (
       <Card title="Cilium Subsystems">
-        <ErrorBanner message={error.value} />
+        <PanelStateNotice
+          state={panelState(failure.value, "Cilium subsystem status")}
+          onRetry={refetch}
+        />
       </Card>
     );
   }
@@ -42,10 +57,11 @@ export default function CiliumSubsystems() {
     );
   }
 
-  const { encryption, mesh, clusterMesh, endpoints } = resp;
+  const { encryption, mesh, clusterMesh, endpoints, coverage } = resp;
 
   return (
     <Card title="Cilium Subsystems">
+      <SourceCoverageNotice coverage={coverage} labels={COVERAGE_LABELS} />
       <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
         {/* Encryption */}
         <div>
@@ -191,92 +207,11 @@ export default function CiliumSubsystems() {
           <p class="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
             Endpoints
           </p>
-          <div class="space-y-1.5">
-            <div class="flex justify-between text-sm">
-              <span class="text-text-muted">Total</span>
-              <span class="font-mono font-medium text-text-primary">
-                {endpoints.total}
-              </span>
-            </div>
-            {/* State breakdown */}
-            <div class="flex gap-3 text-xs">
-              {endpoints.ready > 0 && (
-                <span class="flex items-center gap-1">
-                  <span
-                    class="w-2 h-2 rounded-full inline-block"
-                    style={{ background: "var(--success)" }}
-                  />
-                  {endpoints.ready}
-                </span>
-              )}
-              {endpoints.notReady > 0 && (
-                <span class="flex items-center gap-1">
-                  <span
-                    class="w-2 h-2 rounded-full inline-block"
-                    style={{ background: "var(--warning)" }}
-                  />
-                  {endpoints.notReady}
-                </span>
-              )}
-              {endpoints.disconnecting > 0 && (
-                <span class="flex items-center gap-1">
-                  <span
-                    class="w-2 h-2 rounded-full inline-block"
-                    style={{ background: "var(--error)" }}
-                  />
-                  {endpoints.disconnecting}
-                </span>
-              )}
-              {endpoints.waiting > 0 && (
-                <span class="flex items-center gap-1">
-                  <span
-                    class="w-2 h-2 rounded-full inline-block"
-                    style={{ background: "var(--text-muted)" }}
-                  />
-                  {endpoints.waiting}
-                </span>
-              )}
-            </div>
-            {/* Stacked bar */}
-            {endpoints.total > 0 && (
-              <div class="flex h-1.5 rounded-full overflow-hidden bg-elevated mt-1">
-                {endpoints.ready > 0 && (
-                  <div
-                    style={{
-                      width: `${(endpoints.ready / endpoints.total) * 100}%`,
-                      background: "var(--success)",
-                    }}
-                  />
-                )}
-                {endpoints.notReady > 0 && (
-                  <div
-                    style={{
-                      width: `${(endpoints.notReady / endpoints.total) * 100}%`,
-                      background: "var(--warning)",
-                    }}
-                  />
-                )}
-                {endpoints.disconnecting > 0 && (
-                  <div
-                    style={{
-                      width: `${
-                        (endpoints.disconnecting / endpoints.total) * 100
-                      }%`,
-                      background: "var(--error)",
-                    }}
-                  />
-                )}
-                {endpoints.waiting > 0 && (
-                  <div
-                    style={{
-                      width: `${(endpoints.waiting / endpoints.total) * 100}%`,
-                      background: "var(--text-muted)",
-                    }}
-                  />
-                )}
-              </div>
-            )}
-          </div>
+          {endpoints ? (
+            <EndpointsSummary endpoints={endpoints} />
+          ) : (
+            <p class="text-sm text-text-muted">Not available</p>
+          )}
         </div>
       </div>
       {lastFetchedAt.value && (
@@ -287,5 +222,95 @@ export default function CiliumSubsystems() {
         </div>
       )}
     </Card>
+  );
+}
+
+/** Endpoint counts by state, with a stacked bar. */
+function EndpointsSummary({ endpoints }: { endpoints: EndpointCounts }) {
+  return (
+    <div class="space-y-1.5">
+      <div class="flex justify-between text-sm">
+        <span class="text-text-muted">Total</span>
+        <span class="font-mono font-medium text-text-primary">
+          {endpoints.total}
+        </span>
+      </div>
+      {/* State breakdown */}
+      <div class="flex gap-3 text-xs">
+        {endpoints.ready > 0 && (
+          <span class="flex items-center gap-1">
+            <span
+              class="w-2 h-2 rounded-full inline-block"
+              style={{ background: "var(--success)" }}
+            />
+            {endpoints.ready}
+          </span>
+        )}
+        {endpoints.notReady > 0 && (
+          <span class="flex items-center gap-1">
+            <span
+              class="w-2 h-2 rounded-full inline-block"
+              style={{ background: "var(--warning)" }}
+            />
+            {endpoints.notReady}
+          </span>
+        )}
+        {endpoints.disconnecting > 0 && (
+          <span class="flex items-center gap-1">
+            <span
+              class="w-2 h-2 rounded-full inline-block"
+              style={{ background: "var(--error)" }}
+            />
+            {endpoints.disconnecting}
+          </span>
+        )}
+        {endpoints.waiting > 0 && (
+          <span class="flex items-center gap-1">
+            <span
+              class="w-2 h-2 rounded-full inline-block"
+              style={{ background: "var(--text-muted)" }}
+            />
+            {endpoints.waiting}
+          </span>
+        )}
+      </div>
+      {/* Stacked bar */}
+      {endpoints.total > 0 && (
+        <div class="flex h-1.5 rounded-full overflow-hidden bg-elevated mt-1">
+          {endpoints.ready > 0 && (
+            <div
+              style={{
+                width: `${(endpoints.ready / endpoints.total) * 100}%`,
+                background: "var(--success)",
+              }}
+            />
+          )}
+          {endpoints.notReady > 0 && (
+            <div
+              style={{
+                width: `${(endpoints.notReady / endpoints.total) * 100}%`,
+                background: "var(--warning)",
+              }}
+            />
+          )}
+          {endpoints.disconnecting > 0 && (
+            <div
+              style={{
+                width: `${(endpoints.disconnecting / endpoints.total) * 100}%`,
+                background: "var(--error)",
+              }}
+            />
+          )}
+          {endpoints.waiting > 0 && (
+            <div
+              style={{
+                width: `${(endpoints.waiting / endpoints.total) * 100}%`,
+                background: "var(--text-muted)",
+              }}
+            />
+          )}
+        </div>
+      )}
+    </div>
   );
 }
