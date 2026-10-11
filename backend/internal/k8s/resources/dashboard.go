@@ -221,10 +221,10 @@ func (h *Handler) gatherHealthInputs(
 		// Only the critical bucket feeds health; the warning count is intentionally
 		// ignored here so certs that are still valid (8–30 days out) don't degrade
 		// the cluster. The observatory page surfaces the warning bucket separately.
-		_, crit, certErr := h.CertExpiry.ExpiringCounts(ctx, user)
+		expiry, certErr := h.CertExpiry.ExpiringCountsForCluster(ctx, k8s.LocalClusterID, user)
 		switch {
 		case certErr == nil:
-			o.certificates.setOK(crit)
+			o.certificates.setOK(expiry.Critical)
 		case errors.Is(certErr, ErrCertManagerNotInstalled):
 			o.certificates.setNoSource("cert-manager not installed")
 		case errors.Is(certErr, ErrCertCacheNotWarm):

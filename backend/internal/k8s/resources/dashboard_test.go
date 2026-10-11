@@ -134,8 +134,11 @@ type fakeCertExpiry struct {
 	err  error
 }
 
-func (f *fakeCertExpiry) ExpiringCounts(_ context.Context, _ *auth.User) (int, int, error) {
-	return f.warn, f.crit, f.err
+func (f *fakeCertExpiry) ExpiringCountsForCluster(_ context.Context, _ string, _ *auth.User) (CertExpiry, error) {
+	if f.err != nil {
+		return CertExpiry{}, f.err
+	}
+	return CertExpiry{Warning: f.warn, Critical: f.crit}, nil
 }
 
 // --- Tests ---

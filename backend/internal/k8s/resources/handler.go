@@ -72,13 +72,45 @@ var ErrCertManagerNotInstalled = errors.New("cert-manager not installed")
 // map it to a non-fatal skipped signal.
 var ErrCertCacheNotWarm = errors.New("cert cache warming")
 
+// CertExpiryState says how far a cluster's certificate read got.
+type CertExpiryState int
+
+const (
+	// CertExpiryComplete means every list the buckets depend on was read.
+	CertExpiryComplete CertExpiryState = iota
+	// CertExpiryNotInstalled means cert-manager is not installed on the
+	// cluster: a valid, empty read.
+	CertExpiryNotInstalled
+	// CertExpiryDenied means the user may not read the certificates: the
+	// cluster-wide list check was denied, or a cert-manager list returned
+	// Forbidden.
+	CertExpiryDenied
+	// CertExpiryIncomplete means a read the user is allowed did not complete
+	// (a failed list, an unreachable cluster, no recent snapshot yet). Cause
+	// names why; it is for classification and logs, never for a client.
+	CertExpiryIncomplete
+)
+
+// CertExpiry is a cluster's expiring-certificate counts and how complete the
+// read behind them is. Warning and Critical are meaningful only when State is
+// CertExpiryComplete.
+type CertExpiry struct {
+	Warning  int
+	Critical int
+	State    CertExpiryState
+	Cause    error
+}
+
 // CertExpiryCounter abstracts cert-manager expiring-certificate counts for the
 // cluster health score. The calling user is passed so RBAC filtering can be
 // applied before bucketing. Can be nil if cert-manager is unavailable.
-// Errors are typed: callers should errors.Is-check ErrCertManagerNotInstalled
-// and ErrCertCacheNotWarm to map them to non-fatal skipped signals.
+//
+// For the local cluster the result is always CertExpiryComplete and errors are
+// typed: callers should errors.Is-check ErrCertManagerNotInstalled and
+// ErrCertCacheNotWarm to map them to non-fatal skipped signals. For a remote
+// cluster the error is always nil and the State carries the verdict.
 type CertExpiryCounter interface {
-	ExpiringCounts(ctx context.Context, user *auth.User) (warning, critical int, err error)
+	ExpiringCountsForCluster(ctx context.Context, clusterID string, user *auth.User) (CertExpiry, error)
 }
 
 // ControlPlaneChecker abstracts best-effort control-plane component availability
