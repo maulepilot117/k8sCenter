@@ -124,7 +124,6 @@ const (
 	// detailAllocatableUnknown is appended when the nodes section did not
 	// load, so a usage percentage cannot be turned into an absolute amount.
 	detailAllocatableUnknown = "; allocatable needs the nodes section, which did not load"
-	detailRemoteHealth       = "remote health scoring is not available yet"
 	// detailAuthzUnknown explains a section whose permission check could not
 	// be issued or errored.
 	detailAuthzUnknown = "could not check list permission on the remote cluster"
@@ -145,6 +144,13 @@ const (
 type remoteSection[T any] struct {
 	items    []T
 	coverage SectionCoverage
+	// denied is set when the permission check refused the list, which the
+	// health score skips or omits as the local path does.
+	denied bool
+	// cause is set when an allowed list did not complete in full (refused by
+	// the API server, failed, partial, truncated or timed out), which
+	// withholds the health score (R7).
+	cause healthCause
 }
 
 // Placeholder errors for an alerts read that produced no counts without the
@@ -155,6 +161,9 @@ var (
 	errRemoteAlertsNotRead = errors.New("remote alerts read did not complete")
 	// errRemoteAlertsDenied records a denied alertmanagers permission check.
 	errRemoteAlertsDenied = errors.New("alertmanagers list permission denied")
+	// errRemoteAlertsAuthzUnknown wraps an alertmanagers permission check
+	// that could not be made.
+	errRemoteAlertsAuthzUnknown = errors.New("alertmanagers list permission unknown")
 )
 
 // remoteAlerts is the outcome of the alerts section's one Alertmanager read.
@@ -166,9 +175,12 @@ type remoteAlerts struct {
 	counts AlertSummary
 	// err is nil only when counts were read. Otherwise it is the source's
 	// error (one of the Alertmanager classes, ErrNoMetricsBinding, or a
-	// context error), errRemoteAlertsDenied, the permission-check error, or
-	// errRemoteAlertsNotRead.
-	err      error
+	// context error), errRemoteAlertsDenied, the permission-check error
+	// wrapped in errRemoteAlertsAuthzUnknown, or errRemoteAlertsNotRead.
+	err error
+	// timedOut is set when the source's read failed because the request's
+	// budget had ended, judged as the read returned.
+	timedOut bool
 	coverage SectionCoverage
 }
 
@@ -176,12 +188,12 @@ type remoteAlerts struct {
 // cluster from direct, impersonated API lists — never informers, which exist
 // only for the local cluster.
 //
-// Health is always nil here and the local health scorer (health.go) is
-// deliberately not called: it renormalises weights across whichever signals
-// resolved, so a remote cluster where only node listing succeeded would get a
-// confident score built from nodes alone. The remote path has no workloads
-// or control-plane signal, so no score is the only truthful answer (plan
-// decision D5).
+// Health is scored under the local rules from the remote reads (KTD4): the
+// tiles' nodes, pods and alerts reads plus the health-only reads
+// (dashboard_remote_health.go). A denied permission check skips or omits its
+// signal as the local path does; any allowed read that did not complete
+// leaves Health nil with an unavailable health row naming every missing
+// input (R7, KTD5), never a score renormalised over whatever loaded.
 //
 // CPU and memory usage come from the cluster's own Prometheus through its
 // metrics binding (h.Utilization with the remote cluster id), read alongside
@@ -223,9 +235,10 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 	// A plain errgroup.Group (not WithContext): a failed section must not
 	// cancel its siblings. Workers never return errors of their own; a
 	// non-nil Wait() means a recovered panic, and that section's zero-value
-	// result is turned into an "unavailable" row by sectionOrFailed below.
+	// result is turned into an "unavailable" row by sectionOrFailed below,
+	// and into a not-read input by the health mapper.
 	var g errgroup.Group
-	recoverutil.Go(&g, h.Logger, "resources remote dashboard nodes", func() error {
+	h.goSection(&g, clusterID, "nodes", func() {
 		nodes = readRemoteSection(h, ctx, clusterID, user, "nodes", func(ctx context.Context, opts metav1.ListOptions) ([]*corev1.Node, string, error) {
 			l, err := cs.CoreV1().Nodes().List(ctx, opts)
 			if err != nil {
@@ -233,9 +246,8 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 			}
 			return pointersTo(l.Items), l.Continue, nil
 		})
-		return nil
 	})
-	recoverutil.Go(&g, h.Logger, "resources remote dashboard pods", func() error {
+	h.goSection(&g, clusterID, "pods", func() {
 		pods = readRemoteSection(h, ctx, clusterID, user, "pods", func(ctx context.Context, opts metav1.ListOptions) ([]*corev1.Pod, string, error) {
 			l, err := cs.CoreV1().Pods("").List(ctx, opts)
 			if err != nil {
@@ -243,9 +255,8 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 			}
 			return pointersTo(l.Items), l.Continue, nil
 		})
-		return nil
 	})
-	recoverutil.Go(&g, h.Logger, "resources remote dashboard services", func() error {
+	h.goSection(&g, clusterID, "services", func() {
 		services = readRemoteSection(h, ctx, clusterID, user, "services", func(ctx context.Context, opts metav1.ListOptions) ([]*corev1.Service, string, error) {
 			l, err := cs.CoreV1().Services("").List(ctx, opts)
 			if err != nil {
@@ -253,24 +264,21 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 			}
 			return pointersTo(l.Items), l.Continue, nil
 		})
-		return nil
 	})
 	if h.Utilization != nil {
-		recoverutil.Go(&g, h.Logger, "resources remote dashboard cpu", func() error {
+		h.goSection(&g, clusterID, "cpu", func() {
 			cpuPct, cpuErr = h.Utilization.CPUPercent(ctx, clusterID)
-			return nil
 		})
-		recoverutil.Go(&g, h.Logger, "resources remote dashboard memory", func() error {
+		h.goSection(&g, clusterID, "memory", func() {
 			memPct, memErr = h.Utilization.MemoryPercent(ctx, clusterID)
-			return nil
 		})
 	} else {
 		cpuErr, memErr = ErrNoMetricsBinding, ErrNoMetricsBinding
 	}
-	recoverutil.Go(&g, h.Logger, "resources remote dashboard alerts", func() error {
+	h.goSection(&g, clusterID, "alerts", func() {
 		alerts = readRemoteAlerts(h, ctx, clusterID, user)
-		return nil
 	})
+	healthReads := h.startRemoteHealthReads(&g, ctx, cs, clusterID, user)
 	_ = g.Wait() // recovered panics are already logged by recoverutil
 
 	var summary DashboardSummary
@@ -315,6 +323,9 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	var healthRow SectionCoverage
+	summary.Health, healthRow = remoteHealth(healthReads.outcomes(nodes, pods, alerts))
+
 	summary.Coverage = []SectionCoverage{
 		sectionOrFailed(nodes.coverage, "nodes"),
 		sectionOrFailed(pods.coverage, "pods"),
@@ -322,7 +333,7 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 		metricsSection(h, clusterID, "cpu", cpuErr, amendments),
 		metricsSection(h, clusterID, "memory", memErr, amendments),
 		sectionOrFailed(alerts.coverage, "alerts"),
-		unsupportedSection("health", detailRemoteHealth),
+		healthRow,
 	}
 
 	writeJSON(w, http.StatusOK, api.Response{Data: summary})
@@ -351,33 +362,44 @@ func readRemoteSection[T any](
 ) remoteSection[T] {
 	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, "")
 	if err != nil {
-		return remoteSection[T]{coverage: SectionCoverage{
+		return remoteSection[T]{cause: healthCauseAuthzUnknown, coverage: SectionCoverage{
 			Section: resource, Status: coverageUnavailable, ReasonCode: reasonAuthzUnknown,
 			Detail: detailAuthzUnknown,
 		}}
 	}
 	if !allowed {
-		return remoteSection[T]{coverage: forbiddenSection(resource)}
+		return remoteSection[T]{denied: true, coverage: forbiddenSection(resource)}
 	}
 
 	items, truncated, err := k8s.PageList(ctx, metav1.ListOptions{}, list)
 	if err != nil {
 		if apierrors.IsForbidden(err) {
-			return remoteSection[T]{coverage: forbiddenSection(resource)}
+			// The permission check allowed it, so for health this is an
+			// allowed read that did not complete, not a denial.
+			return remoteSection[T]{cause: healthCauseRefused, coverage: forbiddenSection(resource)}
 		}
+		timedOut := readTimedOut(ctx, err)
 		if len(items) > 0 {
-			return remoteSection[T]{items: items, coverage: SectionCoverage{
+			cause := healthCausePartial
+			if timedOut {
+				cause = healthCauseTimedOut
+			}
+			return remoteSection[T]{items: items, cause: cause, coverage: SectionCoverage{
 				Section: resource, Status: coveragePartial, ReasonCode: reasonUnreachable, ObservedAt: observedNow(),
 				Detail: fmt.Sprintf("list stopped after %d items: a later page failed on the remote cluster", len(items)),
 			}}
 		}
-		return remoteSection[T]{coverage: SectionCoverage{
+		cause := healthCauseListFailed
+		if timedOut {
+			cause = healthCauseTimedOut
+		}
+		return remoteSection[T]{cause: cause, coverage: SectionCoverage{
 			Section: resource, Status: coverageUnavailable, ReasonCode: reasonUnreachable,
 			Detail: "list failed on the remote cluster",
 		}}
 	}
 	if truncated {
-		return remoteSection[T]{items: items, coverage: SectionCoverage{
+		return remoteSection[T]{items: items, cause: healthCauseTruncated, coverage: SectionCoverage{
 			Section: resource, Status: coveragePartial, ReasonCode: reasonOK, ObservedAt: observedNow(),
 			Detail: fmt.Sprintf("list truncated after %d items", k8s.RemoteListPageSize*k8s.RemoteListMaxPages),
 		}}
@@ -417,7 +439,7 @@ func readRemoteAlerts(h *Handler, ctx context.Context, clusterID string, user *a
 	}
 	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "alertmanagers", "")
 	if err != nil {
-		return remoteAlerts{err: err, coverage: SectionCoverage{
+		return remoteAlerts{err: fmt.Errorf("%w: %w", errRemoteAlertsAuthzUnknown, err), coverage: SectionCoverage{
 			Section: "alerts", Status: coverageUnavailable, ReasonCode: reasonAuthzUnknown, Detail: detailAuthzUnknown,
 		}}
 	}
@@ -429,7 +451,7 @@ func readRemoteAlerts(h *Handler, ctx context.Context, clusterID string, user *a
 
 	active, critical, err := h.RemoteAlerts.RemoteAlertCounts(ctx, clusterID)
 	if err != nil {
-		return remoteAlerts{err: err, coverage: alertsFailedSection(h, clusterID, err)}
+		return remoteAlerts{err: err, timedOut: readTimedOut(ctx, err), coverage: alertsFailedSection(h, clusterID, err)}
 	}
 	return remoteAlerts{
 		counts:   AlertSummary{Active: active, Critical: critical},
@@ -508,8 +530,20 @@ func metricsSection(h *Handler, clusterID, section string, err error, amendments
 	}
 }
 
-func unsupportedSection(section, detail string) SectionCoverage {
-	return SectionCoverage{Section: section, Status: coverageUnavailable, ReasonCode: reasonUnsupportedPlatform, Detail: detail}
+// goSection runs fn as one recovered worker of the summary's fan-out and
+// logs how long it took at debug, so each input's share of the budget can be
+// measured (KTD11).
+func (h *Handler) goSection(g *errgroup.Group, clusterID, section string, fn func()) {
+	recoverutil.Go(g, h.Logger, "resources remote dashboard "+section, func() error {
+		start := time.Now()
+		defer func() {
+			if h.Logger != nil {
+				h.Logger.Debug("remote dashboard section read", "cluster", clusterID, "section", section, "duration", time.Since(start))
+			}
+		}()
+		fn()
+		return nil
+	})
 }
 
 // sectionOrFailed returns c, or an "unavailable" row when the section's

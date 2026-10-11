@@ -391,10 +391,9 @@ func TestRemoteSummary_MetricsFromBinding(t *testing.T) {
 			t.Errorf("%s row = %+v, want ok/ok with observedAt and no detail", sec, row)
 		}
 	}
-	if s.Health != nil {
-		t.Errorf("Health = %+v, want nil: a metrics binding does not enable remote health scoring", s.Health)
-	}
-	assertRow(t, s, "health", "unavailable", "unsupported_platform")
+	// Usage percentages are not health inputs: the score is drawn from the
+	// complete list reads either way.
+	assertRow(t, s, "health", "ok", "ok")
 	fu.assertOnlyCluster(t, remoteTestClusterID)
 }
 
@@ -481,44 +480,118 @@ func TestRemoteSummary_MetricsWithUnreadNodesHasNoAmount(t *testing.T) {
 	}
 }
 
-func TestRemoteSummary_NeverSynthesizesHealth(t *testing.T) {
-	sections := []string{"nodes", "pods", "services"}
-	// Every combination of success/denial across the three live sections,
-	// including all-succeed (mask 0) — the case a renormalising score would
-	// be most tempted to report confidently.
-	for mask := 0; mask < 1<<len(sections); mask++ {
-		var denied []string
-		for i, sec := range sections {
-			if mask&(1<<i) != 0 {
-				denied = append(denied, sec)
-			}
-		}
-		t.Run(fmt.Sprintf("denied=%v", denied), func(t *testing.T) {
-			h, _ := remoteDashboardHandler(t, nil, readyNode("r-n1"), runningPod("default", "r-p1"), service("r-s1"))
-			h.Alerts = &fakeAlertCounter{active: 0, critical: 0}
-			if len(denied) > 0 {
-				h.AccessChecker = NewDenyResourcesAccessChecker(denied...)
-			}
+// TestRemoteSummary_HealthOnlyFromCompleteReads iterates permission-denial
+// and read-failure masks over every health input. A denial is skipped or
+// omitted exactly as the local path does it, so the remote score equals the
+// local score under the same denials (R5, R6). Any allowed read that does not
+// complete withholds the score, and the detail names every such input (R7).
+func TestRemoteSummary_HealthOnlyFromCompleteReads(t *testing.T) {
+	hh := newHealthHarness(t, healthFixture()...)
 
-			rr := callRemoteDashboard(t, h, "coverage=1")
-			if rr.Code != http.StatusOK {
-				t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+	t.Run("denial masks", func(t *testing.T) {
+		checks := []string{
+			"nodes", "deployments", "statefulsets", "daemonsets", "pods",
+			"poddisruptionbudgets", "alertmanagers", "persistentvolumeclaims", "storageclasses",
+		}
+		for mask := 0; mask < 1<<len(checks); mask++ {
+			var denied []string
+			for i, c := range checks {
+				if mask&(1<<i) != 0 {
+					denied = append(denied, c)
+				}
 			}
-			raw := rr.Body.String()
-			s := decodeDashboard(t, rr)
-			if s.Health != nil {
-				t.Errorf("Health = %+v, want nil on every remote response", s.Health)
-			}
-			assertRow(t, s, "health", "unavailable", "unsupported_platform")
-			if d := coverageRow(t, s, "health").Detail; d != "remote health scoring is not available yet" {
-				t.Errorf("health detail = %q", d)
-			}
-			// The wire carries an explicit null, not a synthesised object.
-			if !strings.Contains(raw, `"health":null`) {
-				t.Errorf("body lacks \"health\":null: %s", raw)
-			}
-		})
+			t.Run(fmt.Sprintf("denied=%v", denied), func(t *testing.T) {
+				hh.reset()
+				// Local reads StorageClasses as the service account, so a
+				// denied StorageClass check has no local counterpart. A denied
+				// PVC check skips storage with the same reason, which is the
+				// remote outcome, so the oracle denies that instead.
+				oracle := append([]string(nil), denied...)
+				if mask&(1<<8) != 0 {
+					oracle = append(oracle, "persistentvolumeclaims")
+				}
+				want := hh.localHealthFor(t, oracle)
+				hh.h.AccessChecker = NewDenyResourcesAccessChecker(denied...)
+
+				body, s := hh.remoteBody(t)
+				assertScored(t, s)
+				if got := healthJSON(t, body); got != want {
+					t.Errorf("remote health differs from local under the same denials\n got: %s\nwant: %s", got, want)
+				}
+			})
+		}
+	})
+
+	// One injector per health input, in signal order, each making an allowed
+	// read fail without a refusal or a deadline.
+	failures := []struct {
+		fragment string
+		inject   func()
+	}{
+		{"nodes (", func() { hh.failList("nodes", serverError("nodes")) }},
+		{"deployments (", func() { hh.failList("deployments", serverError("deployments")) }},
+		{"statefulsets (", func() { hh.failList("statefulsets", serverError("statefulsets")) }},
+		{"daemonsets (", func() { hh.failList("daemonsets", serverError("daemonsets")) }},
+		{"pods (", func() { hh.failList("pods", serverError("pods")) }},
+		{"pod disruption budgets (", func() { hh.failList("poddisruptionbudgets", serverError("poddisruptionbudgets")) }},
+		{"alerts (", func() { hh.ra.err = fmt.Errorf("%w: status 503", ErrAlertmanagerUnreachable) }},
+		{"certificates (", func() {
+			hh.cert.remote = CertExpiry{State: CertExpiryIncomplete, Cause: serverError("certificates")}
+		}},
+		{"persistent volume claims (", func() { hh.failList("persistentvolumeclaims", serverError("persistentvolumeclaims")) }},
+		{"storage classes (", func() { hh.failList("storageclasses", serverError("storageclasses")) }},
+		{"control plane (", func() { hh.cp.err = errors.New("query failed") }},
 	}
+
+	t.Run("failure masks", func(t *testing.T) {
+		for mask := 1; mask < 1<<len(failures); mask++ {
+			var names []string
+			for i, f := range failures {
+				if mask&(1<<i) != 0 {
+					names = append(names, f.fragment)
+				}
+			}
+			t.Run(fmt.Sprintf("failed=%v", names), func(t *testing.T) {
+				hh.reset()
+				for i, f := range failures {
+					if mask&(1<<i) != 0 {
+						f.inject()
+					}
+				}
+				body, s := hh.remoteBody(t)
+				assertNoScore(t, body, s, "unreachable", names...)
+			})
+		}
+	})
+
+	t.Run("a denied check is never read, so its failure cannot withhold the score", func(t *testing.T) {
+		for _, res := range []string{
+			"nodes", "deployments", "statefulsets", "daemonsets", "pods",
+			"poddisruptionbudgets", "persistentvolumeclaims", "storageclasses",
+		} {
+			t.Run(res, func(t *testing.T) {
+				hh.reset()
+				hh.failList(res, serverError(res))
+				hh.h.AccessChecker = NewDenyResourcesAccessChecker(res)
+				_, s := hh.remoteBody(t)
+				assertScored(t, s)
+			})
+		}
+	})
+
+	t.Run("a denied nodes check gates workload and control-plane failures", func(t *testing.T) {
+		hh.reset()
+		want := hh.localHealthFor(t, []string{"nodes"})
+		hh.failList("deployments", serverError("deployments"))
+		hh.cp.err = errors.New("query failed")
+		hh.h.AccessChecker = NewDenyResourcesAccessChecker("nodes")
+
+		body, s := hh.remoteBody(t)
+		assertScored(t, s)
+		if got := healthJSON(t, body); got != want {
+			t.Errorf("remote health differs from local with nodes denied\n got: %s\nwant: %s", got, want)
+		}
+	})
 }
 
 func TestRemoteSummary_PartialListPermissions(t *testing.T) {
@@ -773,9 +846,12 @@ func TestRemoteSummary_EmptyCluster(t *testing.T) {
 	// An empty answer is still a complete answer.
 	assertRow(t, s, "nodes", "ok", "ok")
 	assertRow(t, s, "pods", "ok", "ok")
-	if s.Health != nil {
-		t.Errorf("Health = %+v, want nil", s.Health)
+	// Every read completed and no node is visible: unknown with no score and
+	// an ok row, as the local path answers (KTD5).
+	if s.Health == nil || s.Health.Status != HealthStatusUnknown || s.Health.Score != nil {
+		t.Errorf("Health = %+v, want unknown without a score", s.Health)
 	}
+	assertRow(t, s, "health", "ok", "ok")
 	if s.CPU != nil || s.Memory != nil {
 		t.Errorf("cpu/memory = %+v/%+v, want nil with no allocatable capacity", s.CPU, s.Memory)
 	}
