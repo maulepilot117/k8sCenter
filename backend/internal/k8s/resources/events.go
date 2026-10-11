@@ -1,22 +1,18 @@
 package resources
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
-	"github.com/kubecenter/kubecenter/pkg/api"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/validation/path"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -33,10 +29,6 @@ const (
 // maxInvolvedObjectNameLen is the longest object name Kubernetes accepts
 // (a DNS subdomain, the widest name format any built-in kind uses).
 const maxInvolvedObjectNameLen = 253
-
-// remoteEventsListTimeout bounds the whole paged events list on a remote
-// cluster, including client resolution.
-const remoteEventsListTimeout = 10 * time.Second
 
 // involvedObjectKindRegexp matches a Kubernetes Kind: an identifier of ASCII
 // letters and digits, starting with a letter (Pod, HorizontalPodAutoscaler).
@@ -183,14 +175,7 @@ func (h *Handler) handleListEvents(w http.ResponseWriter, r *http.Request, user 
 
 	items = filter.filterEvents(items)
 	page, token := paginateAny(items, params.Limit, params.Continue)
-	writeJSON(w, http.StatusOK, api.Response{
-		Data: page,
-		Metadata: &api.Metadata{
-			Total:     len(items),
-			Continue:  token,
-			Truncated: truncated,
-		},
-	})
+	writeListPage(w, page, len(items), token, truncated)
 }
 
 // listRemoteEvents pages through the events on a remote cluster with the
@@ -203,47 +188,9 @@ func (h *Handler) listRemoteEvents(
 	w http.ResponseWriter, r *http.Request, user *auth.User,
 	clusterID, ns string, sel labels.Selector, filter involvedObjectFilter,
 ) (items []any, truncated, ok bool) {
-	ctx, cancel := context.WithTimeout(r.Context(), remoteEventsListTimeout)
-	defer cancel()
-
-	cs, err := h.remoteClientFor(ctx, clusterID, user)
-	if err != nil {
-		h.Logger.Error("remote events: resolve cluster client", "cluster", clusterID, "error", err)
-		writeError(w, http.StatusBadGateway, "failed to reach the selected cluster", "")
-		return nil, false, false
-	}
-
 	base := metav1.ListOptions{
 		LabelSelector: sel.String(),
 		FieldSelector: filter.fieldSelector(),
 	}
-	items, truncated, err = pageRemoteList(ctx, base, func(ctx context.Context, opts metav1.ListOptions) ([]any, string, error) {
-		list, err := cs.CoreV1().Events(ns).List(ctx, opts)
-		if err != nil {
-			return nil, "", err
-		}
-		page := make([]any, len(list.Items))
-		for i := range list.Items {
-			page[i] = &list.Items[i]
-		}
-		return page, list.Continue, nil
-	})
-	if err != nil {
-		// Items read before a failure are discarded: a refusal at a later
-		// page means they may no longer be the user's to see, and a partial
-		// answer would be served as if it were complete.
-		if apierrors.IsForbidden(err) {
-			writeError(w, http.StatusForbidden,
-				"you do not have permission to list events in namespace "+ns+" on the selected cluster", "")
-			return nil, false, false
-		}
-		h.Logger.Error("remote events: list", "cluster", clusterID, "namespace", ns, "error", err)
-		writeError(w, http.StatusBadGateway, "failed to list events on the selected cluster", "")
-		return nil, false, false
-	}
-	if truncated {
-		h.Logger.Warn("remote events: list truncated",
-			"cluster", clusterID, "namespace", ns, "items", len(items))
-	}
-	return items, truncated, true
+	return h.listRemote(w, r, user, clusterID, eventAdapter{}, "events", ns, base)
 }

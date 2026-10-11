@@ -1,8 +1,12 @@
 package resources
 
 import (
+	"context"
+
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
 )
@@ -34,6 +38,24 @@ func (endpointsAdapter) ListFromCache(inf *k8s.InformerManager, ns string, sel l
 
 func (endpointsAdapter) GetFromCache(inf *k8s.InformerManager, ns, name string) (any, error) {
 	return inf.Endpoints().Endpoints(ns).Get(name)
+}
+
+// ListDirect implements ResourceAdapter.
+func (endpointsAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
+	list, err := cs.CoreV1().Endpoints(ns).List(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]any, len(list.Items))
+	for i := range list.Items {
+		out[i] = &list.Items[i]
+	}
+	return out, list.Continue, nil
+}
+
+// GetDirect implements ResourceAdapter.
+func (endpointsAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
+	return cs.CoreV1().Endpoints(ns).Get(ctx, name, metav1.GetOptions{})
 }
 
 func init() { Register(endpointsAdapter{}) }

@@ -60,6 +60,7 @@ export const CAPABILITY_OPERATION_IDS = [
   "yaml.apply",
   "dashboard.summary",
   "resources.counts",
+  "resources.read",
   "pod.exec",
   "logs.stream",
   "logs.search",

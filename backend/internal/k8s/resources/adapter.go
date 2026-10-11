@@ -7,6 +7,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 )
@@ -36,6 +37,19 @@ type ResourceAdapter interface {
 	// Namespace is ignored for cluster-scoped resources.
 	GetFromCache(inf *k8s.InformerManager, ns, name string) (any, error)
 
+	// ListDirect lists one page from the API server through cs, for a cluster
+	// that has no informers (a remote cluster). It returns the same item types
+	// ListFromCache does, plus the API server's continue token verbatim.
+	// Namespace is ignored for cluster-scoped resources. cs must impersonate
+	// the requesting user.
+	ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error)
+
+	// GetDirect reads a single item from the API server through cs, for a
+	// cluster that has no informers. It returns the same type GetFromCache
+	// does. Namespace is ignored for cluster-scoped resources. cs must
+	// impersonate the requesting user.
+	GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error)
+
 	// Create creates a new resource from the JSON body using an impersonating client.
 	// The context should be the HTTP request context to propagate cancellation and timeouts.
 	Create(ctx context.Context, cs kubernetes.Interface, ns string, body []byte) (any, error)
@@ -51,7 +65,7 @@ type ResourceAdapter interface {
 
 // ReadOnlyAdapter provides default no-op implementations for Create, Update, and Delete
 // that return 501 Not Implemented errors. Embed this in adapters for read-only resources
-// (e.g. Events, Endpoints) that only support list/get from cache.
+// (e.g. Events, Endpoints) that only support list and get.
 type ReadOnlyAdapter struct{}
 
 // Create is not supported for read-only resources.
@@ -76,9 +90,9 @@ var errReadOnly = errors.New("this resource is read-only and does not support th
 // The actions.go handlers type-assert against them at runtime.
 // ---------------------------------------------------------------------------
 
-// requestLister indicates a resource whose list cannot be answered from the
-// informer cache alone, because it reads query parameters beyond the shared
-// ListParams or must serve a remote cluster directly (e.g. Events).
+// requestLister indicates a resource whose list reads query parameters beyond
+// the shared ListParams (e.g. Events and its involvedObject filter), so the
+// generic list path cannot serve it on either cluster.
 // HandleListResource calls listForRequest after authentication, the RBAC check
 // and label-selector parsing, and the adapter writes the whole response.
 type requestLister interface {

@@ -447,6 +447,61 @@ test.describe.serial("Remote cluster capabilities", () => {
     expect((await local.json()).data.taskID).toBeTruthy();
   });
 
+  // Nodes are the kind these two cases compare. The fixture identity may read
+  // nodes, pods and services cluster-wide (scripts/test-remote-capabilities.sh)
+  // but not namespaces, and the two kind clusters name their nodes
+  // differently (k8scenter-remote-control-plane vs the local one), so a node
+  // name says which cluster answered.
+  async function nodeNames(page: Page, clusterId: string): Promise<string[]> {
+    const res = await page.request.get("/api/v1/resources/nodes", {
+      headers: await headersFor(page, clusterId),
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.metadata.total).toBeGreaterThanOrEqual(body.data.length);
+    return (body.data as Array<{ metadata: { name: string } }>).map(
+      (n) => n.metadata.name,
+    );
+  }
+
+  test("a resource list under a remote selection is the remote cluster's", async ({
+    page,
+  }) => {
+    const remoteNodes = await nodeNames(page, REMOTE!);
+    const localNodes = await nodeNames(page, "local");
+    expect(remoteNodes.length).toBeGreaterThan(0);
+    expect(localNodes.length).toBeGreaterThan(0);
+    // Disjoint: a remote selection must never be answered from the local
+    // informer cache.
+    for (const name of remoteNodes) {
+      expect(localNodes).not.toContain(name);
+    }
+
+    // Detail follows the same routing: the remote node is found on the
+    // remote cluster and is a 404 on the local one.
+    const remoteName = remoteNodes[0];
+    const onRemote = await page.request.get(
+      `/api/v1/resources/nodes/${encodeURIComponent(remoteName)}`,
+      { headers: await headersFor(page, REMOTE!) },
+    );
+    expect(onRemote.status()).toBe(200);
+    expect((await onRemote.json()).data.metadata.name).toBe(remoteName);
+    const onLocal = await page.request.get(
+      `/api/v1/resources/nodes/${encodeURIComponent(remoteName)}`,
+      { headers: await headersFor(page, "local") },
+    );
+    expect(onLocal.status()).toBe(404);
+  });
+
+  test("a resource list page under a remote selection shows the remote cluster's objects", async ({
+    page,
+  }) => {
+    const [remoteName] = await nodeNames(page, REMOTE!);
+    await seedClusterTarget(page, REMOTE!);
+    await page.goto("/cluster/nodes");
+    await expect(page.getByText(remoteName).first()).toBeVisible();
+  });
+
   // Must stay last: see the header.
   test("deleting the cluster invalidates cached discovery", async ({ page }) => {
     test.skip(

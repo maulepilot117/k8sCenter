@@ -98,8 +98,8 @@ type Handler struct {
 	// isSynced overrides the default h.Informers.IsSynced for tests. When nil,
 	// gatherHealthInputs uses h.Informers.IsSynced.
 	isSynced func(string) bool
-	// remoteClient overrides remote-cluster client resolution for tests of the
-	// remote dashboard path. When nil, h.ClusterRouter.ClientForCluster is used.
+	// remoteClient overrides remote-cluster client resolution for tests of every
+	// remote read path. When nil, h.ClusterRouter.ClientForCluster is used.
 	remoteClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
 	// OriginValidator checks the Origin header for WebSocket connections.
 	// Set by the server at wiring time. If nil, rejects all WS upgrades.
@@ -265,13 +265,21 @@ func writeError(w http.ResponseWriter, status int, message, detail string) {
 	})
 }
 
-// writeList writes a paginated list response.
+// writeList writes a paginated list response over a complete read.
 func writeList(w http.ResponseWriter, items any, total int, continueToken string) {
+	writeListPage(w, items, total, continueToken, false)
+}
+
+// writeListPage writes a paginated list response. truncated reports that the
+// read behind it stopped at a cap (a remote list past remoteListMaxPages), so
+// total counts only what was read; it is omitted from the body when false.
+func writeListPage(w http.ResponseWriter, items any, total int, continueToken string, truncated bool) {
 	writeJSON(w, http.StatusOK, api.Response{
 		Data: items,
 		Metadata: &api.Metadata{
-			Total:    total,
-			Continue: continueToken,
+			Total:     total,
+			Continue:  continueToken,
+			Truncated: truncated,
 		},
 	})
 }

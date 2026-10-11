@@ -104,6 +104,7 @@ test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistenc
     "policy.compliance_history",
     "policy.read",
     "resources.counts",
+    "resources.read",
     "storage.classes",
     "storage.snapshots",
     "topology.graph",
