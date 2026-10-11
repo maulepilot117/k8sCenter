@@ -20,20 +20,9 @@ const readmeCapabilityHeading = "## Remote cluster support"
 // table cannot express "partial"; the README can, and must only do so where
 // the remote path genuinely returns less than the local one.
 //
-// dashboard.summary: the remote summary serves node/pod/service counts and
-// capacity, and CPU/memory usage from the cluster's metrics binding, but
-// omits alert counts and the health score (Alertmanager-backed counts and
-// remote health scoring are not built yet). Those fields render as
-// unavailable, so "Yes" would overstate it.
-//
-// mesh.mtls: remote posture is derived from the target's pods and policies
-// only. The Prometheus metric cross-check the local path applies to Istio
-// workloads is skipped and reported unavailable, because the only
-// Prometheus binding is the local one (R-8 R14).
-var readmeRemotePartialAllowed = map[string]bool{
-	"dashboard.summary": true,
-	"mesh.mtls":         true,
-}
+// No operation is currently allowed to be partial: the remote dashboard
+// summary and mesh mTLS posture are complete through the metrics binding.
+var readmeRemotePartialAllowed = map[string]bool{}
 
 // readmeGuardFileRe matches a Go source path such as
 // `k8s/resources/counts.go` or `server/handle_ws_logs.go`.
@@ -83,7 +72,7 @@ func TestReadmeCapabilityTableParity_DetectsDrift(t *testing.T) {
 		{ID: "pod.exec", Label: "Pod exec", LocalSupported: true, RemoteSupported: false},
 	}
 	const good = "| Apply YAML | Yes | Yes | pinned |\n" +
-		"| Dashboard summary | Yes | Partial | no metrics |\n" +
+		"| Dashboard summary | Yes | Yes | complete reads |\n" +
 		"| Pod exec | Yes | No | `k8s/resources/pods.go` (501) |\n"
 
 	wrap := func(body string) string {

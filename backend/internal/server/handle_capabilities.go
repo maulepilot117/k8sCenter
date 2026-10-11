@@ -518,11 +518,12 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "networking.istio.io", AuthResource: "virtualservices",
 	},
 	{
-		// Remote since U10 (#520), in part: posture is derived from the
-		// selected cluster's pods and policies, but the Prometheus metric
-		// cross-check is skipped and reported unavailable
-		// (servicemesh/handler.go HandleMTLSPosture,
-		// crossCheckUnavailableRemote). The README marks it Partial.
+		// Remote since U10 (#520): posture is derived from the selected
+		// cluster's pods and policies. The Istio Prometheus metric
+		// cross-check runs against the cluster's own metrics binding
+		// (PUT /clusters/{id}/metrics), and a cluster without one reports
+		// the cross-check unavailable (metrics_not_configured), never the
+		// local Prometheus (servicemesh/handler.go HandleMTLSPosture).
 		// AuthResource pods: posture is computed per pod.
 		ID: "mesh.mtls", Label: "Service mesh mTLS posture",
 		LocalSupported: true, RemoteSupported: true,
@@ -567,13 +568,13 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// Golden signals come from the local Prometheus, which knows nothing
-		// of a remote cluster's traffic (R14). servicemesh/handler.go:834
-		// (HandleGoldenSignals answers with reason unsupported_platform and
-		// queries nothing). AuthVerb "list" pods mirrors the handler's own
-		// namespace check.
+		// Remote since #608 PR 4b: golden signals are queried through the
+		// selected cluster's metrics binding (PUT /clusters/{id}/metrics),
+		// never the local Prometheus. A cluster without a binding answers
+		// 200 with reason metrics_not_configured and no figures. AuthVerb
+		// "list" pods mirrors the handler's own namespace check.
 		ID: "mesh.golden_signals", Label: "Service mesh golden signals",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{

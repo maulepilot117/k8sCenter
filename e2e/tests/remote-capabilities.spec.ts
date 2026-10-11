@@ -209,13 +209,13 @@ test.describe.serial("Remote cluster capabilities", () => {
       "changes.receipts",
       "topology.graph",
       "diagnostics.read",
+      "mesh.golden_signals",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
     }
     for (const id of [
       "cni.config",
-      "mesh.golden_signals",
       "eso.history",
       "eso.metrics",
       "policy.compliance_history",
@@ -360,7 +360,9 @@ test.describe.serial("Remote cluster capabilities", () => {
     await expect(cpu).not.toContainText(/^0\s*%/);
   });
 
-  test("remote dashboard shows no health score", async ({ page }) => {
+  test("remote dashboard scores health from complete reads", async ({
+    page,
+  }) => {
     const summary = (
       await (
         await page.request.get("/api/v1/cluster/dashboard-summary?coverage=1", {
@@ -368,25 +370,25 @@ test.describe.serial("Remote cluster capabilities", () => {
         })
       ).json()
     ).data;
-    expect(summary.health).toBeNull();
+    // Every remote read completes and no binding is needed for the score
+    // inputs, so the score is drawn from the remote's own data.
+    expect(summary.health).not.toBeNull();
+    const healthRow = summary.coverage.find(
+      (row: { section: string }) => row.section === "health",
+    );
+    expect(healthRow?.status).toBe("ok");
 
     await seedClusterTarget(page, REMOTE!);
     await page.goto("/");
     const health = page.locator('[data-widget-id="cluster-health"]');
-    await expect(health).toHaveAttribute(
-      "data-widget-state",
-      "coverage-unavailable",
-    );
-    await expect(
-      health.getByTestId("widget-coverage-unavailable"),
-    ).toBeVisible();
-    // No gauge ring at all: an empty ring would read as a score of zero. The
-    // coverage card's own glyph is an <svg><circle>, so match what only the
-    // Gauge draws -- its progress arc carries stroke-dashoffset -- and check
-    // the widget body (whose unscored placeholder stands in for the gauge)
-    // is not rendered either.
-    await expect(health.locator("circle[stroke-dashoffset]")).toHaveCount(0);
+    await expect(health).toHaveAttribute("data-widget-state", "ready");
+    // The gauge's progress arc carries stroke-dashoffset, which the coverage
+    // card's own glyph does not.
+    await expect(health.locator("circle[stroke-dashoffset]")).toHaveCount(1);
     await expect(health.getByTestId("health-unscored")).toHaveCount(0);
+    await expect(health.getByTestId("widget-coverage-unavailable")).toHaveCount(
+      0,
+    );
   });
 
   test("switching clusters clears the previous cluster's dashboard numbers", async ({

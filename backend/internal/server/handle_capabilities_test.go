@@ -265,10 +265,12 @@ var (
 		"topology.graph", "diagnostics.read",
 		// #608 PR 4a: served from the cluster's metrics binding.
 		"monitoring.query", "dashboard.trends",
+		// #608 PR 4b: queried through the cluster's metrics binding.
+		"mesh.golden_signals",
 	}
 	wantRemoteUnsupported = []string{
 		"pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
-		"cni.config", "mesh.golden_signals", "eso.history", "eso.metrics",
+		"cni.config", "eso.history", "eso.metrics",
 		"policy.compliance_history", "velero.assurance",
 		"incidents.capture",
 	}
