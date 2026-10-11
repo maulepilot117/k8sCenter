@@ -53,13 +53,19 @@ const (
 	alertmanagerProbeFilter = `alertname="kubecenter-probe-matches-nothing"`
 )
 
-// heartbeatAlerts are always-firing alerts that signal a healthy pipeline,
-// not a problem; they never count.
-var heartbeatAlerts = map[string]bool{
-	"Watchdog":       true,
-	"DeadMansSwitch": true,
-	"InfoInhibitor":  true,
-}
+// heartbeatAlerts are the always-firing alerts a remote count skips: the
+// heartbeats the local count skips, plus those only a direct alerts read
+// sees (resources documents both lists).
+var heartbeatAlerts = func() map[string]bool {
+	m := map[string]bool{}
+	for _, n := range resources.HeartbeatAlertNames {
+		m[n] = true
+	}
+	for _, n := range resources.RemoteOnlyHeartbeatAlertNames {
+		m[n] = true
+	}
+	return m
+}()
 
 // AlertCounts is a remote cluster's active alert totals, heartbeat alerts
 // excluded. Critical counts alerts labelled severity="critical".

@@ -39,14 +39,26 @@ type UtilizationProvider interface {
 	MemoryPercent(ctx context.Context, clusterID string) (float64, error)
 }
 
+// HeartbeatAlertNames are always-firing alerts that signal a healthy alerting
+// pipeline, not a problem. Neither the alert tile nor the health score counts
+// them, on the local cluster or a remote one. The remote Alertmanager read
+// adds RemoteOnlyHeartbeatAlertNames.
+var HeartbeatAlertNames = []string{"Watchdog", "DeadMansSwitch"}
+
+// RemoteOnlyHeartbeatAlertNames are heartbeat alerts only a remote read sees.
+// kube-prometheus-stack routes InfoInhibitor to its null receiver, so it never
+// reaches the local webhook store; the remote path reads the Alertmanager's
+// alerts API directly, which lists it, always firing.
+var RemoteOnlyHeartbeatAlertNames = []string{"InfoInhibitor"}
+
 // AlertCounter abstracts counting active alerts without importing the alerting package.
 // Used by the dashboard summary endpoint. Can be nil if alerting is unavailable.
 type AlertCounter interface {
 	ActiveAlertCounts(ctx context.Context) (active int, critical int, err error)
 	// ActiveAlertCountsExcluding returns the same counts as ActiveAlertCounts but
 	// skips any alert whose AlertName matches one of the provided excludeAlertNames.
-	// Used by the health signal to filter always-firing heartbeat alerts (Watchdog,
-	// DeadMansSwitch) so they don't depress the cluster health score.
+	// Used by the health signal to filter the always-firing HeartbeatAlertNames
+	// so they don't depress the cluster health score.
 	ActiveAlertCountsExcluding(ctx context.Context, excludeAlertNames ...string) (active int, critical int, err error)
 }
 

@@ -205,7 +205,7 @@ func (h *Handler) gatherHealthInputs(
 	case !h.canList(ctx, user, "alertmanagers", ""):
 		o.alerts.setDenied()
 	default:
-		active, critical, err := h.Alerts.ActiveAlertCountsExcluding(ctx, "Watchdog", "DeadMansSwitch")
+		active, critical, err := h.Alerts.ActiveAlertCountsExcluding(ctx, HeartbeatAlertNames...)
 		if err != nil {
 			// A query error maps to unknown rather than skipped.
 			o.alerts.setUnavailable(SignalStatusUnknown, "alerting unavailable")
