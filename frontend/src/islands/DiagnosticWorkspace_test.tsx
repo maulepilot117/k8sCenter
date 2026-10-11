@@ -244,3 +244,58 @@ for (const { name, results, text, banner, tone } of [
     expect(bar?.classList.contains(banner)).toBe(true);
   });
 }
+
+const TRUNCATED_MESSAGE =
+  "more than 5000 pods in this namespace on the selected cluster; they are left out of this graph";
+
+test("a truncated blast radius says it is incomplete and names each kind", async () => {
+  const root = await mount(200, {
+    data: {
+      target: { kind: "Pod", name: "web", namespace: "team-a" },
+      results: [],
+      blastRadius: {
+        directlyAffected: [],
+        potentiallyAffected: [],
+        truncated: true,
+        errors: { pods: TRUNCATED_MESSAGE },
+      },
+    },
+  });
+  const notice = root.querySelector('[data-testid="blast-radius-truncated"]');
+  expect(notice).not.toBeNull();
+  expect(notice?.textContent).toContain("Blast radius is incomplete");
+  expect(notice?.textContent).toContain(TRUNCATED_MESSAGE);
+});
+
+test("a node-capped blast radius with no read errors says the graph was capped", async () => {
+  const root = await mount(200, {
+    data: {
+      target: { kind: "Pod", name: "web", namespace: "team-a" },
+      results: [],
+      blastRadius: {
+        directlyAffected: [],
+        potentiallyAffected: [],
+        truncated: true,
+      },
+    },
+  });
+  const notice = root.querySelector('[data-testid="blast-radius-truncated"]');
+  expect(notice).not.toBeNull();
+  expect(notice?.textContent).toContain("Blast radius is incomplete");
+  expect(notice?.textContent).toContain("the namespace graph was capped");
+  expect(notice?.textContent).not.toContain("could not be read");
+});
+
+test("a complete blast radius renders no truncation notice", async () => {
+  const root = await mount(200, {
+    data: {
+      target: { kind: "Pod", name: "web", namespace: "team-a" },
+      results: [],
+      blastRadius: { directlyAffected: [], potentiallyAffected: [] },
+    },
+  });
+  expect(
+    root.querySelector('[data-testid="blast-radius-truncated"]'),
+  ).toBeNull();
+  expect(root.textContent).not.toContain("Blast radius is incomplete");
+});

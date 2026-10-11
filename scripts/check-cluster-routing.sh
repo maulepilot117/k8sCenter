@@ -70,7 +70,7 @@ TAB="$(printf '\t')"
 # wires per-request k8s calls. F#14 added server / alerting / gateway /
 # notification / storage / velero — each one had at least one direct
 # .ClientForUser call that the previous list missed.
-HANDLER_DIRS="backend/internal/yaml backend/internal/k8s backend/internal/certmanager backend/internal/networking backend/internal/servicemesh backend/internal/gitops backend/internal/policy backend/internal/externalsecrets backend/internal/monitoring backend/internal/loki backend/internal/topology backend/internal/server backend/internal/alerting backend/internal/gateway backend/internal/notification backend/internal/storage backend/internal/velero backend/internal/changes backend/internal/incidents backend/internal/scanning"
+HANDLER_DIRS="backend/internal/yaml backend/internal/k8s backend/internal/certmanager backend/internal/networking backend/internal/servicemesh backend/internal/gitops backend/internal/policy backend/internal/externalsecrets backend/internal/monitoring backend/internal/loki backend/internal/topology backend/internal/diagnostics backend/internal/server backend/internal/alerting backend/internal/gateway backend/internal/notification backend/internal/storage backend/internal/velero backend/internal/changes backend/internal/incidents backend/internal/scanning"
 
 # File paths (relative to ROOT, prefix-matched) whose direct calls are
 # architecturally legitimate and therefore exempt from the lint:
@@ -96,7 +96,7 @@ SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server backend/intern
 # / .RESTMapper() / .Informers.) is a violation unless annotated: each remaining local
 # read must say why it is local. A package joins this list in the unit that
 # migrates it.
-REMOTE_ROUTED_DIRS="backend/internal/gateway backend/internal/gitops backend/internal/velero backend/internal/storage backend/internal/notification backend/internal/alerting backend/internal/servicemesh backend/internal/externalsecrets backend/internal/certmanager backend/internal/policy backend/internal/changes backend/internal/scanning"
+REMOTE_ROUTED_DIRS="backend/internal/gateway backend/internal/gitops backend/internal/velero backend/internal/storage backend/internal/notification backend/internal/alerting backend/internal/servicemesh backend/internal/externalsecrets backend/internal/certmanager backend/internal/policy backend/internal/changes backend/internal/scanning backend/internal/topology backend/internal/diagnostics backend/internal/monitoring"
 
 # -----------------------------------------------------------------------
 # Helpers
@@ -327,7 +327,7 @@ run_self_test() {
     "backend/internal/yaml/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""
 
   expect_clean "RESTMapper() outside SCHEMA_ROUTED_DIRS must NOT be a violation" \
-    "backend/internal/monitoring/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""
+    "backend/internal/loki/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""
 
   expect_violation "ClientForUser() must be a violation regardless of schema routing" \
     "backend/internal/certmanager/x.go" "${TAB}cs, err := h.K8sClient.ClientForUser(u, g)" ""

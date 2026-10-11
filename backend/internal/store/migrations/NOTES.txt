@@ -670,3 +670,46 @@ Inspect:
       FROM incidents
      WHERE client_request_id IS NOT NULL
      GROUP BY owner_id;
+
+000027_cluster_metrics_binding (#608 PR 4a, remote metrics binding, 2026-10-10)
+------------------------------------------------------------------------------
+
+Adds three columns to the existing cluster_monitoring table: prometheus_token
+(BYTEA, nullable), alertmanager_url (TEXT, nullable) and updated_at
+(TIMESTAMPTZ NOT NULL DEFAULT now()). Purely additive: no backfill.
+
+What it is for:
+  A remote cluster's metrics binding is the cluster's own Prometheus URL plus
+  an optional bearer token, stored with the cluster registration. The
+  cluster_monitoring table has existed since 000003 but nothing ever wrote it,
+  so it is reused instead of adding a table. A row counts as a binding only
+  when prometheus_url is non-empty; a row holding only the legacy grafana
+  columns is not one. prometheus_token is AES-256-GCM encrypted with the same
+  master secret as the cluster credentials (store.Encrypt) and is never
+  returned by the API. alertmanager_url is stored now and consumed by a later
+  change. The row is removed with its cluster (ON DELETE CASCADE from 000003).
+
+Lock impact:
+  The table is empty in every deployment (nothing ever wrote it). ADD COLUMN
+  of nullable columns is catalog-only; the NOT NULL DEFAULT now() column is
+  also catalog-only on PostgreSQL 11+ (the default is evaluated once and kept
+  in the catalog, no rewrite). The ACCESS EXCLUSIVE lock is brief.
+
+Rollback:
+  The down file drops the three columns. Bindings keep their cluster_id and
+  prometheus_url; only the stored tokens and Alertmanager URLs are lost, so a
+  binding that needed a token must have it re-entered after a roll-forward.
+  To run an image that embeds only 000026 against a database recorded at
+  version 27, with every new-image pod stopped, run the 000027 down file, then
+    UPDATE schema_migrations SET version = 26, dirty = false;
+  Leaving the columns in place is also safe for the older image (it never
+  names them); a later roll-forward re-runs the up file without error (ADD
+  COLUMN IF NOT EXISTS, COMMENT ON).
+  TestMigration000027_RoundTripKeepsBindings covers up, down and re-apply.
+
+Inspect:
+    SELECT cluster_id, prometheus_url, prometheus_token IS NOT NULL AS has_token,
+           updated_at
+      FROM cluster_monitoring
+     WHERE COALESCE(prometheus_url, '') <> ''
+     ORDER BY cluster_id;

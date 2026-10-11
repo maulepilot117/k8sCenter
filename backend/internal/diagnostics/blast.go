@@ -7,9 +7,15 @@ import (
 )
 
 // BlastResult contains the resources affected if a target resource fails.
+//
+// Truncated and Errors are the graph's (topology.Graph): when some kinds or
+// nodes are missing from it, the affected lists are a lower bound, and Errors
+// names each missing kind with a fixed sentence.
 type BlastResult struct {
 	DirectlyAffected    []AffectedResource `json:"directlyAffected"`
 	PotentiallyAffected []AffectedResource `json:"potentiallyAffected"`
+	Truncated           bool               `json:"truncated,omitempty"`
+	Errors              map[string]string  `json:"errors,omitempty"`
 }
 
 // AffectedResource describes a resource impacted by a failure.

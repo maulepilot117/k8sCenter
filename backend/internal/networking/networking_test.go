@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	fakedynamic "k8s.io/client-go/dynamic/fake"
 
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -1007,5 +1008,93 @@ func TestRejectNonLocal_CNIConfigWrite(t *testing.T) {
 	}
 	if w.Code != http.StatusNotImplemented {
 		t.Errorf("expected 501, got %d", w.Code)
+	}
+}
+
+// --- Remote refusal for CNI status and Hubble flows (#608, PR #612 #10) ---
+//
+// Both read the LOCAL cluster's CNI detection and Hubble Relay. Under a
+// remote selection they must refuse with 501 rather than show local data
+// under the remote cluster's name; the per-cluster Hubble binding is a later
+// slice of #608.
+
+var networkingTestUser = &auth.User{ID: "u1", Username: "alice", KubernetesUsername: "alice", Roles: []string{"admin"}}
+
+func networkingRequest(method, path, clusterID string) *http.Request {
+	req := httptest.NewRequest(method, path, nil)
+	ctx := auth.ContextWithUser(req.Context(), networkingTestUser)
+	if clusterID != "" {
+		ctx = middleware.WithClusterID(ctx, clusterID)
+	}
+	return req.WithContext(ctx)
+}
+
+func TestHandleCNIStatus_RemoteIs501(t *testing.T) {
+	h := &Handler{Detector: &Detector{}}
+	h.Detector.cached = &CNIInfo{Name: CNICilium}
+
+	w := httptest.NewRecorder()
+	h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", "remoteCluster42"))
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, body %s; want 501", w.Code, w.Body.String())
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte(CNICilium)) {
+		t.Errorf("remote refusal leaks the local CNI: %s", w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("CNI status is not supported for remote clusters")) {
+		t.Errorf("body = %s; want the fixed refusal message", w.Body.String())
+	}
+}
+
+func TestHandleCNIStatus_LocalUnchanged(t *testing.T) {
+	for _, id := range []string{"", "local"} {
+		h := &Handler{Detector: &Detector{}}
+		h.Detector.cached = &CNIInfo{Name: CNICilium}
+
+		w := httptest.NewRecorder()
+		h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", id))
+		if w.Code != http.StatusOK {
+			t.Fatalf("cluster %q: status = %d, body %s; want 200", id, w.Code, w.Body.String())
+		}
+		var body struct {
+			Data CNIInfo `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decoding %s: %v", w.Body.String(), err)
+		}
+		if body.Data.Name != CNICilium {
+			t.Errorf("cluster %q: data.name = %q; want %q", id, body.Data.Name, CNICilium)
+		}
+	}
+}
+
+func TestHandleHubbleFlows_RemoteIs501(t *testing.T) {
+	// Even with a Hubble client wired, a remote selection never reaches the
+	// local relay. A non-nil client proves the refusal comes first.
+	h := &Handler{HubbleClient: &HubbleClient{}}
+
+	w := httptest.NewRecorder()
+	h.HandleHubbleFlows(w, networkingRequest(http.MethodGet, "/api/v1/networking/hubble/flows?namespace=default", "remoteCluster42"))
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, body %s; want 501", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("Hubble flows is not supported for remote clusters")) {
+		t.Errorf("body = %s; want the fixed refusal message", w.Body.String())
+	}
+}
+
+func TestHandleHubbleFlows_LocalUnchanged(t *testing.T) {
+	// The local path still reaches the existing checks: without a Hubble
+	// client it answers the existing 503.
+	for _, id := range []string{"", "local"} {
+		h := &Handler{}
+		w := httptest.NewRecorder()
+		h.HandleHubbleFlows(w, networkingRequest(http.MethodGet, "/api/v1/networking/hubble/flows?namespace=default", id))
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("cluster %q: status = %d, body %s; want 503", id, w.Code, w.Body.String())
+		}
+		if !bytes.Contains(w.Body.Bytes(), []byte("Hubble is not available")) {
+			t.Errorf("cluster %q: body = %s; want the existing 503 message", id, w.Body.String())
+		}
 	}
 }

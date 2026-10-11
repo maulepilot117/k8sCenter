@@ -21,11 +21,22 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// ErrNoMetricsBinding is returned by the Prometheus-backed providers below
+// when the selected remote cluster has no metrics binding (no Prometheus URL
+// registered for it). Callers map it to the "metrics are not configured"
+// state, never to a failure. Defined here (not in monitoring) because
+// monitoring imports this package; monitoring aliases it.
+var ErrNoMetricsBinding = errors.New("metrics are not configured for the selected cluster")
+
 // UtilizationProvider abstracts Prometheus metric queries for CPU/memory.
 // Used by the dashboard summary endpoint. Can be nil if monitoring is unavailable.
+// clusterID selects whose Prometheus answers: the local cluster's discovered
+// Prometheus, or a remote cluster's metrics binding (ErrNoMetricsBinding when
+// it has none). Implementations never answer a remote id from the local
+// Prometheus.
 type UtilizationProvider interface {
-	CPUPercent(ctx context.Context) (float64, error)
-	MemoryPercent(ctx context.Context) (float64, error)
+	CPUPercent(ctx context.Context, clusterID string) (float64, error)
+	MemoryPercent(ctx context.Context, clusterID string) (float64, error)
 }
 
 // AlertCounter abstracts counting active alerts without importing the alerting package.
@@ -46,7 +57,8 @@ type TrendProvider interface {
 	// DashboardTrends range-queries the metric-card series over the given window
 	// at the given step resolution. The handler maps the ?range= tab to these
 	// durations so the dashboard's time-range selector drives every sparkline.
-	DashboardTrends(ctx context.Context, window, step time.Duration) (DashboardTrends, error)
+	// clusterID selects the Prometheus exactly as for UtilizationProvider.
+	DashboardTrends(ctx context.Context, clusterID string, window, step time.Duration) (DashboardTrends, error)
 }
 
 // ErrCertManagerNotInstalled is returned by CertExpiryCounter implementations
@@ -76,8 +88,9 @@ type CertExpiryCounter interface {
 // Components absent from the Prometheus result (e.g. k3s embedded control plane,
 // managed-cloud control planes with no scrape config) map to ComponentUnscraped —
 // the caller treats unscraped as a skipped sub-signal, not a penalty.
+// clusterID selects the Prometheus exactly as for UtilizationProvider.
 type ControlPlaneChecker interface {
-	ControlPlaneStatus(ctx context.Context) (ControlPlaneStates, error)
+	ControlPlaneStatus(ctx context.Context, clusterID string) (ControlPlaneStates, error)
 }
 
 // Handler provides HTTP handler methods for Kubernetes resource operations.

@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import Field from "@/components/ui/form/Field.tsx";
@@ -10,7 +10,14 @@ import type { Column, Row } from "@/components/ui/ResourceTable.tsx";
 import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { api, apiGet, apiPost } from "@/lib/api.ts";
+import {
+  ApiError,
+  api,
+  apiDelete,
+  apiGet,
+  apiPost,
+  apiPut,
+} from "@/lib/api.ts";
 import { showToast } from "@/src/islands/ToastProvider.tsx";
 import {
   LOCAL_CLUSTER_ID,
@@ -39,11 +46,37 @@ interface ClusterInfo {
   lastProbedAt?: string;
 }
 
+/** GET /v1/clusters/{id}/metrics. The token itself is never returned. */
+interface MetricsBinding {
+  clusterId: string;
+  prometheusUrl: string;
+  hasToken: boolean;
+  alertmanagerUrl: string;
+  updatedAt: string;
+}
+
+type MetricsState = "configured" | "not-configured";
+
 type WizardStep = "list" | "connect";
 
 /**
  * Cluster management island — list clusters + add cluster wizard.
  */
+/**
+ * The server's own message for a rejected binding (400) or one another save
+ * changed meanwhile (409), a fixed sentence for an unreachable Prometheus
+ * (502, whose raw error never leaves the server).
+ */
+function metricsErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    if (err.status === 502) return "Could not reach Prometheus at that URL";
+    if (err.status === 400 || err.status === 409) {
+      return err.detail || fallback;
+    }
+  }
+  return fallback;
+}
+
 export default function ClusterManager() {
   const clusters = useSignal<ClusterInfo[]>([]);
   const loading = useSignal(true);
@@ -62,10 +95,132 @@ export default function ClusterManager() {
   // rejects registrations missing both CA and this opt-in.
   const allowInsecureTLS = useSignal(false);
 
+  // Per-cluster metrics binding form (one open at a time).
+  const metricsFor = useSignal<string | null>(null);
+  const metricsState = useSignal<Record<string, MetricsState>>({});
+  const metricsHasToken = useSignal(false);
+  const metricsBusy = useSignal(false);
+  const promUrl = useSignal("");
+  const promToken = useSignal("");
+  // A blank token field keeps the stored token; this sends the explicit
+  // empty token that clears it. A typed token still wins.
+  const clearToken = useSignal(false);
+  const alertmanagerUrl = useSignal("");
+  // Bumped by every load/save/remove and by closing/switching the form. A
+  // response is applied only if its generation is still current AND the form
+  // is still open for the same cluster; otherwise it is dropped, so a late
+  // answer for cluster A never fills (or is saved from) cluster B's form.
+  const metricsGen = useRef(0);
+
   useEffect(() => {
     if (!IS_BROWSER) return;
     loadClusters();
   }, []);
+
+  function setMetricsState(id: string, state: MetricsState) {
+    metricsState.value = { ...metricsState.value, [id]: state };
+  }
+
+  function isCurrent(id: string, gen: number): boolean {
+    return metricsGen.current === gen && metricsFor.value === id;
+  }
+
+  function applyBinding(id: string, b: MetricsBinding) {
+    promUrl.value = b.prometheusUrl;
+    alertmanagerUrl.value = b.alertmanagerUrl ?? "";
+    metricsHasToken.value = b.hasToken;
+    promToken.value = "";
+    clearToken.value = false;
+    setMetricsState(id, "configured");
+  }
+
+  async function toggleMetrics(id: string) {
+    const gen = ++metricsGen.current;
+    if (metricsFor.value === id) {
+      metricsFor.value = null;
+      metricsBusy.value = false;
+      return;
+    }
+    metricsFor.value = id;
+    promUrl.value = "";
+    promToken.value = "";
+    clearToken.value = false;
+    alertmanagerUrl.value = "";
+    metricsHasToken.value = false;
+    metricsBusy.value = true;
+    try {
+      const res = await apiGet<MetricsBinding>(`/v1/clusters/${id}/metrics`);
+      if (!isCurrent(id, gen)) return;
+      applyBinding(id, res.data);
+    } catch (err) {
+      if (!isCurrent(id, gen)) return;
+      if (err instanceof ApiError && err.reason === "metrics_not_configured") {
+        setMetricsState(id, "not-configured");
+      } else {
+        showToast(
+          metricsErrorMessage(err, "Could not load the binding"),
+          "error",
+        );
+      }
+    } finally {
+      if (metricsGen.current === gen) metricsBusy.value = false;
+    }
+  }
+
+  async function saveMetrics(id: string) {
+    const gen = ++metricsGen.current;
+    metricsBusy.value = true;
+    try {
+      const body: Record<string, string> = {
+        prometheusUrl: promUrl.value.trim(),
+      };
+      // Omitted keeps the stored token, "" clears it, a value replaces it.
+      if (promToken.value !== "") body.token = promToken.value;
+      else if (clearToken.value) body.token = "";
+      if (alertmanagerUrl.value.trim() !== "") {
+        body.alertmanagerUrl = alertmanagerUrl.value.trim();
+      }
+      const res = await apiPut<MetricsBinding>(
+        `/v1/clusters/${id}/metrics`,
+        body,
+      );
+      if (!isCurrent(id, gen)) return;
+      applyBinding(id, res.data);
+      showToast("Metrics binding saved", "success");
+    } catch (err) {
+      if (!isCurrent(id, gen)) return;
+      showToast(
+        metricsErrorMessage(err, "Failed to save the binding"),
+        "error",
+      );
+    } finally {
+      if (metricsGen.current === gen) metricsBusy.value = false;
+    }
+  }
+
+  async function removeMetrics(id: string) {
+    const gen = ++metricsGen.current;
+    metricsBusy.value = true;
+    try {
+      await apiDelete(`/v1/clusters/${id}/metrics`);
+      if (!isCurrent(id, gen)) return;
+      promUrl.value = "";
+      promToken.value = "";
+      clearToken.value = false;
+      alertmanagerUrl.value = "";
+      metricsHasToken.value = false;
+      setMetricsState(id, "not-configured");
+      showToast("Metrics binding removed", "success");
+    } catch (err) {
+      if (!isCurrent(id, gen)) return;
+      showToast(
+        metricsErrorMessage(err, "Failed to remove the binding"),
+        "error",
+      );
+    } finally {
+      if (metricsGen.current === gen) metricsBusy.value = false;
+    }
+  }
 
   async function loadClusters() {
     loading.value = true;
@@ -384,6 +539,102 @@ export default function ClusterManager() {
               </span>
             )}
           </div>
+          {!c.isLocal && metricsState.value[c.id] && (
+            <div style={{ marginTop: "4px" }}>
+              <StatusBadge
+                label={
+                  metricsState.value[c.id] === "configured"
+                    ? "metrics: configured"
+                    : "metrics: not configured"
+                }
+                tone={metricsState.value[c.id] === "configured" ? "ok" : "warn"}
+              />
+            </div>
+          )}
+          {!c.isLocal && metricsFor.value === c.id && (
+            <div
+              data-testid="metrics-form"
+              style={{
+                marginTop: "10px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "10px",
+                maxWidth: "520px",
+              }}
+            >
+              <Field label="Prometheus URL">
+                <TextField
+                  value={promUrl.value}
+                  onInput={(v) => {
+                    promUrl.value = v;
+                  }}
+                  placeholder="https://prometheus.example.com"
+                  mono
+                />
+              </Field>
+              <Field label="Bearer token (optional)">
+                <TextField
+                  type="password"
+                  value={promToken.value}
+                  onInput={(v) => {
+                    promToken.value = v;
+                  }}
+                  placeholder="leave blank to keep the stored token"
+                  mono
+                />
+              </Field>
+              <Field label="Alertmanager URL (optional)">
+                <TextField
+                  value={alertmanagerUrl.value}
+                  onInput={(v) => {
+                    alertmanagerUrl.value = v;
+                  }}
+                  placeholder="https://alertmanager.example.com"
+                  mono
+                />
+              </Field>
+              {metricsHasToken.value && (
+                <div class="flex flex-col gap-1">
+                  <span class="text-xs text-text-muted">
+                    A token is stored for this binding.
+                  </span>
+                  <label class="inline-flex items-center gap-2 text-xs text-text-primary">
+                    <input
+                      type="checkbox"
+                      checked={clearToken.value}
+                      disabled={promToken.value !== ""}
+                      onChange={(ev) => {
+                        clearToken.value = ev.currentTarget.checked;
+                      }}
+                    />
+                    Clear the stored token on save
+                  </label>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: "6px" }}>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  disabled={metricsBusy.value || promUrl.value.trim() === ""}
+                  onClick={() => saveMetrics(c.id)}
+                >
+                  Save
+                </Button>
+                {metricsState.value[c.id] === "configured" && (
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="sm"
+                    disabled={metricsBusy.value}
+                    onClick={() => removeMetrics(c.id)}
+                  >
+                    Remove binding
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
           {c.status !== "connected" && c.statusMessage && (
             <div
               style={{
@@ -457,6 +708,14 @@ export default function ClusterManager() {
             }}
           >
             Test
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => toggleMetrics(c.id)}
+          >
+            Metrics
           </Button>
           <Button
             type="button"

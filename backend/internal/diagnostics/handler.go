@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -20,12 +21,19 @@ import (
 	"github.com/kubecenter/kubecenter/internal/topology"
 )
 
+// NotificationEmitter is the part of the notification service diagnostics
+// uses. *notifications.NotificationService implements it.
+type NotificationEmitter interface {
+	Emit(ctx context.Context, n notifications.Notification)
+}
+
 // Handler serves diagnostic HTTP endpoints.
 type Handler struct {
 	Lister        topology.ResourceLister
 	TopoBuilder   *topology.Builder
 	AccessChecker *resources.AccessChecker
-	NotifService  *notifications.NotificationService
+	Clients       k8s.ClusterClients
+	NotifService  NotificationEmitter
 	Logger        *slog.Logger
 }
 
@@ -143,33 +151,95 @@ var kindNeedsPods = map[string]bool{
 	"Service":     true,
 }
 
-// remoteUnsupportedMessage is the fixed refusal for a diagnostics request
-// under a remote cluster selection.
-const remoteUnsupportedMessage = "resource diagnostics are available for the local cluster only"
+// tooManyMessage names a remote list of resource in namespace that exceeded
+// the remote read cap. The namespace summary answers with it as is (it has no
+// field to say it is partial, so it is refused rather than undercounted); a
+// target lookup appends the object it could not find.
+func tooManyMessage(resource, namespace string) string {
+	return "too many " + resource + " in namespace " + namespace + " on the selected cluster"
+}
 
-// refuseRemote answers 501 unsupported_platform and returns true when the
-// request targets a remote cluster (#532). Diagnostics resolve the target,
-// its related pods and the blast-radius graph from the local cluster's
-// informers (Lister, TopoBuilder), which remote clusters do not have, so
-// answering would report the local cluster's state under the remote
-// cluster's name. It runs before any lister read, SAR or notification. The
-// capability row diagnostics.read declares the same.
-func (h *Handler) refuseRemote(w http.ResponseWriter, r *http.Request) bool {
-	clusterID := middleware.ClusterIDFromContext(r.Context())
+// sources returns the lister for the request's cluster. The local cluster
+// uses the informer-backed Lister. A remote cluster gets a per-request
+// topology.RemoteLister over a client impersonating the user
+// (topology.NewRemoteListerFor); there is never a local fallback. On failure
+// the response is written and ok is false.
+func (h *Handler) sources(ctx context.Context, w http.ResponseWriter, user *auth.User, clusterID string) (topology.ResourceLister, bool) {
 	if k8s.IsLocalClusterID(clusterID) {
-		return false
+		return h.Lister, true
 	}
-	// The cluster id goes to the log only, never onto the wire.
-	h.Logger.Info("diagnostics refused on remote cluster", "clusterID", clusterID, "path", r.URL.Path)
-	httputil.WriteErrorWithReason(w, http.StatusNotImplemented, remoteUnsupportedMessage,
-		string(k8s.ReasonUnsupportedPlatform), nil)
-	return true
+	lister, err := topology.NewRemoteListerFor(ctx, h.Clients, clusterID, user, h.Logger)
+	if errors.Is(err, topology.ErrNoClusterClients) {
+		h.Logger.Error("diagnostics: remote cluster requested but no cluster clients are wired", "clusterID", clusterID)
+		httputil.WriteError(w, http.StatusInternalServerError, "diagnostics are not configured", "")
+		return nil, false
+	}
+	if err != nil {
+		httputil.WriteTargetError(w, err)
+		return nil, false
+	}
+	return lister, true
+}
+
+// writeRemoteListError answers a remote list failure with a fixed message:
+// forbidden is a 403 naming the resource and namespace, anything else goes
+// through httputil.WriteRemoteError (an upstream 401 is 502
+// credentials_invalid, a transport failure or deadline 502 unreachable). The
+// raw error reaches only the log.
+func (h *Handler) writeRemoteListError(w http.ResponseWriter, err error, clusterID, resource, namespace string) {
+	h.Logger.Error("diagnostics: remote list failed", "clusterID", clusterID, "resource", resource, "namespace", namespace, "error", err)
+	if apierrors.IsForbidden(err) {
+		httputil.WriteError(w, http.StatusForbidden,
+			"you do not have permission to list "+resource+" in namespace "+namespace+" on the selected cluster", "")
+		return
+	}
+	httputil.WriteRemoteError(w, err)
+}
+
+// writeAccessCheckError answers a permission check that could not be
+// answered. On a remote cluster the SAR ran on that cluster, so its failure
+// goes through httputil.WriteRemoteError (a transport failure is 502
+// unreachable); locally it is a 500. The raw error reaches only the log.
+func (h *Handler) writeAccessCheckError(w http.ResponseWriter, err error, remote bool, clusterID string) {
+	h.Logger.Error("RBAC check failed", "clusterID", clusterID, "error", err)
+	if remote {
+		httputil.WriteRemoteError(w, err)
+		return
+	}
+	httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+}
+
+// writeResolveError answers a Resolve failure: an absent target is 404; on a
+// remote cluster a target list cut short by the read cap is 502 (the target
+// may lie beyond it, so it is never called absent) and any other list failure
+// goes through writeRemoteListError; a local failure is 500.
+func (h *Handler) writeResolveError(w http.ResponseWriter, err error, remote bool, clusterID, namespace, kind, name, resource string) {
+	switch {
+	case errors.Is(err, ErrTargetNotFound):
+		httputil.WriteError(w, http.StatusNotFound, err.Error(), "")
+	case remote && isTruncated(err):
+		h.Logger.Warn("diagnostics: remote target list truncated", "clusterID", clusterID, "kind", kind, "name", name, "error", err)
+		httputil.WriteError(w, http.StatusBadGateway, tooManyMessage(resource, namespace)+" to find "+kind+" "+name, "")
+	case remote:
+		h.writeRemoteListError(w, err, clusterID, resource, namespace)
+	default:
+		h.Logger.Error("failed to resolve diagnostic target", "kind", kind, "name", name, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to resolve resource", "")
+	}
 }
 
 // HandleDiagnostics runs diagnostic checks and blast radius analysis for a resource.
 // GET /api/v1/diagnostics/{namespace}/{kind}/{name}
 //
-// Refused on a remote cluster (see refuseRemote).
+// On a remote cluster the target, its related pods and the blast-radius graph
+// are read directly from that cluster as the user (see sources), within
+// topology.RemoteReadTimeout. A target list cut short by the read cap without the
+// target in it is a 502, never a 404; related pods cut short are a
+// ReasonTruncated limitation. A permission check or graph read that fails
+// (other than a refusal, the read cap or the deadline) is answered through
+// httputil.WriteRemoteError. A graph missing kinds marks the blast radius
+// truncated, naming the kinds in errors. Findings are not sent to the
+// notification feed.
 func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// Request-scoped timeout for the entire diagnostics + topology build
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -185,9 +255,10 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.refuseRemote(w, r) {
-		return
-	}
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	remote := !k8s.IsLocalClusterID(clusterID)
+	ctx, cancelRemote := topology.WithRemoteTimeout(ctx, clusterID)
+	defer cancelRemote()
 
 	// RBAC check: user must be able to list the target resource kind
 	resource, known := kindToResource[kind]
@@ -196,11 +267,18 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clusterID := middleware.ClusterIDFromContext(ctx)
+	// Resolve the cluster before the first permission check: on a remote
+	// selection the check's own client resolution would be the first contact
+	// and an unregistered cluster or registry outage would read as a
+	// reasonless 502 instead of 404 cluster_unknown / 503 db_unavailable.
+	lister, ok := h.sources(ctx, w, user, clusterID)
+	if !ok {
+		return
+	}
+
 	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
 	if err != nil {
-		h.Logger.Error("RBAC check failed", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		h.writeAccessCheckError(w, err, remote, clusterID)
 		return
 	}
 	if !allowed {
@@ -217,15 +295,18 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// treated as denial inside resolveRelatedRBAC (review-fix REL-003 / adv-5).
 	related := h.resolveRelatedRBAC(ctx, user, clusterID, kind, namespace)
 
+	// The blast-radius graph reads the same lister, so on a remote cluster
+	// it reuses the lists Resolve made. It has no overlay providers: those
+	// read local-cluster inventories.
+	builder := h.TopoBuilder
+	if remote {
+		builder = topology.NewBuilder(lister, nil, h.Logger)
+	}
+
 	// Resolve the target resource and its related pods
-	target, err := Resolve(ctx, h.Lister, namespace, kind, name, related)
+	target, err := Resolve(ctx, lister, namespace, kind, name, related)
 	if err != nil {
-		if errors.Is(err, ErrTargetNotFound) {
-			httputil.WriteError(w, http.StatusNotFound, err.Error(), "")
-			return
-		}
-		h.Logger.Error("failed to resolve diagnostic target", "kind", kind, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to resolve resource", "")
+		h.writeResolveError(w, err, remote, clusterID, namespace, kind, name, resource)
 		return
 	}
 
@@ -234,13 +315,22 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	results := RunDiagnostics(ctx, target)
 	checks := Normalize(clusterID, target, time.Now().UTC(), results)
 
-	// Build topology graph for blast radius analysis
+	// Build topology graph for blast radius analysis. A remote graph that
+	// could not be read fails the request: an empty blast radius would read
+	// as "nothing else is affected". Locally the graph is best effort.
 	var blast *BlastResult
-	if h.TopoBuilder != nil {
-		graph, err := h.TopoBuilder.BuildNamespaceGraph(ctx, namespace, user, h.AccessChecker)
-		if err != nil {
+	var graph *topology.Graph
+	if builder != nil {
+		g, err := builder.BuildNamespaceGraph(ctx, namespace, user, h.AccessChecker)
+		switch {
+		case err != nil && remote:
+			h.Logger.Error("diagnostics: remote blast-radius graph failed", "clusterID", clusterID, "namespace", namespace, "error", err)
+			httputil.WriteRemoteError(w, err)
+			return
+		case err != nil:
 			h.Logger.Warn("failed to build topology graph for blast radius", "error", err)
-		} else {
+		default:
+			graph = g
 			// Find the target node ID in the graph
 			targetID := findNodeID(graph, kind, name)
 			if targetID != "" {
@@ -255,9 +345,19 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 			PotentiallyAffected: []AffectedResource{},
 		}
 	}
+	// A graph missing nodes makes the blast radius a lower bound. Its Errors
+	// are fixed sentences naming a kind, never a raw error.
+	if graph != nil {
+		blast.Truncated = graph.Truncated
+		blast.Errors = graph.Errors
+	}
 
-	// Emit notifications for critical/warning diagnostic findings
-	if h.NotifService != nil {
+	// Emit notifications for critical/warning diagnostic findings, for the
+	// local cluster only. The feed shows a non-admin the notifications of the
+	// local namespaces they can read, matched by namespace name alone, so a
+	// remote finding would reach whoever can read a same-named local
+	// namespace. Remote clusters are admin-only.
+	if h.NotifService != nil && !remote {
 		for _, result := range results {
 			if result.Status == "fail" {
 				h.NotifService.Emit(ctx, findingNotification(clusterID, target, result))
@@ -279,25 +379,36 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 // HandleNamespaceSummary returns a quick diagnostic summary for a namespace.
 // GET /api/v1/diagnostics/{namespace}/summary
 //
-// Refused on a remote cluster (see refuseRemote).
+// On a remote cluster the pods are listed directly from that cluster as the
+// user (see sources), within topology.RemoteReadTimeout. The summary has no
+// field to say it is partial, so a pod list cut short by the read cap is a
+// 502 (tooManyMessage) rather than an undercount.
 func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	namespace := chi.URLParam(r, "namespace")
 
-	user, ok := auth.UserFromContext(r.Context())
+	user, ok := auth.UserFromContext(ctx)
 	if !ok {
 		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "")
 		return
 	}
 
-	if h.refuseRemote(w, r) {
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	remote := !k8s.IsLocalClusterID(clusterID)
+	ctx, cancel := topology.WithRemoteTimeout(ctx, clusterID)
+	defer cancel()
+
+	// Resolve the cluster first so an unknown cluster is a target error, not
+	// a failure of the permission check's client resolution (see
+	// HandleDiagnostics).
+	lister, ok := h.sources(ctx, w, user, clusterID)
+	if !ok {
 		return
 	}
 
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-	allowed, err := h.AccessChecker.CanAccess(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", namespace)
+	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", topology.KindPods, namespace)
 	if err != nil {
-		h.Logger.Error("RBAC check failed", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		h.writeAccessCheckError(w, err, remote, clusterID)
 		return
 	}
 	if !allowed {
@@ -305,7 +416,16 @@ func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	pods, err := h.Lister.ListPods(r.Context(), namespace)
+	pods, err := lister.ListPods(ctx, namespace)
+	if err != nil && remote {
+		if isTruncated(err) {
+			h.Logger.Warn("diagnostics: remote pod list truncated", "clusterID", clusterID, "namespace", namespace, "error", err)
+			httputil.WriteError(w, http.StatusBadGateway, tooManyMessage(topology.KindPods, namespace), "")
+			return
+		}
+		h.writeRemoteListError(w, err, clusterID, topology.KindPods, namespace)
+		return
+	}
 	if err != nil {
 		h.Logger.Error("failed to list pods for namespace summary", "namespace", namespace, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to list pods", "")

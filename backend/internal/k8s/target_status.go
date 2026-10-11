@@ -76,6 +76,11 @@ const (
 	// ReasonDBUnavailable — no ClusterStore wired (local-only deployment)
 	// and a non-local target was asked for.
 	ReasonDBUnavailable ReasonCode = "db_unavailable"
+	// ReasonMetricsNotConfigured — the selected remote cluster has no
+	// metrics binding (no Prometheus registered for it), so a
+	// Prometheus-backed answer does not exist. Emitted by the monitoring
+	// routes and the dashboard, not by the capabilities endpoint.
+	ReasonMetricsNotConfigured ReasonCode = "metrics_not_configured"
 )
 
 // ClassifyTargetErr maps a TargetSchemaFor (or ClientForCluster) error to a target-resolution
