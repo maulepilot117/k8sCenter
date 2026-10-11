@@ -50,6 +50,15 @@ type AlertCounter interface {
 	ActiveAlertCountsExcluding(ctx context.Context, excludeAlertNames ...string) (active int, critical int, err error)
 }
 
+// RemoteAlertCounter abstracts counting a selected remote cluster's active
+// alerts from its own Alertmanager. It is separate from AlertCounter, which
+// stays the local webhook-store source. Errors keep the monitoring package's
+// Alertmanager classes so the dashboard can pick a fixed detail per class.
+// Can be nil if monitoring is unavailable.
+type RemoteAlertCounter interface {
+	RemoteAlertCounts(ctx context.Context, clusterID string) (active int, critical int, err error)
+}
+
 // TrendProvider abstracts short historical time-series for the dashboard metric
 // cards (node/pod/service/alert counts). Used by the dashboard trends endpoint.
 // Can be nil if monitoring is unavailable.
@@ -137,6 +146,7 @@ type Handler struct {
 	ClusterID     string
 	Utilization   UtilizationProvider // Optional — nil if monitoring unavailable
 	Alerts        AlertCounter        // Optional — nil if alerting unavailable
+	RemoteAlerts  RemoteAlertCounter  // Optional — nil if monitoring unavailable
 	Trends        TrendProvider       // Optional — nil if monitoring unavailable
 	CertExpiry    CertExpiryCounter   // Optional — nil if cert-manager unavailable
 	ControlPlane  ControlPlaneChecker // Optional — nil if monitoring unavailable
