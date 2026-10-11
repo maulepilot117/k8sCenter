@@ -29,6 +29,10 @@ const (
 	testRemoteID   = "0123456789abcdef0123456789abcdef"
 	testPublicProm = "https://8.8.8.8:9090"
 	testToken      = "s3cr3t-bearer-token-value"
+	// testAMA and testAMB are Alertmanagers on two different origins.
+	testAMA     = "https://8.8.4.4:9093"
+	testAMB     = "https://1.0.0.1:9093"
+	testAMToken = "am-s3cr3t-bearer-token"
 )
 
 // fakeMetricsStore is an in-memory clusterMetricsStore with the same token
@@ -188,6 +192,9 @@ type metricsFixture struct {
 	audit   *captureAudit
 	probes  *[]probeCall
 	probeFn *func(ctx context.Context, url, token string) error
+	// amProbes and amProbeFn are the Alertmanager probe's record and stub.
+	amProbes  *[]probeCall
+	amProbeFn *func(ctx context.Context, url, token string) error
 }
 
 func newMetricsFixture(t *testing.T) *metricsFixture {
@@ -211,8 +218,17 @@ func newMetricsFixture(t *testing.T) *metricsFixture {
 			"local-row":  {ID: "local-row", Name: "local", IsLocal: true},
 		}},
 	}
-	f := &metricsFixture{srv: s, store: fs, evicter: ev, audit: ca, probes: &probes, probeFn: &probeFn}
+	var amProbes []probeCall
+	amProbeFn := func(_ context.Context, url, token string) error {
+		amProbes = append(amProbes, probeCall{url, token})
+		return nil
+	}
+	f := &metricsFixture{
+		srv: s, store: fs, evicter: ev, audit: ca,
+		probes: &probes, probeFn: &probeFn, amProbes: &amProbes, amProbeFn: &amProbeFn,
+	}
 	s.probePrometheus = func(ctx context.Context, url, token string) error { return (*f.probeFn)(ctx, url, token) }
+	s.probeAlertmanager = func(ctx context.Context, url, token string) error { return (*f.amProbeFn)(ctx, url, token) }
 	r := chi.NewRouter()
 	s.registerClusterRoutes(r)
 	f.router = r
@@ -278,7 +294,8 @@ func TestClusterMetrics_PutWithTokenStoresProbesEvictsAudits(t *testing.T) {
 	data := decodeMetricsBinding(t, rec)
 	want := map[string]any{
 		"clusterId": testRemoteID, "prometheusUrl": testPublicProm, "hasToken": true,
-		"alertmanagerUrl": "", "updatedAt": "2026-10-10T12:00:00Z",
+		"alertmanagerUrl": "", "hasAlertmanagerToken": false, "alertmanagerTokenStale": false,
+		"updatedAt": "2026-10-10T12:00:00Z",
 	}
 	for k, v := range want {
 		if data[k] != v {
@@ -504,27 +521,6 @@ func TestClusterMetrics_PutWithoutTokenNewHostNoStoredTokenProceeds(t *testing.T
 	}
 }
 
-func TestSameMetricsOrigin(t *testing.T) {
-	cases := []struct {
-		a, b string
-		want bool
-	}{
-		{"https://prom.example.com:9090", "https://prom.example.com:9090/api", true},
-		{"https://Prom.Example.com:9090", "HTTPS://prom.example.COM:9090", true},
-		{"https://prom.example.com:9090", "https://prom.example.com:9091", false},
-		{"https://prom.example.com", "https://prom.example.com:443", false},
-		{"https://prom.example.com", "https://evil.example.com", false},
-		{"https://prom.example.com", "http://prom.example.com", false},
-		{"https://prom.example.com", "::not a url", false},
-		{"", "https://prom.example.com", false},
-	}
-	for _, c := range cases {
-		if got := sameMetricsOrigin(c.a, c.b); got != c.want {
-			t.Errorf("sameMetricsOrigin(%q, %q) = %v; want %v", c.a, c.b, got, c.want)
-		}
-	}
-}
-
 func TestClusterMetrics_PutExplicitEmptyTokenClears(t *testing.T) {
 	f := newMetricsFixture(t)
 	f.do(t, metricsAdmin, http.MethodPut, testRemoteID, `{"prometheusUrl":"`+testPublicProm+`","token":"`+testToken+`"}`)
@@ -559,6 +555,12 @@ func TestClusterMetrics_PutRejectsBadInput(t *testing.T) {
 		{"userinfo", `{"prometheusUrl":"https://u:p@8.8.8.8:9090"}`, "prometheusUrl must not contain credentials; send the token separately"},
 		{"private alertmanager", `{"prometheusUrl":"` + testPublicProm + `","alertmanagerUrl":"https://192.168.1.10:9093"}`, "alertmanagerUrl resolves to a private or reserved address"},
 		{"http alertmanager", `{"prometheusUrl":"` + testPublicProm + `","alertmanagerUrl":"http://8.8.4.4:9093"}`, "alertmanagerUrl must be a valid HTTPS URL"},
+		{"prometheus query string", `{"prometheusUrl":"` + testPublicProm + `/?x=1"}`, "prometheusUrl must not contain a query string or fragment"},
+		{"prometheus fragment", `{"prometheusUrl":"` + testPublicProm + `/#f"}`, "prometheusUrl must not contain a query string or fragment"},
+		{"alertmanager query string", `{"prometheusUrl":"` + testPublicProm + `","alertmanagerUrl":"` + testAMA + `?filter=x"}`, "alertmanagerUrl must not contain a query string or fragment"},
+		{"alertmanager fragment", `{"prometheusUrl":"` + testPublicProm + `","alertmanagerUrl":"` + testAMA + `#f"}`, "alertmanagerUrl must not contain a query string or fragment"},
+		{"alertmanager token without url", `{"prometheusUrl":"` + testPublicProm + `","alertmanagerToken":"` + testAMToken + `"}`, msgAlertmanagerTokenNoURL},
+		{"oversized alertmanager token", `{"prometheusUrl":"` + testPublicProm + `","alertmanagerUrl":"` + testAMA + `","alertmanagerToken":"` + strings.Repeat("a", maxMetricsTokenBytes+1) + `"}`, "alertmanagerToken too large (max 64KB)"},
 		{"oversized token", `{"prometheusUrl":"` + testPublicProm + `","token":"` + strings.Repeat("a", maxMetricsTokenBytes+1) + `"}`, "token too large (max 64KB)"},
 		{"not json", `not json`, "invalid request body"},
 	}
@@ -572,7 +574,7 @@ func TestClusterMetrics_PutRejectsBadInput(t *testing.T) {
 			if got := decodeMetricsErr(t, rec).Error.Message; got != tc.wantMsg {
 				t.Errorf("message = %q; want %q", got, tc.wantMsg)
 			}
-			if len(*f.probes) != 0 || f.store.upsertCalled || len(f.evicter.list()) != 0 {
+			if len(*f.probes) != 0 || len(*f.amProbes) != 0 || f.store.upsertCalled || len(f.evicter.list()) != 0 {
 				t.Errorf("a rejected request probed, stored or evicted (probes %v, upsert %v)", *f.probes, f.store.upsertCalled)
 			}
 		})
@@ -811,4 +813,298 @@ func TestEvictMetricsClient(t *testing.T) {
 		t.Errorf("evicted = %v", got)
 	}
 	(&Server{}).evictMetricsClient(testRemoteID) // nil resolver: no panic
+}
+
+// seedAlertmanagerBinding stores a binding with a Prometheus token and an
+// Alertmanager on amURL with amToken, through the PUT, and resets the probe,
+// store, audit and eviction records so a test sees only its own save.
+func (f *metricsFixture) seedAlertmanagerBinding(t *testing.T, amURL, amToken string) {
+	t.Helper()
+	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+		`{"prometheusUrl":"`+testPublicProm+`","token":"`+testToken+`","alertmanagerUrl":"`+amURL+`","alertmanagerToken":"`+amToken+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seed PUT status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	*f.probes, *f.amProbes = nil, nil
+	f.store.upsertCalled = false
+	f.audit.entries = nil
+	f.evicter.evicted = nil
+}
+
+// assertNoSecretsOrAddresses fails when the response carries a token, or any
+// audit entry carries a token or a binding address.
+func (f *metricsFixture) assertNoSecretsOrAddresses(t *testing.T, rec *httptest.ResponseRecorder, secrets ...string) {
+	t.Helper()
+	tokens := append([]string{testToken, testAMToken}, secrets...)
+	for _, s := range tokens {
+		if strings.Contains(rec.Body.String(), s) {
+			t.Errorf("response carries %q: %s", s, rec.Body.String())
+		}
+	}
+	forbidden := append(tokens, "8.8.8.8", "8.8.4.4", "1.0.0.1")
+	for _, e := range f.audit.entries {
+		dump := fmt.Sprintf("%+v", e)
+		for _, s := range forbidden {
+			if strings.Contains(dump, s) {
+				t.Errorf("audit entry carries %q: %s", s, dump)
+			}
+		}
+	}
+}
+
+// A new Alertmanager URL with a token is probed with that token, then the
+// token is stored for that URL's origin; the response reports it is stored
+// without carrying it.
+func TestClusterMetrics_PutAlertmanagerTokenProbesAndStores(t *testing.T) {
+	f := newMetricsFixture(t)
+	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+		`{"prometheusUrl":"`+testPublicProm+`","alertmanagerUrl":"`+testAMA+`/am","alertmanagerToken":"`+testAMToken+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", rec.Code, rec.Body.String())
+	}
+	if got := *f.amProbes; len(got) != 1 || got[0] != (probeCall{testAMA + "/am", testAMToken}) {
+		t.Errorf("alertmanager probes = %+v; want one with the request URL and token", got)
+	}
+	if got := *f.probes; len(got) != 1 || got[0].token != "" {
+		t.Errorf("prometheus probes = %+v; want one without the Alertmanager token", got)
+	}
+	if f.store.amTokens[testRemoteID] != testAMToken || f.store.amOrigins[testRemoteID] != testAMA {
+		t.Errorf("stored alertmanager token %q origin %q; want the request token for %q",
+			f.store.amTokens[testRemoteID], f.store.amOrigins[testRemoteID], testAMA)
+	}
+	data := decodeMetricsBinding(t, rec)
+	if data["hasAlertmanagerToken"] != true || data["alertmanagerTokenStale"] != false || data["hasToken"] != false {
+		t.Errorf("data = %v; want hasAlertmanagerToken true, stale false, hasToken false", data)
+	}
+	if len(f.audit.entries) != 1 {
+		t.Fatalf("audit entries = %d; want 1", len(f.audit.entries))
+	}
+	f.assertNoSecretsOrAddresses(t, rec)
+
+	// The GET reports the same flags.
+	get := f.do(t, metricsAdmin, http.MethodGet, testRemoteID, "")
+	if d := decodeMetricsBinding(t, get); d["hasAlertmanagerToken"] != true || d["alertmanagerTokenStale"] != false {
+		t.Errorf("GET data = %v; want hasAlertmanagerToken true, stale false", d)
+	}
+	f.assertNoSecretsOrAddresses(t, get)
+}
+
+// A keep save on the same Alertmanager origin (a path edit) probes the new
+// URL with the stored token and keeps it.
+func TestClusterMetrics_PutAlertmanagerKeepTokenSameOrigin(t *testing.T) {
+	f := newMetricsFixture(t)
+	f.seedAlertmanagerBinding(t, testAMA, testAMToken)
+
+	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+		`{"prometheusUrl":"`+testPublicProm+`","alertmanagerUrl":"`+testAMA+`/alertmanager"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", rec.Code, rec.Body.String())
+	}
+	if got := *f.amProbes; len(got) != 1 || got[0] != (probeCall{testAMA + "/alertmanager", testAMToken}) {
+		t.Errorf("alertmanager probes = %+v; want the new URL with the stored token", got)
+	}
+	if got := *f.probes; len(got) != 1 || got[0] != (probeCall{testPublicProm, testToken}) {
+		t.Errorf("prometheus probes = %+v; want the stored Prometheus token only", got)
+	}
+	if f.store.amTokens[testRemoteID] != testAMToken {
+		t.Errorf("stored alertmanager token = %q; want it kept", f.store.amTokens[testRemoteID])
+	}
+	if d := decodeMetricsBinding(t, rec); d["hasAlertmanagerToken"] != true {
+		t.Errorf("data = %v; want hasAlertmanagerToken true", d)
+	}
+}
+
+// AE4: moving the Alertmanager to another origin without its token is
+// refused before any request reaches either host, whether or not the
+// Prometheus token is re-entered in the same save.
+func TestClusterMetrics_PutAlertmanagerNewOriginWithoutTokenRefused(t *testing.T) {
+	cases := map[string]string{
+		"both tokens omitted":       `{"prometheusUrl":"` + testPublicProm + `","alertmanagerUrl":"` + testAMB + `"}`,
+		"other port":                `{"prometheusUrl":"` + testPublicProm + `","alertmanagerUrl":"https://8.8.4.4:9094"}`,
+		"new prometheus token only": `{"prometheusUrl":"` + testPublicProm + `","token":"new-prom-token","alertmanagerUrl":"` + testAMB + `"}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newMetricsFixture(t)
+			f.seedAlertmanagerBinding(t, testAMA, testAMToken)
+
+			rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body %s; want 400", rec.Code, rec.Body.String())
+			}
+			if got := decodeMetricsErr(t, rec).Error.Message; got != msgAlertmanagerTokenReentry {
+				t.Errorf("message = %q; want %q", got, msgAlertmanagerTokenReentry)
+			}
+			if len(*f.probes) != 0 || len(*f.amProbes) != 0 {
+				t.Errorf("probes ran on a refused save: prometheus %+v alertmanager %+v", *f.probes, *f.amProbes)
+			}
+			if f.store.upsertCalled {
+				t.Error("store was written on a refused save")
+			}
+			if b := f.store.bindings[testRemoteID]; b.AlertmanagerURL != testAMA || f.store.amTokens[testRemoteID] != testAMToken ||
+				f.store.tokens[testRemoteID] != testToken {
+				t.Errorf("stored binding = %+v; want it untouched", b)
+			}
+			f.assertNoSecretsOrAddresses(t, rec, "new-prom-token")
+		})
+	}
+}
+
+// AE5: a previous-release pod moved the Alertmanager URL to origin B and left
+// the token entered for origin A. The binding reports the token as stale,
+// and a keep save to B, or to another path on B, is refused before any
+// request reaches any host.
+func TestClusterMetrics_PutAlertmanagerStaleTokenRefused(t *testing.T) {
+	for name, amURL := range map[string]string{"same URL": testAMB, "other path on B": testAMB + "/am"} {
+		t.Run(name, func(t *testing.T) {
+			f := newMetricsFixture(t)
+			f.seedAlertmanagerBinding(t, testAMA, testAMToken)
+			// The previous release rewrote the URL and never touched the token columns.
+			b := f.store.bindings[testRemoteID]
+			b.AlertmanagerURL = testAMB
+			f.store.bindings[testRemoteID] = b
+
+			get := f.do(t, metricsAdmin, http.MethodGet, testRemoteID, "")
+			if d := decodeMetricsBinding(t, get); d["hasAlertmanagerToken"] != false || d["alertmanagerTokenStale"] != true {
+				t.Errorf("GET data = %v; want hasAlertmanagerToken false, stale true", d)
+			}
+
+			rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+				`{"prometheusUrl":"`+testPublicProm+`","alertmanagerUrl":"`+amURL+`"}`)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body %s; want 400", rec.Code, rec.Body.String())
+			}
+			if got := decodeMetricsErr(t, rec).Error.Message; got != msgAlertmanagerTokenReentry {
+				t.Errorf("message = %q; want %q", got, msgAlertmanagerTokenReentry)
+			}
+			if len(*f.probes) != 0 || len(*f.amProbes) != 0 || f.store.upsertCalled {
+				t.Errorf("a refused save probed or stored: prometheus %+v alertmanager %+v upsert %v",
+					*f.probes, *f.amProbes, f.store.upsertCalled)
+			}
+			f.assertNoSecretsOrAddresses(t, rec)
+		})
+	}
+}
+
+// Two overlapping saves: A omits the Alertmanager token and passes the
+// re-entry check; while A probes, B changes the Alertmanager. A is refused
+// with 409 and B's binding stands, so B's token never follows A's host.
+func TestClusterMetrics_PutAlertmanagerKeepRacingSaveRefused(t *testing.T) {
+	bodyB := `{"prometheusUrl":"` + testPublicProm + `","token":"` + testToken +
+		`","alertmanagerUrl":"` + testAMB + `","alertmanagerToken":"b-am-token"}`
+	cases := map[string]string{ // the Alertmanager token A's seed stored ("" = none)
+		"B moves the Alertmanager and its token":        testAMToken,
+		"A saw no token and B adds one on another host": "",
+	}
+	for name, seedToken := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newMetricsFixture(t)
+			f.seedAlertmanagerBinding(t, testAMA, seedToken)
+
+			// B runs inside A's Prometheus probe, after both re-entry checks.
+			raced := false
+			*f.probeFn = func(context.Context, string, string) error {
+				if !raced {
+					raced = true
+					if rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, bodyB); rec.Code != http.StatusOK {
+						t.Fatalf("racing PUT status = %d, body %s", rec.Code, rec.Body.String())
+					}
+				}
+				return nil
+			}
+
+			rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+				`{"prometheusUrl":"`+testPublicProm+`","alertmanagerUrl":"`+testAMA+`/am"}`)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, body %s; want 409", rec.Code, rec.Body.String())
+			}
+			if got := decodeMetricsErr(t, rec).Error.Message; got != msgMetricsBindingChanged {
+				t.Errorf("message = %q; want %q", got, msgMetricsBindingChanged)
+			}
+			if b := f.store.bindings[testRemoteID]; b.AlertmanagerURL != testAMB ||
+				f.store.amTokens[testRemoteID] != "b-am-token" || f.store.amOrigins[testRemoteID] != testAMB {
+				t.Errorf("stored binding = %+v token %q origin %q; want B's", b,
+					f.store.amTokens[testRemoteID], f.store.amOrigins[testRemoteID])
+			}
+			// A's Alertmanager probe used its own check's token, never B's.
+			for _, p := range *f.amProbes {
+				if p.url == testAMA+"/am" && p.token != seedToken {
+					t.Errorf("A's alertmanager probe token = %q; want %q", p.token, seedToken)
+				}
+			}
+			if ev := f.evicter.list(); len(ev) != 1 {
+				t.Errorf("evictions = %v; want exactly one (B's)", ev)
+			}
+			f.assertNoSecretsOrAddresses(t, rec, "b-am-token")
+		})
+	}
+}
+
+// A save that leaves the Alertmanager URL and token as they are does not
+// probe the Alertmanager.
+func TestClusterMetrics_PutPrometheusOnlyChangeSkipsAlertmanagerProbe(t *testing.T) {
+	f := newMetricsFixture(t)
+	f.seedAlertmanagerBinding(t, testAMA, testAMToken)
+
+	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+		`{"prometheusUrl":"`+testPublicProm+`/prometheus","alertmanagerUrl":"`+testAMA+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", rec.Code, rec.Body.String())
+	}
+	if len(*f.amProbes) != 0 {
+		t.Errorf("alertmanager probes = %+v; want none", *f.amProbes)
+	}
+	if len(*f.probes) != 1 {
+		t.Errorf("prometheus probes = %+v; want one", *f.probes)
+	}
+	if f.store.amTokens[testRemoteID] != testAMToken {
+		t.Errorf("stored alertmanager token = %q; want it kept", f.store.amTokens[testRemoteID])
+	}
+}
+
+// An Alertmanager that does not answer on a changed URL is a fixed 502 that
+// names the Alertmanager, and nothing is stored.
+func TestClusterMetrics_AlertmanagerProbeFailureIs502FixedMessage(t *testing.T) {
+	f := newMetricsFixture(t)
+	f.seedAlertmanagerBinding(t, testAMA, testAMToken)
+	*f.amProbeFn = func(context.Context, string, string) error {
+		return errors.New("dial tcp 1.0.0.1:9093: connection refused (internal detail)")
+	}
+
+	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID,
+		`{"prometheusUrl":"`+testPublicProm+`","alertmanagerUrl":"`+testAMB+`","alertmanagerToken":"b-am-token"}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body %s; want 502", rec.Code, rec.Body.String())
+	}
+	b := decodeMetricsErr(t, rec)
+	if b.Error.Message != "could not reach Alertmanager at the given URL" || b.Error.Reason != "unreachable" {
+		t.Errorf("error = %+v", b.Error)
+	}
+	if strings.Contains(rec.Body.String(), "internal detail") || strings.Contains(rec.Body.String(), "1.0.0.1") {
+		t.Errorf("body leaks raw detail: %s", rec.Body.String())
+	}
+	if f.store.upsertCalled || len(f.evicter.list()) != 0 || len(f.audit.entries) != 0 {
+		t.Error("a failed Alertmanager probe stored, evicted or audited")
+	}
+	f.assertNoSecretsOrAddresses(t, rec, "b-am-token")
+}
+
+// Clearing the Alertmanager URL clears its token without probing it.
+func TestClusterMetrics_PutClearAlertmanagerURLClearsToken(t *testing.T) {
+	f := newMetricsFixture(t)
+	f.seedAlertmanagerBinding(t, testAMA, testAMToken)
+
+	rec := f.do(t, metricsAdmin, http.MethodPut, testRemoteID, `{"prometheusUrl":"`+testPublicProm+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", rec.Code, rec.Body.String())
+	}
+	if len(*f.amProbes) != 0 {
+		t.Errorf("alertmanager probes = %+v; want none", *f.amProbes)
+	}
+	if f.store.amTokens[testRemoteID] != "" {
+		t.Errorf("stored alertmanager token = %q; want it cleared", f.store.amTokens[testRemoteID])
+	}
+	if d := decodeMetricsBinding(t, rec); d["hasAlertmanagerToken"] != false || d["alertmanagerUrl"] != "" {
+		t.Errorf("data = %v; want no Alertmanager and no token", d)
+	}
 }
