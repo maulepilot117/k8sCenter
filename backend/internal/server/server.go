@@ -406,6 +406,13 @@ func New(deps Deps) *Server {
 	// Service Mesh handler (Istio + Linkerd observability)
 	if deps.ServiceMeshHandler != nil {
 		s.ServiceMeshHandler = deps.ServiceMeshHandler
+		// Remote golden signals and the mTLS cross-check read the cluster's
+		// bound Prometheus through the shared resolver, so a binding edit's
+		// Evict reaches them too. Assigned only when non-nil: the field
+		// stays a true nil interface (no typed nil) without monitoring.
+		if metricsResolver != nil {
+			s.ServiceMeshHandler.Metrics = metricsResolver
+		}
 	}
 
 	// Notification center
