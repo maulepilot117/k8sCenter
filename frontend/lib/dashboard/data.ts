@@ -21,6 +21,7 @@ import { COMPLIANCE_HISTORY_DAYS } from "./severity.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   ABSENT_STATUSES,
+  AMBIGUOUS_REQUEST_STATUSES,
   FAMILY_STATUS_KEYS,
   NOT_FOUND_IS_REFUSAL,
   RANGE_SENSITIVE_KEYS,
@@ -273,6 +274,11 @@ export function classify(err: unknown, base: string): SourceErrorKind {
   // specific claim, and "this cluster does not run it" is more specific than
   // "this request cannot be answered".
   if (UNSUPPORTED_STATUSES[base]?.includes(err.status)) return "unsupported";
+  // Not a remote refusal: the same request is ambiguous on a local cluster
+  // that runs two meshes, so it has its own declaration.
+  if (AMBIGUOUS_REQUEST_STATUSES[base]?.includes(err.status)) {
+    return "unsupported";
+  }
   return "failure";
 }
 
@@ -1189,7 +1195,7 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // configuration the mesh pages themselves treat as unusual.
   //
   // So the card says what the 400 means instead -- which it did NOT do until
-  // `UNSUPPORTED_STATUSES` existed. The mesh family status reports the mesh
+  // `AMBIGUOUS_REQUEST_STATUSES` existed. The mesh family status reports the mesh
   // PRESENT on a dual-mesh cluster, because two are, so the unavailable
   // branch never fired and this fell through to the generic error card:
   // warning colour, a quoted backend message, and a retry that could never
@@ -1418,7 +1424,10 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
  *
  * - `remote`: served by the selected cluster itself.
  * - `binding`: served from the cluster's own Prometheus through its metrics
- *   binding; without one the answer is `metrics_not_configured`.
+ *   binding; without one the answer is `metrics_not_configured`, as a 404 on
+ *   the monitoring routes or, for `mesh-golden-signals`, as a 200 whose body
+ *   carries the reason (`metrics_not_configured`, or `unreachable` when a
+ *   bound Prometheus answered nothing).
  * - `installation`: reads this k8sCenter install, not the selected cluster.
  * - `unsupported`: refused for a remote cluster; must be named in
  *   `UNSUPPORTED_STATUSES` so the card says so instead of showing a failure.
@@ -1470,7 +1479,7 @@ export const REMOTE_BEHAVIOUR: Record<
   "scanning-status": "remote",
   "snapshots-status": "remote",
   "gateway-status": "remote",
-  "mesh-golden-signals": "unsupported",
+  "mesh-golden-signals": "binding",
   "hubble-flows": "unsupported",
   "hubble-status": "unsupported",
   "policy-compliance-history": "unsupported",

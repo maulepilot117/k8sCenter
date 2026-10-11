@@ -720,18 +720,36 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * cluster without one answers 404 `metrics_not_configured`, which `classify`
  * in data.ts reads by reason rather than by status.
  *
+ * `mesh-golden-signals` is NOT here: its 400 (a cluster running both meshes)
+ * is not a remote refusal, so it lives in `AMBIGUOUS_REQUEST_STATUSES` below
+ * and applies to the local and the remote cluster alike.
+ *
  * `diagnostics-summary` is deliberately absent: the route serves remote
  * clusters, so a 501 from it is an ordinary failure, not a refusal.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
   {
-    "mesh-golden-signals": [400],
     // Remote clusters never answer these three: the backend refuses with 501
     // (compliance history and Hubble are recorded for the local install only).
     "policy-compliance-history": [501],
     "hubble-flows": [501],
     "hubble-status": [501],
   };
+
+/**
+ * Statuses that mean "the request is ambiguous on this cluster", whichever
+ * cluster is selected. Separate from `UNSUPPORTED_STATUSES` because that
+ * declaration is the set of remote refusals, and these also happen locally.
+ *
+ * `mesh-golden-signals` answers 400 on a cluster running both Istio and
+ * Linkerd, asking to be told which mesh. `classify` reads this as
+ * `unsupported` (muted, no retry, the backend's message shown).
+ */
+export const AMBIGUOUS_REQUEST_STATUSES: Readonly<
+  Record<string, readonly number[]>
+> = {
+  "mesh-golden-signals": [400],
+};
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
  * what the pre-registry three-row layout already approximated. */

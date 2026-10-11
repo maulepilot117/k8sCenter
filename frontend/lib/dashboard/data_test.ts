@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { ApiError } from "@/lib/api.ts";
 import type { SourceCache, SourceFetcher } from "./data.ts";
 import {
+  classify,
   createSourceCache,
   DASHBOARD_FETCHERS,
   DASHBOARD_REFRESH_MS,
@@ -14,6 +15,7 @@ import { sourceKeyFor } from "./params.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   ABSENT_STATUSES,
+  AMBIGUOUS_REQUEST_STATUSES,
   DATA_SOURCE_KEYS,
   FAMILY_STATUS_KEYS,
   RANGE_SENSITIVE_KEYS,
@@ -1779,6 +1781,16 @@ test("an unsupported key is named in UNSUPPORTED_STATUSES, a remote or binding k
       expect(listed).toBe(false);
     }
   }
+});
+
+test("mesh-golden-signals is a binding source whose dual-mesh 400 has its own declaration", () => {
+  expect(REMOTE_BEHAVIOUR["mesh-golden-signals"]).toBe("binding");
+  expect("mesh-golden-signals" in UNSUPPORTED_STATUSES).toBe(false);
+  expect(AMBIGUOUS_REQUEST_STATUSES["mesh-golden-signals"]).toEqual([400]);
+  expect(
+    classify(new ApiError(400, 400, "both meshes"), "mesh-golden-signals"),
+  ).toBe("unsupported");
+  expect(classify(new ApiError(400, 400, "x"), "cluster-info")).toBe("failure");
 });
 
 test("a 404 metrics_not_configured answer is unsupported, with the not-configured message", async () => {
