@@ -40,19 +40,23 @@ export function failureOf(err: unknown): PollFailure | null {
     : null;
 }
 
+/** Whether the failed request read `what` or saved a change to it. */
+export type PanelOperation = "read" | "save";
+
 /**
- * The state for a failure reading or writing `what` (e.g. "BGP status").
+ * The state for a failure reading or saving `what` (e.g. "BGP status").
  * A refusal offers no retry: retrying cannot change the answer (#608 R5).
  */
 export function panelState(
   failure: PollFailure | null,
   what: string,
+  op: PanelOperation = "read",
 ): PanelState {
   const reason = failure?.reason;
   if (failure?.status === 403 || reason === "forbidden") {
     return {
       kind: "forbidden",
-      message: `You do not have permission to read ${what} on this cluster.`,
+      message: `You do not have permission to ${op === "save" ? "change" : "read"} ${what} on this cluster.`,
       action: null,
     };
   }
@@ -83,13 +87,16 @@ export function panelState(
   if (failure?.status === 429 || reason === "tunnel_limit") {
     return {
       kind: "busy",
-      message: `Too many requests to this cluster right now. Try loading ${what} again shortly.`,
+      message: `Too many requests to this cluster right now. Try ${op === "save" ? "saving" : "loading"} ${what} again shortly.`,
       action: "retry",
     };
   }
   return {
     kind: "unavailable",
-    message: `Could not read ${what} from this cluster.`,
+    message:
+      op === "save"
+        ? `Could not save ${what} on this cluster. Your edit is kept; try again.`
+        : `Could not read ${what} from this cluster.`,
     action: "retry",
   };
 }

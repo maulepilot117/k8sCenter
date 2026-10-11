@@ -1,8 +1,13 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { Card } from "@/components/ui/Card.tsx";
-import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
 import { apiGet, apiPut } from "@/lib/api.ts";
+import {
+  failureOf,
+  type PanelState,
+  panelState,
+} from "@/lib/networking-state.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface CiliumConfig {
@@ -12,66 +17,128 @@ interface CiliumConfig {
   configMapNamespace: string;
   editable: boolean;
   config: Record<string, string>;
+  /**
+   * The cluster and registration this config was read from. An edit echoes
+   * both and is addressed to that cluster, never the live selection, so it
+   * cannot land on a cluster the operator did not load (#608 KTD6).
+   */
+  targetCluster?: string;
+  targetGeneration?: string;
 }
+
+const WHAT = "the Cilium configuration";
+
+/** A save that landed, followed by a re-read that did not. */
+const SAVED_NOT_REFRESHED: PanelState = {
+  kind: "unavailable",
+  message:
+    "Saved. The latest configuration could not be loaded, so other values shown may be out of date.",
+  action: "retry",
+};
 
 export default function CiliumConfigEditor() {
   const config = useSignal<CiliumConfig | null>(null);
   const loading = useSignal(true);
+  const loadState = useSignal<PanelState | null>(null);
   const editKey = useSignal<string | null>(null);
   const editValue = useSignal("");
   const saving = useSignal(false);
-  const saveError = useSignal<string | null>(null);
+  // The outcome of the last save, and what its "Try again" repeats.
+  const notice = useSignal<PanelState | null>(null);
+  const retry = useSignal<"save" | "refresh">("save");
 
-  const fetchConfig = async () => {
+  /** Reads the config. Returns the failure state, or null on success. */
+  const fetchConfig = async (): Promise<PanelState | null> => {
     try {
       const resp = await apiGet<CiliumConfig | Record<string, unknown>>(
         "/v1/networking/cni/config",
       );
-      if (resp.data && "config" in resp.data) {
-        config.value = resp.data as CiliumConfig;
-      } else {
-        config.value = null;
-      }
-    } catch {
-      // Config may not be available
-    } finally {
-      loading.value = false;
+      config.value =
+        resp.data && "config" in resp.data ? (resp.data as CiliumConfig) : null;
+      return null;
+    } catch (err) {
+      return panelState(failureOf(err), WHAT);
     }
+  };
+
+  const load = async () => {
+    loading.value = true;
+    loadState.value = await fetchConfig();
+    loading.value = false;
+  };
+
+  const refresh = async () => {
+    notice.value = (await fetchConfig()) ? SAVED_NOT_REFRESHED : null;
   };
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    fetchConfig();
+    load();
   }, []);
+
+  const closeEdit = () => {
+    editKey.value = null;
+    editValue.value = "";
+  };
 
   const startEdit = (key: string, value: string) => {
     editKey.value = key;
     editValue.value = value;
-    saveError.value = null;
+    notice.value = null;
   };
 
   const cancelEdit = () => {
-    editKey.value = null;
-    editValue.value = "";
-    saveError.value = null;
+    closeEdit();
+    notice.value = null;
   };
 
   const saveEdit = async () => {
-    if (editKey.value === null) return;
+    const key = editKey.value;
+    const loaded = config.value;
+    if (key === null || !loaded) return;
+    const value = editValue.value;
     saving.value = true;
-    saveError.value = null;
+    notice.value = null;
+    retry.value = "save";
 
     try {
-      await apiPut("/v1/networking/cni/config", {
-        changes: { [editKey.value]: editValue.value },
-        confirmed: true,
-      });
-      editKey.value = null;
-      editValue.value = "";
-      fetchConfig();
+      await apiPut(
+        "/v1/networking/cni/config",
+        {
+          changes: { [key]: value },
+          confirmed: true,
+          targetCluster: loaded.targetCluster,
+          targetGeneration: loaded.targetGeneration,
+        },
+        { clusterId: loaded.targetCluster },
+      );
+      // The write landed: show it even if the re-read below fails.
+      closeEdit();
+      config.value = { ...loaded, config: { ...loaded.config, [key]: value } };
+      retry.value = "refresh";
+      await refresh();
     } catch (err) {
-      saveError.value =
-        err instanceof Error ? err.message : "Failed to save configuration";
+      const failure = failureOf(err);
+      if (failure && failure.status !== 403 && !failure.reason) {
+        // A local failure carries no reason; its message is the server's
+        // own fixed copy, and the edit stays open to try again.
+        notice.value = {
+          kind: "unavailable",
+          message: (err as Error).message,
+          action: null,
+        };
+        return;
+      }
+      const state = panelState(failure, WHAT, "save");
+      notice.value = state;
+      if (state.kind === "reload" || state.kind === "outcome_unknown") {
+        // Saving again cannot work, or might apply the change twice: only a
+        // reload resolves it.
+        closeEdit();
+      } else if (state.kind === "conflict") {
+        // Show the cluster's current values next to the pending edit.
+        await fetchConfig();
+      }
     } finally {
       saving.value = false;
     }
@@ -83,6 +150,14 @@ export default function CiliumConfigEditor() {
         <div class="h-8 bg-elevated rounded w-48" />
         <div class="h-64 bg-elevated rounded" />
       </div>
+    );
+  }
+
+  if (loadState.value) {
+    return (
+      <Card>
+        <PanelStateNotice state={loadState.value} onRetry={load} />
+      </Card>
     );
   }
 
@@ -102,9 +177,12 @@ export default function CiliumConfigEditor() {
     <Card
       title={`Cilium Configuration (${config.value.configMapNamespace}/${config.value.configMapName})`}
     >
-      {saveError.value && (
+      {notice.value && (
         <div class="mb-4">
-          <ErrorBanner message={saveError.value} />
+          <PanelStateNotice
+            state={notice.value}
+            onRetry={retry.value === "refresh" ? refresh : saveEdit}
+          />
         </div>
       )}
       <div class="overflow-x-auto">

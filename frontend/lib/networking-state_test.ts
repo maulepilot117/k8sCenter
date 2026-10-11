@@ -74,3 +74,25 @@ test("states never echo the server's message text", () => {
 test("failureOf returns null for an error with no HTTP response", () => {
   expect(failureOf(new TypeError("network down"))).toBeNull();
 });
+
+test("a failed save is worded as a save and keeps the same recovery", () => {
+  const what = "the Cilium configuration";
+  const forbidden = panelState(
+    { status: 403, reason: "forbidden" },
+    what,
+    "save",
+  );
+  expect(forbidden.message).toContain("permission to change");
+  expect(forbidden.action).toBeNull();
+
+  const unavailable = panelState(
+    { status: 502, reason: "unreachable" },
+    what,
+    "save",
+  );
+  expect(unavailable.kind).toBe("unavailable");
+  expect(unavailable.message).toContain("Could not save");
+  expect(unavailable.action).toBe("retry");
+
+  expect(panelState({ status: 429 }, what, "save").message).toContain("saving");
+});
