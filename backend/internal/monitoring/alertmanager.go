@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 )
 
 // Alertmanager error classes. Every error from AlertmanagerFor, Counts and
@@ -19,23 +19,27 @@ import (
 // a fixed client message per class. No error ever carries response body
 // text; one may name an address or status code, so callers log it and
 // never return it.
+//
+// They alias the resources package's sentinels (where they are defined
+// because this package imports resources), so the dashboard classifies them
+// with errors.Is without importing monitoring.
 var (
 	// ErrNoAlertmanager means the cluster's binding has no Alertmanager URL.
-	ErrNoAlertmanager = errors.New("no alertmanager bound")
+	ErrNoAlertmanager = resources.ErrNoAlertmanager
 	// ErrAlertmanagerTokenReentry means a stored Alertmanager token no
 	// longer matches the Alertmanager URL's origin and must be entered
 	// again. No request is sent.
-	ErrAlertmanagerTokenReentry = errors.New("alertmanager token must be entered again")
+	ErrAlertmanagerTokenReentry = resources.ErrAlertmanagerTokenReentry
 	// ErrAlertmanagerRefused is a 401 or 403 answer.
-	ErrAlertmanagerRefused = errors.New("alertmanager refused the request")
+	ErrAlertmanagerRefused = resources.ErrAlertmanagerRefused
 	// ErrAlertmanagerRedirected is a 3xx answer, which is never followed.
-	ErrAlertmanagerRedirected = errors.New("alertmanager answered with a redirect")
+	ErrAlertmanagerRedirected = resources.ErrAlertmanagerRedirected
 	// ErrAlertmanagerUnreachable is a transport failure, a timeout, or a
 	// status that is not 2xx, 3xx, 401 or 403 (5xx included).
-	ErrAlertmanagerUnreachable = errors.New("alertmanager unreachable")
+	ErrAlertmanagerUnreachable = resources.ErrAlertmanagerUnreachable
 	// ErrAlertmanagerUnreadable is a 2xx answer over the size cap, not JSON,
 	// or not a JSON array of alerts.
-	ErrAlertmanagerUnreadable = errors.New("alertmanager answer unreadable")
+	ErrAlertmanagerUnreadable = resources.ErrAlertmanagerUnreadable
 )
 
 const (

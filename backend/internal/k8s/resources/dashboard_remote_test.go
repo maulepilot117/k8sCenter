@@ -259,6 +259,8 @@ func TestUtilizationFrom(t *testing.T) {
 
 func TestDashboardSummary_LocalUnchangedWithoutCoverageParam(t *testing.T) {
 	h, remote := remoteDashboardHandler(t, nil, readyNode("remote-node"))
+	ra := &fakeRemoteAlerts{active: 2, critical: 1}
+	h.RemoteAlerts = ra
 
 	rr := callRemoteDashboard(t, h, "")
 	if rr.Code != http.StatusBadRequest {
@@ -279,6 +281,9 @@ func TestDashboardSummary_LocalUnchangedWithoutCoverageParam(t *testing.T) {
 	}
 	if n := len(remote.Actions()); n != 0 {
 		t.Errorf("remote cluster received %d API calls on the rejected path, want 0", n)
+	}
+	if got := ra.calls(); len(got) != 0 {
+		t.Errorf("the cluster's Alertmanager was read %d times on the rejected path, want 0", len(got))
 	}
 
 	// Any value other than exactly "1" stays on the legacy 400.
@@ -340,7 +345,8 @@ func TestRemoteSummary_CountsWithoutMetrics(t *testing.T) {
 			t.Errorf("%s detail = %q, want the not-configured sentence", sec, d)
 		}
 	}
-	assertRow(t, s, "alerts", "unavailable", "unsupported_platform")
+	// No remote alert source is wired: alerts are not configured, not zero.
+	assertRow(t, s, "alerts", "unavailable", "alerts_not_configured")
 	assertRow(t, s, "nodes", "ok", "ok")
 	assertRow(t, s, "pods", "ok", "ok")
 	assertRow(t, s, "services", "ok", "ok")
@@ -571,13 +577,18 @@ func TestRemoteSummary_NodesDeniedIsForbidden(t *testing.T) {
 func TestRemoteSummary_SARErrorIsAuthzUnknown(t *testing.T) {
 	h, remote := remoteDashboardHandler(t, nil, readyNode("r-n1"))
 	h.AccessChecker = NewErroringAccessChecker(errors.New("sar backend down"))
+	ra := &fakeRemoteAlerts{active: 2, critical: 1}
+	h.RemoteAlerts = ra
 
 	s := remoteSummaryOK(t, h)
-	for _, sec := range []string{"nodes", "pods", "services"} {
+	for _, sec := range []string{"nodes", "pods", "services", "alerts"} {
 		assertRow(t, s, sec, "unavailable", "authz_unknown")
 	}
 	if n := len(remote.Actions()); n != 0 {
 		t.Errorf("remote received %d list calls without an authorization answer, want 0", n)
+	}
+	if got := ra.calls(); len(got) != 0 {
+		t.Errorf("the Alertmanager was read %d times without an authorization answer, want 0", len(got))
 	}
 }
 
@@ -869,7 +880,10 @@ func TestRemoteSummary_NeverUsesInformers(t *testing.T) {
 	}
 	h, _ := remoteDashboardHandler(t, local,
 		nodeWithAllocatable("r-n1", "2", "4Gi"), runningPod("default", "r-p1"), service("r-s1"))
+	// The local webhook store holds 9/7; the cluster's own Alertmanager 2/1.
 	h.Alerts = &fakeAlertCounter{active: 9, critical: 7}
+	ra := &fakeRemoteAlerts{active: 2, critical: 1}
+	h.RemoteAlerts = ra
 	h.ControlPlane = &fakeControlPlane{}
 
 	s := remoteSummaryOK(t, h)
@@ -878,8 +892,11 @@ func TestRemoteSummary_NeverUsesInformers(t *testing.T) {
 		t.Errorf("counts = nodes %d / pods %d / services %d, want 1/1/1 (remote only)",
 			s.Nodes.Total, s.Pods.Total, s.Services.Total)
 	}
-	if s.Alerts != (AlertSummary{}) {
-		t.Errorf("alerts = %+v, want zero — the alert counter is bound to the local Alertmanager", s.Alerts)
+	if s.Alerts != (AlertSummary{Active: 2, Critical: 1}) {
+		t.Errorf("alerts = %+v, want {Active:2 Critical:1} from the cluster's Alertmanager, never the local store", s.Alerts)
+	}
+	if got := ra.calls(); len(got) != 1 || got[0] != remoteTestClusterID {
+		t.Errorf("remote alert source asked about %v, want exactly one read of %q", got, remoteTestClusterID)
 	}
 	if s.CPU == nil || s.CPU.Total != "2.0 cores" {
 		t.Errorf("cpu = %+v, want remote allocatable 2.0 cores", s.CPU)
@@ -1177,4 +1194,200 @@ func TestDashboardSummary_LocalResponseMatchesPreU10Golden(t *testing.T) {
 			t.Errorf("local response (query %q) differs from the pre-U10 golden:\n got: %s\nwant: %s", query, got, goldenLocalSummary)
 		}
 	}
+}
+
+// ── Remote alert counts (U8) ───────────────────────────────────────────────
+
+// fakeRemoteAlerts implements RemoteAlertCounter with fixed counts (or err,
+// a panic, or a read that waits for its context to end) and records every
+// cluster id it was asked about.
+type fakeRemoteAlerts struct {
+	active, critical int
+	err              error
+	panics           bool
+	blocks           bool
+
+	mu       sync.Mutex
+	clusters []string
+}
+
+func (f *fakeRemoteAlerts) RemoteAlertCounts(ctx context.Context, clusterID string) (int, int, error) {
+	f.mu.Lock()
+	f.clusters = append(f.clusters, clusterID)
+	f.mu.Unlock()
+	if f.panics {
+		panic("boom")
+	}
+	if f.blocks {
+		<-ctx.Done()
+		return 0, 0, ctx.Err()
+	}
+	if f.err != nil {
+		return 0, 0, f.err
+	}
+	return f.active, f.critical, nil
+}
+
+func (f *fakeRemoteAlerts) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.clusters...)
+}
+
+func TestRemoteSummary_AlertsFromBoundAlertmanager(t *testing.T) {
+	h, _ := remoteDashboardHandler(t, nil, readyNode("r-n1"))
+	// The monitoring adapter turns three active alerts (one critical, one
+	// Watchdog) into these counts; its own tests pin that filtering. Here
+	// the counts must reach the tile unchanged and from this source only.
+	ra := &fakeRemoteAlerts{active: 2, critical: 1}
+	h.RemoteAlerts = ra
+	h.Alerts = &fakeAlertCounter{active: 9, critical: 7}
+
+	s := remoteSummaryOK(t, h)
+
+	if s.Alerts != (AlertSummary{Active: 2, Critical: 1}) {
+		t.Errorf("alerts = %+v, want {Active:2 Critical:1} from the cluster's Alertmanager", s.Alerts)
+	}
+	row := coverageRow(t, s, "alerts")
+	if row.Status != "ok" || row.ReasonCode != "ok" || row.ObservedAt == "" || row.Detail != "" {
+		t.Errorf("alerts row = %+v, want ok/ok with observedAt and no detail", row)
+	}
+	if got := ra.calls(); len(got) != 1 || got[0] != remoteTestClusterID {
+		t.Errorf("remote alert source asked about %v, want exactly one read of %q", got, remoteTestClusterID)
+	}
+}
+
+func TestRemoteSummary_AlertsNotConfigured(t *testing.T) {
+	cases := map[string]RemoteAlertCounter{
+		"no alertmanager url": &fakeRemoteAlerts{err: fmt.Errorf("resolve: %w", ErrNoAlertmanager)},
+		"no metrics binding":  &fakeRemoteAlerts{err: ErrNoMetricsBinding},
+		"no alert source":     nil,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			h, _ := remoteDashboardHandler(t, nil, readyNode("r-n1"))
+			h.RemoteAlerts = src
+			h.Alerts = &fakeAlertCounter{active: 9, critical: 7}
+
+			rr := callRemoteDashboard(t, h, "coverage=1")
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+			}
+			s := decodeDashboard(t, rr)
+
+			row := coverageRow(t, s, "alerts")
+			if row.Status != "unavailable" || row.ReasonCode != "alerts_not_configured" || row.ObservedAt != "" {
+				t.Errorf("alerts row = %+v, want unavailable/alerts_not_configured without observedAt", row)
+			}
+			if row.Detail != "no Alertmanager is configured for this cluster" {
+				t.Errorf("alerts detail = %q, want the not-configured sentence", row.Detail)
+			}
+			if s.Alerts != (AlertSummary{}) {
+				t.Errorf("alerts = %+v, want no counts when nothing was read", s.Alerts)
+			}
+		})
+	}
+}
+
+func TestRemoteSummary_AlertsDeniedIsForbidden(t *testing.T) {
+	h, _ := remoteDashboardHandler(t, nil, readyNode("r-n1"))
+	h.AccessChecker = NewDenyResourcesAccessChecker("alertmanagers")
+	ra := &fakeRemoteAlerts{active: 2, critical: 1}
+	h.RemoteAlerts = ra
+
+	s := remoteSummaryOK(t, h)
+
+	row := coverageRow(t, s, "alerts")
+	if row.Status != "forbidden" || row.ReasonCode != "forbidden" ||
+		row.Detail != "you do not have permission to list alertmanagers on this cluster" {
+		t.Errorf("alerts row = %+v, want forbidden/forbidden with the permission sentence", row)
+	}
+	if got := ra.calls(); len(got) != 0 {
+		t.Errorf("the Alertmanager was read %d times despite a denied permission check", len(got))
+	}
+	if s.Alerts != (AlertSummary{}) {
+		t.Errorf("alerts = %+v, want zero when forbidden", s.Alerts)
+	}
+	assertRow(t, s, "nodes", "ok", "ok")
+}
+
+func TestRemoteSummary_AlertmanagerFailuresAreUnreachable(t *testing.T) {
+	// Each error names the Alertmanager's address, as the real client's may;
+	// the response must carry only the fixed detail for its class.
+	const addr = "https://203.0.113.7:9093"
+	cases := []struct {
+		name   string
+		err    error
+		detail string
+	}{
+		{"refused", fmt.Errorf("%w: status 403 from %s", ErrAlertmanagerRefused, addr),
+			"the cluster's Alertmanager refused the request"},
+		{"redirected", fmt.Errorf("%w: status 302 from %s", ErrAlertmanagerRedirected, addr),
+			"the cluster's Alertmanager answered with a redirect, which is not followed"},
+		{"unreachable", fmt.Errorf("%w: dial tcp %s: connection refused", ErrAlertmanagerUnreachable, addr),
+			"the cluster's Alertmanager could not be reached"},
+		{"unreadable", fmt.Errorf("%w: answer from %s is not a JSON array", ErrAlertmanagerUnreadable, addr),
+			"the cluster's Alertmanager answer could not be read"},
+		{"token re-entry", fmt.Errorf("%w for %s", ErrAlertmanagerTokenReentry, addr),
+			"the Alertmanager token must be entered again for the Alertmanager's current address"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := remoteDashboardHandler(t, nil, readyNode("r-n1"))
+			h.RemoteAlerts = &fakeRemoteAlerts{active: 2, critical: 1, err: tc.err}
+
+			rr := callRemoteDashboard(t, h, "coverage=1")
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+			}
+			if strings.Contains(rr.Body.String(), "203.0.113.7") {
+				t.Errorf("response leaks the Alertmanager address: %s", rr.Body.String())
+			}
+			s := decodeDashboard(t, rr)
+			row := coverageRow(t, s, "alerts")
+			if row.Status != "unavailable" || row.ReasonCode != "unreachable" || row.Detail != tc.detail {
+				t.Errorf("alerts row = %+v, want unavailable/unreachable with detail %q", row, tc.detail)
+			}
+			if s.Alerts != (AlertSummary{}) {
+				t.Errorf("alerts = %+v, want no partial counts on a failed read", s.Alerts)
+			}
+		})
+	}
+}
+
+func TestRemoteSummary_AlertSourcePanicIsUnavailable(t *testing.T) {
+	h, _ := remoteDashboardHandler(t, nil, readyNode("r-n1"))
+	h.RemoteAlerts = &fakeRemoteAlerts{panics: true}
+
+	s := remoteSummaryOK(t, h)
+
+	row := coverageRow(t, s, "alerts")
+	if row.Status != "unavailable" || row.ReasonCode != "unreachable" || row.Detail != "section failed to load" {
+		t.Errorf("alerts row = %+v, want unavailable/unreachable/'section failed to load'", row)
+	}
+	if s.Alerts != (AlertSummary{}) {
+		t.Errorf("alerts = %+v, want zero after a recovered panic", s.Alerts)
+	}
+	assertRow(t, s, "nodes", "ok", "ok")
+}
+
+func TestRemoteSummary_AlertReadEndsAtBudget(t *testing.T) {
+	prev := remoteDashboardBudget
+	remoteDashboardBudget = 200 * time.Millisecond
+	t.Cleanup(func() { remoteDashboardBudget = prev })
+
+	h, _ := remoteDashboardHandler(t, nil, readyNode("r-n1"))
+	h.RemoteAlerts = &fakeRemoteAlerts{blocks: true}
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- callRemoteDashboard(t, h, "coverage=1") }()
+	var rr *httptest.ResponseRecorder
+	select {
+	case rr = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("handler did not return within 3s on a %s budget; the alert read is not bounded by it", remoteDashboardBudget)
+	}
+	s := decodeDashboard(t, rr)
+	assertRow(t, s, "alerts", "unavailable", "unreachable")
+	assertRow(t, s, "nodes", "ok", "ok")
 }

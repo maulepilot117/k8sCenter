@@ -52,6 +52,34 @@ const (
 	reasonAuthzNamespaced     = "authz_namespace_scoped"
 	// reasonMetricsNotConfigured — the remote cluster has no metrics binding.
 	reasonMetricsNotConfigured = "metrics_not_configured"
+	// reasonAlertsNotConfigured — the remote cluster's metrics binding has no
+	// Alertmanager URL (or there is no binding at all).
+	reasonAlertsNotConfigured = "alerts_not_configured"
+)
+
+// Alertmanager error classes. Every error the monitoring package's
+// Alertmanager client and RemoteAlertCounter adapter return matches exactly
+// one of them (errors.Is). They are defined here, not in monitoring, because
+// monitoring imports this package; monitoring aliases them, as it does
+// ErrNoMetricsBinding. No error carries response body text; one may name an
+// address or status code, so callers log it and never return it.
+var (
+	// ErrNoAlertmanager means the cluster's binding has no Alertmanager URL.
+	ErrNoAlertmanager = errors.New("no alertmanager bound")
+	// ErrAlertmanagerTokenReentry means a stored Alertmanager token no
+	// longer matches the Alertmanager URL's origin and must be entered
+	// again. No request is sent.
+	ErrAlertmanagerTokenReentry = errors.New("alertmanager token must be entered again")
+	// ErrAlertmanagerRefused is a 401 or 403 answer.
+	ErrAlertmanagerRefused = errors.New("alertmanager refused the request")
+	// ErrAlertmanagerRedirected is a 3xx answer, which is never followed.
+	ErrAlertmanagerRedirected = errors.New("alertmanager answered with a redirect")
+	// ErrAlertmanagerUnreachable is a transport failure, a timeout, or a
+	// status that is not 2xx, 3xx, 401 or 403 (5xx included).
+	ErrAlertmanagerUnreachable = errors.New("alertmanager unreachable")
+	// ErrAlertmanagerUnreadable is a 2xx answer over the size cap, not JSON,
+	// or not a JSON array of alerts.
+	ErrAlertmanagerUnreadable = errors.New("alertmanager answer unreadable")
 )
 
 // Fixed client-facing messages for the remote metrics paths. The raw error
@@ -96,13 +124,51 @@ const (
 	// detailAllocatableUnknown is appended when the nodes section did not
 	// load, so a usage percentage cannot be turned into an absolute amount.
 	detailAllocatableUnknown = "; allocatable needs the nodes section, which did not load"
-	detailRemoteAlerts       = "alert counts are bound to the local Alertmanager"
 	detailRemoteHealth       = "remote health scoring is not available yet"
+	// detailAuthzUnknown explains a section whose permission check could not
+	// be issued or errored.
+	detailAuthzUnknown = "could not check list permission on the remote cluster"
+	// The alerts row details: one fixed sentence per outcome and per
+	// Alertmanager error class, never error text (which can name the
+	// Alertmanager's address).
+	detailAlertsNotConfigured = "no Alertmanager is configured for this cluster"
+	detailAlertsForbidden     = "you do not have permission to list alertmanagers on this cluster"
+	detailAlertsTokenReentry  = "the Alertmanager token must be entered again for the Alertmanager's current address"
+	detailAlertsRefused       = "the cluster's Alertmanager refused the request"
+	detailAlertsRedirected    = "the cluster's Alertmanager answered with a redirect, which is not followed"
+	detailAlertsUnreachable   = "the cluster's Alertmanager could not be reached"
+	detailAlertsUnreadable    = "the cluster's Alertmanager answer could not be read"
+	detailAlertsFailed        = "the cluster's Alertmanager could not be read"
 )
 
 // remoteSection is the outcome of reading one live section.
 type remoteSection[T any] struct {
 	items    []T
+	coverage SectionCoverage
+}
+
+// Placeholder errors for an alerts read that produced no counts without the
+// source reporting an error of its own.
+var (
+	// errRemoteAlertsNotRead stands in until the alerts worker reports, so a
+	// recovered panic never reads as zero alerts.
+	errRemoteAlertsNotRead = errors.New("remote alerts read did not complete")
+	// errRemoteAlertsDenied records a denied alertmanagers permission check.
+	errRemoteAlertsDenied = errors.New("alertmanagers list permission denied")
+)
+
+// remoteAlerts is the outcome of the alerts section's one Alertmanager read.
+// The tile counts come from it, and any other consumer on the same request
+// (the remote health input) must reuse it rather than read again, so both
+// describe the same answer (R8).
+type remoteAlerts struct {
+	// counts are the observed totals, zero unless err is nil.
+	counts AlertSummary
+	// err is nil only when counts were read. Otherwise it is the source's
+	// error (one of the Alertmanager classes, ErrNoMetricsBinding, or a
+	// context error), errRemoteAlertsDenied, the permission-check error, or
+	// errRemoteAlertsNotRead.
+	err      error
 	coverage SectionCoverage
 }
 
@@ -113,14 +179,20 @@ type remoteSection[T any] struct {
 // Health is always nil here and the local health scorer (health.go) is
 // deliberately not called: it renormalises weights across whichever signals
 // resolved, so a remote cluster where only node listing succeeded would get a
-// confident score built from nodes alone. The remote path has no workloads, metrics, or alert
-// signal, so no score is the only truthful answer (plan decision D5).
+// confident score built from nodes alone. The remote path has no workloads
+// or control-plane signal, so no score is the only truthful answer (plan
+// decision D5).
 //
 // CPU and memory usage come from the cluster's own Prometheus through its
 // metrics binding (h.Utilization with the remote cluster id), read alongside
 // the sections under the same budget. Without a binding the rows say
 // metrics_not_configured; the local Prometheus never answers for a remote
 // cluster.
+//
+// Alert counts come from the cluster's own Alertmanager through the same
+// binding (h.RemoteAlerts), read once under the same budget; without an
+// Alertmanager URL the row says alerts_not_configured. The local alert
+// store (h.Alerts) never answers for a remote cluster.
 func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Request, user *auth.User, clusterID string) {
 	// The budget starts before client resolution: the cluster-store read,
 	// credential decrypt and dial are part of this request too.
@@ -144,6 +216,9 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 		cpuPct, memPct float64
 		cpuErr         = errRemoteMetricsNotRead
 		memErr         = errRemoteMetricsNotRead
+		// Pre-seeded for the same reason: a panicking alerts worker leaves
+		// no counts and an unavailable row (sectionOrFailed).
+		alerts = remoteAlerts{err: errRemoteAlertsNotRead}
 	)
 	// A plain errgroup.Group (not WithContext): a failed section must not
 	// cancel its siblings. Workers never return errors of their own; a
@@ -192,10 +267,15 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 	} else {
 		cpuErr, memErr = ErrNoMetricsBinding, ErrNoMetricsBinding
 	}
+	recoverutil.Go(&g, h.Logger, "resources remote dashboard alerts", func() error {
+		alerts = readRemoteAlerts(h, ctx, clusterID, user)
+		return nil
+	})
 	_ = g.Wait() // recovered panics are already logged by recoverutil
 
 	var summary DashboardSummary
 	summary.Nodes, summary.Pods, summary.Services = aggregateCounts(nodes.items, pods.items, len(services.items))
+	summary.Alerts = alerts.counts
 
 	// Requests, limits and allocatable come from the API lists; the usage
 	// percentage comes from the cluster's Prometheus when it could be read,
@@ -241,7 +321,7 @@ func (h *Handler) handleRemoteDashboardSummary(w http.ResponseWriter, r *http.Re
 		sectionOrFailed(services.coverage, "services"),
 		metricsSection(h, clusterID, "cpu", cpuErr, amendments),
 		metricsSection(h, clusterID, "memory", memErr, amendments),
-		unsupportedSection("alerts", detailRemoteAlerts),
+		sectionOrFailed(alerts.coverage, "alerts"),
 		unsupportedSection("health", detailRemoteHealth),
 	}
 
@@ -273,7 +353,7 @@ func readRemoteSection[T any](
 	if err != nil {
 		return remoteSection[T]{coverage: SectionCoverage{
 			Section: resource, Status: coverageUnavailable, ReasonCode: reasonAuthzUnknown,
-			Detail: "could not check list permission on the remote cluster",
+			Detail: detailAuthzUnknown,
 		}}
 	}
 	if !allowed {
@@ -324,6 +404,70 @@ func forbiddenSection(section string) SectionCoverage {
 		Section: section, Status: coverageForbidden, ReasonCode: reasonAuthzNamespaced,
 		Detail: "you do not have permission to list " + section + " across all namespaces on this cluster",
 	}
+}
+
+// readRemoteAlerts reads the cluster's active alert counts from its own
+// Alertmanager, after checking the user's alertmanagers list permission on
+// that cluster (the same gate the local summary applies). Every outcome is
+// reported as an alerts coverage row; counts are set only on a full read.
+func readRemoteAlerts(h *Handler, ctx context.Context, clusterID string, user *auth.User) remoteAlerts {
+	if h.RemoteAlerts == nil {
+		// No source can mean only that nothing is bound for this cluster.
+		return remoteAlerts{err: ErrNoMetricsBinding, coverage: alertsNotConfiguredSection()}
+	}
+	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "alertmanagers", "")
+	if err != nil {
+		return remoteAlerts{err: err, coverage: SectionCoverage{
+			Section: "alerts", Status: coverageUnavailable, ReasonCode: reasonAuthzUnknown, Detail: detailAuthzUnknown,
+		}}
+	}
+	if !allowed {
+		return remoteAlerts{err: errRemoteAlertsDenied, coverage: SectionCoverage{
+			Section: "alerts", Status: coverageForbidden, ReasonCode: reasonForbidden, Detail: detailAlertsForbidden,
+		}}
+	}
+
+	active, critical, err := h.RemoteAlerts.RemoteAlertCounts(ctx, clusterID)
+	if err != nil {
+		return remoteAlerts{err: err, coverage: alertsFailedSection(h, clusterID, err)}
+	}
+	return remoteAlerts{
+		counts:   AlertSummary{Active: active, Critical: critical},
+		coverage: SectionCoverage{Section: "alerts", Status: coverageOK, ReasonCode: reasonOK, ObservedAt: observedNow()},
+	}
+}
+
+func alertsNotConfiguredSection() SectionCoverage {
+	return SectionCoverage{
+		Section: "alerts", Status: coverageUnavailable, ReasonCode: reasonAlertsNotConfigured, Detail: detailAlertsNotConfigured,
+	}
+}
+
+// alertsFailedSection maps a failed alert read to its row. No Alertmanager
+// URL, or no binding at all, is "not configured", never a failure. Every
+// other error is unreachable with the fixed detail of its class (KTD10); the
+// raw error, which can name the Alertmanager's address, is only logged.
+func alertsFailedSection(h *Handler, clusterID string, err error) SectionCoverage {
+	if errors.Is(err, ErrNoAlertmanager) || errors.Is(err, ErrNoMetricsBinding) {
+		return alertsNotConfiguredSection()
+	}
+	detail := detailAlertsFailed
+	switch {
+	case errors.Is(err, ErrAlertmanagerTokenReentry):
+		detail = detailAlertsTokenReentry
+	case errors.Is(err, ErrAlertmanagerRefused):
+		detail = detailAlertsRefused
+	case errors.Is(err, ErrAlertmanagerRedirected):
+		detail = detailAlertsRedirected
+	case errors.Is(err, ErrAlertmanagerUnreachable):
+		detail = detailAlertsUnreachable
+	case errors.Is(err, ErrAlertmanagerUnreadable):
+		detail = detailAlertsUnreadable
+	}
+	if h.Logger != nil {
+		h.Logger.Warn("remote dashboard: read alert counts from the cluster's Alertmanager", "cluster", clusterID, "error", err)
+	}
+	return SectionCoverage{Section: "alerts", Status: coverageUnavailable, ReasonCode: reasonUnreachable, Detail: detail}
 }
 
 // observedPct returns &pct when the read succeeded, nil otherwise.
