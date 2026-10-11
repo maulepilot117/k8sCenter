@@ -626,3 +626,33 @@ type staticFactory struct{ cs kubernetes.Interface }
 func (f staticFactory) ClientForUser(string, []string) (kubernetes.Interface, error) {
 	return f.cs, nil
 }
+
+// The alerts row and the health score classify a failed Alertmanager read
+// through one table, so for every class (and an error matching none) the
+// tile detail and the health cause name the same failure.
+func TestAlertmanagerErrorClasses_TileAndHealthAgree(t *testing.T) {
+	h := &Handler{}
+	errs := []error{errors.New("something else")}
+	for _, c := range alertmanagerErrorClasses {
+		errs = append(errs, fmt.Errorf("%w: status 418", c.err))
+	}
+	for _, err := range errs {
+		row := alertsFailedSection(h, "remote-1", err)
+		o := remoteAlertsOutcome(remoteAlerts{err: err})
+		want := classifyAlertmanagerError(err)
+		if row.Detail != want.detail {
+			t.Errorf("%v: tile detail %q; want %q", err, row.Detail, want.detail)
+		}
+		if o.cause != want.cause {
+			t.Errorf("%v: health cause %q; want %q", err, o.cause, want.cause)
+		}
+		if !strings.HasPrefix(row.Detail, string(o.cause)) {
+			t.Errorf("%v: tile %q and health cause %q describe different failures", err, row.Detail, o.cause)
+		}
+	}
+	for _, err := range []error{ErrNoAlertmanager, ErrNoMetricsBinding} {
+		if row := alertsFailedSection(h, "remote-1", err); row.ReasonCode != reasonAlertsNotConfigured {
+			t.Errorf("%v: tile reason %q; want alerts_not_configured", err, row.ReasonCode)
+		}
+	}
+}

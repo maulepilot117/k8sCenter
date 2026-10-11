@@ -465,31 +465,58 @@ func alertsNotConfiguredSection() SectionCoverage {
 	}
 }
 
+// alertmanagerErrorClass is one class of failed Alertmanager read, with the
+// fixed tile detail and the health cause it reports (KTD10). Both the alerts
+// row and the health score classify through alertmanagerErrorClasses, so the
+// tile and the health detail always name the same class.
+type alertmanagerErrorClass struct {
+	err    error
+	detail string
+	cause  healthCause
+}
+
+var alertmanagerErrorClasses = []alertmanagerErrorClass{
+	{ErrAlertmanagerTokenReentry, detailAlertsTokenReentry, healthCauseAlertmanagerReentry},
+	{ErrAlertmanagerRefused, detailAlertsRefused, healthCauseAlertmanagerRefused},
+	{ErrAlertmanagerRedirected, detailAlertsRedirected, healthCauseAlertmanagerRedirected},
+	{ErrAlertmanagerUnreachable, detailAlertsUnreachable, healthCauseAlertmanagerUnreachable},
+	{ErrAlertmanagerUnreadable, detailAlertsUnreadable, healthCauseAlertmanagerUnreadable},
+}
+
+// unclassifiedAlertmanagerError is the class of a failed read that matches
+// none of the sentinels above.
+var unclassifiedAlertmanagerError = alertmanagerErrorClass{detail: detailAlertsFailed, cause: healthCauseAlertmanagerFailed}
+
+// classifyAlertmanagerError returns the class of a failed Alertmanager read.
+// It is only called for an err that is neither "not configured" nor a
+// permission outcome.
+func classifyAlertmanagerError(err error) alertmanagerErrorClass {
+	for _, c := range alertmanagerErrorClasses {
+		if errors.Is(err, c.err) {
+			return c
+		}
+	}
+	return unclassifiedAlertmanagerError
+}
+
+// alertmanagerNotConfigured reports a read that found no Alertmanager to ask:
+// no Alertmanager URL, or no binding at all. It is never a failure.
+func alertmanagerNotConfigured(err error) bool {
+	return errors.Is(err, ErrNoAlertmanager) || errors.Is(err, ErrNoMetricsBinding)
+}
+
 // alertsFailedSection maps a failed alert read to its row. No Alertmanager
 // URL, or no binding at all, is "not configured", never a failure. Every
 // other error is unreachable with the fixed detail of its class (KTD10); the
 // raw error, which can name the Alertmanager's address, is only logged.
 func alertsFailedSection(h *Handler, clusterID string, err error) SectionCoverage {
-	if errors.Is(err, ErrNoAlertmanager) || errors.Is(err, ErrNoMetricsBinding) {
+	if alertmanagerNotConfigured(err) {
 		return alertsNotConfiguredSection()
-	}
-	detail := detailAlertsFailed
-	switch {
-	case errors.Is(err, ErrAlertmanagerTokenReentry):
-		detail = detailAlertsTokenReentry
-	case errors.Is(err, ErrAlertmanagerRefused):
-		detail = detailAlertsRefused
-	case errors.Is(err, ErrAlertmanagerRedirected):
-		detail = detailAlertsRedirected
-	case errors.Is(err, ErrAlertmanagerUnreachable):
-		detail = detailAlertsUnreachable
-	case errors.Is(err, ErrAlertmanagerUnreadable):
-		detail = detailAlertsUnreadable
 	}
 	if h.Logger != nil {
 		h.Logger.Warn("remote dashboard: read alert counts from the cluster's Alertmanager", "cluster", clusterID, "error", err)
 	}
-	return SectionCoverage{Section: "alerts", Status: coverageUnavailable, ReasonCode: reasonUnreachable, Detail: detail}
+	return SectionCoverage{Section: "alerts", Status: coverageUnavailable, ReasonCode: reasonUnreachable, Detail: classifyAlertmanagerError(err).detail}
 }
 
 // observedPct returns &pct when the read succeeded, nil otherwise.

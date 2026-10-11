@@ -48,6 +48,7 @@ const (
 	healthCauseAlertmanagerUnreachable healthCause = "the cluster's Alertmanager could not be reached"
 	healthCauseAlertmanagerUnreadable  healthCause = "the cluster's Alertmanager answer could not be read"
 	healthCauseAlertmanagerReentry     healthCause = "the Alertmanager token must be entered again"
+	healthCauseAlertmanagerFailed      healthCause = "the cluster's Alertmanager could not be read"
 )
 
 // detailHealthMissing opens the health row's detail when no score is drawn.
@@ -204,7 +205,7 @@ func remoteAlertsOutcome(a remoteAlerts) healthOutcome[alertCounts] {
 		o.setOK(alertCounts{active: a.counts.Active, critical: a.counts.Critical})
 	case errors.Is(a.err, errRemoteAlertsDenied):
 		o.setDenied()
-	case errors.Is(a.err, ErrNoAlertmanager), errors.Is(a.err, ErrNoMetricsBinding):
+	case alertmanagerNotConfigured(a.err):
 		o.setNoSource("alerting not configured")
 	case errors.Is(a.err, errRemoteAlertsNotRead):
 		o.setFailed(healthCauseNotRead)
@@ -212,16 +213,8 @@ func remoteAlertsOutcome(a remoteAlerts) healthOutcome[alertCounts] {
 		o.setFailed(healthCauseAuthzUnknown)
 	case a.timedOut:
 		o.setFailed(healthCauseTimedOut)
-	case errors.Is(a.err, ErrAlertmanagerTokenReentry):
-		o.setFailed(healthCauseAlertmanagerReentry)
-	case errors.Is(a.err, ErrAlertmanagerRefused):
-		o.setFailed(healthCauseAlertmanagerRefused)
-	case errors.Is(a.err, ErrAlertmanagerRedirected):
-		o.setFailed(healthCauseAlertmanagerRedirected)
-	case errors.Is(a.err, ErrAlertmanagerUnreadable):
-		o.setFailed(healthCauseAlertmanagerUnreadable)
 	default:
-		o.setFailed(healthCauseAlertmanagerUnreachable)
+		o.setFailed(classifyAlertmanagerError(a.err).cause)
 	}
 	return o
 }
