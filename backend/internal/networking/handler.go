@@ -459,6 +459,7 @@ func (h *Handler) HandleCiliumBGP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fetchBGP(ctx context.Context) (*CiliumBGPResponse, error) {
 	gen := atomic.LoadUint64(&h.cacheGen)
 
+	// nolint:cluster-routing local path: BGP is read only when isCiliumLocal; a remote selection answers before this read
 	disc := h.K8sClient.DiscoveryClient()
 	if !hasCRD(disc, bgpNodeConfigGVR) {
 		resp := &CiliumBGPResponse{Configured: false}
@@ -470,6 +471,7 @@ func (h *Handler) fetchBGP(ctx context.Context) (*CiliumBGPResponse, error) {
 		return resp, nil
 	}
 
+	// nolint:cluster-routing local path: BGP is read only when isCiliumLocal; a remote selection answers before this read
 	dynClient := h.K8sClient.BaseDynamicClient()
 	peers, err := readBGPNodeConfigs(ctx, dynClient)
 	if err != nil {
@@ -538,6 +540,7 @@ func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 	gen := atomic.LoadUint64(&h.cacheGen)
 
+	// nolint:cluster-routing local path: IPAM is read only when isCiliumLocal; a remote selection answers before this read
 	disc := h.K8sClient.DiscoveryClient()
 	if !hasCRD(disc, ciliumNodeGVR) {
 		resp := &CiliumIPAMResponse{Configured: false}
@@ -549,6 +552,7 @@ func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 		return resp, nil
 	}
 
+	// nolint:cluster-routing local path: IPAM is read only when isCiliumLocal; a remote selection answers before this read
 	dynClient := h.K8sClient.BaseDynamicClient()
 	nodes, err := readCiliumNodes(ctx, dynClient)
 	if err != nil {
@@ -675,6 +679,7 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 	}
 
 	// Fetch CiliumNodes, CiliumEndpoints, and agent data concurrently
+	// nolint:cluster-routing local path: subsystems are read only when isCiliumLocal; a remote selection answers before this read
 	dynClient := h.K8sClient.BaseDynamicClient()
 
 	var nodes []ciliumNodeIPAM

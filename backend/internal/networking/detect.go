@@ -204,6 +204,7 @@ func ciliumFeaturesFromConfig(data map[string]string) CNIFeatures {
 
 // fetchServerGroups retrieves the API server groups once for reuse.
 func (d *Detector) fetchServerGroups() []metav1.APIGroup {
+	// nolint:cluster-routing local path: the Detector detects the local cluster; a remote cluster is detected by detectRemote (remote.go)
 	disc := d.k8sClient.DiscoveryClient()
 	if disc == nil {
 		return nil
@@ -229,6 +230,7 @@ func hasAPIGroup(groups []metav1.APIGroup, name string) bool {
 // detectCiliumFeatures reads the cilium-config ConfigMap to detect enabled features.
 func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 	features := CNIFeatures{}
+	// nolint:cluster-routing local path: the Detector detects the local cluster; a remote cluster is detected by detectRemote (remote.go)
 	cs := d.k8sClient.BaseClientset()
 
 	for _, ns := range ciliumSearchNamespaces() {

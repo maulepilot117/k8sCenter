@@ -115,6 +115,7 @@ func (c *CiliumAgentCollector) collect(ctx context.Context) (*agentCollectionRes
 	gen := atomic.LoadUint64(&c.cacheGen)
 	// Note: ctx already has agentOuterTimeout from Collect() — no redundant timeout here.
 
+	// nolint:cluster-routing local path: the service-account agent collector serves the local cluster only (callers gate on isCiliumLocal)
 	cs := c.k8sClient.BaseClientset()
 
 	// Find Cilium agent pods
@@ -270,7 +271,9 @@ func (c *CiliumAgentCollector) execInPod(ctx context.Context, namespace, podName
 	ctx, cancel := context.WithTimeout(ctx, agentExecTimeout)
 	defer cancel()
 
+	// nolint:cluster-routing local path: the service-account agent collector serves the local cluster only (callers gate on isCiliumLocal)
 	cs := c.k8sClient.BaseClientset()
+	// nolint:cluster-routing local path: the service-account agent collector serves the local cluster only (callers gate on isCiliumLocal)
 	cfg := c.k8sClient.BaseConfig()
 
 	// Build exec request URL using the same pattern as pods.go:256-266
@@ -287,6 +290,7 @@ func (c *CiliumAgentCollector) execInPod(ctx context.Context, namespace, podName
 		execReq = execReq.Param("command", cmd)
 	}
 
+	// nolint:cluster-routing local path: the service-account agent collector serves the local cluster only (callers gate on isCiliumLocal)
 	executor, err := remotecommand.NewSPDYExecutor(cfg, "POST", execReq.URL())
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating SPDY executor: %w", err)
