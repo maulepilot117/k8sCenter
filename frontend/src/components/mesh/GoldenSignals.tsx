@@ -26,6 +26,7 @@
 
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
+import { METRICS_NOT_CONFIGURED_MESSAGE } from "@/lib/dashboard/data.ts";
 import { meshApi } from "@/lib/mesh-api.ts";
 import type { GoldenSignals, MeshType } from "@/lib/mesh-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -147,10 +148,7 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
           Service Mesh — Golden Signals
         </h3>
         <div class="rounded-md border border-border-primary bg-bg-surface p-4 text-sm text-text-secondary">
-          Metrics unavailable
-          <span class="ml-2 text-xs text-text-muted">
-            ({offlineReason.value})
-          </span>
+          {offlineCopy(offlineReason.value)}
         </div>
       </section>
     );
@@ -265,6 +263,22 @@ function Metric({
         {value}
       </div>
     </div>
+  );
+}
+
+/** Remote reasons get plain copy; the raw code is shown only for the rest. */
+function offlineCopy(reason: string) {
+  if (reason === "metrics_not_configured") {
+    return METRICS_NOT_CONFIGURED_MESSAGE;
+  }
+  if (reason === "unreachable") {
+    return "This cluster's Prometheus could not be read.";
+  }
+  return (
+    <>
+      Metrics unavailable
+      <span class="ml-2 text-xs text-text-muted">({reason})</span>
+    </>
   );
 }
 

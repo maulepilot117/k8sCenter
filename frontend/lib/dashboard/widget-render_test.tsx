@@ -1,12 +1,19 @@
 /** @jsxImportSource preact */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { render } from "preact-render-to-string";
 // Registers every widget. Without it the registry is empty and each lookup
 // below would return undefined, so these tests would pass vacuously.
 import "@/components/dashboard/widgets/index.ts";
+import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
+import { selectedCluster } from "@/src/lib/cluster.ts";
+import type { CoveredSummary } from "./coverage.ts";
 import type { SourceState } from "./data.ts";
-import { dashboardData } from "./data.ts";
-import { PARAM_KEY_NAMESPACE, sourceKeyFor } from "./params.ts";
+import { dashboardData, METRICS_NOT_CONFIGURED_MESSAGE } from "./data.ts";
+import {
+  PARAM_KEY_NAMESPACE,
+  PARAM_KEY_SERVICE,
+  sourceKeyFor,
+} from "./params.ts";
 import { getWidget } from "./registry.ts";
 
 /**
@@ -252,5 +259,150 @@ describe("cluster-topology", () => {
     html = renderWidget("cluster-topology");
     expect(html).toContain("cluster-topology-unreadable");
     expect(html).not.toContain("cluster-topology-empty");
+  });
+});
+
+describe("mesh-golden-signals on a remote cluster (R9)", () => {
+  const params = { [PARAM_KEY_NAMESPACE]: "prod", [PARAM_KEY_SERVICE]: "api" };
+  const key = sourceKeyFor("mesh-golden-signals", params);
+
+  function signalsReason(reason: string): void {
+    seed(key, { data: { signals: { available: false, reason } } });
+  }
+
+  test("metrics_not_configured says to add a Prometheus binding", () => {
+    signalsReason("metrics_not_configured");
+    const html = renderWidget("mesh-golden-signals", params);
+    expect(html).toContain('data-testid="golden-signals-unmeasured"');
+    expect(html).toContain(METRICS_NOT_CONFIGURED_MESSAGE);
+    expect(html).not.toContain("metrics_not_configured");
+  });
+
+  test("unreachable says the cluster's Prometheus could not be read", () => {
+    signalsReason("unreachable");
+    const html = renderWidget("mesh-golden-signals", params);
+    expect(html).toContain("Prometheus could not be read");
+    expect(html).not.toContain(METRICS_NOT_CONFIGURED_MESSAGE);
+    expect(html).not.toMatch(/>unreachable</);
+  });
+});
+
+describe("active-alerts on a remote cluster (R15, AE1, AE5)", () => {
+  const originalCluster = selectedCluster.peek();
+
+  function summary(
+    alerts: CoveredSummary["alerts"],
+    coverage: CoveredSummary["coverage"],
+  ): CoveredSummary {
+    return {
+      nodes: { total: 3, ready: 3 },
+      pods: { total: 42, running: 42, pending: 0, failed: 0 },
+      alerts,
+      cpu: {
+        percentage: 0,
+        used: "N/A",
+        total: "12",
+        requests: "2",
+        limits: "4",
+      },
+      memory: {
+        percentage: 0,
+        used: "N/A",
+        total: "48Gi",
+        requests: "8Gi",
+        limits: "16Gi",
+      },
+      health: undefined,
+      coverage,
+    };
+  }
+
+  function seedSummary(data: CoveredSummary): void {
+    seed("dashboard-summary", { data });
+  }
+
+  function host(): string {
+    const def = getWidget("active-alerts");
+    if (def === undefined) throw new Error("active-alerts is not registered");
+    return render(<WidgetHost def={def} />);
+  }
+
+  function alertsRow(reasonCode: string, detail: string) {
+    return [{ section: "alerts", status: "unavailable", reasonCode, detail }];
+  }
+
+  afterEach(() => {
+    selectedCluster.value = originalCluster;
+    seed("dashboard-summary", { data: null });
+  });
+
+  test("a remote selection has no link to the Alerts page", () => {
+    selectedCluster.value = "abc123";
+    seedSummary(
+      summary({ active: 3, critical: 1 }, [
+        { section: "alerts", status: "ok", reasonCode: "ok" },
+      ]),
+    );
+    const html = host();
+    expect(html).toContain("1 critical");
+    expect(html).not.toContain("/alerting");
+  });
+
+  test("the local cluster keeps the link", () => {
+    selectedCluster.value = "local";
+    seedSummary(summary({ active: 3, critical: 1 }, undefined));
+    expect(host()).toContain('href="/alerting"');
+  });
+
+  test("alerts_not_configured shows the Alertmanager advice and no count", () => {
+    selectedCluster.value = "abc123";
+    seedSummary(
+      summary(
+        { active: 0, critical: 0 },
+        alertsRow(
+          "alerts_not_configured",
+          "no Alertmanager is configured for this cluster",
+        ),
+      ),
+    );
+    const html = host();
+    expect(html).toContain("Add an Alertmanager URL to its metrics binding.");
+    expect(html).not.toContain("All clear");
+    expect(html).not.toContain("firing");
+    expect(html).not.toContain(">0<");
+  });
+
+  test("the token re-entry detail shows the re-enter advice and no count", () => {
+    selectedCluster.value = "abc123";
+    seedSummary(
+      summary(
+        { active: 0, critical: 0 },
+        alertsRow(
+          "unreachable",
+          "the Alertmanager token must be entered again for the Alertmanager's current address",
+        ),
+      ),
+    );
+    const html = host();
+    expect(html).toContain("token must be entered again");
+    expect(html).not.toContain("All clear");
+    expect(html).not.toContain(">0<");
+  });
+
+  test("an unreachable row shows its fixed detail and no count", () => {
+    selectedCluster.value = "abc123";
+    seedSummary(
+      summary(
+        { active: 0, critical: 0 },
+        alertsRow(
+          "unreachable",
+          "the cluster's Alertmanager could not be reached",
+        ),
+      ),
+    );
+    const html = host();
+    expect(html).toContain("Alertmanager could not be reached");
+    expect(html).not.toContain("All clear");
+    expect(html).not.toContain(">0<");
   });
 });
