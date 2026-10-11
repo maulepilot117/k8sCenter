@@ -1,7 +1,8 @@
-# P2-11 (2026-05-22 audit): pin to 1.26.3-alpine to clear the reachable
-# govulncheck stdlib advisories (GO-2026-4918 et al.). The floating
-# "1.26" tag would lag the patch on hosts with cached layers.
-FROM golang:1.27.1-alpine AS builder
+# P2-11 (2026-05-22 audit): pin an exact patch release so stdlib fixes land
+# deterministically; a floating minor tag would lag the patch on hosts with
+# cached layers. 1.27.2 clears the release Trivy gate's stdlib HIGHs
+# (CVE-2026-97031, CVE-2026-78667, CVE-2026-78669).
+FROM golang:1.27.2-alpine AS builder
 
 WORKDIR /build
 
