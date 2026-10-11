@@ -2,6 +2,7 @@ package certmanager
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -11,7 +12,12 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // newTestHandler returns a minimal Handler for adapter tests. The AccessChecker
@@ -258,8 +264,8 @@ func TestCertExpiryAdapter_WarmAfter45s(t *testing.T) {
 // CanAccessGroupResource calls were made (by incrementing callCount). Used to
 // assert the cluster-wide fast path skips per-namespace SARs.
 type callCountingChecker struct {
-	inner    *resources.AccessChecker
-	calls    int
+	inner            *resources.AccessChecker
+	calls            int
 	clusterWideAllow bool // whether to allow empty-namespace (cluster-wide) checks
 }
 
@@ -302,5 +308,228 @@ func TestCertExpiryAdapter_ClusterWideAllowSkipsPerNS(t *testing.T) {
 	// issued, calls would be 3 (cluster-wide "" + "ns1" + "ns2").
 	if c.calls != 1 {
 		t.Errorf("expected 1 access check (cluster-wide fast path), got %d", c.calls)
+	}
+}
+
+// ── Remote clusters (U9) ─────────────────────────────────────────────────────
+
+// remoteExpiry reads remoteCluster's certificate expiry through the adapter as
+// alice, the way the dashboard does.
+func remoteExpiry(t *testing.T, h *Handler) resources.CertExpiry {
+	t.Helper()
+	return remoteExpiryCtx(t, context.Background(), h)
+}
+
+func remoteExpiryCtx(t *testing.T, ctx context.Context, h *Handler) resources.CertExpiry {
+	t.Helper()
+	return (&CertExpiryAdapter{Handler: h}).ExpiringCountsForCluster(ctx, remoteCluster, alice)
+}
+
+// remoteExpiryOnceWarm is remoteExpiry, retried while a call reports the cache
+// not warm (a load that outlasted its caller's context).
+func remoteExpiryOnceWarm(t *testing.T, h *Handler) resources.CertExpiry {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := remoteExpiry(t, h)
+		if !(got.State == resources.CertExpiryIncomplete && errors.Is(got.Cause, resources.ErrCertCacheNotWarm)) {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("snapshot never warmed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func seedPeek(h *Handler, snap *remoteSnapshot, age time.Duration) {
+	h.peeked.mu.Lock()
+	defer h.peeked.mu.Unlock()
+	h.peeked.put(newPeekKey(remoteCluster, alice), snap, time.Now().Add(-age))
+}
+
+func clusterIssuerCert(namespace, name string, days int) *unstructured.Unstructured {
+	u := expiringCert(namespace, name, days)
+	u.Object["spec"].(map[string]any)["issuerRef"].(map[string]any)["kind"] = "ClusterIssuer"
+	return u
+}
+
+func failList(c *fakeCluster, resource string, err error) {
+	c.dyn.PrependReactor("list", resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, err
+	})
+}
+
+func TestRemoteExpiry_InstalledBucketsCertificatesReadableAsTheUser(t *testing.T) {
+	c := newFakeCluster(true,
+		expiringCert("a", "crit", 3),
+		expiringCert("a", "warn", 20),
+		expiringCert("b", "fine", 90),
+		newUnstructuredIssuer("a", "remote-issuer", false),
+		newUnstructuredIssuer("b", "remote-issuer", false),
+	)
+	h, clients := newRemoteHandler(t, false, c)
+
+	got := remoteExpiry(t, h) // cold: the first call loads and returns the real buckets
+	if got.State != resources.CertExpiryComplete || got.Critical != 1 || got.Warning != 1 {
+		t.Errorf("got %+v, want complete with critical=1 warning=1 (the 90-day certificate is in neither bucket; the local cache's certificate is not counted)", got)
+	}
+	for _, id := range clients.identities() {
+		if id != "alice|admins" {
+			t.Errorf("a list ran as %q, want only the requesting identity", id)
+		}
+	}
+}
+
+func TestRemoteExpiry_NotInstalledIsAValidEmptyRead(t *testing.T) {
+	h, _ := newRemoteHandler(t, true, newFakeCluster(false))
+	got := remoteExpiryOnceWarm(t, h)
+	if got.State != resources.CertExpiryNotInstalled || got.Warning != 0 || got.Critical != 0 {
+		t.Errorf("got %+v, want not installed with no counts (the local cluster has cert-manager and must not matter)", got)
+	}
+}
+
+func TestRemoteExpiry_DeniedPermissionCheckReadsNothing(t *testing.T) {
+	c := newFakeCluster(true, expiringCert("a", "crit", 3))
+	h, _ := newRemoteHandler(t, false, c)
+	h.AccessChecker = resources.NewPredicateAccessChecker(func(_, _, _, _ string) bool { return false })
+
+	got := remoteExpiry(t, h)
+	if got.State != resources.CertExpiryDenied {
+		t.Errorf("got %+v, want denied", got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := countLists(c.dyn, "certificates"); n != 0 {
+		t.Errorf("a denied user triggered %d certificate lists, want 0", n)
+	}
+}
+
+func TestRemoteExpiry_ForbiddenListIsDenied(t *testing.T) {
+	for _, resource := range []string{"clusterissuers", "issuers", "certificates"} {
+		t.Run(resource, func(t *testing.T) {
+			c := newFakeCluster(true, expiringCert("a", "crit", 3))
+			failList(c, resource, apierrors.NewForbidden(schema.GroupResource{Group: "cert-manager.io", Resource: resource}, "", errors.New("rbac")))
+			h, _ := newRemoteHandler(t, false, c)
+			if got := remoteExpiryOnceWarm(t, h); got.State != resources.CertExpiryDenied {
+				t.Errorf("got %+v, want denied", got)
+			}
+		})
+	}
+}
+
+func TestRemoteExpiry_CertificateListServerErrorIsIncomplete(t *testing.T) {
+	c := newFakeCluster(true, newUnstructuredIssuer("a", "remote-issuer", false))
+	failList(c, "certificates", apierrors.NewInternalError(errors.New("etcd down")))
+	h, _ := newRemoteHandler(t, false, c)
+	got := remoteExpiryOnceWarm(t, h)
+	if got.State != resources.CertExpiryIncomplete || got.Cause == nil || errors.Is(got.Cause, resources.ErrCertCacheNotWarm) {
+		t.Errorf("got %+v, want incomplete with the list error as its cause", got)
+	}
+}
+
+func TestRemoteExpiry_ClusterIssuerListErrorMattersOnlyWhenReferenced(t *testing.T) {
+	serverErr := apierrors.NewInternalError(errors.New("boom"))
+
+	t.Run("referenced", func(t *testing.T) {
+		c := newFakeCluster(true, clusterIssuerCert("a", "crit", 3))
+		failList(c, "clusterissuers", serverErr)
+		h, _ := newRemoteHandler(t, false, c)
+		if got := remoteExpiryOnceWarm(t, h); got.State != resources.CertExpiryIncomplete {
+			t.Errorf("got %+v, want incomplete: the certificate's thresholds come from the unread ClusterIssuer", got)
+		}
+	})
+	t.Run("not referenced", func(t *testing.T) {
+		c := newFakeCluster(true, expiringCert("a", "crit", 3), newUnstructuredIssuer("a", "remote-issuer", false))
+		failList(c, "clusterissuers", serverErr)
+		h, _ := newRemoteHandler(t, false, c)
+		if got := remoteExpiryOnceWarm(t, h); got.State != resources.CertExpiryComplete || got.Critical != 1 {
+			t.Errorf("got %+v, want complete with critical=1: no certificate references a ClusterIssuer", got)
+		}
+	})
+}
+
+func TestRemoteExpiry_SnapshotWindow(t *testing.T) {
+	// The snapshot says one critical certificate; the cluster holds none, so
+	// the counts show which one a call served.
+	snap := func() *remoteSnapshot {
+		return &remoteSnapshot{data: &cachedData{
+			certificates: []Certificate{{Name: "snap", Namespace: "a", DaysRemaining: intPtr(3), IssuerRef: IssuerRef{Kind: "Issuer"}}},
+			issuers:      []Issuer{}, clusterIssuers: []Issuer{},
+		}}
+	}
+
+	t.Run("60s old is served without waiting on a fetch", func(t *testing.T) {
+		h, _ := newRemoteHandler(t, false, newFakeCluster(true))
+		seedPeek(h, snap(), 60*time.Second)
+		got := remoteExpiry(t, h)
+		if got.State != resources.CertExpiryComplete || got.Critical != 1 {
+			t.Errorf("got %+v, want the 60s-old snapshot's critical=1", got)
+		}
+	})
+	t.Run("older than 90s is not served and triggers a fetch", func(t *testing.T) {
+		c := newFakeCluster(true)
+		h, _ := newRemoteHandler(t, false, c)
+		seedPeek(h, snap(), 100*time.Second)
+		got := remoteExpiry(t, h)
+		if got.State != resources.CertExpiryComplete || got.Critical != 0 {
+			t.Errorf("got %+v, want the cluster's own empty counts, not the 100s-old snapshot", got)
+		}
+		if n := countLists(c.dyn, "certificates"); n == 0 {
+			t.Error("no certificate list ran for a 100s-old snapshot")
+		}
+	})
+	t.Run("an eviction drops the snapshot", func(t *testing.T) {
+		h, _ := newRemoteHandler(t, false, newFakeCluster(true))
+		seedPeek(h, snap(), time.Second)
+		h.EvictRemoteCache(remoteCluster)
+		if _, _, ok := h.peeked.get(newPeekKey(remoteCluster, alice), time.Now()); ok {
+			t.Error("snapshot survived EvictRemoteCache")
+		}
+	})
+}
+
+func TestExpiringCountsForCluster_LocalIsUnchanged(t *testing.T) {
+	h := newTestHandler(resources.NewAlwaysAllowAccessChecker())
+	seedCache(h, []Certificate{
+		{Name: "c1", Namespace: "ns1", DaysRemaining: intPtr(3)},
+		{Name: "c2", Namespace: "ns1", DaysRemaining: intPtr(20)},
+	})
+	adapter := &CertExpiryAdapter{Handler: h}
+	if got := adapter.ExpiringCountsForCluster(context.Background(), k8s.LocalClusterID, testUser()); got != (resources.CertExpiry{Warning: 1, Critical: 1}) {
+		t.Errorf("warm local = %+v; want warning=1 critical=1 complete", got)
+	}
+
+	cold := newTestHandler(resources.NewAlwaysAllowAccessChecker())
+	got := (&CertExpiryAdapter{Handler: cold}).ExpiringCountsForCluster(context.Background(), k8s.LocalClusterID, testUser())
+	if got.State != resources.CertExpiryIncomplete || !errors.Is(got.Cause, resources.ErrCertCacheNotWarm) {
+		t.Errorf("cold local = %+v; want incomplete caused by ErrCertCacheNotWarm", got)
+	}
+
+	absent := newTestHandler(resources.NewAlwaysAllowAccessChecker())
+	absent.Discoverer = newUnavailableDiscoverer()
+	if got := (&CertExpiryAdapter{Handler: absent}).ExpiringCountsForCluster(context.Background(), k8s.LocalClusterID, testUser()); got.State != resources.CertExpiryNotInstalled {
+		t.Errorf("local without cert-manager = %+v; want CertExpiryNotInstalled", got)
+	}
+}
+
+func TestRemoteExpiry_ColdLoadOutlastingTheCallerIsIncompleteThenFilled(t *testing.T) {
+	c := newFakeCluster(true, expiringCert("a", "crit", 3), newUnstructuredIssuer("a", "remote-issuer", false))
+	release := make(chan struct{})
+	c.dyn.PrependReactor("list", "certificates", func(k8stesting.Action) (bool, runtime.Object, error) {
+		<-release
+		return false, nil, nil
+	})
+	h, _ := newRemoteHandler(t, false, c)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	got := remoteExpiryCtx(t, ctx, h)
+	if got.State != resources.CertExpiryIncomplete || !errors.Is(got.Cause, resources.ErrCertCacheNotWarm) {
+		t.Fatalf("got %+v, want incomplete (cache not warm) when the load outlasts the caller", got)
+	}
+
+	close(release)
+	if after := remoteExpiryOnceWarm(t, h); after.State != resources.CertExpiryComplete || after.Critical != 1 {
+		t.Errorf("after the detached load got %+v, want critical=1 from the filled snapshot", after)
 	}
 }

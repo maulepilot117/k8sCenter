@@ -8,7 +8,9 @@ package certmanager
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,6 +21,8 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -43,6 +47,7 @@ func isLocal(ctx context.Context) bool {
 // cluster never serves its previous lists.
 func (h *Handler) EvictRemoteCache(clusterID string) {
 	h.remote.EvictCluster(clusterID)
+	h.peeked.evict(clusterID)
 }
 
 // load returns the request cluster's certificates and issuers, or nil data
@@ -263,4 +268,235 @@ func (h *Handler) afterWrite(ctx context.Context) {
 			})
 		})
 	}
+}
+
+// maxPeekEntries bounds peeked so a burst of distinct (cluster, identity)
+// pairs cannot grow it without limit.
+const maxPeekEntries = 128
+
+// peekKey names one identity's view of one cluster.
+type peekKey struct {
+	clusterID string // normalized
+	identity  string // k8s.IdentityKey(username, groups)
+}
+
+func newPeekKey(clusterID string, user *auth.User) peekKey {
+	return peekKey{clusterID: k8s.NormalizedClusterID(clusterID), identity: k8s.IdentityKey(user.KubernetesUsername, user.KubernetesGroups)}
+}
+
+type peekEntry struct {
+	snap      *remoteSnapshot
+	fetchedAt time.Time
+}
+
+// remotePeek is the last remote snapshot per (cluster, identity), kept up to
+// peekStaleness. The zero value is usable. A refresh records the cluster's
+// generation when it starts and stores only if no eviction happened since,
+// so a write or a cluster removal is never masked by a refresh that read the
+// old state.
+type remotePeek struct {
+	mu       sync.Mutex
+	entries  map[peekKey]peekEntry
+	fetching map[peekKey]*peekRefresh
+	gens     map[string]uint64
+}
+
+// get returns the snapshot for k and its age, when one is within peekStaleness.
+func (p *remotePeek) get(k peekKey, now time.Time) (*remoteSnapshot, time.Duration, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.entries[k]
+	if !ok || now.Sub(e.fetchedAt) >= peekStaleness {
+		return nil, 0, false
+	}
+	return e.snap, now.Sub(e.fetchedAt), true
+}
+
+// put stores snap for k as fetched at fetchedAt.
+func (p *remotePeek) put(k peekKey, snap *remoteSnapshot, fetchedAt time.Time) {
+	if p.entries == nil {
+		p.entries = map[peekKey]peekEntry{}
+	}
+	p.entries[k] = peekEntry{snap: snap, fetchedAt: fetchedAt}
+	for len(p.entries) > maxPeekEntries {
+		var oldest peekKey
+		var oldestAt time.Time
+		first := true
+		for key, e := range p.entries {
+			if first || e.fetchedAt.Before(oldestAt) {
+				oldest, oldestAt, first = key, e.fetchedAt, false
+			}
+		}
+		delete(p.entries, oldest)
+	}
+}
+
+// peekRefresh is one running refresh of a (cluster, identity) view. snap and
+// err are written before done closes, and read only after.
+type peekRefresh struct {
+	done chan struct{}
+	snap *remoteSnapshot
+	err  error
+}
+
+// begin returns the running refresh of k, or reserves a new one and reports
+// started with the generation it must store under.
+func (p *remotePeek) begin(k peekKey) (r *peekRefresh, gen uint64, started bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if running, ok := p.fetching[k]; ok {
+		return running, 0, false
+	}
+	if p.fetching == nil {
+		p.fetching = map[peekKey]*peekRefresh{}
+	}
+	r = &peekRefresh{done: make(chan struct{})}
+	p.fetching[k] = r
+	return r, p.gens[k.clusterID], true
+}
+
+// finish ends the refresh r of k and wakes its waiters. A nil snap, or an
+// eviction since begin, stores nothing.
+func (p *remotePeek) finish(k peekKey, gen uint64, r *peekRefresh, now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.fetching, k)
+	if r.snap != nil && p.gens[k.clusterID] == gen {
+		p.put(k, r.snap, now)
+	}
+	close(r.done)
+}
+
+// evict drops every identity's snapshot of clusterID and invalidates
+// refreshes already running for it.
+func (p *remotePeek) evict(clusterID string) {
+	clusterID = k8s.NormalizedClusterID(clusterID)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.gens == nil {
+		p.gens = map[string]uint64{}
+	}
+	p.gens[clusterID]++
+	for k := range p.entries {
+		if k.clusterID == clusterID {
+			delete(p.entries, k)
+		}
+	}
+}
+
+// remoteExpiryRefreshTimeout bounds one detached refresh.
+const remoteExpiryRefreshTimeout = 30 * time.Second
+
+// errRefreshPanicked is the cause of a refresh that panicked; recoverutil logs the panic.
+var errRefreshPanicked = errors.New("certificate refresh panicked")
+
+// remoteExpiry reads the expiring-certificate counts of a remote cluster as
+// the user (KTD4, KTD11). It serves the identity's last snapshot while it is
+// younger than peekStaleness, and a snapshot older than the remote cache's TTL
+// also starts a detached refresh, so a 60s poll keeps finding a warm one.
+// With no such snapshot it loads within the caller's context, through h.load
+// so the remote cache and its singleflight still apply. The load runs
+// detached: when ctx ends first the result is incomplete (cache not warm) and
+// the load carries on to fill the snapshot for the next call.
+func (h *Handler) remoteExpiry(ctx context.Context, clusterID string, user *auth.User) resources.CertExpiry {
+	can, err := h.AccessChecker.CanAccessGroupResource(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "cert-manager.io", "certificates", "")
+	switch {
+	case err != nil:
+		return resources.CertExpiry{State: resources.CertExpiryIncomplete, Cause: err}
+	case !can:
+		return resources.CertExpiry{State: resources.CertExpiryDenied}
+	}
+
+	k := newPeekKey(clusterID, user)
+	snap, age, ok := h.peeked.get(k, time.Now())
+	if ok {
+		if age > remotecache.DefaultTTL {
+			h.startRemoteExpiryRefresh(ctx, clusterID, user, k)
+		}
+		return expiryFromSnapshot(snap)
+	}
+
+	r := h.startRemoteExpiryRefresh(ctx, clusterID, user, k)
+	select {
+	case <-ctx.Done():
+		return resources.CertExpiry{State: resources.CertExpiryIncomplete, Cause: resources.ErrCertCacheNotWarm}
+	case <-r.done:
+	}
+	if r.err != nil {
+		return resources.CertExpiry{State: resources.CertExpiryIncomplete, Cause: r.err}
+	}
+	return expiryFromSnapshot(r.snap)
+}
+
+// startRemoteExpiryRefresh reads the cluster's lists on a context detached
+// from the caller and stores the snapshot, or joins the refresh of k that is
+// already running.
+func (h *Handler) startRemoteExpiryRefresh(ctx context.Context, clusterID string, user *auth.User, k peekKey) *peekRefresh {
+	r, gen, started := h.peeked.begin(k)
+	if !started {
+		return r
+	}
+	ctx = middleware.WithClusterID(context.WithoutCancel(ctx), clusterID)
+	go func() {
+		r.err = errRefreshPanicked
+		// finish runs even when the refresh panics, so the reservation is released.
+		defer func() { h.peeked.finish(k, gen, r, time.Now()) }()
+		recoverutil.Safe(h.Logger, "certmanager remote expiry refresh", func() {
+			ctx, cancel := context.WithTimeout(ctx, remoteExpiryRefreshTimeout)
+			defer cancel()
+			data, failed, err := h.load(ctx, user)
+			if err != nil {
+				h.Logger.Warn("remote certificate expiry refresh failed", "cluster", clusterID, "error", err)
+				r.err = err
+				return
+			}
+			r.snap, r.err = &remoteSnapshot{data: data, failed: failed}, nil
+		})
+	}()
+	return r
+}
+
+// expiryFromSnapshot buckets a remote snapshot the way the local adapter
+// buckets its cache. A read the user is allowed that did not complete makes
+// the result incomplete: a failed Certificate list always does, and a failed
+// Issuer or ClusterIssuer list does when a certificate references that kind,
+// since its thresholds would otherwise fall back to the defaults unseen.
+// Forbidden on any list is a denial, not a failure.
+func expiryFromSnapshot(snap *remoteSnapshot) resources.CertExpiry {
+	if snap.data == nil {
+		return resources.CertExpiry{State: resources.CertExpiryNotInstalled}
+	}
+	referenced := map[string]bool{}
+	for _, c := range snap.data.certificates {
+		referenced[c.IssuerRef.Kind] = true
+	}
+	needed := map[string]bool{
+		CertificateGVR.Resource:   true,
+		IssuerGVR.Resource:        referenced["Issuer"],
+		ClusterIssuerGVR.Resource: referenced["ClusterIssuer"],
+	}
+	denied := false
+	for _, gvr := range []schema.GroupVersionResource{CertificateGVR, IssuerGVR, ClusterIssuerGVR} {
+		err := snap.failed[gvr.Resource]
+		switch {
+		case err == nil:
+		case apierrors.IsForbidden(err):
+			denied = true
+		case needed[gvr.Resource]:
+			return resources.CertExpiry{State: resources.CertExpiryIncomplete, Cause: err}
+		}
+	}
+	if denied {
+		return resources.CertExpiry{State: resources.CertExpiryDenied}
+	}
+	var out resources.CertExpiry
+	for _, cert := range snap.data.certificates {
+		switch thresholdBucket(cert) {
+		case thresholdWarning:
+			out.Warning++
+		case thresholdCritical, thresholdExpired:
+			out.Critical++
+		}
+	}
+	return out
 }

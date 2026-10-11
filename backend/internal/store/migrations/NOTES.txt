@@ -713,3 +713,50 @@ Inspect:
       FROM cluster_monitoring
      WHERE COALESCE(prometheus_url, '') <> ''
      ORDER BY cluster_id;
+
+
+000028_cluster_alertmanager_token (#608 PR 4b, remote Alertmanager token, 2026-10-11)
+------------------------------------------------------------------------------
+
+Adds two nullable columns to cluster_monitoring: alertmanager_token (BYTEA) and
+alertmanager_token_origin (TEXT). Purely additive: no backfill.
+
+What it is for:
+  A remote cluster's metrics binding may carry its own Alertmanager bearer
+  token, separate from the Prometheus token. alertmanager_token is AES-256-GCM
+  encrypted with the same master secret as the cluster credentials
+  (store.Encrypt) and is never returned by the API. alertmanager_token_origin
+  records the origin of the Alertmanager URL the token was entered for. The
+  store returns the token only while alertmanager_url is non-empty and its
+  origin equals the stored origin; an empty or NULL origin or URL means no
+  token. That check lives in the store read, not only in the writers, so a
+  previous-release pod that moves or clears alertmanager_url during a rolling
+  update or rollback cannot cause the token to be sent to another host.
+
+Lock impact:
+  The table has rows (bindings written since PR 4a). ADD COLUMN of nullable
+  columns with no default is catalog-only: no rewrite, and the ACCESS
+  EXCLUSIVE lock is brief.
+
+Rollback:
+  Stop every pod of this release first, because its binding read names the new
+  columns. Then either
+    (a) leave the columns in place (recommended): the previous release never
+        names them, and the store's origin check keeps a leftover token
+        unusable, or
+    (b) run the 000028 down file, which drops both columns; every Alertmanager
+        token must then be re-entered.
+  Then reset the recorded version:
+    UPDATE schema_migrations SET version = 27, dirty = false;
+  A later roll-forward re-runs the up file without error (ADD COLUMN IF NOT
+  EXISTS, COMMENT ON). Bindings keep their cluster_id, prometheus_url,
+  prometheus_token and alertmanager_url either way.
+  TestMigration000028_RoundTripKeepsBindings covers up, down and re-apply.
+
+Inspect:
+    SELECT cluster_id, alertmanager_url,
+           alertmanager_token IS NOT NULL AS has_token,
+           alertmanager_token_origin
+      FROM cluster_monitoring
+     WHERE COALESCE(alertmanager_url, '') <> ''
+     ORDER BY cluster_id;

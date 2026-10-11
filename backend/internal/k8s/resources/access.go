@@ -405,6 +405,8 @@ func apiGroupForResource(resource string) string {
 		return "networking.k8s.io"
 	case "poddisruptionbudgets":
 		return "policy"
+	case "storageclasses":
+		return "storage.k8s.io"
 	case "roles", "clusterroles", "rolebindings", "clusterrolebindings":
 		return "rbac.authorization.k8s.io"
 	case "prometheusrules", "servicemonitors", "podmonitors", "alertmanagers", "alertmanagerconfigs":

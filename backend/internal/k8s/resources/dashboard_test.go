@@ -134,8 +134,18 @@ type fakeCertExpiry struct {
 	err  error
 }
 
-func (f *fakeCertExpiry) ExpiringCounts(_ context.Context, _ *auth.User) (int, int, error) {
-	return f.warn, f.crit, f.err
+// ExpiringCountsForCluster answers the way certmanager.CertExpiryAdapter
+// answers for the local cluster: err is the error its ExpiringCounts would
+// return, reported through State.
+func (f *fakeCertExpiry) ExpiringCountsForCluster(_ context.Context, _ string, _ *auth.User) CertExpiry {
+	switch {
+	case f.err == nil:
+		return CertExpiry{Warning: f.warn, Critical: f.crit}
+	case errors.Is(f.err, ErrCertManagerNotInstalled):
+		return CertExpiry{State: CertExpiryNotInstalled}
+	default:
+		return CertExpiry{State: CertExpiryIncomplete, Cause: f.err}
+	}
 }
 
 // --- Tests ---

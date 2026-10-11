@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -84,5 +85,74 @@ func TestMetricsBindingReader_ErrorMapping(t *testing.T) {
 				t.Errorf("reason = %q; want %q", body.Error.Reason, c.wantReason)
 			}
 		})
+	}
+}
+
+// The reader hands the resolver the Alertmanager token only as the store
+// returned it (origin-checked), and carries the store's stale flag so the
+// resolver can answer "token must be re-entered" without sending anything.
+func TestMetricsBindingReader_AlertmanagerToken(t *testing.T) {
+	const amURL = "https://8.8.4.4:9093/alertmanager"
+	cases := []struct {
+		name      string
+		amOrigin  string
+		wantToken string
+		wantStale bool
+	}{
+		{"origin matches", "https://8.8.4.4:9093", "am-tok", false},
+		{"origin moved", "https://1.1.1.1:9093", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fs := newFakeMetricsStore()
+			fs.bindings[testRemoteID] = store.MetricsBinding{ClusterID: testRemoteID, PrometheusURL: testPublicProm, AlertmanagerURL: amURL}
+			fs.tokens[testRemoteID] = "prom-tok"
+			fs.amTokens[testRemoteID] = "am-tok"
+			fs.amOrigins[testRemoteID] = c.amOrigin
+
+			b, err := metricsBindingReader{store: fs}.GetMetricsBinding(t.Context(), testRemoteID)
+			if err != nil {
+				t.Fatalf("GetMetricsBinding: %v", err)
+			}
+			want := monitoring.MetricsBinding{
+				ClusterID:              testRemoteID,
+				PrometheusURL:          testPublicProm,
+				AlertmanagerURL:        amURL,
+				Token:                  "prom-tok",
+				AlertmanagerToken:      c.wantToken,
+				AlertmanagerTokenStale: c.wantStale,
+			}
+			if b != want {
+				t.Errorf("binding = %+v; want %+v", b, want)
+			}
+		})
+	}
+}
+
+// The reader passes the store's updated_at through as the binding revision,
+// on both the full read and the revision-only read, and maps the revision
+// read's errors the way GetMetricsBinding maps Get's.
+func TestMetricsBindingReader_Revision(t *testing.T) {
+	rev := time.Date(2026, 10, 11, 9, 30, 0, 123456000, time.UTC)
+	fs := newFakeMetricsStore()
+	fs.bindings[testRemoteID] = store.MetricsBinding{ClusterID: testRemoteID, PrometheusURL: testPublicProm, UpdatedAt: rev}
+	reader := metricsBindingReader{store: fs}
+
+	b, err := reader.GetMetricsBinding(t.Context(), testRemoteID)
+	if err != nil || !b.Revision.Equal(rev) {
+		t.Fatalf("GetMetricsBinding revision = (%v, %v); want %v", b.Revision, err, rev)
+	}
+	got, err := reader.MetricsBindingRevision(t.Context(), testRemoteID)
+	if err != nil || !got.Equal(rev) {
+		t.Fatalf("MetricsBindingRevision = (%v, %v); want %v", got, err, rev)
+	}
+
+	if _, err := reader.MetricsBindingRevision(t.Context(), "unbound"); !errors.Is(err, monitoring.ErrNoMetricsBinding) {
+		t.Errorf("revision of an unbound cluster = %v; want ErrNoMetricsBinding", err)
+	}
+	fs.getErr = fmt.Errorf("getting metrics binding revision: cluster %s: %w", testRemoteID, pgx.ErrNoRows)
+	_, err = reader.MetricsBindingRevision(t.Context(), testRemoteID)
+	if !errors.Is(err, pgx.ErrNoRows) || errors.Is(err, monitoring.ErrNoMetricsBinding) {
+		t.Errorf("revision of an unregistered cluster = %v; want pgx.ErrNoRows passed through", err)
 	}
 }

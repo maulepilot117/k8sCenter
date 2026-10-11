@@ -12,10 +12,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1"
-	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -93,118 +90,26 @@ type DashboardTrends struct {
 	Step      string    `json:"step"`
 }
 
-// Waiting reason predicates copied from diagnostics/rules.go — exact string
-// match required so dashboard and diagnostics page never disagree on the same pod.
-const (
-	waitingReasonCrashLoopBackOff = "CrashLoopBackOff"
-	waitingReasonImagePullBackOff = "ImagePullBackOff"
-	waitingReasonErrImagePull     = "ErrImagePull"
-)
-
-// isCrashloopOrImagePull returns true when the waiting reason indicates a
-// CrashLoopBackOff, ImagePullBackOff, or ErrImagePull condition.
-func isCrashloopOrImagePull(reason string) bool {
-	return reason == waitingReasonCrashLoopBackOff ||
-		reason == waitingReasonImagePullBackOff ||
-		reason == waitingReasonErrImagePull
-}
-
-// hasCrashloopWaiting returns true when any container in the slice is in a
-// CrashLoopBackOff/ImagePullBackOff/ErrImagePull waiting state.
-func hasCrashloopWaiting(statuses []corev1.ContainerStatus) bool {
-	for _, cs := range statuses {
-		if cs.State.Waiting != nil && isCrashloopOrImagePull(cs.State.Waiting.Reason) {
-			return true
-		}
-	}
-	return false
-}
-
-// isProgressingDeployment returns true when the Deployment has an active
-// Progressing condition with reason ReplicaSetUpdated or NewReplicaSetCreated.
-// These deployments are excluded from workload availability scoring to prevent
-// routine chart installs and rolling updates from flashing the health ring.
-func isProgressingDeployment(dep *appsv1.Deployment) bool {
-	for _, cond := range dep.Status.Conditions {
-		if cond.Type == appsv1.DeploymentProgressing && cond.Status == corev1.ConditionTrue {
-			r := cond.Reason
-			if r == "ReplicaSetUpdated" || r == "NewReplicaSetCreated" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// isProgressingStatefulSet returns true when the StatefulSet has an in-flight
-// rolling update (updateRevision differs from currentRevision).
-func isProgressingStatefulSet(sts *appsv1.StatefulSet) bool {
-	return sts.Status.UpdateRevision != "" &&
-		sts.Status.CurrentRevision != "" &&
-		sts.Status.UpdateRevision != sts.Status.CurrentRevision
-}
-
-// defaultStorageClassName returns the name of the default StorageClass (the one
-// annotated with storageclass.kubernetes.io/is-default-class=true). Returns ""
-// when no default exists.
-func defaultStorageClassName(classes []*storagev1.StorageClass) string {
-	for _, sc := range classes {
-		if sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
-			return sc.Name
-		}
-	}
-	return ""
-}
-
-// isWFFCPending returns true when a Pending PVC should be excluded from the
-// health signal because it is waiting for a consumer to be scheduled
-// (WaitForFirstConsumer binding mode) and the scheduler has not yet selected
-// a node. PVCs in this state are not actionable; their pending status is
-// intentional by design and clears automatically once a pod is scheduled.
-func isWFFCPending(pvc *corev1.PersistentVolumeClaim, scByName map[string]*storagev1.StorageClass, defaultSC string) bool {
-	if pvc.Status.Phase == corev1.ClaimBound {
-		return false // not pending
-	}
-	// Resolve the StorageClass for this PVC.
-	// Only fall back to the default class when StorageClassName is nil (unset).
-	// An explicit "" means static binding — never WFFC — so do not substitute
-	// the default class in that case.
-	scName := ""
-	if pvc.Spec.StorageClassName != nil {
-		scName = *pvc.Spec.StorageClassName
-	} else {
-		scName = defaultSC
-	}
-	sc, ok := scByName[scName]
-	if !ok {
-		return false
-	}
-	if sc.VolumeBindingMode == nil || *sc.VolumeBindingMode != storagev1.VolumeBindingWaitForFirstConsumer {
-		return false
-	}
-	// WFFC AND no selected-node annotation → truly waiting for a consumer.
-	_, hasSelectedNode := pvc.Annotations["volume.kubernetes.io/selected-node"]
-	return !hasSelectedNode
-}
-
-// gatherHealthInputs collects all signal inputs for computeClusterHealth from
-// the informer cache and optional providers. Per-signal RBAC and sync gates
-// are applied; each gated signal resolves to skipped/unknown rather than feeding
-// zero into the score (R5, R9).
+// gatherHealthInputs is the local health mapper: it turns informer reads and
+// local permission checks into one outcome per health input, which
+// assembleHealthInputs (health_shaping.go) turns into HealthInputs. The local
+// mapper never records a failed read; its degrade-but-score states (cache
+// syncing, an alert query error, a cold or failing certificate read) are
+// unavailable outcomes, so a local score is always drawn from what resolved.
 //
 // canListNodes is the pre-resolved result of h.canList(ctx, user, "nodes", ""),
 // hoisted by HandleDashboardSummary so a single SAR decision is reused across
-// the nodes signal, the workloads guard, and the control-plane gate.
+// the nodes signal, the workloads guard, and the control-plane gate. nodes and
+// pods are the slices the tile counts were computed from (R8).
 //
 // The control-plane goroutine is dispatched immediately after the nodes decision
 // so it runs concurrently with remaining per-signal SARs rather than after them.
 // It joins the caller-provided promCtx (the 1-second shared Prometheus budget)
-// and WaitGroup wg, which the caller must Wait() on before reading the inputs.
+// and WaitGroup wg; the caller must Wait() on wg and then record the
+// control-plane outcome from cpResult and cpErr.
 //
-// isSyncedFn is consulted per-resource before reading the informer cache.
-// It defaults to h.Informers.IsSynced but can be overridden in tests via
-// h.isSynced (see Handler field). The caller should pass h.syncedFn() which
-// selects the live or test override.
+// Readiness is consulted per resource through h.isSyncedFn(), which tests
+// override via h.isSynced (see Handler field).
 func (h *Handler) gatherHealthInputs(
 	ctx context.Context,
 	user *auth.User,
@@ -213,51 +118,20 @@ func (h *Handler) gatherHealthInputs(
 	pods []*corev1.Pod,
 	wg *sync.WaitGroup,
 	promCtx context.Context,
-	inputs *HealthInputs,
 	cpResult *ControlPlaneStates,
 	cpErr *error,
-) {
-	// ── Nodes signal ────────────────────────────────────────────────────────
-	if !canListNodes {
-		inputs.NodesAvailable = false
-		inputs.NodesUnavailableReason = "insufficient permissions"
-		inputs.WorkloadsAvailable = false
-		inputs.WorkloadsUnavailableReason = "insufficient permissions"
-		inputs.ControlPlaneAvailable = false
-		inputs.ControlPlaneUnavailableReason = "insufficient permissions"
-	} else if !h.isSyncedFn()("nodes") {
-		inputs.NodesAvailable = false
-		inputs.NodesUnavailableReason = "cache syncing"
-	} else if len(nodes) == 0 {
-		// 0 nodes visible despite list permission — treat as unknown rather than
-		// healthy with a 0-weighted node sub-score (plan veto table).
-		inputs.NodesAvailable = false
-		inputs.NodesUnavailableReason = "no nodes visible"
-	} else {
-		inputs.NodesAvailable = true
-		inputs.TotalNodes = len(nodes)
-		for _, n := range nodes {
-			isReady := false
-			hasPressure := false
-			for _, c := range n.Status.Conditions {
-				switch c.Type {
-				case corev1.NodeReady:
-					if c.Status == corev1.ConditionTrue {
-						isReady = true
-					}
-				case corev1.NodeMemoryPressure, corev1.NodeDiskPressure, corev1.NodePIDPressure, corev1.NodeNetworkUnavailable:
-					if c.Status == corev1.ConditionTrue {
-						hasPressure = true
-					}
-				}
-			}
-			if isReady {
-				inputs.ReadyNodes++
-			}
-			if hasPressure {
-				inputs.PressureNodes++
-			}
-		}
+) healthOutcomes {
+	synced := h.isSyncedFn()
+	var o healthOutcomes
+
+	// ── Nodes ────────────────────────────────────────────────────────────────
+	switch {
+	case !canListNodes:
+		o.nodes.setDenied()
+	case !synced("nodes"):
+		o.nodes.setUnavailable(SignalStatusUnknown, reasonCacheSyncing)
+	default:
+		o.nodes.setOK(nodes)
 	}
 
 	// ── Control-plane signal ─────────────────────────────────────────────────
@@ -279,231 +153,123 @@ func (h *Handler) gatherHealthInputs(
 		}()
 	}
 
-	// ── Pods signal ──────────────────────────────────────────────────────────
-	if !h.canList(ctx, user, "pods", "") {
-		inputs.PodsAvailable = false
-		inputs.PodsUnavailableReason = "insufficient permissions"
-	} else if !h.isSyncedFn()("pods") {
-		inputs.PodsAvailable = false
-		inputs.PodsUnavailableReason = "cache syncing"
-	} else {
-		inputs.PodsAvailable = true
-		for _, p := range pods {
-			// Eligible pods: phase Running or Pending AND DeletionTimestamp nil.
-			if p.DeletionTimestamp != nil {
-				continue
-			}
-			if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
-				continue
-			}
-			inputs.EligiblePods++
-			// Walk ContainerStatuses and InitContainerStatuses for waiting reasons.
-			if hasCrashloopWaiting(p.Status.ContainerStatuses) ||
-				hasCrashloopWaiting(p.Status.InitContainerStatuses) {
-				inputs.CrashloopPods++
-			}
-		}
+	// ── Pods ─────────────────────────────────────────────────────────────────
+	switch {
+	case !h.canList(ctx, user, "pods", ""):
+		o.pods.setDenied()
+	case !synced("pods"):
+		o.pods.setUnavailable(SignalStatusUnknown, reasonCacheSyncing)
+	default:
+		o.pods.setOK(pods)
 	}
 
-	// ── Workloads signal ─────────────────────────────────────────────────────
-	// Guard: only computed when canListNodes is true (already checked above).
+	// ── Workloads ────────────────────────────────────────────────────────────
+	// The workload SARs run only when nodes are listable; the assembly gates
+	// the workloads signal on the nodes permission. Any workload informer
+	// still syncing holds back every kind the user may list.
 	if canListNodes {
 		canDeploy := h.canList(ctx, user, "deployments", "")
 		canSTS := h.canList(ctx, user, "statefulsets", "")
 		canDS := h.canList(ctx, user, "daemonsets", "")
+		syncing := !synced("deployments") || !synced("statefulsets") || !synced("daemonsets")
 
-		if !canDeploy && !canSTS && !canDS {
-			inputs.WorkloadsAvailable = false
-			inputs.WorkloadsUnavailableReason = "insufficient permissions"
-		} else if !h.isSyncedFn()("deployments") || !h.isSyncedFn()("statefulsets") || !h.isSyncedFn()("daemonsets") {
-			inputs.WorkloadsAvailable = false
-			inputs.WorkloadsUnavailableReason = "cache syncing"
-		} else {
-			inputs.WorkloadsAvailable = true
-			var totalDesired, totalAvailable, progressingCount int
-
-			// Deployments
-			if canDeploy {
-				if deps, err := h.Informers.Deployments().List(labels.Everything()); err == nil {
-					for _, dep := range deps {
-						// Exclude: spec.paused
-						if dep.Spec.Paused {
-							continue
-						}
-						desired := 1
-						if dep.Spec.Replicas != nil {
-							desired = int(*dep.Spec.Replicas)
-						}
-						// Exclude: desired == 0
-						if desired == 0 {
-							continue
-						}
-						// Exclude: actively progressing (rollout in flight)
-						if isProgressingDeployment(dep) {
-							progressingCount++
-							continue
-						}
-						available := int(dep.Status.AvailableReplicas)
-						// Clamp available to min(available, desired) — surge protection.
-						if available > desired {
-							available = desired
-						}
-						totalDesired += desired
-						totalAvailable += available
-					}
-				}
-			}
-
-			// StatefulSets
-			if canSTS {
-				if stss, err := h.Informers.StatefulSets().List(labels.Everything()); err == nil {
-					for _, sts := range stss {
-						desired := 1
-						if sts.Spec.Replicas != nil {
-							desired = int(*sts.Spec.Replicas)
-						}
-						// Exclude: desired == 0
-						if desired == 0 {
-							continue
-						}
-						// Exclude: actively progressing (update in flight)
-						if isProgressingStatefulSet(sts) {
-							progressingCount++
-							continue
-						}
-						available := int(sts.Status.ReadyReplicas)
-						if available > desired {
-							available = desired
-						}
-						totalDesired += desired
-						totalAvailable += available
-					}
-				}
-			}
-
-			// DaemonSets
-			if canDS {
-				if dss, err := h.Informers.DaemonSets().List(labels.Everything()); err == nil {
-					for _, ds := range dss {
-						desired := int(ds.Status.DesiredNumberScheduled)
-						// Exclude: desiredNumberScheduled == 0
-						if desired == 0 {
-							continue
-						}
-						// DaemonSets don't have a separate "progressing" condition;
-						// they roll gradually. Exclude none here — they're scored via
-						// numberReady vs desiredNumberScheduled like other workloads.
-						available := int(ds.Status.NumberReady)
-						if available > desired {
-							available = desired
-						}
-						totalDesired += desired
-						totalAvailable += available
-					}
-				}
-			}
-
-			inputs.WorkloadsDesired = totalDesired
-			inputs.WorkloadsActuallyAvailable = totalAvailable
-			inputs.ProgressingCount = progressingCount
-		}
+		o.deployments = localListOutcome(canDeploy, syncing, SignalStatusUnknown, h.Informers.Deployments().List)
+		o.statefulSets = localListOutcome(canSTS, syncing, SignalStatusUnknown, h.Informers.StatefulSets().List)
+		o.daemonSets = localListOutcome(canDS, syncing, SignalStatusUnknown, h.Informers.DaemonSets().List)
 	}
 
-	// ── PDB signal ───────────────────────────────────────────────────────────
-	if !h.canList(ctx, user, "poddisruptionbudgets", "") {
-		inputs.PDBAvailable = false
-		inputs.PDBUnavailableReason = "insufficient permissions"
-	} else if !h.isSyncedFn()("poddisruptionbudgets") {
-		inputs.PDBAvailable = false
-		inputs.PDBUnavailableReason = "cache syncing"
-	} else {
-		inputs.PDBAvailable = true
-		if pdbs, err := h.Informers.PodDisruptionBudgets().List(labels.Everything()); err == nil {
-			inputs.PDBViolations = countPDBViolations(pdbs)
-		}
-	}
+	// ── PDBs ─────────────────────────────────────────────────────────────────
+	o.pdbs = localListOutcome(
+		h.canList(ctx, user, "poddisruptionbudgets", ""),
+		!synced("poddisruptionbudgets"),
+		SignalStatusSkipped,
+		h.Informers.PodDisruptionBudgets().List,
+	)
 
-	// ── Storage signal ───────────────────────────────────────────────────────
-	// StorageClass read is SA-level classification metadata — no per-user gate.
-	if !h.canList(ctx, user, "persistentvolumeclaims", "") {
-		inputs.StorageAvailable = false
-		inputs.StorageUnavailableReason = "insufficient permissions"
-	} else if !h.isSyncedFn()("persistentvolumeclaims") || !h.isSyncedFn()("storageclasses") {
-		inputs.StorageAvailable = false
-		inputs.StorageUnavailableReason = "cache syncing"
-	} else {
-		inputs.StorageAvailable = true
-		// Build StorageClass lookup map for WFFC exclusion predicate.
-		scByName := make(map[string]*storagev1.StorageClass)
-		defaultSC := ""
-		if classes, err := h.Informers.StorageClasses().List(labels.Everything()); err == nil {
-			for _, sc := range classes {
-				scByName[sc.Name] = sc
-			}
-			defaultSC = defaultStorageClassName(classes)
-		}
-		if pvcs, err := h.Informers.PersistentVolumeClaims().List(labels.Everything()); err == nil {
-			for _, pvc := range pvcs {
-				if pvc.Status.Phase == corev1.ClaimBound {
-					continue
-				}
-				// Exclude WFFC PVCs awaiting a consumer (intentional pending).
-				if isWFFCPending(pvc, scByName, defaultSC) {
-					continue
-				}
-				inputs.PendingPVCs++
-			}
-		}
-	}
+	// ── Storage ──────────────────────────────────────────────────────────────
+	// The StorageClass read is service-account classification metadata, so it
+	// has no per-user gate locally. Either informer still syncing holds back both.
+	storageSyncing := !synced("persistentvolumeclaims") || !synced("storageclasses")
+	o.pvcs = localListOutcome(
+		h.canList(ctx, user, "persistentvolumeclaims", ""),
+		storageSyncing,
+		SignalStatusSkipped,
+		h.Informers.PersistentVolumeClaims().List,
+	)
+	o.storageClasses = localListOutcome(true, storageSyncing, SignalStatusSkipped, h.Informers.StorageClasses().List)
 
-	// ── Alerts signal ────────────────────────────────────────────────────────
-	if h.Alerts == nil {
-		inputs.AlertsAvailable = false
-		inputs.AlertsSkipped = true
-		inputs.AlertsUnavailableReason = "alerting not configured"
-	} else if !h.canList(ctx, user, "alertmanagers", "") {
-		inputs.AlertsAvailable = false
-		inputs.AlertsSkipped = true
-		inputs.AlertsUnavailableReason = "insufficient permissions"
-	} else {
-		active, critical, err := h.Alerts.ActiveAlertCountsExcluding(ctx, "Watchdog", "DeadMansSwitch")
+	// ── Alerts ───────────────────────────────────────────────────────────────
+	switch {
+	case h.Alerts == nil:
+		o.alerts.setNoSource("alerting not configured")
+	case !h.canList(ctx, user, "alertmanagers", ""):
+		o.alerts.setDenied()
+	default:
+		active, critical, err := h.Alerts.ActiveAlertCountsExcluding(ctx, HeartbeatAlertNames...)
 		if err != nil {
-			inputs.AlertsAvailable = false
-			// AlertsSkipped remains false — query error maps to unknown.
-			inputs.AlertsUnavailableReason = "alerting unavailable"
+			// A query error maps to unknown rather than skipped.
+			o.alerts.setUnavailable(SignalStatusUnknown, "alerting unavailable")
 		} else {
-			inputs.AlertsAvailable = true
-			inputs.AlertsActive = active
-			inputs.AlertsCritical = critical
+			o.alerts.setOK(alertCounts{active: active, critical: critical})
 		}
 	}
 
-	// ── Certificates signal ──────────────────────────────────────────────────
+	// ── Certificates ─────────────────────────────────────────────────────────
 	if h.CertExpiry == nil {
-		inputs.CertsAvailable = false
-		inputs.CertsUnavailableReason = "cert-manager not configured"
+		o.certificates.setNoSource("cert-manager not configured")
 	} else {
 		// Only the critical bucket feeds health; the warning count is intentionally
 		// ignored here so certs that are still valid (8–30 days out) don't degrade
 		// the cluster. The observatory page surfaces the warning bucket separately.
-		_, crit, certErr := h.CertExpiry.ExpiringCounts(ctx, user)
-		if certErr == nil {
-			inputs.CertsAvailable = true
-			inputs.CertCritical = crit
-		} else {
-			inputs.CertsAvailable = false
-			switch {
-			case errors.Is(certErr, ErrCertManagerNotInstalled):
-				inputs.CertsUnavailableReason = "cert-manager not installed"
-			case errors.Is(certErr, ErrCertCacheNotWarm):
-				inputs.CertsUnavailableReason = "cert cache warming"
-			default:
-				// Do not leak internal error text into reasons (R3 / CLAUDE.md security rule).
-				inputs.CertsUnavailableReason = "certificate data unavailable"
-			}
+		expiry := h.CertExpiry.ExpiringCountsForCluster(ctx, k8s.LocalClusterID, user)
+		switch {
+		case expiry.State == CertExpiryComplete:
+			o.certificates.setOK(expiry.Critical)
+		case expiry.State == CertExpiryNotInstalled:
+			o.certificates.setNoSource("cert-manager not installed")
+		case errors.Is(expiry.Cause, ErrCertCacheNotWarm):
+			o.certificates.setUnavailable(SignalStatusSkipped, "cert cache warming")
+		default:
+			// Do not leak internal error text into reasons (R3 / CLAUDE.md security rule).
+			o.certificates.setUnavailable(SignalStatusSkipped, "certificate data unavailable")
 		}
 	}
 
+	return o
+}
+
+// localListOutcome maps one informer-backed input to its outcome: denied,
+// unavailable while its informer syncs (with the signal's status), or the
+// cached list. A lister reads the informer cache; on the rare list error the
+// kind contributes no items, as it always has on the local path.
+func localListOutcome[T any](allowed, syncing bool, syncStatus SignalStatus, list func(labels.Selector) ([]T, error)) healthOutcome[[]T] {
+	var o healthOutcome[[]T]
+	switch {
+	case !allowed:
+		o.setDenied()
+	case syncing:
+		o.setUnavailable(syncStatus, reasonCacheSyncing)
+	default:
+		items, _ := list(labels.Everything())
+		o.setOK(items)
+	}
+	return o
+}
+
+// localControlPlaneOutcome maps the control-plane goroutine's result to its
+// outcome. With no source the reason is left empty: the signal then shows the
+// scorer's default text, as it always has.
+func localControlPlaneOutcome(haveSource bool, states ControlPlaneStates, err error) healthOutcome[ControlPlaneStates] {
+	var o healthOutcome[ControlPlaneStates]
+	switch {
+	case !haveSource:
+		o.setNoSource("")
+	case err != nil:
+		o.setUnavailable(SignalStatusSkipped, "prometheus timeout or unavailable")
+	default:
+		o.setOK(states)
+	}
+	return o
 }
 
 // isSyncedFn returns the active IsSynced function — the test override if set,
@@ -514,26 +280,6 @@ func (h *Handler) isSyncedFn() func(string) bool {
 		return h.isSynced
 	}
 	return h.Informers.IsSynced
-}
-
-// countPDBViolations counts PodDisruptionBudgets where currentHealthy < desiredHealthy.
-//
-// Note on progressing-workload interaction: the plan says to skip PDB checks for
-// workloads that are actively progressing "only if cheaply determinable". The check
-// requires matching PDB label selectors to pods and then to progressing workloads,
-// which is O(pods × PDBs × workloads) and complex. Per the plan's acceptable
-// simplification: we count PDB violations normally. Progressing workloads were
-// already excluded from the availability signal, so the overall cluster status is
-// not double-penalised — the PDB violation may produce a spurious degraded reason
-// during a rollout but resolves as soon as the rollout completes.
-func countPDBViolations(pdbs []*policyv1.PodDisruptionBudget) int {
-	count := 0
-	for _, pdb := range pdbs {
-		if pdb.Status.CurrentHealthy < pdb.Status.DesiredHealthy {
-			count++
-		}
-	}
-	return count
 }
 
 // resourceKind selects which capacity series utilizationFrom renders.
@@ -750,7 +496,7 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 	// within a shared 1-second Prometheus budget. We use sync.WaitGroup (not
 	// errgroup) so a failure in one query does not cancel the others.
 	// The block runs when either Utilization or ControlPlane is non-nil.
-	var healthInputs HealthInputs
+	var outcomes healthOutcomes
 	var cpResult ControlPlaneStates
 	var cpErr error
 
@@ -776,7 +522,7 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 
 		// Gather health inputs — the control-plane goroutine (if any) is added
 		// to wg inside gatherHealthInputs. canListNodes is pre-resolved above.
-		h.gatherHealthInputs(ctx, user, canListNodes, nodes, pods, &wg, promCtx, &healthInputs, &cpResult, &cpErr)
+		outcomes = h.gatherHealthInputs(ctx, user, canListNodes, nodes, pods, &wg, promCtx, &cpResult, &cpErr)
 
 		wg.Wait()
 
@@ -795,20 +541,15 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		var wg sync.WaitGroup
 		dummyCtx, dummyCancel := context.WithCancel(ctx)
 		dummyCancel() // immediately cancelled — control-plane goroutine won't be started
-		h.gatherHealthInputs(ctx, user, canListNodes, nodes, pods, &wg, dummyCtx, &healthInputs, &cpResult, &cpErr)
+		outcomes = h.gatherHealthInputs(ctx, user, canListNodes, nodes, pods, &wg, dummyCtx, &cpResult, &cpErr)
 		wg.Wait()
 	}
 
-	// Resolve control-plane signal from the goroutine result (if it ran).
-	// Reuse canListNodes resolved above — no second SAR call.
-	if h.ControlPlane != nil && canListNodes {
-		if cpErr != nil {
-			healthInputs.ControlPlaneAvailable = false
-			healthInputs.ControlPlaneUnavailableReason = "prometheus timeout or unavailable"
-		} else {
-			healthInputs.ControlPlaneAvailable = true
-			healthInputs.ControlPlane = cpResult
-		}
+	// Record the control-plane outcome from the goroutine result (if it ran).
+	// Without the nodes permission it stays unset: the assembly gates the
+	// control plane on the nodes decision resolved above.
+	if canListNodes {
+		outcomes.controlPlane = localControlPlaneOutcome(h.ControlPlane != nil, cpResult, cpErr)
 	}
 
 	// Without an observed percentage, still report requests/limits/total from
@@ -820,7 +561,9 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		summary.Memory = utilizationFrom(capacity, resourceKindMemory, nil)
 	}
 
-	// Compute and attach cluster health (always present, never nil).
+	// Compute and attach cluster health (always present, never nil). The local
+	// mapper records no failed read, so nothing is ever missing here.
+	healthInputs, _ := assembleHealthInputs(outcomes)
 	health := computeClusterHealth(healthInputs)
 	summary.Health = &health
 

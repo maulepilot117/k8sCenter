@@ -15,6 +15,7 @@ import {
 } from "@/lib/dashboard/params.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
+import { goldenSignalsReasonCopy } from "@/lib/metrics-reasons.ts";
 
 /**
  * The four golden signals for one mesh-managed service.
@@ -71,9 +72,7 @@ function MeshGoldenSignals({ params }: WidgetProps) {
           data-testid="golden-signals-unmeasured"
           class="py-4 text-center text-xs text-text-muted"
         >
-          {view.reason === "metrics_unavailable"
-            ? "A service mesh is installed but no Prometheus is wired up, so there are no signals to read."
-            : "The mesh could not measure this service."}
+          {unmeasuredCopy(view.reason)}
         </p>
       ) : (
         <>
@@ -145,6 +144,17 @@ function MeshGoldenSignals({ params }: WidgetProps) {
         View service →
       </a>
     </WidgetShell>
+  );
+}
+
+/**
+ * What the card says when the signals are unavailable, by the route's reason
+ * (the shared copy in lib/metrics-reasons.ts); the raw code is never printed.
+ */
+function unmeasuredCopy(reason: string): string {
+  return (
+    goldenSignalsReasonCopy(reason) ??
+    "The mesh could not measure this service."
   );
 }
 

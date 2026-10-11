@@ -113,6 +113,10 @@ type Server struct {
 	// in production, which uses monitoring.ProbePrometheus; tests stub it
 	// because the strict transport refuses loopback httptest servers.
 	probePrometheus func(ctx context.Context, url, token string) error
+	// probeAlertmanager checks a binding's Alertmanager before it is stored.
+	// Nil in production, which uses monitoring.ProbeAlertmanager; tests stub
+	// it for the same reason as probePrometheus.
+	probeAlertmanager func(ctx context.Context, url, token string) error
 	// metricsClusters confirms the cluster exists for the binding routes.
 	// Nil in production, which reads ClusterStore; tests set a fake.
 	metricsClusters clusterRecordGetter
@@ -242,6 +246,7 @@ func New(deps Deps) *Server {
 		var utilProvider resources.UtilizationProvider
 		var trendProvider resources.TrendProvider
 		var controlPlaneChecker resources.ControlPlaneChecker
+		var remoteAlertCounter resources.RemoteAlertCounter
 		if metricsResolver != nil {
 			adapter := &monitoring.UtilizationAdapter{Resolver: metricsResolver}
 			utilProvider = adapter
@@ -249,6 +254,8 @@ func New(deps Deps) *Server {
 			// Control-plane health reads the same resolver (local only in
 			// practice: the health score runs on the local path).
 			controlPlaneChecker = &monitoring.ControlPlaneAdapter{Resolver: metricsResolver}
+			// A remote cluster's alert counts come from its bound Alertmanager.
+			remoteAlertCounter = &monitoring.AlertCountsAdapter{Resolver: metricsResolver}
 		}
 
 		// Build optional AlertCounter if alerting is available
@@ -282,6 +289,7 @@ func New(deps Deps) *Server {
 			Utilization:    utilProvider,
 			Trends:         trendProvider,
 			Alerts:         alertCounter,
+			RemoteAlerts:   remoteAlertCounter,
 			CertExpiry:     certExpiryCounter,
 			ControlPlane:   controlPlaneChecker,
 			OriginValidator: s.validateWSOrigin,
@@ -398,6 +406,13 @@ func New(deps Deps) *Server {
 	// Service Mesh handler (Istio + Linkerd observability)
 	if deps.ServiceMeshHandler != nil {
 		s.ServiceMeshHandler = deps.ServiceMeshHandler
+		// Remote golden signals and the mTLS cross-check read the cluster's
+		// bound Prometheus through the shared resolver, so a binding edit's
+		// Evict reaches them too. Assigned only when non-nil: the field
+		// stays a true nil interface (no typed nil) without monitoring.
+		if metricsResolver != nil {
+			s.ServiceMeshHandler.Metrics = metricsResolver
+		}
 	}
 
 	// Notification center

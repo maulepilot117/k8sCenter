@@ -246,7 +246,7 @@ test("a blank token is omitted from the body so the stored one is kept", async (
 
 function clearTokenBox(root: HTMLElement): HTMLInputElement {
   const label = Array.from(root.querySelectorAll("label")).find((el) =>
-    el.textContent?.includes("Clear the stored token"),
+    el.textContent?.includes("Clear the stored Prometheus token"),
   );
   const box = label?.querySelector('input[type="checkbox"]');
   if (!box) throw new Error("no clear-token checkbox");
@@ -276,7 +276,7 @@ test("the clear-token box sends an empty token, which clears the stored one", as
   });
   // The binding no longer holds a token, so the control goes away.
   expect(root.textContent).not.toContain("A token is stored");
-  expect(root.textContent).not.toContain("Clear the stored token");
+  expect(root.textContent).not.toContain("Clear the stored Prometheus token");
 });
 
 test("a typed token wins over the clear-token box", async () => {
@@ -320,6 +320,7 @@ test("a 409 toasts the server's message to reload and retry", async () => {
 test("remove deletes the binding and flips the badge back", async () => {
   metricsReplies.GET = { status: 200, body: { data: BINDING } };
   metricsReplies.DELETE = { status: 204 };
+  globalThis.confirm = () => true;
   const root = await mount();
   await click(button(root, "Metrics"));
   await click(button(root, "Remove binding"));
@@ -394,4 +395,36 @@ test("a late GET for cluster A cannot fill the form now shown for cluster B", as
   expect(puts.length).toBe(1);
   expect(puts[0].path).toContain("/v1/clusters/c-other/metrics");
   expect(puts[0].body).toEqual({ prometheusUrl: "https://prom-b.example.com" });
+});
+
+test("a save that finishes after the form moved to another cluster still flips the first cluster's badge", async () => {
+  withSecondRemote = true;
+  let resolvePut: (r: Reply) => void = () => {};
+  pathReplies["/v1/clusters/c-remote/metrics"] = {
+    PUT: new Promise<Reply>((r) => {
+      resolvePut = r;
+    }),
+  };
+  metricsReplies.GET = NOT_CONFIGURED;
+  const root = await mount();
+  const buttons = Array.from(root.querySelectorAll("button")).filter(
+    (b) => b.textContent?.trim() === "Metrics",
+  );
+  await click(buttons[0]); // A
+  await type(input(root, "https://prometheus"), "https://prom.example.com");
+  await click(button(root, "Save")); // A's PUT held open
+  await click(buttons[1]); // form moves to B
+  await act(async () => {
+    resolvePut({ status: 200, body: { data: BINDING } });
+  });
+  await settle();
+  // B's open form is untouched; A's badge is configured.
+  expect(input(root, "https://prometheus").value).toBe("");
+  const badges = Array.from(root.querySelectorAll("*")).filter(
+    (el) => el.children.length === 0 && el.textContent?.includes("metrics: "),
+  );
+  expect(badges.map((b) => b.textContent?.trim())).toEqual([
+    "metrics: configured",
+    "metrics: not configured",
+  ]);
 });
