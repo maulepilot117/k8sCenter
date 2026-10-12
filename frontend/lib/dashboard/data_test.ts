@@ -1783,6 +1783,18 @@ test("an unsupported key is named in UNSUPPORTED_STATUSES, a remote or binding k
   }
 });
 
+// #608 PR 5a: the CNI read behind the Hubble card follows the selected
+// cluster, so a remote 501 from it is a real failure, never "not available on
+// remote". The live flows card stays refused until PR 5b.
+test("hubble-status is served by the selected cluster; hubble-flows is still refused", () => {
+  expect(REMOTE_BEHAVIOUR["hubble-status"]).toBe("remote");
+  expect("hubble-status" in UNSUPPORTED_STATUSES).toBe(false);
+  expect(classify(new ApiError(501, 501, "x"), "hubble-status")).toBe(
+    "failure",
+  );
+  expect(REMOTE_BEHAVIOUR["hubble-flows"]).toBe("unsupported");
+});
+
 test("mesh-golden-signals is a binding source whose dual-mesh 400 has its own declaration", () => {
   expect(REMOTE_BEHAVIOUR["mesh-golden-signals"]).toBe("binding");
   expect("mesh-golden-signals" in UNSUPPORTED_STATUSES).toBe(false);
