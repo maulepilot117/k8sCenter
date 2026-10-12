@@ -27,7 +27,8 @@ const (
 	agentOuterTimeout         = 30 * time.Second
 	agentExecTimeout          = 5 * time.Second
 	agentDefaultMaxConcurrent = 10
-	agentMaxOutput            = 1 << 20 // 1 MB stdout cap
+	agentMaxOutput            = 1 << 20  // 1 MB stdout cap
+	agentMaxStderr            = 64 << 10 // 64 KB stderr cap
 	agentContainer            = "cilium-agent"
 )
 
@@ -298,7 +299,7 @@ func (c *CiliumAgentCollector) execInPod(ctx context.Context, namespace, podName
 
 	var stdout, stderr bytes.Buffer
 	lw := &limitedWriter{w: &stdout, remaining: agentMaxOutput}
-	stderrLW := &limitedWriter{w: &stderr, remaining: 64 * 1024} // 64KB stderr cap
+	stderrLW := &limitedWriter{w: &stderr, remaining: agentMaxStderr}
 	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdout: lw,
 		Stderr: stderrLW,

@@ -181,11 +181,11 @@ func (h *Handler) detectRemote(ctx context.Context, clusterID string, user *auth
 // remoteServerGroups returns the remote cluster's API groups as the user
 // sees them.
 func (h *Handler) remoteServerGroups(ctx context.Context, clusterID string, user *auth.User) ([]metav1.APIGroup, error) {
-	schema, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	target, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		return nil, k8s.TargetError{Err: err}
 	}
-	groups, err := schema.Discovery.ServerGroups()
+	groups, err := target.Discovery.ServerGroups()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", k8s.ErrDiscoveryUnavailable, err)
 	}
@@ -253,7 +253,7 @@ func remoteCiliumConfigMap(ctx context.Context, cs kubernetes.Interface, info *C
 	return nil, err
 }
 
-func ciliumConfigFrom(cm *corev1.ConfigMap, schema *k8s.TargetSchema) *CiliumConfig {
+func ciliumConfigFrom(cm *corev1.ConfigMap, target *k8s.TargetSchema) *CiliumConfig {
 	return &CiliumConfig{
 		CNIType:            CNICilium,
 		ConfigSource:       "configmap",
@@ -261,8 +261,8 @@ func ciliumConfigFrom(cm *corev1.ConfigMap, schema *k8s.TargetSchema) *CiliumCon
 		ConfigMapNamespace: cm.Namespace,
 		Editable:           true,
 		Config:             cm.Data,
-		TargetCluster:      schema.ClusterID,
-		TargetGeneration:   schema.Generation,
+		TargetCluster:      target.ClusterID,
+		TargetGeneration:   target.Generation,
 	}
 }
 
@@ -282,7 +282,7 @@ func (h *Handler) serveRemoteCNIConfig(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 	clusterID := middleware.ClusterIDFromContext(ctx)
-	schema, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	target, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		h.writeRemoteFailure(w, r, what, k8s.TargetError{Err: err})
 		return
@@ -297,7 +297,7 @@ func (h *Handler) serveRemoteCNIConfig(w http.ResponseWriter, r *http.Request, u
 		h.writeRemoteFailure(w, r, what, err)
 		return
 	}
-	httputil.WriteData(w, ciliumConfigFrom(cm, schema))
+	httputil.WriteData(w, ciliumConfigFrom(cm, target))
 }
 
 // updateRemoteCNIConfig answers PUT /networking/cni/config for a remote
@@ -335,13 +335,13 @@ func (h *Handler) updateRemoteCNIConfig(w http.ResponseWriter, r *http.Request, 
 	if !validateConfigUpdate(w, req) {
 		return
 	}
-	schema, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	target, err := h.Clients.TargetSchemaFor(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		refuse("cluster could not be resolved")
 		h.writeRemoteFailure(w, r, what, k8s.TargetError{Err: err})
 		return
 	}
-	if req.TargetGeneration != schema.Generation {
+	if req.TargetGeneration != target.Generation {
 		refuse(reasonGenerationMismatch)
 		writeGenerationMismatch(w)
 		return
@@ -386,7 +386,7 @@ func (h *Handler) updateRemoteCNIConfig(w http.ResponseWriter, r *http.Request, 
 	h.EvictRemoteCache(clusterID)
 	h.auditConfigUpdate(r, user, clusterID, cm.Namespace, audit.ResultSuccess, detail)
 	h.Logger.Info("remote cilium config updated", "user", user.Username, "cluster", clusterID, "changedKeys", len(req.Changes))
-	httputil.WriteData(w, ciliumConfigFrom(updated, schema))
+	httputil.WriteData(w, ciliumConfigFrom(updated, target))
 }
 
 // writeRemoteUpdateFailure audits and answers a failed cilium-config
@@ -508,21 +508,32 @@ func (h *Handler) remoteCiliumDynamic(ctx context.Context, clusterID string, use
 	return info, dyn, true, nil
 }
 
-// serveRemoteBGP answers GET /networking/cilium/bgp for a remote cluster.
-func (h *Handler) serveRemoteBGP(w http.ResponseWriter, r *http.Request, user *auth.User) {
+// serveRemoteCached answers a remote Cilium read from the selected cluster's
+// per-identity cache, fetching it on a miss. The cache is selected only once
+// remote clients are known to be wired, as each read did before it moved here.
+func serveRemoteCached[T any](
+	h *Handler, w http.ResponseWriter, r *http.Request, user *auth.User, what string,
+	cacheOf func(*remoteCaches) *remotecache.Cache[T],
+	fetch func(ctx context.Context, clusterID string, user *auth.User) (T, error),
+) {
 	if h.Clients == nil {
-		h.writeRemoteFailure(w, r, "BGP status", errRemoteNotConfigured)
+		h.writeRemoteFailure(w, r, what, errRemoteNotConfigured)
 		return
 	}
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	resp, err := h.remote().bgp.Get(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*CiliumBGPResponse, error) {
-		return h.fetchRemoteBGP(ctx, clusterID, user)
+	resp, err := cacheOf(h.remote()).Get(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (T, error) {
+		return fetch(ctx, clusterID, user)
 	})
 	if err != nil {
-		h.writeRemoteFailure(w, r, "BGP status", err)
+		h.writeRemoteFailure(w, r, what, err)
 		return
 	}
 	httputil.WriteData(w, resp)
+}
+
+// serveRemoteBGP answers GET /networking/cilium/bgp for a remote cluster.
+func (h *Handler) serveRemoteBGP(w http.ResponseWriter, r *http.Request, user *auth.User) {
+	serveRemoteCached(h, w, r, user, "BGP status", func(c *remoteCaches) *remotecache.Cache[*CiliumBGPResponse] { return c.bgp }, h.fetchRemoteBGP)
 }
 
 func (h *Handler) fetchRemoteBGP(ctx context.Context, clusterID string, user *auth.User) (*CiliumBGPResponse, error) {
@@ -556,19 +567,7 @@ func (h *Handler) fetchRemoteBGP(ctx context.Context, clusterID string, user *au
 // serveRemoteIPAM answers GET /networking/cilium/ipam for a remote cluster.
 // The IPAM mode comes from that cluster's cilium-config.
 func (h *Handler) serveRemoteIPAM(w http.ResponseWriter, r *http.Request, user *auth.User) {
-	if h.Clients == nil {
-		h.writeRemoteFailure(w, r, "IPAM data", errRemoteNotConfigured)
-		return
-	}
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-	resp, err := h.remote().ipam.Get(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*CiliumIPAMResponse, error) {
-		return h.fetchRemoteIPAM(ctx, clusterID, user)
-	})
-	if err != nil {
-		h.writeRemoteFailure(w, r, "IPAM data", err)
-		return
-	}
-	httputil.WriteData(w, resp)
+	serveRemoteCached(h, w, r, user, "IPAM data", func(c *remoteCaches) *remotecache.Cache[*CiliumIPAMResponse] { return c.ipam }, h.fetchRemoteIPAM)
 }
 
 func (h *Handler) fetchRemoteIPAM(ctx context.Context, clusterID string, user *auth.User) (*CiliumIPAMResponse, error) {
@@ -600,19 +599,7 @@ func (h *Handler) fetchRemoteIPAM(ctx context.Context, clusterID string, user *a
 // cilium-config; a CiliumNode or CiliumEndpoint list the cluster refuses or
 // fails is reported as coverage, never as zero counts.
 func (h *Handler) serveRemoteSubsystems(w http.ResponseWriter, r *http.Request, user *auth.User) {
-	if h.Clients == nil {
-		h.writeRemoteFailure(w, r, "Cilium subsystem status", errRemoteNotConfigured)
-		return
-	}
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-	resp, err := h.remote().subsystems.Get(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, func(ctx context.Context) (*CiliumSubsystemsResponse, error) {
-		return h.fetchRemoteSubsystems(ctx, clusterID, user)
-	})
-	if err != nil {
-		h.writeRemoteFailure(w, r, "Cilium subsystem status", err)
-		return
-	}
-	httputil.WriteData(w, resp)
+	serveRemoteCached(h, w, r, user, "Cilium subsystem status", func(c *remoteCaches) *remotecache.Cache[*CiliumSubsystemsResponse] { return c.subsystems }, h.fetchRemoteSubsystems)
 }
 
 func (h *Handler) fetchRemoteSubsystems(ctx context.Context, clusterID string, user *auth.User) (*CiliumSubsystemsResponse, error) {

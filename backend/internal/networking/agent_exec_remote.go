@@ -200,7 +200,7 @@ func (c *remoteAgentCollector) execPod(ctx context.Context, execer PodExecer, po
 
 	var stdout, stderr bytes.Buffer
 	stdoutW := &limitedWriter{w: &stdout, remaining: agentMaxOutput}
-	stderrW := &limitedWriter{w: &stderr, remaining: 64 * 1024}
+	stderrW := &limitedWriter{w: &stderr, remaining: agentMaxStderr}
 	err := execer.Exec(ctx, pod.Namespace, pod.Name, k8s.ExecCiliumStatusJSON, stdoutW, stderrW)
 	if err == nil && stdoutW.exceeded {
 		err = fmt.Errorf("output exceeded %d byte limit", agentMaxOutput)
