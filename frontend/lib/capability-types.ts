@@ -83,6 +83,8 @@ export const CAPABILITY_OPERATION_IDS = [
   "certmanager.certificates",
   "policy.read",
   "cni.config",
+  "cilium.status",
+  "cilium.connectivity",
   "mesh.golden_signals",
   "eso.history",
   "eso.metrics",

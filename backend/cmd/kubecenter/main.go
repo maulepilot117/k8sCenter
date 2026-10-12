@@ -481,13 +481,16 @@ func main() {
 	networkingHandler := &networking.Handler{
 		K8sClient:      k8sClient,
 		ClusterRouter:  clusterRouter,
+		Clients:        clusterRouter,
 		Detector:       cniDetector,
 		HubbleClient:   hubbleClient,
 		AuditLogger:    auditLogger,
 		Logger:         logger,
 		ClusterID:      cfg.ClusterID,
 		AgentCollector: agentCollector,
+		Streams:        networking.StreamsFrom(clusterRouter),
 	}
+	clusterRouter.RegisterEvictHook(networkingHandler.EvictRemoteCache)
 
 	// Cluster health probing — background goroutine
 	var clusterProber *k8s.ClusterProber

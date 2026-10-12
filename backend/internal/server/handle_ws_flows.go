@@ -27,24 +27,35 @@ const (
 // flowWSCount tracks active flow WebSocket connections for DoS protection.
 var flowWSCount atomic.Int64
 
+// flowsWSRoute is the flows stream's cluster contract: it must name its
+// cluster, and it alone may name a remote one in-band (#608 KTD10).
+var flowsWSRoute = wsRoute{
+	acceptsRemoteInBand: true,
+	requireCluster:      true,
+	auditAction:         audit.Action("read_flows"),
+	auditKind:           "Flow",
+}
+
+// wsReasonHubbleUnavailable answers a local flows stream when the local
+// cluster has no Hubble client.
+const wsReasonHubbleUnavailable = "hubble_unavailable"
+
 // handleWSFlows handles WebSocket connections for real-time Hubble flow streaming.
 // Uses a direct per-client gRPC→WS pipe instead of the Hub, because flow volume
 // (100s/sec) would starve the Hub's 1024-event channel used for resource events.
 // Protocol: client sends auth message (JWT), then filter message, then receives flows.
 func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
-	hc := s.NetworkingHandler.HubbleClient
-	if hc == nil {
-		http.Error(w, "Hubble is not available", http.StatusServiceUnavailable)
-		return
-	}
-
 	// Connection limit — prevent goroutine/gRPC exhaustion
 	if flowWSCount.Load() >= maxFlowConnections {
 		http.Error(w, "too many flow connections", http.StatusServiceUnavailable)
 		return
 	}
 
-	conn, user := s.wsAuthAndUpgrade(w, r)
+	// The stream must name its cluster, in-band or by a header that was
+	// actually sent: a connection naming none is refused rather than served
+	// as local, so an older bundle under a remote selection can never show
+	// local flows (#608 KTD10, AE1).
+	conn, user, reqCtx := s.wsAuthAndUpgradeFor(w, r, flowsWSRoute)
 	if conn == nil {
 		return
 	}
@@ -52,26 +63,42 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 
 	// F#1 (round-3) — Hubble flow streaming targets the LOCAL cluster's CNI
 	// data plane (Hubble gRPC connection is wired to the in-cluster relay).
-	// Forwarding a remote X-Cluster-ID through this handler would still
-	// stream the local cluster's flows but advertise them as the remote
-	// cluster's, a classic confused-deputy. Reject BEFORE the connection
-	// counter, the filter read, the RBAC check, or any audit-success entry
-	// — mirrors handle_ws_logs.go:102-128.
-	flowsClusterID := middleware.ClusterIDFromContext(r.Context())
+	// Serving a remote cluster here would stream the local cluster's flows
+	// under the remote cluster's name, a classic confused-deputy. Reject
+	// BEFORE the connection counter, the filter read, the RBAC check, or any
+	// audit-success entry. The remote relay path replaces this in U11.
+	flowsClusterID := middleware.ClusterIDFromContext(reqCtx)
 	if !k8s.IsLocalClusterID(flowsClusterID) {
 		s.Logger.Warn("ws flow stream rejected on remote cluster",
 			"user", user.Username,
 			"clusterID", flowsClusterID,
 		)
 		if s.AuditLogger != nil {
-			entry := s.newAuditEntry(r, user.Username, audit.Action("read_flows"), audit.ResultFailure)
-			entry.ResourceKind = "Flow"
+			entry := s.newAuditEntry(r, user.Username, flowsWSRoute.auditAction, audit.ResultFailure)
+			entry.ClusterID = s.auditClusterID(flowsClusterID)
+			entry.ResourceKind = flowsWSRoute.auditKind
 			entry.Detail = "ws flow stream rejected: remote clusters not supported"
-			s.AuditLogger.Log(r.Context(), entry)
+			s.AuditLogger.Log(reqCtx, entry)
 		}
 		conn.WriteJSON(map[string]any{
 			"type":    "error",
 			"message": "WebSocket flow streaming not yet supported on remote clusters",
+			"reason":  string(k8s.ReasonUnsupportedPlatform),
+		})
+		return
+	}
+
+	// The route is always mounted, so a local cluster without Hubble is
+	// answered in-band rather than by a missing route.
+	var hc *networking.HubbleClient
+	if s.NetworkingHandler != nil {
+		hc = s.NetworkingHandler.HubbleClient
+	}
+	if hc == nil {
+		conn.WriteJSON(map[string]any{
+			"type":    "error",
+			"message": "Hubble is not available",
+			"reason":  wsReasonHubbleUnavailable,
 		})
 		return
 	}
@@ -99,7 +126,7 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 	// flowsClusterID was already gated to local above; forward it explicitly so the
 	// cluster routing in CanAccess matches the gate that ran first.
 	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-		r.Context(), flowsClusterID, user.KubernetesUsername, user.KubernetesGroups,
+		reqCtx, flowsClusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"list", "pods", filter.Namespace,
 	)
 	if err != nil {
@@ -125,7 +152,7 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Set up context that cancels when WS closes
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(reqCtx)
 	defer cancel()
 
 	// Ping/pong keepalive + read pump

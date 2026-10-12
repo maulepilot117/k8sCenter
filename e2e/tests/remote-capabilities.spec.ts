@@ -210,12 +210,16 @@ test.describe.serial("Remote cluster capabilities", () => {
       "topology.graph",
       "diagnostics.read",
       "mesh.golden_signals",
+      // #608 PR 5a: Cilium views read, and the config is written, on the
+      // selected cluster as the user.
+      "cni.config",
+      "cilium.status",
+      "cilium.connectivity",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
     }
     for (const id of [
-      "cni.config",
       "eso.history",
       "eso.metrics",
       "policy.compliance_history",

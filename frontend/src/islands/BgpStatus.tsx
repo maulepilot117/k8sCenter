@@ -1,18 +1,17 @@
 import { Card } from "@/components/ui/Card.tsx";
-import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
+import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
 import type { CiliumBGPResponse } from "@/lib/cilium-types.ts";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
+import { panelState } from "@/lib/networking-state.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 export default function BgpStatus() {
-  const { data, loading, error, lastFetchedAt } = usePoll<CiliumBGPResponse>(
-    "/v1/networking/cilium/bgp",
-    {
+  const { data, loading, error, failure, refetch, lastFetchedAt } =
+    usePoll<CiliumBGPResponse>("/v1/networking/cilium/bgp", {
       interval: 60_000,
       shouldContinuePolling: (d) => d.configured,
-    },
-  );
+    });
 
   if (!IS_BROWSER || loading.value) {
     return <div class="animate-pulse h-40 bg-elevated rounded-lg" />;
@@ -21,7 +20,10 @@ export default function BgpStatus() {
   if (error.value) {
     return (
       <Card title="BGP Peering">
-        <ErrorBanner message={error.value} />
+        <PanelStateNotice
+          state={panelState(failure.value, "BGP status")}
+          onRetry={refetch}
+        />
       </Card>
     );
   }

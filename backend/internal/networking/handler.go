@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
@@ -32,11 +33,14 @@ var k8sNameRegexp = regexp.MustCompile(`^[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?$`
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
 	ClusterRouter *k8s.ClusterRouter
-	Detector      *Detector
-	HubbleClient  *HubbleClient
-	AuditLogger   audit.Logger
-	Logger        *slog.Logger
-	ClusterID     string
+	// Clients reads a remote cluster as the requesting user. Nil means no
+	// remote networking: a remote selection is refused.
+	Clients      k8s.ClusterClients
+	Detector     *Detector
+	HubbleClient *HubbleClient
+	AuditLogger  audit.Logger
+	Logger       *slog.Logger
+	ClusterID    string
 
 	// Generation counter — incremented on cache invalidation; fetch functions
 	// capture the value before starting work and discard the result if it changed.
@@ -59,6 +63,13 @@ type Handler struct {
 
 	// Phase B: opt-in Cilium agent exec collector (nil when disabled).
 	AgentCollector *CiliumAgentCollector
+	// Streams opens exec streams to remote clusters as the user. With
+	// AgentCollector set it enables remote agent exec under the same opt-in;
+	// nil means remote agent data is unavailable.
+	Streams RemoteExec
+
+	// Per-(cluster, identity) caches of remote reads (remote.go).
+	remoteState remoteCaches
 }
 
 const cacheTTL = 30 * time.Second
@@ -138,18 +149,25 @@ func (h *Handler) rejectNonLocal(w http.ResponseWriter, r *http.Request, feature
 // HandleCNIStatus returns the detected CNI plugin information.
 // GET /api/v1/networking/cni
 //
-// Detection reads the LOCAL cluster, so a remote selection is refused with
-// 501 rather than shown the local CNI (and Hubble presence) under the remote
-// cluster's name. A per-cluster binding is a later slice of #608.
+// A remote selection is detected on that cluster as the user (remote.go);
+// the local Detector only ever answers for the local cluster.
 func (h *Handler) HandleCNIStatus(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
-		return
-	}
-	if !h.rejectNonLocal(w, r, "CNI status") {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
 		return
 	}
 
 	refresh := r.URL.Query().Get("refresh") == "true"
+
+	if !isLocal(r.Context()) {
+		info, err := h.remoteCNI(r.Context(), user, refresh)
+		if err != nil {
+			h.writeRemoteFailure(w, r, "CNI", err)
+			return
+		}
+		httputil.WriteData(w, info)
+		return
+	}
 
 	var info *CNIInfo
 	if refresh {
@@ -172,10 +190,10 @@ func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cilium config is tied to the local cluster's installation; proxying it
-	// to a remote cluster via the generic ClusterRouter would read the wrong
-	// cluster's config or silently mutate the wrong target. Reject non-local.
-	if !h.rejectNonLocal(w, r, "Cilium CNI configuration") {
+	// A remote selection reads that cluster's cilium-config as the user
+	// (remote.go); the local Detector and client only answer for local.
+	if !isLocal(r.Context()) {
+		h.serveRemoteCNIConfig(w, r, user)
 		return
 	}
 
@@ -185,15 +203,11 @@ func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if info.Name != CNICilium {
-		httputil.WriteData(w, map[string]any{
-			"cniType":  info.Name,
-			"editable": false,
-			"message":  "Configuration editing is only supported for Cilium",
-		})
+		writeConfigNotCilium(w, info.Name)
 		return
 	}
 
-	// nolint:cluster-routing carve-out: Cilium config stays local-only (P2-5); remote clusters are refused above by rejectNonLocal.
+	// nolint:cluster-routing local path: the local cluster's config, read as the user; a remote selection is served by serveRemoteCNIConfig above.
 	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create impersonated client", "")
@@ -204,13 +218,75 @@ func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadGateway, "failed to read Cilium config", "")
 		return
 	}
+	config.TargetCluster, config.TargetGeneration = k8s.LocalClusterID, k8s.LocalGeneration
 	httputil.WriteData(w, config)
+}
+
+// writeConfigNotCilium answers a config read on a cluster that does not run
+// Cilium.
+func writeConfigNotCilium(w http.ResponseWriter, cni string) {
+	httputil.WriteData(w, map[string]any{
+		"cniType":  cni,
+		"editable": false,
+		"message":  "Configuration editing is only supported for Cilium",
+	})
 }
 
 // CiliumConfigUpdate is the request body for PUT /api/v1/networking/cni/config.
 type CiliumConfigUpdate struct {
 	Changes   map[string]string `json:"changes"`
 	Confirmed bool              `json:"confirmed"`
+	// TargetCluster and TargetGeneration echo the pin from the config read.
+	// Required for a remote cluster; optional, but checked when present, for
+	// the local one.
+	TargetCluster    string `json:"targetCluster,omitempty"`
+	TargetGeneration string `json:"targetGeneration,omitempty"`
+}
+
+// decodeConfigUpdate reads a config update body, answering 400 itself when
+// it cannot.
+func decodeConfigUpdate(w http.ResponseWriter, r *http.Request) (CiliumConfigUpdate, bool) {
+	var req CiliumConfigUpdate
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return req, false
+	}
+	return req, true
+}
+
+// validateConfigUpdate checks confirmation and the change allowlist,
+// answering 400 itself when a check fails.
+func validateConfigUpdate(w http.ResponseWriter, req CiliumConfigUpdate) bool {
+	if !req.Confirmed {
+		httputil.WriteError(w, http.StatusBadRequest,
+			"CNI configuration changes require explicit confirmation", "Set confirmed: true to proceed")
+		return false
+	}
+	if len(req.Changes) == 0 {
+		httputil.WriteError(w, http.StatusBadRequest, "no changes provided", "")
+		return false
+	}
+	if err := ValidateCiliumChanges(req.Changes); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		return false
+	}
+	return true
+}
+
+// auditConfigUpdate records one Cilium config update attempt.
+func (h *Handler) auditConfigUpdate(r *http.Request, user *auth.User, clusterID, namespace string, result audit.Result, detail string) {
+	h.AuditLogger.Log(r.Context(), audit.Entry{
+		Timestamp:         time.Now().UTC(),
+		ClusterID:         clusterID,
+		User:              user.Username,
+		SourceIP:          r.RemoteAddr,
+		Action:            audit.ActionUpdate,
+		ResourceKind:      "CiliumConfig",
+		ResourceNamespace: namespace,
+		ResourceName:      ciliumConfigMapName,
+		Result:            result,
+		Detail:            detail,
+	})
 }
 
 // HandleUpdateCNIConfig applies CNI configuration changes (Cilium only).
@@ -221,24 +297,10 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Cilium config mutations target the local cluster's cilium-config ConfigMap.
-	// Allowing X-Cluster-ID here would cause the audit row to record the remote
-	// cluster ID while the write always hits local — silent desync. Reject non-local
-	// AND emit an audit row so the rejected write attempt is recorded.
-	if clusterID := middleware.ClusterIDFromContext(r.Context()); !k8s.IsLocalClusterID(clusterID) {
-		h.AuditLogger.Log(r.Context(), audit.Entry{
-			Timestamp:    time.Now().UTC(),
-			ClusterID:    clusterID,
-			User:         user.Username,
-			SourceIP:     r.RemoteAddr,
-			Action:       audit.ActionUpdate,
-			ResourceKind: "CiliumConfig",
-			ResourceName: "cilium-config",
-			Result:       audit.ResultFailure,
-			Detail:       "rejected: remote cluster not supported",
-		})
-	}
-	if !h.rejectNonLocal(w, r, "Cilium CNI configuration update") {
+	// A remote selection writes that cluster's cilium-config as the user,
+	// pinned to the cluster the config was read from (remote.go).
+	if !isLocal(r.Context()) {
+		h.updateRemoteCNIConfig(w, r, user)
 		return
 	}
 
@@ -249,31 +311,30 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var req CiliumConfigUpdate
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+	req, ok := decodeConfigUpdate(w, r)
+	if !ok {
 		return
 	}
 
-	if !req.Confirmed {
-		httputil.WriteError(w, http.StatusBadRequest,
-			"CNI configuration changes require explicit confirmation", "Set confirmed: true to proceed")
+	// A pin is optional on the local cluster, but one that names another
+	// cluster or registration is refused before anything is written.
+	if req.TargetCluster != "" && !k8s.IsLocalClusterID(req.TargetCluster) {
+		h.auditConfigUpdate(r, user, h.ClusterID, "", audit.ResultFailure, "refused: "+reasonPinMismatch)
+		writePinMismatch(w)
+		return
+	}
+	if req.TargetGeneration != "" && req.TargetGeneration != k8s.LocalGeneration {
+		h.auditConfigUpdate(r, user, h.ClusterID, "", audit.ResultFailure, "refused: "+reasonGenerationMismatch)
+		writeGenerationMismatch(w)
 		return
 	}
 
-	if len(req.Changes) == 0 {
-		httputil.WriteError(w, http.StatusBadRequest, "no changes provided", "")
-		return
-	}
-
-	// Validate changes against allowlist
-	if err := ValidateCiliumChanges(req.Changes); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
+	if !validateConfigUpdate(w, req) {
 		return
 	}
 
 	// Use impersonated client to enforce Kubernetes RBAC
-	// nolint:cluster-routing carve-out: Cilium config stays local-only (P2-5); remote clusters are refused and audited above.
+	// nolint:cluster-routing local path: the local cluster's config, written as the user; a remote selection is served by updateRemoteCNIConfig above.
 	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create impersonated client", "")
@@ -283,34 +344,12 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 	// Apply changes to cilium-config ConfigMap
 	updatedNS, err := UpdateCiliumConfig(r.Context(), cs, req.Changes)
 	if err != nil {
-		h.AuditLogger.Log(r.Context(), audit.Entry{
-			Timestamp:         time.Now().UTC(),
-			ClusterID:         h.ClusterID,
-			User:              user.Username,
-			SourceIP:          r.RemoteAddr,
-			Action:            audit.ActionUpdate,
-			ResourceKind:      "CiliumConfig",
-			ResourceNamespace: updatedNS,
-			ResourceName:      "cilium-config",
-			Result:            audit.ResultFailure,
-			Detail:            formatChangedKeys(req.Changes),
-		})
+		h.auditConfigUpdate(r, user, h.ClusterID, updatedNS, audit.ResultFailure, formatChangedKeys(req.Changes))
 		httputil.WriteError(w, http.StatusBadGateway, "failed to update Cilium config", "")
 		return
 	}
 
-	h.AuditLogger.Log(r.Context(), audit.Entry{
-		Timestamp:         time.Now().UTC(),
-		ClusterID:         h.ClusterID,
-		User:              user.Username,
-		SourceIP:          r.RemoteAddr,
-		Action:            audit.ActionUpdate,
-		ResourceKind:      "CiliumConfig",
-		ResourceNamespace: updatedNS,
-		ResourceName:      "cilium-config",
-		Result:            audit.ResultSuccess,
-		Detail:            formatChangedKeys(req.Changes),
-	})
+	h.auditConfigUpdate(r, user, h.ClusterID, updatedNS, audit.ResultSuccess, formatChangedKeys(req.Changes))
 	h.Logger.Info("cilium config updated", "user", user.Username, "changedKeys", len(req.Changes))
 
 	// Return updated config by reading from the known namespace (avoids redundant probing)
@@ -407,7 +446,12 @@ func (h *Handler) HandleHubbleFlows(w http.ResponseWriter, r *http.Request) {
 // GET /api/v1/networking/cilium/bgp
 // Note: uses BaseDynamicClient for read-only CRD access, consistent with policy/gitops/notification handlers.
 func (h *Handler) HandleCiliumBGP(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	if !isLocal(r.Context()) {
+		h.serveRemoteBGP(w, r, user)
 		return
 	}
 
@@ -446,6 +490,7 @@ func (h *Handler) HandleCiliumBGP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fetchBGP(ctx context.Context) (*CiliumBGPResponse, error) {
 	gen := atomic.LoadUint64(&h.cacheGen)
 
+	// nolint:cluster-routing local path: BGP is read only when isCiliumLocal; a remote selection answers before this read
 	disc := h.K8sClient.DiscoveryClient()
 	if !hasCRD(disc, bgpNodeConfigGVR) {
 		resp := &CiliumBGPResponse{Configured: false}
@@ -457,6 +502,7 @@ func (h *Handler) fetchBGP(ctx context.Context) (*CiliumBGPResponse, error) {
 		return resp, nil
 	}
 
+	// nolint:cluster-routing local path: BGP is read only when isCiliumLocal; a remote selection answers before this read
 	dynClient := h.K8sClient.BaseDynamicClient()
 	peers, err := readBGPNodeConfigs(ctx, dynClient)
 	if err != nil {
@@ -486,7 +532,12 @@ func (h *Handler) fetchBGP(ctx context.Context) (*CiliumBGPResponse, error) {
 // GET /api/v1/networking/cilium/ipam
 // Note: uses BaseDynamicClient for read-only CRD access, consistent with policy/gitops/notification handlers.
 func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	if !isLocal(r.Context()) {
+		h.serveRemoteIPAM(w, r, user)
 		return
 	}
 
@@ -525,6 +576,7 @@ func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 	gen := atomic.LoadUint64(&h.cacheGen)
 
+	// nolint:cluster-routing local path: IPAM is read only when isCiliumLocal; a remote selection answers before this read
 	disc := h.K8sClient.DiscoveryClient()
 	if !hasCRD(disc, ciliumNodeGVR) {
 		resp := &CiliumIPAMResponse{Configured: false}
@@ -536,12 +588,32 @@ func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 		return resp, nil
 	}
 
+	// nolint:cluster-routing local path: IPAM is read only when isCiliumLocal; a remote selection answers before this read
 	dynClient := h.K8sClient.BaseDynamicClient()
 	nodes, err := readCiliumNodes(ctx, dynClient)
 	if err != nil {
 		return nil, err
 	}
 
+	// Determine IPAM mode from cached Cilium ConfigMap detection
+	mode := ""
+	if info := h.Detector.CachedInfo(); info != nil {
+		mode = info.Features.IPAMMode
+	}
+	resp := ipamResponseFor(nodes, mode)
+
+	if atomic.LoadUint64(&h.cacheGen) == gen {
+		h.ipamMu.Lock()
+		h.ipamCache = &cachedIPAM{data: resp, fetchedAt: time.Now()}
+		h.ipamMu.Unlock()
+	}
+
+	return resp, nil
+}
+
+// ipamResponseFor summarizes CiliumNode IPAM data. An empty mode reports
+// Cilium's default, cluster-pool.
+func ipamResponseFor(nodes []ciliumNodeIPAM, mode string) *CiliumIPAMResponse {
 	var totalAllocated, totalAvailable int
 	var allCIDRs []string
 	var perNode []NodeIPAM
@@ -572,11 +644,8 @@ func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 
 	total := totalAllocated + totalAvailable
 
-	// Determine IPAM mode from cached Cilium ConfigMap detection
-	mode := "cluster-pool" // default
-	info := h.Detector.CachedInfo()
-	if info != nil && info.Features.IPAMMode != "" {
-		mode = info.Features.IPAMMode
+	if mode == "" {
+		mode = "cluster-pool" // default
 	}
 
 	// Ensure non-nil slices for consistent JSON output
@@ -587,7 +656,7 @@ func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 		perNode = []NodeIPAM{}
 	}
 
-	resp := &CiliumIPAMResponse{
+	return &CiliumIPAMResponse{
 		Configured:     true,
 		Mode:           mode,
 		PodCIDRs:       allCIDRs,
@@ -597,21 +666,18 @@ func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
 		ExhaustionRisk: computeExhaustionRisk(totalAllocated, total),
 		PerNode:        perNode,
 	}
-
-	if atomic.LoadUint64(&h.cacheGen) == gen {
-		h.ipamMu.Lock()
-		h.ipamCache = &cachedIPAM{data: resp, fetchedAt: time.Now()}
-		h.ipamMu.Unlock()
-	}
-
-	return resp, nil
 }
 
 // HandleCiliumSubsystems returns encryption, mesh, ClusterMesh, and endpoint health status.
 // GET /api/v1/networking/cilium/subsystems
 // Note: uses BaseDynamicClient for read-only CRD access, consistent with policy/gitops/notification handlers.
 func (h *Handler) HandleCiliumSubsystems(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	if !isLocal(r.Context()) {
+		h.serveRemoteSubsystems(w, r, user)
 		return
 	}
 
@@ -652,16 +718,8 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 
 	info := h.Detector.CachedInfo()
 
-	// Encryption from ConfigMap + CiliumNode CRDs
-	encInfo := &EncryptionInfo{
-		Enabled: info != nil && info.Features.Encryption,
-		Mode:    "",
-	}
-	if encInfo.Enabled && info != nil {
-		encInfo.Mode = info.Features.EncryptionMode
-	}
-
 	// Fetch CiliumNodes, CiliumEndpoints, and agent data concurrently
+	// nolint:cluster-routing local path: subsystems are read only when isCiliumLocal; a remote selection answers before this read
 	dynClient := h.K8sClient.BaseDynamicClient()
 
 	var nodes []ciliumNodeIPAM
@@ -692,13 +750,12 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		h.Logger.Warn("partial failure fetching subsystem data", "error", err)
 	}
 
-	// Count encrypted nodes from CiliumNode data (nil-safe if readCiliumNodes failed)
-	encInfo.NodesTotal = len(nodes)
-	for _, n := range nodes {
-		if n.EncryptionKey > 0 {
-			encInfo.NodesEncrypted++
-		}
+	// Encryption from ConfigMap + CiliumNode CRDs (nil-safe if readCiliumNodes failed)
+	var features CNIFeatures
+	if info != nil {
+		features = info.Features
 	}
+	encInfo := encryptionInfoFor(features, nodes)
 
 	// Mesh from Detector
 	meshEngine := h.Detector.DetectMesh()
@@ -735,6 +792,21 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 	}
 
 	return resp, nil
+}
+
+// encryptionInfoFor reports Cilium's encryption from its config features and
+// counts the CiliumNodes carrying an encryption key.
+func encryptionInfoFor(f CNIFeatures, nodes []ciliumNodeIPAM) *EncryptionInfo {
+	enc := &EncryptionInfo{Enabled: f.Encryption, NodesTotal: len(nodes)}
+	if enc.Enabled {
+		enc.Mode = f.EncryptionMode
+	}
+	for _, n := range nodes {
+		if n.EncryptionKey > 0 {
+			enc.NodesEncrypted++
+		}
+	}
+	return enc
 }
 
 // mergeAgentIntoSubsystems enriches a CRD-based subsystems response with data
@@ -807,7 +879,12 @@ func mergeAgentIntoSubsystems(resp *CiliumSubsystemsResponse, agent *agentCollec
 // HandleCiliumConnectivity returns per-node Cilium agent health status.
 // GET /api/v1/networking/cilium/connectivity
 func (h *Handler) HandleCiliumConnectivity(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	if !isLocal(r.Context()) {
+		h.serveRemoteConnectivity(w, r, user)
 		return
 	}
 
@@ -834,32 +911,39 @@ func (h *Handler) HandleCiliumConnectivity(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var nodes []NodeConnectivity
-	for _, node := range agentResult.nodes {
+	httputil.WriteData(w, connectivityResponseFor(agentResult))
+}
+
+// connectivityResponseFor builds the connectivity response from an agent
+// collection. A node whose remote exec failed carries its exec-error state
+// with an Unknown health; a local exec failure keeps its historical Failure.
+func connectivityResponseFor(res *agentCollectionResult) CiliumConnectivityResponse {
+	nodes := make([]NodeConnectivity, 0, len(res.nodes))
+	for _, node := range res.nodes {
 		nc := NodeConnectivity{
 			NodeName:    node.nodeName,
 			HealthState: "Unknown",
 		}
-		if node.status != nil && node.status.Cluster != nil && node.status.Cluster.CiliumHealth != nil {
+		switch {
+		case node.status != nil && node.status.Cluster != nil && node.status.Cluster.CiliumHealth != nil:
 			nc.HealthState = node.status.Cluster.CiliumHealth.State
 			nc.Message = node.status.Cluster.CiliumHealth.Msg
-		} else if node.err != "" {
+		case node.execError != "":
+			nc.ExecError = node.execError
+			nc.Message = "agent exec failed"
+		case node.err != "":
 			nc.HealthState = "Failure"
 			nc.Message = "agent exec failed"
 		}
 		nodes = append(nodes, nc)
 	}
-	if nodes == nil {
-		nodes = []NodeConnectivity{}
-	}
-
-	httputil.WriteData(w, CiliumConnectivityResponse{
+	return CiliumConnectivityResponse{
 		Configured:  true,
 		ExecEnabled: true,
 		Nodes:       nodes,
-		CollectedAt: agentResult.collected.UTC().Format(time.RFC3339),
-		Partial:     agentResult.partial,
-	})
+		CollectedAt: res.collected.UTC().Format(time.RFC3339),
+		Partial:     res.partial,
+	}
 }
 
 // formatChangedKeys returns a sorted, comma-separated list of changed key names for audit logging.

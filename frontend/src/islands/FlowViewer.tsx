@@ -4,6 +4,7 @@ import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { apiGet, getAccessToken } from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { currentTarget, UNKNOWN_GENERATION } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 
@@ -164,6 +165,21 @@ export default function FlowViewer() {
 
     wsState.value = "connecting";
 
+    // The stream names its cluster in the auth frame: a WebSocket carries no
+    // X-Cluster-ID header, and the server refuses a flows stream that names
+    // none rather than serving local (#608 KTD10). Captured now, so the
+    // stream stays on the cluster it was opened for. The `unknown` sentinel
+    // names no registration, so it is not sent as a generation.
+    const target = currentTarget();
+    const authFrame = {
+      type: "auth",
+      token,
+      clusterId: target.clusterId,
+      ...(target.generation === UNKNOWN_GENERATION
+        ? {}
+        : { generation: target.generation }),
+    };
+
     const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(
       `${proto}//${globalThis.location.host}/ws/v1/ws/flows`,
@@ -175,7 +191,7 @@ export default function FlowViewer() {
         ws.close();
         return;
       }
-      ws.send(JSON.stringify({ type: "auth", token }));
+      ws.send(JSON.stringify(authFrame));
       ws.send(
         JSON.stringify({
           namespace: namespace.value,

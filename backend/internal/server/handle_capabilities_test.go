@@ -267,10 +267,13 @@ var (
 		"monitoring.query", "dashboard.trends",
 		// #608 PR 4b: queried through the cluster's metrics binding.
 		"mesh.golden_signals",
+		// #608 PR 5a: Cilium views read, and the config is written, on the
+		// selected cluster as the user; agent exec runs as the user there.
+		"cni.config", "cilium.status", "cilium.connectivity",
 	}
 	wantRemoteUnsupported = []string{
 		"pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
-		"cni.config", "eso.history", "eso.metrics",
+		"eso.history", "eso.metrics",
 		"policy.compliance_history", "velero.assurance",
 		"incidents.capture",
 	}

@@ -27,11 +27,13 @@ import {
  * What the fixture cluster can and cannot prove
  * --------------------------------------------
  * e2e/fixtures/k8s/ seeds a namespace and a cluster-admin binding into kind.
- * There is no Loki, no Hubble/Cilium, and no Alertmanager, and the backend
- * mounts /api/v1/ws/flows and /api/v1/ws/logs-search only when those
- * components are discovered (backend/internal/server/routes.go). So for
- * those channels the assertion is the DOCUMENTED UNAVAILABLE behaviour, not
- * a skip: the bridge completes the client handshake before its own backend
+ * There is no Loki, no Hubble/Cilium, and no Alertmanager. The flows route
+ * is always mounted and answers a stream naming the local cluster with an
+ * in-band hubble_unavailable frame (#608 KTD10). /api/v1/ws/logs-search
+ * answers 503 before the upgrade when no Loki was discovered
+ * (backend/internal/server/routes.go). So for those channels the assertion
+ * is the DOCUMENTED UNAVAILABLE behaviour, not a skip: for logs-search the
+ * bridge completes the client handshake before its own backend
  * leg resolves, so the socket opens and is then torn down with a remapped
  * close code and no data frame. Asserting that is what keeps "the channel
  * is wired end to end" distinct from "the channel silently hangs".
@@ -427,18 +429,26 @@ test.describe("WebSocket channels", () => {
   });
 
   /**
-   * Hubble flows. The backend mounts this route only when a Hubble client
-   * was discovered, and the kind fixture runs no Cilium -- so the
-   * unavailable path is the real one here, and the streaming path can only
-   * be covered by a cluster fixture that installs Cilium.
+   * Hubble flows. The route is always mounted, and a stream must name its
+   * cluster in the auth frame (#608 KTD10). The kind fixture runs no
+   * Cilium, so a stream naming the local cluster is answered in-band with
+   * hubble_unavailable. The streaming path can only be covered by a
+   * cluster fixture that installs Cilium.
    */
-  test("flows reports unavailable without Hubble", async ({ page }) => {
+  test("flows reports hubble_unavailable without Hubble", async ({ page }) => {
     const probe = await probeWs(page, {
       path: "/ws/v1/ws/flows",
-      send: [JSON.stringify({ type: "auth", token: accessToken })],
+      send: [
+        JSON.stringify({ type: "auth", token: accessToken, clusterId: "local" }),
+      ],
+      maxFrames: 1,
     });
 
-    expectChannelUnavailable(probe, "flows");
+    expect(probe.opened).toBe(true);
+    expect(probe.frames).toHaveLength(1);
+    const frame = JSON.parse(probe.frames[0]);
+    expect(frame.type).toBe("error");
+    expect(frame.reason).toBe("hubble_unavailable");
     expectNoCredentialInUrl(probe, accessToken as string);
   });
 

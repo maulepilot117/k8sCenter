@@ -726,14 +726,17 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  *
  * `diagnostics-summary` is deliberately absent: the route serves remote
  * clusters, so a 501 from it is an ordinary failure, not a refusal.
+ *
+ * `hubble-status` left in #608 PR 5a: `/v1/networking/cni` now reads the
+ * selected cluster's own CNI detection, so its 501 is a failure too.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
   {
-    // Remote clusters never answer these three: the backend refuses with 501
-    // (compliance history and Hubble are recorded for the local install only).
+    // Remote clusters never answer these two: the backend refuses with 501
+    // (compliance history is recorded for the local install only, and the
+    // remote flow source lands in #608 PR 5b).
     "policy-compliance-history": [501],
     "hubble-flows": [501],
-    "hubble-status": [501],
   };
 
 /**
