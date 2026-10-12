@@ -226,11 +226,11 @@ func TestComplianceIdentity_DeniedImpersonationIs422AndStoresNothing(t *testing.
 		wantMsg              string
 	}{
 		{"user", "bot", `{"username":"bot"}`,
-			fmt.Errorf("%w: impersonate users %q", k8s.ErrImpersonationDenied, "bot"), msgComplianceDeniedUser},
+			&k8s.ImpersonationDeniedError{Resource: "users", Name: "bot"}, msgComplianceDeniedUser},
 		{"service account", "system:serviceaccount:ops:scanner", `{"username":"system:serviceaccount:ops:scanner"}`,
-			fmt.Errorf("%w: impersonate serviceaccounts %q", k8s.ErrImpersonationDenied, "scanner"), msgComplianceDeniedSA},
+			&k8s.ImpersonationDeniedError{Resource: "serviceaccounts", Name: "scanner"}, msgComplianceDeniedSA},
 		{"group", "bot", `{"username":"bot","groups":["auditors"]}`,
-			fmt.Errorf("%w: impersonate groups %q", k8s.ErrImpersonationDenied, "auditors"), msgComplianceDeniedGroup},
+			&k8s.ImpersonationDeniedError{Resource: "groups", Name: "auditors"}, msgComplianceDeniedGroup},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

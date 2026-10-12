@@ -267,6 +267,20 @@ export function policyComplianceView(
   };
 }
 
+/**
+ * Index of the first point the trend figures count (KTD9): the latest point
+ * marked as an identity change, else the first point. Shared by the dashboard
+ * card's delta and the compliance trend chart.
+ */
+export function trendStartIndex(
+  points: { identityChanged?: boolean }[],
+): number {
+  for (let i = points.length - 1; i >= 0; i--) {
+    if (points[i].identityChanged) return i;
+  }
+  return 0;
+}
+
 function historyView(history: unknown): ComplianceHistoryView {
   const points = list(history);
   if (points === null) {
@@ -280,15 +294,7 @@ function historyView(history: unknown): ComplianceHistoryView {
     .filter(
       (p): p is { score: number; identityChanged: boolean } => p.score !== null,
     );
-  // Count from the latest identity change; earlier points do not enter.
-  let start = 0;
-  for (let i = readable.length - 1; i >= 0; i--) {
-    if (readable[i].identityChanged) {
-      start = i;
-      break;
-    }
-  }
-  const scores = readable.slice(start).map((p) => p.score);
+  const scores = readable.slice(trendStartIndex(readable)).map((p) => p.score);
   return {
     available: true,
     delta: scores.length >= 2 ? scores[scores.length - 1] - scores[0] : null,

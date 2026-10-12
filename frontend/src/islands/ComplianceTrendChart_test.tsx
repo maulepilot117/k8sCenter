@@ -94,9 +94,10 @@ test("any other failure is still a failed read with a retry", async () => {
 
 // ---- remote history: not-configured, partial, markers, gaps (U8) ----
 
-const { addDays, fillDateGaps, GAP_MESSAGES, trendStartIndex } = await import(
+const { addDays, fillDateGaps, GAP_MESSAGES } = await import(
   "./ComplianceTrendChart.tsx"
 );
+const { trendStartIndex } = await import("@/lib/dashboard/severity.ts");
 const { selectedCluster } = await import("@/src/lib/cluster.ts");
 
 function pt(date: string, score: number, extra: Record<string, unknown> = {}) {

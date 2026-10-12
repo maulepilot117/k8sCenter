@@ -17,6 +17,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
@@ -28,12 +29,6 @@ type complianceIdentityStore interface {
 	Delete(ctx context.Context, clusterID string) error
 }
 
-// impersonationChecker is the part of *k8s.ClusterRouter the PUT uses: proof
-// that the registration credential may impersonate the named identity.
-type impersonationChecker interface {
-	CanImpersonate(ctx context.Context, clusterID, username string, groups []string) error
-}
-
 // complianceSnapshotter is the part of *policy.RemoteComplianceRecorder the
 // PUT uses to take the first snapshot at once. It returns immediately.
 type complianceSnapshotter interface {
@@ -41,8 +36,7 @@ type complianceSnapshotter interface {
 }
 
 const (
-	reasonComplianceHistoryNotConfigured = "compliance_history_not_configured"
-	reasonImpersonationDenied            = "impersonation_denied"
+	reasonImpersonationDenied = "impersonation_denied"
 
 	maxComplianceUsernameLen = 256
 	maxComplianceGroups      = 32
@@ -53,7 +47,6 @@ const (
 const (
 	msgComplianceNoDatabase    = "compliance identities require a database"
 	msgComplianceLocalCluster  = "the local cluster records compliance history without an identity"
-	msgComplianceNotConfigured = "compliance history is not configured for this cluster"
 	msgComplianceStoreFailed   = "the compliance identity could not be read or saved"
 	msgComplianceUsername      = "username is required"
 	msgComplianceUsernameLong  = "username is too long"
@@ -121,7 +114,7 @@ func (s *Server) handleGetComplianceIdentity(w http.ResponseWriter, r *http.Requ
 	}
 	ident, err := s.ComplianceIdentityStore.Get(r.Context(), id)
 	if errors.Is(err, store.ErrComplianceIdentityNotFound) {
-		httputil.WriteErrorWithReason(w, http.StatusNotFound, msgComplianceNotConfigured, reasonComplianceHistoryNotConfigured, nil)
+		httputil.WriteErrorWithReason(w, http.StatusNotFound, policy.MsgHistoryNotConfigured, policy.ReasonHistoryNotConfigured, nil)
 		return
 	}
 	if err != nil {
@@ -174,10 +167,11 @@ func normalizeComplianceIdentity(req complianceIdentityRequest) (string, []strin
 // impersonationDeniedMessage names the grant kind the credential lacks,
 // without echoing the API server's text.
 func impersonationDeniedMessage(username string, err error) string {
+	var denied *k8s.ImpersonationDeniedError
 	switch {
-	case strings.Contains(err.Error(), "impersonate groups"):
+	case errors.As(err, &denied) && denied.Resource == "groups":
 		return msgComplianceDeniedGroup
-	case strings.HasPrefix(username, "system:serviceaccount:"):
+	case strings.HasPrefix(username, k8s.ServiceAccountUserPrefix):
 		return msgComplianceDeniedSA
 	default:
 		return msgComplianceDeniedUser
@@ -243,7 +237,7 @@ func (s *Server) handleDeleteComplianceIdentity(w http.ResponseWriter, r *http.R
 	}
 	err := s.ComplianceIdentityStore.Delete(r.Context(), id)
 	if errors.Is(err, store.ErrComplianceIdentityNotFound) {
-		httputil.WriteErrorWithReason(w, http.StatusNotFound, msgComplianceNotConfigured, reasonComplianceHistoryNotConfigured, nil)
+		httputil.WriteErrorWithReason(w, http.StatusNotFound, policy.MsgHistoryNotConfigured, policy.ReasonHistoryNotConfigured, nil)
 		return
 	}
 	if err != nil {

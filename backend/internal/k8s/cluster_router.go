@@ -774,6 +774,20 @@ func (cr *ClusterRouter) registrationConfig(ctx context.Context, clusterID strin
 // user (or service account) or one of the groups came back denied.
 var ErrImpersonationDenied = errors.New("the cluster credential may not impersonate this identity")
 
+// ImpersonationDeniedError names the review that came back denied: Resource
+// is "users", "serviceaccounts" or "groups", Name the denied identity. It
+// matches ErrImpersonationDenied under errors.Is.
+type ImpersonationDeniedError struct {
+	Resource string
+	Name     string
+}
+
+func (e *ImpersonationDeniedError) Error() string {
+	return fmt.Sprintf("%v: impersonate %s %q", ErrImpersonationDenied, e.Resource, e.Name)
+}
+
+func (e *ImpersonationDeniedError) Unwrap() error { return ErrImpersonationDenied }
+
 // impersonationCheckTimeout bounds each review request of CanImpersonate.
 const impersonationCheckTimeout = 10 * time.Second
 
@@ -783,7 +797,8 @@ const impersonationCheckTimeout = 10 * time.Second
 // impersonated identity, and it reads only SelfSubjectAccessReviews.
 //
 // It returns nil when every review is allowed, an error wrapping
-// ErrImpersonationDenied when one is denied, and a TargetError (which
+// ErrImpersonationDenied (an *ImpersonationDeniedError) when one is denied,
+// and a TargetError (which
 // ClassifyTargetErr understands) when the cluster could not be resolved,
 // reached or authenticated to. The local cluster and an empty username are
 // refused outright: the check is for remote clusters, and Kubernetes rejects
@@ -810,8 +825,8 @@ func (cr *ClusterRouter) CanImpersonate(ctx context.Context, clusterID, username
 	return checkImpersonateRights(ctx, client, username, groups)
 }
 
-// serviceAccountUserPrefix starts the username of a service account.
-const serviceAccountUserPrefix = "system:serviceaccount:"
+// ServiceAccountUserPrefix starts the username of a service account.
+const ServiceAccountUserPrefix = "system:serviceaccount:"
 
 // impersonationReviews lists the resource attributes the API server checks
 // before it lets a request impersonate username and groups. A
@@ -820,7 +835,7 @@ const serviceAccountUserPrefix = "system:serviceaccount:"
 // a malformed service-account one, is authorized on users.
 func impersonationReviews(username string, groups []string) []authzv1.ResourceAttributes {
 	user := authzv1.ResourceAttributes{Verb: "impersonate", Resource: "users", Name: username}
-	if saRef, ok := strings.CutPrefix(username, serviceAccountUserPrefix); ok {
+	if saRef, ok := strings.CutPrefix(username, ServiceAccountUserPrefix); ok {
 		if ns, name, ok := strings.Cut(saRef, ":"); ok && ns != "" && name != "" && !strings.Contains(name, ":") {
 			user = authzv1.ResourceAttributes{Verb: "impersonate", Resource: "serviceaccounts", Namespace: ns, Name: name}
 		}
@@ -846,7 +861,7 @@ func checkImpersonateRights(ctx context.Context, client kubernetes.Interface, us
 			return TargetError{Err: fmt.Errorf("impersonation review on %s: %w", attrs.Resource, err)}
 		}
 		if !resp.Status.Allowed {
-			return fmt.Errorf("%w: impersonate %s %q", ErrImpersonationDenied, attrs.Resource, attrs.Name)
+			return &ImpersonationDeniedError{Resource: attrs.Resource, Name: attrs.Name}
 		}
 	}
 	return nil

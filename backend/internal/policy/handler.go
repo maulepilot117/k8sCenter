@@ -390,8 +390,10 @@ type ComplianceIdentityReader interface {
 }
 
 const (
-	reasonHistoryNotConfigured = "compliance_history_not_configured"
-	msgHistoryNotConfigured    = "compliance history is not configured for this cluster"
+	// ReasonHistoryNotConfigured and MsgHistoryNotConfigured are shared with
+	// the compliance-identity routes, which answer the same 404.
+	ReasonHistoryNotConfigured = "compliance_history_not_configured"
+	MsgHistoryNotConfigured    = "compliance history is not configured for this cluster"
 )
 
 // historyReader returns the history reader, or nil. It checks the concrete
@@ -468,7 +470,7 @@ func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request
 	if remote {
 		_, err := identities.Get(r.Context(), clusterID)
 		if errors.Is(err, store.ErrComplianceIdentityNotFound) {
-			httputil.WriteErrorWithReason(w, http.StatusNotFound, msgHistoryNotConfigured, reasonHistoryNotConfigured, nil)
+			httputil.WriteErrorWithReason(w, http.StatusNotFound, MsgHistoryNotConfigured, ReasonHistoryNotConfigured, nil)
 			return
 		}
 		if err != nil {
@@ -501,7 +503,7 @@ func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request
 	points := make([]historyPoint, len(snapshots))
 	for i, s := range snapshots {
 		points[i] = historyPoint{
-			Date:       s.Date.Format("2006-01-02"),
+			Date:       s.Date.Format(time.DateOnly),
 			Score:      s.OverallScore,
 			Pass:       s.Pass,
 			Fail:       s.Fail,
@@ -528,7 +530,7 @@ func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request
 	}
 	out := make([]historyGap, len(gaps))
 	for i, g := range gaps {
-		out[i] = historyGap{Date: g.Date.Format("2006-01-02"), Reason: g.Reason}
+		out[i] = historyGap{Date: g.Date.Format(time.DateOnly), Reason: g.Reason}
 	}
 	httputil.WriteJSON(w, http.StatusOK, remoteHistoryResponse{Data: points, Gaps: out})
 }

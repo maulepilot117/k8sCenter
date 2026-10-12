@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
+import { trendStartIndex } from "@/lib/dashboard/severity.ts";
 import { scoreColor } from "@/lib/score-color.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -129,19 +130,6 @@ export function fillDateGaps(
     current = addDays(current, 1);
   }
   return result;
-}
-
-/**
- * Index of the first point the trend figures count (KTD9): the latest point
- * marked as an identity change, else the first point.
- */
-export function trendStartIndex(
-  points: { identityChanged?: boolean }[],
-): number {
-  for (let i = points.length - 1; i >= 0; i--) {
-    if (points[i].identityChanged) return i;
-  }
-  return 0;
 }
 
 function buildSegments(
