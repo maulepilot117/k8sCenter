@@ -403,6 +403,77 @@ func TestRemoteRecorder_SnapshotNowWritesTodaysPointWithCurrentRevision(t *testi
 	}
 }
 
+// Repeated saves while a snapshot runs coalesce into one follow-up read,
+// which picks up the identity current when it starts (review #1).
+func TestRemoteRecorder_SnapshotNowCoalescesPerCluster(t *testing.T) {
+	ids := &recIdentities{rows: map[string]store.ComplianceIdentity{"remote-a": recIdentityRow("remote-a", 1)}}
+	snaps := &recSnapshots{}
+	started := make(chan struct{}, 10)
+	release := make(chan struct{})
+	reader := &recReader{fn: func(ctx context.Context, c, u string, g []string) (*remoteRecord, error) {
+		started <- struct{}{}
+		<-release
+		return recFullRecord(ctx, c, u, g)
+	}}
+	r := newTestRemoteRecorder(ids, snaps, &recChecker{}, reader)
+
+	r.SnapshotNow(context.Background(), "remote-a")
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first snapshot never started")
+	}
+	// Five more saves arrive while the first read is still running; the
+	// last of them names a new identity revision.
+	for range 4 {
+		r.SnapshotNow(context.Background(), "remote-a")
+	}
+	ids.mu.Lock()
+	ids.rows["remote-a"] = recIdentityRow("remote-a", 2)
+	ids.mu.Unlock()
+	r.SnapshotNow(context.Background(), "remote-a")
+	// Another cluster is not held behind remote-a.
+	ids.mu.Lock()
+	ids.rows["remote-b"] = recIdentityRow("remote-b", 7)
+	ids.mu.Unlock()
+	r.SnapshotNow(context.Background(), "remote-b")
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote-b's snapshot waited behind remote-a's")
+	}
+	close(release)
+	r.wait()
+
+	calls := reader.called()
+	var a int
+	for _, c := range calls {
+		if c == "remote-a" {
+			a++
+		}
+	}
+	if a != 2 {
+		t.Fatalf("remote-a read %d times (%v), want 2: the running read plus one coalesced follow-up", a, calls)
+	}
+	points, _, _ := snaps.snapshot()
+	var last int64
+	for _, p := range points {
+		if p.ClusterID == "remote-a" {
+			last = p.IdentityRevision
+		}
+	}
+	if last != 2 {
+		t.Fatalf("remote-a's last point is at revision %d, want 2 (the follow-up reads the current identity)", last)
+	}
+
+	// Once idle, a new save reads again.
+	r.SnapshotNow(context.Background(), "remote-a")
+	r.wait()
+	if got := len(reader.called()); got != len(calls)+1 {
+		t.Fatalf("an idle cluster's save read %d more times, want 1", got-len(calls))
+	}
+}
+
 func TestRemoteRecorder_DailyRunAgesOutRetention(t *testing.T) {
 	for _, tc := range []struct {
 		name string

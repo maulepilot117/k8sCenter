@@ -246,3 +246,49 @@ test("declining the clear confirmation sends nothing", async () => {
   expect(calls.some((c) => c.method === "DELETE")).toBe(false);
   expect(badges.at(-1)).toEqual(["c1", "configured"]);
 });
+
+/** Unmounts the current form, as closing it on the cluster manager does. */
+async function unmount() {
+  act(() => render(null, host as HTMLElement));
+  host?.remove();
+  host = null;
+  await settle();
+}
+
+test("a save still in flight when the form closes badges configured once it lands", async () => {
+  replies.GET = { status: 200, body: { data: IDENTITY } };
+  replies.PUT = { status: 200, body: { data: IDENTITY } };
+  let release = () => {};
+  putGate = new Promise<void>((r) => {
+    release = r;
+  });
+  const root = await mount();
+  await click(button(root, "Save"));
+  await unmount();
+  badges = [];
+  release();
+  await settle();
+  expect(badges).toEqual([["c1", "configured"]]);
+});
+
+test("a late save answer does not undo a clear made after it (review #2)", async () => {
+  replies.GET = { status: 200, body: { data: IDENTITY } };
+  replies.PUT = { status: 200, body: { data: IDENTITY } };
+  replies.DELETE = { status: 204 };
+  globalThis.confirm = () => true;
+  let release = () => {};
+  putGate = new Promise<void>((r) => {
+    release = r;
+  });
+  // Form A saves; its answer is held. The operator closes it, reopens the
+  // cluster's form and clears the identity.
+  const first = await mount();
+  await click(button(first, "Save"));
+  await unmount();
+  const second = await mount();
+  await click(button(second, "Clear identity"));
+  expect(badges.at(-1)).toEqual(["c1", "not-configured"]);
+  release();
+  await settle();
+  expect(badges.at(-1)).toEqual(["c1", "not-configured"]);
+});

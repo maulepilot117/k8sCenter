@@ -72,6 +72,10 @@ type RemoteComplianceRecorder struct {
 	timeout    time.Duration
 	// inflight counts SnapshotNow goroutines, so tests can wait for them.
 	inflight sync.WaitGroup
+	// mu guards now: a cluster is a key while its SnapshotNow runs, and its
+	// value says another save asked for a snapshot meanwhile.
+	mu         sync.Mutex
+	nowRunning map[string]bool
 }
 
 // NewRemoteComplianceRecorder returns a recorder over the given stores, the
@@ -115,24 +119,55 @@ func (r *RemoteComplianceRecorder) Run(ctx context.Context) {
 // at once (R3). The snapshot keeps ctx's values but not its cancellation, so
 // it outlives the request that asked for it, bounded by its own deadline. A
 // cluster with no identity is not read.
+//
+// Calls for a cluster whose snapshot is still running coalesce: however many
+// arrive, one more snapshot follows the running one, and it reads the
+// identity current when it starts. Repeated saves so cannot stack remote
+// reads against one cluster.
 func (r *RemoteComplianceRecorder) SnapshotNow(ctx context.Context, clusterID string) {
+	r.mu.Lock()
+	if r.nowRunning == nil {
+		r.nowRunning = make(map[string]bool)
+	}
+	if _, running := r.nowRunning[clusterID]; running {
+		r.nowRunning[clusterID] = true
+		r.mu.Unlock()
+		return
+	}
+	r.nowRunning[clusterID] = false
+	r.mu.Unlock()
+
+	bgParent := context.WithoutCancel(ctx)
 	r.inflight.Add(1)
 	go func() {
 		defer r.inflight.Done()
-		recoverutil.Safe(r.logger, remoteRecorderTask, func() {
-			bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.timeout+remoteWriteTimeout)
-			defer cancel()
-			id, err := r.identities.Get(bg, clusterID)
-			if errors.Is(err, store.ErrComplianceIdentityNotFound) {
+		for {
+			recoverutil.Safe(r.logger, remoteRecorderTask, func() { r.snapshotNowOnce(bgParent, clusterID) })
+			r.mu.Lock()
+			if !r.nowRunning[clusterID] {
+				delete(r.nowRunning, clusterID)
+				r.mu.Unlock()
 				return
 			}
-			if err != nil {
-				r.logger.Error("remote compliance snapshot: reading identity failed", "cluster", clusterID, "error", err)
-				return
-			}
-			r.snapshotCluster(bg, id)
-		})
+			r.nowRunning[clusterID] = false
+			r.mu.Unlock()
+		}
 	}()
+}
+
+// snapshotNowOnce reads clusterID's current identity and snapshots it.
+func (r *RemoteComplianceRecorder) snapshotNowOnce(parent context.Context, clusterID string) {
+	bg, cancel := context.WithTimeout(parent, r.timeout+remoteWriteTimeout)
+	defer cancel()
+	id, err := r.identities.Get(bg, clusterID)
+	if errors.Is(err, store.ErrComplianceIdentityNotFound) {
+		return
+	}
+	if err != nil {
+		r.logger.Error("remote compliance snapshot: reading identity failed", "cluster", clusterID, "error", err)
+		return
+	}
+	r.snapshotCluster(bg, id)
 }
 
 // wait blocks until every SnapshotNow started so far has finished.

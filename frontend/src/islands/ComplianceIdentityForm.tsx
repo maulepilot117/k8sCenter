@@ -49,6 +49,36 @@ function identityErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
+// Badge ordering across form instances for one cluster. A save or clear can
+// still answer after its form has closed and another form for the same
+// cluster has saved or cleared again, so the badge takes the answer of the
+// latest-issued change only, and a load does not overwrite a change still
+// in flight (review #2).
+const latestChange = new Map<string, number>();
+const changesInFlight = new Map<string, number>();
+let changeTicket = 0;
+
+function beginChange(clusterId: string): number {
+  const ticket = ++changeTicket;
+  latestChange.set(clusterId, ticket);
+  changesInFlight.set(clusterId, (changesInFlight.get(clusterId) ?? 0) + 1);
+  return ticket;
+}
+
+function endChange(clusterId: string) {
+  const left = (changesInFlight.get(clusterId) ?? 1) - 1;
+  if (left > 0) changesInFlight.set(clusterId, left);
+  else changesInFlight.delete(clusterId);
+}
+
+function isLatestChange(clusterId: string, ticket: number): boolean {
+  return latestChange.get(clusterId) === ticket;
+}
+
+function changeInFlight(clusterId: string): boolean {
+  return changesInFlight.has(clusterId);
+}
+
 export default function ComplianceIdentityForm({
   clusterId,
   onIdentity,
@@ -60,7 +90,8 @@ export default function ComplianceIdentityForm({
   const baseId = useRef(`ci-${Math.random().toString(36).slice(2, 8)}`).current;
 
   // Bumped by every load/save/clear and on unmount, so a late answer never
-  // fills the form of another cluster. The badge callback is not gated.
+  // fills the form of another cluster. The badge is ordered separately, by
+  // the module's change tickets, so a form closed mid-save still badges.
   const gen = useRef(0);
 
   function apply(id: ComplianceIdentity) {
@@ -78,14 +109,16 @@ export default function ComplianceIdentityForm({
         if (gen.current !== g) return;
         apply(res.data);
         configured.value = true;
-        onIdentity(clusterId, "configured");
+        if (!changeInFlight(clusterId)) onIdentity(clusterId, "configured");
       } catch (err) {
         if (gen.current !== g) return;
         if (
           err instanceof ApiError &&
           err.reason === "compliance_history_not_configured"
         ) {
-          onIdentity(clusterId, "not-configured");
+          if (!changeInFlight(clusterId)) {
+            onIdentity(clusterId, "not-configured");
+          }
         } else {
           showToast(
             identityErrorMessage(err, "Could not load the identity"),
@@ -103,6 +136,7 @@ export default function ComplianceIdentityForm({
 
   async function save() {
     const g = ++gen.current;
+    const ticket = beginChange(clusterId);
     busy.value = true;
     try {
       const res = await apiPut<ComplianceIdentity>(
@@ -112,7 +146,9 @@ export default function ComplianceIdentityForm({
           groups: parseGroups(groups.value),
         },
       );
-      onIdentity(clusterId, "configured");
+      if (isLatestChange(clusterId, ticket)) {
+        onIdentity(clusterId, "configured");
+      }
       if (gen.current !== g) return;
       apply(res.data);
       configured.value = true;
@@ -124,6 +160,7 @@ export default function ComplianceIdentityForm({
         "error",
       );
     } finally {
+      endChange(clusterId);
       if (gen.current === g) busy.value = false;
     }
   }
@@ -137,10 +174,13 @@ export default function ComplianceIdentityForm({
       return;
     }
     const g = ++gen.current;
+    const ticket = beginChange(clusterId);
     busy.value = true;
     try {
       await apiDelete(`/v1/clusters/${clusterId}/compliance-identity`);
-      onIdentity(clusterId, "not-configured");
+      if (isLatestChange(clusterId, ticket)) {
+        onIdentity(clusterId, "not-configured");
+      }
       if (gen.current !== g) return;
       username.value = "";
       groups.value = "";
@@ -153,6 +193,7 @@ export default function ComplianceIdentityForm({
         "error",
       );
     } finally {
+      endChange(clusterId);
       if (gen.current === g) busy.value = false;
     }
   }
