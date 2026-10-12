@@ -43,6 +43,9 @@ let calls: Call[] = [];
 // Replies are consumed in order per method; the last one repeats.
 let getReplies: Reply[] = [];
 let putReplies: Reply[] = [];
+// putGate, when set, holds every PUT until it resolves, so a test can act
+// while a save is in flight.
+let putGate: Promise<void> | null = null;
 
 const CONFIG = {
   cniType: "cilium",
@@ -70,6 +73,7 @@ beforeEach(() => {
   calls = [];
   getReplies = [ok(CONFIG)];
   putReplies = [ok(CONFIG)];
+  putGate = null;
   selectedCluster.value = "c1";
   originalFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -80,6 +84,7 @@ beforeEach(() => {
       cluster: headers.get("X-Cluster-ID"),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     });
+    if (method === "PUT" && putGate) await putGate;
     const queue = method === "PUT" ? putReplies : getReplies;
     const reply = (queue.length > 1 ? queue.shift() : queue[0]) as Reply;
     return new Response(JSON.stringify(reply.body), {
@@ -233,4 +238,32 @@ test("a save whose refresh fails is shown as saved, out of edit mode", async () 
   ) as HTMLElement;
   expect(row.textContent).toContain("true");
   expect(buttons(root, "Try again")).toHaveLength(1);
+});
+
+test("a second Enter while a save is in flight sends no second PUT", async () => {
+  let release = () => {};
+  putGate = new Promise<void>((r) => {
+    release = r;
+  });
+  const root = await mount();
+  const row = [...root.querySelectorAll("tr")].find((tr) =>
+    tr.textContent?.includes("enable-hubble"),
+  ) as HTMLElement;
+  act(() => (buttons(row, "Edit")[0] as HTMLButtonElement).click());
+  const input = root.querySelector("input") as HTMLInputElement;
+  act(() => {
+    input.value = "true";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const enter = () => {
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+  };
+  act(enter);
+  act(enter);
+  release();
+  await settle();
+
+  expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
 });

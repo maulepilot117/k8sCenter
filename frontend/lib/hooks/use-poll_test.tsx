@@ -111,3 +111,27 @@ test("a success clears the failure", async () => {
   expect(latest?.failure.value).toBeNull();
   expect(latest?.data.value).toEqual({ ok: true });
 });
+
+test("a manual refetch that succeeds restarts paused polling", async () => {
+  let fail = true;
+  respond = () =>
+    fail
+      ? errorResponse(502, "unreachable")
+      : new Response(JSON.stringify({ data: { ok: true } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+  await mount();
+  await act(() => wait(INTERVAL * 5));
+  const paused = calls;
+  await act(() => wait(INTERVAL * 3));
+  expect(calls).toBe(paused);
+
+  fail = false;
+  await act(async () => {
+    await latest?.refetch();
+  });
+  const afterRefetch = calls;
+  await act(() => wait(INTERVAL * 4));
+  expect(calls).toBeGreaterThan(afterRefetch);
+});

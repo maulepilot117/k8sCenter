@@ -68,6 +68,20 @@ export function usePoll<T>(
     if (!IS_BROWSER) return;
     if (opts.enabled === false) return;
 
+    // A new url starts from a clean slate: a refusal or failures recorded
+    // for the previous one say nothing about this one.
+    stoppedRef.current = false;
+    failureCount.current = 0;
+    let active = true;
+
+    const startPolling = () => {
+      intervalRef.current = setInterval(() => {
+        if (document.hidden) return;
+        if (stoppedRef.current) return;
+        doFetch();
+      }, opts.interval) as unknown as number;
+    };
+
     const doFetch = async () => {
       try {
         const resp = await apiGet<T>(url);
@@ -87,6 +101,12 @@ export function usePoll<T>(
             clearInterval(intervalRef.current);
             intervalRef.current = null;
           }
+        }
+
+        // A manual refetch can succeed while polling is paused after
+        // failures; resume it rather than leave the panel frozen.
+        if (active && !stoppedRef.current && intervalRef.current === null) {
+          startPolling();
         }
       } catch (err) {
         error.value =
@@ -120,11 +140,7 @@ export function usePoll<T>(
     doFetch();
 
     // Start polling
-    intervalRef.current = setInterval(() => {
-      if (document.hidden) return;
-      if (stoppedRef.current) return;
-      doFetch();
-    }, opts.interval) as unknown as number;
+    startPolling();
 
     // Resume polling on visibility change after failure pause
     const onVisibilityChange = () => {
@@ -135,18 +151,16 @@ export function usePoll<T>(
       ) {
         failureCount.current = 0;
         doFetch();
-        intervalRef.current = setInterval(() => {
-          if (document.hidden) return;
-          if (stoppedRef.current) return;
-          doFetch();
-        }, opts.interval) as unknown as number;
+        startPolling();
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
+      active = false;
       if (intervalRef.current !== null) {
         clearInterval(intervalRef.current);
+        intervalRef.current = null;
       }
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };

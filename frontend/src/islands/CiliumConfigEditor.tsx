@@ -95,7 +95,9 @@ export default function CiliumConfigEditor() {
   const saveEdit = async () => {
     const key = editKey.value;
     const loaded = config.value;
-    if (key === null || !loaded) return;
+    // A save in flight blocks another: Enter and the notice's Try again
+    // reach here even while the Save button is disabled.
+    if (key === null || !loaded || saving.value) return;
     const value = editValue.value;
     saving.value = true;
     notice.value = null;
