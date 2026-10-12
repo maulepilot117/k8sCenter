@@ -309,6 +309,9 @@ func (s *Server) registerClusterRoutes(ar chi.Router) {
 		cr.Get("/{clusterID}/metrics", s.handleGetClusterMetrics)
 		cr.Put("/{clusterID}/metrics", s.handlePutClusterMetrics)
 		cr.Delete("/{clusterID}/metrics", s.handleDeleteClusterMetrics)
+		cr.Get("/{clusterID}/compliance-identity", s.handleGetComplianceIdentity)
+		cr.Put("/{clusterID}/compliance-identity", s.handlePutComplianceIdentity)
+		cr.Delete("/{clusterID}/compliance-identity", s.handleDeleteComplianceIdentity)
 	})
 }
 

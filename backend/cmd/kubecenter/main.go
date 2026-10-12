@@ -197,6 +197,8 @@ func main() {
 	var settingsService *appstore.SettingsService
 	var userStore *appstore.UserStore
 	var complianceStore *appstore.ComplianceStore
+	var complianceIdentityStore *appstore.ComplianceIdentityStore
+	var remoteComplianceRecorder *policy.RemoteComplianceRecorder
 	var dbPing func(context.Context) error
 	var dbPool *pgxpool.Pool
 	var clusterMetricsStore *appstore.ClusterMetricsStore
@@ -225,6 +227,7 @@ func main() {
 			// credentials.
 			clusterMetricsStore = appstore.NewClusterMetricsStore(db.Pool, encKey)
 			complianceStore = appstore.NewComplianceStore(db.Pool)
+			complianceIdentityStore = appstore.NewComplianceIdentityStore(db.Pool)
 
 			// Register local cluster
 			apiServerHost := "in-cluster"
@@ -610,6 +613,15 @@ func main() {
 			go complianceRecorder.Run(ctx)
 
 			policyHandler.ComplianceStore = complianceStore
+		}
+		// Remote clusters snapshot as the background identity an admin
+		// names per cluster (#608). Nil when any dependency is missing.
+		if complianceIdentityStore != nil {
+			policyHandler.ComplianceIdentities = complianceIdentityStore
+		}
+		remoteComplianceRecorder = policy.NewRemoteComplianceRecorder(complianceIdentityStore, complianceStore, clusterRouter, policyHandler, logger)
+		if remoteComplianceRecorder != nil {
+			go remoteComplianceRecorder.Run(ctx)
 		}
 	}
 
@@ -1129,6 +1141,9 @@ func main() {
 		AccessChecker:          accessChecker,
 		ReadyFn:                ready.Load,
 		DBPing:                 dbPing,
+
+		ComplianceIdentityStore:  complianceIdentityStore,
+		RemoteComplianceRecorder: remoteComplianceRecorder,
 	})
 	// The binding admin API writes through the store and evicts from the
 	// resolver every metrics consumer shares. Without a database both stay

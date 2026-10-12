@@ -272,11 +272,13 @@ var (
 		"cni.config", "cilium.status", "cilium.connectivity",
 		// #608 PR 5b: flows come from the selected cluster's own relay.
 		"flows.stream",
+		// #608: snapshots taken as each cluster's background identity.
+		"policy.compliance_history",
 	}
 	wantRemoteUnsupported = []string{
 		"pod.exec", "logs.stream", "logs.search", "eso.write",
 		"eso.history", "eso.metrics",
-		"policy.compliance_history", "velero.assurance",
+		"velero.assurance",
 		"incidents.capture",
 	}
 )

@@ -169,6 +169,8 @@ export const COMPLIANCE_PAGE_HREF = "/security/compliance";
  * Pinned to the `days=` the `policy-compliance-history` fetcher sends in
  * data.ts. The two have to agree: the card's copy says "over 30 days", and a
  * fetcher asking for 7 would put a truthful number under a false label.
+ *
+ * The same source serves the selected remote cluster's own history (#608).
  */
 export const COMPLIANCE_HISTORY_DAYS = 30;
 
@@ -177,7 +179,9 @@ export interface ComplianceHistoryView {
    * non-admin caller (403) and a deployment with no database (503). */
   available: boolean;
   /** Change in score across the window, or null when fewer than two snapshots
-   * are readable. One snapshot is a point, not a trend. */
+   * are readable. One snapshot is a point, not a trend. When the background
+   * identity changed inside the window, only points since the latest change
+   * count (KTD9): a step caused by a wider or narrower view is not a trend. */
   delta: number | null;
   days: number;
 }
@@ -263,14 +267,34 @@ export function policyComplianceView(
   };
 }
 
+/**
+ * Index of the first point the trend figures count (KTD9): the latest point
+ * marked as an identity change, else the first point. Shared by the dashboard
+ * card's delta and the compliance trend chart.
+ */
+export function trendStartIndex(
+  points: { identityChanged?: boolean }[],
+): number {
+  for (let i = points.length - 1; i >= 0; i--) {
+    if (points[i].identityChanged) return i;
+  }
+  return 0;
+}
+
 function historyView(history: unknown): ComplianceHistoryView {
   const points = list(history);
   if (points === null) {
     return { available: false, delta: null, days: COMPLIANCE_HISTORY_DAYS };
   }
-  const scores = points
-    .map((point) => num(obj(point)?.score))
-    .filter((s): s is number => s !== null);
+  const readable = points
+    .map((point) => ({
+      score: num(obj(point)?.score),
+      identityChanged: obj(point)?.identityChanged === true,
+    }))
+    .filter(
+      (p): p is { score: number; identityChanged: boolean } => p.score !== null,
+    );
+  const scores = readable.slice(trendStartIndex(readable)).map((p) => p.score);
   return {
     available: true,
     delta: scores.length >= 2 ? scores[scores.length - 1] - scores[0] : null,

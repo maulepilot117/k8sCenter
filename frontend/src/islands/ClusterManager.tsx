@@ -11,6 +11,9 @@ import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { api, apiGet, apiPost } from "@/lib/api.ts";
+import ComplianceIdentityForm, {
+  type ComplianceIdentityState,
+} from "@/src/islands/ComplianceIdentityForm.tsx";
 import MetricsBindingForm, {
   type MetricsState,
 } from "@/src/islands/MetricsBindingForm.tsx";
@@ -69,6 +72,9 @@ export default function ClusterManager() {
   // fields, this island keeps which cluster is open and each cluster's badge.
   const metricsFor = useSignal<string | null>(null);
   const metricsState = useSignal<Record<string, MetricsState>>({});
+  // Same shape for the compliance-history identity form.
+  const identityFor = useSignal<string | null>(null);
+  const identityState = useSignal<Record<string, ComplianceIdentityState>>({});
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -77,6 +83,14 @@ export default function ClusterManager() {
 
   function setMetricsState(id: string, state: MetricsState) {
     metricsState.value = { ...metricsState.value, [id]: state };
+  }
+
+  function setIdentityState(id: string, state: ComplianceIdentityState) {
+    identityState.value = { ...identityState.value, [id]: state };
+  }
+
+  function toggleIdentity(id: string) {
+    identityFor.value = identityFor.value === id ? null : id;
   }
 
   function toggleMetrics(id: string) {
@@ -412,6 +426,27 @@ export default function ClusterManager() {
               />
             </div>
           )}
+          {!c.isLocal && identityState.value[c.id] && (
+            <div style={{ marginTop: "4px" }}>
+              <StatusBadge
+                label={
+                  identityState.value[c.id] === "configured"
+                    ? "compliance history: configured"
+                    : "compliance history: not configured"
+                }
+                tone={
+                  identityState.value[c.id] === "configured" ? "ok" : "warn"
+                }
+              />
+            </div>
+          )}
+          {!c.isLocal && identityFor.value === c.id && (
+            <ComplianceIdentityForm
+              key={c.id}
+              clusterId={c.id}
+              onIdentity={setIdentityState}
+            />
+          )}
           {!c.isLocal && metricsFor.value === c.id && (
             <MetricsBindingForm
               key={c.id}
@@ -500,6 +535,14 @@ export default function ClusterManager() {
             onClick={() => toggleMetrics(c.id)}
           >
             Metrics
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => toggleIdentity(c.id)}
+          >
+            Compliance identity
           </Button>
           <Button
             type="button"

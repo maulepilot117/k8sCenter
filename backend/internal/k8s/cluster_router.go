@@ -715,6 +715,26 @@ func copyRemoteConfig(cfg *rest.Config) *rest.Config {
 // mutate concurrently — callers receive a CopyConfig from the cache hit
 // above so each clientset/dynamic-client gets its own instance.
 func (cr *ClusterRouter) buildRemoteConfig(ctx context.Context, clusterID, username string, groups []string) (*rest.Config, error) {
+	cfg, err := cr.registrationConfig(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Impersonate = rest.ImpersonationConfig{
+		UserName: username,
+		Groups:   groups,
+	}
+	cfg.QPS = 50
+	cfg.Burst = 100
+	return cfg, nil
+}
+
+// registrationConfig builds a rest.Config that authenticates as the cluster's
+// stored registration credential and impersonates no one. It re-checks the
+// URL against the SSRF block-list, keeps the strict dialer and applies the
+// cluster's TLS policy. It must never leave this package: buildRemoteConfig
+// adds the impersonated identity on top of it, and CanImpersonate is its only
+// other caller.
+func (cr *ClusterRouter) registrationConfig(ctx context.Context, clusterID string) (*rest.Config, error) {
 	cluster, err := cr.clusterStore.Get(ctx, clusterID)
 	if err != nil {
 		return nil, fmt.Errorf("cluster %s not found: %w", clusterID, err)
@@ -740,17 +760,9 @@ func (cr *ClusterRouter) buildRemoteConfig(ctx context.Context, clusterID, usern
 	}
 
 	cfg := NewRemoteRESTConfig(cluster.APIServerURL, string(token), caData)
-	cfg.Impersonate = rest.ImpersonationConfig{
-		UserName: username,
-		Groups:   groups,
-	}
-	cfg.QPS = 50
-	cfg.Burst = 100
-
 	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, cr.logger); err != nil {
 		return nil, err
 	}
-
 	return cfg, nil
 }
 

@@ -12,6 +12,7 @@ import {
   sourceRefreshOffsetMs,
 } from "./data.ts";
 import { sourceKeyFor } from "./params.ts";
+import { policyComplianceView } from "./severity.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   ABSENT_STATUSES,
@@ -1870,4 +1871,56 @@ test("a 404 metrics_not_configured answer is unsupported, with the not-configure
   // A bare 404 stays an ordinary failure: the reason is what says "binding".
   expect(cache.state("cluster-info").errorKind).toBe("failure");
   expect(cache.state("top-consumers-cpu").errorKind).toBe("unsupported");
+});
+
+// #608 final slice: a remote cluster serves its own compliance history, and
+// the one state it cannot (no named identity) is told apart by reason.
+test("policy-compliance-history is served by the selected cluster", () => {
+  expect(REMOTE_BEHAVIOUR["policy-compliance-history"]).toBe("remote");
+  expect("policy-compliance-history" in UNSUPPORTED_STATUSES).toBe(false);
+  expect(
+    classify(new ApiError(501, 501, "x"), "policy-compliance-history"),
+  ).toBe("failure");
+});
+
+test("a 404 compliance_history_not_configured answer is unsupported, other 404s stay failures", () => {
+  expect(
+    classify(
+      reasoned(404, "compliance_history_not_configured"),
+      "policy-compliance-history",
+    ),
+  ).toBe("unsupported");
+  expect(
+    classify(reasoned(404, "cluster_unknown"), "policy-compliance-history"),
+  ).toBe("failure");
+  // The reason is this route's own: elsewhere it settles nothing.
+  expect(
+    classify(
+      reasoned(404, "compliance_history_not_configured"),
+      "hubble-status",
+    ),
+  ).toBe("failure");
+});
+
+test("the card's trend figure counts only points since the latest identity change", () => {
+  const pt = (score: number, identityChanged?: boolean) => ({
+    date: "2026-10-01",
+    score,
+    ...(identityChanged ? { identityChanged } : {}),
+  });
+  const score = { score: 60, total: 3 };
+  // 90 -> 10 before the switch must not enter the figure; 50 -> 60 does.
+  const view = policyComplianceView(score, [
+    pt(90),
+    pt(10),
+    pt(50, true),
+    pt(60),
+  ]);
+  expect(view.history.delta).toBe(10);
+  // A change on the very last point leaves one counted point: no trend yet.
+  expect(
+    policyComplianceView(score, [pt(90), pt(10, true)]).history.delta,
+  ).toBeNull();
+  // Local responses carry no marker and keep counting the whole window.
+  expect(policyComplianceView(score, [pt(40), pt(70)]).history.delta).toBe(30);
 });
