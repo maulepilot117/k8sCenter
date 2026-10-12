@@ -270,9 +270,11 @@ var (
 		// #608 PR 5a: Cilium views read, and the config is written, on the
 		// selected cluster as the user; agent exec runs as the user there.
 		"cni.config", "cilium.status", "cilium.connectivity",
+		// #608 PR 5b: flows come from the selected cluster's own relay.
+		"flows.stream",
 	}
 	wantRemoteUnsupported = []string{
-		"pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
+		"pod.exec", "logs.stream", "logs.search", "eso.write",
 		"eso.history", "eso.metrics",
 		"policy.compliance_history", "velero.assurance",
 		"incidents.capture",

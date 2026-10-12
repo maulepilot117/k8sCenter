@@ -215,6 +215,8 @@ test.describe.serial("Remote cluster capabilities", () => {
       "cni.config",
       "cilium.status",
       "cilium.connectivity",
+      // #608 PR 5b: flows come from the selected cluster's own relay.
+      "flows.stream",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
