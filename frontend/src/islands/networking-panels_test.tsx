@@ -188,3 +188,65 @@ test("a node whose agent exec timed out shows an exec problem, not ill health", 
   expect(row("node-c").textContent).toContain("Failure");
   expect(row("node-c").textContent).not.toContain("Exec problem");
 });
+
+test("encryption node counts read 'Not available' when the node list failed", async () => {
+  const root = await mount(
+    CiliumSubsystems,
+    ok({
+      configured: true,
+      encryption: {
+        enabled: true,
+        mode: "wireguard",
+        nodesEncrypted: 0,
+        nodesTotal: 0,
+      },
+      mesh: { enabled: false, engine: "none" },
+      clusterMesh: { enabled: false },
+      endpoints: {
+        total: 1,
+        ready: 1,
+        notReady: 0,
+        disconnecting: 0,
+        waiting: 0,
+      },
+      coverage: [
+        {
+          source: "ciliumnodes",
+          status: "unavailable",
+          reasonCode: "unreachable",
+        },
+      ],
+    }),
+  );
+  expect(root.textContent).not.toContain("0 / 0");
+  const encryption = [...root.querySelectorAll("div")].find(
+    (d) => d.firstElementChild?.textContent?.trim() === "Encryption",
+  ) as HTMLElement;
+  expect(encryption.textContent).toContain("Not available");
+});
+
+test("CRDs whose presence could not be read show as Unknown, not Not Found", async () => {
+  const root = await mount(
+    CniOverview,
+    ok({
+      name: "cilium",
+      version: "1.16.2",
+      namespace: "kube-system",
+      daemonSet: "cilium",
+      status: { ready: 3, desired: 3, healthy: true },
+      features: {
+        hubble: false,
+        encryption: false,
+        encryptionMode: "",
+        clusterMesh: false,
+        wireguard: false,
+        envoyEnabled: false,
+      },
+      hasCRDs: false,
+      crdsUnknown: true,
+      detectionMethod: "daemonset",
+    }),
+  );
+  expect(root.textContent).toContain("Unknown");
+  expect(root.textContent).not.toContain("Not Found");
+});

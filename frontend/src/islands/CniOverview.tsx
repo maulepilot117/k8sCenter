@@ -31,6 +31,11 @@ interface CNIInfo {
   status: CNIStatus;
   features: CNIFeatures;
   hasCRDs: boolean;
+  /**
+   * Set when a remote cluster's discovery could not be read, so hasCRDs
+   * false means "unknown", not "absent". Never set on the local cluster.
+   */
+  crdsUnknown?: boolean;
   detectionMethod: string;
 }
 
@@ -140,7 +145,13 @@ export default function CniOverview() {
           <div class="flex justify-between">
             <span class="text-text-muted">CRDs</span>
             <StatusBadge
-              label={info.hasCRDs ? "Installed" : "Not Found"}
+              label={
+                info.hasCRDs
+                  ? "Installed"
+                  : info.crdsUnknown
+                    ? "Unknown"
+                    : "Not Found"
+              }
               tone={info.hasCRDs ? "ok" : "neutral"}
             />
           </div>

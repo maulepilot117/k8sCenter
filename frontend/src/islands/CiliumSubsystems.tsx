@@ -58,6 +58,10 @@ export default function CiliumSubsystems() {
   }
 
   const { encryption, mesh, clusterMesh, endpoints, coverage } = resp;
+  // Encryption node counts come from the CiliumNode list; when a remote
+  // cluster could not provide it, the counts are unknown, not zero.
+  const nodesUnknown =
+    coverage?.some((c) => c.source === "ciliumnodes") ?? false;
 
   return (
     <Card title="Cilium Subsystems">
@@ -79,7 +83,9 @@ export default function CiliumSubsystems() {
               <div class="flex justify-between text-sm">
                 <span class="text-text-muted">Nodes</span>
                 <span class="font-mono text-text-primary">
-                  {encryption.nodesEncrypted} / {encryption.nodesTotal}
+                  {nodesUnknown
+                    ? "Not available"
+                    : `${encryption.nodesEncrypted} / ${encryption.nodesTotal}`}
                 </span>
               </div>
               {encryption.wireGuardNodes &&
