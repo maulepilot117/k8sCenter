@@ -12,7 +12,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
-	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -62,23 +61,9 @@ func wsLogsTestServer(t *testing.T, clusterID string) (*httptest.Server, func() 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	issueToken := func() string {
-		t.Helper()
-		u := &auth.User{
-			ID:                 "test-user",
-			Username:           "alice",
-			KubernetesUsername: "alice",
-			KubernetesGroups:   []string{"dev"},
-			// Admin, so a remote cluster passes the auth helper's admin
-			// check and reaches the handler's own remote gate.
-			Roles: []string{"admin"},
-		}
-		tok, err := srv.TokenManager.IssueAccessToken(u)
-		if err != nil {
-			t.Fatalf("IssueAccessToken: %v", err)
-		}
-		return tok
-	}
+	// Admin, so a remote cluster passes the auth helper's admin check and
+	// reaches the handler's own remote gate.
+	issueToken := func() string { return issueWSToken(t, srv, true) }
 
 	return ts, issueToken
 }

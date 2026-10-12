@@ -2,6 +2,7 @@ import type { Signal } from "@preact/signals";
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { ApiError, apiGet } from "@/lib/api.ts";
+import { failureOf } from "@/lib/networking-state.ts";
 
 // Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
 // this file is shared by both the Fresh tree and the Astro/Bun port, and the
@@ -90,10 +91,7 @@ export function usePoll<T>(
       } catch (err) {
         error.value =
           err instanceof Error ? err.message : "Failed to fetch data";
-        failure.value =
-          err instanceof ApiError
-            ? { status: err.status, reason: err.reason }
-            : null;
+        failure.value = failureOf(err);
         failureCount.current++;
 
         // A 403 is final: stop, and do not resume on visibility change.

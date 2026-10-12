@@ -146,21 +146,7 @@ func wsLogsSearchTestServer(t *testing.T, clusterID string) (*httptest.Server, f
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	issueToken := func() string {
-		t.Helper()
-		u := &auth.User{
-			ID:                 "test-user",
-			Username:           "alice",
-			KubernetesUsername: "alice",
-			KubernetesGroups:   []string{"dev"},
-			Roles:              []string{"viewer"},
-		}
-		tok, err := srv.TokenManager.IssueAccessToken(u)
-		if err != nil {
-			t.Fatalf("IssueAccessToken: %v", err)
-		}
-		return tok
-	}
+	issueToken := func() string { return issueWSToken(t, srv, false) }
 
 	return ts, issueToken
 }
