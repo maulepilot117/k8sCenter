@@ -28,14 +28,17 @@ var cniSearchNamespaces = []string{"kube-system", "cilium", "calico-system", "ku
 
 // CNIInfo represents the detected CNI plugin information.
 type CNIInfo struct {
-	Name            string      `json:"name"`
-	Version         string      `json:"version"`
-	Namespace       string      `json:"namespace"`
-	DaemonSet       string      `json:"daemonSet"`
-	Status          CNIStatus   `json:"status"`
-	Features        CNIFeatures `json:"features,omitempty"`
-	HasCRDs         bool        `json:"hasCRDs"`
-	DetectionMethod string      `json:"detectionMethod"`
+	Name      string      `json:"name"`
+	Version   string      `json:"version"`
+	Namespace string      `json:"namespace"`
+	DaemonSet string      `json:"daemonSet"`
+	Status    CNIStatus   `json:"status"`
+	Features  CNIFeatures `json:"features,omitempty"`
+	HasCRDs   bool        `json:"hasCRDs"`
+	// CRDsUnknown is set when a remote cluster's discovery could not be read,
+	// so HasCRDs false means "unknown", not "absent". Never set locally.
+	CRDsUnknown     bool   `json:"crdsUnknown,omitempty"`
+	DetectionMethod string `json:"detectionMethod"`
 }
 
 // CNIStatus describes the health of the CNI DaemonSet.

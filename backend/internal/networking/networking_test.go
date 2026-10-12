@@ -2146,3 +2146,78 @@ func TestHandleCiliumSubsystems_RemoteAgentData(t *testing.T) {
 		}
 	})
 }
+
+// --- Review fixes (#608 PR 5a code review) ---
+
+// A remote cluster whose CNI DaemonSet is found but whose discovery fails
+// reports its CRDs as unknown, not as absent.
+func TestHandleCNIStatus_RemoteDiscoveryFailureLeavesCRDsUnknown(t *testing.T) {
+	c := remoteCiliumCluster()
+	c.Discovery().(*fakediscovery.FakeDiscovery).PrependReactor("get", "group", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("discovery unavailable")
+	})
+	h := remoteNetHandler(&fakeNetClients{clusters: map[string]*kfake.Clientset{netRemoteCluster: c}})
+
+	w := httptest.NewRecorder()
+	h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", netRemoteCluster))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s; want 200", w.Code, w.Body.String())
+	}
+	info := decodeCNIInfo(t, w)
+	if info.Name != CNICilium || info.HasCRDs || !info.CRDsUnknown {
+		t.Errorf("got name %q hasCRDs %v crdsUnknown %v, want cilium with its CRDs unknown", info.Name, info.HasCRDs, info.CRDsUnknown)
+	}
+}
+
+// The CNI DaemonSet is found on a later DaemonSet list page.
+func TestHandleCNIStatus_RemoteDaemonSetsPaged(t *testing.T) {
+	c := remoteCiliumCluster()
+	ds := testDaemonSet("kube-system", "cilium", "quay.io/cilium/cilium:v1.16.2", 3, 3)
+	other := testDaemonSet("kube-system", "node-exporter", "prom/node-exporter:v1.8.0", 3, 3)
+	c.PrependReactor("list", "daemonsets", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.GetNamespace() != "kube-system" {
+			return true, &appsv1.DaemonSetList{}, nil
+		}
+		if a.(k8stesting.ListActionImpl).ListOptions.Continue == "" {
+			return true, &appsv1.DaemonSetList{ListMeta: metav1.ListMeta{Continue: "next"}, Items: []appsv1.DaemonSet{other}}, nil
+		}
+		return true, &appsv1.DaemonSetList{Items: []appsv1.DaemonSet{ds}}, nil
+	})
+	h := remoteNetHandler(&fakeNetClients{clusters: map[string]*kfake.Clientset{netRemoteCluster: c}})
+
+	w := httptest.NewRecorder()
+	h.HandleCNIStatus(w, networkingRequest(http.MethodGet, "/api/v1/networking/cni", netRemoteCluster))
+	if info := decodeCNIInfo(t, w); w.Code != http.StatusOK || info.Name != CNICilium || info.DaemonSet != "cilium" {
+		t.Errorf("status %d, cni %q daemonSet %q (body %s); want the cilium DaemonSet found on page two", w.Code, info.Name, info.DaemonSet, w.Body.String())
+	}
+}
+
+// A config update whose outcome is unknown, or that conflicted, still drops
+// the cluster's cached detection: the write may have landed.
+func TestHandleUpdateCNIConfig_RemoteFailedWriteEvictsCache(t *testing.T) {
+	for name, writeErr := range map[string]error{
+		"outcome unknown": &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset")},
+		"conflict":        apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, ciliumConfigMapName, errors.New("changed")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := remoteCiliumCluster()
+			var lists atomic.Int32
+			c.PrependReactor("list", "daemonsets", func(k8stesting.Action) (bool, runtime.Object, error) {
+				lists.Add(1)
+				return false, nil, nil
+			})
+			c.PrependReactor("update", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, writeErr
+			})
+			h, _ := remoteConfigHandler(c)
+			configPut(t, h, netRemoteCluster, validRemotePut())
+
+			before := lists.Load()
+			sw := httptest.NewRecorder()
+			h.HandleCNIStatus(sw, networkingRequest(http.MethodGet, "/api/v1/networking/cni", netRemoteCluster))
+			if lists.Load() == before {
+				t.Error("CNI status after a failed config write was served from the pre-write cache")
+			}
+		})
+	}
+}

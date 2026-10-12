@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -103,7 +104,9 @@ var errRemoteNotConfigured = errors.New("remote networking is not configured")
 // settled is an error, never "unknown": a refused DaemonSet list or Cilium
 // config read is forbidden, an unreadable discovery is
 // k8s.ErrDiscoveryUnavailable, and an unresolved cluster is a
-// k8s.TargetError.
+// k8s.TargetError. The one exception is the CRD marker of a CNI found by
+// its DaemonSet: when discovery cannot be read it is reported as
+// CRDsUnknown, so the overview stays readable without claiming absence.
 func (h *Handler) detectRemote(ctx context.Context, clusterID string, user *auth.User) (*CNIInfo, error) {
 	client, err := h.Clients.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
@@ -115,7 +118,13 @@ func (h *Handler) detectRemote(ctx context.Context, clusterID string, user *auth
 	var info *CNIInfo
 	var refused error
 	for _, ns := range cniSearchNamespaces {
-		list, err := client.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{Limit: k8s.RemoteListPageSize})
+		daemonSets, truncated, err := k8s.PageList(ctx, metav1.ListOptions{}, func(ctx context.Context, opts metav1.ListOptions) ([]appsv1.DaemonSet, string, error) {
+			list, err := client.AppsV1().DaemonSets(ns).List(ctx, opts)
+			if err != nil {
+				return nil, "", err
+			}
+			return list.Items, list.Continue, nil
+		})
 		if apierrors.IsForbidden(err) {
 			// Another namespace may still hold the CNI; a refusal only
 			// matters when none does.
@@ -127,13 +136,17 @@ func (h *Handler) detectRemote(ctx context.Context, clusterID string, user *auth
 		if err != nil {
 			return nil, fmt.Errorf("list daemonsets in %s: %w", ns, err)
 		}
-		for i := range list.Items {
-			if info = cniInfoFromDaemonSet(&list.Items[i]); info != nil {
+		for i := range daemonSets {
+			if info = cniInfoFromDaemonSet(&daemonSets[i]); info != nil {
 				break
 			}
 		}
 		if info != nil {
 			break
+		}
+		if truncated {
+			// A list cut off at the remote cap cannot show the CNI is absent.
+			return nil, fmt.Errorf("%w: daemonsets in %s exceed the remote list cap", k8s.ErrDiscoveryUnavailable, ns)
 		}
 	}
 
@@ -157,7 +170,8 @@ func (h *Handler) detectRemote(ctx context.Context, clusterID string, user *auth
 	if group := cniCRDGroup(info.Name); group != "" {
 		if groupsErr != nil {
 			// The CNI itself is known; only the CRD marker is not.
-			h.Logger.Warn("remote CNI discovery failed; reporting no CRDs", "cluster", clusterID, "error", groupsErr)
+			h.Logger.Warn("remote CNI discovery failed; CRD presence unknown", "cluster", clusterID, "error", groupsErr)
+			info.CRDsUnknown = true
 		}
 		info.HasCRDs = hasAPIGroup(groups, group)
 		if info.HasCRDs {
@@ -377,13 +391,14 @@ func (h *Handler) updateRemoteCNIConfig(w http.ResponseWriter, r *http.Request, 
 	}
 	detail := formatChangedKeys(req.Changes)
 	updated, err := cs.CoreV1().ConfigMaps(cm.Namespace).Update(ctx, cm, metav1.UpdateOptions{})
+	// A remote cluster sends no informer events: drop this cluster's cached
+	// detection, which may now predate the config. Do it whatever the
+	// answer: a transport failure can follow a write that landed.
+	h.EvictRemoteCache(clusterID)
 	if err != nil {
 		h.writeRemoteUpdateFailure(w, r, user, clusterID, cm.Namespace, detail, err)
 		return
 	}
-	// A remote cluster sends no informer events: drop this cluster's cached
-	// detection, which reflects the config before the change.
-	h.EvictRemoteCache(clusterID)
 	h.auditConfigUpdate(r, user, clusterID, cm.Namespace, audit.ResultSuccess, detail)
 	h.Logger.Info("remote cilium config updated", "user", user.Username, "cluster", clusterID, "changedKeys", len(req.Changes))
 	httputil.WriteData(w, ciliumConfigFrom(updated, target))
@@ -610,7 +625,10 @@ func (h *Handler) fetchRemoteSubsystems(ctx context.Context, clusterID string, u
 	if !ok {
 		return &CiliumSubsystemsResponse{Configured: false}, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, remoteReadTimeout)
+	// The CRD lists share the remote read bound. Agent collection does not:
+	// it has its own agentOuterTimeout, and waiting on it with the shorter
+	// bound would drop agent data on clusters whose exec waves run longer.
+	listCtx, cancel := context.WithTimeout(ctx, remoteReadTimeout)
 	defer cancel()
 
 	const nodesSource, endpointsSource = "ciliumnodes", "ciliumendpoints"
@@ -619,11 +637,11 @@ func (h *Handler) fetchRemoteSubsystems(ctx context.Context, clusterID string, u
 	var agentResult *agentCollectionResult
 	lists := []k8s.NamedList{
 		{Label: "networking remote list ciliumnodes", Run: func() (err error) {
-			nodes, err = readCiliumNodes(ctx, dyn)
+			nodes, err = readCiliumNodes(listCtx, dyn)
 			return err
 		}},
 		{Label: "networking remote list ciliumendpoints", Run: func() (err error) {
-			endpoints, err = aggregateEndpoints(ctx, dyn)
+			endpoints, err = aggregateEndpoints(listCtx, dyn)
 			return err
 		}},
 	}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -273,5 +275,62 @@ func TestRemoteAgentCollector_PodListForbidden(t *testing.T) {
 func TestStreamsFrom_NilRouterIsNilInterface(t *testing.T) {
 	if StreamsFrom(nil) != nil {
 		t.Error("StreamsFrom(nil) returned a non-nil interface wrapping a nil router")
+	}
+}
+
+// pagedAgentCollector serves one agent pod per list page, with a continue
+// token between pages, as a remote API server does past its page limit.
+// endless keeps handing out continue tokens.
+func pagedAgentCollector(t *testing.T, exec *fakeExec, pages int, endless bool) *remoteAgentCollector {
+	t.Helper()
+	cs := kfake.NewSimpleClientset()
+	cs.PrependReactor("list", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		page := 0
+		if cont := a.(k8stesting.ListActionImpl).ListOptions.Continue; cont != "" {
+			page, _ = strconv.Atoi(cont)
+		}
+		list := &corev1.PodList{Items: []corev1.Pod{*agentPod(fmt.Sprintf("cilium-%d", page), fmt.Sprintf("n%d", page))}}
+		if endless || page+1 < pages {
+			list.Continue = strconv.Itoa(page + 1)
+		}
+		return true, list, nil
+	})
+	clients := &fakeNetClients{clusters: map[string]*kfake.Clientset{netRemoteCluster: cs}}
+	c := newRemoteAgentCollector(clients, exec, &recordingAudit{}, slog.New(slog.NewTextHandler(io.Discard, nil)), 4)
+	c.execTimeout = 100 * time.Millisecond
+	return c
+}
+
+// A remote cluster with more agent pods than one list page holds is
+// collected across every page, not just the first.
+func TestRemoteAgentCollector_FollowsListPages(t *testing.T) {
+	exec := &fakeExec{run: func(_ context.Context, username, _ string, stdout, _ io.Writer) error {
+		return statusFor(username, stdout)
+	}}
+	c := pagedAgentCollector(t, exec, 3, false)
+
+	res, err := c.Collect(context.Background(), netRemoteCluster, networkingTestUser, "kube-system")
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(res.nodes) != 3 || res.partial {
+		t.Errorf("collected %d nodes (partial %v), want all 3 pages and not partial", len(res.nodes), res.partial)
+	}
+}
+
+// A list cut off at the page cap is reported as partial, never as a
+// complete check of the cluster.
+func TestRemoteAgentCollector_TruncatedListIsPartial(t *testing.T) {
+	exec := &fakeExec{run: func(_ context.Context, username, _ string, stdout, _ io.Writer) error {
+		return statusFor(username, stdout)
+	}}
+	c := pagedAgentCollector(t, exec, 0, true)
+
+	res, err := c.Collect(context.Background(), netRemoteCluster, networkingTestUser, "kube-system")
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(res.nodes) != k8s.RemoteListMaxPages || !res.partial {
+		t.Errorf("collected %d nodes (partial %v), want %d and partial", len(res.nodes), res.partial, k8s.RemoteListMaxPages)
 	}
 }

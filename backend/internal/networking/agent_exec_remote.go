@@ -121,7 +121,7 @@ func (c *remoteAgentCollector) collect(ctx context.Context, clusterID string, us
 	if err != nil {
 		return nil, k8s.TargetError{Err: err}
 	}
-	pods, err := findRemoteAgentPods(ctx, cs, namespace)
+	pods, truncated, err := findRemoteAgentPods(ctx, cs, namespace)
 	if err != nil {
 		c.audit(ctx, clusterID, user, namespace, audit.ResultFailure, "agent pods could not be listed")
 		return nil, fmt.Errorf("list cilium agent pods: %w", err)
@@ -167,27 +167,36 @@ func (c *remoteAgentCollector) collect(ctx context.Context, clusterID string, us
 		outcome = audit.ResultFailure
 	}
 	c.audit(ctx, clusterID, user, namespace, outcome, fmt.Sprintf("cilium-dbg status on %d agent pods, %d failed", len(pods), failures))
-	return &agentCollectionResult{nodes: results, collected: time.Now(), partial: failures > 0}, nil
+	// A pod list cut off at the remote cap leaves nodes unchecked.
+	return &agentCollectionResult{nodes: results, collected: time.Now(), partial: failures > 0 || truncated}, nil
 }
 
-// findRemoteAgentPods lists the running Cilium agent pods in namespace.
-func findRemoteAgentPods(ctx context.Context, cs kubernetes.Interface, namespace string) ([]corev1.Pod, error) {
+// findRemoteAgentPods lists the running Cilium agent pods in namespace,
+// across every list page up to the remote cap. truncated reports that the
+// cap cut the list off.
+func findRemoteAgentPods(ctx context.Context, cs kubernetes.Interface, namespace string) (pods []corev1.Pod, truncated bool, err error) {
 	for _, selector := range agentPodLabelSelectors() {
-		list, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector, Limit: k8s.RemoteListPageSize})
+		items, truncated, err := k8s.PageList(ctx, metav1.ListOptions{LabelSelector: selector}, func(ctx context.Context, opts metav1.ListOptions) ([]corev1.Pod, string, error) {
+			list, err := cs.CoreV1().Pods(namespace).List(ctx, opts)
+			if err != nil {
+				return nil, "", err
+			}
+			return list.Items, list.Continue, nil
+		})
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var running []corev1.Pod
-		for _, p := range list.Items {
+		for _, p := range items {
 			if p.Status.Phase == corev1.PodRunning && p.Namespace == namespace {
 				running = append(running, p)
 			}
 		}
 		if len(running) > 0 {
-			return running, nil
+			return running, truncated, nil
 		}
 	}
-	return nil, nil
+	return nil, false, nil
 }
 
 // execPod runs cilium-dbg status in one remote pod. The node result carries
