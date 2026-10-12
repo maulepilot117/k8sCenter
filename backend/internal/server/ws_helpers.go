@@ -11,6 +11,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -108,6 +109,9 @@ func (s *Server) wsAuthAndUpgradeFor(w http.ResponseWriter, r *http.Request, rou
 	user := auth.UserFromClaims(claims)
 
 	ctx := r.Context()
+	if claims.ExpiresAt != nil {
+		ctx = context.WithValue(ctx, wsTokenExpiryKey{}, claims.ExpiresAt.Time)
+	}
 	headerPresent := middleware.ClusterHeaderPresent(ctx)
 	headerID := k8s.NormalizedClusterID(middleware.ClusterIDFromContext(ctx))
 
@@ -157,6 +161,18 @@ func (s *Server) wsAuthAndUpgradeFor(w http.ResponseWriter, r *http.Request, rou
 	}
 
 	return conn, user, middleware.WithClusterID(ctx, effective)
+}
+
+// wsTokenExpiryKey carries the access token's expiry on the context
+// wsAuthAndUpgradeFor returns. A WebSocket's roles and groups come from that
+// frozen token, so a long-lived stream ends at its expiry (#608 KTD11).
+type wsTokenExpiryKey struct{}
+
+// wsTokenExpiry returns the expiry of the token a WebSocket authenticated
+// with, when it has one.
+func wsTokenExpiry(ctx context.Context) (time.Time, bool) {
+	exp, ok := ctx.Value(wsTokenExpiryKey{}).(time.Time)
+	return exp, ok
 }
 
 // checkWSGeneration compares a client's generation with the registration it
@@ -213,15 +229,17 @@ func wsStartKeepalive(conn *websocket.Conn, cancel context.CancelFunc) *time.Tic
 		return nil
 	})
 
-	// Read pump: detect WS close/errors (runs in background)
+	// Read pump: detect WS close/errors (runs in background). The cancel
+	// stays outside the recovered closure, so a panic still ends the stream.
 	go func() {
 		defer cancel()
-		for {
-			_, _, err := conn.ReadMessage()
-			if err != nil {
-				return
+		recoverutil.Safe(nil, "ws read pump", func() {
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
 			}
-		}
+		})
 	}()
 
 	return time.NewTicker(wsPingPeriod)

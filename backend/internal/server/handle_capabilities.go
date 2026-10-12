@@ -397,11 +397,18 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
-		// Hubble flow streaming targets the LOCAL cluster's CNI data plane
-		// for the same confused-deputy reason as logs.search.
-		// handle_ws_flows.go:61.
+		// Remote since #608 PR 5b: a remote cluster's flows, live and on the
+		// dashboard card, come from that cluster's own Hubble Relay, reached
+		// by port-forward through its API server as the user
+		// (networking/relay_tunnel.go), never from the local relay. Besides
+		// list pods in the flow namespace, which this probes, the user needs
+		// list daemonsets in kube-system and cilium (to find Cilium), and
+		// create pods/portforward, get services and list pods in the Cilium
+		// namespace; without them the stream is refused as forbidden. Only
+		// plaintext relays are supported: a relay serving TLS answers
+		// relay_tls_unsupported.
 		ID: "flows.stream", Label: "Network flow stream",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{

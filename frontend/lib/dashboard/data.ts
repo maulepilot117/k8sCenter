@@ -29,6 +29,7 @@ import {
   FAMILY_STATUS_KEYS,
   NOT_FOUND_IS_REFUSAL,
   RANGE_SENSITIVE_KEYS,
+  REASON_KINDS,
   sourceCost,
   UNSUPPORTED_STATUSES,
 } from "./types.ts";
@@ -268,6 +269,10 @@ export function classify(err: unknown, base: string): SourceErrorKind {
   if (isMetricsNotConfigured(err)) return "unsupported";
   if (err.status === 403) return "permission";
   if (err.status === 404 && NOT_FOUND_IS_REFUSAL.has(base)) return "permission";
+  // Before the status tables: for these routes the status alone is
+  // ambiguous, and the reason is what settles the state.
+  const byReason = err.reason ? REASON_KINDS[base]?.[err.reason] : undefined;
+  if (byReason) return byReason;
   // Checked after the refusal branch, so a source that ever appeared in both
   // declarations still reads as refused: that set exists to keep a
   // deliberately opaque refusal readable as one, and reporting it as an
@@ -1484,7 +1489,7 @@ export const REMOTE_BEHAVIOUR: Record<
   "snapshots-status": "remote",
   "gateway-status": "remote",
   "mesh-golden-signals": "binding",
-  "hubble-flows": "unsupported",
+  "hubble-flows": "remote",
   "hubble-status": "remote",
   "policy-compliance-history": "unsupported",
   "clusters-list": "installation",

@@ -14,10 +14,13 @@ export type PanelStateKind =
   | "reload"
   | "conflict"
   | "outcome_unknown"
-  | "busy";
+  | "busy"
+  | "not_installed"
+  | "unsupported"
+  | "ended";
 
 /** The control an island offers to recover from a state, if any. */
-export type RecoveryAction = "retry" | "reload" | null;
+export type RecoveryAction = "retry" | "reload" | "reconnect" | null;
 
 export interface PanelState {
   kind: PanelStateKind;
@@ -40,6 +43,16 @@ export function failureOf(err: unknown): PollFailure | null {
     : null;
 }
 
+/** The page targets a cluster registration that changed. */
+function reloadState(): PanelState {
+  return {
+    kind: "reload",
+    message:
+      "This cluster's registration changed since the page loaded. Reload to continue.",
+    action: "reload",
+  };
+}
+
 /** Whether the failed request read `what` or saved a change to it. */
 export type PanelOperation = "read" | "save";
 
@@ -60,14 +73,7 @@ export function panelState(
       action: null,
     };
   }
-  if (reason && RELOAD_REASONS.has(reason)) {
-    return {
-      kind: "reload",
-      message:
-        "This cluster's registration changed since the page loaded. Reload to continue.",
-      action: "reload",
-    };
-  }
+  if (reason && RELOAD_REASONS.has(reason)) return reloadState();
   if (reason === "conflict") {
     return {
       kind: "conflict",
@@ -98,5 +104,77 @@ export function panelState(
         ? `Could not save ${what} on this cluster. Your edit is kept; try again.`
         : `Could not read ${what} from this cluster.`,
     action: "retry",
+  };
+}
+
+/** The final frame of a live stream, as the viewer received it. */
+export interface StreamEnd {
+  reason?: string;
+}
+
+/**
+ * The state for a live flow stream that ended or could not open, once its
+ * automatic reconnects are spent or do not apply (#608 KTD11, KTD14). Like
+ * panelState it keys on the frame's reason, never its message text.
+ */
+export function streamState(end: StreamEnd): PanelState {
+  switch (end.reason) {
+    case "forbidden":
+      return {
+        kind: "forbidden",
+        message: "You do not have permission to view flows on this cluster.",
+        action: null,
+      };
+    case "access_revoked":
+      return {
+        kind: "forbidden",
+        message:
+          "Your access to these flows was revoked, so the live stream ended.",
+        action: null,
+      };
+    case "cluster_removed":
+      return {
+        kind: "reload",
+        message:
+          "This cluster was removed from k8sCenter, so the live stream ended. Reload to continue.",
+        action: "reload",
+      };
+    case "relay_not_found":
+      return {
+        kind: "not_installed",
+        message:
+          "Hubble Relay was not found in kube-system or cilium on this cluster.",
+        action: null,
+      };
+    case "relay_tls_unsupported":
+      return {
+        kind: "unsupported",
+        message:
+          "Hubble Relay on this cluster uses TLS, which k8sCenter cannot connect to yet.",
+        action: null,
+      };
+    case "hubble_unavailable":
+      return {
+        kind: "unsupported",
+        message: "Hubble is not available on this cluster.",
+        action: null,
+      };
+    case "unsupported_platform":
+      return {
+        kind: "unsupported",
+        message: "Live flows are not available for this cluster.",
+        action: null,
+      };
+  }
+  if (
+    end.reason === "cluster_required" ||
+    RELOAD_REASONS.has(end.reason ?? "")
+  ) {
+    return reloadState();
+  }
+  return {
+    kind: "ended",
+    message: "The live flow stream ended.",
+    action: "reconnect",
   };
 }

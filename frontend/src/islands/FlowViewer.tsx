@@ -2,8 +2,10 @@ import { useSignal } from "@preact/signals";
 import type { JSX } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
-import { apiGet, getAccessToken } from "@/lib/api.ts";
+import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
+import { apiGet, getAccessToken, refreshSession } from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { type PanelState, streamState } from "@/lib/networking-state.ts";
 import { currentTarget, UNKNOWN_GENERATION } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
@@ -63,6 +65,31 @@ function formatEndpoint(
 const VERDICT_OPTIONS = ["", "FORWARDED", "DROPPED", "ERROR", "AUDIT"];
 const MAX_FLOWS = 1000;
 
+/**
+ * Backoff before each automatic reconnect after a retryable end: a relay
+ * restart, an expired token, a relay not yet ready or a busy cluster (#608
+ * KTD11). Three tries, reset once a stream is up again.
+ */
+const RECONNECT_DELAYS_MS = [2_000, 5_000, 10_000];
+
+/**
+ * How long a stream may take to subscribe. A remote stream resolves the
+ * relay and opens its tunnel first, which the server bounds at 15s.
+ */
+const CONNECT_TIMEOUT_MS = 20_000;
+
+/** A stream that never subscribed ends as a retryable failure to connect. */
+const CONNECT_TIMED_OUT = { reason: "connect_timeout", retryable: true };
+
+/** A server frame on the flows stream. */
+interface StreamFrame {
+  type?: string;
+  data?: FlowRecord;
+  message?: string;
+  reason?: string;
+  retryable?: boolean;
+}
+
 function verdictStyle(verdict: string): JSX.CSSProperties {
   switch (verdict) {
     case "FORWARDED":
@@ -96,13 +123,26 @@ export default function FlowViewer() {
   const flows = useSignal<FlowRecord[]>([]);
   const loading = useSignal(false);
   const error = useSignal<string | null>(null);
-  const wsState = useSignal<"disconnected" | "connecting" | "live">(
-    "disconnected",
-  );
+  const wsState = useSignal<
+    "disconnected" | "connecting" | "live" | "reconnecting"
+  >("disconnected");
+  // How the live stream ended, once it will not reconnect on its own.
+  const ended = useSignal<PanelState | null>(null);
 
   // Connection generation counter — prevents stale WS callbacks from clobbering state
   const wsIdRef = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
+  // Automatic reconnects used since the last stream that came up.
+  const triesRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTimers = () => {
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    if (connectTimerRef.current) clearTimeout(connectTimerRef.current);
+    retryTimerRef.current = null;
+    connectTimerRef.current = null;
+  };
 
   // RAF batching for high-volume flow updates
   const pendingFlows = useRef<FlowRecord[]>([]);
@@ -145,8 +185,41 @@ export default function FlowViewer() {
       });
   };
 
+  // A stream ended or could not open. A retryable end reconnects after a
+  // backoff, refreshing the token first when it expired; otherwise, or once
+  // the tries are spent, the end state is shown with its recovery control.
+  const endStream = (frame: StreamFrame) => {
+    clearTimers();
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    const delay = RECONNECT_DELAYS_MS[triesRef.current];
+    if (frame.retryable && delay !== undefined) {
+      triesRef.current++;
+      wsState.value = "reconnecting";
+      const connectionId = wsIdRef.current;
+      retryTimerRef.current = setTimeout(async () => {
+        retryTimerRef.current = null;
+        if (frame.reason === "token_expired") await refreshSession();
+        if (wsIdRef.current === connectionId) connectWS();
+      }, delay);
+      return;
+    }
+    wsState.value = "disconnected";
+    ended.value = streamState(frame);
+  };
+
+  // "Reconnect" starts over with a fresh set of tries.
+  const reconnect = () => {
+    triesRef.current = 0;
+    connectWS();
+  };
+
   // Connect WebSocket for live streaming
   const connectWS = () => {
+    clearTimers();
+    ended.value = null;
     // Close existing connection
     if (wsRef.current) {
       wsRef.current.close();
@@ -164,6 +237,12 @@ export default function FlowViewer() {
     const isStale = () => wsIdRef.current !== connectionId;
 
     wsState.value = "connecting";
+    connectTimerRef.current = setTimeout(() => {
+      connectTimerRef.current = null;
+      if (!isStale() && wsState.value === "connecting") {
+        endStream(CONNECT_TIMED_OUT);
+      }
+    }, CONNECT_TIMEOUT_MS);
 
     // The stream names its cluster in the auth frame: a WebSocket carries no
     // X-Cluster-ID header, and the server refuses a flows stream that names
@@ -202,35 +281,47 @@ export default function FlowViewer() {
 
     ws.onmessage = (event) => {
       if (isStale()) return;
+      let msg: StreamFrame;
       try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "flow" && msg.data) {
-          // Batch flows for RAF flush
-          pendingFlows.current.push(msg.data);
-          if (!rafId.current) {
-            rafId.current = requestAnimationFrame(flushFlows);
-          }
-        } else if (msg.type === "subscribed") {
-          wsState.value = "live";
-          error.value = null;
-          flows.value = [];
-        } else if (msg.type === "error") {
-          error.value = msg.message;
+        msg = JSON.parse(event.data);
+      } catch {
+        return; // Ignore malformed messages
+      }
+      if (msg.type === "flow" && msg.data) {
+        // Batch flows for RAF flush
+        pendingFlows.current.push(msg.data);
+        if (!rafId.current) {
+          rafId.current = requestAnimationFrame(flushFlows);
+        }
+      } else if (msg.type === "subscribed") {
+        if (connectTimerRef.current) clearTimeout(connectTimerRef.current);
+        connectTimerRef.current = null;
+        triesRef.current = 0;
+        wsState.value = "live";
+        error.value = null;
+        flows.value = [];
+      } else if (msg.type === "error") {
+        // The state comes from the frame's reason; a frame without one
+        // (a bad filter, a local stream error) keeps its message.
+        if (msg.reason) {
+          endStream(msg);
+        } else {
+          error.value = msg.message ?? "Flow stream error";
           wsState.value = "disconnected";
         }
-      } catch {
-        // Ignore malformed messages
       }
     };
 
     ws.onclose = () => {
-      if (isStale()) return;
-      wsState.value = "disconnected";
+      if (isStale() || wsRef.current !== ws) return;
+      if (wsState.value !== "reconnecting") wsState.value = "disconnected";
       wsRef.current = null;
     };
 
     ws.onerror = () => {
-      if (isStale()) return;
+      // A socket endStream already released (closing a still-connecting
+      // socket fires error) must not reset the reconnect state.
+      if (isStale() || wsRef.current !== ws) return;
       wsState.value = "disconnected";
       wsRef.current = null;
       fetchFlows();
@@ -244,6 +335,8 @@ export default function FlowViewer() {
     return () => {
       // Increment generation so any in-flight callbacks become stale
       wsIdRef.current++;
+      clearTimers();
+      triesRef.current = 0;
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -321,8 +414,10 @@ export default function FlowViewer() {
               Live
             </span>
           )}
-          {wsState.value === "connecting" && (
+          {(wsState.value === "connecting" ||
+            wsState.value === "reconnecting") && (
             <span
+              role="status"
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -336,7 +431,9 @@ export default function FlowViewer() {
                 color: "var(--warning)",
               }}
             >
-              Connecting...
+              {wsState.value === "reconnecting"
+                ? "Reconnecting..."
+                : "Connecting..."}
             </span>
           )}
         </div>
@@ -440,6 +537,12 @@ export default function FlowViewer() {
           {flows.value.length} flows
         </div>
       </div>
+
+      {ended.value && (
+        <div style={{ marginBottom: "16px" }}>
+          <PanelStateNotice state={ended.value} onReconnect={reconnect} />
+        </div>
+      )}
 
       {error.value && (
         <div

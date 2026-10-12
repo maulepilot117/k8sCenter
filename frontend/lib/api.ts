@@ -164,6 +164,20 @@ async function refreshAccessToken(): Promise<boolean> {
 }
 
 /**
+ * Refreshes the access token, joining a refresh already in flight. Resolves
+ * whether it succeeded. For callers that hold the token outside api(), such
+ * as a WebSocket that must authenticate again after its token expired.
+ */
+export function refreshSession(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = refreshAccessToken().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
+/**
  * Per-request transport controls shared by `api()` and every convenience
  * wrapper below.
  */
@@ -281,12 +295,7 @@ async function send(
   // Check even when accessToken is null — after a full page reload the
   // in-memory token is gone but the httpOnly refresh cookie may still exist.
   if (res.status === 401) {
-    if (!refreshPromise) {
-      refreshPromise = refreshAccessToken().finally(() => {
-        refreshPromise = null;
-      });
-    }
-    const refreshed = await refreshPromise;
+    const refreshed = await refreshSession();
     if (refreshed) {
       res = await doFetch();
     } else {

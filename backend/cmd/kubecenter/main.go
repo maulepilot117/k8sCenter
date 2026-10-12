@@ -489,6 +489,8 @@ func main() {
 		ClusterID:      cfg.ClusterID,
 		AgentCollector: agentCollector,
 		Streams:        networking.StreamsFrom(clusterRouter),
+		Tunnels:        networking.TunnelsFrom(clusterRouter),
+		Access:         accessChecker,
 	}
 	clusterRouter.RegisterEvictHook(networkingHandler.EvictRemoteCache)
 

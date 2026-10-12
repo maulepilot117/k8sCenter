@@ -120,6 +120,16 @@ type Server struct {
 	// metricsClusters confirms the cluster exists for the binding routes.
 	// Nil in production, which reads ClusterStore; tests set a fake.
 	metricsClusters clusterRecordGetter
+
+	// flowStreams tracks live remote flow streams, so a cluster's removal
+	// ends them (flow_streams.go).
+	flowStreams flowStreamRegistry
+	// openRemoteFlows opens a live remote flow source. Nil in production,
+	// which opens one through NetworkingHandler; tests stub the relay.
+	openRemoteFlows flowStreamOpener
+	// flowAccess is the check live-stream revalidation runs. Nil in
+	// production, which uses ResourceHandler.AccessChecker.
+	flowAccess networking.NamespaceAccess
 }
 
 // Deps holds all dependencies needed to create a Server.
@@ -330,6 +340,11 @@ func New(deps Deps) *Server {
 	// Networking handler
 	if deps.NetworkingHandler != nil {
 		s.NetworkingHandler = deps.NetworkingHandler
+	}
+	// Removing a cluster ends its live remote flow streams on this replica
+	// at once; other replicas end theirs at the next revalidation.
+	if deps.ClusterRouter != nil {
+		deps.ClusterRouter.RegisterEvictHook(s.flowStreams.CancelCluster)
 	}
 
 	// Alerting handler
