@@ -1785,14 +1785,48 @@ test("an unsupported key is named in UNSUPPORTED_STATUSES, a remote or binding k
 
 // #608 PR 5a: the CNI read behind the Hubble card follows the selected
 // cluster, so a remote 501 from it is a real failure, never "not available on
-// remote". The live flows card stays refused until PR 5b.
-test("hubble-status is served by the selected cluster; hubble-flows is still refused", () => {
+// remote". PR 5b: the flows read follows it too, from that cluster's relay.
+test("hubble-status and hubble-flows are served by the selected cluster", () => {
   expect(REMOTE_BEHAVIOUR["hubble-status"]).toBe("remote");
   expect("hubble-status" in UNSUPPORTED_STATUSES).toBe(false);
   expect(classify(new ApiError(501, 501, "x"), "hubble-status")).toBe(
     "failure",
   );
-  expect(REMOTE_BEHAVIOUR["hubble-flows"]).toBe("unsupported");
+  expect(REMOTE_BEHAVIOUR["hubble-flows"]).toBe("remote");
+  expect("hubble-flows" in UNSUPPORTED_STATUSES).toBe(false);
+});
+
+/** An API error carrying a reason, as the flows route answers. */
+function reasoned(status: number, reason: string): ApiError {
+  return new ApiError(status, status, "server wording", {
+    error: { code: status, message: "server wording", reason },
+  });
+}
+
+// The flows route's 404 means two things, so its states key on the reason.
+test("hubble-flows relay states are classified by reason, not status", () => {
+  expect(classify(reasoned(404, "relay_not_found"), "hubble-flows")).toBe(
+    "absent",
+  );
+  expect(classify(reasoned(404, "cluster_unknown"), "hubble-flows")).toBe(
+    "failure",
+  );
+  expect(classify(reasoned(501, "relay_tls_unsupported"), "hubble-flows")).toBe(
+    "unsupported",
+  );
+  expect(classify(reasoned(503, "relay_not_ready"), "hubble-flows")).toBe(
+    "failure",
+  );
+  expect(classify(reasoned(429, "tunnel_limit"), "hubble-flows")).toBe(
+    "failure",
+  );
+  expect(classify(reasoned(403, "forbidden"), "hubble-flows")).toBe(
+    "permission",
+  );
+  // The reasons are the flows route's own: elsewhere a 404 stays a failure.
+  expect(classify(reasoned(404, "relay_not_found"), "hubble-status")).toBe(
+    "failure",
+  );
 });
 
 test("mesh-golden-signals is a binding source whose dual-mesh 400 has its own declaration", () => {

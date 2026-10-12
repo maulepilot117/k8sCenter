@@ -729,15 +729,34 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  *
  * `hubble-status` left in #608 PR 5a: `/v1/networking/cni` now reads the
  * selected cluster's own CNI detection, so its 501 is a failure too.
+ * `hubble-flows` left in PR 5b: the route reads the selected cluster's own
+ * relay, and its relay states are told apart by reason, in `REASON_KINDS`.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
   {
-    // Remote clusters never answer these two: the backend refuses with 501
-    // (compliance history is recorded for the local install only, and the
-    // remote flow source lands in #608 PR 5b).
+    // Remote clusters never answer this one: the backend refuses with 501,
+    // since compliance history is recorded for the local install only.
     "policy-compliance-history": [501],
-    "hubble-flows": [501],
   };
+
+/**
+ * Error reasons that settle a source's state whatever the status, for routes
+ * whose status alone is ambiguous (#608 KTD5). `hubble-flows` answers 404
+ * both for a cluster with no Hubble Relay (`relay_not_found`, an absence)
+ * and for a cluster that is not registered (`cluster_unknown`, a failure),
+ * so no 404 can go in `ABSENT_STATUSES`. A relay serving TLS answers 501
+ * `relay_tls_unsupported`: the feature is installed and the request cannot
+ * be served, which is `unsupported`. Any other reason -- `relay_not_ready`,
+ * `tunnel_limit` -- stays a failure, which offers a retry.
+ */
+export const REASON_KINDS: Readonly<
+  Record<string, Readonly<Record<string, "absent" | "unsupported">>>
+> = {
+  "hubble-flows": {
+    relay_not_found: "absent",
+    relay_tls_unsupported: "unsupported",
+  },
+};
 
 /**
  * Statuses that mean "the request is ambiguous on this cluster", whichever

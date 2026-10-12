@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ApiError } from "@/lib/api.ts";
-import { failureOf, panelState } from "@/lib/networking-state.ts";
+import { failureOf, panelState, streamState } from "@/lib/networking-state.ts";
 
 function apiError(status: number, reason?: string): ApiError {
   return new ApiError(status, status, "server wording", {
@@ -95,4 +95,31 @@ test("a failed save is worded as a save and keeps the same recovery", () => {
   expect(unavailable.action).toBe("retry");
 
   expect(panelState({ status: 429 }, what, "save").message).toContain("saving");
+});
+
+test("a live stream's end state comes from its reason", () => {
+  expect(streamState({ reason: "access_revoked" })).toMatchObject({
+    kind: "forbidden",
+    action: null,
+  });
+  expect(streamState({ reason: "cluster_removed" })).toMatchObject({
+    kind: "reload",
+    action: "reload",
+  });
+  expect(streamState({ reason: "cluster_required" }).action).toBe("reload");
+  expect(streamState({ reason: "relay_not_found" })).toMatchObject({
+    kind: "not_installed",
+    action: null,
+  });
+  expect(streamState({ reason: "relay_tls_unsupported" })).toMatchObject({
+    kind: "unsupported",
+    action: null,
+  });
+  // Spent retries and unknown ends offer Reconnect.
+  for (const reason of ["relay_restarted", "unreachable", undefined]) {
+    expect(streamState({ reason })).toMatchObject({
+      kind: "ended",
+      action: "reconnect",
+    });
+  }
 });
