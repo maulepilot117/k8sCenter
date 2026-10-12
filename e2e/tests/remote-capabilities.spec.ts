@@ -217,6 +217,8 @@ test.describe.serial("Remote cluster capabilities", () => {
       "cilium.connectivity",
       // #608 PR 5b: flows come from the selected cluster's own relay.
       "flows.stream",
+      // #608: snapshots taken as each cluster's background identity.
+      "policy.compliance_history",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
@@ -224,7 +226,6 @@ test.describe.serial("Remote cluster capabilities", () => {
     for (const id of [
       "eso.history",
       "eso.metrics",
-      "policy.compliance_history",
       "velero.assurance",
       "incidents.capture",
     ]) {

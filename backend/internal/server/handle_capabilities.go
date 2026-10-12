@@ -652,12 +652,14 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
-		// Compliance snapshots are taken by the local ComplianceRecorder of
-		// the local cluster only (R14). policy/handler.go
-		// HandleComplianceHistory (501 remote_history_unsupported, before
-		// the store is read).
+		// Remote since #608: each remote cluster records its own daily
+		// snapshot, taken by impersonating the background identity an admin
+		// names on the cluster (PUT /clusters/{id}/compliance-identity;
+		// policy/remote_recorder.go). Without one, history answers 404
+		// compliance_history_not_configured. The registration credential must
+		// be allowed to impersonate that identity.
 		ID: "policy.compliance_history", Label: "Policy compliance history",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "kyverno.io", AuthResource: "policies",
 	},
 	{
