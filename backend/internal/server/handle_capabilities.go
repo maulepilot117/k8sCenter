@@ -559,13 +559,40 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "kyverno.io", AuthResource: "policies",
 	},
 	{
-		// Cilium config is tied to the local installation, so reads and
-		// updates are refused on remote (R13, the P2-5 decision).
-		// networking/handler.go:171 and :234 (rejectNonLocal, 501). The
-		// config lives in the cilium-config ConfigMap.
+		// Remote since #608 PR 5a: the selected cluster's cilium-config is
+		// read and written as the user (networking/remote.go
+		// serveRemoteCNIConfig, updateRemoteCNIConfig), in the namespace
+		// that cluster's own detection found. A remote edit must carry the
+		// pin from its read: a missing pin is 428 cluster_pin_required, a
+		// stale one 409, and a write whose outcome is unknown answers
+		// outcome_unknown. The config lives in the cilium-config ConfigMap.
 		ID: "cni.config", Label: "Cilium CNI configuration",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
+	},
+	{
+		// Remote since #608 PR 5a: the CNI overview, BGP, IPAM and subsystem
+		// panels read the selected cluster as the user (networking/remote.go
+		// remoteCNI, serveRemoteBGP, serveRemoteSubsystems), never the local
+		// Detector or an informer. An answer that cannot be read is reported
+		// as such, never as "not configured", and a CRD list the cluster
+		// refuses is a coverage row, never zero counts. Detection reads the
+		// CNI DaemonSet, so "list daemonsets" is the representative probe.
+		ID: "cilium.status", Label: "Cilium status, BGP and IPAM",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "apps", AuthResource: "daemonsets",
+	},
+	{
+		// Remote since #608 PR 5a: the connectivity check and the subsystem
+		// agent data exec into the selected cluster's Cilium agent pods as
+		// the user, through the strict stream transport
+		// (networking/agent_exec_remote.go), under the same
+		// ciliumAgent.execEnabled setting as local. A failed exec is shown
+		// as an exec problem per node, not as ill health. Same "pods/exec"
+		// subresource caveat as pod.exec above.
+		ID: "cilium.connectivity", Label: "Cilium node connectivity check",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "create", AuthGroup: "", AuthResource: "pods/exec",
 	},
 	{
 		// Remote since #608 PR 4b: golden signals are queried through the
