@@ -67,9 +67,18 @@ type Handler struct {
 	// AgentCollector set it enables remote agent exec under the same opt-in;
 	// nil means remote agent data is unavailable.
 	Streams RemoteExec
+	// Tunnels opens port-forward tunnels to remote clusters as the user,
+	// for remote Hubble flows (relay_tunnel.go). Nil means remote flows
+	// are unavailable.
+	Tunnels RemoteTunnels
+	// Access checks a user's access on a cluster; remote flows require
+	// list pods in the flow namespace, as local flows do.
+	Access NamespaceAccess
 
 	// Per-(cluster, identity) caches of remote reads (remote.go).
 	remoteState remoteCaches
+	// slots bounds concurrent remote flow tunnels.
+	slots flowSlots
 }
 
 const cacheTTL = 30 * time.Second

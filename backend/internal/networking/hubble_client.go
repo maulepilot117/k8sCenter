@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"time"
 
 	flowpb "github.com/kubecenter/kubecenter/internal/networking/hubbleproto/flow"
@@ -65,6 +66,27 @@ func NewHubbleClient(relayAddr string) (*HubbleClient, error) {
 		conn:   conn,
 		client: observerpb.NewObserverClient(conn),
 	}, nil
+}
+
+// newHubbleClientWithDialer builds a client whose every connection comes from
+// dial, for a relay reached through a port-forward tunnel. The connection is
+// plaintext: a relay serving TLS is refused before this is called (KTD8).
+// grpc.NewClient connects lazily, so this neither dials nor blocks.
+func newHubbleClientWithDialer(dial func(ctx context.Context, addr string) (net.Conn, error)) (*HubbleClient, error) {
+	conn, err := grpc.NewClient("passthrough:///hubble-relay",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(dial),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating hubble relay client: %w", err)
+	}
+	return &HubbleClient{conn: conn, client: observerpb.NewObserverClient(conn)}, nil
+}
+
+// serverStatus asks the relay for its status, which proves it answers gRPC.
+func (c *HubbleClient) serverStatus(ctx context.Context) error {
+	_, err := c.client.ServerStatus(ctx, &observerpb.ServerStatusRequest{})
+	return err
 }
 
 // GetFlows queries Hubble Relay for recent flows matching the given filters.
