@@ -402,6 +402,7 @@ var capabilityOperations = []capabilityOp{
 		// by port-forward through its API server as the user
 		// (networking/relay_tunnel.go), never from the local relay. Besides
 		// list pods in the flow namespace, which this probes, the user needs
+		// list daemonsets in kube-system and cilium (to find Cilium), and
 		// create pods/portforward, get services and list pods in the Cilium
 		// namespace; without them the stream is refused as forbidden. Only
 		// plaintext relays are supported: a relay serving TLS answers

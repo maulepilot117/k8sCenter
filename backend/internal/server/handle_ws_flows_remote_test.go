@@ -568,3 +568,21 @@ func TestHandleWSFlows_RemoteRefusalCarriesReason(t *testing.T) {
 		t.Errorf("audit entries = %+v, want one failure on %s", env.audit.entries, flowsRemoteCluster)
 	}
 }
+
+// Covers AE5 for a stream still opening: a cluster removed while its relay
+// tunnel is being set up ends the stream rather than letting it start.
+func TestHandleWSFlows_RemoteEvictDuringOpenEndsStream(t *testing.T) {
+	env := newRemoteFlowsEnv(t, true)
+	env.srv.openRemoteFlows = func(context.Context, string, *auth.User, string) (flowStream, error) {
+		env.srv.flowStreams.CancelCluster(flowsRemoteCluster)
+		return env.source, nil
+	}
+	conn := env.start(t, issueWSToken(t, env.srv, true))
+	if msg := readFrame(t, conn); msg["reason"] != "cluster_removed" {
+		t.Fatalf("first frame = %v, want cluster_removed", msg)
+	}
+	waitStreamsDone(t)
+	if !env.source.closed.Load() {
+		t.Error("flow source opened during the removal was not closed")
+	}
+}

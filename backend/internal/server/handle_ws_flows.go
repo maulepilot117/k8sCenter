@@ -122,14 +122,30 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The stream's context ends when the WebSocket closes, or with a
+	// *flowStreamEnd cause when a remote stream must end.
+	ctx, cancel := context.WithCancelCause(reqCtx)
+	defer cancel(nil)
+
 	// stream follows flows from the source chosen below.
 	var stream func(ctx context.Context, namespace, verdict string, cb func(networking.FlowRecord)) error
 	var src flowStream
 	if remote {
+		// Registered before the source opens, so a cluster removed while
+		// the relay tunnel is still being set up ends this stream too.
+		remove := s.flowStreams.add(flowsClusterID, cancel)
+		defer remove()
 		// The opener checks the user may list pods in the namespace on
 		// that cluster before any tunnel opens (R10).
 		var err error
-		src, err = openRemote(reqCtx, flowsClusterID, user, filter.Namespace)
+		src, err = openRemote(ctx, flowsClusterID, user, filter.Namespace)
+		if err == nil && ctx.Err() != nil {
+			src.Close()
+		}
+		if ctx.Err() != nil {
+			s.endFlowStream(conn, ctx)
+			return
+		}
 		if err != nil {
 			s.refuseRemoteFlows(conn, r, reqCtx, user, flowsClusterID, filter.Namespace, err)
 			return
@@ -168,11 +184,6 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 		"verdict", filter.Verdict,
 	)
 
-	// The stream's context ends when the WebSocket closes, or with a
-	// *flowStreamEnd cause when a remote stream must end.
-	ctx, cancel := context.WithCancelCause(reqCtx)
-	defer cancel(nil)
-
 	// Ping/pong keepalive + read pump
 	ticker := wsStartKeepalive(conn, func() { cancel(nil) })
 	defer ticker.Stop()
@@ -180,8 +191,6 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 	var relayDone <-chan struct{}
 	if remote {
 		relayDone = src.Done()
-		remove := s.flowStreams.add(flowsClusterID, cancel)
-		defer remove()
 		s.watchRemoteFlowStream(ctx, cancel, flowsClusterID, user, filter.Namespace, src.RelayNamespace())
 	}
 

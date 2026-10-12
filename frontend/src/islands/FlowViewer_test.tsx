@@ -285,3 +285,36 @@ test("a removed cluster ends the stream with its message and no reconnect", asyn
     jest.useRealTimers();
   }
 });
+
+test("a stream that never subscribes times out and reconnects", async () => {
+  jest.useFakeTimers();
+  try {
+    mountViewer();
+    jest.advanceTimersByTime(19_999);
+    await settle();
+    expect(host?.textContent).toContain("Connecting...");
+    jest.advanceTimersByTime(1);
+    await settle();
+    expect(host?.textContent).toContain("Reconnecting...");
+    const next = await reconnectAfter(2_000);
+    deliver(next, { type: "subscribed" });
+    expect(host?.textContent).toContain("Live");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a stream that subscribes in time is not timed out", async () => {
+  jest.useFakeTimers();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    const before = FakeWebSocket.instances.length;
+    jest.advanceTimersByTime(60_000);
+    await settle();
+    expect(FakeWebSocket.instances.length).toBe(before);
+    expect(host?.textContent).toContain("Live");
+  } finally {
+    jest.useRealTimers();
+  }
+});

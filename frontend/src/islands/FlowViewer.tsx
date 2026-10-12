@@ -319,7 +319,9 @@ export default function FlowViewer() {
     };
 
     ws.onerror = () => {
-      if (isStale()) return;
+      // A socket endStream already released (closing a still-connecting
+      // socket fires error) must not reset the reconnect state.
+      if (isStale() || wsRef.current !== ws) return;
       wsState.value = "disconnected";
       wsRef.current = null;
       fetchFlows();
