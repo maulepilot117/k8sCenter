@@ -1,5 +1,13 @@
 /** @jsxImportSource preact */
-import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  expect,
+  jest,
+  mock,
+  test,
+} from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { render } from "preact";
 import { act } from "preact/test-utils";
@@ -112,4 +120,168 @@ test("the unknown generation sentinel is not sent", () => {
   const frame = authFrame();
   expect(frame.clusterId).toBe("c1");
   expect("generation" in frame).toBe(false);
+});
+
+// --- Reconnects and end states (#608 KTD11, U12) ---
+
+const settle = () =>
+  act(async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  });
+
+/** Mounts the viewer and opens its first socket. */
+function mountViewer(): FakeWebSocket {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  act(() => render(<FlowViewer />, host as HTMLElement));
+  const ws = latestSocket();
+  act(() => ws.onopen?.());
+  return ws;
+}
+
+function latestSocket(): FakeWebSocket {
+  return FakeWebSocket.instances.at(-1) as FakeWebSocket;
+}
+
+function deliver(ws: FakeWebSocket, frame: Record<string, unknown>) {
+  act(() => ws.onmessage?.({ data: JSON.stringify(frame) }));
+}
+
+/** Waits out the backoff and opens the socket it starts. */
+async function reconnectAfter(ms: number): Promise<FakeWebSocket> {
+  const before = FakeWebSocket.instances.length;
+  jest.advanceTimersByTime(ms - 1);
+  await settle();
+  expect(FakeWebSocket.instances.length).toBe(before);
+  jest.advanceTimersByTime(1);
+  await settle();
+  expect(FakeWebSocket.instances.length).toBe(before + 1);
+  const ws = latestSocket();
+  act(() => ws.onopen?.());
+  return ws;
+}
+
+test("an expired token is refreshed before reconnecting, and a live stream resets the tries", async () => {
+  globalThis.fetch = (async (input: string | URL | Request) =>
+    new Response(
+      JSON.stringify({
+        data: String(input).includes("/auth/refresh")
+          ? { accessToken: "fresh-token" }
+          : [],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as unknown as typeof globalThis.fetch;
+  jest.useFakeTimers();
+  try {
+    const first = mountViewer();
+    deliver(first, { type: "subscribed" });
+    deliver(first, {
+      type: "error",
+      reason: "token_expired",
+      retryable: true,
+    });
+    expect(host?.textContent).toContain("Reconnecting...");
+
+    const second = await reconnectAfter(2_000);
+    expect((second.sent[0] as Record<string, unknown>).token).toBe(
+      "fresh-token",
+    );
+    deliver(second, { type: "subscribed" });
+    expect(host?.textContent).toContain("Live");
+
+    // The tries were reset: the next end waits the first delay again.
+    deliver(second, {
+      type: "error",
+      reason: "relay_restarted",
+      retryable: true,
+    });
+    await reconnectAfter(2_000);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("after a relay restart, a not-ready relay is retried until the stream is back", async () => {
+  jest.useFakeTimers();
+  try {
+    const first = mountViewer();
+    deliver(first, { type: "subscribed" });
+    deliver(first, {
+      type: "error",
+      reason: "relay_restarted",
+      retryable: true,
+    });
+    const second = await reconnectAfter(2_000);
+    deliver(second, {
+      type: "error",
+      reason: "relay_not_ready",
+      retryable: true,
+    });
+    const third = await reconnectAfter(5_000);
+    deliver(third, { type: "subscribed" });
+    expect(host?.textContent).toContain("Live");
+    expect(host?.textContent).not.toContain("The live flow stream ended.");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("three failed tries end the stream with Reconnect, which starts over", async () => {
+  jest.useFakeTimers();
+  try {
+    let ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    const end = { type: "error", reason: "relay_not_ready", retryable: true };
+    deliver(ws, end);
+    for (const delay of [2_000, 5_000, 10_000]) {
+      ws = await reconnectAfter(delay);
+      deliver(ws, end);
+    }
+    jest.advanceTimersByTime(30_000);
+    await settle();
+    expect(host?.textContent).toContain("The live flow stream ended.");
+    const button = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (b) => b.textContent === "Reconnect",
+    );
+    expect(button).toBeDefined();
+
+    const before = FakeWebSocket.instances.length;
+    act(() => button?.click());
+    expect(FakeWebSocket.instances.length).toBe(before + 1);
+    ws = latestSocket();
+    act(() => ws.onopen?.());
+    expect(host?.textContent).not.toContain("The live flow stream ended.");
+    // A fresh set of tries: the next end waits the first delay.
+    deliver(ws, end);
+    await reconnectAfter(2_000);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a removed cluster ends the stream with its message and no reconnect", async () => {
+  jest.useFakeTimers();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    deliver(ws, {
+      type: "error",
+      reason: "cluster_removed",
+      message: "server wording",
+    });
+    const before = FakeWebSocket.instances.length;
+    jest.advanceTimersByTime(60_000);
+    await settle();
+    expect(FakeWebSocket.instances.length).toBe(before);
+    expect(host?.textContent).toContain(
+      "This cluster was removed from k8sCenter",
+    );
+    expect(host?.textContent).not.toContain("server wording");
+    const labels = Array.from(host?.querySelectorAll("button") ?? []).map(
+      (b) => b.textContent,
+    );
+    expect(labels).not.toContain("Reconnect");
+  } finally {
+    jest.useRealTimers();
+  }
 });
