@@ -167,7 +167,7 @@ func (s *Server) wsAuthAndUpgradeFor(w http.ResponseWriter, r *http.Request, rou
 func (s *Server) checkWSGeneration(ctx context.Context, clusterID, generation string) (reason, message string) {
 	const mismatchMsg = "the cluster's registration changed; reload the page"
 	if k8s.IsLocalClusterID(clusterID) {
-		if generation != "local" {
+		if generation != k8s.LocalGeneration {
 			return wsReasonGenerationMismatch, mismatchMsg
 		}
 		return "", ""

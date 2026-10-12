@@ -296,7 +296,7 @@ func (cr *ClusterRouter) TargetSchemaFor(ctx context.Context, clusterID, usernam
 	if IsLocalClusterID(clusterID) {
 		return &TargetSchema{
 			ClusterID:  LocalClusterID,
-			Generation: "local",
+			Generation: LocalGeneration,
 			IsLocal:    true,
 			Discovery:  cr.localFactory.DiscoveryClient(),
 			Mapper:     cr.localFactory.RESTMapper(),
@@ -445,6 +445,12 @@ func (cr *ClusterRouter) TargetFor(ctx context.Context, clusterID, username stri
 // If this value ever changes, every place that compares against it MUST go
 // through IsLocalClusterID / NormalizedClusterID, never a literal.
 const LocalClusterID = "local"
+
+// LocalGeneration is the pin generation TargetSchemaFor reports for the
+// local cluster; a remote cluster's is its registration's creation instant.
+// It shares LocalClusterID's literal but names a different concept, so a
+// pin check compares against this constant, never the literal.
+const LocalGeneration = "local"
 
 // IsLocalClusterID reports whether the given X-Cluster-ID value resolves
 // to the local in-cluster context. Empty, "local", and missing all count

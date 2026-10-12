@@ -218,13 +218,9 @@ func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadGateway, "failed to read Cilium config", "")
 		return
 	}
-	config.TargetCluster, config.TargetGeneration = k8s.LocalClusterID, localGeneration
+	config.TargetCluster, config.TargetGeneration = k8s.LocalClusterID, k8s.LocalGeneration
 	httputil.WriteData(w, config)
 }
-
-// localGeneration is the pin generation of the local cluster (see the YAML
-// target-pin contract).
-const localGeneration = "local"
 
 // writeConfigNotCilium answers a config read on a cluster that does not run
 // Cilium.
@@ -327,7 +323,7 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 		writePinMismatch(w)
 		return
 	}
-	if req.TargetGeneration != "" && req.TargetGeneration != localGeneration {
+	if req.TargetGeneration != "" && req.TargetGeneration != k8s.LocalGeneration {
 		h.auditConfigUpdate(r, user, h.ClusterID, "", audit.ResultFailure, "refused: "+reasonGenerationMismatch)
 		writeGenerationMismatch(w)
 		return

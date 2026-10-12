@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -221,4 +222,31 @@ func TestWSAuth_OverlongInBandIDIsRefused(t *testing.T) {
 	f := newWSHelperFixture(t, flowsWSRoute)
 	msg := f.connect(t, "", map[string]any{"token": f.token(t, true), "clusterId": strings.Repeat("a", 65)})
 	expectRefused(t, msg, wsReasonClusterInvalid)
+}
+
+// failingClusterRecords is a cluster registry whose reads fail.
+type failingClusterRecords struct{}
+
+func (failingClusterRecords) Get(context.Context, string) (*store.ClusterRecord, error) {
+	return nil, errors.New("connection refused")
+}
+
+// A generation that cannot be checked is refused: with no registry the
+// cluster is unknown, and a registry that cannot be read is reported as such.
+func TestWSAuth_GenerationLookupFailures(t *testing.T) {
+	gen := remoteCreatedAt.Format(time.RFC3339Nano)
+
+	t.Run("no registry", func(t *testing.T) {
+		f := newWSHelperFixture(t, flowsWSRoute)
+		f.srv.metricsClusters = nil
+		f.srv.ClusterStore = nil
+		msg := f.connect(t, "", map[string]any{"token": f.token(t, true), "clusterId": "remote-1", "generation": gen})
+		expectRefused(t, msg, "cluster_unknown")
+	})
+	t.Run("registry unreadable", func(t *testing.T) {
+		f := newWSHelperFixture(t, flowsWSRoute)
+		f.srv.metricsClusters = failingClusterRecords{}
+		msg := f.connect(t, "", map[string]any{"token": f.token(t, true), "clusterId": "remote-1", "generation": gen})
+		expectRefused(t, msg, "db_unavailable")
+	})
 }
