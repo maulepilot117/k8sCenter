@@ -136,24 +136,17 @@ func expectCluster(t *testing.T, msg map[string]any, cluster string) {
 	}
 }
 
-var flowsRoute = wsRoute{
-	acceptsRemoteInBand: true,
-	requireCluster:      true,
-	auditAction:         audit.Action("read_flows"),
-	auditKind:           "Flow",
-}
-
 var logsRoute = wsRoute{auditAction: audit.ActionReadLogs, auditKind: "Pod"}
 
 // Covers AE1: a flows connection naming no cluster is never served as local.
 func TestWSAuth_FlowsWithoutAnyClusterIsRefused(t *testing.T) {
-	f := newWSHelperFixture(t, flowsRoute)
+	f := newWSHelperFixture(t, flowsWSRoute)
 	msg := f.connect(t, "", map[string]any{"token": f.token(t, true)})
 	expectRefused(t, msg, wsReasonClusterRequired)
 }
 
 func TestWSAuth_FlowsAcceptsLocalInBandOrHeader(t *testing.T) {
-	f := newWSHelperFixture(t, flowsRoute)
+	f := newWSHelperFixture(t, flowsWSRoute)
 	expectCluster(t, f.connect(t, "", map[string]any{"token": f.token(t, false), "clusterId": "local"}), "local")
 	expectCluster(t, f.connect(t, "local", map[string]any{"token": f.token(t, false)}), "local")
 	expectCluster(t, f.connect(t, "remote-1", map[string]any{"token": f.token(t, true)}), "remote-1")
@@ -169,7 +162,7 @@ func TestWSAuth_LogsRefuseRemoteInBand(t *testing.T) {
 }
 
 func TestWSAuth_HeaderConflictIsRefusedAndAudited(t *testing.T) {
-	f := newWSHelperFixture(t, flowsRoute)
+	f := newWSHelperFixture(t, flowsWSRoute)
 	msg := f.connect(t, "local", map[string]any{"token": f.token(t, true), "clusterId": "remote-1"})
 	expectRefused(t, msg, wsReasonPinMismatch)
 
@@ -185,7 +178,7 @@ func TestWSAuth_HeaderConflictIsRefusedAndAudited(t *testing.T) {
 }
 
 func TestWSAuth_NonAdminRemoteRefusedBeforeLookup(t *testing.T) {
-	f := newWSHelperFixture(t, flowsRoute)
+	f := newWSHelperFixture(t, flowsWSRoute)
 	msg := f.connect(t, "", map[string]any{
 		"token":      f.token(t, false),
 		"clusterId":  "remote-1",
@@ -204,7 +197,7 @@ func TestWSAuth_NonAdminRemoteRefusedBeforeLookup(t *testing.T) {
 }
 
 func TestWSAuth_GenerationComparesInstants(t *testing.T) {
-	f := newWSHelperFixture(t, flowsRoute)
+	f := newWSHelperFixture(t, flowsWSRoute)
 	tok := f.token(t, true)
 
 	// The same instant written with a non-UTC offset is the same registration.
@@ -225,7 +218,7 @@ func TestWSAuth_GenerationComparesInstants(t *testing.T) {
 }
 
 func TestWSAuth_OverlongInBandIDIsRefused(t *testing.T) {
-	f := newWSHelperFixture(t, flowsRoute)
+	f := newWSHelperFixture(t, flowsWSRoute)
 	msg := f.connect(t, "", map[string]any{"token": f.token(t, true), "clusterId": strings.Repeat("a", 65)})
 	expectRefused(t, msg, wsReasonClusterInvalid)
 }
