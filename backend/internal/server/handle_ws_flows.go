@@ -299,7 +299,7 @@ func (s *Server) endFlowStream(conn *websocket.Conn, ctx context.Context) {
 // relay_restarted, which the viewer retries. A source this handler closed
 // itself sends nothing.
 func (s *Server) writeRelayEnded(conn *websocket.Conn, src flowStream) {
-	if src.CloseReason() == "" {
+	if !src.EndedByRelay() {
 		return
 	}
 	conn.SetWriteDeadline(time.Now().Add(wsWriteWait))

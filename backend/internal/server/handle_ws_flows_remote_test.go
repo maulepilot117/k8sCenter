@@ -293,13 +293,8 @@ func (f *fakeFlowSource) StreamFlows(ctx context.Context, _, _ string, cb func(n
 	}
 }
 
-func (f *fakeFlowSource) Done() <-chan struct{} { return f.done }
-func (f *fakeFlowSource) CloseReason() string {
-	if f.closed.Load() {
-		return ""
-	}
-	return networking.ReasonRelayRestarted
-}
+func (f *fakeFlowSource) Done() <-chan struct{}  { return f.done }
+func (f *fakeFlowSource) EndedByRelay() bool     { return !f.closed.Load() }
 func (f *fakeFlowSource) RelayNamespace() string { return "kube-system" }
 func (f *fakeFlowSource) Close() {
 	f.closed.Store(true)

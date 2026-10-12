@@ -129,7 +129,7 @@ type Server struct {
 	openRemoteFlows flowStreamOpener
 	// flowAccess is the check live-stream revalidation runs. Nil in
 	// production, which uses ResourceHandler.AccessChecker.
-	flowAccess flowAccessChecker
+	flowAccess networking.NamespaceAccess
 }
 
 // Deps holds all dependencies needed to create a Server.

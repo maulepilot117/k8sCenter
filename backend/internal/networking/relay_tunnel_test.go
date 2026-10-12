@@ -469,8 +469,8 @@ func TestRemoteFlowSource_CloseReleasesEverything(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no flow streamed through the tunnel")
 	}
-	if reason := src.CloseReason(); reason != ReasonRelayRestarted {
-		t.Errorf("CloseReason before Close = %q, want %q", reason, ReasonRelayRestarted)
+	if !src.EndedByRelay() {
+		t.Error("EndedByRelay before Close = false, want true")
 	}
 	cancel()
 	<-streamDone
@@ -480,8 +480,8 @@ func TestRemoteFlowSource_CloseReleasesEverything(t *testing.T) {
 	if !tun.closed.Load() {
 		t.Error("tunnel not closed")
 	}
-	if reason := src.CloseReason(); reason != "" {
-		t.Errorf("CloseReason after Close = %q, want empty", reason)
+	if src.EndedByRelay() {
+		t.Error("EndedByRelay after Close = true, want false")
 	}
 	// The slot is free again.
 	if release, ok := env.h.slots.acquire(context.Background(), FlowSourceLive, netRemoteCluster, "alice"); !ok {

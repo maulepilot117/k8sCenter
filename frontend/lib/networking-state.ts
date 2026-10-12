@@ -43,6 +43,16 @@ export function failureOf(err: unknown): PollFailure | null {
     : null;
 }
 
+/** The page targets a cluster registration that changed. */
+function reloadState(): PanelState {
+  return {
+    kind: "reload",
+    message:
+      "This cluster's registration changed since the page loaded. Reload to continue.",
+    action: "reload",
+  };
+}
+
 /** Whether the failed request read `what` or saved a change to it. */
 export type PanelOperation = "read" | "save";
 
@@ -63,14 +73,7 @@ export function panelState(
       action: null,
     };
   }
-  if (reason && RELOAD_REASONS.has(reason)) {
-    return {
-      kind: "reload",
-      message:
-        "This cluster's registration changed since the page loaded. Reload to continue.",
-      action: "reload",
-    };
-  }
+  if (reason && RELOAD_REASONS.has(reason)) return reloadState();
   if (reason === "conflict") {
     return {
       kind: "conflict",
@@ -167,7 +170,7 @@ export function streamState(end: StreamEnd): PanelState {
     end.reason === "cluster_required" ||
     RELOAD_REASONS.has(end.reason ?? "")
   ) {
-    return panelState({ status: 409, reason: "cluster_unknown" }, "flows");
+    return reloadState();
   }
   return {
     kind: "ended",

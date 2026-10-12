@@ -33,7 +33,7 @@ var flowRevalidateInterval = 5 * time.Minute
 type flowStream interface {
 	StreamFlows(ctx context.Context, namespace, verdict string, cb func(networking.FlowRecord)) error
 	Done() <-chan struct{}
-	CloseReason() string
+	EndedByRelay() bool
 	RelayNamespace() string
 	Close()
 }
@@ -41,12 +41,6 @@ type flowStream interface {
 // flowStreamOpener opens a live flow source on a remote cluster for the
 // user's view of namespace. A refusal is a *networking.FlowSourceError.
 type flowStreamOpener func(ctx context.Context, clusterID string, user *auth.User, namespace string) (flowStream, error)
-
-// flowAccessChecker is the access check revalidation runs.
-// *resources.AccessChecker implements it.
-type flowAccessChecker interface {
-	CanAccess(ctx context.Context, clusterID, username string, groups []string, verb, resource, namespace string) (bool, error)
-}
 
 // remoteFlowOpener returns the opener for live remote streams, or nil when
 // remote flows are not wired.
@@ -69,7 +63,7 @@ func (s *Server) remoteFlowOpener() flowStreamOpener {
 
 // flowStreamAccess returns the checker revalidation uses, or nil when none
 // is wired.
-func (s *Server) flowStreamAccess() flowAccessChecker {
+func (s *Server) flowStreamAccess() networking.NamespaceAccess {
 	if s.flowAccess != nil {
 		return s.flowAccess
 	}

@@ -11,13 +11,13 @@ package networking
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"net"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -192,8 +192,7 @@ type RemoteFlowSource struct {
 	release        func()
 
 	closeOnce sync.Once
-	mu        sync.Mutex
-	closed    bool
+	closed    atomic.Bool
 }
 
 // GetFlows reads recent flows, as HubbleClient.GetFlows does locally.
@@ -210,16 +209,9 @@ func (s *RemoteFlowSource) StreamFlows(ctx context.Context, namespace, verdict s
 // relay or the API server went away.
 func (s *RemoteFlowSource) Done() <-chan struct{} { return s.tunnel.Done() }
 
-// CloseReason is why the source ended on its own: relay_restarted, a
-// retryable end. It is empty once the caller has closed the source.
-func (s *RemoteFlowSource) CloseReason() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return ""
-	}
-	return ReasonRelayRestarted
-}
+// EndedByRelay reports whether the source ended on its own, which the live
+// stream reports as relay_restarted, rather than by the caller's Close.
+func (s *RemoteFlowSource) EndedByRelay() bool { return !s.closed.Load() }
 
 // RelayNamespace is the namespace the relay runs in, where the user's
 // pods/portforward grant authorizes the tunnel.
@@ -229,9 +221,7 @@ func (s *RemoteFlowSource) RelayNamespace() string { return s.relayNamespace }
 // to call more than once.
 func (s *RemoteFlowSource) Close() {
 	s.closeOnce.Do(func() {
-		s.mu.Lock()
-		s.closed = true
-		s.mu.Unlock()
+		s.closed.Store(true)
 		s.client.Close()
 		_ = s.tunnel.Close()
 		s.release()
@@ -498,13 +488,11 @@ func relayServesTLS(ctx context.Context, tunnel k8s.Tunnel) bool {
 	if err == nil {
 		return true
 	}
+	// A certificate that does not verify arrives as a
+	// CertificateVerificationError, which wraps the x509 cause.
 	var verifyErr *tls.CertificateVerificationError
 	var alert tls.AlertError
-	var unknownAuthority x509.UnknownAuthorityError
-	var hostname x509.HostnameError
-	var invalid x509.CertificateInvalidError
-	return errors.As(err, &verifyErr) || errors.As(err, &alert) ||
-		errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &invalid)
+	return errors.As(err, &verifyErr) || errors.As(err, &alert)
 }
 
 // flowSlots bounds concurrent remote flow tunnels (KTD9). The zero value is

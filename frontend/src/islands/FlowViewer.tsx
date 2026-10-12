@@ -78,6 +78,9 @@ const RECONNECT_DELAYS_MS = [2_000, 5_000, 10_000];
  */
 const CONNECT_TIMEOUT_MS = 20_000;
 
+/** A stream that never subscribed ends as a retryable failure to connect. */
+const CONNECT_TIMED_OUT = { reason: "connect_timeout", retryable: true };
+
 /** A server frame on the flows stream. */
 interface StreamFrame {
   type?: string;
@@ -237,7 +240,7 @@ export default function FlowViewer() {
     connectTimerRef.current = setTimeout(() => {
       connectTimerRef.current = null;
       if (!isStale() && wsState.value === "connecting") {
-        endStream({ reason: "connect_timeout", retryable: true });
+        endStream(CONNECT_TIMED_OUT);
       }
     }, CONNECT_TIMEOUT_MS);
 
