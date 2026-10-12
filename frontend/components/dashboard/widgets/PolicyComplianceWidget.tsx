@@ -167,6 +167,10 @@ function PolicyCompliance() {
               The {view.history.days}-day trend requires an administrator
               account.
             </>
+          ) : history.errorKind === "unsupported" ? (
+            // A remote cluster with no named background identity records
+            // nothing; the score above is still current.
+            <>Compliance history is not configured for this cluster.</>
           ) : view.history.available ? (
             <>Not enough history yet for a {view.history.days}-day trend.</>
           ) : (

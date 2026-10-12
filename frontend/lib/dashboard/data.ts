@@ -1491,7 +1491,7 @@ export const REMOTE_BEHAVIOUR: Record<
   "mesh-golden-signals": "binding",
   "hubble-flows": "remote",
   "hubble-status": "remote",
-  "policy-compliance-history": "unsupported",
+  "policy-compliance-history": "remote",
   "clusters-list": "installation",
   "audit-log": "installation",
   "unread-notifications": "installation",

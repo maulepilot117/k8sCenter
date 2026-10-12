@@ -194,7 +194,9 @@ export const DATA_SOURCE_KEYS = [
   // database. Declared OPTIONAL by the widget that reads it for exactly that
   // reason: both refusals leave the current score untouched, and a card gated
   // on this one would blank a gauge the compliance endpoint already answered,
-  // permanently, for every non-admin.
+  // permanently, for every non-admin. A remote cluster serves its own
+  // recorded history (declared `remote` in `REMOTE_BEHAVIOUR`), or answers
+  // 404 `compliance_history_not_configured` when no identity is named.
   "policy-compliance-history",
   // `/v1/policies/violations`. Note the plural prefix: the routes are mounted
   // under `/v1/policies/...`, not `/v1/policy/...` (see `registerPolicyRoutes`
@@ -731,13 +733,12 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * selected cluster's own CNI detection, so its 501 is a failure too.
  * `hubble-flows` left in PR 5b: the route reads the selected cluster's own
  * relay, and its relay states are told apart by reason, in `REASON_KINDS`.
+ * `policy-compliance-history` left in #608's final slice: a remote cluster
+ * now serves its own recorded history, and the one state it cannot (no named
+ * background identity) is told apart by reason, in `REASON_KINDS`.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
-  {
-    // Remote clusters never answer this one: the backend refuses with 501,
-    // since compliance history is recorded for the local install only.
-    "policy-compliance-history": [501],
-  };
+  {};
 
 /**
  * Error reasons that settle a source's state whatever the status, for routes
@@ -755,6 +756,13 @@ export const REASON_KINDS: Readonly<
   "hubble-flows": {
     relay_not_found: "absent",
     relay_tls_unsupported: "unsupported",
+  },
+  // A remote cluster with no named background identity records nothing and
+  // answers 404 `compliance_history_not_configured` (#608 KTD8). A standing
+  // fact about the cluster, so `unsupported`: muted, no retry. A 404 with any
+  // other reason (`cluster_unknown`) stays a failure.
+  "policy-compliance-history": {
+    compliance_history_not_configured: "unsupported",
   },
 };
 
