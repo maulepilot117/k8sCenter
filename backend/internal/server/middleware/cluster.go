@@ -51,12 +51,14 @@ func ClusterContext(next http.Handler) http.Handler {
 // reads the X-Cluster-ID header before the connection is upgraded and stores
 // the resolved value in the request context. Unlike ClusterContext, it does
 // NOT enforce the admin-required check — WS handlers do authentication in-
-// band after upgrade (see ws_helpers.wsAuthAndUpgrade), so user identity
+// band after upgrade (see ws_helpers.wsAuthAndUpgradeFor), so user identity
 // isn't in the request context yet at middleware time.
 //
-// Authorization for non-local clusters is enforced downstream by the
-// per-handler gates (e.g. handle_ws_logs returns "remote clusters not
-// supported" when the resolved clusterID is non-local). Without this
+// Authorization for non-local clusters is enforced downstream: the in-band
+// auth helper refuses a non-admin naming a remote cluster, and the
+// per-handler gates refuse what each stream does not support (e.g.
+// handle_ws_logs returns "remote clusters not supported" when the resolved
+// clusterID is non-local). Without this
 // middleware, those gates always saw "local" because ClusterContext only
 // ran inside the /api/v1 REST group, leaving the WS routes blind to
 // X-Cluster-ID — F#6 of the security audit re-review.
