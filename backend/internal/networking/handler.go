@@ -3,6 +3,7 @@ package networking
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -127,32 +128,6 @@ func (h *Handler) isCiliumLocal(r *http.Request) bool {
 		return false
 	}
 	return k8s.IsLocalClusterID(middleware.ClusterIDFromContext(r.Context()))
-}
-
-// rejectNonLocal writes a 501 Not Implemented response when the request targets a
-// non-local cluster and returns false. Returns true when execution may proceed.
-// Use for Cilium-specific endpoints whose data and operations are cluster-install-scoped
-// and cannot be safely proxied through the generic ClusterRouter path.
-//
-// The cluster ID is logged via slog (with user context where available at the
-// call site), never echoed back on the wire — see the Phase 1 precedent
-// (review #13) that established the wire-vs-log separation.
-func (h *Handler) rejectNonLocal(w http.ResponseWriter, r *http.Request, feature string) bool {
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-	if !k8s.IsLocalClusterID(clusterID) {
-		if h.Logger != nil {
-			h.Logger.Warn("networking handler rejected on remote cluster",
-				"feature", feature,
-				"clusterID", clusterID,
-				"path", r.URL.Path,
-			)
-		}
-		httputil.WriteError(w, http.StatusNotImplemented,
-			feature+" is not supported for remote clusters",
-			"Connect to that cluster directly to use this feature")
-		return false
-	}
-	return true
 }
 
 // HandleCNIStatus returns the detected CNI plugin information.
@@ -379,55 +354,35 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 // HandleHubbleFlows returns network flows from Hubble Relay filtered by namespace and verdict.
 // GET /api/v1/networking/hubble/flows?namespace=default&verdict=DROPPED&limit=100
 //
-// The relay is the LOCAL cluster's, so a remote selection is refused with 501
-// before any RBAC check or relay read (#608; the per-cluster Hubble binding
-// is a later slice).
+// A remote selection reads that cluster's own relay through a port-forward
+// tunnel opened for this request (relay_tunnel.go); it never touches the
+// local Hubble client, so it works whether or not the local cluster runs
+// Hubble (R12).
 func (h *Handler) HandleHubbleFlows(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
-	if !h.rejectNonLocal(w, r, "Hubble flows") {
+	if !isLocal(r.Context()) {
+		namespace, verdict, limit, ok := parseFlowQuery(w, r)
+		if !ok {
+			return
+		}
+		h.serveRemoteFlows(w, r, user, namespace, verdict, limit)
 		return
 	}
 
 	if h.HubbleClient == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "Hubble is not available", "")
+		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, "Hubble is not available", reasonHubbleUnavailable, nil)
 		return
 	}
 
-	namespace := r.URL.Query().Get("namespace")
-	if namespace == "" {
-		httputil.WriteError(w, http.StatusBadRequest, "namespace parameter is required", "")
+	namespace, verdict, limit, ok := parseFlowQuery(w, r)
+	if !ok {
 		return
-	}
-	// Validate namespace against k8s naming rules
-	if !k8sNameRegexp.MatchString(namespace) {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace name", "")
-		return
-	}
-
-	// Validate verdict filter
-	verdict := r.URL.Query().Get("verdict")
-	if verdict != "" && !ValidVerdict(verdict) {
-		httputil.WriteError(w, http.StatusBadRequest,
-			"invalid verdict filter, must be one of: FORWARDED, DROPPED, ERROR, AUDIT", "")
-		return
-	}
-
-	// Validate limit
-	limit := 100
-	if l := r.URL.Query().Get("limit"); l != "" {
-		v, err := strconv.Atoi(l)
-		if err != nil || v < 1 || v > 1000 {
-			httputil.WriteError(w, http.StatusBadRequest, "limit must be between 1 and 1000", "")
-			return
-		}
-		limit = v
 	}
 
 	// RBAC: check user can get pods in the requested namespace (flow visibility = pod observability).
-	// Hubble Relay is always local-cluster-scoped; ClusterRouter resolves to local for clusterID "local".
 	clusterID := middleware.ClusterIDFromContext(r.Context())
 	cs, err := h.ClusterRouter.ClientForCluster(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
@@ -449,6 +404,87 @@ func (h *Handler) HandleHubbleFlows(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteData(w, flows)
+}
+
+// reasonHubbleUnavailable answers flows on the local cluster when it has no
+// Hubble client.
+const reasonHubbleUnavailable = "hubble_unavailable"
+
+// parseFlowQuery validates the flows query: a namespace, an optional
+// verdict and an optional limit (default 100). On a bad value it answers 400
+// and returns false.
+func parseFlowQuery(w http.ResponseWriter, r *http.Request) (namespace, verdict string, limit int, ok bool) {
+	namespace = r.URL.Query().Get("namespace")
+	if namespace == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "namespace parameter is required", "")
+		return "", "", 0, false
+	}
+	// Validate namespace against k8s naming rules
+	if !k8sNameRegexp.MatchString(namespace) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace name", "")
+		return "", "", 0, false
+	}
+
+	verdict = r.URL.Query().Get("verdict")
+	if verdict != "" && !ValidVerdict(verdict) {
+		httputil.WriteError(w, http.StatusBadRequest,
+			"invalid verdict filter, must be one of: FORWARDED, DROPPED, ERROR, AUDIT", "")
+		return "", "", 0, false
+	}
+
+	limit = 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		v, err := strconv.Atoi(l)
+		if err != nil || v < 1 || v > 1000 {
+			httputil.WriteError(w, http.StatusBadRequest, "limit must be between 1 and 1000", "")
+			return "", "", 0, false
+		}
+		limit = v
+	}
+	return namespace, verdict, limit, true
+}
+
+// serveRemoteFlows answers a remote flows request from one flow source,
+// opened for this request and closed when it ends (KTD9).
+func (h *Handler) serveRemoteFlows(w http.ResponseWriter, r *http.Request, user *auth.User, namespace, verdict string, limit int) {
+	ctx := r.Context()
+	src, err := h.OpenRemoteFlowSource(ctx, middleware.ClusterIDFromContext(ctx), user, namespace, FlowSourceREST)
+	if err != nil {
+		h.writeFlowSourceError(w, r, err)
+		return
+	}
+	defer src.Close()
+
+	flows, err := src.GetFlows(ctx, namespace, verdict, limit)
+	if err != nil {
+		h.Logger.Warn("remote hubble flow query failed", "cluster", middleware.ClusterIDFromContext(ctx), "namespace", namespace, "error", err)
+		httputil.WriteError(w, http.StatusBadGateway, "failed to query Hubble flows", "")
+		return
+	}
+	httputil.WriteData(w, flows)
+}
+
+// writeFlowSourceError answers a flow source that could not open. A failed
+// remote read goes through the usual remote failure writer; a flow refusal
+// carries its own status and reason.
+func (h *Handler) writeFlowSourceError(w http.ResponseWriter, r *http.Request, err error) {
+	var fe *FlowSourceError
+	if !errors.As(err, &fe) {
+		h.writeRemoteFailure(w, r, "Hubble flows", err)
+		return
+	}
+	if fe.read {
+		h.writeRemoteFailure(w, r, "Hubble flows", fe.Err)
+		return
+	}
+	if fe.Err != nil {
+		h.Logger.Warn("remote hubble flows refused", "cluster", middleware.ClusterIDFromContext(r.Context()), "reason", fe.Reason, "error", fe.Err)
+	}
+	var extra map[string]any
+	if fe.Retryable {
+		extra = map[string]any{"retryable": true}
+	}
+	httputil.WriteErrorWithReason(w, fe.Status, fe.Message, fe.Reason, extra)
 }
 
 // HandleCiliumBGP returns BGP peering configuration and live peer status from Cilium CRDs.

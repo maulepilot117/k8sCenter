@@ -32,11 +32,15 @@ import (
 
 // fakeRelay is a Hubble Relay gRPC server on an in-memory listener. It
 // answers ServerStatus and serves one flow per GetFlows call; a followed
-// stream then stays open until the client goes away.
+// stream, or any stream while hold is set, then stays open until the client
+// goes away.
 type fakeRelay struct {
 	observerpb.UnimplementedObserverServer
 	lis *bufconn.Listener
 	srv *grpc.Server
+	// hold keeps every GetFlows stream open; set it before the first call.
+	hold  bool
+	calls atomic.Int32
 }
 
 func newFakeRelay(t *testing.T) *fakeRelay {
@@ -53,6 +57,7 @@ func (r *fakeRelay) ServerStatus(context.Context, *observerpb.ServerStatusReques
 }
 
 func (r *fakeRelay) GetFlows(req *observerpb.GetFlowsRequest, stream grpc.ServerStreamingServer[observerpb.GetFlowsResponse]) error {
+	r.calls.Add(1)
 	flow := &flowpb.Flow{
 		Verdict: flowpb.Verdict_FORWARDED,
 		Source:  &flowpb.Endpoint{Namespace: "default", PodName: "web-1"},
@@ -60,7 +65,7 @@ func (r *fakeRelay) GetFlows(req *observerpb.GetFlowsRequest, stream grpc.Server
 	if err := stream.Send(&observerpb.GetFlowsResponse{ResponseTypes: &observerpb.GetFlowsResponse_Flow{Flow: flow}}); err != nil {
 		return err
 	}
-	if req.GetFollow() {
+	if req.GetFollow() || r.hold {
 		<-stream.Context().Done()
 	}
 	return nil
@@ -79,7 +84,7 @@ func newFakeTunnel(dial func(ctx context.Context) (net.Conn, error)) *fakeTunnel
 }
 
 func (t *fakeTunnel) DialContext(ctx context.Context) (net.Conn, error) { return t.dial(ctx) }
-func (t *fakeTunnel) Done() <-chan struct{}                            { return t.done }
+func (t *fakeTunnel) Done() <-chan struct{}                             { return t.done }
 func (t *fakeTunnel) Close() error {
 	t.closed.Store(true)
 	t.once.Do(func() { close(t.done) })
