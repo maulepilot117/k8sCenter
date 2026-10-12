@@ -1141,6 +1141,9 @@ func main() {
 		AccessChecker:          accessChecker,
 		ReadyFn:                ready.Load,
 		DBPing:                 dbPing,
+
+		ComplianceIdentityStore:  complianceIdentityStore,
+		RemoteComplianceRecorder: remoteComplianceRecorder,
 	})
 	// The binding admin API writes through the store and evicts from the
 	// resolver every metrics consumer shares. Without a database both stay

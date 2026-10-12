@@ -121,6 +121,17 @@ type Server struct {
 	// Nil in production, which reads ClusterStore; tests set a fake.
 	metricsClusters clusterRecordGetter
 
+	// ComplianceIdentityStore persists per-cluster compliance identities
+	// (/clusters/{id}/compliance-identity). Nil without a database: those
+	// routes answer 503.
+	ComplianceIdentityStore complianceIdentityStore
+	// impersonationChecker proves the registration credential may impersonate
+	// an identity before it is stored. Set from a non-nil ClusterRouter only.
+	impersonationChecker impersonationChecker
+	// complianceSnapshotter takes the first remote snapshot when an identity
+	// is saved. Nil when no recorder runs (no database).
+	complianceSnapshotter complianceSnapshotter
+
 	// flowStreams tracks live remote flow streams, so a cluster's removal
 	// ends them (flow_streams.go).
 	flowStreams flowStreamRegistry
@@ -134,6 +145,10 @@ type Server struct {
 
 // Deps holds all dependencies needed to create a Server.
 type Deps struct {
+	// ComplianceIdentityStore and RemoteComplianceRecorder are nil without a
+	// database; New wires them into the server seams only when non-nil.
+	ComplianceIdentityStore  *store.ComplianceIdentityStore
+	RemoteComplianceRecorder *policy.RemoteComplianceRecorder
 	Config             *config.Config
 	K8sClient          *k8s.ClientFactory
 	Informers          *k8s.InformerManager
@@ -471,6 +486,18 @@ func New(deps Deps) *Server {
 	// Note: Timeout is applied per-route-group (not globally) so that
 	// long-lived WebSocket connections are not terminated.
 	s.Router.Use(middleware.CORS(deps.Config))
+
+	// Interfaces are filled from non-nil pointers only, so a missing
+	// dependency stays a nil interface (docs/solutions/go-typed-nil-interface.md).
+	if deps.ComplianceIdentityStore != nil {
+		s.ComplianceIdentityStore = deps.ComplianceIdentityStore
+	}
+	if deps.ClusterRouter != nil {
+		s.impersonationChecker = deps.ClusterRouter
+	}
+	if deps.RemoteComplianceRecorder != nil {
+		s.complianceSnapshotter = deps.RemoteComplianceRecorder
+	}
 
 	s.registerRoutes()
 
