@@ -21,12 +21,35 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// ErrNoMetricsBinding is returned by the Prometheus-backed providers below
+// when the selected remote cluster has no metrics binding (no Prometheus URL
+// registered for it). Callers map it to the "metrics are not configured"
+// state, never to a failure. Defined here (not in monitoring) because
+// monitoring imports this package; monitoring aliases it.
+var ErrNoMetricsBinding = errors.New("metrics are not configured for the selected cluster")
+
 // UtilizationProvider abstracts Prometheus metric queries for CPU/memory.
 // Used by the dashboard summary endpoint. Can be nil if monitoring is unavailable.
+// clusterID selects whose Prometheus answers: the local cluster's discovered
+// Prometheus, or a remote cluster's metrics binding (ErrNoMetricsBinding when
+// it has none). Implementations never answer a remote id from the local
+// Prometheus.
 type UtilizationProvider interface {
-	CPUPercent(ctx context.Context) (float64, error)
-	MemoryPercent(ctx context.Context) (float64, error)
+	CPUPercent(ctx context.Context, clusterID string) (float64, error)
+	MemoryPercent(ctx context.Context, clusterID string) (float64, error)
 }
+
+// HeartbeatAlertNames are always-firing alerts that signal a healthy alerting
+// pipeline, not a problem. Neither the alert tile nor the health score counts
+// them, on the local cluster or a remote one. The remote Alertmanager read
+// adds RemoteOnlyHeartbeatAlertNames.
+var HeartbeatAlertNames = []string{"Watchdog", "DeadMansSwitch"}
+
+// RemoteOnlyHeartbeatAlertNames are heartbeat alerts only a remote read sees.
+// kube-prometheus-stack routes InfoInhibitor to its null receiver, so it never
+// reaches the local webhook store; the remote path reads the Alertmanager's
+// alerts API directly, which lists it, always firing.
+var RemoteOnlyHeartbeatAlertNames = []string{"InfoInhibitor"}
 
 // AlertCounter abstracts counting active alerts without importing the alerting package.
 // Used by the dashboard summary endpoint. Can be nil if alerting is unavailable.
@@ -34,9 +57,18 @@ type AlertCounter interface {
 	ActiveAlertCounts(ctx context.Context) (active int, critical int, err error)
 	// ActiveAlertCountsExcluding returns the same counts as ActiveAlertCounts but
 	// skips any alert whose AlertName matches one of the provided excludeAlertNames.
-	// Used by the health signal to filter always-firing heartbeat alerts (Watchdog,
-	// DeadMansSwitch) so they don't depress the cluster health score.
+	// Used by the health signal to filter the always-firing HeartbeatAlertNames
+	// so they don't depress the cluster health score.
 	ActiveAlertCountsExcluding(ctx context.Context, excludeAlertNames ...string) (active int, critical int, err error)
+}
+
+// RemoteAlertCounter abstracts counting a selected remote cluster's active
+// alerts from its own Alertmanager. It is separate from AlertCounter, which
+// stays the local webhook-store source. Errors keep the monitoring package's
+// Alertmanager classes so the dashboard can pick a fixed detail per class.
+// Can be nil if monitoring is unavailable.
+type RemoteAlertCounter interface {
+	RemoteAlertCounts(ctx context.Context, clusterID string) (active int, critical int, err error)
 }
 
 // TrendProvider abstracts short historical time-series for the dashboard metric
@@ -46,7 +78,8 @@ type TrendProvider interface {
 	// DashboardTrends range-queries the metric-card series over the given window
 	// at the given step resolution. The handler maps the ?range= tab to these
 	// durations so the dashboard's time-range selector drives every sparkline.
-	DashboardTrends(ctx context.Context, window, step time.Duration) (DashboardTrends, error)
+	// clusterID selects the Prometheus exactly as for UtilizationProvider.
+	DashboardTrends(ctx context.Context, clusterID string, window, step time.Duration) (DashboardTrends, error)
 }
 
 // ErrCertManagerNotInstalled is returned by CertExpiryCounter implementations
@@ -60,13 +93,46 @@ var ErrCertManagerNotInstalled = errors.New("cert-manager not installed")
 // map it to a non-fatal skipped signal.
 var ErrCertCacheNotWarm = errors.New("cert cache warming")
 
+// CertExpiryState says how far a cluster's certificate read got.
+type CertExpiryState int
+
+const (
+	// CertExpiryComplete means every list the buckets depend on was read.
+	CertExpiryComplete CertExpiryState = iota
+	// CertExpiryNotInstalled means cert-manager is not installed on the
+	// cluster: a valid, empty read.
+	CertExpiryNotInstalled
+	// CertExpiryDenied means the user may not read the certificates: the
+	// cluster-wide list check was denied, or a cert-manager list returned
+	// Forbidden.
+	CertExpiryDenied
+	// CertExpiryIncomplete means a read the user is allowed did not complete
+	// (a failed list, an unreachable cluster, no recent snapshot yet). Cause
+	// names why; it is for classification and logs, never for a client.
+	CertExpiryIncomplete
+)
+
+// CertExpiry is a cluster's expiring-certificate counts and how complete the
+// read behind them is. Warning and Critical are meaningful only when State is
+// CertExpiryComplete.
+type CertExpiry struct {
+	Warning  int
+	Critical int
+	State    CertExpiryState
+	Cause    error
+}
+
 // CertExpiryCounter abstracts cert-manager expiring-certificate counts for the
 // cluster health score. The calling user is passed so RBAC filtering can be
 // applied before bucketing. Can be nil if cert-manager is unavailable.
-// Errors are typed: callers should errors.Is-check ErrCertManagerNotInstalled
-// and ErrCertCacheNotWarm to map them to non-fatal skipped signals.
+//
+// The verdict is always in the result's State, for the local cluster and a
+// remote one alike: CertExpiryNotInstalled when cert-manager is absent, and
+// CertExpiryIncomplete with a Cause (ErrCertCacheNotWarm for a cold local
+// cache or a remote snapshot not yet filled) when the read did not complete.
+// Each caller decides what an incomplete read means for its own score.
 type CertExpiryCounter interface {
-	ExpiringCounts(ctx context.Context, user *auth.User) (warning, critical int, err error)
+	ExpiringCountsForCluster(ctx context.Context, clusterID string, user *auth.User) CertExpiry
 }
 
 // ControlPlaneChecker abstracts best-effort control-plane component availability
@@ -76,8 +142,9 @@ type CertExpiryCounter interface {
 // Components absent from the Prometheus result (e.g. k3s embedded control plane,
 // managed-cloud control planes with no scrape config) map to ComponentUnscraped —
 // the caller treats unscraped as a skipped sub-signal, not a penalty.
+// clusterID selects the Prometheus exactly as for UtilizationProvider.
 type ControlPlaneChecker interface {
-	ControlPlaneStatus(ctx context.Context) (ControlPlaneStates, error)
+	ControlPlaneStatus(ctx context.Context, clusterID string) (ControlPlaneStates, error)
 }
 
 // Handler provides HTTP handler methods for Kubernetes resource operations.
@@ -92,14 +159,15 @@ type Handler struct {
 	ClusterID     string
 	Utilization   UtilizationProvider // Optional — nil if monitoring unavailable
 	Alerts        AlertCounter        // Optional — nil if alerting unavailable
+	RemoteAlerts  RemoteAlertCounter  // Optional — nil if monitoring unavailable
 	Trends        TrendProvider       // Optional — nil if monitoring unavailable
 	CertExpiry    CertExpiryCounter   // Optional — nil if cert-manager unavailable
 	ControlPlane  ControlPlaneChecker // Optional — nil if monitoring unavailable
 	// isSynced overrides the default h.Informers.IsSynced for tests. When nil,
 	// gatherHealthInputs uses h.Informers.IsSynced.
 	isSynced func(string) bool
-	// remoteClient overrides remote-cluster client resolution for tests of the
-	// remote dashboard path. When nil, h.ClusterRouter.ClientForCluster is used.
+	// remoteClient overrides remote-cluster client resolution for tests of every
+	// remote read path. When nil, h.ClusterRouter.ClientForCluster is used.
 	remoteClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
 	// OriginValidator checks the Origin header for WebSocket connections.
 	// Set by the server at wiring time. If nil, rejects all WS upgrades.
@@ -265,13 +333,21 @@ func writeError(w http.ResponseWriter, status int, message, detail string) {
 	})
 }
 
-// writeList writes a paginated list response.
+// writeList writes a paginated list response over a complete read.
 func writeList(w http.ResponseWriter, items any, total int, continueToken string) {
+	writeListPage(w, items, total, continueToken, false)
+}
+
+// writeListPage writes a paginated list response. truncated reports that the
+// read behind it stopped at a cap (a remote list past k8s.RemoteListMaxPages), so
+// total counts only what was read; it is omitted from the body when false.
+func writeListPage(w http.ResponseWriter, items any, total int, continueToken string, truncated bool) {
 	writeJSON(w, http.StatusOK, api.Response{
 		Data: items,
 		Metadata: &api.Metadata{
-			Total:    total,
-			Continue: continueToken,
+			Total:     total,
+			Continue:  continueToken,
+			Truncated: truncated,
 		},
 	})
 }

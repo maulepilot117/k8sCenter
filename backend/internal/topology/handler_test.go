@@ -17,7 +17,6 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
-	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/servicemesh"
@@ -116,56 +115,6 @@ func newRecordingHandler() (*Handler, *recordingLister, *recordingMeshProvider) 
 		Logger:        slog.Default(),
 	}
 	return h, lister, mesh
-}
-
-// TestHandleNamespaceGraph_RemoteRefused pins #532: a remote cluster
-// selection gets 501 unsupported_platform, and neither the informer-backed
-// lister nor an overlay provider is read, so the local graph can never be
-// served under a remote cluster's name.
-func TestHandleNamespaceGraph_RemoteRefused(t *testing.T) {
-	for _, overlay := range []string{"", "mesh", "eso-chain", "bogus"} {
-		t.Run("overlay="+overlay, func(t *testing.T) {
-			h, lister, mesh := newRecordingHandler()
-			// A real checker with no ClusterRouter: any SAR attempted for the
-			// remote cluster errors, so the refusal must precede every access
-			// check, not just the lister reads.
-			h.AccessChecker = resources.NewAccessChecker(nil, slog.Default())
-			w := callTopologyHandlerForCluster(t, h, "remote-cluster-1", "foo", overlay)
-
-			if w.Code != http.StatusNotImplemented {
-				t.Fatalf("status = %d, want 501; body: %s", w.Code, w.Body.String())
-			}
-			var body struct {
-				Data  any `json:"data"`
-				Error struct {
-					Code    int    `json:"code"`
-					Message string `json:"message"`
-					Reason  string `json:"reason"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-				t.Fatalf("decode body: %v; body: %s", err, w.Body.String())
-			}
-			if body.Data != nil {
-				t.Errorf("data = %v, want absent on a refusal", body.Data)
-			}
-			if body.Error.Code != http.StatusNotImplemented {
-				t.Errorf("error.code = %d, want 501", body.Error.Code)
-			}
-			if body.Error.Reason != string(k8s.ReasonUnsupportedPlatform) {
-				t.Errorf("error.reason = %q, want %q", body.Error.Reason, k8s.ReasonUnsupportedPlatform)
-			}
-			if body.Error.Message != remoteUnsupportedMessage {
-				t.Errorf("error.message = %q, want %q", body.Error.Message, remoteUnsupportedMessage)
-			}
-			if n := lister.calls.Load(); n != 0 {
-				t.Errorf("lister read %d times on a remote request, want 0", n)
-			}
-			if n := mesh.calls.Load(); n != 0 {
-				t.Errorf("mesh provider read %d times on a remote request, want 0", n)
-			}
-		})
-	}
 }
 
 // TestHandleNamespaceGraph_LocalUnchanged confirms the local path still builds

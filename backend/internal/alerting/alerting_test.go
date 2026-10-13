@@ -437,3 +437,15 @@ func setUserContext(ctx context.Context) context.Context {
 		KubernetesUsername: "admin",
 	})
 }
+
+// A nil *Notifier is stored in interfaces when alerting is disabled; the
+// receiver must report "not configured" rather than panic.
+func TestSMTPConfigured_NilReceiver(t *testing.T) {
+	var n *Notifier
+	if n.SMTPConfigured() {
+		t.Fatal("nil notifier must not report SMTP configured")
+	}
+	if err := n.QueueEmail([]string{"a@b.c"}, "s", "b"); err == nil {
+		t.Fatal("nil notifier QueueEmail must return an error")
+	}
+}

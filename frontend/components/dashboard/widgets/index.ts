@@ -19,6 +19,7 @@ import "./AuditActivityWidget.tsx";
 import "./CertsExpiringWidget.tsx";
 import "./ClusterHealthWidget.tsx";
 import "./ClusterStatusWidget.tsx";
+import "./ClusterTopologyWidget.tsx";
 import "./CpuTileWidget.tsx";
 import "./DiagnosticsSummaryWidget.tsx";
 import "./EsoHealthWidget.tsx";

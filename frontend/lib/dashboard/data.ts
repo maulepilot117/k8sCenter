@@ -14,6 +14,10 @@
 import type { Signal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import { ApiError, api } from "@/lib/api.ts";
+import {
+  METRICS_NOT_CONFIGURED_MESSAGE,
+  METRICS_NOT_CONFIGURED_REASON,
+} from "@/lib/metrics-reasons.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { HUBBLE_FLOW_BATCH } from "./networking.ts";
 import { decodeSourceKey } from "./params.ts";
@@ -21,9 +25,11 @@ import { COMPLIANCE_HISTORY_DAYS } from "./severity.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   ABSENT_STATUSES,
+  AMBIGUOUS_REQUEST_STATUSES,
   FAMILY_STATUS_KEYS,
   NOT_FOUND_IS_REFUSAL,
   RANGE_SENSITIVE_KEYS,
+  REASON_KINDS,
   sourceCost,
   UNSUPPORTED_STATUSES,
 } from "./types.ts";
@@ -258,10 +264,15 @@ function messageOf(err: unknown): string {
  * catalog cannot be enumerated. `NOT_FOUND_IS_REFUSAL` in types.ts names the
  * sources that read it, and carries the full reasoning.
  */
-function classify(err: unknown, base: string): SourceErrorKind {
+export function classify(err: unknown, base: string): SourceErrorKind {
   if (!(err instanceof ApiError)) return "failure";
+  if (isMetricsNotConfigured(err)) return "unsupported";
   if (err.status === 403) return "permission";
   if (err.status === 404 && NOT_FOUND_IS_REFUSAL.has(base)) return "permission";
+  // Before the status tables: for these routes the status alone is
+  // ambiguous, and the reason is what settles the state.
+  const byReason = err.reason ? REASON_KINDS[base]?.[err.reason] : undefined;
+  if (byReason) return byReason;
   // Checked after the refusal branch, so a source that ever appeared in both
   // declarations still reads as refused: that set exists to keep a
   // deliberately opaque refusal readable as one, and reporting it as an
@@ -272,7 +283,32 @@ function classify(err: unknown, base: string): SourceErrorKind {
   // specific claim, and "this cluster does not run it" is more specific than
   // "this request cannot be answered".
   if (UNSUPPORTED_STATUSES[base]?.includes(err.status)) return "unsupported";
+  // Not a remote refusal: the same request is ambiguous on a local cluster
+  // that runs two meshes, so it has its own declaration.
+  if (AMBIGUOUS_REQUEST_STATUSES[base]?.includes(err.status)) {
+    return "unsupported";
+  }
   return "failure";
+}
+
+// The metrics reason copy lives in lib/metrics-reasons.ts, shared with the
+// mesh pages; it is re-exported for the dashboard's existing importers.
+export {
+  METRICS_NOT_CONFIGURED_MESSAGE,
+  METRICS_NOT_CONFIGURED_REASON,
+} from "@/lib/metrics-reasons.ts";
+
+/**
+ * A 404 carrying the `metrics_not_configured` reason. Reason-aware rather than
+ * status-only: an ordinary 404 means the object is gone, and only this body
+ * says the cluster is missing its metrics binding.
+ */
+function isMetricsNotConfigured(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 404 &&
+    err.reason === METRICS_NOT_CONFIGURED_REASON
+  );
 }
 
 function isAbort(err: unknown): boolean {
@@ -560,7 +596,9 @@ export function createSourceCache(
         // describes the data, and the data did not change.
         s.value = {
           ...s.value,
-          error: messageOf(err),
+          error: isMetricsNotConfigured(err)
+            ? METRICS_NOT_CONFIGURED_MESSAGE
+            : messageOf(err),
           errorKind: classify(err, base),
           loading: false,
         };
@@ -893,6 +931,11 @@ const UNREAD_FEED_LIMIT = 10;
  * population, so dropping the total would leave a consumer unable to tell a
  * complete list from the first 500 of three thousand. Every widget that ranks
  * a list has to say which of the two it is showing.
+ *
+ * The list is read from the selected cluster: the api client sends
+ * X-Cluster-ID, and the route reads a remote cluster through ClusterRouter as
+ * the user. A remote cluster's list is read whole by the server up to its cap
+ * and then paged, so `metadata.total` is the number read.
  */
 async function readList(
   path: string,
@@ -973,7 +1016,7 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
       signal,
     ),
 
-  // Batch counts across every informer-tracked kind. Deliberately requested
+  // Batch counts across every counted kind. Deliberately requested
   // without a namespace: the dashboard is a cluster-wide surface, and the
   // namespace picker scopes the list pages rather than this one.
   "resource-counts": (signal) => read("/v1/resources/counts", signal),
@@ -997,6 +1040,11 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // `nodes` is both the adapter's `Kind()` and the long resource name, so
   // unlike the two above there is no short/long form to get wrong.
   "nodes-list": (signal) => readList("/v1/resources/nodes", signal),
+
+  // The topology map's two remaining kinds. `pvcs` is the adapter's short
+  // form, like `hpas` and `pdbs` above.
+  "services-list": (signal) => readList("/v1/resources/services", signal),
+  "pvcs-list": (signal) => readList("/v1/resources/pvcs", signal),
 
   // Two family routes rather than the generic one, and neither is a list page
   // -- both answer with a whole roll-up, so `read` and not `readList`.
@@ -1156,7 +1204,7 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
   // configuration the mesh pages themselves treat as unusual.
   //
   // So the card says what the 400 means instead -- which it did NOT do until
-  // `UNSUPPORTED_STATUSES` existed. The mesh family status reports the mesh
+  // `AMBIGUOUS_REQUEST_STATUSES` existed. The mesh family status reports the mesh
   // PRESENT on a dual-mesh cluster, because two are, so the unavailable
   // branch never fired and this fell through to the generic error card:
   // warning colour, a quoted backend message, and a retry that could never
@@ -1378,6 +1426,77 @@ export const DASHBOARD_FETCHERS: Record<DataSourceKey, SourceFetcher> = {
       detected: (features as { hubble?: unknown } | undefined)?.hubble === true,
     };
   },
+};
+
+/**
+ * How each source behaves under a remote cluster selection.
+ *
+ * - `remote`: served by the selected cluster itself.
+ * - `binding`: served from the cluster's own Prometheus through its metrics
+ *   binding; without one the answer is `metrics_not_configured`, as a 404 on
+ *   the monitoring routes or, for `mesh-golden-signals`, as a 200 whose body
+ *   carries the reason (`metrics_not_configured`, or `unreachable` when a
+ *   bound Prometheus answered nothing).
+ * - `installation`: reads this k8sCenter install, not the selected cluster.
+ * - `unsupported`: refused for a remote cluster; must be named in
+ *   `UNSUPPORTED_STATUSES` so the card says so instead of showing a failure.
+ *
+ * A `Record` over `DataSourceKey`, so a new source cannot compile without
+ * declaring which one it is.
+ */
+export const REMOTE_BEHAVIOUR: Record<
+  DataSourceKey,
+  "remote" | "binding" | "installation" | "unsupported"
+> = {
+  "dashboard-summary": "binding",
+  "dashboard-trends": "binding",
+  "top-consumers-cpu": "binding",
+  "top-consumers-memory": "binding",
+  "volume-capacity": "binding",
+  "cluster-info": "remote",
+  "recent-events": "remote",
+  "diagnostics-summary": "remote",
+  "resource-counts": "remote",
+  "deployments-list": "remote",
+  "statefulsets-list": "remote",
+  "daemonsets-list": "remote",
+  "pods-list": "remote",
+  "hpas-list": "remote",
+  "pdbs-list": "remote",
+  "nodes-list": "remote",
+  "limits-namespaces": "remote",
+  "storage-classes": "remote",
+  "services-list": "remote",
+  "pvcs-list": "remote",
+  "policy-compliance-score": "remote",
+  "policy-violations-list": "remote",
+  "vulnerability-reports": "remote",
+  "certificates-list": "remote",
+  "external-secrets-list": "remote",
+  "velero-backups-list": "remote",
+  "snapshots-list": "remote",
+  "gitops-applications": "remote",
+  "mesh-mtls": "remote",
+  "gateway-gateways": "remote",
+  "gateway-httproutes": "remote",
+  "policies-status": "remote",
+  "gitops-status": "remote",
+  "certificates-status": "remote",
+  "mesh-status": "remote",
+  "external-secrets-status": "remote",
+  "velero-status": "remote",
+  "scanning-status": "remote",
+  "snapshots-status": "remote",
+  "gateway-status": "remote",
+  "mesh-golden-signals": "binding",
+  "hubble-flows": "remote",
+  "hubble-status": "remote",
+  "policy-compliance-history": "remote",
+  "clusters-list": "installation",
+  "audit-log": "installation",
+  "unread-notifications": "installation",
+  "preference-views": "installation",
+  "preference-pins": "installation",
 };
 
 export const dashboardData: SourceCache = createSourceCache(DASHBOARD_FETCHERS);

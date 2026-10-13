@@ -25,10 +25,11 @@ import type { DiagnosticsSummary } from "@/lib/dashboard/wire-types.ts";
  * scope the reader has to remember is a roll-up they will eventually read
  * against the wrong namespace.
  *
- * What it does NOT do is report absence as health. The handler lists pods out
- * of the informer cache, so a namespace that has been deleted -- or one that
- * simply never had anything in it -- answers 200 with an empty list and a
- * zero total rather than 404. "0 failing" over that is a green card about a
+ * What it does NOT do is report absence as health. The handler lists pods
+ * (the informer cache locally, a bounded direct read remotely), so a
+ * namespace that has been deleted -- or one that simply never had anything
+ * in it -- answers 200 with an empty list and a zero total rather than 404.
+ * "0 failing" over that is a green card about a
  * namespace that is gone, so the empty case gets its own line that says what
  * it actually knows. The other two failure directions are resolved before
  * this renders at all: a 403 from the read is the permission state, and a
@@ -152,8 +153,9 @@ registerWidget({
   scopes: ["overview"],
   sources: ["diagnostics-summary"],
   // No `familyStatus`. Diagnostics is not a CRD-discovered feature -- it is a
-  // first-party route over the informer cache, present on every cluster this
-  // server runs against -- so there is no discovery route to ask and nothing
+  // first-party route (the informer cache locally, bounded direct reads as
+  // the user on a remote cluster), present on every cluster this server
+  // runs against -- so there is no discovery route to ask and nothing
   // for the "not installed" state to be true of.
   //
   // The namespace declares an EMPTY value set, which is not the same as

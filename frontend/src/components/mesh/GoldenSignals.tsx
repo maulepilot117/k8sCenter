@@ -28,6 +28,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { meshApi } from "@/lib/mesh-api.ts";
 import type { GoldenSignals, MeshType } from "@/lib/mesh-types.ts";
+import { goldenSignalsReasonCopy } from "@/lib/metrics-reasons.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const REFRESH_INTERVAL_MS = 30_000;
@@ -147,10 +148,7 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
           Service Mesh — Golden Signals
         </h3>
         <div class="rounded-md border border-border-primary bg-bg-surface p-4 text-sm text-text-secondary">
-          Metrics unavailable
-          <span class="ml-2 text-xs text-text-muted">
-            ({offlineReason.value})
-          </span>
+          {offlineCopy(offlineReason.value)}
         </div>
       </section>
     );
@@ -265,6 +263,18 @@ function Metric({
         {value}
       </div>
     </div>
+  );
+}
+
+/** Known reasons get the shared plain copy; the raw code is shown only for the rest. */
+function offlineCopy(reason: string) {
+  const copy = goldenSignalsReasonCopy(reason);
+  if (copy !== null) return copy;
+  return (
+    <>
+      Metrics unavailable
+      <span class="ml-2 text-xs text-text-muted">({reason})</span>
+    </>
   );
 }
 

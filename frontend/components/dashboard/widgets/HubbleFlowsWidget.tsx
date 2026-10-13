@@ -243,10 +243,14 @@ registerWidget({
   sources: ["hubble-flows"],
   // Hubble is a Cilium feature rather than a CRD, and the flow route cannot
   // answer whether it is present: it answers 200 with an empty list for a
-  // quiet namespace and 503 only when the backend never built a client at
-  // all. `hubble-status` reads the CNI detector's own flag instead, which is
-  // the only signal that separates "nothing was blocked" from "nothing is
-  // watching" (R1, KTD1).
+  // quiet namespace. `hubble-status` reads the CNI detector's own flag
+  // instead, which is the only signal that separates "nothing was blocked"
+  // from "nothing is watching" (R1, KTD1).
+  //
+  // On a remote cluster the route reads that cluster's own relay, and names
+  // the relay's state by reason (`REASON_KINDS` in types.ts): no relay found
+  // renders as not installed, a TLS relay as unsupported with the server's
+  // message saying so, and a relay not yet ready as a failure with a retry.
   familyStatus: "hubble-status",
   // Mandatory rather than a scoping choice: the handler answers 400 without
   // `?namespace=`. The key is spelled exactly as the server's

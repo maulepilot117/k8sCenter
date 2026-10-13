@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -27,14 +28,17 @@ var cniSearchNamespaces = []string{"kube-system", "cilium", "calico-system", "ku
 
 // CNIInfo represents the detected CNI plugin information.
 type CNIInfo struct {
-	Name            string      `json:"name"`
-	Version         string      `json:"version"`
-	Namespace       string      `json:"namespace"`
-	DaemonSet       string      `json:"daemonSet"`
-	Status          CNIStatus   `json:"status"`
-	Features        CNIFeatures `json:"features,omitempty"`
-	HasCRDs         bool        `json:"hasCRDs"`
-	DetectionMethod string      `json:"detectionMethod"`
+	Name      string      `json:"name"`
+	Version   string      `json:"version"`
+	Namespace string      `json:"namespace"`
+	DaemonSet string      `json:"daemonSet"`
+	Status    CNIStatus   `json:"status"`
+	Features  CNIFeatures `json:"features,omitempty"`
+	HasCRDs   bool        `json:"hasCRDs"`
+	// CRDsUnknown is set when a remote cluster's discovery could not be read,
+	// so HasCRDs false means "unknown", not "absent". Never set locally.
+	CRDsUnknown     bool   `json:"crdsUnknown,omitempty"`
+	DetectionMethod string `json:"detectionMethod"`
 }
 
 // CNIStatus describes the health of the CNI DaemonSet.
@@ -113,75 +117,22 @@ func (d *Detector) detect(ctx context.Context) *CNIInfo {
 		if !slices.Contains(cniSearchNamespaces, ds.Namespace) {
 			continue
 		}
-
-		name := strings.ToLower(ds.Name)
-		switch {
-		case name == "cilium" || strings.HasPrefix(name, "cilium-"):
-			if name == "cilium" || name == "cilium-agent" {
-				version := extractImageVersion(ds.Spec.Template.Spec.Containers, "cilium-agent")
-				if version == "" {
-					version = extractImageVersion(ds.Spec.Template.Spec.Containers, "")
-				}
-				info := &CNIInfo{
-					Name:      CNICilium,
-					Version:   version,
-					Namespace: ds.Namespace,
-					DaemonSet: ds.Name,
-					Status: CNIStatus{
-						Ready:   ds.Status.NumberReady,
-						Desired: ds.Status.DesiredNumberScheduled,
-						Healthy: ds.Status.NumberReady == ds.Status.DesiredNumberScheduled && ds.Status.DesiredNumberScheduled > 0,
-					},
-					DetectionMethod: "daemonset",
-				}
-				// Check for Cilium CRDs using pre-fetched groups
-				info.HasCRDs = hasAPIGroup(serverGroups, "cilium.io")
-				if info.HasCRDs {
-					info.DetectionMethod = "daemonset+crd"
-				}
-				// Detect features from cilium-config ConfigMap
-				info.Features = d.detectCiliumFeatures(ctx)
-				return info
-			}
-
-		case name == "calico-node" || strings.HasPrefix(name, "calico-"):
-			if name == "calico-node" {
-				version := extractImageVersion(ds.Spec.Template.Spec.Containers, "calico-node")
-				info := &CNIInfo{
-					Name:      CNICalico,
-					Version:   version,
-					Namespace: ds.Namespace,
-					DaemonSet: ds.Name,
-					Status: CNIStatus{
-						Ready:   ds.Status.NumberReady,
-						Desired: ds.Status.DesiredNumberScheduled,
-						Healthy: ds.Status.NumberReady == ds.Status.DesiredNumberScheduled && ds.Status.DesiredNumberScheduled > 0,
-					},
-					DetectionMethod: "daemonset",
-				}
-				info.HasCRDs = hasAPIGroup(serverGroups, "crd.projectcalico.org")
-				if info.HasCRDs {
-					info.DetectionMethod = "daemonset+crd"
-				}
-				return info
-			}
-
-		case name == "kube-flannel-ds" || name == "flannel":
-			version := extractImageVersion(ds.Spec.Template.Spec.Containers, "kube-flannel")
-			info := &CNIInfo{
-				Name:      CNIFlannel,
-				Version:   version,
-				Namespace: ds.Namespace,
-				DaemonSet: ds.Name,
-				Status: CNIStatus{
-					Ready:   ds.Status.NumberReady,
-					Desired: ds.Status.DesiredNumberScheduled,
-					Healthy: ds.Status.NumberReady == ds.Status.DesiredNumberScheduled && ds.Status.DesiredNumberScheduled > 0,
-				},
-				DetectionMethod: "daemonset",
-			}
-			return info
+		info := cniInfoFromDaemonSet(ds)
+		if info == nil {
+			continue
 		}
+		if group := cniCRDGroup(info.Name); group != "" {
+			// Check for the CNI's CRDs using pre-fetched groups
+			info.HasCRDs = hasAPIGroup(serverGroups, group)
+			if info.HasCRDs {
+				info.DetectionMethod = "daemonset+crd"
+			}
+		}
+		if info.Name == CNICilium {
+			// Detect features from cilium-config ConfigMap
+			info.Features = d.detectCiliumFeatures(ctx)
+		}
+		return info
 	}
 
 	// Strategy 2: CRD-only check (DaemonSet might be in unexpected namespace)
@@ -195,8 +146,68 @@ func (d *Detector) detect(ctx context.Context) *CNIInfo {
 	return &CNIInfo{Name: CNIUnknown, DetectionMethod: "none"}
 }
 
+// cniInfoFromDaemonSet returns the CNI a DaemonSet runs, or nil when it is
+// not a CNI agent DaemonSet. HasCRDs and Features are left for the caller,
+// which reads them from its own cluster.
+func cniInfoFromDaemonSet(ds *appsv1.DaemonSet) *CNIInfo {
+	var cni, container string
+	switch name := strings.ToLower(ds.Name); name {
+	case "cilium", "cilium-agent":
+		cni, container = CNICilium, "cilium-agent"
+	case "calico-node":
+		cni, container = CNICalico, "calico-node"
+	case "kube-flannel-ds", "flannel":
+		cni, container = CNIFlannel, "kube-flannel"
+	default:
+		return nil
+	}
+	version := extractImageVersion(ds.Spec.Template.Spec.Containers, container)
+	if version == "" && cni == CNICilium {
+		version = extractImageVersion(ds.Spec.Template.Spec.Containers, "")
+	}
+	return &CNIInfo{
+		Name:      cni,
+		Version:   version,
+		Namespace: ds.Namespace,
+		DaemonSet: ds.Name,
+		Status: CNIStatus{
+			Ready:   ds.Status.NumberReady,
+			Desired: ds.Status.DesiredNumberScheduled,
+			Healthy: ds.Status.NumberReady == ds.Status.DesiredNumberScheduled && ds.Status.DesiredNumberScheduled > 0,
+		},
+		DetectionMethod: "daemonset",
+	}
+}
+
+// cniCRDGroup returns the API group whose presence marks a CNI's CRDs, or ""
+// for a CNI detected without CRDs.
+func cniCRDGroup(cni string) string {
+	switch cni {
+	case CNICilium:
+		return "cilium.io"
+	case CNICalico:
+		return "crd.projectcalico.org"
+	}
+	return ""
+}
+
+// ciliumFeaturesFromConfig reads Cilium's enabled features from the
+// cilium-config ConfigMap data. The Hubble Relay address is not part of it.
+func ciliumFeaturesFromConfig(data map[string]string) CNIFeatures {
+	return CNIFeatures{
+		Hubble:         data["enable-hubble"] == "true",
+		Encryption:     data["enable-encryption"] == "true",
+		EncryptionMode: data["encryption-type"],
+		ClusterMesh:    data["cluster-mesh-config"] != "",
+		WireGuard:      data["encryption-type"] == "wireguard",
+		EnvoyEnabled:   data["enable-envoy-config"] == "true",
+		IPAMMode:       data["ipam"],
+	}
+}
+
 // fetchServerGroups retrieves the API server groups once for reuse.
 func (d *Detector) fetchServerGroups() []metav1.APIGroup {
+	// nolint:cluster-routing local path: the Detector detects the local cluster; a remote cluster is detected by detectRemote (remote.go)
 	disc := d.k8sClient.DiscoveryClient()
 	if disc == nil {
 		return nil
@@ -222,6 +233,7 @@ func hasAPIGroup(groups []metav1.APIGroup, name string) bool {
 // detectCiliumFeatures reads the cilium-config ConfigMap to detect enabled features.
 func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 	features := CNIFeatures{}
+	// nolint:cluster-routing local path: the Detector detects the local cluster; a remote cluster is detected by detectRemote (remote.go)
 	cs := d.k8sClient.BaseClientset()
 
 	for _, ns := range ciliumSearchNamespaces() {
@@ -229,13 +241,7 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 		if err != nil {
 			continue
 		}
-		features.Hubble = cm.Data["enable-hubble"] == "true"
-		features.Encryption = cm.Data["enable-encryption"] == "true"
-		features.EncryptionMode = cm.Data["encryption-type"]
-		features.ClusterMesh = cm.Data["cluster-mesh-config"] != ""
-		features.WireGuard = cm.Data["encryption-type"] == "wireguard"
-		features.EnvoyEnabled = cm.Data["enable-envoy-config"] == "true"
-		features.IPAMMode = cm.Data["ipam"]
+		features = ciliumFeaturesFromConfig(cm.Data)
 
 		// Discover Hubble Relay service address
 		if features.Hubble {
@@ -260,7 +266,16 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 // Istio/Linkerd detection is deferred to Phase C (needs per-mesh adapter + test environment).
 func (d *Detector) DetectMesh() string {
 	info := d.CachedInfo()
-	if info != nil && info.Features.EnvoyEnabled {
+	if info == nil {
+		return "none"
+	}
+	return meshEngineFor(info.Features)
+}
+
+// meshEngineFor returns the service mesh engine Cilium's features enable:
+// "cilium" when its Envoy-based mesh is on, "none" otherwise.
+func meshEngineFor(f CNIFeatures) string {
+	if f.EnvoyEnabled {
 		return "cilium"
 	}
 	return "none"

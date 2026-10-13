@@ -11,6 +11,12 @@ import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { api, apiGet, apiPost } from "@/lib/api.ts";
+import ComplianceIdentityForm, {
+  type ComplianceIdentityState,
+} from "@/src/islands/ComplianceIdentityForm.tsx";
+import MetricsBindingForm, {
+  type MetricsState,
+} from "@/src/islands/MetricsBindingForm.tsx";
 import { showToast } from "@/src/islands/ToastProvider.tsx";
 import {
   LOCAL_CLUSTER_ID,
@@ -62,10 +68,34 @@ export default function ClusterManager() {
   // rejects registrations missing both CA and this opt-in.
   const allowInsecureTLS = useSignal(false);
 
+  // Per-cluster metrics binding form (one open at a time); the form owns its
+  // fields, this island keeps which cluster is open and each cluster's badge.
+  const metricsFor = useSignal<string | null>(null);
+  const metricsState = useSignal<Record<string, MetricsState>>({});
+  // Same shape for the compliance-history identity form.
+  const identityFor = useSignal<string | null>(null);
+  const identityState = useSignal<Record<string, ComplianceIdentityState>>({});
+
   useEffect(() => {
     if (!IS_BROWSER) return;
     loadClusters();
   }, []);
+
+  function setMetricsState(id: string, state: MetricsState) {
+    metricsState.value = { ...metricsState.value, [id]: state };
+  }
+
+  function setIdentityState(id: string, state: ComplianceIdentityState) {
+    identityState.value = { ...identityState.value, [id]: state };
+  }
+
+  function toggleIdentity(id: string) {
+    identityFor.value = identityFor.value === id ? null : id;
+  }
+
+  function toggleMetrics(id: string) {
+    metricsFor.value = metricsFor.value === id ? null : id;
+  }
 
   async function loadClusters() {
     loading.value = true;
@@ -384,6 +414,46 @@ export default function ClusterManager() {
               </span>
             )}
           </div>
+          {!c.isLocal && metricsState.value[c.id] && (
+            <div style={{ marginTop: "4px" }}>
+              <StatusBadge
+                label={
+                  metricsState.value[c.id] === "configured"
+                    ? "metrics: configured"
+                    : "metrics: not configured"
+                }
+                tone={metricsState.value[c.id] === "configured" ? "ok" : "warn"}
+              />
+            </div>
+          )}
+          {!c.isLocal && identityState.value[c.id] && (
+            <div style={{ marginTop: "4px" }}>
+              <StatusBadge
+                label={
+                  identityState.value[c.id] === "configured"
+                    ? "compliance history: configured"
+                    : "compliance history: not configured"
+                }
+                tone={
+                  identityState.value[c.id] === "configured" ? "ok" : "warn"
+                }
+              />
+            </div>
+          )}
+          {!c.isLocal && identityFor.value === c.id && (
+            <ComplianceIdentityForm
+              key={c.id}
+              clusterId={c.id}
+              onIdentity={setIdentityState}
+            />
+          )}
+          {!c.isLocal && metricsFor.value === c.id && (
+            <MetricsBindingForm
+              key={c.id}
+              clusterId={c.id}
+              onBinding={setMetricsState}
+            />
+          )}
           {c.status !== "connected" && c.statusMessage && (
             <div
               style={{
@@ -457,6 +527,22 @@ export default function ClusterManager() {
             }}
           >
             Test
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => toggleMetrics(c.id)}
+          >
+            Metrics
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => toggleIdentity(c.id)}
+          >
+            Compliance identity
           </Button>
           <Button
             type="button"

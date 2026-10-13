@@ -1,14 +1,32 @@
 import { Card } from "@/components/ui/Card.tsx";
-import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
 import type {
   CiliumConnectivityResponse,
   NodeConnectivity as NodeHealth,
 } from "@/lib/cilium-types.ts";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
+import { panelState } from "@/lib/networking-state.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
+/**
+ * What a remote exec failure means for a node's row. The agent could not be
+ * asked, so the node's health is unknown, not failed (#608 R8).
+ */
+function execProblem(execError: string): string {
+  switch (execError) {
+    case "forbidden":
+      return "exec into the agent is not permitted";
+    case "timeout":
+      return "the agent timed out";
+    case "pod_gone":
+      return "the agent pod is gone";
+    default:
+      return "exec into the agent failed";
+  }
+}
+
 export default function NodeConnectivity() {
-  const { data, loading, error, lastFetchedAt } =
+  const { data, loading, error, failure, refetch, lastFetchedAt } =
     usePoll<CiliumConnectivityResponse>("/v1/networking/cilium/connectivity", {
       interval: 60_000,
       shouldContinuePolling: (d) => d.configured,
@@ -21,7 +39,10 @@ export default function NodeConnectivity() {
   if (error.value) {
     return (
       <Card title="Node Connectivity">
-        <ErrorBanner message={error.value} />
+        <PanelStateNotice
+          state={panelState(failure.value, "node connectivity")}
+          onRetry={refetch}
+        />
       </Card>
     );
   }
@@ -69,6 +90,7 @@ export default function NodeConnectivity() {
         {resp.nodes.map((node: NodeHealth) => (
           <div
             key={node.nodeName}
+            data-node={node.nodeName}
             class="flex items-center justify-between text-sm"
           >
             <div class="flex items-center gap-2">
@@ -78,12 +100,18 @@ export default function NodeConnectivity() {
               />
               <span class="font-mono text-text-primary">{node.nodeName}</span>
             </div>
-            <div class="flex items-center gap-2">
-              <span class="text-xs text-text-muted">{node.healthState}</span>
-              {node.message && (
-                <span class="text-xs text-text-muted">— {node.message}</span>
-              )}
-            </div>
+            {node.execError ? (
+              <span class="text-xs text-warning">
+                Exec problem: {execProblem(node.execError)}
+              </span>
+            ) : (
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-text-muted">{node.healthState}</span>
+                {node.message && (
+                  <span class="text-xs text-text-muted">— {node.message}</span>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>

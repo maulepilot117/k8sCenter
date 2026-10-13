@@ -1,10 +1,11 @@
 import { useSignal } from "@preact/signals";
 import { Button } from "@/components/ui/Button.tsx";
 import { Card } from "@/components/ui/Card.tsx";
-import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
+import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
 import { apiGet } from "@/lib/api.ts";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
+import { panelState } from "@/lib/networking-state.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface CNIFeatures {
@@ -30,6 +31,11 @@ interface CNIInfo {
   status: CNIStatus;
   features: CNIFeatures;
   hasCRDs: boolean;
+  /**
+   * Set when a remote cluster's discovery could not be read, so hasCRDs
+   * false means "unknown", not "absent". Never set on the local cluster.
+   */
+  crdsUnknown?: boolean;
   detectionMethod: string;
 }
 
@@ -38,6 +44,8 @@ export default function CniOverview() {
     data: cniData,
     loading,
     error,
+    failure,
+    refetch,
   } = usePoll<CNIInfo>("/v1/networking/cni", { interval: 120_000 });
   const refreshing = useSignal(false);
 
@@ -63,7 +71,12 @@ export default function CniOverview() {
   if (error.value) {
     return (
       <div class="md:col-span-2">
-        <ErrorBanner message={error.value} />
+        <Card>
+          <PanelStateNotice
+            state={panelState(failure.value, "the CNI status")}
+            onRetry={refetch}
+          />
+        </Card>
       </div>
     );
   }
@@ -132,7 +145,13 @@ export default function CniOverview() {
           <div class="flex justify-between">
             <span class="text-text-muted">CRDs</span>
             <StatusBadge
-              label={info.hasCRDs ? "Installed" : "Not Found"}
+              label={
+                info.hasCRDs
+                  ? "Installed"
+                  : info.crdsUnknown
+                    ? "Unknown"
+                    : "Not Found"
+              }
               tone={info.hasCRDs ? "ok" : "neutral"}
             />
           </div>

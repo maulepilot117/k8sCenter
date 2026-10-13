@@ -77,21 +77,52 @@ const V1_REMOTE: SectionCoverage[] = [
   row("pods", "ok", { observedAt: "2026-09-27T12:00:00Z" }),
   row("services", "ok", { observedAt: "2026-09-27T12:00:00Z" }),
   row("cpu", "unavailable", {
-    detail:
-      "remote CPU/memory usage requires the remote metrics binding (deferred)",
+    reasonCode: "metrics_not_configured",
+    detail: "metrics are not configured for this cluster",
   }),
   row("memory", "unavailable", {
-    detail:
-      "remote CPU/memory usage requires the remote metrics binding (deferred)",
+    reasonCode: "metrics_not_configured",
+    detail: "metrics are not configured for this cluster",
   }),
   row("alerts", "unavailable", {
-    detail: "alert counts are bound to the local Alertmanager",
+    reasonCode: "alerts_not_configured",
+    detail: "no Alertmanager is configured for this cluster",
   }),
   row("health", "unavailable", {
-    detail:
-      "remote health scoring requires the remote metrics binding (deferred)",
+    detail: "remote health scoring is not available yet",
   }),
 ];
+
+describe("alerts_not_configured", () => {
+  test("names the Alertmanager URL, not the Prometheus binding", () => {
+    const msg = coverageMessage(
+      row("alerts", "unavailable", {
+        reasonCode: "alerts_not_configured",
+        detail: "no Alertmanager is configured for this cluster",
+      }),
+    );
+    expect(msg).toContain("Alertmanager URL");
+    expect(msg).not.toContain("Prometheus");
+    expect(msg).not.toContain("Metrics are not configured");
+  });
+
+  test("wins over whatever detail the backend wrote", () => {
+    const msg = coverageMessage(
+      row("alerts", "unavailable", {
+        reasonCode: "alerts_not_configured",
+        detail: "something else",
+      }),
+    );
+    expect(msg).toContain("Alertmanager URL");
+  });
+
+  test("the alerts count is withheld, never shown as zero", () => {
+    expect(
+      summaryCountLabel(remoteSummary(V1_REMOTE), "alerts", 0, "active alerts")
+        .text,
+    ).toBe("— active alerts");
+  });
+});
 
 describe("health (AE3)", () => {
   test("shouldRenderHealth is false for null health", () => {
@@ -117,6 +148,27 @@ describe("health (AE3)", () => {
     });
     expect(shouldRenderHealth(s)).toBe(true);
     expect(formatHealthScore(s)).toBe("88");
+  });
+
+  test("a remote ok health row with a score renders the score", () => {
+    const s = remoteSummary([row("health", "ok")], {
+      health: { score: 91, status: "healthy" } as CoveredSummary["health"],
+    });
+    expect(shouldRenderHealth(s)).toBe(true);
+    expect(formatHealthScore(s)).toBe("91");
+  });
+
+  test("a remote unavailable health row renders its detail", () => {
+    const s = remoteSummary(
+      [
+        row("health", "unavailable", {
+          detail: "the alerts input could not be read",
+        }),
+      ],
+      { health: { score: 0, status: "unknown" } as CoveredSummary["health"] },
+    );
+    expect(shouldRenderHealth(s)).toBe(false);
+    expect(healthUnscoredReason(s)).toBe("The alerts input could not be read.");
   });
 
   test("null health never renders as zero", () => {
@@ -210,7 +262,9 @@ describe("health signals", () => {
   test("the health coverage row outranks a signal reason", () => {
     const s = localHealth({ alerts: { status: "unknown" } });
     s.coverage = V1_REMOTE;
-    expect(healthUnscoredReason(s)).toContain("health scoring requires");
+    expect(healthUnscoredReason(s)).toContain(
+      "health scoring is not available yet",
+    );
   });
 
   test("a null score with every signal resolved keeps the generic reason", () => {
@@ -392,9 +446,20 @@ describe("tones (R3)", () => {
     );
   });
 
+  test("metrics_not_configured renders a plain sentence, and an ok cpu row none", () => {
+    expect(
+      coverageMessage(
+        row("cpu", "unavailable", { reasonCode: "metrics_not_configured" }),
+      ),
+    ).toBe("Metrics are not configured for this cluster.");
+    expect(coverageMessage(row("cpu", "ok"))).toBe("");
+  });
+
   test("withheldReason gives the reason for an unobservable section only", () => {
     const s = remoteSummary(V1_REMOTE);
-    expect(withheldReason(s, "cpu")).toContain("remote metrics binding");
+    expect(withheldReason(s, "cpu")).toContain(
+      "Metrics are not configured for this cluster.",
+    );
     expect(withheldReason(s, "nodes")).toBeNull();
     expect(withheldReason(localSummary(), "cpu")).toBeNull();
   });
@@ -466,7 +531,7 @@ describe("unobserved usage (local, no Prometheus)", () => {
 
   test("a coverage row's reason outranks the sentinel's", () => {
     expect(withheldReason(remoteSummary(V1_REMOTE), "cpu")).toContain(
-      "remote metrics binding",
+      "Metrics are not configured for this cluster.",
     );
   });
 });
@@ -571,7 +636,7 @@ describe("WidgetHost gating (AE3)", () => {
     seedSummary(remoteSummary(V1_REMOTE));
     const html = host("cpu-tile");
     expect(html).toContain('data-widget-state="coverage-unavailable"');
-    expect(html).toContain("remote metrics binding");
+    expect(html).toContain("Metrics are not configured for this cluster.");
     expect(html).not.toContain(">0<");
   });
 
@@ -579,7 +644,8 @@ describe("WidgetHost gating (AE3)", () => {
     seedSummary(remoteSummary(V1_REMOTE));
     const html = host("active-alerts");
     expect(html).toContain('data-widget-state="coverage-unavailable"');
-    expect(html).toContain("local Alertmanager");
+    expect(html).toContain("Alertmanager");
+    expect(html).not.toContain("Prometheus");
   });
 
   test("the health card shows no score on a remote cluster", () => {
@@ -721,7 +787,7 @@ describe("widget bodies", () => {
     const html = body("nodes");
     expect(html).not.toContain(">0%<");
     expect(html).toContain(">—<");
-    expect(html).toContain("remote metrics binding");
+    expect(html).toContain("Metrics are not configured for this cluster.");
     expect(html).toContain("3/3");
   });
 

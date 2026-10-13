@@ -1,5 +1,7 @@
 package networking
 
+import "github.com/kubecenter/kubecenter/internal/k8s"
+
 // CiliumBGPResponse is the response for GET /api/v1/networking/cilium/bgp.
 type CiliumBGPResponse struct {
 	Configured bool            `json:"configured"`
@@ -44,6 +46,9 @@ type CiliumSubsystemsResponse struct {
 	Mesh        *MeshInfo        `json:"mesh,omitempty"`
 	ClusterMesh *ClusterMeshInfo `json:"clusterMesh,omitempty"`
 	Endpoints   *EndpointCounts  `json:"endpoints,omitempty"`
+	// Coverage names each source a remote cluster could not provide; the
+	// sections built from it are omitted or partial. Never set locally.
+	Coverage []k8s.SourceCoverage `json:"coverage,omitempty"`
 }
 
 // EncryptionInfo describes the Cilium encryption configuration from ConfigMap and CiliumNode CRDs.
@@ -124,6 +129,11 @@ type NodeConnectivity struct {
 	NodeName    string `json:"nodeName"`
 	HealthState string `json:"healthState"` // Ok, Warning, Failure
 	Message     string `json:"message,omitempty"`
+	// ExecError is set when the agent on this node could not be reached by
+	// exec on a remote cluster (forbidden, timeout, pod_gone, failed). The
+	// node's health is then Unknown, not Failure: the exec failed, not the
+	// node.
+	ExecError string `json:"execError,omitempty"`
 }
 
 // computeExhaustionRisk returns the exhaustion risk level based on IPAM utilization.

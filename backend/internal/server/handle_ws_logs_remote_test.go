@@ -12,7 +12,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
-	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -62,21 +61,9 @@ func wsLogsTestServer(t *testing.T, clusterID string) (*httptest.Server, func() 
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	issueToken := func() string {
-		t.Helper()
-		u := &auth.User{
-			ID:                 "test-user",
-			Username:           "alice",
-			KubernetesUsername: "alice",
-			KubernetesGroups:   []string{"dev"},
-			Roles:              []string{"viewer"},
-		}
-		tok, err := srv.TokenManager.IssueAccessToken(u)
-		if err != nil {
-			t.Fatalf("IssueAccessToken: %v", err)
-		}
-		return tok
-	}
+	// Admin, so a remote cluster passes the auth helper's admin check and
+	// reaches the handler's own remote gate.
+	issueToken := func() string { return issueWSToken(t, srv, true) }
 
 	return ts, issueToken
 }
@@ -187,5 +174,37 @@ func TestHandleWSLogs_LocalCluster_DoesNotTriggerRemoteGate(t *testing.T) {
 			// Gate passed — stream subscription was attempted
 			return
 		}
+	}
+}
+
+// TestHandleWSLogs_RemoteInBandCluster_Refused verifies that a remote cluster
+// named in the auth frame is refused on the logs route before any filter is
+// read, so no log stream starts (#608 KTD10).
+func TestHandleWSLogs_RemoteInBandCluster_Refused(t *testing.T) {
+	ts, issueToken := wsLogsTestServer(t, "local")
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/logs/default/my-pod/app"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"http://localhost"}})
+	if err != nil {
+		t.Fatalf("WS dial failed: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(map[string]any{
+		"type": "auth", "token": issueToken(), "clusterId": "remote-cluster-99",
+	}); err != nil {
+		t.Fatalf("WriteJSON auth: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var msg map[string]any
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if msg["type"] != "error" || msg["reason"] != "unsupported_platform" {
+		t.Fatalf("got %v, want an unsupported_platform refusal", msg)
+	}
+	// The server closed the connection: nothing else is ever sent.
+	if err := conn.ReadJSON(&msg); err == nil {
+		t.Fatalf("got a second frame %v after the refusal", msg)
 	}
 }

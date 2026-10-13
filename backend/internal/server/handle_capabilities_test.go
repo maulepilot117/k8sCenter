@@ -257,15 +257,29 @@ func assertCapabilities(t *testing.T, body CapabilitiesResponse, ids []string, w
 // other remote test reads them rather than hard-coding its own copy.
 var (
 	wantRemoteSupported = []string{
-		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply", "dashboard.summary",
+		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply", "dashboard.summary", "resources.read",
 		"node.drain", "gitops.applications", "velero.backups", "storage.snapshots",
 		"storage.classes", "flux.notifications", "alert.rules", "gateway.read", "mesh.routing",
 		"mesh.mtls", "eso.read", "certmanager.certificates", "policy.read", "changes.receipts",
+		"resources.counts", "cluster.info", "limits.read", "scanning.read",
+		"topology.graph", "diagnostics.read",
+		// #608 PR 4a: served from the cluster's metrics binding.
+		"monitoring.query", "dashboard.trends",
+		// #608 PR 4b: queried through the cluster's metrics binding.
+		"mesh.golden_signals",
+		// #608 PR 5a: Cilium views read, and the config is written, on the
+		// selected cluster as the user; agent exec runs as the user there.
+		"cni.config", "cilium.status", "cilium.connectivity",
+		// #608 PR 5b: flows come from the selected cluster's own relay.
+		"flows.stream",
+		// #608: snapshots taken as each cluster's background identity.
+		"policy.compliance_history",
 	}
 	wantRemoteUnsupported = []string{
-		"resources.counts", "pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
-		"cni.config", "mesh.golden_signals", "eso.history", "eso.metrics",
-		"topology.graph", "diagnostics.read", "policy.compliance_history", "velero.assurance",
+		"pod.exec", "logs.stream", "logs.search", "eso.write",
+		"eso.history", "eso.metrics",
+		"velero.assurance",
+		"incidents.capture",
 	}
 )
 
@@ -1344,6 +1358,8 @@ func TestCapabilityOperations_ScopePinned(t *testing.T) {
 	// CRD) is namespaced.
 	wantClusterScoped := map[string]bool{
 		"dashboard.summary": true,
+		"dashboard.trends":  true,
+		"cluster.info":      true,
 		"node.drain":        true,
 		"storage.classes":   true,
 	}

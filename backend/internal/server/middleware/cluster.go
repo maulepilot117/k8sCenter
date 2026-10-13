@@ -9,7 +9,14 @@ import (
 
 type clusterContextKey int
 
-const clusterIDCtxKey clusterContextKey = 0
+const (
+	clusterIDCtxKey clusterContextKey = iota
+	clusterHeaderCtxKey
+)
+
+// MaxClusterIDLength caps a cluster id taken from a request. Registered ids
+// are 32-character hex strings; the cap keeps a hostile value out of logs.
+const MaxClusterIDLength = 64
 
 // ClusterContext extracts the X-Cluster-ID header and stores it in the request context.
 // Non-local cluster access requires the admin role.
@@ -20,7 +27,7 @@ func ClusterContext(next http.Handler) http.Handler {
 			clusterID = "local"
 		} else {
 			// Validate header length (cluster IDs are 32-char hex strings)
-			if len(clusterID) > 64 {
+			if len(clusterID) > MaxClusterIDLength {
 				writeAuthError(w, http.StatusBadRequest, "invalid X-Cluster-ID")
 				return
 			}
@@ -44,12 +51,14 @@ func ClusterContext(next http.Handler) http.Handler {
 // reads the X-Cluster-ID header before the connection is upgraded and stores
 // the resolved value in the request context. Unlike ClusterContext, it does
 // NOT enforce the admin-required check — WS handlers do authentication in-
-// band after upgrade (see ws_helpers.wsAuthAndUpgrade), so user identity
+// band after upgrade (see ws_helpers.wsAuthAndUpgradeFor), so user identity
 // isn't in the request context yet at middleware time.
 //
-// Authorization for non-local clusters is enforced downstream by the
-// per-handler gates (e.g. handle_ws_logs returns "remote clusters not
-// supported" when the resolved clusterID is non-local). Without this
+// Authorization for non-local clusters is enforced downstream: the in-band
+// auth helper refuses a non-admin naming a remote cluster, and the
+// per-handler gates refuse what each stream does not support (e.g.
+// handle_ws_logs returns "remote clusters not supported" when the resolved
+// clusterID is non-local). Without this
 // middleware, those gates always saw "local" because ClusterContext only
 // ran inside the /api/v1 REST group, leaving the WS routes blind to
 // X-Cluster-ID — F#6 of the security audit re-review.
@@ -61,13 +70,24 @@ func WSClusterContext(next http.Handler) http.Handler {
 		}
 		// Same length cap as ClusterContext — guards downstream handlers
 		// that log the cluster ID against unbounded header abuse.
-		if len(clusterID) > 64 {
+		if len(clusterID) > MaxClusterIDLength {
 			writeAuthError(w, http.StatusBadRequest, "invalid X-Cluster-ID")
 			return
 		}
 		ctx := context.WithValue(r.Context(), clusterIDCtxKey, clusterID)
+		// Record whether the header was sent at all: "local" by default and
+		// "local" by request look the same above, and the flows stream must
+		// tell them apart (#608 KTD10).
+		ctx = context.WithValue(ctx, clusterHeaderCtxKey, r.Header.Get("X-Cluster-ID") != "")
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// ClusterHeaderPresent reports whether WSClusterContext saw an X-Cluster-ID
+// header on the upgrade request, as opposed to defaulting to "local".
+func ClusterHeaderPresent(ctx context.Context) bool {
+	present, _ := ctx.Value(clusterHeaderCtxKey).(bool)
+	return present
 }
 
 // ClusterIDFromContext returns the cluster ID from the request context.

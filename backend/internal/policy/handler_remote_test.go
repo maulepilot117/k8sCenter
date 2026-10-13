@@ -34,6 +34,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/store"
 )
 
 const remoteCluster = "remote-1"
@@ -646,11 +647,61 @@ func TestRemote_TooManySourcesIsRefused(t *testing.T) {
 	f.assertNoLocal(t)
 }
 
-// Compliance history is recorded for the local cluster only, so a remote
-// selection is refused, not answered with the local trend. The handler has
-// no ComplianceStore, which locally answers 503: the 501 proves the remote
-// check runs first and reads nothing.
-func TestRemote_ComplianceHistoryIsUnsupported(t *testing.T) {
+// fakeHistory serves canned rows per cluster id and records which ids were read.
+type fakeHistory struct {
+	points map[string][]store.ComplianceSnapshot
+	gaps   map[string][]store.ComplianceGap
+	read   []string
+}
+
+func (f *fakeHistory) QueryHistory(_ context.Context, id string, _ int) ([]store.ComplianceSnapshot, error) {
+	f.read = append(f.read, id)
+	return f.points[id], nil
+}
+
+func (f *fakeHistory) QueryGaps(_ context.Context, id string, _ int) ([]store.ComplianceGap, error) {
+	f.read = append(f.read, id)
+	return f.gaps[id], nil
+}
+
+type fakeIdentities map[string]store.ComplianceIdentity
+
+func (f fakeIdentities) Get(_ context.Context, id string) (store.ComplianceIdentity, error) {
+	if i, ok := f[id]; ok {
+		return i, nil
+	}
+	return store.ComplianceIdentity{}, store.ErrComplianceIdentityNotFound
+}
+
+func day(s string) time.Time {
+	d, _ := time.Parse("2006-01-02", s)
+	return d
+}
+
+func historyFixture(t *testing.T, ids fakeIdentities) (*remoteFixture, *fakeHistory) {
+	t.Helper()
+	f := newRemoteFixture(t, remoteBothEngines())
+	hist := &fakeHistory{
+		points: map[string][]store.ComplianceSnapshot{
+			remoteCluster: {
+				{Date: day("2026-10-01"), OverallScore: 80, Pass: 8, Fail: 2, Total: 10, IdentityRevision: 1},
+				{Date: day("2026-10-02"), OverallScore: 50, Pass: 1, Fail: 1, Total: 2, IdentityRevision: 1, Partial: true, Unreadable: []string{"gatekeeper"}},
+				{Date: day("2026-10-03"), OverallScore: 90, Pass: 9, Fail: 1, Total: 10, IdentityRevision: 3},
+			},
+			k8s.LocalClusterID: {{Date: day("2026-10-01"), OverallScore: 11, Pass: 1, Fail: 8, Total: 9}},
+		},
+		gaps: map[string][]store.ComplianceGap{
+			remoteCluster: {{Date: day("2026-10-04"), Reason: "unreachable", IdentityRevision: 3}},
+		},
+	}
+	f.h.History = hist
+	f.h.ComplianceIdentities = ids
+	return f, hist
+}
+
+// With no identity reader wired, remote history is refused with a reason
+// and reads nothing; the local 503 without a store is unchanged.
+func TestRemote_ComplianceHistoryIsUnsupportedWithoutIdentityReader(t *testing.T) {
 	f := newRemoteFixture(t, remoteBothEngines())
 
 	rr := call(t, f.h.HandleComplianceHistory, "/policies/compliance/history")
@@ -663,6 +714,101 @@ func TestRemote_ComplianceHistoryIsUnsupported(t *testing.T) {
 	local := callOn(t, k8s.LocalClusterID, f.h.HandleComplianceHistory, "/policies/compliance/history")
 	if local.Code != http.StatusServiceUnavailable {
 		t.Errorf("local history without a store = %d, want the historical 503", local.Code)
+	}
+}
+
+// A typed-nil identity store is treated as not wired, not dereferenced.
+func TestRemote_ComplianceHistoryTypedNilIdentityStore(t *testing.T) {
+	f, _ := historyFixture(t, nil)
+	var nilStore *store.ComplianceIdentityStore
+	f.h.ComplianceIdentities = nilStore
+	rr := call(t, f.h.HandleComplianceHistory, "/policies/compliance/history")
+	if rr.Code != http.StatusNotImplemented {
+		t.Errorf("got %d %s, want 501", rr.Code, rr.Body.String())
+	}
+}
+
+// AE1: no identity row answers 404 compliance_history_not_configured even
+// though rows are stored, and no rows are read.
+func TestRemote_ComplianceHistoryNotConfigured(t *testing.T) {
+	f, hist := historyFixture(t, fakeIdentities{})
+
+	rr := call(t, f.h.HandleComplianceHistory, "/policies/compliance/history")
+	var body errorBody
+	_ = json.Unmarshal(rr.Body.Bytes(), &body)
+	if rr.Code != http.StatusNotFound || body.Error.Reason != "compliance_history_not_configured" {
+		t.Fatalf("got %d %s, want 404 compliance_history_not_configured", rr.Code, rr.Body.String())
+	}
+	if len(hist.read) != 0 {
+		t.Errorf("read rows %v for an unconfigured cluster, want none", hist.read)
+	}
+}
+
+// AE7 and the response shape: points keep the bare-array data key, markers
+// ride on the points, gaps (including one after the last point) sit beside
+// data, and only the selected remote cluster's rows are read.
+func TestRemote_ComplianceHistoryServesRemoteRows(t *testing.T) {
+	f, hist := historyFixture(t, fakeIdentities{remoteCluster: {ClusterID: remoteCluster, Username: "bg", Revision: 3}})
+
+	rr := call(t, f.h.HandleComplianceHistory, "/policies/compliance/history?days=30")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d %s", rr.Code, rr.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	var points []map[string]any
+	if err := json.Unmarshal(raw["data"], &points); err != nil {
+		t.Fatalf("data is not a bare array: %s", raw["data"])
+	}
+	if len(points) != 3 {
+		t.Fatalf("points = %d, want 3", len(points))
+	}
+	if _, ok := points[0]["identityChanged"]; ok {
+		t.Errorf("first point carries identityChanged: %v", points[0])
+	}
+	if _, ok := points[1]["identityChanged"]; ok {
+		t.Errorf("same-revision point carries identityChanged: %v", points[1])
+	}
+	if points[2]["identityChanged"] != true {
+		t.Errorf("point after the revision change lacks identityChanged: %v", points[2])
+	}
+	if points[1]["partial"] != true || fmt.Sprint(points[1]["unreadable"]) != "[gatekeeper]" {
+		t.Errorf("partial point = %v, want partial with gatekeeper unreadable", points[1])
+	}
+	if _, ok := points[0]["partial"]; ok {
+		t.Errorf("complete point carries partial: %v", points[0])
+	}
+	if points[0]["score"] != float64(80) {
+		t.Errorf("score = %v, want 80 (not the local row's 11)", points[0]["score"])
+	}
+	var gaps []map[string]string
+	if err := json.Unmarshal(raw["gaps"], &gaps); err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 1 || gaps[0]["date"] != "2026-10-04" || gaps[0]["reason"] != "unreachable" {
+		t.Errorf("gaps = %v, want the after-last-point unreachable gap", gaps)
+	}
+	for _, id := range hist.read {
+		if id != remoteCluster {
+			t.Errorf("remote request read rows for %q", id)
+		}
+	}
+}
+
+// The local response is exactly the historical bytes for the same rows:
+// no gaps key, no remote-only fields, even when the row carries none.
+func TestLocal_ComplianceHistoryBytesUnchanged(t *testing.T) {
+	f, hist := historyFixture(t, fakeIdentities{})
+	f.h.ComplianceIdentities = nil
+	rr := callOn(t, k8s.LocalClusterID, f.h.HandleComplianceHistory, "/policies/compliance/history")
+	want := `{"data":[{"date":"2026-10-01","score":11,"pass":1,"fail":8,"warn":0,"total":9}]}` + "\n"
+	if rr.Code != http.StatusOK || rr.Body.String() != want {
+		t.Errorf("local body = %q (%d), want %q", rr.Body.String(), rr.Code, want)
+	}
+	if len(hist.read) != 1 || hist.read[0] != k8s.LocalClusterID {
+		t.Errorf("local read ids = %v, want only local", hist.read)
 	}
 }
 

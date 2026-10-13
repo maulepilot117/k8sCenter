@@ -160,14 +160,30 @@ func (s *ClusterStore) UpdateStatus(ctx context.Context, id, status, message, k8
 	return nil
 }
 
-// Delete removes a cluster.
+// Delete removes a cluster together with its compliance history, in one
+// transaction. compliance_snapshots and compliance_snapshot_gaps have no FK to
+// clusters, so they are deleted here; the identity row goes by cascade.
 func (s *ClusterStore) Delete(ctx context.Context, id string) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM clusters WHERE id = $1 AND is_local = false`, id)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("deleting cluster: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	result, err := tx.Exec(ctx, `DELETE FROM clusters WHERE id = $1 AND is_local = false`, id)
 	if err != nil {
 		return fmt.Errorf("deleting cluster: %w", err)
 	}
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("cluster not found or is the local cluster")
+	}
+	for _, table := range []string{"compliance_snapshots", "compliance_snapshot_gaps"} {
+		if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE cluster_id = $1`, id); err != nil {
+			return fmt.Errorf("deleting cluster compliance history: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("deleting cluster: %w", err)
 	}
 	return nil
 }

@@ -22,6 +22,7 @@ type Config struct {
 	Alerting    AlertingConfig    `koanf:"alerting"`
 	Audit       AuditConfig       `koanf:"audit"`
 	Changes     ChangesConfig     `koanf:"changes"`
+	Incidents   IncidentsConfig   `koanf:"incidents"`
 	Database    DatabaseConfig    `koanf:"database"`
 	Dev         bool              `koanf:"dev"`
 	ClusterID   string            `koanf:"clusterid"`
@@ -41,6 +42,42 @@ type ChangesConfig struct {
 	// not validated here; the receipt store refuses a value below 1 (it never
 	// deletes on one) and the sweep logs the refusal each pass.
 	ReceiptRetentionDays int `koanf:"receiptretentiondays"`
+}
+
+// IncidentsConfig holds incident-investigation (Release D) settings. Env vars
+// are KUBECENTER_INCIDENTS_<FIELD>, e.g. KUBECENTER_INCIDENTS_RETENTIONDAYS.
+//
+// Load does not validate these. The bounds that matter come from the store's
+// SQL CHECK ceilings, which this package cannot import (store depends on
+// config), so incidents.ResolveSettings corrects every out-of-range value at
+// startup and logs each correction.
+type IncidentsConfig struct {
+	// RetentionDays is how long incidents are kept (default 30, range 1-3650).
+	RetentionDays int `koanf:"retentiondays"`
+	// RetentionLoweringConfirmed (default false) acknowledges that lowering
+	// RetentionDays deletes existing incidents. When lowering would delete
+	// incidents captured under a longer retention, the first sweep is deferred
+	// one hour (a window to roll the change back) unless this is true. Env:
+	// KUBECENTER_INCIDENTS_RETENTIONLOWERINGCONFIRMED.
+	RetentionLoweringConfirmed bool `koanf:"retentionloweringconfirmed"`
+	// Evidence limits, each clamped to [minimum, the SQL CHECK ceiling].
+	MaxItemBytes     int `koanf:"maxitembytes"`
+	MaxIncidentBytes int `koanf:"maxincidentbytes"`
+	MaxItems         int `koanf:"maxitems"`
+	MaxScopes        int `koanf:"maxscopes"`
+	// CaptureTimeout bounds one whole capture (default 14s); SourceTimeout one
+	// evidence source inside it (default 5s, capped at CaptureTimeout).
+	// MaxConcurrency bounds sources run at once. A capture request must finish
+	// inside 27s: the browser path goes through the frontend proxy (30s,
+	// PROXY_TIMEOUT_MS), so CaptureTimeout is clamped to at most 14.75s, which
+	// leaves the 250ms collector grace, 7s for the insert (above the store's 5s
+	// lock timeout) and the 5s commit bound inside the budget
+	// (incidents.captureRequestBudget). The collector's deadline is also capped
+	// by what is left of the budget when it starts. The server WriteTimeout
+	// (60s) is not the binding limit. Corrections are logged.
+	CaptureTimeout time.Duration `koanf:"capturetimeout"`
+	SourceTimeout  time.Duration `koanf:"sourcetimeout"`
+	MaxConcurrency int           `koanf:"maxconcurrency"`
 }
 
 // DatabaseConfig holds PostgreSQL connection configuration.
@@ -197,6 +234,14 @@ func Load(configPath string) (*Config, error) {
 		"clusterid":                    DefaultClusterID,
 		"audit.retentiondays":          DefaultAuditRetentionDays,
 		"changes.receiptretentiondays": DefaultChangesReceiptRetentionDays,
+		"incidents.retentiondays":      DefaultIncidentsRetentionDays,
+		"incidents.maxitembytes":       DefaultIncidentsMaxItemBytes,
+		"incidents.maxincidentbytes":   DefaultIncidentsMaxIncidentBytes,
+		"incidents.maxitems":           DefaultIncidentsMaxItems,
+		"incidents.maxscopes":          DefaultIncidentsMaxScopes,
+		"incidents.capturetimeout":     DefaultIncidentsCaptureTimeout,
+		"incidents.sourcetimeout":      DefaultIncidentsSourceTimeout,
+		"incidents.maxconcurrency":     DefaultIncidentsMaxConcurrency,
 		"alerting.enabled":             DefaultAlertingEnabled,
 		"alerting.retentiondays":       DefaultAlertingRetentionDays,
 		"alerting.ratelimit":           DefaultAlertingRateLimit,

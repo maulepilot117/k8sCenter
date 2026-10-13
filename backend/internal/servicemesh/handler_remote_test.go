@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -514,47 +515,300 @@ func TestRemote_GetRouteFailures(t *testing.T) {
 	})
 }
 
-// Remote mTLS posture reads the remote's pods and policies, names the
-// metric cross-check as unavailable and never asks Prometheus, which only
-// knows the local cluster.
-func TestRemote_MTLSPostureUsesRemotePodsWithoutPrometheus(t *testing.T) {
-	remote := newFakeCluster(t, meshLists(MeshIstio),
+// fakeResolver is a PrometheusResolver serving one remote cluster's bound
+// Prometheus (pc), or err; neither set means the cluster has no binding.
+type fakeResolver struct {
+	pc       *monitoring.PrometheusClient
+	err      error
+	calls    atomic.Int32
+	clusters []string
+}
+
+func (r *fakeResolver) PrometheusFor(_ context.Context, clusterID string) (*monitoring.PrometheusClient, error) {
+	r.calls.Add(1)
+	r.clusters = append(r.clusters, clusterID)
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.pc == nil {
+		return nil, monitoring.ErrNoMetricsBinding
+	}
+	return r.pc, nil
+}
+
+// boundProm stands up the remote cluster's own Prometheus and returns a
+// resolver bound to it, its query counter and its host:port.
+func boundProm(t *testing.T, handler http.HandlerFunc) (*fakeResolver, *atomic.Int32, string) {
+	t.Helper()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		handler(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
+	if err != nil {
+		t.Fatalf("remote prom client: %v", err)
+	}
+	return &fakeResolver{pc: pc}, &hits, srv.Listener.Addr().String()
+}
+
+// mtlsRatios answers the mTLS cross-check: shop/cart saw 9 mTLS requests
+// and 1 plaintext one.
+func mtlsRatios(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[
+		{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"9"]},
+		{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"none"},"value":[1,"1"]}]}}`)
+}
+
+func remoteMTLSCluster(t *testing.T) *fakeCluster {
+	t.Helper()
+	return newFakeCluster(t, meshLists(MeshIstio),
 		[]runtime.Object{newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)},
 		injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}))
-	f := newRemoteFixture(t, remote)
+}
+
+// Remote mTLS posture with a binding runs the metric cross-check against the
+// remote's own Prometheus: its ratios turn the STRICT cart workload mixed.
+func TestRemote_MTLSPostureCrossChecksTheBoundPrometheus(t *testing.T) {
+	f := newRemoteFixture(t, remoteMTLSCluster(t))
+	resolver, remoteHits, _ := boundProm(t, mtlsRatios)
+	f.h.Metrics = resolver
 
 	rr := call(t, f.h.HandleMTLSPosture, "/mesh/mtls", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
 	}
 	body := decode[MTLSPostureResponse](t, rr)
-	if len(body.Workloads) != 1 || body.Workloads[0].Workload != "cart" || body.Workloads[0].State != MTLSActive {
-		t.Errorf("workloads = %+v, want the remote cart workload with STRICT mTLS active", body.Workloads)
+	if len(body.Workloads) != 1 || body.Workloads[0].Workload != "cart" ||
+		body.Workloads[0].State != MTLSMixed || body.Workloads[0].Source != MTLSSourceMetric {
+		t.Errorf("workloads = %+v, want the remote cart workload mixed from the metric", body.Workloads)
 	}
-	if _, ok := body.Errors["prometheus-cross-check"]; !ok {
-		t.Errorf("errors = %v, want the prometheus-cross-check unavailable marker", body.Errors)
+	if msg, ok := body.Errors["prometheus-cross-check"]; ok {
+		t.Errorf("errors[prometheus-cross-check] = %q, want none when the cross-check ran", msg)
 	}
-	if body.Status.Detected != MeshIstio {
-		t.Errorf("status = %+v, want the remote's istio", body.Status)
+	if remoteHits.Load() == 0 {
+		t.Error("the remote's bound Prometheus received no query")
+	}
+	if len(resolver.clusters) == 0 || resolver.clusters[0] != remoteCluster {
+		t.Errorf("resolver asked for clusters %v, want %q", resolver.clusters, remoteCluster)
 	}
 	f.assertNoLocalOrProm(t)
 }
 
-func TestRemote_GoldenSignalsUnavailableWithoutPrometheus(t *testing.T) {
+// Without a binding the remote posture is still served from policies, and
+// the cross-check is named as not configured. A binding that cannot be read
+// degrades to the fixed cross-check failure text: the posture is still valid.
+func TestRemote_MTLSPostureWithoutUsableBinding(t *testing.T) {
+	const notConfigured = "metric cross-check is not configured for this cluster; posture derived from policies only"
+	tests := []struct {
+		name     string
+		resolver PrometheusResolver
+		wantMsg  string
+	}{
+		{"no resolver wired", nil, notConfigured},
+		{"no binding", &fakeResolver{}, notConfigured},
+		{"binding store fails", &fakeResolver{err: &pgconn.PgError{Message: "db at 10.20.30.40 down"}},
+			"metric cross-check unavailable; posture derived from policies only"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRemoteFixture(t, remoteMTLSCluster(t))
+			f.h.Metrics = tt.resolver
+
+			rr := call(t, f.h.HandleMTLSPosture, "/mesh/mtls", nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+			}
+			body := decode[MTLSPostureResponse](t, rr)
+			if len(body.Workloads) != 1 || body.Workloads[0].Workload != "cart" ||
+				body.Workloads[0].State != MTLSActive || body.Workloads[0].Source != MTLSSourcePolicy {
+				t.Errorf("workloads = %+v, want the remote cart workload active from policy", body.Workloads)
+			}
+			if got := body.Errors["prometheus-cross-check"]; got != tt.wantMsg {
+				t.Errorf("errors[prometheus-cross-check] = %q, want %q", got, tt.wantMsg)
+			}
+			if body.Status.Detected != MeshIstio {
+				t.Errorf("status = %+v, want the remote's istio", body.Status)
+			}
+			assertNoLeak(t, rr)
+			f.assertNoLocalOrProm(t)
+		})
+	}
+}
+
+// Remote golden signals read the remote's bound Prometheus and return its
+// series; the local Prometheus is never asked.
+func TestRemote_GoldenSignalsReadTheBoundPrometheus(t *testing.T) {
 	f := newRemoteFixture(t, newFakeCluster(t, meshLists(MeshIstio), nil))
+	stubs := newFakePromServer(t, []promStub{
+		{`response_code=~"5.."`, 2},
+		{"0.99", 300},
+		{"0.95", 120},
+		{"0.50", 40},
+		{"istio_requests_total", 50},
+	})
+	t.Cleanup(stubs.Close)
+	resolver, remoteHits, _ := boundProm(t, stubs.Config.Handler.ServeHTTP)
+	f.h.Metrics = resolver
+
+	rr := call(t, f.h.HandleGoldenSignals, "/mesh/golden-signals?namespace=shop&service=cart", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	got := decode[GoldenSignalsResponse](t, rr).Signals
+	want := GoldenSignals{Mesh: MeshIstio, Namespace: "shop", Service: "cart", Available: true,
+		RPS: 50, ErrorRate: 0.04, P50Ms: 40, P95Ms: 120, P99Ms: 300}
+	if got.Mesh != want.Mesh || got.Namespace != want.Namespace || got.Service != want.Service ||
+		got.Available != want.Available || got.Reason != "" || len(got.MissingQueries) != 0 ||
+		got.RPS != want.RPS || got.ErrorRate != want.ErrorRate ||
+		got.P50Ms != want.P50Ms || got.P95Ms != want.P95Ms || got.P99Ms != want.P99Ms {
+		t.Errorf("signals = %+v, want %+v", got, want)
+	}
+	if n := remoteHits.Load(); n != 6 {
+		t.Errorf("remote Prometheus received %d queries, want 6", n)
+	}
+	if len(resolver.clusters) != 1 || resolver.clusters[0] != remoteCluster {
+		t.Errorf("resolver asked for clusters %v, want [%q]", resolver.clusters, remoteCluster)
+	}
+	f.assertNoLocalOrProm(t)
+}
+
+// AE6: a remote cluster without a binding answers 200 with reason
+// metrics_not_configured, and the local Prometheus receives no request.
+func TestRemote_GoldenSignalsWithoutBindingAreNotConfigured(t *testing.T) {
+	tests := []struct {
+		name     string
+		resolver PrometheusResolver
+	}{
+		{"no resolver wired", nil},
+		{"no binding", &fakeResolver{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRemoteFixture(t, newFakeCluster(t, meshLists(MeshIstio), nil))
+			f.h.Metrics = tt.resolver
+
+			rr := call(t, f.h.HandleGoldenSignals, "/mesh/golden-signals?namespace=shop&service=cart", nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+			}
+			body := decode[GoldenSignalsResponse](t, rr)
+			if body.Signals.Available || body.Signals.Reason != "metrics_not_configured" {
+				t.Errorf("signals = %+v, want unavailable with reason metrics_not_configured", body.Signals)
+			}
+			if body.Signals.Mesh != MeshIstio || body.Signals.Namespace != "shop" || body.Signals.Service != "cart" || body.Status.Detected != MeshIstio {
+				t.Errorf("signals = %+v, status = %+v, want the remote's istio for shop/cart", body.Signals, body.Status)
+			}
+			f.assertNoLocalOrProm(t)
+		})
+	}
+}
+
+// A bound Prometheus that fails every query answers reason unreachable, and
+// neither its address nor its error text reaches the body.
+func TestRemote_GoldenSignalsUnreadablePrometheusIsUnreachable(t *testing.T) {
+	f := newRemoteFixture(t, newFakeCluster(t, meshLists(MeshIstio), nil))
+	resolver, remoteHits, addr := boundProm(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, "upstream exploded at 10.20.30.40: connection refused")
+	})
+	f.h.Metrics = resolver
 
 	rr := call(t, f.h.HandleGoldenSignals, "/mesh/golden-signals?namespace=shop&service=cart", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
 	}
 	body := decode[GoldenSignalsResponse](t, rr)
-	if body.Signals.Available || body.Signals.Reason != string(k8s.ReasonUnsupportedPlatform) {
-		t.Errorf("signals = %+v, want unavailable with reason unsupported_platform", body.Signals)
+	if body.Signals.Available || body.Signals.Reason != "unreachable" {
+		t.Errorf("signals = %+v, want unavailable with reason unreachable", body.Signals)
 	}
-	if body.Signals.Mesh != MeshIstio || body.Status.Detected != MeshIstio {
-		t.Errorf("mesh = %q, status = %+v, want the remote's istio", body.Signals.Mesh, body.Status)
+	if remoteHits.Load() == 0 {
+		t.Error("the remote's bound Prometheus received no query")
+	}
+	for _, s := range []string{addr, "upstream exploded"} {
+		if strings.Contains(rr.Body.String(), s) {
+			t.Errorf("response leaks %q: %s", s, rr.Body.String())
+		}
+	}
+	assertNoLeak(t, rr)
+	f.assertNoLocalOrProm(t)
+}
+
+// A binding that cannot be read is a 503 through the target-error writer,
+// never "not configured".
+func TestRemote_GoldenSignalsBindingStoreFailureIs503(t *testing.T) {
+	f := newRemoteFixture(t, newFakeCluster(t, meshLists(MeshIstio), nil))
+	f.h.Metrics = &fakeResolver{err: &pgconn.PgError{Message: "db at 10.20.30.40 down"}}
+
+	rr := call(t, f.h.HandleGoldenSignals, "/mesh/golden-signals?namespace=shop&service=cart", nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "metrics_not_configured") {
+		t.Errorf("a binding-store failure reads as not configured: %s", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "db at") {
+		t.Errorf("response leaks the store error: %s", rr.Body.String())
+	}
+	assertNoLeak(t, rr)
+	f.assertNoLocalOrProm(t)
+}
+
+// With both meshes on the remote and no ?mesh=, the request is ambiguous:
+// 400 before any binding lookup.
+func TestRemote_GoldenSignalsDualMeshIs400BeforeBindingLookup(t *testing.T) {
+	f := newRemoteFixture(t, newFakeCluster(t, meshLists(MeshIstio, MeshLinkerd), nil))
+	resolver, remoteHits, _ := boundProm(t, mtlsRatios)
+	f.h.Metrics = resolver
+
+	rr := call(t, f.h.HandleGoldenSignals, "/mesh/golden-signals?namespace=shop&service=cart", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+	if n := resolver.calls.Load(); n != 0 {
+		t.Errorf("resolver called %d times, want 0", n)
+	}
+	if n := remoteHits.Load(); n != 0 {
+		t.Errorf("remote Prometheus received %d queries, want 0", n)
 	}
 	f.assertNoLocalOrProm(t)
+}
+
+// The local cluster keeps its own Prometheus for golden signals and the mTLS
+// cross-check: a wired resolver is never consulted.
+func TestLocal_MeshMetricsIgnoreTheResolver(t *testing.T) {
+	f := newRemoteFixture(t, newFakeCluster(t, nil, nil))
+	f.h.Discoverer = seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true}})
+	resolver := &fakeResolver{err: errors.New("the local cluster must not consult the resolver")}
+	f.h.Metrics = resolver
+
+	gs := callOn(t, k8s.LocalClusterID, f.h.HandleGoldenSignals, "/mesh/golden-signals?namespace=shop&service=cart", nil)
+	if gs.Code != http.StatusOK {
+		t.Fatalf("golden signals status %d: %s", gs.Code, gs.Body.String())
+	}
+	if sig := decode[GoldenSignalsResponse](t, gs).Signals; !sig.Available || sig.Reason != "" {
+		t.Errorf("local signals = %+v, want available from the local Prometheus", sig)
+	}
+	afterSignals := f.promHits.Load()
+	if afterSignals != 6 {
+		t.Errorf("local Prometheus received %d golden-signal queries, want 6", afterSignals)
+	}
+
+	mtls := callOn(t, k8s.LocalClusterID, f.h.HandleMTLSPosture, "/mesh/mtls", nil)
+	if mtls.Code != http.StatusOK {
+		t.Fatalf("mtls status %d: %s", mtls.Code, mtls.Body.String())
+	}
+	if errs := decode[MTLSPostureResponse](t, mtls).Errors; errs["prometheus-cross-check"] != "" {
+		t.Errorf("local mtls errors = %v, want no cross-check marker", errs)
+	}
+	if got := f.promHits.Load() - afterSignals; got != 1 {
+		t.Errorf("local Prometheus received %d mTLS queries, want 1", got)
+	}
+	if n := resolver.calls.Load(); n != 0 {
+		t.Errorf("resolver called %d times on the local cluster, want 0", n)
+	}
 }
 
 // mesh=linkerd is validated against the remote, which serves Istio only,

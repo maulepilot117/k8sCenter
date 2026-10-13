@@ -23,16 +23,62 @@ mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
 const { default: DiagnosticWorkspace } = await import(
   "./DiagnosticWorkspace.tsx"
 );
+const { fetchCurrentUser, logout } = await import("@/lib/auth.ts");
+
+/**
+ * Signs a user in, as the top bar's /auth/me load does: the capture button
+ * stays inactive until the signed-in user is known.
+ */
+async function signIn() {
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        data: {
+          user: {
+            id: "u1",
+            username: "u1",
+            provider: "local",
+            kubernetesUsername: "u1",
+            kubernetesGroups: [],
+            roles: [],
+          },
+          rbac: {},
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as unknown as typeof globalThis.fetch;
+  try {
+    await fetchCurrentUser();
+  } finally {
+    globalThis.fetch = previous;
+  }
+}
 
 afterAll(() => {
   mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
   GlobalRegistrator.unregister();
 });
 
+/** Signs out (logout() with its request answered), resetting the shared user. */
+async function signOut() {
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response("{}", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })) as unknown as typeof globalThis.fetch;
+  try {
+    await logout();
+  } finally {
+    globalThis.fetch = previous;
+  }
+}
+
 let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 
-afterEach(() => {
+afterEach(async () => {
   if (host) {
     act(() => render(null, host as HTMLElement));
     host.remove();
@@ -42,6 +88,9 @@ afterEach(() => {
   originalFetch = undefined;
   setAccessToken(null);
   globalThis.history.replaceState(null, "", "/");
+  // Unmounted first, then signed out: the signed-in user is a module-wide
+  // signal, never left behind for the next file.
+  await signOut();
 });
 
 function stubFetch(status: number, body: unknown) {
@@ -113,4 +162,140 @@ test("a local result renders without the remote notice", async () => {
     root.querySelector('[data-diagnostics-state="remote-unsupported"]'),
   ).toBeNull();
   expect(root.textContent).not.toContain("Select a resource to investigate");
+});
+
+test("a local result offers capture to an incident beside Re-scan", async () => {
+  await signIn();
+  const root = await mount(200, {
+    data: {
+      target: { kind: "Pod", name: "web", namespace: "team-a" },
+      results: [],
+      blastRadius: { directlyAffected: [], potentiallyAffected: [] },
+    },
+  });
+  const capture = root.querySelector('[data-testid="capture-to-incident"]');
+  expect(capture).not.toBeNull();
+  expect(capture?.getAttribute("aria-disabled")).toBe("false");
+  const banner = capture?.parentElement?.parentElement;
+  expect(banner?.textContent).toContain("Re-scan");
+});
+
+test("each picker field is named by its visible label", () => {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+  const labels = Array.from(host.querySelectorAll("label"));
+  expect(labels.map((l) => l.textContent)).toEqual([
+    "Namespace",
+    "Kind",
+    "Name",
+  ]);
+  for (const label of labels) {
+    const field = label.htmlFor
+      ? host.querySelector(`#${CSS.escape(label.htmlFor)}`)
+      : null;
+    expect(field?.tagName).toMatch(/^(INPUT|SELECT)$/);
+  }
+});
+
+function check(
+  status: "pass" | "warn" | "fail",
+  severity: "critical" | "warning" | "info",
+) {
+  return { ruleName: `${status}-${severity}`, status, severity, message: "m" };
+}
+
+for (const { name, results, text, banner, tone } of [
+  {
+    name: "a critical failure",
+    results: [check("fail", "critical"), check("warn", "warning")],
+    text: "1 critical issue",
+    banner: "bg-error-dim",
+    tone: "text-error",
+  },
+  {
+    name: "warnings only",
+    results: [check("warn", "warning"), check("fail", "warning")],
+    text: "2 warnings",
+    banner: "bg-warning-dim",
+    tone: "text-warning",
+  },
+  {
+    name: "no failures",
+    results: [check("pass", "info")],
+    text: "All checks passed",
+    banner: "bg-success-dim",
+    tone: "text-success",
+  },
+]) {
+  test(`the status banner takes the ${tone} tone for ${name}`, async () => {
+    const root = await mount(200, {
+      data: {
+        target: { kind: "Pod", name: "web", namespace: "team-a" },
+        results,
+        blastRadius: { directlyAffected: [], potentiallyAffected: [] },
+      },
+    });
+    const status = Array.from(root.querySelectorAll("span")).find(
+      (s) => s.textContent === text,
+    );
+    expect(status?.classList.contains(tone)).toBe(true);
+    const bar = status?.parentElement?.parentElement;
+    expect(bar?.classList.contains(banner)).toBe(true);
+  });
+}
+
+const TRUNCATED_MESSAGE =
+  "more than 5000 pods in this namespace on the selected cluster; they are left out of this graph";
+
+test("a truncated blast radius says it is incomplete and names each kind", async () => {
+  const root = await mount(200, {
+    data: {
+      target: { kind: "Pod", name: "web", namespace: "team-a" },
+      results: [],
+      blastRadius: {
+        directlyAffected: [],
+        potentiallyAffected: [],
+        truncated: true,
+        errors: { pods: TRUNCATED_MESSAGE },
+      },
+    },
+  });
+  const notice = root.querySelector('[data-testid="blast-radius-truncated"]');
+  expect(notice).not.toBeNull();
+  expect(notice?.textContent).toContain("Blast radius is incomplete");
+  expect(notice?.textContent).toContain(TRUNCATED_MESSAGE);
+});
+
+test("a node-capped blast radius with no read errors says the graph was capped", async () => {
+  const root = await mount(200, {
+    data: {
+      target: { kind: "Pod", name: "web", namespace: "team-a" },
+      results: [],
+      blastRadius: {
+        directlyAffected: [],
+        potentiallyAffected: [],
+        truncated: true,
+      },
+    },
+  });
+  const notice = root.querySelector('[data-testid="blast-radius-truncated"]');
+  expect(notice).not.toBeNull();
+  expect(notice?.textContent).toContain("Blast radius is incomplete");
+  expect(notice?.textContent).toContain("the namespace graph was capped");
+  expect(notice?.textContent).not.toContain("could not be read");
+});
+
+test("a complete blast radius renders no truncation notice", async () => {
+  const root = await mount(200, {
+    data: {
+      target: { kind: "Pod", name: "web", namespace: "team-a" },
+      results: [],
+      blastRadius: { directlyAffected: [], potentiallyAffected: [] },
+    },
+  });
+  expect(
+    root.querySelector('[data-testid="blast-radius-truncated"]'),
+  ).toBeNull();
+  expect(root.textContent).not.toContain("Blast radius is incomplete");
 });

@@ -290,6 +290,7 @@ func buildGrafanaClients(grafURL, viewerToken, provisioningToken string) (read, 
 
 // checkOperatorCRDs checks whether Prometheus Operator CRDs are installed.
 func (d *Discoverer) checkOperatorCRDs(ctx context.Context) bool {
+	// nolint:cluster-routing local path: in-cluster discovery describes the local installation only; a remote cluster's Prometheus comes from its metrics binding (resolver.go).
 	disc := d.k8sClient.DiscoveryClient()
 	if disc == nil {
 		return false
@@ -323,6 +324,7 @@ var wellKnownGrafanaServices = []struct{ name, namespace string }{
 
 // discoverPrometheus finds a Prometheus service in the cluster.
 func (d *Discoverer) discoverPrometheus(ctx context.Context) (string, string) {
+	// nolint:cluster-routing local path: in-cluster discovery finds the local Prometheus only; remote clusters use their metrics binding.
 	cs := d.k8sClient.BaseClientset()
 
 	// 1. Check configured namespace hint first
@@ -354,6 +356,7 @@ func (d *Discoverer) discoverPrometheus(ctx context.Context) (string, string) {
 
 // discoverGrafana finds a Grafana service in the cluster.
 func (d *Discoverer) discoverGrafana(ctx context.Context) (string, string) {
+	// nolint:cluster-routing local path: in-cluster discovery finds the local Grafana only.
 	cs := d.k8sClient.BaseClientset()
 
 	// 1. Check configured namespace hint first
@@ -389,6 +392,7 @@ func (d *Discoverer) discoverGrafana(ctx context.Context) (string, string) {
 
 // findServiceByLabel searches for a service by label in a given namespace (or all namespaces if empty).
 func (d *Discoverer) findServiceByLabel(ctx context.Context, namespace, labelKey, labelValue string, defaultPort int32) (string, string) {
+	// nolint:cluster-routing local path: in-cluster discovery searches the local cluster's Services only.
 	cs := d.k8sClient.BaseClientset()
 	selector := fmt.Sprintf("%s=%s", labelKey, labelValue)
 

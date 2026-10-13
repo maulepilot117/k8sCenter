@@ -1,11 +1,15 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useId } from "preact/hooks";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import type { AffectedResource } from "@/src/islands/BlastRadiusPanel.tsx";
 import BlastRadiusPanel from "@/src/islands/BlastRadiusPanel.tsx";
+import CaptureToIncidentButton, {
+  earliestObservedAt,
+} from "@/src/islands/CaptureToIncidentButton.tsx";
 import type { DiagnosticResult } from "@/src/islands/DiagnosticChecklist.tsx";
 import DiagnosticChecklist from "@/src/islands/DiagnosticChecklist.tsx";
+import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface DiagnosticResponse {
@@ -14,6 +18,10 @@ interface DiagnosticResponse {
   blastRadius: {
     directlyAffected: AffectedResource[];
     potentiallyAffected: AffectedResource[];
+    // Set when the graph was built from a partial read: some kinds were
+    // capped or timed out, so the lists are not the whole radius.
+    truncated?: boolean;
+    errors?: Record<string, string>;
   };
 }
 
@@ -26,10 +34,26 @@ const KIND_OPTIONS = [
   "PersistentVolumeClaim",
 ];
 
+const LABEL_CLASS = "mb-1 block text-xs font-medium text-text-secondary";
+const FIELD_CLASS =
+  "w-full rounded-md border border-border-primary bg-base px-2.5 py-1.5 text-sm text-text-primary";
+
+// Status banner colors, keyed by the worst result. Full class names (not
+// built from fragments) so Tailwind's scanner sees every one.
+const TONES = {
+  critical: { banner: "border-error-dim bg-error-dim", text: "text-error" },
+  warning: {
+    banner: "border-warning-dim bg-warning-dim",
+    text: "text-warning",
+  },
+  passed: { banner: "border-success-dim bg-success-dim", text: "text-success" },
+};
+
 export default function DiagnosticWorkspace() {
   const namespace = useSignal("");
   const kind = useSignal("");
   const name = useSignal("");
+  const fieldId = useId();
 
   const loading = useSignal(false);
   const error = useSignal<string | null>(null);
@@ -42,12 +66,16 @@ export default function DiagnosticWorkspace() {
   const results = useSignal<DiagnosticResult[]>([]);
   const directlyAffected = useSignal<AffectedResource[]>([]);
   const potentiallyAffected = useSignal<AffectedResource[]>([]);
+  const truncated = useSignal(false);
+  const truncationErrors = useSignal<Record<string, string>>({});
   const hasData = useSignal(false);
 
   const fetchDiagnostics = async (ns: string, k: string, n: string) => {
     loading.value = true;
     error.value = null;
     remoteUnsupported.value = false;
+    truncated.value = false;
+    truncationErrors.value = {};
     try {
       const resp = await apiGet<DiagnosticResponse>(
         `/v1/diagnostics/${ns}/${k}/${n}`,
@@ -56,6 +84,8 @@ export default function DiagnosticWorkspace() {
       results.value = data.results;
       directlyAffected.value = data.blastRadius.directlyAffected;
       potentiallyAffected.value = data.blastRadius.potentiallyAffected;
+      truncated.value = data.blastRadius.truncated === true;
+      truncationErrors.value = data.blastRadius.errors ?? {};
       hasData.value = true;
     } catch (err) {
       hasData.value = false;
@@ -106,93 +136,48 @@ export default function DiagnosticWorkspace() {
     (r) =>
       (r.status === "fail" && r.severity === "warning") || r.status === "warn",
   ).length;
+  const tone =
+    criticalCount > 0
+      ? TONES.critical
+      : warningCount > 0
+        ? TONES.warning
+        : TONES.passed;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+    <div class="flex flex-col gap-4">
       {/* Resource Picker */}
       {!hasData.value && !loading.value && (
-        <div
-          style={{
-            border: "1px solid var(--border-primary)",
-            borderRadius: "var(--radius)",
-            background: "var(--bg-surface)",
-            padding: "24px",
-          }}
-        >
-          <h3
-            style={{
-              fontSize: "14px",
-              fontWeight: 600,
-              color: "var(--text-primary)",
-              marginBottom: "16px",
-            }}
-          >
+        <div class="rounded-lg border border-border-primary bg-surface p-6">
+          <h3 class="mb-4 text-sm font-semibold text-text-primary">
             Select a resource to investigate
           </h3>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr 1fr auto",
-              gap: "12px",
-              alignItems: "end",
-            }}
-          >
+          <div class="grid grid-cols-[1fr_1fr_1fr_auto] items-end gap-3">
             <div>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "12px",
-                  fontWeight: 500,
-                  color: "var(--text-secondary)",
-                  marginBottom: "4px",
-                }}
-              >
+              <label for={`${fieldId}-namespace`} class={LABEL_CLASS}>
                 Namespace
               </label>
               <input
                 type="text"
+                id={`${fieldId}-namespace`}
                 placeholder="default"
                 value={namespace.value}
                 onInput={(e) =>
                   (namespace.value = (e.target as HTMLInputElement).value)
                 }
-                style={{
-                  width: "100%",
-                  padding: "7px 10px",
-                  fontSize: "13px",
-                  borderRadius: "var(--radius-sm)",
-                  border: "1px solid var(--border-primary)",
-                  background: "var(--bg-base)",
-                  color: "var(--text-primary)",
-                }}
+                class={FIELD_CLASS}
               />
             </div>
             <div>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "12px",
-                  fontWeight: 500,
-                  color: "var(--text-secondary)",
-                  marginBottom: "4px",
-                }}
-              >
+              <label for={`${fieldId}-kind`} class={LABEL_CLASS}>
                 Kind
               </label>
               <select
+                id={`${fieldId}-kind`}
                 value={kind.value}
                 onChange={(e) =>
                   (kind.value = (e.target as HTMLSelectElement).value)
                 }
-                style={{
-                  width: "100%",
-                  padding: "7px 10px",
-                  fontSize: "13px",
-                  borderRadius: "var(--radius-sm)",
-                  border: "1px solid var(--border-primary)",
-                  background: "var(--bg-base)",
-                  color: "var(--text-primary)",
-                }}
+                class={FIELD_CLASS}
               >
                 <option value="">Select kind...</option>
                 {KIND_OPTIONS.map((k) => (
@@ -203,51 +188,25 @@ export default function DiagnosticWorkspace() {
               </select>
             </div>
             <div>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "12px",
-                  fontWeight: 500,
-                  color: "var(--text-secondary)",
-                  marginBottom: "4px",
-                }}
-              >
+              <label for={`${fieldId}-name`} class={LABEL_CLASS}>
                 Name
               </label>
               <input
                 type="text"
+                id={`${fieldId}-name`}
                 placeholder="my-deployment"
                 value={name.value}
                 onInput={(e) =>
                   (name.value = (e.target as HTMLInputElement).value)
                 }
-                style={{
-                  width: "100%",
-                  padding: "7px 10px",
-                  fontSize: "13px",
-                  borderRadius: "var(--radius-sm)",
-                  border: "1px solid var(--border-primary)",
-                  background: "var(--bg-base)",
-                  color: "var(--text-primary)",
-                }}
+                class={FIELD_CLASS}
               />
             </div>
             <button
               type="button"
               onClick={handleInvestigate}
               disabled={!namespace.value || !kind.value || !name.value}
-              style={{
-                padding: "7px 16px",
-                fontSize: "13px",
-                fontWeight: 600,
-                borderRadius: "var(--radius-sm)",
-                border: "1px solid var(--accent)",
-                background: "var(--accent)",
-                color: "var(--bg-base)",
-                cursor: "pointer",
-                opacity:
-                  !namespace.value || !kind.value || !name.value ? 0.5 : 1,
-              }}
+              class="cursor-pointer rounded-md border border-accent bg-accent px-4 py-1.5 text-sm font-semibold text-(--bg-base) disabled:cursor-not-allowed disabled:opacity-50"
             >
               Investigate
             </button>
@@ -257,14 +216,7 @@ export default function DiagnosticWorkspace() {
 
       {/* Loading */}
       {loading.value && (
-        <div
-          style={{
-            textAlign: "center",
-            padding: "48px",
-            color: "var(--text-muted)",
-            fontSize: "14px",
-          }}
-        >
+        <div class="p-12 text-center text-sm text-text-muted">
           Running diagnostics...
         </div>
       )}
@@ -283,16 +235,7 @@ export default function DiagnosticWorkspace() {
 
       {/* Error */}
       {error.value && (
-        <div
-          style={{
-            padding: "12px 16px",
-            borderRadius: "var(--radius)",
-            border: "1px solid var(--error-dim)",
-            background: "var(--error-dim)",
-            color: "var(--error)",
-            fontSize: "13px",
-          }}
-        >
+        <div class="rounded-lg border border-error-dim bg-error-dim px-4 py-3 text-sm text-error">
           {error.value}
         </div>
       )}
@@ -302,40 +245,10 @@ export default function DiagnosticWorkspace() {
         <>
           {/* Status Banner */}
           <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "12px 16px",
-              borderRadius: "var(--radius)",
-              border: `1px solid ${
-                criticalCount > 0
-                  ? "var(--error-dim)"
-                  : warningCount > 0
-                    ? "var(--warning-dim)"
-                    : "var(--success-dim)"
-              }`,
-              background:
-                criticalCount > 0
-                  ? "var(--error-dim)"
-                  : warningCount > 0
-                    ? "var(--warning-dim)"
-                    : "var(--success-dim)",
-            }}
+            class={`flex items-center justify-between rounded-lg border px-4 py-3 ${tone.banner}`}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-              <span
-                style={{
-                  fontWeight: 600,
-                  fontSize: "14px",
-                  color:
-                    criticalCount > 0
-                      ? "var(--error)"
-                      : warningCount > 0
-                        ? "var(--warning)"
-                        : "var(--success)",
-                }}
-              >
+            <div class="flex items-center gap-3">
+              <span class={`text-sm font-semibold ${tone.text}`}>
                 {criticalCount > 0
                   ? `${criticalCount} critical issue${
                       criticalCount > 1 ? "s" : ""
@@ -344,50 +257,57 @@ export default function DiagnosticWorkspace() {
                     ? `${warningCount} warning${warningCount > 1 ? "s" : ""}`
                     : "All checks passed"}
               </span>
-              <span
-                style={{ fontSize: "13px", color: "var(--text-secondary)" }}
-              >
+              <span class="text-sm text-text-secondary">
                 {kind.value}/{name.value} in {namespace.value}
               </span>
             </div>
+            <CaptureToIncidentButton
+              class="ml-auto mr-2"
+              clusterId={selectedCluster.value}
+              namespace={namespace.value}
+              kind={kind.value}
+              name={name.value}
+              windowStart={earliestObservedAt(results.value)}
+            />
             <button
               type="button"
               onClick={() =>
                 fetchDiagnostics(namespace.value, kind.value, name.value)
               }
-              style={{
-                padding: "5px 12px",
-                fontSize: "12px",
-                fontWeight: 500,
-                borderRadius: "var(--radius-sm)",
-                border: "1px solid var(--border-primary)",
-                background: "var(--bg-surface)",
-                color: "var(--text-secondary)",
-                cursor: "pointer",
-              }}
+              class="cursor-pointer rounded-md border border-border-primary bg-surface px-3 py-1 text-xs font-medium text-text-secondary"
             >
               Re-scan
             </button>
           </div>
 
           {/* Two-column layout */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "3fr 2fr",
-              gap: "16px",
-              alignItems: "start",
-            }}
-          >
+          <div class="grid grid-cols-[3fr_2fr] items-start gap-4">
             <DiagnosticChecklist
               results={results}
               namespace={namespace.value}
             />
-            <BlastRadiusPanel
-              directlyAffected={directlyAffected}
-              potentiallyAffected={potentiallyAffected}
-              namespace={namespace.value}
-            />
+            <div class="flex flex-col gap-3">
+              {truncated.value && (
+                <div
+                  data-testid="blast-radius-truncated"
+                  class={`rounded-lg border px-3 py-2 text-xs ${TONES.warning.banner} ${TONES.warning.text}`}
+                >
+                  <p class="font-semibold">
+                    {Object.keys(truncationErrors.value).length > 0
+                      ? "Blast radius is incomplete: some kinds could not be read from the selected cluster."
+                      : "Blast radius is incomplete: the namespace graph was capped, so some resources are left out."}
+                  </p>
+                  {Object.entries(truncationErrors.value).map(([k, msg]) => (
+                    <p key={k}>{msg}</p>
+                  ))}
+                </div>
+              )}
+              <BlastRadiusPanel
+                directlyAffected={directlyAffected}
+                potentiallyAffected={potentiallyAffected}
+                namespace={namespace.value}
+              />
+            </div>
           </div>
         </>
       )}

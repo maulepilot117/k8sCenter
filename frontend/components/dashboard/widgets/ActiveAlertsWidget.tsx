@@ -1,4 +1,5 @@
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
+import { LOCAL_CLUSTER_ID, selectedCluster } from "@/lib/cluster.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
@@ -14,6 +15,9 @@ function ActiveAlerts() {
   const activeAlerts = s?.alerts.active ?? 0;
   const criticalAlerts = s?.alerts.critical ?? 0;
   const warningAlerts = activeAlerts - criticalAlerts;
+  // The Alerts page feeds stay local (R15): a link from a remote cluster's
+  // card would open another cluster's alerts under this one's name.
+  const isRemote = selectedCluster.value !== LOCAL_CLUSTER_ID;
 
   return (
     <WidgetShell
@@ -109,18 +113,20 @@ function ActiveAlerts() {
               </span>
             )}
           </div>
-          <a
-            href="/alerting"
-            style={{
-              display: "block",
-              marginTop: "12px",
-              fontSize: "12px",
-              color: "var(--accent)",
-              textDecoration: "none",
-            }}
-          >
-            View all alerts →
-          </a>
+          {!isRemote && (
+            <a
+              href="/alerting"
+              style={{
+                display: "block",
+                marginTop: "12px",
+                fontSize: "12px",
+                color: "var(--accent)",
+                textDecoration: "none",
+              }}
+            >
+              View all alerts →
+            </a>
+          )}
         </div>
       )}
     </WidgetShell>

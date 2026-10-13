@@ -64,11 +64,37 @@ var (
 	// lock within its lock timeout because another transaction held it. It
 	// is retryable; nothing was written.
 	ErrIncidentBusy = errors.New("incident is busy")
+
+	// ErrCommitOutcomeUnknown wraps an InsertBatch error raised by the COMMIT
+	// itself when its outcome is unknown (no reply: I/O failure, the commit
+	// bound passed; or a FATAL/PANIC, class 57 or class 08 reply, which can
+	// follow a local commit; see classifyCommitError): the batch may or may
+	// not be durable. Every other InsertBatch error, context errors
+	// included, is raised before the commit or proves the commit failed, and
+	// means nothing was written. Retrying is safe: capture_key de-duplication
+	// ignores rows that did land.
+	ErrCommitOutcomeUnknown = errors.New("incident evidence commit outcome unknown")
 )
+
+// incidentCommitTimeout bounds InsertBatch's COMMIT, which runs free of the
+// caller's cancellation (context.WithoutCancel): a client that disconnects
+// while the commit is in flight must not turn a committed batch into an
+// error that reads as "nothing was recorded". The bound keeps a wedged
+// connection from holding the goroutine.
+const incidentCommitTimeout = 5 * time.Second
+
+// IncidentCommitTimeout exports incidentCommitTimeout so the capture handler
+// can budget the whole request (incidents.captureRequestBudget) around it.
+const IncidentCommitTimeout = incidentCommitTimeout
 
 // incidentLockTimeout bounds how long InsertBatch and AddGrant wait for the
 // incident row lock, so a stalled holder cannot pin pool connections.
 const incidentLockTimeout = 5 * time.Second
+
+// IncidentLockTimeout exports incidentLockTimeout so the capture handler's
+// minimum insert allowance (incidents.captureMinInsertWork) can be kept
+// strictly above it.
+const IncidentLockTimeout = incidentLockTimeout
 
 // beginIncidentLockTx begins a transaction whose lock waits give up after
 // lockTimeout (SET LOCAL lock_timeout, scoped to this transaction).
@@ -618,6 +644,9 @@ func DecodeEvidenceCursor(s string) (EvidenceCursor, error) {
 type IncidentEvidenceStore struct {
 	pool        *pgxpool.Pool
 	lockTimeout time.Duration // incidentLockTimeout; tests shorten it
+	// beforeCommit runs just before InsertBatch's COMMIT; tests use it to
+	// cancel the caller's context at exactly that point.
+	beforeCommit func()
 }
 
 // NewIncidentEvidenceStore creates an evidence store. It never touches the
@@ -801,10 +830,58 @@ func (s *IncidentEvidenceStore) insertValidated(
 	if _, err := tx.Exec(ctx, evidenceTotalsUpdateSQL, incidentID, newBytes, newCount, newScopes); err != nil {
 		return 0, fmt.Errorf("update incidents evidence totals: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit incident evidence tx: %w", err)
+	if s.beforeCommit != nil {
+		s.beforeCommit()
+	}
+	// The commit is detached from the caller's cancellation and bounded on
+	// its own (see incidentCommitTimeout), so a caller context error can
+	// only have been raised before this point, where the deferred rollback
+	// guarantees nothing was written.
+	commitCtx, cancelCommit := context.WithTimeout(context.WithoutCancel(ctx), incidentCommitTimeout)
+	defer cancelCommit()
+	if err := tx.Commit(commitCtx); err != nil {
+		return 0, classifyCommitError(err)
 	}
 	return inserted, nil
+}
+
+// classifyCommitError wraps a failed COMMIT, marking it
+// ErrCommitOutcomeUnknown unless the server's reply proves the transaction
+// did not commit. The rule:
+//
+//   - pgx.ErrTxCommitRollback (the server reported a rollback) and a
+//     PgError of severity ERROR outside SQLSTATE classes 57 and 08 (for
+//     example 40001 serialization failure, 23xxx integrity violations) are
+//     definite failures: nothing was written.
+//   - Severity is SeverityUnlocalized, or the localized Severity when the
+//     server sent none; a Code shorter than two characters has no class
+//     and is judged by severity alone.
+//   - A PgError of severity FATAL or PANIC, or of class 57 (operator
+//     intervention, e.g. 57P01 admin shutdown) or 08 (connection
+//     exception), is outcome unknown: the server can raise these after the
+//     commit is already durable locally (a synchronous-replication wait
+//     cut short by a shutdown or a terminated backend).
+//   - Anything else (I/O and network errors, the incidentCommitTimeout
+//     bound passing) means the reply never arrived: outcome unknown.
+func classifyCommitError(err error) error {
+	if errors.Is(err, pgx.ErrTxCommitRollback) {
+		return fmt.Errorf("commit incident evidence tx: %w", err)
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		severity := pgErr.SeverityUnlocalized
+		if severity == "" {
+			severity = pgErr.Severity
+		}
+		class := ""
+		if len(pgErr.Code) >= 2 {
+			class = pgErr.Code[:2]
+		}
+		if severity != "FATAL" && severity != "PANIC" && class != "57" && class != "08" {
+			return fmt.Errorf("commit incident evidence tx: %w", err)
+		}
+	}
+	return fmt.Errorf("%w: commit incident evidence tx: %w", ErrCommitOutcomeUnknown, err)
 }
 
 // insertEvidenceRows pipelines the inserts in one round trip and sums the rows
@@ -953,6 +1030,46 @@ func (s *IncidentEvidenceStore) ListAllByIncident(ctx context.Context, incidentI
 		return nil, fmt.Errorf("list all incident_evidence: %w", err)
 	}
 	return collectEvidence(rows, "incident_evidence")
+}
+
+// scopeRowColumns are the columns the read path's authorization filter
+// needs (identity, kind, scope, source kind, secret flag, collection time)
+// and nothing a caller might not be allowed to see: no name, uid, payload
+// or redaction.
+const scopeRowColumns = `
+	id, incident_id, evidence_kind, mode, cluster_id, api_group, resource, source_kind,
+	namespace, secret_derived, collected_at`
+
+// ListScopeRowsByIncident returns every evidence row of an incident with only
+// scopeRowColumns populated, in ListByIncident order, bounded by
+// EvidenceMaxItemsCeiling. It exists so the read path can count what a
+// caller may see across the whole incident (Q1 P10) without loading up to
+// 10 MiB of payload; the rows are not evidence and must never be returned
+// to a client as such.
+func (s *IncidentEvidenceStore) ListScopeRowsByIncident(ctx context.Context, incidentID uuid.UUID) ([]IncidentEvidenceRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT`+scopeRowColumns+`
+		  FROM incident_evidence
+		 WHERE incident_id = $1
+		 ORDER BY collected_at DESC, id DESC
+		 LIMIT $2`, incidentID, EvidenceMaxItemsCeiling)
+	if err != nil {
+		return nil, fmt.Errorf("list incident_evidence scope rows: %w", err)
+	}
+	defer rows.Close()
+	out := make([]IncidentEvidenceRow, 0)
+	for rows.Next() {
+		var r IncidentEvidenceRow
+		if err := rows.Scan(&r.ID, &r.IncidentID, &r.EvidenceKind, &r.Mode, &r.ClusterID, &r.APIGroup, &r.Resource,
+			&r.SourceKind, &r.Namespace, &r.SecretDerived, &r.CollectedAt); err != nil {
+			return nil, fmt.Errorf("scan incident_evidence scope rows: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate incident_evidence scope rows: %w", err)
+	}
+	return out, nil
 }
 
 // ListBySourceUID returns an incident's evidence captured from one object,

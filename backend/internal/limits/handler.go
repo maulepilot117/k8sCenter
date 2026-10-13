@@ -17,21 +17,35 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 const cacheTTL = 30 * time.Second
 
-// Handler serves namespace limits HTTP endpoints.
+// Handler serves namespace limits HTTP endpoints. The local cluster is read
+// from Informers; a remote cluster is read live through Clients as the
+// requesting identity (remote.go) and never falls back to local data.
 type Handler struct {
 	Informers     InformerSource
 	AccessChecker AccessChecker
 	Logger        *slog.Logger
+	// Clients reaches a remote cluster as the requesting identity. main.go
+	// sets it after NewHandler; while it is nil a remote selection is
+	// answered 501 rather than with local data.
+	Clients k8s.ClusterClients
 
+	// The summary cache below holds LOCAL informer data only. It is not
+	// keyed by cluster, so it must never serve a remote request; remote
+	// summaries live in the per-(cluster, identity) remote cache.
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cachedData *cachedLimitsData
 	cacheTime  time.Time
+
+	remoteOnce sync.Once
+	remote     *remotecache.Cache[[]NamespaceSummary]
 }
 
 type cachedLimitsData struct {
@@ -53,7 +67,12 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A remote cluster always serves the core quota APIs, so it is available
+	// whenever this server can reach remote clusters at all.
 	available := h.Informers != nil
+	if !isLocal(r.Context()) {
+		available = h.Clients != nil
+	}
 	httputil.WriteData(w, map[string]bool{"available": available})
 }
 
@@ -64,11 +83,21 @@ func (h *Handler) HandleListNamespaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summaries, err := h.fetchSummaries(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch namespace summaries", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch namespace limits", "")
-		return
+	var summaries []NamespaceSummary
+	if isLocal(r.Context()) {
+		local, err := h.fetchSummaries(r.Context())
+		if err != nil {
+			h.Logger.Error("failed to fetch namespace summaries", "error", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch namespace limits", "")
+			return
+		}
+		summaries = local
+	} else {
+		remote, ok := h.remoteSummaries(w, r, user)
+		if !ok {
+			return
+		}
+		summaries = remote
 	}
 
 	// Filter by RBAC
@@ -95,13 +124,19 @@ func (h *Handler) HandleGetNamespace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	local := isLocal(r.Context())
+	if !local && h.Clients == nil {
+		writeRemoteNotConfigured(w)
+		return
+	}
+
 	// Check RBAC for both resource types — allow if user has permission for either
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	quotaAllowed, err1 := h.AccessChecker.CanAccess(r.Context(), clusterID, user.Username, user.KubernetesGroups, "get", "resourcequotas", namespace)
+	quotaAllowed, err1 := h.AccessChecker.CanAccess(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, "get", "resourcequotas", namespace)
 	if err1 != nil {
 		h.Logger.Error("RBAC check failed for resourcequotas", "namespace", namespace, "error", err1)
 	}
-	limitRangeAllowed, err2 := h.AccessChecker.CanAccess(r.Context(), clusterID, user.Username, user.KubernetesGroups, "get", "limitranges", namespace)
+	limitRangeAllowed, err2 := h.AccessChecker.CanAccess(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, "get", "limitranges", namespace)
 	if err2 != nil {
 		h.Logger.Error("RBAC check failed for limitranges", "namespace", namespace, "error", err2)
 	}
@@ -118,7 +153,15 @@ func (h *Handler) HandleGetNamespace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	detail, err := h.getNamespaceDetail(r.Context(), namespace)
+	if !local {
+		detail, ok := h.remoteNamespaceDetail(w, r, user, namespace)
+		if ok {
+			httputil.WriteData(w, detail)
+		}
+		return
+	}
+
+	detail, err := h.getNamespaceDetail(namespace)
 	if err != nil {
 		h.Logger.Error("failed to get namespace limits", "namespace", namespace, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch namespace limits", "")
@@ -128,8 +171,9 @@ func (h *Handler) HandleGetNamespace(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, detail)
 }
 
-// fetchSummaries returns cached summaries or fetches fresh data.
-// Concurrent callers are coalesced via singleflight.
+// fetchSummaries returns the LOCAL cluster's summaries from the informer
+// cache, cached for cacheTTL. Concurrent callers are coalesced via
+// singleflight. Remote clusters go through remoteSummaries instead.
 func (h *Handler) fetchSummaries(ctx context.Context) ([]NamespaceSummary, error) {
 	h.cacheMu.RLock()
 	if h.cachedData != nil && time.Since(h.cacheTime) < cacheTTL {
@@ -148,7 +192,7 @@ func (h *Handler) fetchSummaries(ctx context.Context) ([]NamespaceSummary, error
 	return result.([]NamespaceSummary), nil
 }
 
-func (h *Handler) doFetchSummaries(ctx context.Context) ([]NamespaceSummary, error) {
+func (h *Handler) doFetchSummaries(_ context.Context) ([]NamespaceSummary, error) {
 	quotas, err := h.Informers.ResourceQuotas().List(labels.Everything())
 	if err != nil {
 		return nil, err
@@ -159,6 +203,21 @@ func (h *Handler) doFetchSummaries(ctx context.Context) ([]NamespaceSummary, err
 		return nil, err
 	}
 
+	summaries := h.summarize(quotas, limitRanges)
+
+	// Update cache
+	h.cacheMu.Lock()
+	h.cachedData = &cachedLimitsData{summaries: summaries}
+	h.cacheTime = time.Now()
+	h.cacheMu.Unlock()
+
+	return summaries, nil
+}
+
+// summarize builds one dashboard row per namespace that has a quota or a
+// LimitRange. It is pure over its inputs, so the local (informer) and remote
+// (direct list) paths share it.
+func (h *Handler) summarize(quotas []*corev1.ResourceQuota, limitRanges []*corev1.LimitRange) []NamespaceSummary {
 	// Group by namespace
 	quotasByNS := make(map[string][]*corev1.ResourceQuota)
 	for _, q := range quotas {
@@ -239,13 +298,7 @@ func (h *Handler) doFetchSummaries(ctx context.Context) ([]NamespaceSummary, err
 		summaries = append(summaries, summary)
 	}
 
-	// Update cache
-	h.cacheMu.Lock()
-	h.cachedData = &cachedLimitsData{summaries: summaries}
-	h.cacheTime = time.Now()
-	h.cacheMu.Unlock()
-
-	return summaries, nil
+	return summaries
 }
 
 func (h *Handler) filterByRBAC(ctx context.Context, user *auth.User, summaries []NamespaceSummary) []NamespaceSummary {
@@ -263,11 +316,11 @@ func (h *Handler) filterByRBAC(ctx context.Context, user *auth.User, summaries [
 	for _, s := range summaries {
 		result, cached := accessCache[s.Namespace]
 		if !cached {
-			quotaAllowed, err1 := h.AccessChecker.CanAccess(ctx, clusterID, user.Username, user.KubernetesGroups, "get", "resourcequotas", s.Namespace)
+			quotaAllowed, err1 := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "get", "resourcequotas", s.Namespace)
 			if err1 != nil {
 				h.Logger.Warn("RBAC check failed for resourcequotas", "namespace", s.Namespace, "error", err1)
 			}
-			limitRangeAllowed, err2 := h.AccessChecker.CanAccess(ctx, clusterID, user.Username, user.KubernetesGroups, "get", "limitranges", s.Namespace)
+			limitRangeAllowed, err2 := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "get", "limitranges", s.Namespace)
 			if err2 != nil {
 				h.Logger.Warn("RBAC check failed for limitranges", "namespace", s.Namespace, "error", err2)
 			}
@@ -286,7 +339,8 @@ func (h *Handler) filterByRBAC(ctx context.Context, user *auth.User, summaries [
 	return filtered
 }
 
-func (h *Handler) getNamespaceDetail(ctx context.Context, namespace string) (*NamespaceLimits, error) {
+// getNamespaceDetail reads one namespace of the LOCAL cluster from informers.
+func (h *Handler) getNamespaceDetail(namespace string) (*NamespaceLimits, error) {
 	quotas, err := h.Informers.ResourceQuotas().ResourceQuotas(namespace).List(labels.Everything())
 	if err != nil {
 		return nil, err
@@ -297,6 +351,12 @@ func (h *Handler) getNamespaceDetail(ctx context.Context, namespace string) (*Na
 		return nil, err
 	}
 
+	return h.buildDetail(namespace, quotas, limitRanges), nil
+}
+
+// buildDetail normalizes one namespace's quotas and LimitRanges. Shared by
+// the local and remote paths.
+func (h *Handler) buildDetail(namespace string, quotas []*corev1.ResourceQuota, limitRanges []*corev1.LimitRange) *NamespaceLimits {
 	detail := &NamespaceLimits{
 		Namespace:   namespace,
 		Quotas:      make([]NormalizedQuota, 0, len(quotas)),
@@ -311,7 +371,7 @@ func (h *Handler) getNamespaceDetail(ctx context.Context, namespace string) (*Na
 		detail.LimitRanges = append(detail.LimitRanges, h.normalizeLimitRange(lr))
 	}
 
-	return detail, nil
+	return detail
 }
 
 func (h *Handler) computeUtilization(quota *corev1.ResourceQuota) map[string]ResourceUtilization {

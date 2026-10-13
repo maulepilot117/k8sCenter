@@ -60,6 +60,10 @@ export const CAPABILITY_OPERATION_IDS = [
   "yaml.apply",
   "dashboard.summary",
   "resources.counts",
+  "cluster.info",
+  "limits.read",
+  "scanning.read",
+  "resources.read",
   "pod.exec",
   "logs.stream",
   "logs.search",
@@ -79,6 +83,8 @@ export const CAPABILITY_OPERATION_IDS = [
   "certmanager.certificates",
   "policy.read",
   "cni.config",
+  "cilium.status",
+  "cilium.connectivity",
   "mesh.golden_signals",
   "eso.history",
   "eso.metrics",
@@ -87,6 +93,9 @@ export const CAPABILITY_OPERATION_IDS = [
   "policy.compliance_history",
   "velero.assurance",
   "changes.receipts",
+  "incidents.capture",
+  "monitoring.query",
+  "dashboard.trends",
 ] as const;
 
 export type CapabilityOperationId = (typeof CAPABILITY_OPERATION_IDS)[number];

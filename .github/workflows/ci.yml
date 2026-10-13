@@ -163,6 +163,21 @@ jobs:
       - name: Build
         run: bun run build
 
+      # Mirrors the "Scan frontend dependencies with Trivy" gate in
+      # ci-release.yml. Without it a PR can go green while the post-merge
+      # release run fails on a vulnerable lockfile entry and skips the image
+      # build and GitHub Release. Table format prints the CVE in the log.
+      - name: Scan frontend lockfile with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+        with:
+          scan-type: fs
+          scan-ref: frontend/bun.lock
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: ".trivyignore"
+          format: table
+
   rbac-guard:
     name: ClusterRole CRD grants
     runs-on: ubuntu-latest

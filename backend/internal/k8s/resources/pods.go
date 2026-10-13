@@ -197,6 +197,7 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// nolint:cluster-routing local path: pod exec is local-only; a remote selection is refused with 501 above
 	cfg := h.K8sClient.BaseConfig()
 	cfg.Impersonate.UserName = user.KubernetesUsername
 	cfg.Impersonate.Groups = user.KubernetesGroups
@@ -229,6 +230,7 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 			Param("tty", "true").
 			Param("command", shell)
 
+		// nolint:cluster-routing local path: pod exec is local-only; a remote selection is refused with 501 above
 		executor, execErr := remotecommand.NewSPDYExecutor(cfg, "POST", execReq.URL())
 		if execErr != nil {
 			h.Logger.Debug("SPDY executor creation failed", "shell", shell, "error", execErr)
@@ -392,4 +394,3 @@ func (s *wsStream) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
-
