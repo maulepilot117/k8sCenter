@@ -59,9 +59,12 @@ func (d *ScannerDiscoverer) RunDiscoveryLoop(ctx context.Context) {
 	}
 }
 
-// Discover probes the cluster for security scanners and updates cached state.
+// Discover probes the local cluster for security scanners and updates cached
+// state. It reads as the service account: these are discovery-only probes
+// that never reach a user, and they never answer for a remote cluster.
 func (d *ScannerDiscoverer) Discover(ctx context.Context) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	// nolint:cluster-routing local path: the Discoverer answers for the local cluster only; a remote cluster is probed as the user through Presence in remote.go.
 	disco := d.k8sClient.DiscoveryClient()
 
 	var trivyDetail *ScannerDetail
@@ -91,6 +94,7 @@ func (d *ScannerDiscoverer) Discover(ctx context.Context) {
 
 	// For Trivy: probe pods in the trivy-system namespace
 	if trivyDetail != nil {
+		// nolint:cluster-routing local path: discovery-only namespace probe of the local cluster; no probe runs on a remote cluster.
 		pods, err := d.k8sClient.BaseClientset().CoreV1().Pods("trivy-system").List(ctx, metav1.ListOptions{Limit: 1})
 		if err == nil && len(pods.Items) > 0 {
 			trivyDetail.Namespace = "trivy-system"
@@ -99,6 +103,7 @@ func (d *ScannerDiscoverer) Discover(ctx context.Context) {
 
 	// For Kubescape: probe pods in the kubescape namespace
 	if kubescapeDetail != nil {
+		// nolint:cluster-routing local path: discovery-only namespace probe of the local cluster; no probe runs on a remote cluster.
 		pods, err := d.k8sClient.BaseClientset().CoreV1().Pods("kubescape").List(ctx, metav1.ListOptions{Limit: 1})
 		if err == nil && len(pods.Items) > 0 {
 			kubescapeDetail.Namespace = "kubescape"

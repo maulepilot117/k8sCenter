@@ -170,7 +170,7 @@ test.describe.serial("Remote cluster capabilities", () => {
     const byId = new Map(caps.map((c) => [c.operation, c]));
 
     // Unsupported on remote, and said so as unsupported -- not as an error.
-    for (const id of ["pod.exec", "resources.counts", "logs.stream"]) {
+    for (const id of ["pod.exec", "logs.stream"]) {
       expect(byId.get(id)?.platformSupported, id).toBe(false);
       expect(byId.get(id)?.reasonCode, id).toBe("unsupported_platform");
     }
@@ -181,6 +181,10 @@ test.describe.serial("Remote cluster capabilities", () => {
       "yaml.diff",
       "yaml.export",
       "dashboard.summary",
+      "resources.counts",
+      "cluster.info",
+      "limits.read",
+      "scanning.read",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
@@ -203,19 +207,27 @@ test.describe.serial("Remote cluster capabilities", () => {
       "certmanager.certificates",
       "policy.read",
       "changes.receipts",
+      "topology.graph",
+      "diagnostics.read",
+      "mesh.golden_signals",
+      // #608 PR 5a: Cilium views read, and the config is written, on the
+      // selected cluster as the user.
+      "cni.config",
+      "cilium.status",
+      "cilium.connectivity",
+      // #608 PR 5b: flows come from the selected cluster's own relay.
+      "flows.stream",
+      // #608: snapshots taken as each cluster's background identity.
+      "policy.compliance_history",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");
     }
     for (const id of [
-      "cni.config",
-      "mesh.golden_signals",
       "eso.history",
       "eso.metrics",
-      "topology.graph",
-      "diagnostics.read",
-      "policy.compliance_history",
       "velero.assurance",
+      "incidents.capture",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(false);
       expect(byId.get(id)?.reasonCode, id).toBe("unsupported_platform");
@@ -355,7 +367,9 @@ test.describe.serial("Remote cluster capabilities", () => {
     await expect(cpu).not.toContainText(/^0\s*%/);
   });
 
-  test("remote dashboard shows no health score", async ({ page }) => {
+  test("remote dashboard scores health from complete reads", async ({
+    page,
+  }) => {
     const summary = (
       await (
         await page.request.get("/api/v1/cluster/dashboard-summary?coverage=1", {
@@ -363,25 +377,25 @@ test.describe.serial("Remote cluster capabilities", () => {
         })
       ).json()
     ).data;
-    expect(summary.health).toBeNull();
+    // Every remote read completes and no binding is needed for the score
+    // inputs, so the score is drawn from the remote's own data.
+    expect(summary.health).not.toBeNull();
+    const healthRow = summary.coverage.find(
+      (row: { section: string }) => row.section === "health",
+    );
+    expect(healthRow?.status).toBe("ok");
 
     await seedClusterTarget(page, REMOTE!);
     await page.goto("/");
     const health = page.locator('[data-widget-id="cluster-health"]');
-    await expect(health).toHaveAttribute(
-      "data-widget-state",
-      "coverage-unavailable",
-    );
-    await expect(
-      health.getByTestId("widget-coverage-unavailable"),
-    ).toBeVisible();
-    // No gauge ring at all: an empty ring would read as a score of zero. The
-    // coverage card's own glyph is an <svg><circle>, so match what only the
-    // Gauge draws -- its progress arc carries stroke-dashoffset -- and check
-    // the widget body (whose unscored placeholder stands in for the gauge)
-    // is not rendered either.
-    await expect(health.locator("circle[stroke-dashoffset]")).toHaveCount(0);
+    await expect(health).toHaveAttribute("data-widget-state", "ready");
+    // The gauge's progress arc carries stroke-dashoffset, which the coverage
+    // card's own glyph does not.
+    await expect(health.locator("circle[stroke-dashoffset]")).toHaveCount(1);
     await expect(health.getByTestId("health-unscored")).toHaveCount(0);
+    await expect(health.getByTestId("widget-coverage-unavailable")).toHaveCount(
+      0,
+    );
   });
 
   test("switching clusters clears the previous cluster's dashboard numbers", async ({
@@ -444,6 +458,278 @@ test.describe.serial("Remote cluster capabilities", () => {
     const local = await drain("local");
     expect(local.status()).toBe(202);
     expect((await local.json()).data.taskID).toBeTruthy();
+  });
+
+  // Nodes are the kind these two cases compare. The fixture identity may read
+  // nodes, pods and services cluster-wide (scripts/test-remote-capabilities.sh)
+  // but not namespaces, and the two kind clusters name their nodes
+  // differently (k8scenter-remote-control-plane vs the local one), so a node
+  // name says which cluster answered.
+  async function nodeNames(page: Page, clusterId: string): Promise<string[]> {
+    const res = await page.request.get("/api/v1/resources/nodes", {
+      headers: await headersFor(page, clusterId),
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.metadata.total).toBeGreaterThanOrEqual(body.data.length);
+    return (body.data as Array<{ metadata: { name: string } }>).map(
+      (n) => n.metadata.name,
+    );
+  }
+
+  test("a resource list under a remote selection is the remote cluster's", async ({
+    page,
+  }) => {
+    const remoteNodes = await nodeNames(page, REMOTE!);
+    const localNodes = await nodeNames(page, "local");
+    expect(remoteNodes.length).toBeGreaterThan(0);
+    expect(localNodes.length).toBeGreaterThan(0);
+    // Disjoint: a remote selection must never be answered from the local
+    // informer cache.
+    for (const name of remoteNodes) {
+      expect(localNodes).not.toContain(name);
+    }
+
+    // Detail follows the same routing: the remote node is found on the
+    // remote cluster and is a 404 on the local one.
+    const remoteName = remoteNodes[0];
+    const onRemote = await page.request.get(
+      `/api/v1/resources/nodes/${encodeURIComponent(remoteName)}`,
+      { headers: await headersFor(page, REMOTE!) },
+    );
+    expect(onRemote.status()).toBe(200);
+    expect((await onRemote.json()).data.metadata.name).toBe(remoteName);
+    const onLocal = await page.request.get(
+      `/api/v1/resources/nodes/${encodeURIComponent(remoteName)}`,
+      { headers: await headersFor(page, "local") },
+    );
+    expect(onLocal.status()).toBe(404);
+  });
+
+  test("a resource list page under a remote selection shows the remote cluster's objects", async ({
+    page,
+  }) => {
+    const [remoteName] = await nodeNames(page, REMOTE!);
+    await seedClusterTarget(page, REMOTE!);
+    await page.goto("/cluster/nodes");
+    await expect(page.getByText(remoteName).first()).toBeVisible();
+  });
+
+  // The four sources that answered a remote selection with the local cluster's
+  // data, or a 400, before #608. The fixture identity may list nodes, pods and
+  // services cluster-wide and nothing else (scripts/test-remote-capabilities.sh),
+  // so these assert what that identity can legitimately read; a kind it may not
+  // list is skipped by counts, never invented.
+
+  test("resource counts under a remote selection are the remote cluster's", async ({
+    page,
+  }) => {
+    const res = await page.request.get("/api/v1/resources/counts", {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.data.nodes).toBeGreaterThanOrEqual(1);
+    // A fixture cluster is far below the read cap.
+    expect(body.metadata?.truncated).toBeFalsy();
+  });
+
+  test("cluster info under a remote selection describes the remote cluster", async ({
+    page,
+  }) => {
+    const res = await page.request.get("/api/v1/cluster/info", {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(res.status()).toBe(200);
+    const { data } = await res.json();
+    expect(data.clusterID).toBe(REMOTE);
+    // The fixture identity may list nodes, so the count is observed.
+    expect(typeof data.nodeCount).toBe("number");
+    expect(data.nodeCount).toBeGreaterThanOrEqual(1);
+  });
+
+  test("limits status under a remote selection is available", async ({
+    page,
+  }) => {
+    // Availability needs no RBAC: a remote cluster always serves the core
+    // quota APIs. Reading quotas (limits/namespaces) needs a cluster-wide
+    // list of resourcequotas, which the fixture identity does not hold, so
+    // that route is deliberately not asserted here.
+    const res = await page.request.get("/api/v1/limits/status", {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(res.status()).toBe(200);
+    expect((await res.json()).data.available).toBe(true);
+  });
+
+  test("scanning status under a remote selection is detected on the remote cluster", async ({
+    page,
+  }) => {
+    const res = await page.request.get("/api/v1/scanning/status", {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(res.status()).toBe(200);
+    const { data } = await res.json();
+    expect(["none", "trivy", "kubescape", "both"]).toContain(data.detected);
+    // The fixture cluster runs no scanner.
+    expect(data.detected).toBe("none");
+  });
+
+  // The fixture identity can neither create nor read ConfigMaps and holds no
+  // write verb on pods, so a seeded object cannot carry these two cases. They
+  // use kube-system instead: it exists on both clusters, the identity may list
+  // its pods cluster-wide, and kind static-pod names embed the node name
+  // (etcd-<node>, kube-apiserver-<node>). Node names are disjoint between the
+  // two clusters (asserted above), so a pod named after a remote node can only
+  // come from the remote cluster. The diagnostics case proves the cluster
+  // through the detail route (/diagnostics/<ns>/Pod/<name>, 200 remote and 404
+  // local for a remote-node-named pod), not through summary counts.
+  const SYSTEM_NS = "kube-system";
+
+  test("diagnostics summary under a remote selection reads the remote cluster", async ({
+    page,
+  }) => {
+    const podsIn = async (clusterId: string) => {
+      const res = await page.request.get(
+        `/api/v1/resources/pods/${SYSTEM_NS}`,
+        { headers: await headersFor(page, clusterId) },
+      );
+      expect(res.status()).toBe(200);
+      return (await res.json()).data as Array<{ metadata: { name: string } }>;
+    };
+    const summaryFor = async (clusterId: string) => {
+      const res = await page.request.get(
+        `/api/v1/diagnostics/${SYSTEM_NS}/summary`,
+        { headers: await headersFor(page, clusterId) },
+      );
+      expect(res.status()).toBe(200);
+      return (await res.json()).data as {
+        total: number;
+        failing: Array<{ name: string }>;
+      };
+    };
+
+    const remotePods = await podsIn(REMOTE!);
+    const remoteNode = (await nodeNames(page, REMOTE!))[0];
+    // A kind cluster always runs control-plane pods, and the ones named after
+    // the remote node exist only there.
+    expect(remotePods.length).toBeGreaterThan(0);
+    expect(
+      remotePods.some((p) => p.metadata.name.includes(remoteNode)),
+    ).toBe(true);
+
+    // The summary must answer under the remote selection. Its counts cannot
+    // prove the cluster (both fixtures run the same kube-system pod set), so
+    // identity comes from the detail route below.
+    const remote = await summaryFor(REMOTE!);
+    expect(typeof remote.total).toBe("number");
+    expect(remote.total).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(remote.failing)).toBe(true);
+
+    // A pod named after the remote node exists only on the remote cluster:
+    // the detail route resolves it under the remote selection and 404s under
+    // the local one.
+    const remotePod = remotePods
+      .map((p) => p.metadata.name)
+      .find((n) => n.includes(remoteNode))!;
+    const detailPath = `/api/v1/diagnostics/${SYSTEM_NS}/Pod/${remotePod}`;
+    const remoteDetail = await page.request.get(detailPath, {
+      headers: await headersFor(page, REMOTE!),
+    });
+    expect(remoteDetail.status()).toBe(200);
+    expect((await remoteDetail.json()).data.target.name).toBe(remotePod);
+    const localDetail = await page.request.get(detailPath, {
+      headers: await headersFor(page, "local"),
+    });
+    expect(localDetail.status()).toBe(404);
+  });
+
+  test("topology graph under a remote selection is built from the remote cluster", async ({
+    page,
+  }) => {
+    const podNodesIn = async (clusterId: string) => {
+      const res = await page.request.get(`/api/v1/topology/${SYSTEM_NS}`, {
+        headers: await headersFor(page, clusterId),
+      });
+      expect(res.status()).toBe(200);
+      const { data } = await res.json();
+      expect(Array.isArray(data.nodes)).toBe(true);
+      expect(Array.isArray(data.edges)).toBe(true);
+      return (data.nodes as Array<{ kind: string; name: string }>)
+        .filter((n) => n.kind === "Pod")
+        .map((n) => n.name);
+    };
+
+    const remoteNode = (await nodeNames(page, REMOTE!))[0];
+    const remotePods = await podNodesIn(REMOTE!);
+    expect(remotePods.some((n) => n.includes(remoteNode))).toBe(true);
+    // The same request against the local cluster has no pod of that name, so
+    // a silent fall back to the local informers fails the assertion above.
+    const localPods = await podNodesIn("local");
+    expect(localPods.some((n) => n.includes(remoteNode))).toBe(false);
+  });
+
+  test("the mesh overlay is refused on a remote selection", async ({ page }) => {
+    const res = await page.request.get(
+      `/api/v1/topology/${FIXTURE_NS}?overlay=mesh`,
+      { headers: await headersFor(page, REMOTE!) },
+    );
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error.reason).toBe("overlay_unsupported_remote");
+  });
+
+  // Per-cluster metrics binding (#608 PR-4a). The /clusters/{id}/metrics routes
+  // are admin-only; the page session is the admin the suite registers and
+  // deletes the cluster with, so these calls use its plain auth headers (no
+  // X-Cluster-ID: the cluster is named in the path). No case here writes a
+  // binding that succeeds, so nothing needs cleaning up.
+
+  test("metrics binding rejects a private Prometheus URL", async ({ page }) => {
+    const res = await page.request.put(`/api/v1/clusters/${REMOTE}/metrics`, {
+      headers: { ...(await getAuthHeaders(page)), "Content-Type": "application/json" },
+      data: { prometheusUrl: "https://10.0.0.5:9090" },
+    });
+    expect(res.status()).toBe(400);
+  });
+
+  test("metrics binding reports an unreachable Prometheus", async ({ page }) => {
+    // 203.0.113.0/24 is TEST-NET-3: public per the SSRF check, never routable.
+    // The backend probe has its own timeout, so allow it to run out.
+    const res = await page.request.put(`/api/v1/clusters/${REMOTE}/metrics`, {
+      headers: { ...(await getAuthHeaders(page)), "Content-Type": "application/json" },
+      data: { prometheusUrl: "https://203.0.113.10:9090" },
+      timeout: 30_000,
+    });
+    expect(res.status()).toBe(502);
+    expect((await res.json()).error.message).toBe(
+      "could not reach Prometheus at the given URL",
+    );
+  });
+
+  test("no metrics binding is an explicit state, not local data", async ({
+    page,
+  }) => {
+    const binding = await page.request.get(`/api/v1/clusters/${REMOTE}/metrics`, {
+      headers: await getAuthHeaders(page),
+    });
+    expect(binding.status()).toBe(404);
+    expect((await binding.json()).error.reason).toBe("metrics_not_configured");
+
+    // Trends under a remote selection without a binding say so rather than
+    // answering with the local cluster's series.
+    const remote = await page.request.get(
+      "/api/v1/cluster/dashboard-trends?range=1h",
+      { headers: await headersFor(page, REMOTE!) },
+    );
+    expect(remote.status()).toBe(404);
+    expect((await remote.json()).error.reason).toBe("metrics_not_configured");
+
+    // The local selection is unaffected.
+    const local = await page.request.get(
+      "/api/v1/cluster/dashboard-trends?range=1h",
+      { headers: await headersFor(page, "local") },
+    );
+    expect(local.status()).toBe(200);
   });
 
   // Must stay last: see the header.

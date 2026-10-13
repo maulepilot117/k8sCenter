@@ -8,6 +8,7 @@ package servicemesh
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/remotecache"
+	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -33,10 +35,14 @@ var meshGroups = []string{"networking.istio.io", "security.istio.io", "linkerd.i
 // installed: the same ones the local Discoverer probes.
 var presenceResources = []schema.GroupResource{IstioVirtualServiceGVR.GroupResource(), LinkerdServerGVR.GroupResource()}
 
-// crossCheckUnavailableRemote is the mTLS posture warning on a remote
-// cluster. The metric cross-check queries the local Prometheus, which knows
-// nothing of a remote cluster's traffic (R14).
-const crossCheckUnavailableRemote = "metric cross-check is unavailable on remote clusters; posture derived from policies only"
+// crossCheckUnavailable is the mTLS posture warning when the metric
+// cross-check could not run: a failed query, or a remote binding that could
+// not be read. The posture is still served from policies.
+const crossCheckUnavailable = "metric cross-check unavailable; posture derived from policies only"
+
+// crossCheckNotConfigured is the mTLS posture warning on a remote cluster
+// with no metrics binding: there is no Prometheus to cross-check against.
+const crossCheckNotConfigured = "metric cross-check is not configured for this cluster; posture derived from policies only"
 
 // meshSource is one list a mesh snapshot is built from. Exactly one of
 // route and policy is set.
@@ -350,4 +356,51 @@ func (h *Handler) writeGetError(w http.ResponseWriter, r *http.Request, err erro
 		return
 	}
 	httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch mesh resource", "")
+}
+
+// remoteProm resolves the request's remote cluster's bound Prometheus. No
+// resolver (monitoring is not wired) reads as no binding. The local
+// Prometheus never answers for a remote cluster.
+func (h *Handler) remoteProm(ctx context.Context) (*monitoring.PrometheusClient, error) {
+	if h.Metrics == nil {
+		return nil, monitoring.ErrNoMetricsBinding
+	}
+	return h.Metrics.PrometheusFor(ctx, middleware.ClusterIDFromContext(ctx))
+}
+
+// goldenSignalsProm resolves the remote Prometheus that golden signals query
+// (KTD7). When there is none it writes the answer and returns ok=false: no
+// binding is a 200 with reason metrics_not_configured, and a binding that
+// could not be read is a target error (503 when the registry is down),
+// never "not configured".
+func (h *Handler) goldenSignalsProm(w http.ResponseWriter, r *http.Request, status MeshStatus, signals GoldenSignals) (*monitoring.PrometheusClient, bool) {
+	pc, err := h.remoteProm(r.Context())
+	switch {
+	case err == nil:
+		return pc, true
+	case errors.Is(err, monitoring.ErrNoMetricsBinding):
+		signals.Reason = string(k8s.ReasonMetricsNotConfigured)
+		httputil.WriteData(w, GoldenSignalsResponse{Status: status, Signals: signals})
+	default:
+		httputil.WriteTargetError(w, err)
+	}
+	return nil, false
+}
+
+// crossCheckProm resolves the remote Prometheus the mTLS cross-check runs
+// against. Without one it records why in errs and returns nil: the posture
+// itself is valid, so neither a missing binding nor an unreadable one fails
+// the request.
+func (h *Handler) crossCheckProm(ctx context.Context, errs map[string]string) *monitoring.PrometheusClient {
+	pc, err := h.remoteProm(ctx)
+	switch {
+	case err == nil:
+		return pc
+	case errors.Is(err, monitoring.ErrNoMetricsBinding):
+		errs["prometheus-cross-check"] = crossCheckNotConfigured
+	default:
+		h.Logger.Warn("mTLS metric cross-check binding unreadable; falling back to policy-only", "cluster", middleware.ClusterIDFromContext(ctx), "error", err)
+		errs["prometheus-cross-check"] = crossCheckUnavailable
+	}
+	return nil
 }

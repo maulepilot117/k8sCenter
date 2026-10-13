@@ -295,12 +295,62 @@ var capabilityOperations = []capabilityOp{
 		ClusterScoped: true,
 	},
 	{
-		// Resource counts rely on the local informer cache; remote clusters
-		// use direct API calls and do not populate informers.
-		// k8s/resources/counts.go:28 (400).
-		ID: "resources.counts", Label: "Resource counts",
-		LocalSupported: true, RemoteSupported: false,
+		// The generic list and detail routes (k8s/resources/crud.go
+		// HandleListResource/HandleGetResource) read the selected cluster as
+		// the user instead of the local informer cache. A remote list is
+		// bounded by k8s.RemoteListPageSize x k8s.RemoteListMaxPages and
+		// flagged metadata.truncated past the cap. Secrets are excluded: they keep their own masked
+		// route. No Probe: the core kinds this row stands for are always
+		// served. Namespaced, so a denial reports as authz_namespace_scoped.
+		ID: "resources.read", Label: "Resource lists and detail",
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// GET /resources/counts runs a per-kind access
+		// check on the selected cluster and counts each kind the user may list
+		// with a bounded direct read as the user (k8s/resources/counts.go). A
+		// kind cut off at the cap is counted as read and the response carries
+		// metadata.truncated; a count is never manufactured for a kind that
+		// was not read. No Probe: the core kinds are always served.
+		// Namespaced, so a denial reports as authz_namespace_scoped.
+		ID: "resources.counts", Label: "Resource counts",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// GET /cluster/info reads the version, platform and
+		// node count from the selected cluster as the user. The node count is
+		// omitted rather than guessed when the user may not list nodes.
+		// Cluster-scoped like dashboard.summary: nodes are not namespaced, so
+		// the cluster-wide SAR is an exact question. No Probe.
+		ID: "cluster.info", Label: "Cluster info",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "nodes",
+		ClusterScoped: true,
+	},
+	{
+		// ResourceQuotas and LimitRanges are read from the
+		// selected cluster as the user and cached briefly per user. Known gap:
+		// the remote read is a cluster-wide list as the user, so an account
+		// allowed in only some namespaces is refused on remote where the
+		// local path filters per namespace. No Probe; namespaced, so a denial
+		// reports as authz_namespace_scoped.
+		ID: "limits.read", Label: "Namespace limits",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "resourcequotas",
+	},
+	{
+		// Trivy and Kubescape vulnerability reports are
+		// read as the user on the selected cluster, with scanner presence
+		// detected there. The local discovery loop still probes scanner
+		// namespaces with the service account, for the local status only.
+		// Trivy's VulnerabilityReport stands in for both scanners. No Probe,
+		// like the other CRD rows: the status route reports whether the CRDs
+		// are installed on the target.
+		ID: "scanning.read", Label: "Vulnerability reports",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "aquasecurity.github.io", AuthResource: "vulnerabilityreports",
 	},
 	{
 		// Pod exec requires an SPDY stream upgrade against the target
@@ -347,11 +397,18 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
-		// Hubble flow streaming targets the LOCAL cluster's CNI data plane
-		// for the same confused-deputy reason as logs.search.
-		// handle_ws_flows.go:61.
+		// Remote since #608 PR 5b: a remote cluster's flows, live and on the
+		// dashboard card, come from that cluster's own Hubble Relay, reached
+		// by port-forward through its API server as the user
+		// (networking/relay_tunnel.go), never from the local relay. Besides
+		// list pods in the flow namespace, which this probes, the user needs
+		// list daemonsets in kube-system and cilium (to find Cilium), and
+		// create pods/portforward, get services and list pods in the Cilium
+		// namespace; without them the stream is refused as forbidden. Only
+		// plaintext relays are supported: a relay serving TLS answers
+		// relay_tls_unsupported.
 		ID: "flows.stream", Label: "Network flow stream",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
@@ -468,11 +525,12 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "networking.istio.io", AuthResource: "virtualservices",
 	},
 	{
-		// Remote since U10 (#520), in part: posture is derived from the
-		// selected cluster's pods and policies, but the Prometheus metric
-		// cross-check is skipped and reported unavailable
-		// (servicemesh/handler.go HandleMTLSPosture,
-		// crossCheckUnavailableRemote). The README marks it Partial.
+		// Remote since U10 (#520): posture is derived from the selected
+		// cluster's pods and policies. The Istio Prometheus metric
+		// cross-check runs against the cluster's own metrics binding
+		// (PUT /clusters/{id}/metrics), and a cluster without one reports
+		// the cross-check unavailable (metrics_not_configured), never the
+		// local Prometheus (servicemesh/handler.go HandleMTLSPosture).
 		// AuthResource pods: posture is computed per pod.
 		ID: "mesh.mtls", Label: "Service mesh mTLS posture",
 		LocalSupported: true, RemoteSupported: true,
@@ -508,22 +566,49 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "kyverno.io", AuthResource: "policies",
 	},
 	{
-		// Cilium config is tied to the local installation, so reads and
-		// updates are refused on remote (R13, the P2-5 decision).
-		// networking/handler.go:171 and :234 (rejectNonLocal, 501). The
-		// config lives in the cilium-config ConfigMap.
+		// Remote since #608 PR 5a: the selected cluster's cilium-config is
+		// read and written as the user (networking/remote.go
+		// serveRemoteCNIConfig, updateRemoteCNIConfig), in the namespace
+		// that cluster's own detection found. A remote edit must carry the
+		// pin from its read: a missing pin is 428 cluster_pin_required, a
+		// stale one 409, and a write whose outcome is unknown answers
+		// outcome_unknown. The config lives in the cilium-config ConfigMap.
 		ID: "cni.config", Label: "Cilium CNI configuration",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// Golden signals come from the local Prometheus, which knows nothing
-		// of a remote cluster's traffic (R14). servicemesh/handler.go:834
-		// (HandleGoldenSignals answers with reason unsupported_platform and
-		// queries nothing). AuthVerb "list" pods mirrors the handler's own
-		// namespace check.
+		// Remote since #608 PR 5a: the CNI overview, BGP, IPAM and subsystem
+		// panels read the selected cluster as the user (networking/remote.go
+		// remoteCNI, serveRemoteBGP, serveRemoteSubsystems), never the local
+		// Detector or an informer. An answer that cannot be read is reported
+		// as such, never as "not configured", and a CRD list the cluster
+		// refuses is a coverage row, never zero counts. Detection reads the
+		// CNI DaemonSet, so "list daemonsets" is the representative probe.
+		ID: "cilium.status", Label: "Cilium status, BGP and IPAM",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "apps", AuthResource: "daemonsets",
+	},
+	{
+		// Remote since #608 PR 5a: the connectivity check and the subsystem
+		// agent data exec into the selected cluster's Cilium agent pods as
+		// the user, through the strict stream transport
+		// (networking/agent_exec_remote.go), under the same
+		// ciliumAgent.execEnabled setting as local. A failed exec is shown
+		// as an exec problem per node, not as ill health. Same "pods/exec"
+		// subresource caveat as pod.exec above.
+		ID: "cilium.connectivity", Label: "Cilium node connectivity check",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "create", AuthGroup: "", AuthResource: "pods/exec",
+	},
+	{
+		// Remote since #608 PR 4b: golden signals are queried through the
+		// selected cluster's metrics binding (PUT /clusters/{id}/metrics),
+		// never the local Prometheus. A cluster without a binding answers
+		// 200 with reason metrics_not_configured and no figures. AuthVerb
+		// "list" pods mirrors the handler's own namespace check.
 		ID: "mesh.golden_signals", Label: "Service mesh golden signals",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
@@ -545,33 +630,36 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "get", AuthGroup: "external-secrets.io", AuthResource: "secretstores",
 	},
 	{
-		// The graph is built from the local cluster's informers, which
-		// remote clusters do not have (#532). topology/handler.go
-		// HandleNamespaceGraph answers 501 unsupported_platform before the
-		// builder reads anything. AuthResource pods stands in for the
+		// Remote clusters are served by bounded direct reads as the user
+		// through a per-request remote topology lister (#608); a kind the
+		// user may not list, or one past the read cap, degrades the graph the
+		// way a forbidden kind does locally. The mesh overlay reads local
+		// providers, so ?overlay=mesh on a remote selection answers 400
+		// overlay_unsupported_remote. AuthResource pods stands in for the
 		// per-kind list checks the builder makes on each node it adds.
 		ID: "topology.graph", Label: "Resource topology graph",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
 		// Diagnostics resolve the target, its related pods and the
-		// blast-radius graph from the local cluster's informers (#532).
-		// diagnostics/handler.go refuseRemote answers 501
-		// unsupported_platform for both diagnostics routes before any read,
-		// SAR or notification. AuthResource pods mirrors the namespace
-		// summary's own check.
+		// blast-radius graph from the selected cluster with bounded direct
+		// reads as the user (#608); a pod list past the read cap is reported
+		// as a limitation rather than undercounted. AuthResource pods
+		// mirrors the namespace summary's own check.
 		ID: "diagnostics.read", Label: "Resource diagnostics and blast radius",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
-		// Compliance snapshots are taken by the local ComplianceRecorder of
-		// the local cluster only (R14). policy/handler.go
-		// HandleComplianceHistory (501 remote_history_unsupported, before
-		// the store is read).
+		// Remote since #608: each remote cluster records its own daily
+		// snapshot, taken by impersonating the background identity an admin
+		// names on the cluster (PUT /clusters/{id}/compliance-identity;
+		// policy/remote_recorder.go). Without one, history answers 404
+		// compliance_history_not_configured. The registration credential must
+		// be allowed to impersonate that identity.
 		ID: "policy.compliance_history", Label: "Policy compliance history",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "kyverno.io", AuthResource: "policies",
 	},
 	{
@@ -604,6 +692,54 @@ var capabilityOperations = []capabilityOp{
 		ID: "changes.receipts", Label: "Tracked change receipts",
 		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
+	},
+	{
+		// Release D (U23b, plan A-12): incident evidence is collected from
+		// the local cluster only. incidents/handler_capture.go HandleCapture
+		// answers a non-local X-Cluster-ID with 400
+		// remote_capture_unsupported before any source runs, and the
+		// collector (incidents/collector.go validateRequest) refuses a
+		// non-local cluster id as a second guard. Reading an incident, its
+		// evidence, grants and export is cluster-independent (the rows'
+		// STORED cluster drives every access check, Q1 P6), so only capture
+		// is a capability. AuthResource pods stands in for the target kinds
+		// the sources SAR-gate individually (the object and events adapters
+		// check `get` on the target's own resource and `list events`).
+		ID: "incidents.capture", Label: "Incident evidence capture",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "get", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// Remote since #608 PR 4a, with a per-cluster metrics binding
+		// (PUT /clusters/{id}/metrics). monitoring/handler.go resolves the
+		// Prometheus per request through ClientResolver.PrometheusFor: the
+		// local Discoverer for the local cluster, the cluster's binding for a
+		// remote one, never the local Prometheus for a remote selection. A
+		// remote cluster without a binding answers 404 metrics_not_configured
+		// on the route itself; this row cannot report that (the capabilities
+		// endpoint does not read bindings), so metrics_not_configured is not
+		// one of its reason codes. Raw /query and /query_range are
+		// admin-only; slug queries check each slug's own resource, most of
+		// which are pods, so pods stands in. No Probe: Prometheus is not a
+		// Kubernetes resource. Namespaced, so a denial reports as
+		// authz_namespace_scoped.
+		ID: "monitoring.query", Label: "Prometheus queries",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
+	},
+	{
+		// Remote since #608 PR 4a, with a per-cluster metrics binding:
+		// k8s/resources/dashboard.go HandleDashboardTrends reads the
+		// selected cluster's own Prometheus through the trends provider and
+		// answers 404 metrics_not_configured when the cluster has no binding
+		// (see monitoring.query for why this row cannot say so). The series
+		// are cluster-wide node metrics, so the probe mirrors
+		// dashboard.summary: cluster-scoped nodes, an exact SAR question. No
+		// Probe: the series come from Prometheus, not discovery.
+		ID: "dashboard.trends", Label: "Dashboard trends",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "nodes",
+		ClusterScoped: true,
 	},
 }
 

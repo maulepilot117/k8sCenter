@@ -63,6 +63,9 @@ var (
 	// ErrInvalidIncidentCursor reports a ListVisible cursor that does not
 	// decode. Callers answer it with a 400, never by restarting at page one.
 	ErrInvalidIncidentCursor = errors.New("invalid incident cursor")
+
+	// ErrInvalidNoteCursor reports a ListNotes cursor that does not decode.
+	ErrInvalidNoteCursor = errors.New("invalid incident note cursor")
 )
 
 // NoteRevisionConflictError is returned by UpdateNote when the caller's
@@ -98,14 +101,10 @@ const (
 	IncidentMinRetentionDays = 1
 	IncidentMaxRetentionDays = 3650
 
-	// IncidentDefaultPageSize and IncidentMaxPageSize bound ListVisible, the
-	// same bounds change_receipts and eso_history use.
+	// IncidentDefaultPageSize and IncidentMaxPageSize bound ListVisible and
+	// ListNotes, the same bounds change_receipts and eso_history use.
 	IncidentDefaultPageSize = 50
 	IncidentMaxPageSize     = 200
-
-	// IncidentMaxNotesListed caps ListNotes. The schema does not bound notes
-	// per incident; a read returns at most this many, oldest first.
-	IncidentMaxNotesListed = 500
 )
 
 // IncidentRow is one row in incidents.
@@ -285,6 +284,35 @@ func DecodeIncidentCursor(s string) (IncidentCursor, error) {
 	return IncidentCursor{CreatedAt: at, ID: id}, nil
 }
 
+// IncidentNoteCursor is the keyset position after the last row of a
+// ListNotes page: that row's (created_at, id). Notes page oldest first, so
+// the next page starts strictly after it.
+type IncidentNoteCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
+// EncodeIncidentNoteCursor renders a note cursor in the shared keyset form.
+// Unsigned, like the incident cursor: ListNotes pins the incident in its
+// WHERE clause and the caller has already passed the visibility gate.
+func EncodeIncidentNoteCursor(c IncidentNoteCursor) string {
+	return encodeMicrosCursor(c.CreatedAt, c.ID.String())
+}
+
+// DecodeIncidentNoteCursor parses a cursor produced by
+// EncodeIncidentNoteCursor; every malformed input returns ErrInvalidNoteCursor.
+func DecodeIncidentNoteCursor(s string) (IncidentNoteCursor, error) {
+	at, idText, ok := decodeMicrosCursor(s, maxIncidentCursorBytes)
+	if !ok {
+		return IncidentNoteCursor{}, ErrInvalidNoteCursor
+	}
+	id, err := uuid.Parse(idText)
+	if err != nil || id == uuid.Nil || id.String() != idText {
+		return IncidentNoteCursor{}, ErrInvalidNoteCursor
+	}
+	return IncidentNoteCursor{CreatedAt: at, ID: id}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -349,31 +377,12 @@ func scanNote(row pgx.Row) (IncidentNoteRow, error) {
 // ClusterID defaults to "local". RetentionDaysAtCapture is the retention in
 // force at creation, supplied by the caller; it must be within [1, 3650].
 func (s *IncidentStore) Create(ctx context.Context, r IncidentRow) (uuid.UUID, error) {
-	if err := requireIdentity("owner id", r.OwnerID); err != nil {
+	clusterID, err := validateIncidentCreate(r)
+	if err != nil {
 		return uuid.Nil, err
 	}
-	if err := ValidateIncidentTitle(r.Title); err != nil {
-		return uuid.Nil, err
-	}
-	if err := ValidateIncidentSummary(r.Summary); err != nil {
-		return uuid.Nil, err
-	}
-	if err := ValidateIncidentWindow(r.WindowStart, r.WindowEnd); err != nil {
-		return uuid.Nil, err
-	}
-	if err := ValidateIncidentRetentionDays(r.RetentionDaysAtCapture); err != nil {
-		return uuid.Nil, err
-	}
-	if r.Status != "" && r.Status != IncidentStatusOpen {
-		return uuid.Nil, fmt.Errorf("%w: an incident is created open, got status %q", ErrIncidentInvalid, r.Status)
-	}
-	clusterID := r.ClusterID
-	if clusterID == "" {
-		clusterID = "local"
-	}
-
 	var id uuid.UUID
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		INSERT INTO incidents (owner_id, cluster_id, title, summary, window_start, window_end, retention_days_at_capture)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id`,
@@ -383,6 +392,100 @@ func (s *IncidentStore) Create(ctx context.Context, r IncidentRow) (uuid.UUID, e
 		return uuid.Nil, fmt.Errorf("insert incidents: %w", err)
 	}
 	return id, nil
+}
+
+// incidentCreateAttempts bounds CreateWithRequestID's insert-or-find loop. A
+// second pass is needed only when the conflicting incident was deleted
+// between the INSERT and the lookup; a third would need that to happen twice
+// in a row.
+const incidentCreateAttempts = 3
+
+// CreateWithRequestID is Create made idempotent per owner by a
+// client-generated request id (migration 000026). The first call for
+// (r.OwnerID, requestID) inserts the incident and returns (id, true, nil);
+// any later call with the same pair returns (that id, false, nil) and writes
+// nothing. First write wins: a replay whose title, summary or window differ
+// from the stored incident still gets the stored incident's id, unchanged,
+// because a retry of a lost response must not be able to rewrite what the
+// first attempt committed. (The HTTP layer compares the payloads and answers
+// a reused id with a different payload 409 client_request_id_conflict.) The
+// key is scoped by owner, so another identity using
+// the same request id gets its own incident and never learns of this one. A
+// deleted incident frees its key: a later call creates a new incident.
+//
+// Concurrency: INSERT ... ON CONFLICT DO NOTHING waits for an in-flight
+// insert of the same key to commit or roll back, so concurrent callers with
+// one key produce exactly one row and all of them get its id. Input is
+// validated before any SQL, exactly as Create does; requestID must not be
+// uuid.Nil.
+func (s *IncidentStore) CreateWithRequestID(ctx context.Context, r IncidentRow, requestID uuid.UUID) (uuid.UUID, bool, error) {
+	clusterID, err := validateIncidentCreate(r)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	if requestID == uuid.Nil {
+		return uuid.Nil, false, fmt.Errorf("%w: client request id must not be the nil UUID", ErrIncidentInvalid)
+	}
+	for range incidentCreateAttempts {
+		var id uuid.UUID
+		err := s.pool.QueryRow(ctx, `
+			INSERT INTO incidents (owner_id, cluster_id, title, summary, window_start, window_end,
+				retention_days_at_capture, client_request_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (owner_id, client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING
+			RETURNING id`,
+			r.OwnerID, clusterID, r.Title, r.Summary, r.WindowStart, r.WindowEnd, r.RetentionDaysAtCapture, requestID,
+		).Scan(&id)
+		if err == nil {
+			return id, true, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, fmt.Errorf("insert incidents: %w", err)
+		}
+		// Conflict: the key is taken. Read back the incident holding it. Under
+		// READ COMMITTED this new statement sees the committed winner.
+		err = s.pool.QueryRow(ctx,
+			`SELECT id FROM incidents WHERE owner_id = $1 AND client_request_id = $2`,
+			r.OwnerID, requestID,
+		).Scan(&id)
+		if err == nil {
+			return id, false, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, fmt.Errorf("find incident by client request id: %w", err)
+		}
+		// The holder was deleted in between; the key is free again, so retry.
+	}
+	return uuid.Nil, false, fmt.Errorf("%w: client request id kept conflicting with an incident deleted before it could be read",
+		ErrIncidentBusy)
+}
+
+// validateIncidentCreate is the pre-SQL validation shared by Create and
+// CreateWithRequestID. It returns the cluster id to store ("local" when
+// r.ClusterID is empty).
+func validateIncidentCreate(r IncidentRow) (string, error) {
+	if err := requireIdentity("owner id", r.OwnerID); err != nil {
+		return "", err
+	}
+	if err := ValidateIncidentTitle(r.Title); err != nil {
+		return "", err
+	}
+	if err := ValidateIncidentSummary(r.Summary); err != nil {
+		return "", err
+	}
+	if err := ValidateIncidentWindow(r.WindowStart, r.WindowEnd); err != nil {
+		return "", err
+	}
+	if err := ValidateIncidentRetentionDays(r.RetentionDaysAtCapture); err != nil {
+		return "", err
+	}
+	if r.Status != "" && r.Status != IncidentStatusOpen {
+		return "", fmt.Errorf("%w: an incident is created open, got status %q", ErrIncidentInvalid, r.Status)
+	}
+	if r.ClusterID == "" {
+		return "local", nil
+	}
+	return r.ClusterID, nil
 }
 
 // Get returns one incident by id, or (nil, nil) when it does not exist. A
@@ -475,31 +578,41 @@ func (s *IncidentStore) ListVisible(ctx context.Context, userID string, limit in
 	return out, next, nil
 }
 
-// Update replaces the title, summary and status of an incident owned by
-// ownerID, and bumps updated_at. Closing stamps closed_at (an edit to an
-// already-closed incident keeps its original close time); reopening clears it.
-// The owner is in the WHERE clause, so a non-owner can never write. Returns
-// ErrIncidentNotFound for a missing id and ErrNotOwner when it exists under
-// another owner.
-func (s *IncidentStore) Update(ctx context.Context, id uuid.UUID, ownerID, title, summary, status string) error {
+// Update sets the title, summary and/or status of an incident owned by
+// ownerID and bumps updated_at. A nil field keeps its column: the merge is
+// COALESCE in the UPDATE itself, so two partial updates that interleave
+// (one editor's title, another's summary) never revert each other the way a
+// handler-side read-modify-write would. closed_at follows the RESULTING
+// status: closing stamps it (an edit to an already-closed incident keeps its
+// original close time); reopening clears it. A non-nil field is validated; a
+// nil one is not. The owner is in the WHERE clause, so a non-owner can never
+// write. Returns ErrIncidentNotFound for a missing id and ErrNotOwner when
+// it exists under another owner.
+func (s *IncidentStore) Update(ctx context.Context, id uuid.UUID, ownerID string, title, summary, status *string) error {
 	if err := requireIdentity("owner id", ownerID); err != nil {
 		return err
 	}
-	if err := ValidateIncidentTitle(title); err != nil {
-		return err
+	if title != nil {
+		if err := ValidateIncidentTitle(*title); err != nil {
+			return err
+		}
 	}
-	if err := ValidateIncidentSummary(summary); err != nil {
-		return err
+	if summary != nil {
+		if err := ValidateIncidentSummary(*summary); err != nil {
+			return err
+		}
 	}
-	if err := ValidateIncidentStatus(status); err != nil {
-		return err
+	if status != nil {
+		if err := ValidateIncidentStatus(*status); err != nil {
+			return err
+		}
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE incidents
-		   SET title      = $3,
-		       summary    = $4,
-		       status     = $5,
-		       closed_at  = CASE WHEN $5 = 'closed' THEN COALESCE(closed_at, NOW()) ELSE NULL END,
+		   SET title      = COALESCE($3, title),
+		       summary    = COALESCE($4, summary),
+		       status     = COALESCE($5, status),
+		       closed_at  = CASE WHEN COALESCE($5, status) = 'closed' THEN COALESCE(closed_at, NOW()) ELSE NULL END,
 		       updated_at = NOW()
 		 WHERE id = $1 AND owner_id = $2`,
 		id, ownerID, title, summary, status)
@@ -545,20 +658,138 @@ func (s *IncidentStore) ownershipMiss(ctx context.Context, id uuid.UUID) error {
 // value the caller passes (the currently configured retention, Q1 P13), and
 // returns the number deleted. Evidence, notes, revisions and grants cascade.
 // Lowering the configured value therefore deletes, on the next sweep,
-// incidents that were inside the old window. Bounded by cleanupTimeout; it
-// rejects retentionDays < 1 before any SQL.
+// incidents that were inside the old window. It deletes in batches of
+// incidentCleanupBatch, each its own statement, so a large backlog never holds
+// one long transaction or lock; the whole call is bounded by cleanupTimeout, and
+// a timeout or failure part-way returns the count already deleted along with the
+// error (progress is kept). It rejects retentionDays < 1 before any SQL.
 func (s *IncidentStore) Cleanup(ctx context.Context, retentionDays int) (int64, error) {
+	return s.cleanupBatched(ctx, retentionDays, incidentCleanupBatch, nil)
+}
+
+// incidentCleanupBatch is the number of incidents one Cleanup statement deletes.
+const incidentCleanupBatch = 500
+
+// cleanupBatched is Cleanup with an injectable batch size. afterBatch, when
+// non-nil, is called with each batch's deleted count and may return false to
+// stop early (test seam; production passes nil).
+func (s *IncidentStore) cleanupBatched(ctx context.Context, retentionDays, batchSize int, afterBatch func(deleted int64) bool) (int64, error) {
 	if retentionDays < 1 {
 		return 0, fmt.Errorf("retention days must be at least 1, got %d", retentionDays)
 	}
+	if batchSize < 1 {
+		return 0, fmt.Errorf("cleanup batch size must be at least 1, got %d", batchSize)
+	}
 	cleanupCtx, cancel := context.WithTimeout(ctx, cleanupTimeout)
 	defer cancel()
-	tag, err := s.pool.Exec(cleanupCtx,
-		`DELETE FROM incidents WHERE created_at < NOW() - $1 * INTERVAL '1 day'`, retentionDays)
-	if err != nil {
-		return 0, fmt.Errorf("cleanup incidents: %w", err)
+	var total int64
+	for {
+		tag, err := s.pool.Exec(cleanupCtx,
+			`DELETE FROM incidents WHERE id IN (
+			     SELECT id FROM incidents
+			      WHERE created_at < NOW() - $1 * INTERVAL '1 day'
+			      ORDER BY created_at
+			      LIMIT $2)`, retentionDays, batchSize)
+		if err != nil {
+			return total, fmt.Errorf("cleanup incidents: %w", err)
+		}
+		n := tag.RowsAffected()
+		total += n
+		if afterBatch != nil && !afterBatch(n) {
+			return total, nil
+		}
+		if n < int64(batchSize) {
+			return total, nil
+		}
 	}
-	return tag.RowsAffected(), nil
+}
+
+// RetentionLoweringImpact describes incidents a configured retention would
+// delete although the retention in force when they were created would have
+// kept them.
+type RetentionLoweringImpact struct {
+	// Count is how many such incidents exist.
+	Count int64
+	// Oldest and Newest bound their created_at; both are zero when Count is 0.
+	Oldest, Newest time.Time
+	// LaterCount is how many incidents are still inside the configured window
+	// but were captured under a longer retention: they will be deleted earlier
+	// than their own policy promised, once they age past the configured value.
+	LaterCount int64
+}
+
+// RetentionLoweringImpact reports how a configured retention departs from the
+// retention_days_at_capture of existing incidents. Count (with Oldest and
+// Newest) is the incidents the next Cleanup(retentionDays) deletes only
+// because the configured value is lower than the one they were created under:
+// created_at is older than the configured window but still inside their own.
+// LaterCount is those still inside the configured window that were captured
+// under a longer retention. Incidents simply expired under their own policy
+// are in neither, so both are zero in normal operation. LaterCount stays above
+// zero until every such incident has aged past the configured window, so a
+// caller that warns on it will warn again on later restarts. It reads
+// aggregates only, no incident content.
+func (s *IncidentStore) RetentionLoweringImpact(ctx context.Context, retentionDays int) (RetentionLoweringImpact, error) {
+	if retentionDays < 1 {
+		return RetentionLoweringImpact{}, fmt.Errorf("retention days must be at least 1, got %d", retentionDays)
+	}
+	var (
+		impact         RetentionLoweringImpact
+		oldest, newest *time.Time
+	)
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FILTER (WHERE past),
+		       MIN(created_at) FILTER (WHERE past),
+		       MAX(created_at) FILTER (WHERE past),
+		       COUNT(*) FILTER (WHERE later)
+		  FROM (
+		    SELECT created_at,
+		           created_at <  NOW() - $1::int * INTERVAL '1 day'
+		             AND created_at >= NOW() - retention_days_at_capture * INTERVAL '1 day' AS past,
+		           created_at >= NOW() - $1::int * INTERVAL '1 day'
+		             AND retention_days_at_capture > $1::int AS later
+		      FROM incidents) AS t`,
+		retentionDays).Scan(&impact.Count, &oldest, &newest, &impact.LaterCount); err != nil {
+		return RetentionLoweringImpact{}, fmt.Errorf("retention lowering impact: %w", err)
+	}
+	if oldest != nil {
+		impact.Oldest = *oldest
+	}
+	if newest != nil {
+		impact.Newest = *newest
+	}
+	return impact, nil
+}
+
+// AppliedRetentionDays returns the retention (days) the last successful
+// retention sweep applied, from the single-row incident_retention_state table
+// (migration 000025). found is false when no sweep has recorded one yet.
+func (s *IncidentStore) AppliedRetentionDays(ctx context.Context) (days int, found bool, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT applied_retention_days FROM incident_retention_state`).Scan(&days)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("read applied retention: %w", err)
+	}
+	return days, true, nil
+}
+
+// RecordAppliedRetention upserts the retention a successful sweep applied. It
+// rejects a value outside [IncidentMinRetentionDays, IncidentMaxRetentionDays]
+// before any SQL.
+func (s *IncidentStore) RecordAppliedRetention(ctx context.Context, days int) error {
+	if err := ValidateIncidentRetentionDays(days); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO incident_retention_state (id, applied_retention_days, updated_at)
+		VALUES (true, $1, now())
+		ON CONFLICT (id) DO UPDATE
+		   SET applied_retention_days = EXCLUDED.applied_retention_days, updated_at = now()`, days); err != nil {
+		return fmt.Errorf("record applied retention: %w", err)
+	}
+	return nil
 }
 
 // CreateNote adds a note at revision 1. authorID is the authenticated caller.
@@ -587,17 +818,56 @@ func (s *IncidentStore) CreateNote(ctx context.Context, incidentID uuid.UUID, au
 	return n, nil
 }
 
-// ListNotes returns an incident's notes, oldest first, capped at
-// IncidentMaxNotesListed. Notes past the cap are not returned.
-func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID) ([]IncidentNoteRow, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+noteColumns+`
+// The two ListNotes page queries (fixed texts, as for ListVisible). Both
+// fetch one row past the page so the returned cursor is exact: it is issued
+// only when a further note exists.
+const (
+	noteFirstPageSQL = `
+		SELECT ` + noteColumns + `
 		  FROM incident_notes
 		 WHERE incident_id = $1
 		 ORDER BY created_at, id
-		 LIMIT $2`, incidentID, IncidentMaxNotesListed)
+		 LIMIT $2`
+
+	noteNextPageSQL = `
+		SELECT ` + noteColumns + `
+		  FROM incident_notes
+		 WHERE incident_id = $1
+		   AND (created_at, id) > ($2::timestamptz, $3::uuid)
+		 ORDER BY created_at, id
+		 LIMIT $4`
+)
+
+// ListNotes returns one page of an incident's notes, oldest first
+// ((created_at, id)), starting after cursor ("" for the first page). limit is
+// clamped like ListVisible. The returned cursor is "" when no further note
+// exists, so a page that ends on the last note never costs an extra request.
+// The schema does not bound notes per incident; every note is reachable by
+// paging.
+//
+// Ordering caveat: created_at is the INSERT's NOW(), which is the start of
+// its transaction. A note whose transaction commits late (it waited on a
+// lock) can therefore land BEHIND a cursor a forward pager has already
+// passed, and that pager will not see it until it restarts from the first
+// page. Accepted for Release D (notes are rare, and a reload shows them); a
+// monotonic BIGSERIAL ordering column would close it and needs a migration.
+func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID, limit int, cursor string) ([]IncidentNoteRow, string, error) {
+	limit = clampIncidentPageSize(limit)
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if cursor == "" {
+		rows, err = s.pool.Query(ctx, noteFirstPageSQL, incidentID, limit+1)
+	} else {
+		after, decodeErr := DecodeIncidentNoteCursor(cursor)
+		if decodeErr != nil {
+			return nil, "", decodeErr
+		}
+		rows, err = s.pool.Query(ctx, noteNextPageSQL, incidentID, after.CreatedAt, after.ID, limit+1)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("list incident_notes: %w", err)
+		return nil, "", fmt.Errorf("list incident_notes: %w", err)
 	}
 	defer rows.Close()
 
@@ -605,14 +875,20 @@ func (s *IncidentStore) ListNotes(ctx context.Context, incidentID uuid.UUID) ([]
 	for rows.Next() {
 		n, err := scanNote(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan incident_notes: %w", err)
+			return nil, "", fmt.Errorf("scan incident_notes: %w", err)
 		}
 		out = append(out, n)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate incident_notes: %w", err)
+		return nil, "", fmt.Errorf("iterate incident_notes: %w", err)
 	}
-	return out, nil
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = EncodeIncidentNoteCursor(IncidentNoteCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	}
+	return out, next, nil
 }
 
 // ListNoteRevisions returns the prior bodies of a note, oldest revision first.

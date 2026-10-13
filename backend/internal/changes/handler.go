@@ -104,11 +104,6 @@ const (
 	defaultNamespace = "default"
 )
 
-// localGeneration is the generation TargetSchemaFor reports for the local
-// cluster; it is what a local receipt recorded, so it is compared without a
-// cluster call.
-const localGeneration = "local"
-
 // Handler serves change receipts and ownership resolution.
 type Handler struct {
 	service  *Service
@@ -391,7 +386,9 @@ func (h *Handler) requireClusterAccess(w http.ResponseWriter, user *auth.User, c
 // cluster call; a remote one is resolved only for a caller who may reach it.
 func (h *Handler) currentGeneration(ctx context.Context, user *auth.User, clusterID string) string {
 	if k8s.IsLocalClusterID(clusterID) {
-		return localGeneration
+		// What a local receipt recorded, so it is compared without a
+		// cluster call.
+		return k8s.LocalGeneration
 	}
 	if h.clusters == nil || !mayReachCluster(user, clusterID) {
 		return ""

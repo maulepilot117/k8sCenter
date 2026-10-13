@@ -36,6 +36,12 @@ export interface DiagnosticResult {
   detail?: string;
   remediation?: string;
   links?: { label: string; kind: string; name: string }[];
+  /**
+   * When the check was evaluated (RFC 3339, UTC), one instant for every check
+   * of a response. Optional because an older backend does not send it;
+   * incident capture derives its window start from it (`earliestObservedAt`).
+   */
+  observedAt?: string;
 }
 
 export interface AffectedResource {

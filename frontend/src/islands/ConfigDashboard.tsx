@@ -5,11 +5,7 @@ import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import SecretWizard from "@/src/islands/SecretWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
-import {
-  countsPendingText,
-  getCount,
-  resourceCounts,
-} from "@/src/lib/resource-counts.ts";
+import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 
 type WizardComponent =
   | (({ onClose }: { onClose: () => void }) => preact.JSX.Element)
@@ -81,12 +77,11 @@ export default function ConfigDashboard({
   }, []);
 
   // Subtitle derived from live counts — no invented data.
-  const total = getCount(kind) ?? 0;
   const countsReady = resourceCounts.value !== null;
 
   const subtitle = countsReady
-    ? `${total} ${title.toLowerCase()}`
-    : countsPendingText(`Loading ${title.toLowerCase()}…`);
+    ? `${formatCount(kind) ?? 0} ${title.toLowerCase()}`
+    : `Loading ${title.toLowerCase()}…`;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>

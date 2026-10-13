@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -425,8 +426,8 @@ func TestListEvents_RemoteTruncatedListIsFlagged(t *testing.T) {
 	remote.PrependReactor("list", "events", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		pages++
 		opts := a.(k8stesting.ListActionImpl).ListOptions
-		if opts.Limit != remoteListPageSize {
-			t.Errorf("page %d requested Limit=%d, want %d", pages, opts.Limit, remoteListPageSize)
+		if opts.Limit != k8s.RemoteListPageSize {
+			t.Errorf("page %d requested Limit=%d, want %d", pages, opts.Limit, k8s.RemoteListPageSize)
 		}
 		// Every page claims there is more; the pager must stop at its cap.
 		return true, &corev1.EventList{
@@ -436,11 +437,11 @@ func TestListEvents_RemoteTruncatedListIsFlagged(t *testing.T) {
 	})
 
 	total, _, truncated := listMetadata(t, listEvents(t, h, remoteTestClusterID, "default", url.Values{"limit": {"100"}}))
-	if pages != remoteListMaxPages {
-		t.Errorf("pager fetched %d pages, want cap %d", pages, remoteListMaxPages)
+	if pages != k8s.RemoteListMaxPages {
+		t.Errorf("pager fetched %d pages, want cap %d", pages, k8s.RemoteListMaxPages)
 	}
-	if total != remoteListMaxPages {
-		t.Errorf("total = %d, want the %d items actually read", total, remoteListMaxPages)
+	if total != k8s.RemoteListMaxPages {
+		t.Errorf("total = %d, want the %d items actually read", total, k8s.RemoteListMaxPages)
 	}
 	if !truncated {
 		t.Error("a list stopped at the page cap is not flagged truncated")

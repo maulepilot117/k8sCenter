@@ -104,9 +104,9 @@ func (f *fakeAlertCounter) ActiveAlertCountsExcluding(_ context.Context, _ ...st
 // fakeAlertCounterCapture records the excludeAlertNames passed to
 // ActiveAlertCountsExcluding so tests can assert the exact names forwarded.
 type fakeAlertCounterCapture struct {
-	active         int
-	critical       int
-	err            error
+	active          int
+	critical        int
+	err             error
 	capturedExclude []string
 }
 
@@ -124,7 +124,7 @@ type fakeControlPlane struct {
 	err    error
 }
 
-func (f *fakeControlPlane) ControlPlaneStatus(_ context.Context) (ControlPlaneStates, error) {
+func (f *fakeControlPlane) ControlPlaneStatus(_ context.Context, _ string) (ControlPlaneStates, error) {
 	return f.states, f.err
 }
 
@@ -134,8 +134,18 @@ type fakeCertExpiry struct {
 	err  error
 }
 
-func (f *fakeCertExpiry) ExpiringCounts(_ context.Context, _ *auth.User) (int, int, error) {
-	return f.warn, f.crit, f.err
+// ExpiringCountsForCluster answers the way certmanager.CertExpiryAdapter
+// answers for the local cluster: err is the error its ExpiringCounts would
+// return, reported through State.
+func (f *fakeCertExpiry) ExpiringCountsForCluster(_ context.Context, _ string, _ *auth.User) CertExpiry {
+	switch {
+	case f.err == nil:
+		return CertExpiry{Warning: f.warn, Critical: f.crit}
+	case errors.Is(f.err, ErrCertManagerNotInstalled):
+		return CertExpiry{State: CertExpiryNotInstalled}
+	default:
+		return CertExpiry{State: CertExpiryIncomplete, Cause: f.err}
+	}
 }
 
 // --- Tests ---
@@ -464,7 +474,7 @@ func TestDashboardHealth_WFFCPVCExcluded(t *testing.T) {
 func TestDashboardHealth_WFFCPVCWithAnnotationDegraded(t *testing.T) {
 	wffc := storagev1.VolumeBindingWaitForFirstConsumer
 	sc := &storagev1.StorageClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "fast"},
+		ObjectMeta:        metav1.ObjectMeta{Name: "fast"},
 		VolumeBindingMode: &wffc,
 	}
 	pendingPVC := &corev1.PersistentVolumeClaim{

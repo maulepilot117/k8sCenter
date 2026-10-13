@@ -32,10 +32,11 @@ func (s *Server) registerRoutes() {
 			r.Get("/api/v1/ws/resources", s.handleWSResources)
 		}
 
-		// Hubble flow WebSocket — auth in-band (same as resource WS), no timeout
-		if s.NetworkingHandler != nil && s.NetworkingHandler.HubbleClient != nil {
-			r.Get("/api/v1/ws/flows", s.handleWSFlows)
-		}
+		// Hubble flow WebSocket — auth in-band (same as resource WS), no
+		// timeout. Always mounted: the stream names its cluster in-band, so
+		// whether the local cluster has Hubble is answered in-band too
+		// (hubble_unavailable), and a remote cluster never needs it (#608 R12).
+		r.Get("/api/v1/ws/flows", s.handleWSFlows)
 
 		// Loki log search WebSocket — auth in-band, no timeout
 		if s.LokiHandler != nil {
@@ -204,6 +205,14 @@ func (s *Server) registerRoutes() {
 				s.registerChangesRoutes(ar)
 			}
 
+			// Incident routes (Release D) — registered whenever the handler
+			// exists, which main.go guarantees even without a database, so a
+			// no-DB deployment reports 503 "incident_persistence_unavailable"
+			// rather than a bare 404 (R3, correction C4).
+			if s.IncidentsHandler != nil {
+				s.registerIncidentRoutes(ar)
+			}
+
 			// Security scanning routes — only registered if scanning handler is available
 			if s.ScanningHandler != nil {
 				s.registerScanningRoutes(ar)
@@ -282,15 +291,27 @@ func (s *Server) registerRoutes() {
 			})
 
 			// Cluster management — admin only
-			ar.Route("/clusters", func(cr chi.Router) {
-				cr.Use(middleware.RequireAdmin)
-				cr.Get("/", s.handleListClusters)
-				cr.Post("/", s.handleCreateCluster)
-				cr.Get("/{clusterID}", s.handleGetCluster)
-				cr.Delete("/{clusterID}", s.handleDeleteCluster)
-				cr.Post("/{clusterID}/test", s.handleTestCluster)
-			})
+			s.registerClusterRoutes(ar)
 		})
+	})
+}
+
+// registerClusterRoutes mounts the admin-only cluster registry, including
+// each remote cluster's metrics binding.
+func (s *Server) registerClusterRoutes(ar chi.Router) {
+	ar.Route("/clusters", func(cr chi.Router) {
+		cr.Use(middleware.RequireAdmin)
+		cr.Get("/", s.handleListClusters)
+		cr.Post("/", s.handleCreateCluster)
+		cr.Get("/{clusterID}", s.handleGetCluster)
+		cr.Delete("/{clusterID}", s.handleDeleteCluster)
+		cr.Post("/{clusterID}/test", s.handleTestCluster)
+		cr.Get("/{clusterID}/metrics", s.handleGetClusterMetrics)
+		cr.Put("/{clusterID}/metrics", s.handlePutClusterMetrics)
+		cr.Delete("/{clusterID}/metrics", s.handleDeleteClusterMetrics)
+		cr.Get("/{clusterID}/compliance-identity", s.handleGetComplianceIdentity)
+		cr.Put("/{clusterID}/compliance-identity", s.handlePutComplianceIdentity)
+		cr.Delete("/{clusterID}/compliance-identity", s.handleDeleteComplianceIdentity)
 	})
 }
 
@@ -635,6 +656,65 @@ func (s *Server) registerChangesRoutes(ar chi.Router) {
 		cr.Post("/ownership", h.HandleResolveOwnership)
 		cr.Get("/{id}", h.HandleGet)
 		cr.Get("/{id}/verification", h.HandleVerification)
+	})
+}
+
+// DefaultIncidentsRateLimit is the per-user, per-minute budget of the
+// /incidents limiter. main.go uses it for production so the fallback built
+// when no limiter is wired matches. An incident detail read costs one access
+// check per distinct evidence scope (at most 20) on a cold cache, so this
+// matches the /changes budget rather than the wider YAML one.
+const DefaultIncidentsRateLimit = 60
+
+// registerIncidentRoutes mounts the incident record, note, evidence,
+// capture, grant and export endpoints. Auth, CSRF and ClusterContext are inherited
+// from the enclosing authenticated group; the handlers never use the
+// request's cluster for authorization (the evidence row's stored cluster
+// drives every access check, Q1 P6).
+//
+// {incidentID} and {noteID} are UUIDs, not Kubernetes names, so
+// resources.ValidateURLParams is deliberately not applied; the handlers
+// validate them with uuid.Parse (correction C6).
+func (s *Server) registerIncidentRoutes(ar chi.Router) {
+	h := s.IncidentsHandler
+	// A dedicated per-user bucket like /changes: behind the frontend BFF every
+	// user shares the pod's IP, so a per-IP bucket would be installation-wide.
+	// The fallback is for tests and misconfiguration only (no cleanup
+	// goroutine, no audit logger), never the YAML or auth bucket.
+	rl := s.IncidentsRateLimiter
+	if rl == nil {
+		if s.Logger != nil {
+			s.Logger.Warn("incidents: no dedicated rate limiter wired; using a default per-user limiter")
+		}
+		rl = middleware.NewRateLimiterWithRate(DefaultIncidentsRateLimit, time.Minute)
+	}
+	ar.Route("/incidents", func(ir chi.Router) {
+		ir.Use(middleware.RateLimitByUser(rl, "incidents"))
+
+		ir.Get("/", h.HandleList)
+		ir.Post("/", h.HandleCreate)
+		ir.Get("/{incidentID}", h.HandleGet)
+		ir.Put("/{incidentID}", h.HandleUpdate)
+		ir.Delete("/{incidentID}", h.HandleDelete)
+		ir.Get("/{incidentID}/notes", h.HandleListNotes)
+		ir.Post("/{incidentID}/notes", h.HandleCreateNote)
+		ir.Put("/{incidentID}/notes/{noteID}", h.HandleUpdateNote)
+		ir.Delete("/{incidentID}/notes/{noteID}", h.HandleDeleteNote)
+		// U23b. Capture and export share the per-user bucket above rather
+		// than a tighter one: a capture is bounded by the collector's
+		// CaptureTimeout (14s default, clamped to maxCaptureTimeout, 14.75s),
+		// the whole request by captureRequestBudget (27s, under the frontend
+		// proxy's 30s), and by the 20-scope cap; an export by exportMaxBytes,
+		// and the handler-level owner gate stops a collaborator before any
+		// source runs, so neither can outspend a detail read by more than a
+		// constant factor. {granteeID} is an auth.User.ID (percent-decoded
+		// by the handler), not a Kubernetes name.
+		ir.Get("/{incidentID}/evidence", h.HandleListEvidence)
+		ir.Post("/{incidentID}/capture", h.HandleCapture)
+		ir.Get("/{incidentID}/grants", h.HandleListGrants)
+		ir.Post("/{incidentID}/grants", h.HandleAddGrant)
+		ir.Delete("/{incidentID}/grants/{granteeID}", h.HandleRemoveGrant)
+		ir.Get("/{incidentID}/export", h.HandleExport)
 	})
 }
 

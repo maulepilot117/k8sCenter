@@ -18,6 +18,14 @@
 # selected cluster must mark every remaining local read with a nolint
 # reason, so serving local data under a remote cluster's name is visible.
 #
+# #608 slice 5 (KTD1/KTD13) — in every HANDLER_DIRS package, also flag the
+# client-go constructors that open an exec or port-forward stream
+# (.BaseConfig(), remotecommand's SPDY/WebSocket executors,
+# spdy/websocket .RoundTripperFor, portforward.New, spdy.NewDialer). Those
+# ignore rest.Config.Dial, so a stream built from a remote config would skip
+# StrictDialContext. STREAM_TRANSPORT_PATH is the one file allowed to build
+# them; any local service-account stream elsewhere carries a nolint reason.
+#
 # A line is exempt when:
 #   - The line above carries `// nolint:cluster-routing` AND a free-form reason
 #   - The file path matches one of the ALLOWED_PREFIXES below (informer
@@ -70,7 +78,7 @@ TAB="$(printf '\t')"
 # wires per-request k8s calls. F#14 added server / alerting / gateway /
 # notification / storage / velero — each one had at least one direct
 # .ClientForUser call that the previous list missed.
-HANDLER_DIRS="backend/internal/yaml backend/internal/k8s backend/internal/certmanager backend/internal/networking backend/internal/servicemesh backend/internal/gitops backend/internal/policy backend/internal/externalsecrets backend/internal/monitoring backend/internal/loki backend/internal/topology backend/internal/server backend/internal/alerting backend/internal/gateway backend/internal/notification backend/internal/storage backend/internal/velero backend/internal/changes"
+HANDLER_DIRS="backend/internal/yaml backend/internal/k8s backend/internal/certmanager backend/internal/networking backend/internal/servicemesh backend/internal/gitops backend/internal/policy backend/internal/externalsecrets backend/internal/monitoring backend/internal/loki backend/internal/topology backend/internal/diagnostics backend/internal/server backend/internal/alerting backend/internal/gateway backend/internal/notification backend/internal/storage backend/internal/velero backend/internal/changes backend/internal/incidents backend/internal/scanning"
 
 # File paths (relative to ROOT, prefix-matched) whose direct calls are
 # architecturally legitimate and therefore exempt from the lint:
@@ -96,7 +104,12 @@ SCHEMA_ROUTED_DIRS="backend/internal/yaml backend/internal/server backend/intern
 # / .RESTMapper() / .Informers.) is a violation unless annotated: each remaining local
 # read must say why it is local. A package joins this list in the unit that
 # migrates it.
-REMOTE_ROUTED_DIRS="backend/internal/gateway backend/internal/gitops backend/internal/velero backend/internal/storage backend/internal/notification backend/internal/alerting backend/internal/servicemesh backend/internal/externalsecrets backend/internal/certmanager backend/internal/policy backend/internal/changes"
+REMOTE_ROUTED_DIRS="backend/internal/gateway backend/internal/gitops backend/internal/velero backend/internal/storage backend/internal/notification backend/internal/alerting backend/internal/servicemesh backend/internal/externalsecrets backend/internal/certmanager backend/internal/policy backend/internal/changes backend/internal/scanning backend/internal/topology backend/internal/diagnostics backend/internal/monitoring backend/internal/networking"
+
+# The one file allowed to construct an exec or port-forward stream (see the
+# #608 slice 5 note in the header). Everywhere else in HANDLER_DIRS a stream
+# constructor is a violation unless annotated.
+STREAM_TRANSPORT_PATH="backend/internal/k8s/stream_transport.go"
 
 # -----------------------------------------------------------------------
 # Helpers
@@ -208,6 +221,21 @@ has_selector() {
   done
 }
 
+# has_stream_constructor LINE — returns 0 (true) if LINE builds, or reaches
+# the config for, an exec or port-forward stream through client-go.
+has_stream_constructor() {
+  _scl="$1"
+  for _scn in BaseConfig NewSPDYExecutor NewSPDYExecutorForTransports \
+    NewSPDYExecutorRejectRedirects NewSPDYExecutorForProtocols \
+    NewWebSocketExecutor NewWebSocketExecutorForProtocols RoundTripperFor; do
+    has_selector "$_scl" "$_scn" && return 0
+  done
+  case "$_scl" in
+    *portforward.New*|*spdy.NewDialer*) return 0 ;;
+  esac
+  return 1
+}
+
 # classify_line REL_PATH LINE PREV_LINE — returns 0 (true) if LINE at
 # REL_PATH is an unexempt cluster-routing violation, given PREV_LINE (the
 # source line immediately above, used for the nolint check, or "" if LINE
@@ -227,7 +255,8 @@ classify_line() {
   # loops for those. Every name has_selector checks below must appear here.
   case "$_line" in
     *ClientForUser* | *RESTMapper* | *DiscoveryClient* | *BaseDynamicClient* | \
-      *BaseClientset* | *Informers*) ;;
+      *BaseClientset* | *Informers* | *BaseConfig* | *Executor* | \
+      *RoundTripperFor* | *portforward.New* | *spdy.NewDialer*) ;;
     *) return 1 ;;
   esac
 
@@ -249,6 +278,9 @@ classify_line() {
       has_selector "$_line" Informers; then
       _hit=1
     fi
+  fi
+  if [ "$_hit" -eq 0 ] && [ "$_path" != "$STREAM_TRANSPORT_PATH" ]; then
+    has_stream_constructor "$_line" && _hit=1
   fi
   [ "$_hit" -eq 1 ] || return 1
 
@@ -327,7 +359,7 @@ run_self_test() {
     "backend/internal/yaml/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""
 
   expect_clean "RESTMapper() outside SCHEMA_ROUTED_DIRS must NOT be a violation" \
-    "backend/internal/monitoring/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""
+    "backend/internal/loki/x.go" "${TAB}mapper := h.K8sClient.RESTMapper()" ""
 
   expect_violation "ClientForUser() must be a violation regardless of schema routing" \
     "backend/internal/certmanager/x.go" "${TAB}cs, err := h.K8sClient.ClientForUser(u, g)" ""
@@ -451,6 +483,32 @@ run_self_test() {
 
   REMOTE_ROUTED_DIRS="$_saved_remote_routed"
 
+  # #608 slice 5 — stream constructors, flagged in every handler package
+  # outside STREAM_TRANSPORT_PATH.
+  expect_violation "an SPDY executor outside the stream transport must be a violation" \
+    "backend/internal/velero/x.go" "${TAB}executor, err := remotecommand.NewSPDYExecutor(cfg, \"POST\", u)" ""
+
+  expect_violation "a BaseConfig() read outside the stream transport must be a violation" \
+    "backend/internal/k8s/resources/x.go" "${TAB}cfg := h.K8sClient.BaseConfig()" ""
+
+  expect_violation "a WebSocket executor outside the stream transport must be a violation" \
+    "backend/internal/server/x.go" "${TAB}ex, err := remotecommand.NewWebSocketExecutor(cfg, \"GET\", u)" ""
+
+  expect_violation "an spdy RoundTripperFor outside the stream transport must be a violation" \
+    "backend/internal/networking/x.go" "${TAB}rt, up, err := spdy.RoundTripperFor(cfg)" ""
+
+  expect_violation "a port-forwarder outside the stream transport must be a violation" \
+    "backend/internal/networking/x.go" "${TAB}fw, err := portforward.New(dialer, ports, stop, ready, out, errOut)" ""
+
+  expect_clean "the stream transport may build streams" \
+    "$STREAM_TRANSPORT_PATH" "${TAB}executor, err := remotecommand.NewSPDYExecutorRejectRedirects(rt, up, http.MethodPost, u)" ""
+
+  expect_clean "an annotated local stream must NOT be a violation" \
+    "backend/internal/k8s/resources/x.go" "${TAB}cfg := h.K8sClient.BaseConfig()" "${TAB}// nolint:cluster-routing local path: pod exec is local-only"
+
+  expect_clean "a longer identifier that starts with BaseConfig must NOT be a violation" \
+    "backend/internal/velero/x.go" "${TAB}c := h.BaseConfigured" ""
+
   printf '[check-cluster-routing] self-test: %d/%d detector cases passed\n' "$_pass" "$_n"
 }
 
@@ -534,7 +592,8 @@ fi
 
 printf 'FOUND %d violation(s) — handlers calling .ClientForUser / .DynamicClientForUser\n' "$VIOLATIONS"
 printf '(or, in SCHEMA_ROUTED_DIRS, .RESTMapper / .DiscoveryClient;\n'
-printf ' or, in REMOTE_ROUTED_DIRS, any local service-account or schema read)\n'
+printf ' or, in REMOTE_ROUTED_DIRS, any local service-account or schema read;\n'
+printf ' or, outside %s, an exec or port-forward stream constructor)\n' "$STREAM_TRANSPORT_PATH"
 printf 'directly instead of routing through ClusterRouter.\n\n'
 printf 'To fix: replace h.K8sClient.ClientForUser / DynamicClientForUser with\n'
 printf '        h.ClusterRouter.ClientForCluster / DynamicClientForCluster, and\n'

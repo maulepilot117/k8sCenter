@@ -44,7 +44,9 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, user := s.wsAuthAndUpgrade(w, r)
+	// Loki search reads the local cluster only: a remote in-band cluster is
+	// refused by the helper, a remote header by the gate below.
+	conn, user, reqCtx := s.wsAuthAndUpgradeFor(w, r, wsRoute{auditAction: audit.ActionReadLogs, auditKind: "LokiTail"})
 	if conn == nil {
 		return
 	}
@@ -56,7 +58,7 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 	// classic confused-deputy. Reject BEFORE the connection counter, the
 	// subscribe read, the RBAC check, or the Loki dial. Mirrors the gate
 	// pattern in handle_ws_logs.go:102-128.
-	searchClusterID := middleware.ClusterIDFromContext(r.Context())
+	searchClusterID := middleware.ClusterIDFromContext(reqCtx)
 	if !k8s.IsLocalClusterID(searchClusterID) {
 		s.Logger.Warn("ws log search rejected on remote cluster",
 			"user", user.Username,
@@ -66,7 +68,7 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 			entry := s.newAuditEntry(r, user.Username, audit.ActionReadLogs, audit.ResultFailure)
 			entry.ResourceKind = "LokiTail"
 			entry.Detail = "ws log search rejected: remote clusters not supported"
-			s.AuditLogger.Log(r.Context(), entry)
+			s.AuditLogger.Log(reqCtx, entry)
 		}
 		conn.WriteJSON(map[string]any{
 			"type":    "error",
@@ -103,7 +105,7 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 		// context so the gate and the RBAC check resolve against the same cluster ID.
 		if s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil {
 			allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-				r.Context(), searchClusterID, user.KubernetesUsername, user.KubernetesGroups,
+				reqCtx, searchClusterID, user.KubernetesUsername, user.KubernetesGroups,
 				"list", "pods", sub.Namespace,
 			)
 			if err != nil {
@@ -137,7 +139,7 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Set up context
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(reqCtx)
 	defer cancel()
 
 	// Ping/pong keepalive + read pump

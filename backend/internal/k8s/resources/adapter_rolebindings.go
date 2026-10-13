@@ -41,6 +41,24 @@ func (roleBindingAdapter) GetFromCache(inf *k8s.InformerManager, ns, name string
 	return inf.RoleBindings().RoleBindings(ns).Get(name)
 }
 
+// ListDirect implements ResourceAdapter.
+func (roleBindingAdapter) ListDirect(ctx context.Context, cs kubernetes.Interface, ns string, opts metav1.ListOptions) ([]any, string, error) {
+	list, err := cs.RbacV1().RoleBindings(ns).List(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make([]any, len(list.Items))
+	for i := range list.Items {
+		out[i] = &list.Items[i]
+	}
+	return out, list.Continue, nil
+}
+
+// GetDirect implements ResourceAdapter.
+func (roleBindingAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error) {
+	return cs.RbacV1().RoleBindings(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
 func (roleBindingAdapter) Create(ctx context.Context, cs kubernetes.Interface, ns string, body []byte) (any, error) {
 	var obj rbacv1.RoleBinding
 	if err := json.Unmarshal(body, &obj); err != nil {

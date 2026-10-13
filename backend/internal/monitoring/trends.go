@@ -2,13 +2,16 @@ package monitoring
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
 
 	"github.com/prometheus/common/model"
 
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
@@ -48,19 +51,34 @@ var trendQueries = []struct {
 	{`sum(rate(node_network_transmit_bytes_total{device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) * 8 / 1e6`, func(t *resources.DashboardTrends, v []float64) { t.NetworkTx = v }},
 }
 
+// ErrAllTrendQueriesFailed means every trend range query against a remote
+// cluster's Prometheus failed. It wraps the first query's error, which can
+// name the cluster's Prometheus: log it, never return it to a client.
+var ErrAllTrendQueriesFailed = errors.New("all dashboard trend queries failed")
+
 // DashboardTrends implements resources.TrendProvider. It range-queries
 // Prometheus for the metric-card series concurrently and returns whatever
-// resolved; individual query failures yield an empty series for that metric
-// rather than failing the whole request.
-func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step time.Duration) (resources.DashboardTrends, error) {
+// resolved; individual query failures are logged and yield an empty series
+// for that metric rather than failing the whole request.
+//
+// A resolution failure (no binding for a remote cluster, local Prometheus not
+// discovered, binding unreadable) is returned as the error, so the caller can
+// tell "not configured" from "failed". For a remote cluster, every query
+// failing is also an error (ErrAllTrendQueriesFailed): a broken binding must
+// not read as "no data". The local cluster keeps its empty-series answer.
+func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, clusterID string, window, step time.Duration) (resources.DashboardTrends, error) {
 	out := resources.DashboardTrends{
 		Window: window.String(),
 		Step:   step.String(),
 	}
 
-	pc := a.Discoverer.PrometheusClient()
-	if pc == nil {
-		return out, fmt.Errorf("prometheus not available")
+	pc, err := a.client(ctx, clusterID)
+	if err != nil {
+		return out, err
+	}
+	logger := a.Resolver.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	// Bound the whole fan-out; QueryRange also applies its own per-call timeout.
@@ -69,7 +87,8 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step t
 	// trendQueries (currently 7, including the two cluster-wide network
 	// range queries). On a loaded Prometheus the 24h window at a 48m step can
 	// push several queries past 5s together, blanking every sparkline at once.
-	// Failure is benign (empty series, HTTP 200 — the cards just hide), so this
+	// Locally that failure is benign (empty series, HTTP 200 — the cards just
+	// hide); for a remote cluster it surfaces as ErrAllTrendQueriesFailed. It
 	// is a tuning question, not a correctness bug: measure 24h/48m latency
 	// against a representative-retention Prometheus, then either raise this to
 	// ~10s or give each query its own ~4s deadline so slow ones fail in
@@ -81,14 +100,17 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step t
 	start := end.Add(-window)
 
 	series := make([][]float64, len(trendQueries))
+	errs := make([]error, len(trendQueries))
 	var wg sync.WaitGroup
 	wg.Add(len(trendQueries))
 	for i, q := range trendQueries {
 		go func(i int, query string) {
 			defer wg.Done()
-			recoverutil.Safe(a.Discoverer.logger, "monitoring trends-query", func() {
+			recoverutil.Safe(logger, "monitoring trends-query", func() {
 				val, _, err := pc.QueryRange(ctx, query, start, end, step)
 				if err != nil {
+					errs[i] = err
+					logger.Warn("dashboard trend query failed", "cluster", clusterID, "query", i, "error", err)
 					return // leave series[i] nil → empty slice in JSON
 				}
 				series[i] = parseMatrixSeries(val)
@@ -96,6 +118,21 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step t
 		}(i, q.query)
 	}
 	wg.Wait()
+
+	var firstErr error
+	failed := 0
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		failed++
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if failed == len(trendQueries) && !k8s.IsLocalClusterID(clusterID) {
+		return out, fmt.Errorf("%w: %w", ErrAllTrendQueriesFailed, firstErr)
+	}
 
 	for i, q := range trendQueries {
 		q.assign(&out, series[i])

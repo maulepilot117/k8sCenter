@@ -31,6 +31,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/gateway"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/gitprovider"
+	"github.com/kubecenter/kubecenter/internal/incidents"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/limits"
@@ -196,8 +197,11 @@ func main() {
 	var settingsService *appstore.SettingsService
 	var userStore *appstore.UserStore
 	var complianceStore *appstore.ComplianceStore
+	var complianceIdentityStore *appstore.ComplianceIdentityStore
+	var remoteComplianceRecorder *policy.RemoteComplianceRecorder
 	var dbPing func(context.Context) error
 	var dbPool *pgxpool.Pool
+	var clusterMetricsStore *appstore.ClusterMetricsStore
 	if cfg.Database.URL != "" {
 		db, err := appstore.New(ctx, cfg.Database.URL, int32(cfg.Database.MaxConns), int32(cfg.Database.MinConns), logger)
 		if err != nil {
@@ -219,7 +223,11 @@ func main() {
 			}
 			settingsService = appstore.NewSettingsService(db.Pool, encKey)
 			clusterStore = appstore.NewClusterStore(db.Pool, encKey)
+			// Metrics binding tokens use the same master secret as cluster
+			// credentials.
+			clusterMetricsStore = appstore.NewClusterMetricsStore(db.Pool, encKey)
 			complianceStore = appstore.NewComplianceStore(db.Pool)
+			complianceIdentityStore = appstore.NewComplianceIdentityStore(db.Pool)
 
 			// Register local cluster
 			apiServerHost := "in-cluster"
@@ -307,6 +315,16 @@ func main() {
 	changesRateLimiter := middleware.NewRateLimiterWithRate(changesRateLimit(cfg.Dev))
 	changesRateLimiter.StartCleanup(ctx)
 	changesRateLimiter.SetAuditLogger(auditLogger)
+	// Dedicated per-user bucket for /incidents/* (Release D), sized like the
+	// /changes one: a cold incident read costs up to 20 access checks. Dev
+	// gets the same 10x multiplier changesRateLimit applies.
+	incidentsRate := server.DefaultIncidentsRateLimit
+	if cfg.Dev {
+		incidentsRate *= 10
+	}
+	incidentsRateLimiter := middleware.NewRateLimiterWithRate(incidentsRate, time.Minute)
+	incidentsRateLimiter.StartCleanup(ctx)
+	incidentsRateLimiter.SetAuditLogger(auditLogger)
 
 	// Initialize monitoring discoverer and start background discovery
 	monDiscoverer := monitoring.NewDiscoverer(k8sClient, cfg.Monitoring, logger)
@@ -316,6 +334,12 @@ func main() {
 		Discoverer:    monDiscoverer,
 		AccessChecker: accessChecker,
 		Logger:        logger,
+	}
+	// With a database, remote clusters resolve Prometheus through their
+	// metrics bindings. Set before server.New so the server's dashboard
+	// adapters reuse this resolver instead of building a binding-less one.
+	if clusterMetricsStore != nil {
+		monHandler.Resolver = monitoring.NewClientResolver(monDiscoverer, server.NewMetricsBindingReader(clusterMetricsStore), logger)
 	}
 
 	// Initialize Loki discoverer and start background discovery
@@ -383,6 +407,7 @@ func main() {
 	topoHandler := &topology.Handler{
 		Builder:       topoBuilder,
 		AccessChecker: accessChecker,
+		Clients:       clusterRouter,
 		Logger:        logger,
 	}
 
@@ -391,6 +416,7 @@ func main() {
 		Lister:        topoLister,
 		TopoBuilder:   topoBuilder,
 		AccessChecker: accessChecker,
+		Clients:       clusterRouter,
 		Logger:        logger,
 	}
 
@@ -458,13 +484,18 @@ func main() {
 	networkingHandler := &networking.Handler{
 		K8sClient:      k8sClient,
 		ClusterRouter:  clusterRouter,
+		Clients:        clusterRouter,
 		Detector:       cniDetector,
 		HubbleClient:   hubbleClient,
 		AuditLogger:    auditLogger,
 		Logger:         logger,
 		ClusterID:      cfg.ClusterID,
 		AgentCollector: agentCollector,
+		Streams:        networking.StreamsFrom(clusterRouter),
+		Tunnels:        networking.TunnelsFrom(clusterRouter),
+		Access:         accessChecker,
 	}
+	clusterRouter.RegisterEvictHook(networkingHandler.EvictRemoteCache)
 
 	// Cluster health probing — background goroutine
 	var clusterProber *k8s.ClusterProber
@@ -582,6 +613,15 @@ func main() {
 			go complianceRecorder.Run(ctx)
 
 			policyHandler.ComplianceStore = complianceStore
+		}
+		// Remote clusters snapshot as the background identity an admin
+		// names per cluster (#608). Nil when any dependency is missing.
+		if complianceIdentityStore != nil {
+			policyHandler.ComplianceIdentities = complianceIdentityStore
+		}
+		remoteComplianceRecorder = policy.NewRemoteComplianceRecorder(complianceIdentityStore, complianceStore, clusterRouter, policyHandler, logger)
+		if remoteComplianceRecorder != nil {
+			go remoteComplianceRecorder.Run(ctx)
 		}
 	}
 
@@ -717,16 +757,20 @@ func main() {
 	go scanDiscoverer.RunDiscoveryLoop(ctx)
 
 	scanHandler := &scanning.Handler{
-		K8sClient:     k8sClient,
 		Discoverer:    scanDiscoverer,
 		AccessChecker: accessChecker,
 		Logger:        logger,
+		Clients:       clusterRouter,
+		Presence:      remotePresence,
 	}
 	scanHandler.InitCache()
+	clusterRouter.RegisterEvictHook(scanHandler.EvictRemoteCache)
 
 	// Namespace limits handler (ResourceQuota + LimitRange management)
 	// Note: Limits checker is created after notification center to enable threshold alerts
 	limitsHandler := limits.NewHandler(informerMgr, accessChecker, logger)
+	limitsHandler.Clients = clusterRouter
+	clusterRouter.RegisterEvictHook(limitsHandler.EvictRemoteCache)
 
 	// Velero backup/restore handler
 	veleroDiscoverer := velero.NewDiscoverer(k8sClient, logger)
@@ -750,7 +794,17 @@ func main() {
 			fcmClient = nil
 		}
 
-		notifService = notifications.NewService(notifStore, hub, alertNotifier, fcmClient, logger)
+		// Assign only a non-nil notifier: a nil *alerting.Notifier stored in the
+		// EmailSender interface is a non-nil interface and would defeat the
+		// service's `emailSender == nil` guards.
+		// Known limitation: when SMTP is unset at boot the notification center
+		// has no email sender until restart (the alerting handler skips
+		// UpdateConfig when Notifier is nil).
+		var emailSender notifications.EmailSender
+		if alertNotifier != nil {
+			emailSender = alertNotifier
+		}
+		notifService = notifications.NewService(notifStore, hub, emailSender, fcmClient, logger)
 		notifService.Start(ctx)
 
 		notifCenterHandler = &notifications.Handler{
@@ -771,7 +825,6 @@ func main() {
 			policyHandler.NotifService = notifService
 		}
 		gitopsHandler.NotifService = notifService
-		scanHandler.NotifService = notifService
 		diagHandler.NotifService = notifService
 		veleroHandler.NotifService = notifService
 
@@ -937,6 +990,66 @@ func main() {
 		go sweeper.run(ctx, changesDone)
 	}
 
+	// Persistent incident investigations (Release D). The handler is
+	// constructed unconditionally; its store fields stay nil when no database
+	// is configured, and every /incidents endpoint then answers 503
+	// incident_persistence_unavailable rather than disappearing behind a 404
+	// (R3, correction C4).
+	//
+	// The evidence collector (U22b) runs the three local-cluster sources
+	// under the configured limits (plan A-6; KUBECENTER_INCIDENTS_*, clamped
+	// and logged by incidents.ResolveSettings). Every source SAR-gates its reads with the capturing
+	// user's identity through accessChecker and reads through that user's
+	// impersonated client (k8sClient); the diagnostics source reads related
+	// objects through the same informer lister the diagnostics endpoint
+	// uses; the object and events sources resolve API versions through the
+	// local RESTMapper (capture is local-only, plan A-12). Redaction runs
+	// inside the sources at the per-item bound before anything is measured.
+	//
+	// incidentLimits is the ONE value the redactor, the collector and the
+	// handler are built from: the handler passes it to InsertBatch and
+	// derives the capture budget from it, so it must be exactly what the
+	// collector validated and bounds itself with. It comes from the resolved
+	// configuration, so the redactor, collector, InsertBatch limits and the
+	// capture timeout all use the configured values from one source. Every
+	// out-of-range configured value is corrected and logged by ResolveSettings.
+	incidentSettings := incidents.ResolveSettings(cfg.Incidents, logger)
+	incidentLimits := incidentSettings.Limits
+	incidentRedactor, err := incidents.NewRedactor(incidentLimits.MaxItemBytes)
+	if err != nil {
+		logger.Error("incident redactor configuration invalid", "error", err)
+		os.Exit(1)
+	}
+	incidentCollector, err := incidents.NewCollector([]incidents.Source{
+		incidents.NewDiagnosticsSource(topoLister, accessChecker, incidentRedactor, logger),
+		incidents.NewObjectSource(k8sClient, k8sClient.RESTMapper(), accessChecker, incidentRedactor, logger),
+		incidents.NewEventsSource(k8sClient, k8sClient.RESTMapper(), accessChecker, incidentRedactor, logger),
+	}, incidentLimits, logger)
+	if err != nil {
+		logger.Error("incident collector configuration invalid", "error", err)
+		os.Exit(1)
+	}
+	var incidentStore *appstore.IncidentStore
+	var incidentEvidenceStore *appstore.IncidentEvidenceStore
+	var incidentGrantStore *appstore.IncidentGrantStore
+	if dbPool != nil {
+		incidentStore = appstore.NewIncidentStore(dbPool)
+		incidentEvidenceStore = appstore.NewIncidentEvidenceStore(dbPool)
+		incidentGrantStore = appstore.NewIncidentGrantStore(dbPool)
+	}
+	incidentsHandler := incidents.NewHandler(
+		incidentStore, incidentEvidenceStore, incidentGrantStore, incidentCollector, incidentLimits,
+		accessChecker, auditLogger, logger,
+	)
+	incidentsHandler.SetRetentionDays(incidentSettings.RetentionDays)
+	logger.Info("incident retention configured", "retentionDays", incidentSettings.RetentionDays)
+	if incidentStore != nil {
+		// Plain go statement by design: Retainer.RunLoop owns no WaitGroup or
+		// counted channel and returns on ctx cancel (see its doc comment).
+		go incidents.NewRetainer(incidentStore, incidentSettings.RetentionDays, logger).
+			WithLoweringConfirmed(incidentSettings.RetentionLoweringConfirmed).RunLoop(ctx)
+	}
+
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
 	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, clusterRouter, remotePresence, logger)
@@ -997,6 +1110,7 @@ func main() {
 		RateLimiter:            rateLimiter,
 		YAMLRateLimiter:        yamlRateLimiter,
 		ChangesRateLimiter:     changesRateLimiter,
+		IncidentsRateLimiter:   incidentsRateLimiter,
 		Hub:                    hub,
 		MonitoringHandler:      monHandler,
 		LokiHandler:            lokiHandler,
@@ -1009,6 +1123,7 @@ func main() {
 		GitOpsHandler:          gitopsHandler,
 		ChangesHandler:         changesHandler,
 		ChangesService:         changesService,
+		IncidentsHandler:       incidentsHandler,
 		FluxNotifHandler:       fluxNotifHandler,
 		NotifCenterHandler:     notifCenterHandler,
 		NotifCenterService:     notifService,
@@ -1026,7 +1141,17 @@ func main() {
 		AccessChecker:          accessChecker,
 		ReadyFn:                ready.Load,
 		DBPing:                 dbPing,
+
+		ComplianceIdentityStore:  complianceIdentityStore,
+		RemoteComplianceRecorder: remoteComplianceRecorder,
 	})
+	// The binding admin API writes through the store and evicts from the
+	// resolver every metrics consumer shares. Without a database both stay
+	// nil and the binding routes answer 503.
+	if clusterMetricsStore != nil {
+		srv.ClusterMetricsStore = clusterMetricsStore
+		srv.MetricsResolver = monHandler.Resolver
+	}
 	httpServer := srv.HTTPServer()
 
 	// Start HTTP server — use errCh instead of os.Exit in goroutine

@@ -2,8 +2,9 @@
  * Per-section coverage for the dashboard summary (Release C, D5 / AE3).
  *
  * A remote cluster's summary is assembled from impersonated direct lists, and
- * some of it cannot be assembled at all: there is no remote metrics binding,
- * no remote Alertmanager, and no remote health score. The backend says so one
+ * some of it cannot be assembled at all: there is no metrics binding, no
+ * Alertmanager URL in it, or an input the health score needs could not be
+ * read. The backend says so one
  * section at a time in `coverage` (`dashboard_remote.go`), and it still fills
  * the numeric fields it could not observe with zeroes -- `alerts: {active: 0}`,
  * `cpu.percentage: 0` -- because those fields are not nullable on the wire.
@@ -158,6 +159,17 @@ export function coverageMessage(
     const ago = observedAgo(cov, now);
     const base = detail ? capitalize(detail) : "Last observed value";
     return ago ? `${base} (observed ${ago}).` : `${base}.`;
+  }
+  // The reason code is authoritative: a cluster with no Prometheus binding
+  // reads the same whatever wording the backend put in `detail`.
+  if (cov?.reasonCode === "metrics_not_configured") {
+    return "Metrics are not configured for this cluster.";
+  }
+  // Alerts come from the cluster's Alertmanager, a different address in the
+  // same binding, so the Prometheus advice would send the admin to the wrong
+  // field.
+  if (cov?.reasonCode === "alerts_not_configured") {
+    return "No Alertmanager is configured for this cluster. Add an Alertmanager URL to its metrics binding.";
   }
   if (detail) return `${capitalize(detail)}.`;
   switch (tone) {
@@ -318,8 +330,9 @@ function unresolvedWeightedSignal(
  * `unresolvedWeightedSignal`), or when the health row is anything but a plain
  * `ok`. Health is a composite: a `partial` or `stale` score is a score
  * computed from inputs that are known to be incomplete, which is precisely
- * the synthesised reading AE3 forbids. The remote path always reports health
- * `unavailable` in v1.
+ * the synthesised reading AE3 forbids. A remote cluster reports health `ok`
+ * with a score only when every input completed, else `unavailable` with a
+ * detail naming the missing inputs.
  */
 export function shouldRenderHealth(
   summary: CoveredSummary | null | undefined,

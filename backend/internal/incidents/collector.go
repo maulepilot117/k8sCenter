@@ -141,15 +141,16 @@ type Limits struct {
 }
 
 // DefaultLimits returns the Release D defaults: 1 MiB per item, 10 MiB per
-// incident, 500 items, 20 scopes, 20 s per capture, 5 s per source, 4
-// concurrent sources.
+// incident, 500 items, 20 scopes, 14 s per capture, 5 s per source, 4
+// concurrent sources. The capture default leaves room for the insert inside
+// captureRequestBudget (see handler_capture.go).
 func DefaultLimits() Limits {
 	return Limits{
 		MaxItemBytes:     store.EvidenceMaxItemBytesCeiling,
 		MaxIncidentBytes: store.EvidenceMaxIncidentBytesCeiling,
 		MaxItems:         store.EvidenceMaxItemsCeiling,
 		MaxScopes:        store.EvidenceMaxScopesCeiling,
-		CaptureTimeout:   20 * time.Second,
+		CaptureTimeout:   14 * time.Second,
 		SourceTimeout:    5 * time.Second,
 		MaxConcurrency:   4,
 	}
@@ -204,6 +205,11 @@ type CaptureRequest struct {
 	User      *auth.User
 	Target    TargetRef
 	Sources   []string
+	// NotAfter, when non-zero, caps the capture deadline: Capture runs under
+	// the earlier of now+CaptureTimeout and NotAfter. The handler sets it to
+	// what is left of the request budget before the insert's share, so slow
+	// work before collection cannot push the request past the budget.
+	NotAfter time.Time
 }
 
 // SourceResult is what one Source observed.
@@ -368,6 +374,14 @@ func (c *Collector) Capture(ctx context.Context, req CaptureRequest) (CaptureRep
 	}
 
 	captureCtx, cancel := context.WithTimeout(ctx, c.limits.CaptureTimeout)
+	if !req.NotAfter.IsZero() {
+		cancel() // replace the uncapped context with one capped at NotAfter
+		deadline := time.Now().Add(c.limits.CaptureTimeout)
+		if req.NotAfter.Before(deadline) {
+			deadline = req.NotAfter
+		}
+		captureCtx, cancel = context.WithDeadline(ctx, deadline)
+	}
 	defer cancel()
 
 	slots := make([]chan sourceOutcome, len(selected))

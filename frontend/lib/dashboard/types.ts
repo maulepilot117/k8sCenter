@@ -159,6 +159,11 @@ export const DATA_SOURCE_KEYS = [
   "nodes-list",
   "limits-namespaces",
   "storage-classes",
+  // The last two kinds the cluster topology map draws. The generic list route
+  // again; `pvcs` is the adapter's `Kind()`, the same short-form trap as
+  // `hpas`/`pdbs` above -- `persistentvolumeclaims` is a 404.
+  "services-list",
+  "pvcs-list",
   // The first sources that are neither an informer read nor a discovery
   // route: two named, server-owned PromQL templates from the slug registry
   // (`backend/internal/monitoring/query_registry.go`). The widget names a
@@ -189,7 +194,9 @@ export const DATA_SOURCE_KEYS = [
   // database. Declared OPTIONAL by the widget that reads it for exactly that
   // reason: both refusals leave the current score untouched, and a card gated
   // on this one would blank a gauge the compliance endpoint already answered,
-  // permanently, for every non-admin.
+  // permanently, for every non-admin. A remote cluster serves its own
+  // recorded history (declared `remote` in `REMOTE_BEHAVIOUR`), or answers
+  // 404 `compliance_history_not_configured` when no identity is named.
   "policy-compliance-history",
   // `/v1/policies/violations`. Note the plural prefix: the routes are mounted
   // under `/v1/policies/...`, not `/v1/policy/...` (see `registerPolicyRoutes`
@@ -394,6 +401,9 @@ export const SOURCE_COST: Readonly<Record<DataSourceKey, SourceCost>> = {
   // Same route, same reasons, and a node object is one of the larger ones the
   // route serves -- capacity, allocatable, images and a dozen conditions each.
   "nodes-list": "expensive",
+  // Same route, same reasons.
+  "services-list": "expensive",
+  "pvcs-list": "expensive",
   // Neither of these is the generic list route, and neither is cheap.
   //
   // `limits-namespaces` runs a SelfSubjectAccessReview PER NAMESPACE before it
@@ -707,25 +717,69 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * Saying plainly what is wrong is the cheaper honest answer, and it is what
  * the fetcher's comment always claimed the card did.
  *
- * `dashboard-trends` and `resource-counts` are the remote-cluster case (Release
- * C). Both read local-only sources -- Prometheus and the informer cache -- and
- * answer 400 for any other cluster (`dashboard.go`, `counts.go`); 400 is the
- * only status either handler writes itself. A remote cluster is not missing a
- * feature and a retry cannot change the answer, which is this set's meaning
- * exactly, and the handler's message is what the card should show.
+ * `dashboard-trends` used to be here, answering 400 for any remote cluster.
+ * It now reads the cluster's own Prometheus through a metrics binding; a
+ * cluster without one answers 404 `metrics_not_configured`, which `classify`
+ * in data.ts reads by reason rather than by status.
  *
- * `diagnostics-summary` is the same case answered differently: the route reads
- * the local informer cache and refuses any other cluster with 501
- * `unsupported_platform` (#532, `diagnostics/handler.go` `refuseRemote`). 501
- * is the only 5xx that handler writes deliberately; its 500s stay failures.
+ * `mesh-golden-signals` is NOT here: its 400 (a cluster running both meshes)
+ * is not a remote refusal, so it lives in `AMBIGUOUS_REQUEST_STATUSES` below
+ * and applies to the local and the remote cluster alike.
+ *
+ * `diagnostics-summary` is deliberately absent: the route serves remote
+ * clusters, so a 501 from it is an ordinary failure, not a refusal.
+ *
+ * `hubble-status` left in #608 PR 5a: `/v1/networking/cni` now reads the
+ * selected cluster's own CNI detection, so its 501 is a failure too.
+ * `hubble-flows` left in PR 5b: the route reads the selected cluster's own
+ * relay, and its relay states are told apart by reason, in `REASON_KINDS`.
+ * `policy-compliance-history` left in #608's final slice: a remote cluster
+ * now serves its own recorded history, and the one state it cannot (no named
+ * background identity) is told apart by reason, in `REASON_KINDS`.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
-  {
-    "mesh-golden-signals": [400],
-    "dashboard-trends": [400],
-    "resource-counts": [400],
-    "diagnostics-summary": [501],
-  };
+  {};
+
+/**
+ * Error reasons that settle a source's state whatever the status, for routes
+ * whose status alone is ambiguous (#608 KTD5). `hubble-flows` answers 404
+ * both for a cluster with no Hubble Relay (`relay_not_found`, an absence)
+ * and for a cluster that is not registered (`cluster_unknown`, a failure),
+ * so no 404 can go in `ABSENT_STATUSES`. A relay serving TLS answers 501
+ * `relay_tls_unsupported`: the feature is installed and the request cannot
+ * be served, which is `unsupported`. Any other reason -- `relay_not_ready`,
+ * `tunnel_limit` -- stays a failure, which offers a retry.
+ */
+export const REASON_KINDS: Readonly<
+  Record<string, Readonly<Record<string, "absent" | "unsupported">>>
+> = {
+  "hubble-flows": {
+    relay_not_found: "absent",
+    relay_tls_unsupported: "unsupported",
+  },
+  // A remote cluster with no named background identity records nothing and
+  // answers 404 `compliance_history_not_configured` (#608 KTD8). A standing
+  // fact about the cluster, so `unsupported`: muted, no retry. A 404 with any
+  // other reason (`cluster_unknown`) stays a failure.
+  "policy-compliance-history": {
+    compliance_history_not_configured: "unsupported",
+  },
+};
+
+/**
+ * Statuses that mean "the request is ambiguous on this cluster", whichever
+ * cluster is selected. Separate from `UNSUPPORTED_STATUSES` because that
+ * declaration is the set of remote refusals, and these also happen locally.
+ *
+ * `mesh-golden-signals` answers 400 on a cluster running both Istio and
+ * Linkerd, asking to be told which mesh. `classify` reads this as
+ * `unsupported` (muted, no retry, the backend's message shown).
+ */
+export const AMBIGUOUS_REQUEST_STATUSES: Readonly<
+  Record<string, readonly number[]>
+> = {
+  "mesh-golden-signals": [400],
+};
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
  * what the pre-registry three-row layout already approximated. */

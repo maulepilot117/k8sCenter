@@ -91,7 +91,11 @@ type widgetSpec struct {
 // drops it with a notice (spec D-7). A retired entry keeps whatever minimums
 // it shipped with, because stored layouts still carry placements sized to them.
 var allowedWidgets = map[string]widgetSpec{
-	"cluster-health":       {MinW: 3, MinH: 4},
+	"cluster-health": {MinW: 3, MinH: 4},
+	// The largest minimum in the catalog: five rows of labelled shapes plus a
+	// legend and coverage notes. Below six columns the labels overlap before
+	// a cluster is even mid-sized.
+	"cluster-topology":     {MinW: 6, MinH: 4},
 	"cpu-tile":             {MinW: 2, MinH: 2},
 	"memory-tile":          {MinW: 2, MinH: 2},
 	"pods-tile":            {MinW: 2, MinH: 2},

@@ -42,7 +42,7 @@ func newTestAdapter(t *testing.T, responseBody string) *ControlPlaneAdapter {
 		status:     &MonitoringStatus{},
 		promClient: pc,
 	}
-	return &ControlPlaneAdapter{Discoverer: d}
+	return &ControlPlaneAdapter{Resolver: NewClientResolver(d, nil, nil)}
 }
 
 // TestControlPlane_AllUp verifies that when all three jobs report value 1,
@@ -55,7 +55,7 @@ func TestControlPlane_AllUp(t *testing.T) {
 	})
 	a := newTestAdapter(t, body)
 
-	got, err := a.ControlPlaneStatus(context.Background())
+	got, err := a.ControlPlaneStatus(context.Background(), "local")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestControlPlane_JobDown(t *testing.T) {
 	})
 	a := newTestAdapter(t, body)
 
-	got, err := a.ControlPlaneStatus(context.Background())
+	got, err := a.ControlPlaneStatus(context.Background(), "local")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestControlPlane_MissingJob(t *testing.T) {
 	})
 	a := newTestAdapter(t, body)
 
-	got, err := a.ControlPlaneStatus(context.Background())
+	got, err := a.ControlPlaneStatus(context.Background(), "local")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestControlPlane_EmptyVector(t *testing.T) {
 	body := `{"status":"success","data":{"resultType":"vector","result":[]}}`
 	a := newTestAdapter(t, body)
 
-	got, err := a.ControlPlaneStatus(context.Background())
+	got, err := a.ControlPlaneStatus(context.Background(), "local")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,9 +145,9 @@ func TestControlPlane_NilClient(t *testing.T) {
 		status:     &MonitoringStatus{},
 		promClient: nil, // explicitly nil
 	}
-	a := &ControlPlaneAdapter{Discoverer: d}
+	a := &ControlPlaneAdapter{Resolver: NewClientResolver(d, nil, nil)}
 
-	_, err := a.ControlPlaneStatus(context.Background())
+	_, err := a.ControlPlaneStatus(context.Background(), "local")
 	if err == nil {
 		t.Fatal("expected error when prometheus client is nil, got nil")
 	}
@@ -169,9 +169,9 @@ func TestControlPlane_QueryError(t *testing.T) {
 		status:     &MonitoringStatus{},
 		promClient: pc,
 	}
-	a := &ControlPlaneAdapter{Discoverer: d}
+	a := &ControlPlaneAdapter{Resolver: NewClientResolver(d, nil, nil)}
 
-	_, err = a.ControlPlaneStatus(context.Background())
+	_, err = a.ControlPlaneStatus(context.Background(), "local")
 	if err == nil {
 		t.Fatal("expected error from query failure, got nil")
 	}
@@ -187,7 +187,7 @@ func TestControlPlane_EtcdKubeEtcd(t *testing.T) {
 	})
 	a := newTestAdapter(t, body)
 
-	got, err := a.ControlPlaneStatus(context.Background())
+	got, err := a.ControlPlaneStatus(context.Background(), "local")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestControlPlane_EtcdKubeEtcdDown(t *testing.T) {
 	})
 	a := newTestAdapter(t, body)
 
-	got, err := a.ControlPlaneStatus(context.Background())
+	got, err := a.ControlPlaneStatus(context.Background(), "local")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -38,6 +38,9 @@ const (
 	// ReasonSourceUnavailable: reading what the check needs failed, or the
 	// result was not one this contract understands.
 	ReasonSourceUnavailable = "source_unavailable"
+	// ReasonTruncated: what the check needs is a remote list that exceeded
+	// the read cap (k8s.PageList), so only part of it was observed.
+	ReasonTruncated = "truncated"
 	// ReasonTimedOut: the check hit its time limit.
 	ReasonTimedOut = "timed_out"
 	// ReasonInternalError: the check itself failed (it panicked), so it says

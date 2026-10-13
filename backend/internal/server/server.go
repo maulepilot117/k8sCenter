@@ -12,11 +12,14 @@ import (
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/certmanager"
+	"github.com/kubecenter/kubecenter/internal/changes"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/externalsecrets"
 	"github.com/kubecenter/kubecenter/internal/gateway"
 	"github.com/kubecenter/kubecenter/internal/gitops"
+	"github.com/kubecenter/kubecenter/internal/incidents"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/limits"
@@ -27,8 +30,6 @@ import (
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/preferences"
-	"github.com/kubecenter/kubecenter/internal/certmanager"
-	"github.com/kubecenter/kubecenter/internal/changes"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/servicemesh"
@@ -39,138 +40,220 @@ import (
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	"github.com/kubecenter/kubecenter/internal/wizard"
 	yamlpkg "github.com/kubecenter/kubecenter/internal/yaml"
+	"k8s.io/client-go/kubernetes"
 )
 
 // Server holds all dependencies needed by HTTP handlers.
 type Server struct {
-	Router             *chi.Mux
-	Config             *config.Config
-	K8sClient          *k8s.ClientFactory
-	Informers          *k8s.InformerManager
-	Logger             *slog.Logger
-	TokenManager       *auth.TokenManager
-	LocalAuth          *auth.LocalProvider
-	AuthRegistry       *auth.ProviderRegistry
-	OIDCStateStore     *auth.OIDCStateStore
-	Sessions           *auth.SessionStore
-	RBACChecker        *auth.RBACChecker
-	AuditLogger        audit.Logger
-	ClusterStore       *store.ClusterStore
-	ClusterRouter      *k8s.ClusterRouter
-	ClusterProber      *k8s.ClusterProber
-	SettingsService    *store.SettingsService
-	RateLimiter        *middleware.RateLimiter
-	YAMLRateLimiter    *middleware.RateLimiter
-	ChangesRateLimiter *middleware.RateLimiter
-	ResourceHandler    *resources.Handler
-	YAMLHandler        *yamlpkg.Handler
-	WizardHandler      *wizard.Handler
-	MonitoringHandler  *monitoring.Handler
-	LokiHandler        *loki.Handler
-	TopologyHandler    *topology.Handler
-	StorageHandler     *storage.Handler
-	NetworkingHandler  *networking.Handler
-	AlertingHandler    *alerting.Handler
-	DiagnosticsHandler *diagnostics.Handler
-	PolicyHandler      *policy.Handler
-	GitOpsHandler      *gitops.Handler
-	ChangesHandler     *changes.Handler
-	ChangesService     *changes.Service
-	FluxNotifHandler   *notification.Handler
-	ScanningHandler    *scanning.Handler
-	LimitsHandler      *limits.Handler
-	VeleroHandler      *velero.Handler
-	CertManagerHandler *certmanager.Handler
+	Router                 *chi.Mux
+	Config                 *config.Config
+	K8sClient              *k8s.ClientFactory
+	Informers              *k8s.InformerManager
+	Logger                 *slog.Logger
+	TokenManager           *auth.TokenManager
+	LocalAuth              *auth.LocalProvider
+	AuthRegistry           *auth.ProviderRegistry
+	OIDCStateStore         *auth.OIDCStateStore
+	Sessions               *auth.SessionStore
+	RBACChecker            *auth.RBACChecker
+	AuditLogger            audit.Logger
+	ClusterStore           *store.ClusterStore
+	ClusterRouter          *k8s.ClusterRouter
+	ClusterProber          *k8s.ClusterProber
+	SettingsService        *store.SettingsService
+	RateLimiter            *middleware.RateLimiter
+	YAMLRateLimiter        *middleware.RateLimiter
+	ChangesRateLimiter     *middleware.RateLimiter
+	IncidentsRateLimiter   *middleware.RateLimiter
+	ResourceHandler        *resources.Handler
+	YAMLHandler            *yamlpkg.Handler
+	WizardHandler          *wizard.Handler
+	MonitoringHandler      *monitoring.Handler
+	LokiHandler            *loki.Handler
+	TopologyHandler        *topology.Handler
+	StorageHandler         *storage.Handler
+	NetworkingHandler      *networking.Handler
+	AlertingHandler        *alerting.Handler
+	DiagnosticsHandler     *diagnostics.Handler
+	PolicyHandler          *policy.Handler
+	GitOpsHandler          *gitops.Handler
+	ChangesHandler         *changes.Handler
+	ChangesService         *changes.Service
+	IncidentsHandler       *incidents.Handler
+	FluxNotifHandler       *notification.Handler
+	ScanningHandler        *scanning.Handler
+	LimitsHandler          *limits.Handler
+	VeleroHandler          *velero.Handler
+	CertManagerHandler     *certmanager.Handler
 	ExternalSecretsHandler *externalsecrets.Handler
-	GatewayHandler     *gateway.Handler
-	ServiceMeshHandler *servicemesh.Handler
-	CRDHandler         *resources.GenericCRDHandler
-	NotifCenterHandler *notifications.Handler
-	NotifCenterService *notifications.NotificationService
-	PreferencesHandler *preferences.Handler
-	Hub                *websocket.Hub
-	LogQueryLimiter    *middleware.RateLimiter
-	WebhookRateLimiter *middleware.RateLimiter
-	ready              func() bool
-	dbPing             func(context.Context) error // PostgreSQL health check (nil if no DB)
+	GatewayHandler         *gateway.Handler
+	ServiceMeshHandler     *servicemesh.Handler
+	CRDHandler             *resources.GenericCRDHandler
+	NotifCenterHandler     *notifications.Handler
+	NotifCenterService     *notifications.NotificationService
+	PreferencesHandler     *preferences.Handler
+	Hub                    *websocket.Hub
+	LogQueryLimiter        *middleware.RateLimiter
+	WebhookRateLimiter     *middleware.RateLimiter
+	ready                  func() bool
+	dbPing                 func(context.Context) error // PostgreSQL health check (nil if no DB)
+	// remoteInfoClient resolves the impersonating clientset for a remote
+	// cluster on /cluster/info. Nil in production, which routes through
+	// ClusterRouter; tests set it because a real resolution needs a cluster
+	// registry and a reachable API server.
+	remoteInfoClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
+	// ClusterMetricsStore persists per-cluster metrics bindings
+	// (/clusters/{id}/metrics). Nil without a database: those routes answer 503.
+	ClusterMetricsStore clusterMetricsStore
+	// MetricsResolver is the resolver shared by the monitoring handler and
+	// the dashboard adapters; binding writes and cluster deletes evict from
+	// it. Nil-safe.
+	MetricsResolver metricsResolverEvicter
+	// probePrometheus checks a binding's Prometheus before it is stored. Nil
+	// in production, which uses monitoring.ProbePrometheus; tests stub it
+	// because the strict transport refuses loopback httptest servers.
+	probePrometheus func(ctx context.Context, url, token string) error
+	// probeAlertmanager checks a binding's Alertmanager before it is stored.
+	// Nil in production, which uses monitoring.ProbeAlertmanager; tests stub
+	// it for the same reason as probePrometheus.
+	probeAlertmanager func(ctx context.Context, url, token string) error
+	// metricsClusters confirms the cluster exists for the binding routes.
+	// Nil in production, which reads ClusterStore; tests set a fake.
+	metricsClusters clusterRecordGetter
+
+	// ComplianceIdentityStore persists per-cluster compliance identities
+	// (/clusters/{id}/compliance-identity). Nil without a database: those
+	// routes answer 503.
+	ComplianceIdentityStore complianceIdentityStore
+	// impersonationChecker proves the registration credential may impersonate
+	// an identity before it is stored. Set from a non-nil ClusterRouter only.
+	impersonationChecker policy.ImpersonationChecker
+	// complianceSnapshotter takes the first remote snapshot when an identity
+	// is saved. Nil when no recorder runs (no database).
+	complianceSnapshotter complianceSnapshotter
+
+	// flowStreams tracks live remote flow streams, so a cluster's removal
+	// ends them (flow_streams.go).
+	flowStreams flowStreamRegistry
+	// openRemoteFlows opens a live remote flow source. Nil in production,
+	// which opens one through NetworkingHandler; tests stub the relay.
+	openRemoteFlows flowStreamOpener
+	// flowAccess is the check live-stream revalidation runs. Nil in
+	// production, which uses ResourceHandler.AccessChecker.
+	flowAccess networking.NamespaceAccess
 }
 
 // Deps holds all dependencies needed to create a Server.
 type Deps struct {
-	Config             *config.Config
-	K8sClient          *k8s.ClientFactory
-	Informers          *k8s.InformerManager
-	Logger             *slog.Logger
-	TokenManager       *auth.TokenManager
-	LocalAuth          *auth.LocalProvider
-	AuthRegistry       *auth.ProviderRegistry
-	OIDCStateStore     *auth.OIDCStateStore
-	Sessions           *auth.SessionStore
-	RBACChecker        *auth.RBACChecker
-	AuditLogger        audit.Logger
-	ClusterStore       *store.ClusterStore
-	ClusterRouter      *k8s.ClusterRouter
-	ClusterProber      *k8s.ClusterProber
-	SettingsService    *store.SettingsService
-	RateLimiter        *middleware.RateLimiter
-	YAMLRateLimiter    *middleware.RateLimiter
-	ChangesRateLimiter *middleware.RateLimiter
-	Hub                *websocket.Hub
-	MonitoringHandler  *monitoring.Handler
-	LokiHandler        *loki.Handler
-	TopologyHandler    *topology.Handler
-	StorageHandler     *storage.Handler
-	NetworkingHandler  *networking.Handler
-	AlertingHandler    *alerting.Handler
-	DiagnosticsHandler *diagnostics.Handler
-	PolicyHandler      *policy.Handler
-	GitOpsHandler      *gitops.Handler
-	ChangesHandler     *changes.Handler
-	ChangesService     *changes.Service
-	FluxNotifHandler   *notification.Handler
-	ScanningHandler    *scanning.Handler
-	LimitsHandler      *limits.Handler
-	VeleroHandler      *velero.Handler
-	CertManagerHandler *certmanager.Handler
-	ExternalSecretsHandler *externalsecrets.Handler
-	GatewayHandler     *gateway.Handler
-	ServiceMeshHandler *servicemesh.Handler
-	CRDHandler         *resources.GenericCRDHandler
-	NotifCenterHandler *notifications.Handler
-	NotifCenterService *notifications.NotificationService
-	PreferencesHandler *preferences.Handler
-	LogQueryLimiter    *middleware.RateLimiter
-	WebhookRateLimiter *middleware.RateLimiter
-	AccessChecker      *resources.AccessChecker
-	ReadyFn            func() bool
-	DBPing             func(context.Context) error // nil if no database
+	// ComplianceIdentityStore and RemoteComplianceRecorder are nil without a
+	// database; New wires them into the server seams only when non-nil.
+	ComplianceIdentityStore  *store.ComplianceIdentityStore
+	RemoteComplianceRecorder *policy.RemoteComplianceRecorder
+	Config                   *config.Config
+	K8sClient                *k8s.ClientFactory
+	Informers                *k8s.InformerManager
+	Logger                   *slog.Logger
+	TokenManager             *auth.TokenManager
+	LocalAuth                *auth.LocalProvider
+	AuthRegistry             *auth.ProviderRegistry
+	OIDCStateStore           *auth.OIDCStateStore
+	Sessions                 *auth.SessionStore
+	RBACChecker              *auth.RBACChecker
+	AuditLogger              audit.Logger
+	ClusterStore             *store.ClusterStore
+	ClusterRouter            *k8s.ClusterRouter
+	ClusterProber            *k8s.ClusterProber
+	SettingsService          *store.SettingsService
+	RateLimiter              *middleware.RateLimiter
+	YAMLRateLimiter          *middleware.RateLimiter
+	ChangesRateLimiter       *middleware.RateLimiter
+	IncidentsRateLimiter     *middleware.RateLimiter
+	Hub                      *websocket.Hub
+	MonitoringHandler        *monitoring.Handler
+	LokiHandler              *loki.Handler
+	TopologyHandler          *topology.Handler
+	StorageHandler           *storage.Handler
+	NetworkingHandler        *networking.Handler
+	AlertingHandler          *alerting.Handler
+	DiagnosticsHandler       *diagnostics.Handler
+	PolicyHandler            *policy.Handler
+	GitOpsHandler            *gitops.Handler
+	ChangesHandler           *changes.Handler
+	ChangesService           *changes.Service
+	IncidentsHandler         *incidents.Handler
+	FluxNotifHandler         *notification.Handler
+	ScanningHandler          *scanning.Handler
+	LimitsHandler            *limits.Handler
+	VeleroHandler            *velero.Handler
+	CertManagerHandler       *certmanager.Handler
+	ExternalSecretsHandler   *externalsecrets.Handler
+	GatewayHandler           *gateway.Handler
+	ServiceMeshHandler       *servicemesh.Handler
+	CRDHandler               *resources.GenericCRDHandler
+	NotifCenterHandler       *notifications.Handler
+	NotifCenterService       *notifications.NotificationService
+	PreferencesHandler       *preferences.Handler
+	LogQueryLimiter          *middleware.RateLimiter
+	WebhookRateLimiter       *middleware.RateLimiter
+	AccessChecker            *resources.AccessChecker
+	ReadyFn                  func() bool
+	DBPing                   func(context.Context) error // nil if no database
+}
+
+// monitoringResolver returns the metrics client resolver shared by the
+// monitoring handler and the dashboard adapters, or nil when monitoring is
+// not wired. When the caller did not set MonitoringHandler.Resolver (no
+// metrics-binding store), one is built over the Discoverer with no bindings
+// reader — every remote cluster then reads as "metrics not configured" — and
+// stored on the handler so both sides use the same instance.
+func monitoringResolver(deps Deps) *monitoring.ClientResolver {
+	mh := deps.MonitoringHandler
+	if mh == nil {
+		return nil
+	}
+	if mh.Resolver == nil {
+		if mh.Discoverer == nil {
+			return nil
+		}
+		mh.Resolver = monitoring.NewClientResolver(mh.Discoverer, nil, deps.Logger)
+	}
+	return mh.Resolver
 }
 
 // New creates a configured HTTP server with middleware and routes.
 func New(deps Deps) *Server {
 	s := &Server{
-		Router:          chi.NewRouter(),
-		Config:          deps.Config,
-		K8sClient:       deps.K8sClient,
-		Informers:       deps.Informers,
-		Logger:          deps.Logger,
-		TokenManager:    deps.TokenManager,
-		LocalAuth:       deps.LocalAuth,
-		AuthRegistry:    deps.AuthRegistry,
-		OIDCStateStore:  deps.OIDCStateStore,
-		Sessions:        deps.Sessions,
-		RBACChecker:     deps.RBACChecker,
-		AuditLogger:     deps.AuditLogger,
-		ClusterStore:    deps.ClusterStore,
-		ClusterRouter:   deps.ClusterRouter,
-		ClusterProber:   deps.ClusterProber,
-		SettingsService: deps.SettingsService,
-		RateLimiter:     deps.RateLimiter,
-		YAMLRateLimiter: deps.YAMLRateLimiter,
-		ChangesRateLimiter: deps.ChangesRateLimiter,
-		Hub:             deps.Hub,
-		ready:           deps.ReadyFn,
-		dbPing:          deps.DBPing,
+		Router:               chi.NewRouter(),
+		Config:               deps.Config,
+		K8sClient:            deps.K8sClient,
+		Informers:            deps.Informers,
+		Logger:               deps.Logger,
+		TokenManager:         deps.TokenManager,
+		LocalAuth:            deps.LocalAuth,
+		AuthRegistry:         deps.AuthRegistry,
+		OIDCStateStore:       deps.OIDCStateStore,
+		Sessions:             deps.Sessions,
+		RBACChecker:          deps.RBACChecker,
+		AuditLogger:          deps.AuditLogger,
+		ClusterStore:         deps.ClusterStore,
+		ClusterRouter:        deps.ClusterRouter,
+		ClusterProber:        deps.ClusterProber,
+		SettingsService:      deps.SettingsService,
+		RateLimiter:          deps.RateLimiter,
+		YAMLRateLimiter:      deps.YAMLRateLimiter,
+		ChangesRateLimiter:   deps.ChangesRateLimiter,
+		IncidentsRateLimiter: deps.IncidentsRateLimiter,
+		Hub:                  deps.Hub,
+		ready:                deps.ReadyFn,
+		dbPing:               deps.DBPing,
+	}
+
+	// One metrics resolver serves the monitoring handler, the dashboard
+	// adapters and the binding routes' Evict, so a binding edit reaches
+	// every cache. A nil resolver stays a nil interface (no typed nil).
+	metricsResolver := monitoringResolver(deps)
+	if metricsResolver != nil {
+		s.MetricsResolver = metricsResolver
 	}
 
 	// Build resource handler if k8s dependencies are available (not in auth-only tests)
@@ -181,14 +264,23 @@ func New(deps Deps) *Server {
 			ac = resources.NewAccessChecker(deps.K8sClient, deps.Logger)
 		}
 		// Build optional UtilizationProvider + TrendProvider if monitoring is
-		// available. The same adapter implements both — one wraps the Prometheus
-		// Discoverer for instant utilization queries and range trend queries.
+		// available. The same adapter implements both — instant utilization
+		// queries and range trend queries — over the Prometheus the metrics
+		// resolver picks per cluster. The adapters and the monitoring handler
+		// share ONE resolver, so a binding edit's Evict reaches every cache.
 		var utilProvider resources.UtilizationProvider
 		var trendProvider resources.TrendProvider
-		if deps.MonitoringHandler != nil && deps.MonitoringHandler.Discoverer != nil {
-			adapter := &monitoring.UtilizationAdapter{Discoverer: deps.MonitoringHandler.Discoverer}
+		var controlPlaneChecker resources.ControlPlaneChecker
+		var remoteAlertCounter resources.RemoteAlertCounter
+		if metricsResolver != nil {
+			adapter := &monitoring.UtilizationAdapter{Resolver: metricsResolver}
 			utilProvider = adapter
 			trendProvider = adapter
+			// Control-plane health reads the same resolver (local only in
+			// practice: the health score runs on the local path).
+			controlPlaneChecker = &monitoring.ControlPlaneAdapter{Resolver: metricsResolver}
+			// A remote cluster's alert counts come from its bound Alertmanager.
+			remoteAlertCounter = &monitoring.AlertCountsAdapter{Resolver: metricsResolver}
 		}
 
 		// Build optional AlertCounter if alerting is available
@@ -203,13 +295,6 @@ func New(deps Deps) *Server {
 			certExpiryCounter = &certmanager.CertExpiryAdapter{Handler: deps.CertManagerHandler}
 		}
 
-		// Build optional ControlPlaneChecker if monitoring is available.
-		// Mirrors UtilizationAdapter wiring above — same Discoverer, separate adapter.
-		var controlPlaneChecker resources.ControlPlaneChecker
-		if deps.MonitoringHandler != nil && deps.MonitoringHandler.Discoverer != nil {
-			controlPlaneChecker = &monitoring.ControlPlaneAdapter{Discoverer: deps.MonitoringHandler.Discoverer}
-		}
-
 		// Deregistering a cluster or replacing its credentials evicts it from
 		// ClusterRouter; the hook stops drains still running against it.
 		taskManager := resources.NewTaskManager()
@@ -218,19 +303,20 @@ func New(deps Deps) *Server {
 		}
 
 		s.ResourceHandler = &resources.Handler{
-			K8sClient:      deps.K8sClient,
-			ClusterRouter:  deps.ClusterRouter,
-			Informers:      deps.Informers,
-			AccessChecker:  ac,
-			AuditLogger:    deps.AuditLogger,
-			Logger:         deps.Logger,
-			TaskManager:    taskManager,
-			ClusterID:      deps.Config.ClusterID,
-			Utilization:    utilProvider,
-			Trends:         trendProvider,
-			Alerts:         alertCounter,
-			CertExpiry:     certExpiryCounter,
-			ControlPlane:   controlPlaneChecker,
+			K8sClient:       deps.K8sClient,
+			ClusterRouter:   deps.ClusterRouter,
+			Informers:       deps.Informers,
+			AccessChecker:   ac,
+			AuditLogger:     deps.AuditLogger,
+			Logger:          deps.Logger,
+			TaskManager:     taskManager,
+			ClusterID:       deps.Config.ClusterID,
+			Utilization:     utilProvider,
+			Trends:          trendProvider,
+			Alerts:          alertCounter,
+			RemoteAlerts:    remoteAlertCounter,
+			CertExpiry:      certExpiryCounter,
+			ControlPlane:    controlPlaneChecker,
 			OriginValidator: s.validateWSOrigin,
 		}
 		s.YAMLHandler = &yamlpkg.Handler{
@@ -270,6 +356,11 @@ func New(deps Deps) *Server {
 	if deps.NetworkingHandler != nil {
 		s.NetworkingHandler = deps.NetworkingHandler
 	}
+	// Removing a cluster ends its live remote flow streams on this replica
+	// at once; other replicas end theirs at the next revalidation.
+	if deps.ClusterRouter != nil {
+		deps.ClusterRouter.RegisterEvictHook(s.flowStreams.CancelCluster)
+	}
 
 	// Alerting handler
 	if deps.AlertingHandler != nil {
@@ -299,6 +390,13 @@ func New(deps Deps) *Server {
 		s.ChangesHandler = deps.ChangesHandler
 	}
 	s.ChangesService = deps.ChangesService
+
+	// Incidents handler (Release D). main.go constructs it unconditionally,
+	// with nil stores when there is no database, so the routes always
+	// register and a no-DB deployment answers 503 rather than 404.
+	if deps.IncidentsHandler != nil {
+		s.IncidentsHandler = deps.IncidentsHandler
+	}
 
 	// Notification handler
 	if deps.FluxNotifHandler != nil {
@@ -338,6 +436,13 @@ func New(deps Deps) *Server {
 	// Service Mesh handler (Istio + Linkerd observability)
 	if deps.ServiceMeshHandler != nil {
 		s.ServiceMeshHandler = deps.ServiceMeshHandler
+		// Remote golden signals and the mTLS cross-check read the cluster's
+		// bound Prometheus through the shared resolver, so a binding edit's
+		// Evict reaches them too. Assigned only when non-nil: the field
+		// stays a true nil interface (no typed nil) without monitoring.
+		if metricsResolver != nil {
+			s.ServiceMeshHandler.Metrics = metricsResolver
+		}
 	}
 
 	// Notification center
@@ -381,6 +486,18 @@ func New(deps Deps) *Server {
 	// Note: Timeout is applied per-route-group (not globally) so that
 	// long-lived WebSocket connections are not terminated.
 	s.Router.Use(middleware.CORS(deps.Config))
+
+	// Interfaces are filled from non-nil pointers only, so a missing
+	// dependency stays a nil interface (docs/solutions/go-typed-nil-interface.md).
+	if deps.ComplianceIdentityStore != nil {
+		s.ComplianceIdentityStore = deps.ComplianceIdentityStore
+	}
+	if deps.ClusterRouter != nil {
+		s.impersonationChecker = deps.ClusterRouter
+	}
+	if deps.RemoteComplianceRecorder != nil {
+		s.complianceSnapshotter = deps.RemoteComplianceRecorder
+	}
 
 	s.registerRoutes()
 

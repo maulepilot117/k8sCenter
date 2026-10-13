@@ -35,6 +35,14 @@ import (
 
 const meshCacheTTL = 30 * time.Second
 
+// PrometheusResolver answers which Prometheus serves a cluster. For a remote
+// cluster that is its metrics binding: errors.Is(err,
+// monitoring.ErrNoMetricsBinding) means it has none, and any other error is
+// a failure to read the binding. *monitoring.ClientResolver implements it.
+type PrometheusResolver interface {
+	PrometheusFor(ctx context.Context, clusterID string) (*monitoring.PrometheusClient, error)
+}
+
 // Handler serves service-mesh HTTP endpoints for the cluster a request
 // selects. v1 is read-only.
 //
@@ -55,6 +63,13 @@ type Handler struct {
 	// golden-signal metrics. Nil is a supported configuration — the
 	// handler degrades to policy-only results.
 	MonitoringDisc *monitoring.Discoverer
+
+	// Metrics resolves a remote cluster's bound Prometheus for golden
+	// signals and the mTLS cross-check. server.New assigns the shared
+	// metrics resolver only when one exists, so nil (a true nil interface)
+	// reads as "no binding" for every remote cluster. The local cluster
+	// never consults it: it keeps MonitoringDisc and promClientOverride.
+	Metrics PrometheusResolver
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
@@ -602,8 +617,9 @@ func (h *Handler) promClient() *monitoring.PrometheusClient {
 //
 // On a remote cluster the pods and policies come from that cluster, a
 // failure to read its mesh state fails the request (R-8 KTD5), and the
-// metric cross-check is reported unavailable without querying Prometheus,
-// which only knows the local cluster (R14).
+// metric cross-check runs against the cluster's bound Prometheus, never the
+// local one (R16). Without a binding the cross-check is reported not
+// configured and the posture is still served.
 func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
@@ -727,15 +743,22 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	//     istio_requests_total; Linkerd has no equivalent and
 	//     applyMTLSMetricOverrides already filters by Mesh != MeshIstio,
 	//     so the call would be wasted on a Linkerd-only cluster.
+	//
+	// The local cluster asks its own Prometheus; a remote cluster asks the
+	// one its metrics binding names, and without one the cross-check is
+	// reported not configured (crossCheckProm).
 	istioPresent := status.Detected == MeshIstio || status.Detected == MeshBoth
-	if !local && istioPresent {
-		errs["prometheus-cross-check"] = crossCheckUnavailableRemote
+	var pc *monitoring.PrometheusClient
+	if local {
+		pc = h.promClient()
+	} else if istioPresent {
+		pc = h.crossCheckProm(r.Context(), errs)
 	}
-	if pc := h.promClient(); local && pc != nil && len(workloads) > 0 && istioPresent {
+	if pc != nil && len(workloads) > 0 && istioPresent {
 		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
 		if perr != nil {
 			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "user", user.KubernetesUsername, "namespace", namespace, "error", perr)
-			errs["prometheus-cross-check"] = "metric cross-check unavailable; posture derived from policies only"
+			errs["prometheus-cross-check"] = crossCheckUnavailable
 		} else {
 			workloads = applyMTLSMetricOverrides(workloads, ratios)
 			// When the pod list was capped AND the Prom cross-check ran
@@ -786,9 +809,10 @@ type GoldenSignalsResponse struct {
 // never echoed to the response body.
 //
 // On a remote cluster the mesh is validated against that cluster and the
-// signals are unavailable with reason unsupported_platform: they come from
-// the local Prometheus, which knows nothing of a remote cluster's traffic
-// (R14), so Prometheus is never queried.
+// signals come from the cluster's bound Prometheus, never the local one
+// (R9, KTD7): no binding is a 200 with reason metrics_not_configured, a
+// bound Prometheus that answers no query is a 200 with reason unreachable,
+// and a binding that cannot be read is a target error.
 func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
@@ -831,15 +855,16 @@ func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isLocal(r.Context()) {
-		httputil.WriteData(w, GoldenSignalsResponse{Status: status, Signals: GoldenSignals{
-			Mesh: mesh, Namespace: namespace, Service: service,
-			Reason: string(k8s.ReasonUnsupportedPlatform),
-		}})
-		return
+	local := isLocal(r.Context())
+	var pc *monitoring.PrometheusClient
+	if local {
+		pc = h.promClient()
+	} else {
+		var ok bool
+		if pc, ok = h.goldenSignalsProm(w, r, status, GoldenSignals{Mesh: mesh, Namespace: namespace, Service: service}); !ok {
+			return
+		}
 	}
-
-	pc := h.promClient()
 	signals, gerr := goldenSignalsForService(r.Context(), pc, mesh, namespace, service)
 	if gerr != nil {
 		// Validation errors come from the monitoring package's k8s-name
@@ -848,6 +873,12 @@ func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Warn("golden signals render failed", "user", user.KubernetesUsername, "namespace", namespace, "service", service, "mesh", mesh, "error", gerr)
 		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace or service name", "")
 		return
+	}
+	if !local && !signals.Available {
+		// Every query to the bound Prometheus failed. The causes, which can
+		// name its address, are not returned.
+		h.Logger.Warn("remote golden signals: bound Prometheus answered no query", "cluster", middleware.ClusterIDFromContext(r.Context()), "namespace", namespace, "service", service, "mesh", mesh)
+		signals.Reason = string(k8s.ReasonUnreachable)
 	}
 
 	httputil.WriteData(w, GoldenSignalsResponse{Status: status, Signals: signals})

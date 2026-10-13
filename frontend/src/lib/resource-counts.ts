@@ -10,28 +10,28 @@
  * server-side would leak state across SSR requests.
  */
 import { computed, effect, signal } from "@preact/signals";
-import { ApiError, api } from "@/lib/api.ts";
-import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
+import { api } from "@/lib/api.ts";
+import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
 
 /** Raw count map from the backend batch endpoint. null = not yet loaded. */
 export const resourceCounts = signal<Record<string, number> | null>(null);
 
-/** True while a fetch is in flight. */
-export const resourceCountsLoading = signal(false);
+/**
+ * True when the last read reported `metadata.truncated`: a remote kind hit the
+ * paging cap, so a count equal to the cap is a lower bound, not exact.
+ */
+export const resourceCountsTruncated = signal(false);
 
 /**
- * Why counts cannot be shown for the selected cluster, or null when they can.
- *
- * The counts route reads the local informer cache and refuses every other
- * cluster with a 400 (`counts.go`). That is a standing fact about the target,
- * not a failed request, so it is published here as unavailability for a
- * consumer to explain, rather than swallowed like a transient error -- which
- * would leave `resourceCounts` null and every consumer waiting on a load that
- * is never coming.
+ * Per-kind cap on a remote count. Mirrors
+ * `k8s.RemoteListPageSize * k8s.RemoteListMaxPages` in the backend.
  */
-export const resourceCountsUnavailable = signal<string | null>(null);
+export const REMOTE_COUNT_CAP = 5000;
+
+/** True while a fetch is in flight. */
+export const resourceCountsLoading = signal(false);
 
 /** Derived: total items with counts across the current signal value. */
 export const resourceCountsTotal = computed(() => {
@@ -50,36 +50,35 @@ export function getCount(kind: string): number | null {
   return c[kind] ?? 0;
 }
 
-/**
- * Why a resource-counts read failed, when the failure is the known remote
- * refusal rather than an error.
- *
- * `GET /v1/resources/counts` reads the local informer cache and answers 400
- * for any other cluster (`counts.go`). That is a standing fact about the
- * target, so it is reported as unavailability, not as a failed request. Keyed
- * on the status plus the cluster the request was pinned to, not on the
- * message: the handler's prose is not a contract.
- */
-export function countsUnavailableReason(
-  err: unknown,
-  clusterId: string,
-): string | null {
-  if (!(err instanceof ApiError) || err.status !== 400) return null;
-  if (clusterId === LOCAL_CLUSTER_ID) return null;
-  return "Resource counts are only available for the local cluster.";
-}
+/** The cluster `resourceCounts` was last read from, or null before any read. */
+let countsCluster: string | null = null;
 
 /**
- * What a loading-state consumer should print while counts are pending: the
- * unavailability reason when the selected cluster refused counts outright, or
- * the caller's own "Loading…" copy while a real fetch is still in flight.
- *
- * Reads `resourceCountsUnavailable.value` so callers subscribe to it like any
- * other signal read in a render body -- this must not be called outside a
- * reactive context if the caller wants updates.
+ * The count for `kind` as display text: a capped count under a truncated read
+ * gets a trailing `+`. Null before the store has loaded.
  */
-export function countsPendingText(loading: string): string {
-  return resourceCountsUnavailable.value ?? loading;
+export function formatCount(kind: string): string | null {
+  const n = getCount(kind);
+  if (n === null) return null;
+  return resourceCountsTruncated.value && n >= REMOTE_COUNT_CAP
+    ? `${n}+`
+    : String(n);
+}
+
+/** Counts from another cluster are wrong data for this one: drop them now. */
+function dropCountsFromOtherCluster(cluster: string) {
+  if (countsCluster !== cluster) {
+    resourceCounts.value = null;
+    resourceCountsTruncated.value = false;
+    countsCluster = null;
+  }
+}
+
+/** Test-only: return the store to its initial state. */
+export function resetCountsForTest() {
+  resourceCounts.value = null;
+  resourceCountsTruncated.value = false;
+  countsCluster = null;
 }
 
 let lastNs = "";
@@ -105,29 +104,31 @@ export async function fetchCounts(
 ): Promise<void> {
   const nsParam =
     ns && ns !== "all" ? `?namespace=${encodeURIComponent(ns)}` : "";
+  dropCountsFromOtherCluster(cluster);
   try {
     const res = await api<Record<string, number>>(
       `/v1/resources/counts${nsParam}`,
       { method: "GET", signal, clusterId: cluster },
     );
-    resourceCountsUnavailable.value = null;
     resourceCounts.value = res.data ?? {};
+    resourceCountsTruncated.value = res.metadata?.truncated === true;
+    countsCluster = cluster;
   } catch (err) {
     if ((err as Error)?.name === "AbortError") throw err;
-    const reason = countsUnavailableReason(err, cluster);
-    if (reason !== null) {
-      // Nothing kept: counts from another cluster are not stale data for this
-      // one, they are wrong data.
-      resourceCounts.value = null;
-      resourceCountsUnavailable.value = reason;
-    }
-    // Any other error keeps the stale data.
+    // Counts from another cluster are not stale data for this one, they are
+    // wrong data: a failed read after a cluster switch shows nothing rather
+    // than the previous cluster's numbers. A failed read on the same cluster
+    // keeps its last counts.
+    dropCountsFromOtherCluster(cluster);
   }
 }
 
 function scheduleCountsFetch(ns: string, cluster: string) {
   if (debounceTimer !== null) clearTimeout(debounceTimer);
   if (abortController) abortController.abort();
+  // Do not label the previous cluster's numbers as the new cluster's while the
+  // debounce and the read are pending.
+  dropCountsFromOtherCluster(cluster);
 
   debounceTimer = setTimeout(() => {
     abortController = new AbortController();

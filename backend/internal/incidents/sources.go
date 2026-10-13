@@ -202,6 +202,7 @@ func readTarget(ctx context.Context, clients ClientProvider, mapper meta.RESTMap
 	if !ok {
 		return nil, failed(detailUnresolvedVersion), nil
 	}
+	// nolint:cluster-routing Release D capture is local-only (plan A-12): req.ClusterID is the local cluster, and the SAR above ran on it.
 	dyn, err := clients.DynamicClientForUser(req.User.KubernetesUsername, req.User.KubernetesGroups)
 	if err != nil {
 		logger.Error("incident capture impersonated dynamic client unavailable", "error", err)
@@ -505,6 +506,7 @@ func (s *eventsSource) Collect(ctx context.Context, req CaptureRequest) (SourceR
 		secretDerived = secretDerived || secretDerivedUnknown(t)
 	}
 
+	// nolint:cluster-routing Release D capture is local-only (plan A-12): req.ClusterID is the local cluster, and the SAR above ran on it.
 	cs, err := s.clients.ClientForUser(req.User.KubernetesUsername, req.User.KubernetesGroups)
 	if err != nil {
 		s.logger.Error("incident capture impersonated client unavailable", "error", err)

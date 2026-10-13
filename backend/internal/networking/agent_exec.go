@@ -27,7 +27,8 @@ const (
 	agentOuterTimeout         = 30 * time.Second
 	agentExecTimeout          = 5 * time.Second
 	agentDefaultMaxConcurrent = 10
-	agentMaxOutput            = 1 << 20 // 1 MB stdout cap
+	agentMaxOutput            = 1 << 20  // 1 MB stdout cap
+	agentMaxStderr            = 64 << 10 // 64 KB stderr cap
 	agentContainer            = "cilium-agent"
 )
 
@@ -115,6 +116,7 @@ func (c *CiliumAgentCollector) collect(ctx context.Context) (*agentCollectionRes
 	gen := atomic.LoadUint64(&c.cacheGen)
 	// Note: ctx already has agentOuterTimeout from Collect() — no redundant timeout here.
 
+	// nolint:cluster-routing local path: the service-account agent collector serves the local cluster only (callers gate on isCiliumLocal)
 	cs := c.k8sClient.BaseClientset()
 
 	// Find Cilium agent pods
@@ -270,7 +272,9 @@ func (c *CiliumAgentCollector) execInPod(ctx context.Context, namespace, podName
 	ctx, cancel := context.WithTimeout(ctx, agentExecTimeout)
 	defer cancel()
 
+	// nolint:cluster-routing local path: the service-account agent collector serves the local cluster only (callers gate on isCiliumLocal)
 	cs := c.k8sClient.BaseClientset()
+	// nolint:cluster-routing local path: the service-account agent collector serves the local cluster only (callers gate on isCiliumLocal)
 	cfg := c.k8sClient.BaseConfig()
 
 	// Build exec request URL using the same pattern as pods.go:256-266
@@ -287,6 +291,7 @@ func (c *CiliumAgentCollector) execInPod(ctx context.Context, namespace, podName
 		execReq = execReq.Param("command", cmd)
 	}
 
+	// nolint:cluster-routing local path: the service-account agent collector serves the local cluster only (callers gate on isCiliumLocal)
 	executor, err := remotecommand.NewSPDYExecutor(cfg, "POST", execReq.URL())
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating SPDY executor: %w", err)
@@ -294,7 +299,7 @@ func (c *CiliumAgentCollector) execInPod(ctx context.Context, namespace, podName
 
 	var stdout, stderr bytes.Buffer
 	lw := &limitedWriter{w: &stdout, remaining: agentMaxOutput}
-	stderrLW := &limitedWriter{w: &stderr, remaining: 64 * 1024} // 64KB stderr cap
+	stderrLW := &limitedWriter{w: &stderr, remaining: agentMaxStderr}
 	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdout: lw,
 		Stderr: stderrLW,

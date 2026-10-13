@@ -2,10 +2,13 @@ package certmanager
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // peekStaleness is the maximum age of a cached entry that peekCertificates
@@ -32,6 +35,26 @@ var ErrCertCacheNotWarm = resources.ErrCertCacheNotWarm
 // cache is cold, it returns ErrCertCacheNotWarm immediately.
 type CertExpiryAdapter struct {
 	Handler *Handler
+}
+
+// ExpiringCountsForCluster returns the expiring-certificate counts of the
+// cluster clusterID with its verdict in the result's State. The local cluster
+// reads ExpiringCounts: cert-manager absent is CertExpiryNotInstalled and a
+// cold cache is CertExpiryIncomplete caused by ErrCertCacheNotWarm. A remote
+// cluster is read as the user: not installed, denied, or incomplete (R5-R7).
+func (a *CertExpiryAdapter) ExpiringCountsForCluster(ctx context.Context, clusterID string, user *auth.User) resources.CertExpiry {
+	if k8s.IsLocalClusterID(clusterID) {
+		warning, critical, err := a.ExpiringCounts(ctx, user)
+		switch {
+		case err == nil:
+			return resources.CertExpiry{Warning: warning, Critical: critical}
+		case errors.Is(err, ErrCertManagerNotInstalled):
+			return resources.CertExpiry{State: resources.CertExpiryNotInstalled}
+		default:
+			return resources.CertExpiry{State: resources.CertExpiryIncomplete, Cause: err}
+		}
+	}
+	return a.Handler.remoteExpiry(middleware.WithClusterID(ctx, clusterID), clusterID, user)
 }
 
 // ExpiringCounts returns the number of certificates that fall into the warning
