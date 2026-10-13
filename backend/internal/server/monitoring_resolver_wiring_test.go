@@ -13,6 +13,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
+	"github.com/kubecenter/kubecenter/internal/servicemesh"
 )
 
 // countingBindings is a MetricsBindingReader that counts reads, so a test
@@ -42,12 +43,13 @@ func newResolverWiringServer(t *testing.T, mh *monitoring.Handler) *Server {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cs := fake.NewSimpleClientset()
 	return New(Deps{
-		Config:            &config.Config{ClusterID: "local"},
-		Logger:            logger,
-		K8sClient:         k8s.NewFakeClientFactory(cs),
-		Informers:         k8s.NewInformerManager(cs, nil, logger),
-		MonitoringHandler: mh,
-		ReadyFn:           func() bool { return true },
+		Config:             &config.Config{ClusterID: "local"},
+		Logger:             logger,
+		K8sClient:          k8s.NewFakeClientFactory(cs),
+		Informers:          k8s.NewInformerManager(cs, nil, logger),
+		MonitoringHandler:  mh,
+		ServiceMeshHandler: &servicemesh.Handler{},
+		ReadyFn:            func() bool { return true },
 	})
 }
 
@@ -74,12 +76,17 @@ func sharedResolvers(t *testing.T, s *Server) map[string]*monitoring.ClientResol
 	if !ok {
 		t.Fatalf("MetricsResolver = %T; want *monitoring.ClientResolver", s.MetricsResolver)
 	}
+	mesh, ok := s.ServiceMeshHandler.Metrics.(*monitoring.ClientResolver)
+	if !ok {
+		t.Fatalf("ServiceMeshHandler.Metrics = %T; want *monitoring.ClientResolver", s.ServiceMeshHandler.Metrics)
+	}
 	return map[string]*monitoring.ClientResolver{
 		"monitoring handler": s.MonitoringHandler.Resolver,
 		"utilization":        util.Resolver,
 		"trends":             trends.Resolver,
 		"control plane":      cp.Resolver,
 		"MetricsResolver":    evicter,
+		"mesh handler":       mesh,
 	}
 }
 
@@ -139,12 +146,16 @@ func TestNew_BuildsAndSharesResolverWhenUnset(t *testing.T) {
 	}
 }
 
-// Without monitoring, MetricsResolver stays a true nil interface, so the
-// binding routes' evict is a no-op rather than a typed-nil call.
+// Without monitoring, MetricsResolver and the mesh handler's resolver stay
+// true nil interfaces, so the binding routes' evict is a no-op rather than a
+// typed-nil call, and remote mesh metrics read as not configured.
 func TestNew_NoMonitoringLeavesMetricsResolverNil(t *testing.T) {
 	s := newResolverWiringServer(t, nil)
 	if s.MetricsResolver != nil {
 		t.Errorf("MetricsResolver = %#v; want nil without monitoring", s.MetricsResolver)
+	}
+	if s.ServiceMeshHandler.Metrics != nil {
+		t.Errorf("ServiceMeshHandler.Metrics = %#v; want nil without monitoring", s.ServiceMeshHandler.Metrics)
 	}
 	s.evictMetricsClient(testRemoteID) // must not panic
 }

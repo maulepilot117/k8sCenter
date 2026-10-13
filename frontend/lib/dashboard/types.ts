@@ -194,7 +194,9 @@ export const DATA_SOURCE_KEYS = [
   // database. Declared OPTIONAL by the widget that reads it for exactly that
   // reason: both refusals leave the current score untouched, and a card gated
   // on this one would blank a gauge the compliance endpoint already answered,
-  // permanently, for every non-admin.
+  // permanently, for every non-admin. A remote cluster serves its own
+  // recorded history (declared `remote` in `REMOTE_BEHAVIOUR`), or answers
+  // 404 `compliance_history_not_configured` when no identity is named.
   "policy-compliance-history",
   // `/v1/policies/violations`. Note the plural prefix: the routes are mounted
   // under `/v1/policies/...`, not `/v1/policy/...` (see `registerPolicyRoutes`
@@ -720,18 +722,64 @@ export const ABSENT_STATUSES: Readonly<Record<string, readonly number[]>> = {
  * cluster without one answers 404 `metrics_not_configured`, which `classify`
  * in data.ts reads by reason rather than by status.
  *
+ * `mesh-golden-signals` is NOT here: its 400 (a cluster running both meshes)
+ * is not a remote refusal, so it lives in `AMBIGUOUS_REQUEST_STATUSES` below
+ * and applies to the local and the remote cluster alike.
+ *
  * `diagnostics-summary` is deliberately absent: the route serves remote
  * clusters, so a 501 from it is an ordinary failure, not a refusal.
+ *
+ * `hubble-status` left in #608 PR 5a: `/v1/networking/cni` now reads the
+ * selected cluster's own CNI detection, so its 501 is a failure too.
+ * `hubble-flows` left in PR 5b: the route reads the selected cluster's own
+ * relay, and its relay states are told apart by reason, in `REASON_KINDS`.
+ * `policy-compliance-history` left in #608's final slice: a remote cluster
+ * now serves its own recorded history, and the one state it cannot (no named
+ * background identity) is told apart by reason, in `REASON_KINDS`.
  */
 export const UNSUPPORTED_STATUSES: Readonly<Record<string, readonly number[]>> =
-  {
-    "mesh-golden-signals": [400],
-    // Remote clusters never answer these three: the backend refuses with 501
-    // (compliance history and Hubble are recorded for the local install only).
-    "policy-compliance-history": [501],
-    "hubble-flows": [501],
-    "hubble-status": [501],
-  };
+  {};
+
+/**
+ * Error reasons that settle a source's state whatever the status, for routes
+ * whose status alone is ambiguous (#608 KTD5). `hubble-flows` answers 404
+ * both for a cluster with no Hubble Relay (`relay_not_found`, an absence)
+ * and for a cluster that is not registered (`cluster_unknown`, a failure),
+ * so no 404 can go in `ABSENT_STATUSES`. A relay serving TLS answers 501
+ * `relay_tls_unsupported`: the feature is installed and the request cannot
+ * be served, which is `unsupported`. Any other reason -- `relay_not_ready`,
+ * `tunnel_limit` -- stays a failure, which offers a retry.
+ */
+export const REASON_KINDS: Readonly<
+  Record<string, Readonly<Record<string, "absent" | "unsupported">>>
+> = {
+  "hubble-flows": {
+    relay_not_found: "absent",
+    relay_tls_unsupported: "unsupported",
+  },
+  // A remote cluster with no named background identity records nothing and
+  // answers 404 `compliance_history_not_configured` (#608 KTD8). A standing
+  // fact about the cluster, so `unsupported`: muted, no retry. A 404 with any
+  // other reason (`cluster_unknown`) stays a failure.
+  "policy-compliance-history": {
+    compliance_history_not_configured: "unsupported",
+  },
+};
+
+/**
+ * Statuses that mean "the request is ambiguous on this cluster", whichever
+ * cluster is selected. Separate from `UNSUPPORTED_STATUSES` because that
+ * declaration is the set of remote refusals, and these also happen locally.
+ *
+ * `mesh-golden-signals` answers 400 on a cluster running both Istio and
+ * Linkerd, asking to be told which mesh. `classify` reads this as
+ * `unsupported` (muted, no retry, the backend's message shown).
+ */
+export const AMBIGUOUS_REQUEST_STATUSES: Readonly<
+  Record<string, readonly number[]>
+> = {
+  "mesh-golden-signals": [400],
+};
 
 /** Grid geometry. Twelve divides into halves, thirds and quarters, which is
  * what the pre-registry three-row layout already approximated. */

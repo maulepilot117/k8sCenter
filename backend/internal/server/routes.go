@@ -32,10 +32,11 @@ func (s *Server) registerRoutes() {
 			r.Get("/api/v1/ws/resources", s.handleWSResources)
 		}
 
-		// Hubble flow WebSocket — auth in-band (same as resource WS), no timeout
-		if s.NetworkingHandler != nil && s.NetworkingHandler.HubbleClient != nil {
-			r.Get("/api/v1/ws/flows", s.handleWSFlows)
-		}
+		// Hubble flow WebSocket — auth in-band (same as resource WS), no
+		// timeout. Always mounted: the stream names its cluster in-band, so
+		// whether the local cluster has Hubble is answered in-band too
+		// (hubble_unavailable), and a remote cluster never needs it (#608 R12).
+		r.Get("/api/v1/ws/flows", s.handleWSFlows)
 
 		// Loki log search WebSocket — auth in-band, no timeout
 		if s.LokiHandler != nil {
@@ -308,6 +309,9 @@ func (s *Server) registerClusterRoutes(ar chi.Router) {
 		cr.Get("/{clusterID}/metrics", s.handleGetClusterMetrics)
 		cr.Put("/{clusterID}/metrics", s.handlePutClusterMetrics)
 		cr.Delete("/{clusterID}/metrics", s.handleDeleteClusterMetrics)
+		cr.Get("/{clusterID}/compliance-identity", s.handleGetComplianceIdentity)
+		cr.Put("/{clusterID}/compliance-identity", s.handlePutComplianceIdentity)
+		cr.Delete("/{clusterID}/compliance-identity", s.handleDeleteComplianceIdentity)
 	})
 }
 

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -32,8 +33,14 @@ type Handler struct {
 	Discoverer      *PolicyDiscoverer
 	AccessChecker   *resources.AccessChecker
 	ComplianceStore *store.ComplianceStore
-	NotifService    *notifications.NotificationService
-	Logger          *slog.Logger
+	// History overrides ComplianceStore as the history reader (a test seam).
+	History ComplianceHistoryReader
+	// ComplianceIdentities answers whether a remote cluster has a named
+	// background identity. Nil means remote history is unavailable. Assign it
+	// only from a non-nil store: a nil pointer in an interface is not nil.
+	ComplianceIdentities ComplianceIdentityReader
+	NotifService         *notifications.NotificationService
+	Logger               *slog.Logger
 	// Clients resolves per-user clients and schema for a remote cluster.
 	Clients k8s.ClusterClients
 	// Presence answers whether an engine's API is served on a remote
@@ -369,26 +376,108 @@ func (h *Handler) HandleCompliance(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, score)
 }
 
+// ComplianceHistoryReader reads stored compliance points and gaps. The
+// concrete *store.ComplianceStore satisfies it.
+type ComplianceHistoryReader interface {
+	QueryHistory(ctx context.Context, clusterID string, days int) ([]store.ComplianceSnapshot, error)
+	QueryGaps(ctx context.Context, clusterID string, days int) ([]store.ComplianceGap, error)
+}
+
+// ComplianceIdentityReader reads a remote cluster's background identity.
+// *store.ComplianceIdentityStore satisfies it.
+type ComplianceIdentityReader interface {
+	Get(ctx context.Context, clusterID string) (store.ComplianceIdentity, error)
+}
+
+const (
+	// ReasonHistoryNotConfigured and MsgHistoryNotConfigured are shared with
+	// the compliance-identity routes, which answer the same 404.
+	ReasonHistoryNotConfigured = "compliance_history_not_configured"
+	MsgHistoryNotConfigured    = "compliance history is not configured for this cluster"
+)
+
+// historyReader returns the history reader, or nil. It checks the concrete
+// pointer first so a nil *store.ComplianceStore never becomes a non-nil
+// interface.
+func (h *Handler) historyReader() ComplianceHistoryReader {
+	if h.History != nil {
+		return h.History
+	}
+	if h.ComplianceStore != nil {
+		return h.ComplianceStore
+	}
+	return nil
+}
+
+// identityReader returns the identity reader, treating a typed-nil store as unset.
+func (h *Handler) identityReader() ComplianceIdentityReader {
+	if s, ok := h.ComplianceIdentities.(*store.ComplianceIdentityStore); ok && s == nil {
+		return nil
+	}
+	return h.ComplianceIdentities
+}
+
+// historyPoint is one day of the history response. The remote-only fields
+// are omitted when empty, so the local response keeps its original shape.
+type historyPoint struct {
+	Date            string   `json:"date"`
+	Score           float64  `json:"score"`
+	Pass            int      `json:"pass"`
+	Fail            int      `json:"fail"`
+	Warn            int      `json:"warn"`
+	Total           int      `json:"total"`
+	Partial         bool     `json:"partial,omitempty"`
+	Unreadable      []string `json:"unreadable,omitempty"`
+	IdentityChanged bool     `json:"identityChanged,omitempty"`
+}
+
+type historyGap struct {
+	Date   string `json:"date"`
+	Reason string `json:"reason"`
+}
+
+// remoteHistoryResponse keeps data a bare points array and puts gaps beside it.
+type remoteHistoryResponse struct {
+	Data []historyPoint `json:"data"`
+	Gaps []historyGap   `json:"gaps"`
+}
+
 // HandleComplianceHistory returns historical compliance score snapshots.
-// Snapshots are taken by the ComplianceRecorder of the local cluster only,
-// so a remote selection is refused rather than answered with the local
-// cluster's trend (R-8 R14, #530).
+// The local cluster is recorded by the ComplianceRecorder; a remote cluster
+// is served from its own rows and only when it has a named identity (R4).
 // GET /api/v1/policies/compliance/history?days=30
 func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request) {
 	if _, ok := httputil.RequireUser(w, r); !ok {
 		return
 	}
 
-	if !isLocal(r.Context()) {
+	remote := !isLocal(r.Context())
+	identities := h.identityReader()
+	if remote && identities == nil {
 		httputil.WriteErrorWithReason(w, http.StatusNotImplemented,
 			"compliance history is recorded for the local cluster only",
 			"remote_history_unsupported", nil)
 		return
 	}
 
-	if h.ComplianceStore == nil {
+	reader := h.historyReader()
+	if reader == nil {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "compliance history requires a database", "")
 		return
+	}
+
+	clusterID := k8s.NormalizedClusterID(middleware.ClusterIDFromContext(r.Context()))
+	if remote {
+		_, err := identities.Get(r.Context(), clusterID)
+		if errors.Is(err, store.ErrComplianceIdentityNotFound) {
+			httputil.WriteErrorWithReason(w, http.StatusNotFound, MsgHistoryNotConfigured, ReasonHistoryNotConfigured, nil)
+			return
+		}
+		if err != nil {
+			h.Logger.Error("failed to read compliance identity", "cluster", clusterID, "error", err)
+			httputil.WriteError(w, http.StatusServiceUnavailable, "compliance history is temporarily unavailable", "")
+			return
+		}
 	}
 
 	days := 30
@@ -404,36 +493,46 @@ func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request
 		days = 90
 	}
 
-	snapshots, err := h.ComplianceStore.QueryHistory(r.Context(), k8s.LocalClusterID, days)
+	snapshots, err := reader.QueryHistory(r.Context(), clusterID, days)
 	if err != nil {
 		h.Logger.Error("failed to query compliance history", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to query compliance history", "")
 		return
 	}
 
-	// Convert to API response format
-	type historyPoint struct {
-		Date  string  `json:"date"`
-		Score float64 `json:"score"`
-		Pass  int     `json:"pass"`
-		Fail  int     `json:"fail"`
-		Warn  int     `json:"warn"`
-		Total int     `json:"total"`
-	}
-
 	points := make([]historyPoint, len(snapshots))
 	for i, s := range snapshots {
 		points[i] = historyPoint{
-			Date:  s.Date.Format("2006-01-02"),
-			Score: s.OverallScore,
-			Pass:  s.Pass,
-			Fail:  s.Fail,
-			Warn:  s.Warn,
-			Total: s.Total,
+			Date:       s.Date.Format(time.DateOnly),
+			Score:      s.OverallScore,
+			Pass:       s.Pass,
+			Fail:       s.Fail,
+			Warn:       s.Warn,
+			Total:      s.Total,
+			Partial:    s.Partial,
+			Unreadable: s.Unreadable,
+		}
+		if remote && i > 0 && s.IdentityRevision != snapshots[i-1].IdentityRevision {
+			points[i].IdentityChanged = true
 		}
 	}
 
-	httputil.WriteData(w, points)
+	if !remote {
+		httputil.WriteData(w, points)
+		return
+	}
+
+	gaps, err := reader.QueryGaps(r.Context(), clusterID, days)
+	if err != nil {
+		h.Logger.Error("failed to query compliance gaps", "cluster", clusterID, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to query compliance history", "")
+		return
+	}
+	out := make([]historyGap, len(gaps))
+	for i, g := range gaps {
+		out[i] = historyGap{Date: g.Date.Format(time.DateOnly), Reason: g.Reason}
+	}
+	httputil.WriteJSON(w, http.StatusOK, remoteHistoryResponse{Data: points, Gaps: out})
 }
 
 // filterViolationsByRBAC removes violations the user cannot see. Uses "list pods"

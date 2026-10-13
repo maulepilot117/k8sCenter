@@ -116,6 +116,7 @@ func TestApiGroupForResource_KnownMappings(t *testing.T) {
 		{"nodes", ""},
 		{"services", ""},
 		{"persistentvolumeclaims", ""},
+		{"storageclasses", "storage.k8s.io"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.resource, func(t *testing.T) {

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { ApiError } from "@/lib/api.ts";
 import type { SourceCache, SourceFetcher } from "./data.ts";
 import {
+  classify,
   createSourceCache,
   DASHBOARD_FETCHERS,
   DASHBOARD_REFRESH_MS,
@@ -11,9 +12,11 @@ import {
   sourceRefreshOffsetMs,
 } from "./data.ts";
 import { sourceKeyFor } from "./params.ts";
+import { policyComplianceView } from "./severity.ts";
 import type { DataSourceKey } from "./types.ts";
 import {
   ABSENT_STATUSES,
+  AMBIGUOUS_REQUEST_STATUSES,
   DATA_SOURCE_KEYS,
   FAMILY_STATUS_KEYS,
   RANGE_SENSITIVE_KEYS,
@@ -1781,6 +1784,62 @@ test("an unsupported key is named in UNSUPPORTED_STATUSES, a remote or binding k
   }
 });
 
+// #608 PR 5a: the CNI read behind the Hubble card follows the selected
+// cluster, so a remote 501 from it is a real failure, never "not available on
+// remote". PR 5b: the flows read follows it too, from that cluster's relay.
+test("hubble-status and hubble-flows are served by the selected cluster", () => {
+  expect(REMOTE_BEHAVIOUR["hubble-status"]).toBe("remote");
+  expect("hubble-status" in UNSUPPORTED_STATUSES).toBe(false);
+  expect(classify(new ApiError(501, 501, "x"), "hubble-status")).toBe(
+    "failure",
+  );
+  expect(REMOTE_BEHAVIOUR["hubble-flows"]).toBe("remote");
+  expect("hubble-flows" in UNSUPPORTED_STATUSES).toBe(false);
+});
+
+/** An API error carrying a reason, as the flows route answers. */
+function reasoned(status: number, reason: string): ApiError {
+  return new ApiError(status, status, "server wording", {
+    error: { code: status, message: "server wording", reason },
+  });
+}
+
+// The flows route's 404 means two things, so its states key on the reason.
+test("hubble-flows relay states are classified by reason, not status", () => {
+  expect(classify(reasoned(404, "relay_not_found"), "hubble-flows")).toBe(
+    "absent",
+  );
+  expect(classify(reasoned(404, "cluster_unknown"), "hubble-flows")).toBe(
+    "failure",
+  );
+  expect(classify(reasoned(501, "relay_tls_unsupported"), "hubble-flows")).toBe(
+    "unsupported",
+  );
+  expect(classify(reasoned(503, "relay_not_ready"), "hubble-flows")).toBe(
+    "failure",
+  );
+  expect(classify(reasoned(429, "tunnel_limit"), "hubble-flows")).toBe(
+    "failure",
+  );
+  expect(classify(reasoned(403, "forbidden"), "hubble-flows")).toBe(
+    "permission",
+  );
+  // The reasons are the flows route's own: elsewhere a 404 stays a failure.
+  expect(classify(reasoned(404, "relay_not_found"), "hubble-status")).toBe(
+    "failure",
+  );
+});
+
+test("mesh-golden-signals is a binding source whose dual-mesh 400 has its own declaration", () => {
+  expect(REMOTE_BEHAVIOUR["mesh-golden-signals"]).toBe("binding");
+  expect("mesh-golden-signals" in UNSUPPORTED_STATUSES).toBe(false);
+  expect(AMBIGUOUS_REQUEST_STATUSES["mesh-golden-signals"]).toEqual([400]);
+  expect(
+    classify(new ApiError(400, 400, "both meshes"), "mesh-golden-signals"),
+  ).toBe("unsupported");
+  expect(classify(new ApiError(400, 400, "x"), "cluster-info")).toBe("failure");
+});
+
 test("a 404 metrics_not_configured answer is unsupported, with the not-configured message", async () => {
   const fetchers: Partial<Record<DataSourceKey, SourceFetcher>> = {
     "dashboard-trends": () =>
@@ -1812,4 +1871,56 @@ test("a 404 metrics_not_configured answer is unsupported, with the not-configure
   // A bare 404 stays an ordinary failure: the reason is what says "binding".
   expect(cache.state("cluster-info").errorKind).toBe("failure");
   expect(cache.state("top-consumers-cpu").errorKind).toBe("unsupported");
+});
+
+// #608 final slice: a remote cluster serves its own compliance history, and
+// the one state it cannot (no named identity) is told apart by reason.
+test("policy-compliance-history is served by the selected cluster", () => {
+  expect(REMOTE_BEHAVIOUR["policy-compliance-history"]).toBe("remote");
+  expect("policy-compliance-history" in UNSUPPORTED_STATUSES).toBe(false);
+  expect(
+    classify(new ApiError(501, 501, "x"), "policy-compliance-history"),
+  ).toBe("failure");
+});
+
+test("a 404 compliance_history_not_configured answer is unsupported, other 404s stay failures", () => {
+  expect(
+    classify(
+      reasoned(404, "compliance_history_not_configured"),
+      "policy-compliance-history",
+    ),
+  ).toBe("unsupported");
+  expect(
+    classify(reasoned(404, "cluster_unknown"), "policy-compliance-history"),
+  ).toBe("failure");
+  // The reason is this route's own: elsewhere it settles nothing.
+  expect(
+    classify(
+      reasoned(404, "compliance_history_not_configured"),
+      "hubble-status",
+    ),
+  ).toBe("failure");
+});
+
+test("the card's trend figure counts only points since the latest identity change", () => {
+  const pt = (score: number, identityChanged?: boolean) => ({
+    date: "2026-10-01",
+    score,
+    ...(identityChanged ? { identityChanged } : {}),
+  });
+  const score = { score: 60, total: 3 };
+  // 90 -> 10 before the switch must not enter the figure; 50 -> 60 does.
+  const view = policyComplianceView(score, [
+    pt(90),
+    pt(10),
+    pt(50, true),
+    pt(60),
+  ]);
+  expect(view.history.delta).toBe(10);
+  // A change on the very last point leaves one counted point: no trend yet.
+  expect(
+    policyComplianceView(score, [pt(90), pt(10, true)]).history.delta,
+  ).toBeNull();
+  // Local responses carry no marker and keep counting the whole window.
+  expect(policyComplianceView(score, [pt(40), pt(70)]).history.delta).toBe(30);
 });

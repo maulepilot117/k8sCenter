@@ -397,11 +397,18 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
-		// Hubble flow streaming targets the LOCAL cluster's CNI data plane
-		// for the same confused-deputy reason as logs.search.
-		// handle_ws_flows.go:61.
+		// Remote since #608 PR 5b: a remote cluster's flows, live and on the
+		// dashboard card, come from that cluster's own Hubble Relay, reached
+		// by port-forward through its API server as the user
+		// (networking/relay_tunnel.go), never from the local relay. Besides
+		// list pods in the flow namespace, which this probes, the user needs
+		// list daemonsets in kube-system and cilium (to find Cilium), and
+		// create pods/portforward, get services and list pods in the Cilium
+		// namespace; without them the stream is refused as forbidden. Only
+		// plaintext relays are supported: a relay serving TLS answers
+		// relay_tls_unsupported.
 		ID: "flows.stream", Label: "Network flow stream",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
@@ -518,11 +525,12 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "networking.istio.io", AuthResource: "virtualservices",
 	},
 	{
-		// Remote since U10 (#520), in part: posture is derived from the
-		// selected cluster's pods and policies, but the Prometheus metric
-		// cross-check is skipped and reported unavailable
-		// (servicemesh/handler.go HandleMTLSPosture,
-		// crossCheckUnavailableRemote). The README marks it Partial.
+		// Remote since U10 (#520): posture is derived from the selected
+		// cluster's pods and policies. The Istio Prometheus metric
+		// cross-check runs against the cluster's own metrics binding
+		// (PUT /clusters/{id}/metrics), and a cluster without one reports
+		// the cross-check unavailable (metrics_not_configured), never the
+		// local Prometheus (servicemesh/handler.go HandleMTLSPosture).
 		// AuthResource pods: posture is computed per pod.
 		ID: "mesh.mtls", Label: "Service mesh mTLS posture",
 		LocalSupported: true, RemoteSupported: true,
@@ -558,22 +566,49 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "kyverno.io", AuthResource: "policies",
 	},
 	{
-		// Cilium config is tied to the local installation, so reads and
-		// updates are refused on remote (R13, the P2-5 decision).
-		// networking/handler.go:171 and :234 (rejectNonLocal, 501). The
-		// config lives in the cilium-config ConfigMap.
+		// Remote since #608 PR 5a: the selected cluster's cilium-config is
+		// read and written as the user (networking/remote.go
+		// serveRemoteCNIConfig, updateRemoteCNIConfig), in the namespace
+		// that cluster's own detection found. A remote edit must carry the
+		// pin from its read: a missing pin is 428 cluster_pin_required, a
+		// stale one 409, and a write whose outcome is unknown answers
+		// outcome_unknown. The config lives in the cilium-config ConfigMap.
 		ID: "cni.config", Label: "Cilium CNI configuration",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// Golden signals come from the local Prometheus, which knows nothing
-		// of a remote cluster's traffic (R14). servicemesh/handler.go:834
-		// (HandleGoldenSignals answers with reason unsupported_platform and
-		// queries nothing). AuthVerb "list" pods mirrors the handler's own
-		// namespace check.
+		// Remote since #608 PR 5a: the CNI overview, BGP, IPAM and subsystem
+		// panels read the selected cluster as the user (networking/remote.go
+		// remoteCNI, serveRemoteBGP, serveRemoteSubsystems), never the local
+		// Detector or an informer. An answer that cannot be read is reported
+		// as such, never as "not configured", and a CRD list the cluster
+		// refuses is a coverage row, never zero counts. Detection reads the
+		// CNI DaemonSet, so "list daemonsets" is the representative probe.
+		ID: "cilium.status", Label: "Cilium status, BGP and IPAM",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "list", AuthGroup: "apps", AuthResource: "daemonsets",
+	},
+	{
+		// Remote since #608 PR 5a: the connectivity check and the subsystem
+		// agent data exec into the selected cluster's Cilium agent pods as
+		// the user, through the strict stream transport
+		// (networking/agent_exec_remote.go), under the same
+		// ciliumAgent.execEnabled setting as local. A failed exec is shown
+		// as an exec problem per node, not as ill health. Same "pods/exec"
+		// subresource caveat as pod.exec above.
+		ID: "cilium.connectivity", Label: "Cilium node connectivity check",
+		LocalSupported: true, RemoteSupported: true,
+		AuthVerb: "create", AuthGroup: "", AuthResource: "pods/exec",
+	},
+	{
+		// Remote since #608 PR 4b: golden signals are queried through the
+		// selected cluster's metrics binding (PUT /clusters/{id}/metrics),
+		// never the local Prometheus. A cluster without a binding answers
+		// 200 with reason metrics_not_configured and no figures. AuthVerb
+		// "list" pods mirrors the handler's own namespace check.
 		ID: "mesh.golden_signals", Label: "Service mesh golden signals",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
@@ -617,12 +652,14 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
-		// Compliance snapshots are taken by the local ComplianceRecorder of
-		// the local cluster only (R14). policy/handler.go
-		// HandleComplianceHistory (501 remote_history_unsupported, before
-		// the store is read).
+		// Remote since #608: each remote cluster records its own daily
+		// snapshot, taken by impersonating the background identity an admin
+		// names on the cluster (PUT /clusters/{id}/compliance-identity;
+		// policy/remote_recorder.go). Without one, history answers 404
+		// compliance_history_not_configured. The registration credential must
+		// be allowed to impersonate that identity.
 		ID: "policy.compliance_history", Label: "Policy compliance history",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "kyverno.io", AuthResource: "policies",
 	},
 	{

@@ -24,6 +24,11 @@ type CiliumConfig struct {
 	ConfigMapNamespace string            `json:"configMapNamespace"`
 	Editable           bool              `json:"editable"`
 	Config             map[string]string `json:"config"`
+	// TargetCluster and TargetGeneration pin an edit to the cluster this
+	// config was read from (#608 KTD6). The editor sends them back on PUT;
+	// a remote PUT without them is refused.
+	TargetCluster    string `json:"targetCluster,omitempty"`
+	TargetGeneration string `json:"targetGeneration,omitempty"`
 }
 
 // ReadCiliumConfig reads the cilium-config ConfigMap using the provided clientset.

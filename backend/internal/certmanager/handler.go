@@ -62,6 +62,11 @@ type Handler struct {
 	// fetches once. Keying on identity means one identity's view, or its
 	// error, is never served to another.
 	remote *remotecache.Cache[*remoteSnapshot]
+
+	// peeked holds the last remote snapshot per (cluster, identity) for up to
+	// peekStaleness, so the dashboard's 60s poll finds one the 30s remote
+	// cache has already dropped (remote.go remoteExpiry).
+	peeked remotePeek
 }
 
 type cachedData struct {

@@ -82,6 +82,8 @@ test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistenc
     "alert.rules",
     "certmanager.certificates",
     "changes.receipts",
+    "cilium.connectivity",
+    "cilium.status",
     "cluster.info",
     "cni.config",
     "dashboard.summary",

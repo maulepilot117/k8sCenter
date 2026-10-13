@@ -18,14 +18,15 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/store"
+	"github.com/kubecenter/kubecenter/internal/urlorigin"
 )
 
 // clusterMetricsStore is the subset of *store.ClusterMetricsStore the
 // metrics-binding handlers use. It is declared here so tests can substitute
 // a fake for the PostgreSQL-backed store.
 type clusterMetricsStore interface {
-	Get(ctx context.Context, clusterID string) (store.MetricsBinding, string, error)
-	Upsert(ctx context.Context, clusterID, prometheusURL, alertmanagerURL string, token *string, keptFrom string) (store.MetricsBinding, error)
+	Get(ctx context.Context, clusterID string) (store.MetricsBinding, store.MetricsTokens, error)
+	Upsert(ctx context.Context, clusterID string, w store.MetricsBindingWrite) (store.MetricsBinding, error)
 	Delete(ctx context.Context, clusterID string) error
 }
 
@@ -47,28 +48,39 @@ const (
 	msgClusterRegistryFailure = "the cluster registry is unavailable"
 	msgMetricsTokenReentry    = "the token must be re-entered when the Prometheus URL changes"
 	msgMetricsBindingChanged  = "the metrics binding was changed by another save; reload it and try again"
+
+	msgAlertmanagerUnreachable  = "could not reach Alertmanager at the given URL"
+	msgAlertmanagerTokenReentry = "the Alertmanager token must be re-entered when the Alertmanager URL changes host"
+	msgAlertmanagerTokenNoURL   = "alertmanagerToken requires alertmanagerUrl"
 )
 
 // maxMetricsTokenBytes matches the cluster-registration token limit.
 const maxMetricsTokenBytes = 65536
 
 // metricsBindingResponse is the wire shape of GET/PUT /clusters/{id}/metrics.
-// The token is never part of it; hasToken only reports that one is stored.
+// Neither token is ever part of it. hasToken and hasAlertmanagerToken only
+// report that a usable one is stored; alertmanagerTokenStale reports a stored
+// Alertmanager token that was entered for another origin and must be entered
+// again before it is used.
 type metricsBindingResponse struct {
-	ClusterID       string    `json:"clusterId"`
-	PrometheusURL   string    `json:"prometheusUrl"`
-	HasToken        bool      `json:"hasToken"`
-	AlertmanagerURL string    `json:"alertmanagerUrl"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ClusterID              string    `json:"clusterId"`
+	PrometheusURL          string    `json:"prometheusUrl"`
+	HasToken               bool      `json:"hasToken"`
+	AlertmanagerURL        string    `json:"alertmanagerUrl"`
+	HasAlertmanagerToken   bool      `json:"hasAlertmanagerToken"`
+	AlertmanagerTokenStale bool      `json:"alertmanagerTokenStale"`
+	UpdatedAt              time.Time `json:"updatedAt"`
 }
 
 func toMetricsBindingResponse(b store.MetricsBinding) metricsBindingResponse {
 	return metricsBindingResponse{
-		ClusterID:       b.ClusterID,
-		PrometheusURL:   b.PrometheusURL,
-		HasToken:        b.HasToken,
-		AlertmanagerURL: b.AlertmanagerURL,
-		UpdatedAt:       b.UpdatedAt,
+		ClusterID:              b.ClusterID,
+		PrometheusURL:          b.PrometheusURL,
+		HasToken:               b.HasToken,
+		AlertmanagerURL:        b.AlertmanagerURL,
+		HasAlertmanagerToken:   b.HasAlertmanagerToken,
+		AlertmanagerTokenStale: b.AlertmanagerTokenStale,
+		UpdatedAt:              b.UpdatedAt,
 	}
 }
 
@@ -145,19 +157,23 @@ func (s *Server) handleGetClusterMetrics(w http.ResponseWriter, r *http.Request)
 	httputil.WriteData(w, toMetricsBindingResponse(b))
 }
 
-// metricsBindingRequest is the PUT body. Token is a pointer so an omitted
-// (or null) token can be told apart from an explicit "": omitted keeps the
-// stored token, "" clears it, anything else replaces it.
+// metricsBindingRequest is the PUT body. Each token is a pointer so an
+// omitted (or null) token can be told apart from an explicit "": omitted
+// keeps the stored token, "" clears it, anything else replaces it. Token is
+// the Prometheus token; AlertmanagerToken is only ever sent to the
+// Alertmanager.
 type metricsBindingRequest struct {
-	PrometheusURL   string  `json:"prometheusUrl"`
-	Token           *string `json:"token"`
-	AlertmanagerURL string  `json:"alertmanagerUrl"`
+	PrometheusURL     string  `json:"prometheusUrl"`
+	Token             *string `json:"token"`
+	AlertmanagerURL   string  `json:"alertmanagerUrl"`
+	AlertmanagerToken *string `json:"alertmanagerToken"`
 }
 
 // validateMetricsURL applies the remote API server URL rule to a binding
-// URL: https, a host, no embedded credentials, and an address that is not
-// private, loopback, link-local or otherwise reserved. It returns the fixed
-// client message, or "" when the URL is acceptable.
+// URL: https, a host, no embedded credentials, no query string or fragment
+// (each client appends its own API path and query), and an address that is
+// not private, loopback, link-local or otherwise reserved. It returns the
+// fixed client message, or "" when the URL is acceptable.
 func validateMetricsURL(field, raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
@@ -166,30 +182,27 @@ func validateMetricsURL(field, raw string) string {
 	if u.User != nil {
 		return field + " must not contain credentials; send the token separately"
 	}
+	if strings.ContainsAny(raw, "?#") {
+		return field + " must not contain a query string or fragment"
+	}
 	if err := k8s.ValidateRemoteURL(raw); err != nil {
 		return field + " resolves to a private or reserved address"
 	}
 	return ""
 }
 
-// sameMetricsOrigin reports whether two Prometheus URLs share a scheme and a
-// host (port included), compared case-insensitively. A stored token may only
-// follow a binding edit that stays on the same origin. An unparsable or
-// host-less URL never matches.
-func sameMetricsOrigin(stored, next string) bool {
-	a, err := url.Parse(stored)
-	if err != nil || a.Host == "" {
-		return false
-	}
-	b, err := url.Parse(next)
-	if err != nil || b.Host == "" {
-		return false
-	}
-	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+// sameOrigin reports whether next is on the same origin as stored, per
+// urlorigin.Of (scheme and host with port, compared case-insensitively). A
+// URL without an origin never matches.
+func sameOrigin(stored, next string) bool {
+	o := urlorigin.Of(next)
+	return o != "" && o == urlorigin.Of(stored)
 }
 
 // handlePutClusterMetrics answers PUT /clusters/{clusterID}/metrics: it
-// validates the binding, probes the Prometheus it names, then stores it.
+// validates the binding, refuses an edit that would carry a stored token to
+// another origin, probes the Prometheus and (when new or changed) the
+// Alertmanager it names, then stores it.
 func (s *Server) handlePutClusterMetrics(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "clusterID")
 
@@ -224,35 +237,67 @@ func (s *Server) handlePutClusterMetrics(w http.ResponseWriter, r *http.Request)
 		httputil.WriteError(w, http.StatusBadRequest, "token too large (max 64KB)", "")
 		return
 	}
+	if req.AlertmanagerToken != nil {
+		if *req.AlertmanagerToken != "" && req.AlertmanagerURL == "" {
+			httputil.WriteError(w, http.StatusBadRequest, msgAlertmanagerTokenNoURL, "")
+			return
+		}
+		if len(*req.AlertmanagerToken) > maxMetricsTokenBytes {
+			httputil.WriteError(w, http.StatusBadRequest, "alertmanagerToken too large (max 64KB)", "")
+			return
+		}
+	}
 
-	// The probe uses the token the binding will hold after the write: the
-	// stored one when the request omits it. The stored token is only ever
-	// sent to the scheme and host it was entered for; moving the binding
-	// elsewhere requires the token again, refused before any probe so a
-	// changed URL cannot be used to exfiltrate it.
+	// Each probe uses the token the binding will hold after the write: the
+	// stored one when the request omits it. A stored token is only ever sent
+	// to the origin it was entered for; moving its URL elsewhere requires the
+	// token again. Both checks run before either probe, so a changed URL
+	// cannot be used to exfiltrate a token, and each probe's token comes only
+	// from its own check.
 	//
-	// keptFrom is the stored URL this check was made against. The write
-	// keeps the token only while the binding still has that URL, so a save
-	// that moved the binding and its token elsewhere during the probe makes
-	// this one fail with 409 rather than pair this URL with that token.
-	probeToken := ""
-	keptFrom := ""
+	// keptFrom and keptAMFrom are the stored URLs the checks were made
+	// against. The write keeps an omitted token only while the binding still
+	// has its URL, so a save that moved the binding (and a token) elsewhere
+	// during the probes makes this one fail with 409 rather than pair this
+	// save's host with that save's token.
+	probeToken, amProbeToken := "", ""
+	keptFrom, keptAMFrom := "", ""
 	if req.Token != nil {
 		probeToken = *req.Token
-	} else {
+	}
+	if req.AlertmanagerToken != nil {
+		amProbeToken = *req.AlertmanagerToken
+	}
+	if req.Token == nil || req.AlertmanagerToken == nil {
 		current, stored, err := s.ClusterMetricsStore.Get(r.Context(), id)
-		keptFrom = current.PrometheusURL
-		switch {
-		case errors.Is(err, store.ErrMetricsBindingNotFound):
-		case err != nil:
-			s.Logger.Error("metrics binding: reading stored token failed", "cluster", id, "error", err)
+		if err != nil && !errors.Is(err, store.ErrMetricsBindingNotFound) {
+			s.Logger.Error("metrics binding: reading stored tokens failed", "cluster", id, "error", err)
 			httputil.WriteError(w, http.StatusServiceUnavailable, msgMetricsStoreFailed, "")
 			return
-		case stored != "" && !sameMetricsOrigin(current.PrometheusURL, req.PrometheusURL):
-			httputil.WriteError(w, http.StatusBadRequest, msgMetricsTokenReentry, "")
-			return
-		default:
-			probeToken = stored
+		}
+		keptFrom, keptAMFrom = current.PrometheusURL, current.AlertmanagerURL
+
+		if req.Token == nil {
+			if stored.Prometheus != "" && !sameOrigin(current.PrometheusURL, req.PrometheusURL) {
+				httputil.WriteError(w, http.StatusBadRequest, msgMetricsTokenReentry, "")
+				return
+			}
+			probeToken = stored.Prometheus
+		}
+
+		// The store reports a usable Alertmanager token only while its stored
+		// origin is the current URL's origin, so comparing the request URL's
+		// origin with the current URL's is comparing it with the token's. A
+		// stale token (entered for another origin, as when a previous-release
+		// pod moved the URL) always needs re-entry. An empty URL clears the
+		// token, so it has nothing to check.
+		if req.AlertmanagerToken == nil && req.AlertmanagerURL != "" {
+			if current.AlertmanagerTokenStale ||
+				(current.HasAlertmanagerToken && !sameOrigin(current.AlertmanagerURL, req.AlertmanagerURL)) {
+				httputil.WriteError(w, http.StatusBadRequest, msgAlertmanagerTokenReentry, "")
+				return
+			}
+			amProbeToken = stored.Alertmanager
 		}
 	}
 
@@ -266,7 +311,29 @@ func (s *Server) handlePutClusterMetrics(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	b, err := s.ClusterMetricsStore.Upsert(r.Context(), id, req.PrometheusURL, req.AlertmanagerURL, req.Token, keptFrom)
+	// The Alertmanager is probed only when its URL or token is new or
+	// changed, so a Prometheus-only edit does not depend on it.
+	if req.AlertmanagerURL != "" && (req.AlertmanagerToken != nil || req.AlertmanagerURL != keptAMFrom) {
+		amProbe := s.probeAlertmanager
+		if amProbe == nil {
+			amProbe = monitoring.ProbeAlertmanager
+		}
+		if err := amProbe(r.Context(), req.AlertmanagerURL, amProbeToken); err != nil {
+			s.Logger.Warn("metrics binding: alertmanager probe failed", "cluster", id, "error", err)
+			httputil.WriteErrorWithReason(w, http.StatusBadGateway, msgAlertmanagerUnreachable, string(k8s.ReasonUnreachable), nil)
+			return
+		}
+	}
+
+	b, err := s.ClusterMetricsStore.Upsert(r.Context(), id, store.MetricsBindingWrite{
+		PrometheusURL:           req.PrometheusURL,
+		AlertmanagerURL:         req.AlertmanagerURL,
+		PrometheusToken:         req.Token,
+		AlertmanagerToken:       req.AlertmanagerToken,
+		AlertmanagerTokenOrigin: urlorigin.Of(req.AlertmanagerURL),
+		KeptFrom:                keptFrom,
+		KeptAMFrom:              keptAMFrom,
+	})
 	if errors.Is(err, store.ErrMetricsBindingChanged) {
 		httputil.WriteError(w, http.StatusConflict, msgMetricsBindingChanged, "")
 		return

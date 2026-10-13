@@ -265,11 +265,20 @@ var (
 		"topology.graph", "diagnostics.read",
 		// #608 PR 4a: served from the cluster's metrics binding.
 		"monitoring.query", "dashboard.trends",
+		// #608 PR 4b: queried through the cluster's metrics binding.
+		"mesh.golden_signals",
+		// #608 PR 5a: Cilium views read, and the config is written, on the
+		// selected cluster as the user; agent exec runs as the user there.
+		"cni.config", "cilium.status", "cilium.connectivity",
+		// #608 PR 5b: flows come from the selected cluster's own relay.
+		"flows.stream",
+		// #608: snapshots taken as each cluster's background identity.
+		"policy.compliance_history",
 	}
 	wantRemoteUnsupported = []string{
-		"pod.exec", "logs.stream", "logs.search", "flows.stream", "eso.write",
-		"cni.config", "mesh.golden_signals", "eso.history", "eso.metrics",
-		"policy.compliance_history", "velero.assurance",
+		"pod.exec", "logs.stream", "logs.search", "eso.write",
+		"eso.history", "eso.metrics",
+		"velero.assurance",
 		"incidents.capture",
 	}
 )

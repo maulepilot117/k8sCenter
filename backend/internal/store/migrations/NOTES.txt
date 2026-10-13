@@ -713,3 +713,99 @@ Inspect:
       FROM cluster_monitoring
      WHERE COALESCE(prometheus_url, '') <> ''
      ORDER BY cluster_id;
+
+
+000028_cluster_alertmanager_token (#608 PR 4b, remote Alertmanager token, 2026-10-11)
+------------------------------------------------------------------------------
+
+Adds two nullable columns to cluster_monitoring: alertmanager_token (BYTEA) and
+alertmanager_token_origin (TEXT). Purely additive: no backfill.
+
+What it is for:
+  A remote cluster's metrics binding may carry its own Alertmanager bearer
+  token, separate from the Prometheus token. alertmanager_token is AES-256-GCM
+  encrypted with the same master secret as the cluster credentials
+  (store.Encrypt) and is never returned by the API. alertmanager_token_origin
+  records the origin of the Alertmanager URL the token was entered for. The
+  store returns the token only while alertmanager_url is non-empty and its
+  origin equals the stored origin; an empty or NULL origin or URL means no
+  token. That check lives in the store read, not only in the writers, so a
+  previous-release pod that moves or clears alertmanager_url during a rolling
+  update or rollback cannot cause the token to be sent to another host.
+
+Lock impact:
+  The table has rows (bindings written since PR 4a). ADD COLUMN of nullable
+  columns with no default is catalog-only: no rewrite, and the ACCESS
+  EXCLUSIVE lock is brief.
+
+Rollback:
+  Stop every pod of this release first, because its binding read names the new
+  columns. Then either
+    (a) leave the columns in place (recommended): the previous release never
+        names them, and the store's origin check keeps a leftover token
+        unusable, or
+    (b) run the 000028 down file, which drops both columns; every Alertmanager
+        token must then be re-entered.
+  Then reset the recorded version:
+    UPDATE schema_migrations SET version = 27, dirty = false;
+  A later roll-forward re-runs the up file without error (ADD COLUMN IF NOT
+  EXISTS, COMMENT ON). Bindings keep their cluster_id, prometheus_url,
+  prometheus_token and alertmanager_url either way.
+  TestMigration000028_RoundTripKeepsBindings covers up, down and re-apply.
+
+Inspect:
+    SELECT cluster_id, alertmanager_url,
+           alertmanager_token IS NOT NULL AS has_token,
+           alertmanager_token_origin
+      FROM cluster_monitoring
+     WHERE COALESCE(alertmanager_url, '') <> ''
+     ORDER BY cluster_id;
+
+
+000029_compliance_identity_and_gaps (#608 final slice, remote compliance history, 2026-10-12)
+------------------------------------------------------------------------------
+
+Creates two tables and one sequence: cluster_compliance_identity (the
+username and groups a remote cluster's daily compliance snapshot impersonates),
+compliance_snapshot_gaps (days a snapshot could not be taken, with a reason)
+and cluster_compliance_identity_revision_seq. compliance_snapshots is not
+touched. Purely additive: no backfill.
+
+What it is for:
+  A remote cluster's compliance history is recorded in the background as a
+  stored identity, never as the registration credential. The identity row is
+  keyed by cluster id with ON DELETE CASCADE, so it goes with the cluster. It
+  is not a secret, so it is not encrypted. Its revision comes from the
+  sequence and is drawn only when the username or groups change; it is never
+  reused, so a clear followed by a re-name always yields a higher revision. A
+  snapshot or gap write carries the revision it was taken with and lands only
+  while that revision is still current. compliance_snapshot_gaps has no
+  foreign key (compliance_snapshots has none either): the cluster delete
+  removes its rows in the same transaction as the snapshots.
+
+Lock impact:
+  CREATE of new tables and a sequence takes no lock on existing tables. The
+  FK to clusters takes a brief SHARE ROW EXCLUSIVE lock on clusters at create
+  time; both new tables are empty.
+
+Rollback:
+  Stop every pod of this release first, because the recorder and the history
+  route read these tables. Then either
+    (a) leave the tables in place (recommended): the previous release never
+        names them, or
+    (b) run the 000029 down file, which drops both tables and the sequence;
+        every stored identity and gap is lost and each identity must be saved
+        again after a roll-forward.
+  Then reset the recorded version:
+    UPDATE schema_migrations SET version = 28, dirty = false;
+  A later roll-forward re-runs the up file without error (IF NOT EXISTS,
+  COMMENT ON). Existing compliance_snapshots rows are kept either way.
+  TestMigration000029_RoundTripKeepsSnapshots covers up, down and re-apply.
+
+Inspect:
+    SELECT cluster_id, username, groups, revision, updated_by, updated_at
+      FROM cluster_compliance_identity
+     ORDER BY cluster_id;
+    SELECT cluster_id, snapshot_date, reason, identity_revision
+      FROM compliance_snapshot_gaps
+     ORDER BY cluster_id, snapshot_date DESC;

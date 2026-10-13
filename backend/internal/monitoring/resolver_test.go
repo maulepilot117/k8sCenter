@@ -545,3 +545,312 @@ func TestClientResolver_RemoteDoesNotFollowRedirectToPlainHTTP(t *testing.T) {
 		t.Fatalf("want only the original https request on the wire, got %q", got)
 	}
 }
+
+// twoTokenBinding binds remote-1 to prom with the Prometheus token and to am
+// with the Alertmanager token.
+func twoTokenBinding(prom *fakePrometheus, am *fakeAlertmanager) MetricsBinding {
+	return MetricsBinding{
+		ClusterID:         "remote-1",
+		PrometheusURL:     prom.srv.URL,
+		Token:             "prom-tok",
+		AlertmanagerURL:   am.srv.URL,
+		AlertmanagerToken: "am-tok",
+	}
+}
+
+// Each token reaches only its own host: the Alertmanager never sees the
+// Prometheus token, and the Prometheus never sees the Alertmanager token.
+func TestClientResolver_EachTokenReachesOnlyItsOwnHost(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	am := newFakeAlertmanager(t, amList(amAlert("A", "critical", "active")))
+	b := &fakeBindings{}
+	b.set("remote-1", twoTokenBinding(prom, am))
+	r := newTestResolver(nil, b)
+
+	pc, err := r.PrometheusFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("PrometheusFor: %v", err)
+	}
+	if _, _, err := pc.Query(context.Background(), "up", time.Now()); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	ac, err := r.AlertmanagerFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("AlertmanagerFor: %v", err)
+	}
+	counts, err := ac.Counts(context.Background())
+	if err != nil {
+		t.Fatalf("Counts: %v", err)
+	}
+	if counts != (AlertCounts{Active: 1, Critical: 1}) {
+		t.Fatalf("counts = %+v; want 1 active, 1 critical", counts)
+	}
+
+	if got := prom.auth(); got != "Bearer prom-tok" {
+		t.Errorf("Prometheus Authorization = %q; want only the Prometheus token", got)
+	}
+	if got, _, _ := am.last(); got != "Bearer am-tok" {
+		t.Errorf("Alertmanager Authorization = %q; want only the Alertmanager token", got)
+	}
+	if got := b.reads.Load(); got != 1 {
+		t.Errorf("binding reads = %d; both clients come from one read", got)
+	}
+}
+
+// AE5: a stored Alertmanager token whose origin no longer matches is never
+// sent. The resolver answers the re-entry error without a request, and the
+// Prometheus client is unaffected.
+func TestClientResolver_StaleAlertmanagerTokenNeedsReentry(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	am := newFakeAlertmanager(t, "[]")
+	b := &fakeBindings{}
+	b.set("remote-1", MetricsBinding{
+		ClusterID:              "remote-1",
+		PrometheusURL:          prom.srv.URL,
+		Token:                  "prom-tok",
+		AlertmanagerURL:        am.srv.URL,
+		AlertmanagerTokenStale: true,
+	})
+	r := newTestResolver(nil, b)
+
+	_, err := r.AlertmanagerFor(context.Background(), "remote-1")
+	if !errors.Is(err, ErrAlertmanagerTokenReentry) {
+		t.Fatalf("AlertmanagerFor err = %v; want ErrAlertmanagerTokenReentry", err)
+	}
+	if am.hits.Load() != 0 {
+		t.Fatal("a request reached the Alertmanager although its token must be re-entered")
+	}
+
+	pc, err := r.PrometheusFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("PrometheusFor: %v", err)
+	}
+	if _, _, err := pc.Query(context.Background(), "up", time.Now()); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got := prom.auth(); got != "Bearer prom-tok" {
+		t.Errorf("Prometheus Authorization = %q; want Bearer prom-tok", got)
+	}
+}
+
+func TestClientResolver_AlertmanagerNotBound(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	b := &fakeBindings{}
+	b.set("remote-1", MetricsBinding{ClusterID: "remote-1", PrometheusURL: prom.srv.URL})
+	r := newTestResolver(nil, b)
+
+	if _, err := r.AlertmanagerFor(context.Background(), "remote-1"); !errors.Is(err, ErrNoAlertmanager) {
+		t.Fatalf("no Alertmanager URL: err = %v; want ErrNoAlertmanager", err)
+	}
+	if _, err := r.PrometheusFor(context.Background(), "remote-1"); err != nil {
+		t.Fatalf("a missing Alertmanager must not fail PrometheusFor: %v", err)
+	}
+
+	if _, err := r.AlertmanagerFor(context.Background(), "remote-2"); !errors.Is(err, ErrNoMetricsBinding) {
+		t.Fatalf("no binding: err = %v; want ErrNoMetricsBinding", err)
+	}
+	if _, err := newTestResolver(nil, nil).AlertmanagerFor(context.Background(), "remote-1"); !errors.Is(err, ErrNoMetricsBinding) {
+		t.Fatalf("no-database resolver: err = %v; want ErrNoMetricsBinding", err)
+	}
+}
+
+// The local cluster's alerts come from the webhook alert store, so the
+// resolver never answers it with a bound Alertmanager or reads a binding.
+func TestClientResolver_LocalHasNoBoundAlertmanager(t *testing.T) {
+	b := &fakeBindings{}
+	r := newTestResolver(nil, b)
+	for _, id := range []string{"", "local"} {
+		if _, err := r.AlertmanagerFor(context.Background(), id); !errors.Is(err, ErrNoAlertmanager) {
+			t.Fatalf("cluster %q: err = %v; want ErrNoAlertmanager", id, err)
+		}
+	}
+	if b.reads.Load() != 0 {
+		t.Fatal("the local cluster read a metrics binding")
+	}
+}
+
+func TestClientResolver_EvictDropsBothClients(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	am := newFakeAlertmanager(t, "[]")
+	b := &fakeBindings{}
+	b.set("remote-1", twoTokenBinding(prom, am))
+	r := newTestResolver(nil, b)
+
+	firstProm, err := r.PrometheusFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("PrometheusFor: %v", err)
+	}
+	if _, err := r.AlertmanagerFor(context.Background(), "remote-1"); err != nil {
+		t.Fatalf("AlertmanagerFor: %v", err)
+	}
+
+	b.set("remote-1", MetricsBinding{ClusterID: "remote-1", PrometheusURL: prom.srv.URL})
+	r.Evict("remote-1")
+
+	if _, err := r.AlertmanagerFor(context.Background(), "remote-1"); !errors.Is(err, ErrNoAlertmanager) {
+		t.Fatalf("after Evict: err = %v; want ErrNoAlertmanager from the new binding", err)
+	}
+	secondProm, err := r.PrometheusFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("PrometheusFor after Evict: %v", err)
+	}
+	if secondProm == firstProm {
+		t.Fatal("Evict kept the old Prometheus client")
+	}
+	if got := b.reads.Load(); got != 2 {
+		t.Fatalf("binding reads = %d; want one before and one after Evict", got)
+	}
+}
+
+func TestClientResolver_EvictDuringReadDoesNotReinstateAlertmanager(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	am := newFakeAlertmanager(t, "[]")
+	b := &blockingBindings{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		binding: twoTokenBinding(prom, am),
+	}
+	r := newTestResolver(nil, b)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = r.AlertmanagerFor(context.Background(), "remote-1")
+	}()
+	<-b.started
+	r.Evict("remote-1") // the Alertmanager was unbound while the read was in flight
+	close(b.release)
+	<-done
+	b.binding = MetricsBinding{ClusterID: "remote-1", PrometheusURL: prom.srv.URL}
+
+	if _, err := r.AlertmanagerFor(context.Background(), "remote-1"); !errors.Is(err, ErrNoAlertmanager) {
+		t.Fatalf("err = %v; a read that began before Evict must not be cached", err)
+	}
+	if got := b.reads.Load(); got != 2 {
+		t.Fatalf("binding reads = %d; want 2", got)
+	}
+}
+
+// TestClientResolver_ProductionAlertmanagerTransportIsStrict proves a
+// resolver built by NewClientResolver dials the Alertmanager through the
+// strict transport.
+func TestClientResolver_ProductionAlertmanagerTransportIsStrict(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	am := newFakeAlertmanager(t, "[]")
+	b := &fakeBindings{}
+	b.set("remote-1", twoTokenBinding(prom, am))
+	r := NewClientResolver(nil, b, testLogger())
+
+	ac, err := r.AlertmanagerFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("AlertmanagerFor: %v", err)
+	}
+	if _, err := ac.Counts(context.Background()); !errors.Is(err, ErrAlertmanagerUnreachable) {
+		t.Fatalf("err = %v; the strict transport must refuse a loopback Alertmanager", err)
+	}
+	if am.hits.Load() != 0 {
+		t.Fatal("the Alertmanager client reached a loopback address")
+	}
+}
+
+// revisionBindings is fakeBindings that also reports revisions, like the
+// production store adapter. A binding's revision is its Revision field;
+// revErr, when set, fails every revision read.
+type revisionBindings struct {
+	*fakeBindings
+	revReads atomic.Int32
+	revErr   error
+}
+
+func (b *revisionBindings) MetricsBindingRevision(ctx context.Context, clusterID string) (time.Time, error) {
+	b.revReads.Add(1)
+	if b.revErr != nil {
+		return time.Time{}, b.revErr
+	}
+	got, err := b.fakeBindings.GetMetricsBinding(ctx, clusterID)
+	b.fakeBindings.reads.Add(-1) // a revision read is not a binding read
+	if err != nil {
+		return time.Time{}, err
+	}
+	return got.Revision, nil
+}
+
+// A binding written by another pod (no Evict here) is picked up on the next
+// read: while the revision is unchanged the cached clients are reused with
+// no binding read; once it moves, the next read rebuilds from the new binding
+// and the old Alertmanager gets no further request.
+func TestClientResolver_RevisionChangeFromAnotherPodRebuildsClients(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	oldAM := newFakeAlertmanager(t, "[]")
+	newAM := newFakeAlertmanager(t, amList(amAlert("A", "critical", "active")))
+	rev1 := time.Unix(1_700_000_000, 0)
+	b := &revisionBindings{fakeBindings: &fakeBindings{}}
+	bind := twoTokenBinding(prom, oldAM)
+	bind.Revision = rev1
+	b.set("remote-1", bind)
+	r := newTestResolver(nil, b)
+
+	first, err := r.AlertmanagerFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("AlertmanagerFor: %v", err)
+	}
+	again, err := r.AlertmanagerFor(context.Background(), "remote-1")
+	if err != nil || again != first {
+		t.Fatalf("unchanged revision: got (%p, %v); want the cached client %p", again, err, first)
+	}
+	if b.reads.Load() != 1 || b.revReads.Load() != 1 {
+		t.Fatalf("unchanged revision: binding reads=%d revision reads=%d; want 1 and 1", b.reads.Load(), b.revReads.Load())
+	}
+
+	moved := twoTokenBinding(prom, newAM)
+	moved.Revision = rev1.Add(time.Millisecond)
+	b.set("remote-1", moved)
+
+	ac, err := r.AlertmanagerFor(context.Background(), "remote-1")
+	if err != nil {
+		t.Fatalf("AlertmanagerFor after the move: %v", err)
+	}
+	if ac == first || b.reads.Load() != 2 {
+		t.Fatalf("moved revision: want a rebuilt client and a second binding read, got reads=%d same=%v", b.reads.Load(), ac == first)
+	}
+	if counts, err := ac.Counts(context.Background()); err != nil || counts.Active != 1 {
+		t.Fatalf("Counts = (%+v, %v); want the new Alertmanager's one alert", counts, err)
+	}
+	if hits := oldAM.hits.Load(); hits != 0 {
+		t.Errorf("the old Alertmanager received %d requests after the binding moved", hits)
+	}
+}
+
+// A binding deleted by another pod answers as unbound on the next read and
+// drops the cached entry; a revision that cannot be read fails the read
+// rather than serving a client the binding may no longer name.
+func TestClientResolver_RevisionReadFailsClosed(t *testing.T) {
+	prom := newFakePrometheus(t, "1")
+	b := &revisionBindings{fakeBindings: &fakeBindings{}}
+	b.set("remote-1", MetricsBinding{ClusterID: "remote-1", PrometheusURL: prom.srv.URL, Revision: time.Unix(1_700_000_000, 0)})
+	r := newTestResolver(nil, b)
+
+	if _, err := r.PrometheusFor(context.Background(), "remote-1"); err != nil {
+		t.Fatalf("PrometheusFor: %v", err)
+	}
+
+	dbErr := errors.New("database unavailable")
+	b.revErr = dbErr
+	if pc, err := r.PrometheusFor(context.Background(), "remote-1"); !errors.Is(err, dbErr) || pc != nil {
+		t.Fatalf("revision read failure: got (%v, %v); want no client and the reader's error", pc, err)
+	}
+	b.revErr = nil
+
+	b.mu.Lock()
+	delete(b.bindings, "remote-1")
+	b.mu.Unlock()
+	if _, err := r.PrometheusFor(context.Background(), "remote-1"); !errors.Is(err, ErrNoMetricsBinding) {
+		t.Fatalf("deleted binding: err = %v; want ErrNoMetricsBinding", err)
+	}
+	r.mu.Lock()
+	_, cached := r.cache["remote-1"]
+	r.mu.Unlock()
+	if cached {
+		t.Error("the deleted binding's clients are still cached")
+	}
+}
