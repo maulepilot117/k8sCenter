@@ -73,7 +73,7 @@ jobs:
         # Persist the failing corpus as a downloadable artifact so the input can
         # be committed as a regression seed. SHA pinned to the same version e2e.yml
         # already uses (supply-chain cooldown: already vetted in-repo).
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-crash-${{ matrix.target }}
           path: backend/internal/**/testdata/fuzz/${{ matrix.target }}/**
