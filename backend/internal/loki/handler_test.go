@@ -105,6 +105,28 @@ func TestLokiREST_RemoteClusterRefused(t *testing.T) {
 	}
 }
 
+// TestLokiREST_RemoteRefusedWithoutLocalLoki verifies the remote refusal
+// comes before the local-availability check: on a server with no Loki of
+// its own, a remote request still gets the remote-unsupported reason, not
+// "Loki is not available", which would wrongly suggest installing it.
+func TestLokiREST_RemoteRefusedWithoutLocalLoki(t *testing.T) {
+	h := &Handler{
+		Discoverer:    NewDiscoverer(nil, config.LokiConfig{}, slog.New(slog.NewTextHandler(io.Discard, nil))),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	for name, fn := range map[string]http.HandlerFunc{
+		"query":        h.HandleQuery,
+		"labels":       h.HandleLabels,
+		"label values": h.HandleLabelValues,
+		"volume":       h.HandleVolume,
+	} {
+		if w := serve(fn, "remote-cluster-99", `/logs/x?query={app="web"}`, map[string]string{"name": "pod"}); w.Code != http.StatusNotImplemented {
+			t.Errorf("%s: status = %d, want 501 before the local-availability check", name, w.Code)
+		}
+	}
+}
+
 // TestLokiREST_RemoteStatusNotDetected verifies the status probe reports Loki
 // as not detected for a remote cluster, with the reason, rather than the
 // local discovery result. Web and mobile both treat detected:false as "Loki

@@ -65,7 +65,7 @@ What works against a registered remote cluster, operation by operation. The tabl
 | Vulnerability reports | Yes | Yes | Trivy and Kubescape reports read as the user on the selected cluster, with scanner presence detected there. The local discovery loop still probes scanner namespaces with the service account for the local status only |
 | Pod exec | Yes | No | `k8s/resources/pods.go` (501) |
 | Live log stream | Yes | No | `server/handle_ws_logs.go` (WebSocket close) |
-| Log search | Yes | No | `server/handle_ws_logs_search.go` (WebSocket close) |
+| Log search | Yes | No | `server/handle_ws_logs_search.go` (WebSocket close); `loki/handler.go` (501; status reports not detected) |
 | Network flow stream | Yes | Yes | The live viewer and the dashboard flows card read the selected cluster's own Hubble Relay, reached by port-forward through its API server as the user, so no relay address is stored. The user needs `list daemonsets` in `kube-system` and `cilium` (to find Cilium), `create pods/portforward`, `get services` and `list pods` in the Cilium namespace, and `list pods` in the flow namespace. Only plaintext relays are supported: a relay serving TLS is reported as such. A live stream ends with its reason when the cluster is removed, access is revoked or the session token expires, and reconnects after a relay restart or a token refresh |
 | External Secrets write actions | Yes | No | `externalsecrets/actions.go` (501) |
 | Node drain | Yes | Yes | Runs to completion on the selected cluster after the 202, and is cancelled if that cluster is removed |
