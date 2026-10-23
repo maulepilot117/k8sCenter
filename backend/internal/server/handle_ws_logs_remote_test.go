@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +13,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	k8sfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
@@ -246,27 +249,53 @@ func TestHandleWSLogs_LocalHeader_Accepted(t *testing.T) {
 		t.Fatalf("WriteJSON filter: %v", err)
 	}
 
+	// The handler confirms with "subscribed" once auth, the cluster check and
+	// RBAC have all passed, before it opens the (stub) log stream.
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var msg map[string]any
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if msg["reason"] == "cluster_required" {
-		t.Fatalf("a header-named local cluster was refused: %v", msg)
+	if msg["type"] != "subscribed" {
+		t.Fatalf("got %v, want the stream admitted with a subscribed frame", msg)
 	}
 }
 
-// TestLogWSRoutes_RequireCluster pins the route contract for both log
-// streams: each must name its cluster and neither accepts a remote one
-// in-band yet. The Loki tail cannot be dialed past its pre-upgrade Loki
-// check without a live Loki, so its contract is asserted here directly.
-func TestLogWSRoutes_RequireCluster(t *testing.T) {
-	for name, route := range map[string]wsRoute{"logs": logsWSRoute, "logs-search": logsSearchWSRoute} {
-		if !route.requireCluster {
-			t.Errorf("%s route does not require a cluster", name)
-		}
-		if route.acceptsRemoteInBand {
-			t.Errorf("%s route accepts a remote cluster in-band", name)
-		}
+// TestHandleWSLogsSearch_NoCluster_Refused is the Loki tail's half of AE13:
+// a tail that names no cluster is refused before any Loki dial. A fake Loki
+// that answers /ready gets the handler past its pre-upgrade availability
+// check, so the route is exercised through the real handler.
+func TestHandleWSLogsSearch_NoCluster_Refused(t *testing.T) {
+	fakeLoki := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(fakeLoki.Close)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	disc := loki.NewDiscoverer(nil, config.LokiConfig{URL: fakeLoki.URL}, logger)
+	disc.Discover(context.Background())
+	if disc.Client() == nil {
+		t.Fatal("fake Loki was not discovered; the test cannot reach the cluster check")
+	}
+
+	srv := testServer(t)
+	srv.LokiHandler = &loki.Handler{Discoverer: disc, Logger: logger}
+	mux := chi.NewRouter()
+	mux.Use(middleware.WSClusterContext)
+	mux.Get("/ws/logs-search", srv.handleWSLogsSearch)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/logs-search"
+	conn := wsDialAndAuth(t, wsURL, "", "", issueWSToken(t, srv, true))
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var msg map[string]any
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if msg["type"] != "error" || msg["reason"] != "cluster_required" {
+		t.Fatalf("got %v, want a cluster_required refusal", msg)
 	}
 }
