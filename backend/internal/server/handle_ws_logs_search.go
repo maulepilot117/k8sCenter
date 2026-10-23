@@ -29,6 +29,15 @@ const maxLogSearchConnections = 50
 // logSearchWSCount tracks active log search WebSocket connections.
 var logSearchWSCount atomic.Int64
 
+// logsSearchWSRoute is the Loki tail's cluster contract, the same as the log
+// stream's (logsWSRoute): it must name its cluster and may not name a remote
+// one in-band yet.
+var logsSearchWSRoute = wsRoute{
+	requireCluster: true,
+	auditAction:    audit.ActionReadLogs,
+	auditKind:      "LokiTail",
+}
+
 // handleWSLogsSearch handles WebSocket connections for real-time Loki log tailing.
 // Protocol: client sends auth message (JWT), then subscribe message with LogQL query,
 // then receives log stream messages from Loki.
@@ -44,9 +53,10 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Loki search reads the local cluster only: a remote in-band cluster is
-	// refused by the helper, a remote header by the gate below.
-	conn, user, reqCtx := s.wsAuthAndUpgradeFor(w, r, wsRoute{auditAction: audit.ActionReadLogs, auditKind: "LokiTail"})
+	// Loki search reads the local cluster only: a stream naming no cluster or
+	// a remote one in-band is refused by the helper, a remote header by the
+	// gate below.
+	conn, user, reqCtx := s.wsAuthAndUpgradeFor(w, r, logsSearchWSRoute)
 	if conn == nil {
 		return
 	}
