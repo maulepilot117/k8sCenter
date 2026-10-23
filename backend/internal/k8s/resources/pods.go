@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -289,9 +290,9 @@ func (h *Handler) RunExecSession(r *http.Request, conn *websocket.Conn, user *au
 			// This ensures no stdin data is consumed during shell detection.
 			go ws.readPump()
 
-			// Notify client of successful shell
-			shellMsg, _ := json.Marshal(map[string]string{"type": "shell", "name": shell})
-			conn.WriteMessage(websocket.TextMessage, shellMsg)
+			// Notify client of successful shell. The shell may already be
+			// writing its prompt, so this goes through the stream's lock.
+			ws.writeJSON(map[string]string{"type": "shell", "name": shell})
 
 			h.auditWrite(r, user, audit.ActionCreate, "Pod/exec", ns, name, audit.ResultSuccess)
 
@@ -307,8 +308,7 @@ func (h *Handler) RunExecSession(r *http.Request, conn *websocket.Conn, user *au
 
 	// All shells failed
 	if foundShell == "" {
-		errMsg, _ := json.Marshal(map[string]string{"type": "error", "message": "no shell found in container"})
-		conn.WriteMessage(websocket.TextMessage, errMsg)
+		ws.writeJSON(map[string]string{"type": "error", "message": "no shell found in container"})
 		h.Logger.Warn("no shell found in container", "pod", name, "namespace", ns, "container", container)
 	}
 }
@@ -398,6 +398,9 @@ type wsStream struct {
 	conn        *websocket.Conn
 	stdinWriter *io.PipeWriter
 	sizeQueue   *termSizeQueue
+	// writeMu serializes writes: gorilla allows one concurrent writer, and
+	// the stdout and stderr copies run alongside the session's own frames.
+	writeMu sync.Mutex
 }
 
 func newWSStream(conn *websocket.Conn, stdinWriter *io.PipeWriter, sizeQueue *termSizeQueue) *wsStream {
@@ -443,9 +446,19 @@ func (s *wsStream) readPump() {
 
 // Write sends raw binary data to the WebSocket (stdout/stderr output).
 func (s *wsStream) Write(p []byte) (int, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	err := s.conn.WriteMessage(websocket.BinaryMessage, p)
 	if err != nil {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// writeJSON sends a control frame to the client, serialized with output.
+func (s *wsStream) writeJSON(v any) {
+	msg, _ := json.Marshal(v)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.conn.WriteMessage(websocket.TextMessage, msg)
 }
