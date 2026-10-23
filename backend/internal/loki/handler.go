@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
@@ -27,15 +28,52 @@ type Handler struct {
 	Logger        *slog.Logger
 }
 
-// HandleStatus returns the current Loki discovery status.
+// msgRemoteUnsupported is the fixed refusal for a remote cluster.
+const msgRemoteUnsupported = "Log search is not available for this cluster yet"
+
+// remoteTarget reports whether the request targets a remote cluster. The
+// discovered Loki belongs to the local cluster, so it can never answer for a
+// remote one: serving it would return the local cluster's logs under the
+// remote cluster's name.
+func remoteTarget(r *http.Request) bool {
+	return !k8s.IsLocalClusterID(middleware.ClusterIDFromContext(r.Context()))
+}
+
+// refuseRemote writes the remote-unsupported refusal and reports true when
+// the request targets a remote cluster. Each read handler calls it before it
+// resolves the Loki client.
+func refuseRemote(w http.ResponseWriter, r *http.Request) bool {
+	if !remoteTarget(r) {
+		return false
+	}
+	httputil.WriteErrorWithReason(w, http.StatusNotImplemented, msgRemoteUnsupported,
+		string(k8s.ReasonUnsupportedPlatform), nil)
+	return true
+}
+
+// HandleStatus returns the current Loki discovery status. For a remote
+// cluster it reports Loki as not detected, with the reason, instead of the
+// local discovery result; clients already treat "not detected" as Loki
+// being unavailable.
 // GET /api/v1/logs/status
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
+	if remoteTarget(r) {
+		httputil.WriteData(w, LokiStatus{
+			Detected:    false,
+			LastChecked: time.Now().UTC().Format(time.RFC3339),
+			Reason:      string(k8s.ReasonUnsupportedPlatform),
+		})
+		return
+	}
 	httputil.WriteData(w, h.Discoverer.Status())
 }
 
 // HandleQuery proxies a LogQL range query to Loki with namespace enforcement.
 // GET /api/v1/logs/query?query=...&start=...&end=...&limit=...&direction=...&namespace=...
 func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
+	if refuseRemote(w, r) {
+		return
+	}
 	client := h.Discoverer.Client()
 	if client == nil {
 		httputil.WriteError(w, http.StatusServiceUnavailable,
@@ -116,6 +154,9 @@ func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 // still enumerate label values inside their permitted namespace via
 // /labels/{name}/values (which enforces a namespace-scoped LogQL selector).
 func (h *Handler) HandleLabels(w http.ResponseWriter, r *http.Request) {
+	if refuseRemote(w, r) {
+		return
+	}
 	client := h.Discoverer.Client()
 	if client == nil {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "Loki is not available", "")
@@ -148,6 +189,9 @@ func (h *Handler) HandleLabels(w http.ResponseWriter, r *http.Request) {
 // HandleLabelValues returns values for a specific label.
 // GET /api/v1/logs/labels/{name}/values?start=...&end=...&namespace=...
 func (h *Handler) HandleLabelValues(w http.ResponseWriter, r *http.Request) {
+	if refuseRemote(w, r) {
+		return
+	}
 	client := h.Discoverer.Client()
 	if client == nil {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "Loki is not available", "")
@@ -206,6 +250,9 @@ func (h *Handler) HandleLabelValues(w http.ResponseWriter, r *http.Request) {
 // HandleVolume returns log volume data for the histogram.
 // GET /api/v1/logs/volume?query=...&start=...&end=...&step=...&namespace=...
 func (h *Handler) HandleVolume(w http.ResponseWriter, r *http.Request) {
+	if refuseRemote(w, r) {
+		return
+	}
 	client := h.Discoverer.Client()
 	if client == nil {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "Loki is not available", "")
