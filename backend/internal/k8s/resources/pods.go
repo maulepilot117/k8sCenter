@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	corev1 "k8s.io/api/core/v1"
@@ -125,9 +126,13 @@ func (h *Handler) HandlePodLogs(w http.ResponseWriter, r *http.Request) {
 
 // HandlePodExec upgrades to WebSocket and opens an exec session to a pod container.
 // WS /api/v1/ws/exec/{namespace}/{name}/{container}
+//
+// This is the legacy path, authenticated by middleware from an Authorization
+// header. The in-band path (server/handle_ws_exec.go) authenticates the first
+// frame instead; both share RunExecSession.
 func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 	// Connection limit check
-	if execWSCount.Load() >= maxExecConnections {
+	if ExecAtCapacity() {
 		writeError(w, http.StatusServiceUnavailable, "too many exec connections", "")
 		return
 	}
@@ -183,24 +188,56 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Limit incoming message size (16KB — sufficient for input + resize JSON)
+	h.RunExecSession(r, conn, user, ns, name, container)
+}
+
+// ExecAtCapacity reports whether the concurrent exec connection limit is
+// reached. Both exec paths check it before upgrading.
+func ExecAtCapacity() bool {
+	return execWSCount.Load() >= maxExecConnections
+}
+
+// ValidContainerName reports whether a container name from a URL is safe to
+// pass to the exec subresource.
+func ValidContainerName(name string) bool {
+	return validContainerName.MatchString(name)
+}
+
+// ExecExecutorFunc builds the executor that runs one shell candidate in a
+// container.
+type ExecExecutorFunc func(ns, name, container, shell string) (remotecommand.Executor, error)
+
+// RunExecSession runs a shell over an upgraded connection until either side
+// ends it. The caller has authenticated user, checked create pods/exec,
+// validated the names and refused a remote cluster; r's context carries the
+// effective cluster for the client and the audit row. The caller closes conn.
+func (h *Handler) RunExecSession(r *http.Request, conn *websocket.Conn, user *auth.User, ns, name, container string) {
+	// Limit incoming message size (16KB — sufficient for input + resize JSON).
+	// The in-band path arrives with the auth frame's smaller limit and read
+	// deadline, so both are reset here.
 	conn.SetReadLimit(16384)
+	conn.SetReadDeadline(time.Time{})
 
-	// Track connection count
-	execWSCount.Add(1)
-	defer execWSCount.Add(-1)
-
-	// Create impersonating client
-	cs, err := h.impersonatingClient(r, user)
-	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"failed to create client"}`))
+	// Reserve a connection slot. The callers' ExecAtCapacity check runs
+	// before the upgrade; the in-band path then waits on the client's auth
+	// frame, so many connections can pass that check before any of them
+	// holds a slot.
+	if execWSCount.Add(1) > maxExecConnections {
+		execWSCount.Add(-1)
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"too many exec connections"}`))
 		return
 	}
+	defer execWSCount.Add(-1)
 
-	// nolint:cluster-routing local path: pod exec is local-only; a remote selection is refused with 501 above
-	cfg := h.K8sClient.BaseConfig()
-	cfg.Impersonate.UserName = user.KubernetesUsername
-	cfg.Impersonate.Groups = user.KubernetesGroups
+	newExecutor := h.ExecExecutor
+	if newExecutor == nil {
+		var err error
+		newExecutor, err = h.spdyExecExecutor(r, user)
+		if err != nil {
+			conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"failed to create client"}`))
+			return
+		}
+	}
 
 	// Set up stdin pipe and terminal size queue
 	sizeQueue := newTermSizeQueue()
@@ -218,20 +255,7 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 	// Shell detection: try each shell candidate
 	var foundShell string
 	for _, shell := range shellCandidates {
-		execReq := cs.CoreV1().RESTClient().Post().
-			Resource("pods").
-			Name(name).
-			Namespace(ns).
-			SubResource("exec").
-			Param("container", container).
-			Param("stdin", "true").
-			Param("stdout", "true").
-			Param("stderr", "true").
-			Param("tty", "true").
-			Param("command", shell)
-
-		// nolint:cluster-routing local path: pod exec is local-only; a remote selection is refused with 501 above
-		executor, execErr := remotecommand.NewSPDYExecutor(cfg, "POST", execReq.URL())
+		executor, execErr := newExecutor(ns, name, container, shell)
 		if execErr != nil {
 			h.Logger.Debug("SPDY executor creation failed", "shell", shell, "error", execErr)
 			continue
@@ -287,6 +311,37 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 		conn.WriteMessage(websocket.TextMessage, errMsg)
 		h.Logger.Warn("no shell found in container", "pod", name, "namespace", ns, "container", container)
 	}
+}
+
+// spdyExecExecutor returns an ExecExecutorFunc that builds SPDY executors
+// impersonating user against the local API server.
+func (h *Handler) spdyExecExecutor(r *http.Request, user *auth.User) (ExecExecutorFunc, error) {
+	cs, err := h.impersonatingClient(r, user)
+	if err != nil {
+		return nil, err
+	}
+
+	// nolint:cluster-routing local path: pod exec is local-only; both exec paths refuse a remote cluster before the session starts
+	cfg := h.K8sClient.BaseConfig()
+	cfg.Impersonate.UserName = user.KubernetesUsername
+	cfg.Impersonate.Groups = user.KubernetesGroups
+
+	return func(ns, name, container, shell string) (remotecommand.Executor, error) {
+		execReq := cs.CoreV1().RESTClient().Post().
+			Resource("pods").
+			Name(name).
+			Namespace(ns).
+			SubResource("exec").
+			Param("container", container).
+			Param("stdin", "true").
+			Param("stdout", "true").
+			Param("stderr", "true").
+			Param("tty", "true").
+			Param("command", shell)
+
+		// nolint:cluster-routing local path: pod exec is local-only; both exec paths refuse a remote cluster before the session starts
+		return remotecommand.NewSPDYExecutor(cfg, "POST", execReq.URL())
+	}, nil
 }
 
 // termSizeQueue implements remotecommand.TerminalSizeQueue.

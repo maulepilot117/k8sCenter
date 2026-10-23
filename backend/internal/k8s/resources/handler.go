@@ -172,6 +172,10 @@ type Handler struct {
 	// OriginValidator checks the Origin header for WebSocket connections.
 	// Set by the server at wiring time. If nil, rejects all WS upgrades.
 	OriginValidator func(w http.ResponseWriter, r *http.Request) bool
+	// ExecExecutor overrides how an exec session builds its executors; tests
+	// substitute a fake. When nil, each session builds SPDY executors that
+	// impersonate the user against the local API server.
+	ExecExecutor ExecExecutorFunc
 }
 
 // ListParams holds query parameters for list operations.
