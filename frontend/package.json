@@ -17,7 +17,7 @@
     "astro": "7.3.2",
     "@astrojs/node": "^11.1.5",
     "@astrojs/preact": "^6.0.5",
-    "vite": "^7.3.5",
+    "vite": "^7.3.7",
     "@babel/core": "^7.29.6",
     "preact": "^10.28.3",
     "@preact/signals": "^2.7.1",
