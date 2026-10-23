@@ -11,19 +11,26 @@ import { checkWsPath, isExecPath, remapCloseCode } from "./ws-allowlist.ts";
 /**
  * The native WebSocket bridge to the Go backend (KD5, KTD2). Ported from
  * frontend/routes/ws/[...path].ts's allowlist + relay + close-code
- * remapping (behaviour port, not a redesign — R6), with two additions U1
- * found necessary rather than assumed:
+ * remapping (behaviour port, not a redesign — R6), with one addition U1
+ * found necessary rather than assumed: a bounded queue, handshake timeout,
+ * and idle timeout. The original queues client messages (including the auth
+ * first-message) until the backend socket opens, with no limit — a slow or
+ * dead backend lets a client hold an allowlisted socket open and push
+ * messages until memory runs out.
  *
- *  - A bounded queue, handshake timeout, and idle timeout. The original
- *    queues client messages (including the auth first-message) until the
- *    backend socket opens, with no limit — a slow or dead backend lets a
- *    client hold an allowlisted socket open and push messages until memory
- *    runs out.
- *  - The exec route's outbound upgrade carries the client's Bearer
- *    credential. See "Pre-existing defect found by U1" in the migration
- *    plan: middleware.Auth gates /api/v1/ws/exec/... at upgrade time, not
- *    in-band, and the original bridge sends no headers on any route.
+ * Every route, exec included, authenticates in-band with its first message,
+ * so the bridge forwards no credential and opens every backend leg without
+ * headers. Exec used to carry its token in a Sec-WebSocket-Protocol value
+ * that the bridge converted to an Authorization header; a tab still running
+ * that client gets a reload instruction instead (refuseLegacyExecClient).
  */
+
+/**
+ * What a tab still running the subprotocol exec client is told. That client
+ * shows an error frame's message as sent, so the instruction is the message.
+ */
+export const LEGACY_EXEC_CLIENT_MESSAGE =
+  "This page is out of date. Reload the page to open a terminal.";
 
 export const MAX_QUEUE_MESSAGES = 32;
 export const MAX_QUEUE_BYTES = 256 * 1024;
@@ -121,8 +128,6 @@ export interface UpgradeCapableServer {
 export interface AttachWsProxyOptions {
   /** Overridable for tests; defaults to BACKEND_URL / http://localhost:8080. */
   backendUrl?: string;
-  /** Overridable for tests; defaults to the inbound request's Authorization header. */
-  getAuthHeader?: (req: IncomingMessage) => string | undefined;
   maxQueueMessages?: number;
   maxQueueBytes?: number;
   handshakeTimeoutMs?: number;
@@ -153,10 +158,10 @@ export function attachWsProxy(
   options: AttachWsProxyOptions = {},
 ): void {
   const ownUnmatchedPaths = options.ownUnmatchedPaths ?? true;
-  // handleProtocols is what makes the echo safe: `ws` defaults to echoing
-  // back whichever subprotocol the client listed first, which for the exec
-  // route would be the credential-bearing one exactly as often as not. This
-  // pins the choice to the sentinel, never the token (see ws-exec-auth.ts).
+  // Only a tab running the legacy exec client offers subprotocols, and its
+  // handshake has to complete for it to read the reload instruction. `ws`
+  // defaults to echoing whichever subprotocol the client listed first, which
+  // would be the credential-bearing one; this pins the echo to the sentinel.
   const wss = new WebSocketServer({
     noServer: true,
     handleProtocols: selectWsSubprotocol,
@@ -186,9 +191,11 @@ export function attachWsProxy(
         return;
       }
 
-      const authHeader = isExecPath(check.path)
-        ? (options.getAuthHeader ?? defaultGetAuthHeader)(req)
-        : undefined;
+      // Presence only: the token itself is never read or forwarded.
+      const legacyExecClient =
+        isExecPath(check.path) &&
+        findBearerInSubprotocols(req.headers["sec-websocket-protocol"]) !==
+          undefined;
 
       wss.handleUpgrade(req, socket, head, (clientWs) => {
         // An 'upgrade' listener runs outside any request-scoped error
@@ -197,9 +204,12 @@ export function attachWsProxy(
         // whole frontend for every user. Everything below this line is
         // reachable from an unauthenticated request, so it is contained.
         try {
+          if (legacyExecClient) {
+            refuseLegacyExecClient(clientWs);
+            return;
+          }
           bridgeConnection(clientWs, check.path, {
             backendUrl: options.backendUrl ?? getBackendUrl(),
-            authHeader,
             maxQueueMessages: options.maxQueueMessages ?? MAX_QUEUE_MESSAGES,
             maxQueueBytes: options.maxQueueBytes ?? MAX_QUEUE_BYTES,
             handshakeTimeoutMs:
@@ -221,35 +231,19 @@ export function attachWsProxy(
 }
 
 /**
- * U13/U-subproto: the exec route's credential can arrive two ways.
- *
- * `req.headers.authorization` covers a non-browser client (this file's own
- * tests, a future CLI) that can set arbitrary request headers on the
- * handshake. It cannot cover the actual product: the WHATWG `WebSocket`
- * constructor browsers implement has no parameter for custom request
- * headers at all -- `PodTerminal.tsx` cannot attach `Authorization` to its
- * own handshake no matter how the bridge below forwards it. Verified
- * empirically against this proxy and the live backend (U13): a handshake
- * with the header opens and streams; the identical handshake without one
- * opens on the client side (bridgeConnection decouples that from the
- * backend outcome) and is torn down moments later once the backend's
- * middleware.Auth 401s the backend leg -- exactly PodTerminal's situation
- * before this fix.
- *
- * What the browser *can* set is `Sec-WebSocket-Protocol`, via the second
- * argument to `new WebSocket(url, protocols)`. U-subproto replaces the
- * `access_token` query-parameter fallback (which put the credential in a
- * URL an ingress logs by default) with that: PodTerminal offers a
- * credential-bearing subprotocol alongside a plain sentinel, and
- * `findBearerInSubprotocols` (ws-exec-auth.ts) recovers the token from it.
- * The header wins when both are present so the existing header-based tests
- * keep exercising that path unchanged.
+ * Ends an exec connection from a tab loaded before exec moved to in-band
+ * auth (KTD17). That client puts its token in a subprotocol and sends no
+ * auth frame, so the backend would only time it out; it is told to reload
+ * instead, and no backend leg is opened. Goes once that client is retired
+ * (U29).
  */
-function defaultGetAuthHeader(req: IncomingMessage): string | undefined {
-  if (req.headers.authorization) return req.headers.authorization;
-
-  const token = findBearerInSubprotocols(req.headers["sec-websocket-protocol"]);
-  return token ? `Bearer ${token}` : undefined;
+function refuseLegacyExecClient(clientWs: ServerClientSocket): void {
+  // As in bridgeConnection: an unhandled 'error' on a socket is a crash.
+  clientWs.on("error", () => {});
+  clientWs.send(
+    JSON.stringify({ type: "error", message: LEGACY_EXEC_CLIENT_MESSAGE }),
+  );
+  clientWs.close(1008, "reload required");
 }
 
 /**
@@ -269,7 +263,6 @@ function asSendable(data: string | Buffer): string | Uint8Array<ArrayBuffer> {
 
 interface BridgeOptions {
   backendUrl: string;
-  authHeader: string | undefined;
   maxQueueMessages: number;
   maxQueueBytes: number;
   handshakeTimeoutMs: number;
@@ -285,16 +278,9 @@ function bridgeConnection(
   const wsProto = target.protocol === "https:" ? "wss:" : "ws:";
   const backendUrl = `${wsProto}//${target.host}/api/${path}`;
 
-  // Bun's (and Deno's) WebSocket constructor accepts a non-standard
-  // `headers` option in place of the spec's subprotocols argument (U1
-  // proved this against the real backend: 101 with the header, 401
-  // without). Every route except exec authenticates in-band via the first
-  // queued message; exec needs the credential on the upgrade itself.
-  const backendSocket = opts.authHeader
-    ? new WebSocket(backendUrl, {
-        headers: { Authorization: opts.authHeader },
-      } as unknown as string[])
-    : new WebSocket(backendUrl);
+  // Every route authenticates in-band via the first queued message, so the
+  // backend leg carries no credential of its own.
+  const backendSocket = new WebSocket(backendUrl);
   backendSocket.binaryType = "arraybuffer";
 
   let queue: Array<string | Buffer> = [];
@@ -399,8 +385,7 @@ function bridgeConnection(
   }, opts.handshakeTimeoutMs);
 
   // Client -> backend (or queue, until the backend socket opens). This is
-  // what protects the auth token sent as the first message on the other
-  // four routes.
+  // what protects the auth token sent as the first message on every route.
   clientWs.on("message", (data: Buffer | Buffer[], isBinary: boolean) => {
     if (closed) return;
     resetIdle();

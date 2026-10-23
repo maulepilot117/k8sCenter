@@ -1,11 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/base.ts";
 import { E2E_PASSWORD, E2E_USERNAME, loginViaApi } from "../helpers.ts";
-import {
-  encodeBearerSubprotocol,
-  WS_AUTH_BEARER_PROTOCOL_PREFIX,
-  WS_AUTH_SENTINEL_PROTOCOL,
-} from "../../frontend/src/lib/ws-exec-auth.ts";
 
 /**
  * Every WebSocket channel the bridge relays (U11 step 5, covers AE2 / R4).
@@ -46,17 +41,13 @@ import {
  *
  * Credential handling
  * -------------------
- * Four channels authenticate in-band: the first message the client sends
- * carries the JWT, and the bridge queues it until the backend leg opens.
- * Exec cannot -- backend/internal/server/routes.go gates it with
- * middleware.Auth at upgrade time -- and a browser cannot put a header on a
- * WebSocket handshake, so the credential travels in a
- * Sec-WebSocket-Protocol value (src/lib/ws-exec-auth.ts). The server must
- * echo back only the plain sentinel; echoing the credential-bearing value
- * would put the token in a response header. Both properties are asserted
- * below, as is the one that motivated the whole design: the credential
- * never appears in a URL, which an ingress in front of the frontend pod
- * logs by default.
+ * Every channel authenticates in-band: the first message the client sends
+ * carries the JWT, and the bridge queues it until the backend leg opens. A
+ * browser cannot put a header on a WebSocket handshake, so nothing rides on
+ * the handshake, and the credential never appears in a URL, which an
+ * ingress in front of the frontend pod logs by default. Exec used to carry
+ * its token in a Sec-WebSocket-Protocol value; the bridge's reload answer
+ * for a tab still running that client is covered in ws-proxy_test.ts.
  */
 
 /** Namespace seeded by e2e/fixtures/k8s/ -- the one that reliably exists. */
@@ -82,8 +73,6 @@ interface WsProbe {
 interface WsProbeOptions {
   /** Path under the frontend origin, e.g. "/ws/v1/ws/resources". */
   path: string;
-  /** Subprotocols to offer; empty for every channel except exec. */
-  protocols?: string[];
   /** Messages to send once the socket opens, in order. */
   send?: string[];
   /** Stop after this many text frames. */
@@ -97,15 +86,15 @@ interface WsProbeOptions {
  *
  * Runs in the browser rather than through a Node client on purpose: the
  * browser is the only client that cannot set handshake headers, which is
- * the entire reason the exec channel's credential design exists. A Node
- * client would pass a test the product would fail.
+ * why every channel authenticates in-band. A Node client would pass a test
+ * the product would fail.
  */
 async function probeWs(
   page: Page,
   options: WsProbeOptions,
 ): Promise<WsProbe> {
   return await page.evaluate(
-    ({ path, protocols, send, maxFrames, waitMs }) => {
+    ({ path, send, maxFrames, waitMs }) => {
       return new Promise<WsProbe>((resolve) => {
         const scheme = location.protocol === "https:" ? "wss:" : "ws:";
         const target = `${scheme}//${location.host}${path}`;
@@ -121,9 +110,7 @@ async function probeWs(
 
         let socket: WebSocket;
         try {
-          socket = protocols.length
-            ? new WebSocket(target, protocols)
-            : new WebSocket(target);
+          socket = new WebSocket(target);
         } catch {
           resolve(result);
           return;
@@ -166,7 +153,6 @@ async function probeWs(
     },
     {
       path: options.path,
-      protocols: options.protocols ?? [],
       send: options.send ?? [],
       maxFrames: options.maxFrames ?? 1,
       waitMs: options.waitMs ?? 10_000,
@@ -190,7 +176,6 @@ function expectNoCredentialInUrl(probe: WsProbe, token: string) {
   expect(probe.url, "a WS URL must carry no query string").not.toContain("?");
   expect(probe.url).not.toContain(token);
   expect(probe.url).not.toContain("access_token");
-  expect(probe.url).not.toContain(WS_AUTH_BEARER_PROTOCOL_PREFIX);
 }
 
 /**
@@ -202,8 +187,7 @@ function expectNoCredentialInUrl(probe: WsProbe, token: string) {
  * guard on the probe itself, but it is not evidence about the product.
  *
  * `page.on("websocket")` observes every socket the page actually opens, so
- * this one fails if the island ever puts the credential back in the query
- * string. That is the property the whole subprotocol design exists for.
+ * this one fails if an island ever puts the credential in the query string.
  */
 async function expectAppOpensCredentialFreeSockets(
   page: Page,
@@ -219,7 +203,6 @@ async function expectAppOpensCredentialFreeSockets(
     );
     expect(url).not.toContain(token);
     expect(url).not.toContain("access_token");
-    expect(url).not.toContain(WS_AUTH_BEARER_PROTOCOL_PREFIX);
   }
   return urls;
 }
@@ -344,74 +327,45 @@ test.describe("WebSocket channels", () => {
   });
 
   /**
-   * Exec, the one channel whose credential rides on the handshake.
-   *
-   * Three things are asserted and each protects a separate decision:
-   *
-   *  1. The server echoes the sentinel and ONLY the sentinel. `ws` defaults
-   *     to echoing whichever subprotocol the client listed first, which here
-   *     is the credential-bearing one -- selectWsSubprotocol exists solely to
-   *     stop that, and without this assertion it can be removed silently.
-   *  2. The credential is nowhere in the URL (expectNoCredentialInUrl).
-   *  3. A backend-originated frame arrives. That is the load-bearing one:
-   *     the backend gates exec with middleware.Auth at upgrade time, so a
-   *     frame from the handler can only exist if the token made it out of
-   *     the subprotocol, into an Authorization header on the outbound leg,
-   *     and past that middleware. The pod does not exist, so the frame is
-   *     the handler's "no shell found in container" error -- which is a
-   *     backend answer, not a bridge one.
+   * Exec authenticates in-band, naming its cluster, like the other streams.
+   * Nothing rides on the handshake: no subprotocol is offered or echoed. The
+   * load-bearing assertion is the backend's answer. The pod does not exist,
+   * so the frame is the handler's "no shell found in container" error, which
+   * the backend sends only after the token, the cluster and the
+   * create pods/exec check have all been accepted.
    */
-  test("exec carries its credential in a subprotocol, not a URL", async ({
+  test("exec authenticates in-band and reports a missing pod", async ({
     page,
   }) => {
     const probe = await probeWs(page, {
       path: `/ws/v1/ws/exec/${NAMESPACE}/${POD}/${CONTAINER}`,
-      protocols: [
-        encodeBearerSubprotocol(accessToken as string),
-        WS_AUTH_SENTINEL_PROTOCOL,
+      send: [
+        JSON.stringify({ type: "auth", token: accessToken, clusterId: "local" }),
       ],
       waitMs: 15_000,
     });
 
     expect(probe.opened).toBe(true);
-    expect(probe.protocol).toBe(WS_AUTH_SENTINEL_PROTOCOL);
-    expect(
-      probe.protocol,
-      "echoing the credential-bearing subprotocol would put the token in a response header",
-    ).not.toContain(WS_AUTH_BEARER_PROTOCOL_PREFIX);
-    expectNoCredentialInUrl(probe, accessToken as string);
-
+    expect(probe.protocol).toBe("");
     expect(
       probe.frames.length,
-      "no frame means the backend's middleware.Auth rejected the outbound leg -- " +
-        "the subprotocol credential did not survive the bridge",
+      "no frame means the backend never answered the in-band auth frame",
     ).toBeGreaterThanOrEqual(1);
-    expect(probe.frames[0]).toContain('"error"');
-    // A leg that arrives without the credential is served by the in-band
-    // handler instead, whose answer is a demand for an auth frame. Only the
-    // legacy handler reaching the missing pod proves the credential crossed.
-    expect(
-      probe.frames[0],
-      "the outbound leg arrived anonymous and took the in-band auth path",
-    ).not.toContain("auth");
+    expect(probe.frames[0]).toContain("no shell found in container");
+    expectNoCredentialInUrl(probe, accessToken as string);
   });
 
   /**
-   * The negative control for the test above, and the reason it proves
-   * anything. Without it, "the socket opened and the sentinel came back"
-   * would pass just as happily with the credential discarded -- the bridge
-   * completes the client handshake regardless of what the backend does.
-   * Offering only the sentinel leaves the outbound leg anonymous, so the
-   * backend serves it on the in-band path, which refuses an auth frame that
-   * carries no token. The refusal is the backend's, and no shell starts.
+   * The negative control for the test above: without it, a backend that
+   * answered every exec socket the same way would pass. An auth frame with
+   * no token is refused by the backend, and no shell starts.
    */
-  test("exec without the credential subprotocol is refused by the backend", async ({
+  test("exec without a token in its auth frame is refused by the backend", async ({
     page,
   }) => {
     const probe = await probeWs(page, {
       path: `/ws/v1/ws/exec/${NAMESPACE}/${POD}/${CONTAINER}`,
-      protocols: [WS_AUTH_SENTINEL_PROTOCOL],
-      send: [JSON.stringify({ type: "auth" })],
+      send: [JSON.stringify({ type: "auth", clusterId: "local" })],
     });
 
     expect(probe.opened).toBe(true);

@@ -13,6 +13,7 @@ import {
   handleWsHttpRequest,
   IDLE_TIMEOUT_MS,
   KEEPALIVE_PING_MS,
+  LEGACY_EXEC_CLIENT_MESSAGE,
   MAX_QUEUE_BYTES,
   MAX_QUEUE_MESSAGES,
 } from "./ws-proxy.ts";
@@ -42,11 +43,7 @@ interface StubBackend {
 }
 
 function startStubBackend(
-  opts: {
-    requireAuth?: boolean;
-    neverAccept?: boolean;
-    killAfterOpen?: boolean;
-  } = {},
+  opts: { neverAccept?: boolean; killAfterOpen?: boolean } = {},
 ): Promise<StubBackend> {
   return new Promise((resolvePromise) => {
     const receivedAuth: (string | undefined)[] = [];
@@ -58,11 +55,6 @@ function startStubBackend(
       upgradeAttempts++;
       if (opts.neverAccept) return; // simulate a hung handshake
 
-      if (opts.requireAuth && !req.headers.authorization) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-        socket.destroy();
-        return;
-      }
       receivedAuth.push(req.headers.authorization);
 
       wss.handleUpgrade(req, socket, head, (ws) => {
@@ -452,29 +444,31 @@ test("a connection whose peer stops answering is reaped at the idle bound", asyn
   expect(closedByServer).toBe(true);
 });
 
-// --- exec Bearer header forwarding ---
+// --- exec authenticates in-band (KTD2) ---
+//
+// Exec used to carry its token on the handshake, which the bridge forwarded
+// as an Authorization header. It now authenticates with its first message
+// like every other route, so the bridge forwards nothing.
 
-test("the exec route forwards the client's Authorization header to the backend upgrade", async () => {
-  const backend = await startStubBackend({ requireAuth: true });
+test("the exec route forwards no Authorization header to the backend, even when the client sends one", async () => {
+  const backend = await startStubBackend();
   cleanups.push(backend.close);
   const { server, port } = await startProxy(backend.port);
   cleanups.push(() => server.close());
 
-  const { statusLine } = await rawUpgradeRequest(
+  const { statusLine, socket } = await rawUpgradeRequest(
     port,
     "/ws/v1/ws/exec/default/mypod/main",
-    {
-      Authorization: "Bearer test-token-123",
-    },
+    { Authorization: "Bearer should-not-forward" },
   );
+  cleanups.push(() => socket.destroy());
   expect(statusLine).toContain("101");
-  // Give the proxy's own upgrade callback a moment to run before asserting.
   await new Promise((res) => setTimeout(res, 50));
-  expect(backend.receivedAuth).toContain("Bearer test-token-123");
+  expect(backend.receivedAuth).toEqual([undefined]);
 });
 
-test("a no-header control on the exec route is refused by the backend with 401, proving the header is what carries auth", async () => {
-  const backend = await startStubBackend({ requireAuth: true });
+test("the exec route relays the in-band auth frame to the backend unchanged", async () => {
+  const backend = await startStubBackend();
   cleanups.push(backend.close);
   const { server, port } = await startProxy(backend.port);
   cleanups.push(() => server.close());
@@ -483,142 +477,66 @@ test("a no-header control on the exec route is refused by the backend with 401, 
     `ws://127.0.0.1:${port}/ws/v1/ws/exec/default/mypod/main`,
   );
   cleanups.push(() => client.close());
-
-  // The client-facing upgrade always completes immediately -- ported from
-  // the original Fresh route, which decouples it from the backend
-  // connection outcome (the backend socket is only opened once the client
-  // side is already open). The proof that the Bearer header is what
-  // carries auth is that, without it, the backend answers 401 and never
-  // records an Authorization header, and this connection -- unlike the
-  // header-bearing one above -- gets torn back down instead of relaying.
   await new Promise<void>((res) =>
     client.addEventListener("open", () => res()),
   );
-  const closeEvent = await new Promise<CloseEvent>((res) => {
-    client.addEventListener("close", (ev) => res(ev));
+
+  // Sent at once, so the bridge may still be queueing it for the backend.
+  const frame = JSON.stringify({
+    type: "auth",
+    token: "in-band-token",
+    clusterId: "local",
   });
-  expect(closeEvent).toBeTruthy();
-  expect(backend.receivedAuth).toHaveLength(0);
+  const echoed = new Promise<string>((res) => {
+    client.addEventListener("message", (ev) => res(ev.data as string));
+  });
+  client.send(frame);
+  expect(await echoed).toBe(frame);
+  expect(backend.receivedAuth).toEqual([undefined]);
 });
 
-// --- exec auth via Sec-WebSocket-Protocol (U-subproto) ---
+// A tab loaded before the change still offers its token as a subprotocol and
+// sends no auth frame. It is told to reload, and the token goes nowhere.
 //
-// The browser WebSocket constructor has no parameter for custom request
-// headers -- PodTerminal.tsx cannot attach Authorization the way the tests
-// above do with a raw socket. This is what it actually uses instead: the
-// pattern the Kubernetes apiserver uses for the identical problem. The
-// client offers two Sec-WebSocket-Protocol values -- a credential-bearing
-// one and a plain sentinel -- and defaultGetAuthHeader recovers the token
-// from the former and forwards it as a real Authorization header on the
-// outbound backend leg. This replaces the earlier `?access_token=` query
-// parameter fallback (U13), which put the credential in a URL an ingress
-// in front of the frontend pod logs by default.
-
-// These two use rawUpgradeRequest rather than a native `new WebSocket(url,
-// protocols)` client -- deliberately, not just for consistency with the
-// header-based tests above. A native Bun WebSocket client that negotiates a
+// rawUpgradeRequest rather than a native `new WebSocket(url, protocols)`
+// client, deliberately: a native Bun WebSocket client that negotiates a
 // subprotocol against this same in-process server corrupts state inside
 // Bun's own built-in `ws` fast path (github.com/oven-sh/bun; reproduced
-// standalone outside bun:test too): a *later* raw-socket upgrade that also
-// offers a Sec-WebSocket-Protocol header then throws inside `ws`'s
-// `completeUpgrade` ("TypeError: undefined is not an object (evaluating
-// 'socket')"), even on a completely unrelated server/socket pair. Sending
-// the exact same bytes over a raw socket for both requests avoids ever
-// exercising that native fast path, and lets the second test assert on the
-// literal response header besides.
-test("the exec route forwards a Sec-WebSocket-Protocol bearer credential as a Bearer header to the backend upgrade", async () => {
-  const backend = await startStubBackend({ requireAuth: true });
+// standalone outside bun:test too), so a later raw-socket upgrade offering a
+// Sec-WebSocket-Protocol header throws inside `ws`'s `completeUpgrade`.
+test("a legacy exec client offering a bearer subprotocol is told to reload, and no backend leg opens", async () => {
+  const backend = await startStubBackend();
   cleanups.push(backend.close);
   const { server, port } = await startProxy(backend.port);
   cleanups.push(() => server.close());
 
-  const { statusLine } = await rawUpgradeRequest(
-    port,
-    "/ws/v1/ws/exec/default/mypod/main",
-    {
-      "Sec-WebSocket-Protocol": `${encodeBearerSubprotocol(
-        "subproto-token-456",
-      )}, ${WS_AUTH_SENTINEL_PROTOCOL}`,
-    },
-  );
-  expect(statusLine).toContain("101");
-  await new Promise((res) => setTimeout(res, 50));
-  expect(backend.receivedAuth).toContain("Bearer subproto-token-456");
-});
-
-test("the proxy echoes only the sentinel subprotocol back to the client, never the credential", async () => {
-  const backend = await startStubBackend({ requireAuth: true });
-  cleanups.push(backend.close);
-  const { server, port } = await startProxy(backend.port);
-  cleanups.push(() => server.close());
-
-  const bearer = encodeBearerSubprotocol("should-never-be-echoed");
-  const { statusLine, raw } = await rawUpgradeRequest(
+  const bearer = encodeBearerSubprotocol("legacy-token");
+  const { statusLine, raw, socket } = await rawUpgradeRequest(
     port,
     "/ws/v1/ws/exec/default/mypod/main",
     { "Sec-WebSocket-Protocol": `${bearer}, ${WS_AUTH_SENTINEL_PROTOCOL}` },
   );
+  cleanups.push(() => socket.destroy());
+
+  // The handshake completes, echoing only the sentinel, so the client can
+  // read the instruction; the credential is never echoed.
   expect(statusLine).toContain("101");
   expect(raw).toContain(
     `Sec-WebSocket-Protocol: ${WS_AUTH_SENTINEL_PROTOCOL}\r\n`,
   );
   expect(raw).not.toContain(bearer);
 
-  // Let the outbound backend leg (still CONNECTING at this point -- the
-  // client-facing upgrade completes independently of it) settle before
-  // afterEach tears the servers down. Without this, closing the backend's
-  // http.Server out from under an in-flight upgrade corrupts Bun's own
-  // built-in `ws` module for the rest of the process -- see the comment
-  // above the next two tests.
-  await new Promise((res) => setTimeout(res, 50));
-});
-
-test("an explicit Authorization header wins over an offered Sec-WebSocket-Protocol credential when both are present", async () => {
-  const backend = await startStubBackend({ requireAuth: true });
-  cleanups.push(backend.close);
-  const { server, port } = await startProxy(backend.port);
-  cleanups.push(() => server.close());
-
-  const { statusLine } = await rawUpgradeRequest(
-    port,
-    "/ws/v1/ws/exec/default/mypod/main",
-    {
-      Authorization: "Bearer header-wins",
-      "Sec-WebSocket-Protocol": `${encodeBearerSubprotocol(
-        "should-lose",
-      )}, ${WS_AUTH_SENTINEL_PROTOCOL}`,
-    },
-  );
-  expect(statusLine).toContain("101");
-  await new Promise((res) => setTimeout(res, 50));
-  expect(backend.receivedAuth).toContain("Bearer header-wins");
-  expect(backend.receivedAuth).not.toContain("Bearer should-lose");
-});
-
-test("a no-credential control offering only the sentinel is refused by the backend with 401", async () => {
-  const backend = await startStubBackend({ requireAuth: true });
-  cleanups.push(backend.close);
-  const { server, port } = await startProxy(backend.port);
-  cleanups.push(() => server.close());
-
-  const { statusLine, socket } = await rawUpgradeRequest(
-    port,
-    "/ws/v1/ws/exec/default/mypod/main",
-    { "Sec-WebSocket-Protocol": WS_AUTH_SENTINEL_PROTOCOL },
-  );
-  cleanups.push(() => socket.destroy());
-  // The client-facing upgrade always completes immediately -- decoupled
-  // from the backend outcome, same as the header-based no-header-control
-  // test above -- so this is 101 even though no credential was offered.
-  expect(statusLine).toContain("101");
-
-  // ...but the backend never receives a request (nothing to send), and the
-  // proxy tears the client leg back down once the backend rejects.
+  // Server frames are unmasked, so the instruction is readable on the wire.
+  let wire = raw;
+  socket.on("data", (chunk) => {
+    wire += chunk.toString("utf-8");
+  });
   await new Promise<void>((res) => socket.once("close", () => res()));
-  expect(backend.receivedAuth).toHaveLength(0);
+  expect(wire).toContain(LEGACY_EXEC_CLIENT_MESSAGE);
+  expect(backend.upgradeAttempts).toBe(0);
 });
 
-test("a Sec-WebSocket-Protocol credential is not forwarded on non-exec routes", async () => {
+test("a bearer subprotocol on a non-exec route is bridged as usual, without the credential", async () => {
   const backend = await startStubBackend();
   cleanups.push(backend.close);
   const { server, port } = await startProxy(backend.port);
@@ -630,7 +548,10 @@ test("a Sec-WebSocket-Protocol credential is not forwarded on non-exec routes", 
     )}, ${WS_AUTH_SENTINEL_PROTOCOL}`,
   });
   await new Promise((res) => setTimeout(res, 50));
-  expect(backend.receivedAuth).toEqual([undefined]);
+  // The reload refusal is exec's alone: this route still gets a backend leg.
+  expect(backend.upgradeAttempts).toBe(1);
+  expect(backend.receivedAuth).toHaveLength(1);
+  expect(backend.receivedAuth[0]).toBeUndefined();
 });
 
 test("non-exec routes carry no Authorization header even when the client's request has one", async () => {
