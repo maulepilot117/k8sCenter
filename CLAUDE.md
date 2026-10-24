@@ -111,7 +111,7 @@ k8sCenter is a web-based Kubernetes management platform that delivers vCenter-le
 
 | Layer | Technology |
 |---|---|
-| Backend API | Go 1.26, chi router, client-go v0.35.2 |
+| Backend API | Go 1.27, chi router, client-go v0.35.2 |
 | Frontend | Bun 1.4.x, Astro 7.x (Preact islands), Tailwind v4, Monaco Editor |
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack subchart) |
@@ -126,7 +126,7 @@ k8sCenter is a web-based Kubernetes management platform that delivers vCenter-le
 
 ```
 k8scenter/
-├── backend/                  # Go 1.26 backend
+├── backend/                  # Go 1.27 backend
 │   ├── cmd/kubecenter/       # Entrypoint (main.go)
 │   └── internal/
 │       ├── server/           # HTTP handlers, routes, middleware (auth, CSRF, rate limit, cluster context)
