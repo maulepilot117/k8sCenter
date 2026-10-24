@@ -34,6 +34,16 @@ const (
 // logWSCount tracks active log stream WebSocket connections for DoS protection.
 var logWSCount atomic.Int64
 
+// logsWSRoute is the log stream's cluster contract: it must name its cluster,
+// by header or in-band, and may not name a remote one in-band yet. Without
+// requireCluster a browser, which cannot send X-Cluster-ID, would be served
+// the local cluster's logs under a remote selection.
+var logsWSRoute = wsRoute{
+	requireCluster: true,
+	auditAction:    audit.ActionReadLogs,
+	auditKind:      "Pod",
+}
+
 // handleWSLogs handles WebSocket connections for real-time pod log streaming.
 // Protocol: client sends auth message (JWT), then filter message, then receives log lines.
 // Uses direct per-client k8s log stream → WS pipe (Pattern B, same as flows).
@@ -49,9 +59,10 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A log stream reads the local cluster only: a remote in-band cluster is
-	// refused by the helper, a remote header by the gate below.
-	conn, user, reqCtx := s.wsAuthAndUpgradeFor(w, r, wsRoute{auditAction: audit.ActionReadLogs, auditKind: "Pod"})
+	// A log stream reads the local cluster only: a stream naming no cluster
+	// or a remote one in-band is refused by the helper, a remote header by
+	// the gate below.
+	conn, user, reqCtx := s.wsAuthAndUpgradeFor(w, r, logsWSRoute)
 	if conn == nil {
 		return
 	}

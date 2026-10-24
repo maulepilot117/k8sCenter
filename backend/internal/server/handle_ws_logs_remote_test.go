@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,17 +13,21 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	k8sfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 )
 
-// wsLogsTestServer wires a minimal Server with a single WS log route and
-// returns the test HTTP server plus a JWT factory function.
-func wsLogsTestServer(t *testing.T, clusterID string) (*httptest.Server, func() string) {
+// wsLogsTestServer wires a minimal Server with a single WS log route behind
+// the production WSClusterContext middleware, so a test names its cluster the
+// way a real client does: an X-Cluster-ID header (mobile) or the auth frame
+// (web). It returns the test HTTP server plus a JWT factory function.
+func wsLogsTestServer(t *testing.T) (*httptest.Server, func() string) {
 	t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -48,14 +53,8 @@ func wsLogsTestServer(t *testing.T, clusterID string) (*httptest.Server, func() 
 	srv := testServer(t)
 	srv.ResourceHandler = rh
 
-	// Build a chi mux that injects the test cluster ID and routes to handleWSLogs.
 	mux := chi.NewRouter()
-	mux.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := middleware.WithClusterID(r.Context(), clusterID)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	})
+	mux.Use(middleware.WSClusterContext)
 	mux.Get("/ws/logs/{namespace}/{pod}/{container}", srv.handleWSLogs)
 
 	ts := httptest.NewServer(mux)
@@ -68,19 +67,27 @@ func wsLogsTestServer(t *testing.T, clusterID string) (*httptest.Server, func() 
 	return ts, issueToken
 }
 
-// wsDialAndAuth dials the WS URL, sends the auth message, and returns the connection.
-func wsDialAndAuth(t *testing.T, wsURL, token string) *websocket.Conn {
+// wsDialAndAuth dials the WS URL, sending header as X-Cluster-ID when it is
+// non-empty, then sends an auth message naming clusterID in-band when that is
+// non-empty, and returns the connection.
+func wsDialAndAuth(t *testing.T, wsURL, header, clusterID, token string) *websocket.Conn {
 	t.Helper()
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, http.Header{
-		"Origin": {"http://localhost"},
-	})
+	h := http.Header{"Origin": {"http://localhost"}}
+	if header != "" {
+		h.Set("X-Cluster-ID", header)
+	}
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, h)
 	if err != nil {
 		if resp != nil {
 			t.Fatalf("WS dial failed (HTTP %d): %v", resp.StatusCode, err)
 		}
 		t.Fatalf("WS dial failed: %v", err)
 	}
-	if err := conn.WriteJSON(map[string]any{"type": "auth", "token": token}); err != nil {
+	authMsg := map[string]any{"type": "auth", "token": token}
+	if clusterID != "" {
+		authMsg["clusterId"] = clusterID
+	}
+	if err := conn.WriteJSON(authMsg); err != nil {
 		conn.Close()
 		t.Fatalf("WriteJSON auth: %v", err)
 	}
@@ -106,13 +113,14 @@ func readWSMessagesUntilError(t *testing.T, conn *websocket.Conn) (message strin
 }
 
 // TestHandleWSLogs_RemoteCluster_Returns501Error verifies that handleWSLogs
-// sends a JSON error frame for non-local cluster IDs (Finding P2-5).
+// sends a JSON error frame for a remote cluster named by header, the way the
+// mobile app names it (Finding P2-5).
 func TestHandleWSLogs_RemoteCluster_Returns501Error(t *testing.T) {
-	ts, issueToken := wsLogsTestServer(t, "remote-cluster-99")
+	ts, issueToken := wsLogsTestServer(t)
 	token := issueToken()
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/logs/default/my-pod/app"
-	conn := wsDialAndAuth(t, wsURL, token)
+	conn := wsDialAndAuth(t, wsURL, "remote-cluster-99", "", token)
 	defer conn.Close()
 
 	// Send filter message (required before cluster gate check in handleWSLogs)
@@ -138,11 +146,11 @@ func TestHandleWSLogs_RemoteCluster_Returns501Error(t *testing.T) {
 // handleWSLogs does NOT send a remote-cluster error for local cluster requests.
 // The stream will fail (no real pod) but the gate itself must not fire.
 func TestHandleWSLogs_LocalCluster_DoesNotTriggerRemoteGate(t *testing.T) {
-	ts, issueToken := wsLogsTestServer(t, "local")
+	ts, issueToken := wsLogsTestServer(t)
 	token := issueToken()
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/logs/default/my-pod/app"
-	conn := wsDialAndAuth(t, wsURL, token)
+	conn := wsDialAndAuth(t, wsURL, "", "local", token)
 	defer conn.Close()
 
 	if err := conn.WriteJSON(map[string]any{
@@ -181,7 +189,7 @@ func TestHandleWSLogs_LocalCluster_DoesNotTriggerRemoteGate(t *testing.T) {
 // named in the auth frame is refused on the logs route before any filter is
 // read, so no log stream starts (#608 KTD10).
 func TestHandleWSLogs_RemoteInBandCluster_Refused(t *testing.T) {
-	ts, issueToken := wsLogsTestServer(t, "local")
+	ts, issueToken := wsLogsTestServer(t)
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/logs/default/my-pod/app"
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"http://localhost"}})
@@ -206,5 +214,88 @@ func TestHandleWSLogs_RemoteInBandCluster_Refused(t *testing.T) {
 	// The server closed the connection: nothing else is ever sent.
 	if err := conn.ReadJSON(&msg); err == nil {
 		t.Fatalf("got a second frame %v after the refusal", msg)
+	}
+}
+
+// Covers AE13: a web log stream that names no cluster, in-band or by header,
+// is refused rather than served from the local cluster. Browsers cannot set
+// X-Cluster-ID, so before this a remote selection streamed the local pod.
+func TestHandleWSLogs_NoCluster_Refused(t *testing.T) {
+	ts, issueToken := wsLogsTestServer(t)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/logs/default/my-pod/app"
+	conn := wsDialAndAuth(t, wsURL, "", "", issueToken())
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var msg map[string]any
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if msg["type"] != "error" || msg["reason"] != "cluster_required" {
+		t.Fatalf("got %v, want a cluster_required refusal", msg)
+	}
+}
+
+// TestHandleWSLogs_LocalHeader_Accepted verifies the mobile shape: a local
+// cluster named only by the X-Cluster-ID header still reaches the stream.
+func TestHandleWSLogs_LocalHeader_Accepted(t *testing.T) {
+	ts, issueToken := wsLogsTestServer(t)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/logs/default/my-pod/app"
+	conn := wsDialAndAuth(t, wsURL, "local", "", issueToken())
+	defer conn.Close()
+	if err := conn.WriteJSON(map[string]any{"container": "app", "tailLines": 10}); err != nil {
+		t.Fatalf("WriteJSON filter: %v", err)
+	}
+
+	// The handler confirms with "subscribed" once auth, the cluster check and
+	// RBAC have all passed, before it opens the (stub) log stream.
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var msg map[string]any
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if msg["type"] != "subscribed" {
+		t.Fatalf("got %v, want the stream admitted with a subscribed frame", msg)
+	}
+}
+
+// TestHandleWSLogsSearch_NoCluster_Refused is the Loki tail's half of AE13:
+// a tail that names no cluster is refused before any Loki dial. A fake Loki
+// that answers /ready gets the handler past its pre-upgrade availability
+// check, so the route is exercised through the real handler.
+func TestHandleWSLogsSearch_NoCluster_Refused(t *testing.T) {
+	fakeLoki := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(fakeLoki.Close)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	disc := loki.NewDiscoverer(nil, config.LokiConfig{URL: fakeLoki.URL}, logger)
+	disc.Discover(context.Background())
+	if disc.Client() == nil {
+		t.Fatal("fake Loki was not discovered; the test cannot reach the cluster check")
+	}
+
+	srv := testServer(t)
+	srv.LokiHandler = &loki.Handler{Discoverer: disc, Logger: logger}
+	mux := chi.NewRouter()
+	mux.Use(middleware.WSClusterContext)
+	mux.Get("/ws/logs-search", srv.handleWSLogsSearch)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/logs-search"
+	conn := wsDialAndAuth(t, wsURL, "", "", issueWSToken(t, srv, true))
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var msg map[string]any
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if msg["type"] != "error" || msg["reason"] != "cluster_required" {
+		t.Fatalf("got %v, want a cluster_required refusal", msg)
 	}
 }

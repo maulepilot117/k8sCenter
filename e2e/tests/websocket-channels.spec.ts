@@ -321,7 +321,9 @@ test.describe("WebSocket channels", () => {
     const probe = await probeWs(page, {
       path: `/ws/v1/ws/logs/${NAMESPACE}/${POD}/${CONTAINER}`,
       send: [
-        JSON.stringify({ type: "auth", token: accessToken }),
+        // The log stream must name its cluster; a browser cannot send
+        // X-Cluster-ID, so it rides in the auth frame.
+        JSON.stringify({ type: "auth", token: accessToken, clusterId: "local" }),
         JSON.stringify({ container: CONTAINER, tailLines: 10 }),
       ],
       maxFrames: 2,
@@ -472,7 +474,7 @@ test.describe("WebSocket channels", () => {
     const probe = await probeWs(page, {
       path: "/ws/v1/ws/logs-search",
       send: [
-        JSON.stringify({ type: "auth", token: accessToken }),
+        JSON.stringify({ type: "auth", token: accessToken, clusterId: "local" }),
         JSON.stringify({
           type: "subscribe",
           query: '{namespace="e2e-test"}',
