@@ -168,7 +168,7 @@ Kubernetes Cluster
 +-----------------------------------------------------------+
 |  +----------+     +-----------+     +------------+        |
 |  | Frontend  |---->|  Backend  |---->| PostgreSQL |        |
-|  | Bun/Astro |     |  Go 1.26  |     +------------+        |
+|  | Bun/Astro |     |  Go 1.27  |     +------------+        |
 |  | :8000     |     |  :8080    |                           |
 |  +----------+     +-----+-----+                           |
 |                         |                                  |
@@ -183,7 +183,7 @@ Kubernetes Cluster
 
 | Layer | Technology |
 |---|---|
-| Backend API | Go 1.26, chi router, client-go v0.35.2 |
+| Backend API | Go 1.27, chi router, client-go v0.35.2 |
 | Frontend | Bun 1.4.x, Astro 7.x (Preact islands), Tailwind v4 |
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack) |
@@ -198,7 +198,7 @@ Kubernetes Cluster
 
 ### Prerequisites
 
-- Go 1.26+, Bun 1.4.x (see `.bun-version`), Docker, Helm 3.x, kubectl
+- Go 1.27+, Bun 1.4.x (see `.bun-version`), Docker, Helm 3.x, kubectl
 - [kind](https://kind.sigs.k8s.io/) or k3s for local development
 
 ### Local Development
