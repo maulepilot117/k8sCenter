@@ -389,9 +389,11 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "get", AuthGroup: "", AuthResource: "pods/log",
 	},
 	{
-		// Loki tail always targets the LOCAL cluster's Loki service; a
-		// remote X-Cluster-ID would stream local logs under the remote
-		// cluster's name (confused deputy). handle_ws_logs_search.go:60.
+		// The discovered Loki is the LOCAL cluster's; a remote X-Cluster-ID
+		// would return local logs under the remote cluster's name (confused
+		// deputy). The tail refuses in handle_ws_logs_search.go; the REST
+		// reads refuse in loki/handler.go refuseRemote (501), and
+		// /logs/status reports detected:false with the reason.
 		ID: "logs.search", Label: "Log search",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",

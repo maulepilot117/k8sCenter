@@ -6,6 +6,9 @@ type LokiStatus struct {
 	URL         string `json:"url,omitempty"`
 	DetectedVia string `json:"detectedVia,omitempty"`
 	LastChecked string `json:"lastChecked"`
+	// Reason explains a status that is not this discovery result, such as
+	// unsupported_platform for a remote cluster this Loki cannot answer for.
+	Reason string `json:"reason,omitempty"`
 }
 
 // QueryResponse is the response from Loki query endpoints.
