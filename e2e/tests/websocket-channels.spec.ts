@@ -387,6 +387,13 @@ test.describe("WebSocket channels", () => {
         "the subprotocol credential did not survive the bridge",
     ).toBeGreaterThanOrEqual(1);
     expect(probe.frames[0]).toContain('"error"');
+    // A leg that arrives without the credential is served by the in-band
+    // handler instead, whose answer is a demand for an auth frame. Only the
+    // legacy handler reaching the missing pod proves the credential crossed.
+    expect(
+      probe.frames[0],
+      "the outbound leg arrived anonymous and took the in-band auth path",
+    ).not.toContain("auth");
   });
 
   /**
@@ -394,9 +401,9 @@ test.describe("WebSocket channels", () => {
    * anything. Without it, "the socket opened and the sentinel came back"
    * would pass just as happily with the credential discarded -- the bridge
    * completes the client handshake regardless of what the backend does.
-   * Offering only the sentinel leaves the outbound leg anonymous, the
-   * backend's middleware.Auth 401s it, and the client socket is closed with
-   * no frame ever delivered.
+   * Offering only the sentinel leaves the outbound leg anonymous, so the
+   * backend serves it on the in-band path, which refuses an auth frame that
+   * carries no token. The refusal is the backend's, and no shell starts.
    */
   test("exec without the credential subprotocol is refused by the backend", async ({
     page,
@@ -404,9 +411,12 @@ test.describe("WebSocket channels", () => {
     const probe = await probeWs(page, {
       path: `/ws/v1/ws/exec/${NAMESPACE}/${POD}/${CONTAINER}`,
       protocols: [WS_AUTH_SENTINEL_PROTOCOL],
+      send: [JSON.stringify({ type: "auth" })],
     });
 
-    expectChannelUnavailable(probe, "exec (anonymous)");
+    expect(probe.opened).toBe(true);
+    expect(probe.frames).toHaveLength(1);
+    expect(probe.frames[0]).toContain("invalid auth message");
     expectNoCredentialInUrl(probe, accessToken as string);
   });
 
