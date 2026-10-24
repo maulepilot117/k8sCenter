@@ -2,11 +2,9 @@ import { useSignal } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { getAccessToken } from "@/lib/api.ts";
+import { streamAuthFrame, streamErrorMessage } from "@/lib/stream-state.ts";
+import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import {
-  encodeBearerSubprotocol,
-  WS_AUTH_SENTINEL_PROTOCOL,
-} from "@/src/lib/ws-exec-auth.ts";
 
 interface PodTerminalProps {
   namespace: string;
@@ -17,6 +15,8 @@ interface PodTerminalProps {
 interface Session {
   id: number;
   container: string;
+  /** The cluster the session was opened for; its socket names it. */
+  target: ClusterTarget;
   shell: string;
   terminal: any;
   fitAddon: any;
@@ -119,26 +119,16 @@ export default function PodTerminal({
       if (!token) return;
 
       const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
-      // Exec is the one WS route the backend gates with middleware.Auth at
-      // upgrade time rather than in-band (see frontend/server/ws-proxy.ts).
-      // The browser WebSocket constructor has no headers parameter, so the
-      // token travels as a `Sec-WebSocket-Protocol` value instead of the
-      // first in-band message every other route uses — browsers can set
-      // that via the constructor's second argument, and it never touches
-      // the URL (an ingress in front of this pod logs request URLs by
-      // default). ws-proxy.ts's defaultGetAuthHeader recovers the token
-      // from it server-side and forwards it as a real Authorization header
-      // on the outbound leg to the backend, and echoes back only the plain
-      // sentinel, never the credential-bearing value.
+      // Exec authenticates in-band like every other stream: the token and
+      // the session's cluster go in the first frame, never in the URL (an
+      // ingress in front of this pod logs request URLs by default).
       const wsUrl = `${proto}//${globalThis.location.host}/ws/v1/ws/exec/${namespace}/${name}/${session.container}`;
-      const ws = new WebSocket(wsUrl, [
-        encodeBearerSubprotocol(token),
-        WS_AUTH_SENTINEL_PROTOCOL,
-      ]);
+      const ws = new WebSocket(wsUrl);
 
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {
+        ws.send(JSON.stringify(streamAuthFrame(token, session.target)));
         updateSession(id, { ws, connected: true });
         terminal.focus();
       };
@@ -150,8 +140,9 @@ export default function PodTerminal({
             if (msg.type === "shell") {
               updateSession(id, { shell: msg.name });
             } else if (msg.type === "error") {
-              updateSession(id, { error: msg.message });
-              terminal.writeln(`\r\n\x1b[31mError: ${msg.message}\x1b[0m`);
+              const message = streamErrorMessage(msg, "Terminal");
+              updateSession(id, { error: message });
+              terminal.writeln(`\r\n\x1b[31mError: ${message}\x1b[0m`);
             }
           } catch {
             terminal.write(event.data);
@@ -235,6 +226,9 @@ export default function PodTerminal({
     if (!token) return;
 
     const id = ++sessionIdCounter;
+    // Taken once, before the async imports: the session stays on the
+    // cluster selected when it was opened.
+    const target = currentTarget();
 
     // Register cancellation token before async work
     const cancelToken = { canceled: false };
@@ -268,6 +262,7 @@ export default function PodTerminal({
     const session: Session = {
       id,
       container,
+      target,
       shell: "",
       terminal,
       fitAddon,
