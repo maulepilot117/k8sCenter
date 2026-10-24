@@ -1,6 +1,9 @@
 import { type Signal, useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
+import { getAccessToken } from "@/lib/api.ts";
+import { streamAuthFrame, streamErrorMessage } from "@/lib/stream-state.ts";
 import type { LogLine } from "@/lib/types/logs.ts";
+import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface LogLiveTailProps {
@@ -15,10 +18,12 @@ const MAX_LINES = 5000;
 export default function LogLiveTail(props: LogLiveTailProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const pinRef = useRef<ClusterTarget | null>(null);
   const autoScroll = useSignal(true);
   const status = useSignal<"connecting" | "connected" | "disconnected">(
     "disconnected",
   );
+  const error = useSignal("");
 
   // Auto-scroll detection
   function handleScroll() {
@@ -46,6 +51,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
     }
 
     status.value = "connecting";
+    error.value = "";
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(
       `${protocol}//${location.host}/ws/v1/ws/logs-search`,
@@ -53,9 +59,14 @@ export default function LogLiveTail(props: LogLiveTailProps) {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      // Send auth token
-      const token = localStorage.getItem("access_token") ?? "";
-      ws.send(JSON.stringify({ type: "auth", token }));
+      const token = getAccessToken();
+      if (!token) {
+        error.value = "Not authenticated";
+        ws.close();
+        return;
+      }
+      pinRef.current ??= currentTarget();
+      ws.send(JSON.stringify(streamAuthFrame(token, pinRef.current)));
 
       // Send subscribe message
       ws.send(
@@ -77,6 +88,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
         }
         if (msg.type === "error") {
           status.value = "disconnected";
+          error.value = streamErrorMessage(msg, "Live log search");
           return;
         }
         if (msg.type === "log" && msg.payload) {
@@ -148,6 +160,9 @@ export default function LogLiveTail(props: LogLiveTailProps) {
           <span class="text-text-muted">
             &middot; {props.lines.value.length} lines
           </span>
+          {error.value && (
+            <span class="text-status-error">&middot; {error.value}</span>
+          )}
         </div>
         {!autoScroll.value && (
           <button

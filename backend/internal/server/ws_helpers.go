@@ -20,7 +20,11 @@ const (
 	wsWriteWait   = 10 * time.Second
 	wsPongWait    = 60 * time.Second
 	wsPingPeriod  = (wsPongWait * 9) / 10 // 54s
-	wsMaxReadSize = 4096                  // only expect small auth/filter messages
+	wsMaxReadSize = 4096                  // only expect small filter messages after auth
+	// wsAuthMaxReadSize bounds the auth frame alone. Its token carries the
+	// user's Kubernetes groups, so a user in many IdP groups outgrows
+	// wsMaxReadSize; 16 KiB is the allowance a token had as a request header.
+	wsAuthMaxReadSize = 16 * 1024
 )
 
 // wsRoute describes how a WebSocket route takes its target cluster and how
@@ -86,7 +90,7 @@ func (s *Server) wsAuthAndUpgradeFor(w http.ResponseWriter, r *http.Request, rou
 		return nil, nil, nil
 	}
 
-	conn.SetReadLimit(wsMaxReadSize)
+	conn.SetReadLimit(wsAuthMaxReadSize)
 
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var msg wsAuthMessage
@@ -160,6 +164,9 @@ func (s *Server) wsAuthAndUpgradeFor(w http.ResponseWriter, r *http.Request, rou
 		}
 	}
 
+	// Frames after auth are filters and control messages; only the auth
+	// frame needed the larger allowance.
+	conn.SetReadLimit(wsMaxReadSize)
 	return conn, user, middleware.WithClusterID(ctx, effective)
 }
 

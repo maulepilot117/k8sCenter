@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -248,5 +249,136 @@ func TestWSAuth_GenerationLookupFailures(t *testing.T) {
 		f.srv.metricsClusters = failingClusterRecords{}
 		msg := f.connect(t, "", map[string]any{"token": f.token(t, true), "clusterId": "remote-1", "generation": gen})
 		expectRefused(t, msg, "db_unavailable")
+	})
+}
+
+// The frame sizes below are literals rather than the constants, so a change
+// to either limit has to change these tests too.
+const (
+	testAuthFrameLimit  = 16 * 1024
+	testLaterFrameLimit = 4 * 1024
+)
+
+// largeAuthFrame returns an auth frame for a user in enough IdP groups that
+// the frame is at least minLen bytes, so it outgrows the limit later frames
+// get. The groups are what make a real token this large.
+func largeAuthFrame(t *testing.T, srv *Server, minLen int) []byte {
+	t.Helper()
+	var groups []string
+	for i := 0; ; i++ {
+		groups = append(groups, fmt.Sprintf("oidc:%08d-7f3c-4a1e-9b2d-5c8e0f6a1b2c", i))
+		if i%10 != 0 {
+			continue
+		}
+		tok, err := srv.TokenManager.IssueAccessToken(&auth.User{
+			ID: "u1", Username: "alice", KubernetesUsername: "alice",
+			KubernetesGroups: groups, Roles: []string{"viewer"},
+		})
+		if err != nil {
+			t.Fatalf("IssueAccessToken: %v", err)
+		}
+		frame, _ := json.Marshal(map[string]any{"type": "auth", "token": tok, "clusterId": "local"})
+		if len(frame) >= minLen {
+			return frame
+		}
+	}
+}
+
+// A user in many groups has a token larger than later frames may be. An
+// auth frame just under the auth limit is still accepted.
+func TestWSAuth_LargeTokenIsAccepted(t *testing.T) {
+	f := newWSHelperFixture(t, flowsWSRoute)
+	frame := largeAuthFrame(t, f.srv, testAuthFrameLimit-700)
+	if len(frame) > testAuthFrameLimit {
+		t.Fatalf("frame is %d bytes, want it under %d", len(frame), testAuthFrameLimit)
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(f.url, http.Header{"Origin": {"http://localhost"}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.WriteMessage(websocket.TextMessage, frame); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var msg map[string]any
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	expectCluster(t, msg, "local")
+}
+
+// The auth frame's allowance has its own bound, and frames after auth are
+// held to the small limit again.
+func TestWSAuth_FrameLimits(t *testing.T) {
+	srv := testServer(t)
+	mux := chi.NewRouter()
+	mux.Use(middleware.WSClusterContext)
+	mux.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _ := srv.wsAuthAndUpgradeFor(w, r, flowsWSRoute)
+		if conn == nil {
+			return
+		}
+		defer conn.Close()
+		conn.WriteJSON(map[string]any{"type": "ok"})
+		if _, _, err := conn.ReadMessage(); err == nil {
+			conn.WriteJSON(map[string]any{"type": "read"})
+		}
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	url := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+
+	// authed dials and authenticates with a token over the later-frame limit.
+	authed := func(t *testing.T) *websocket.Conn {
+		t.Helper()
+		conn, _, err := websocket.DefaultDialer.Dial(url, http.Header{"Origin": {"http://localhost"}})
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		conn.WriteMessage(websocket.TextMessage, largeAuthFrame(t, srv, testLaterFrameLimit+1))
+		var msg map[string]any
+		if err := conn.ReadJSON(&msg); err != nil || msg["type"] != "ok" {
+			t.Fatalf("auth: msg=%v err=%v, want ok", msg, err)
+		}
+		return conn
+	}
+
+	t.Run("a frame after auth at the small limit is read", func(t *testing.T) {
+		conn := authed(t)
+		conn.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("x", testLaterFrameLimit)))
+		var msg map[string]any
+		if err := conn.ReadJSON(&msg); err != nil || msg["type"] != "read" {
+			t.Fatalf("msg=%v err=%v, want the frame read", msg, err)
+		}
+	})
+
+	t.Run("a frame after auth over the small limit ends the stream", func(t *testing.T) {
+		conn := authed(t)
+		conn.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("x", testLaterFrameLimit+1)))
+		var msg map[string]any
+		if err := conn.ReadJSON(&msg); err == nil {
+			t.Fatalf("got %v, want the stream closed for an oversized frame", msg)
+		}
+	})
+
+	t.Run("an auth frame over its own limit is not read", func(t *testing.T) {
+		conn, _, err := websocket.DefaultDialer.Dial(url, http.Header{"Origin": {"http://localhost"}})
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		// Under the limit this token would earn "invalid token"; over it,
+		// the frame is never parsed and the connection closes.
+		frame, _ := json.Marshal(map[string]any{"type": "auth", "token": strings.Repeat("x", testAuthFrameLimit)})
+		conn.WriteMessage(websocket.TextMessage, frame)
+		var msg map[string]any
+		if err := conn.ReadJSON(&msg); err == nil {
+			t.Fatalf("got %v, want the connection closed unread", msg)
+		}
 	})
 }

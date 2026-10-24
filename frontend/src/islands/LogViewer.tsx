@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { apiGet, getAccessToken } from "@/lib/api.ts";
+import { streamAuthFrame, streamErrorMessage } from "@/lib/stream-state.ts";
+import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface LogViewerProps {
@@ -63,6 +65,7 @@ export default function LogViewer({
 
   // WS refs — tracked separately from signal to avoid storing non-serializable objects in signals
   const wsRefs = useRef<Map<number, WebSocket>>(new Map());
+  const pinRef = useRef<ClusterTarget | null>(null);
 
   // RAF batching — accumulate incoming lines, flush once per animation frame
   const pendingLines = useRef<Map<number, string[]>>(new Map());
@@ -201,7 +204,8 @@ export default function LogViewer({
           updateTabState(tabIdx, { error: "Not authenticated" });
           return;
         }
-        ws.send(JSON.stringify({ type: "auth", token }));
+        pinRef.current ??= currentTarget();
+        ws.send(JSON.stringify(streamAuthFrame(token, pinRef.current)));
         ws.send(
           JSON.stringify({
             container,
@@ -242,7 +246,9 @@ export default function LogViewer({
             return;
           }
           if (msg.type === "error") {
-            updateTabState(tabIdx, { error: msg.message });
+            updateTabState(tabIdx, {
+              error: streamErrorMessage(msg, "Live log streaming"),
+            });
             return;
           }
           if (msg.type === "end") {
