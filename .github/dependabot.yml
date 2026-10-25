@@ -4,15 +4,20 @@ version: 2
 # Phase 7 fresh. Hand-pinning actions stops mutable tags from being
 # silently rewritten under us; dependabot keeps the pins from rotting
 # without an operator having to chase every action release manually.
-# The 7-day supply-chain cooldown in CLAUDE.md still applies — the PR
-# reviewer must confirm each bumped action is at least 7 days old
-# before merging.
+#
+# Every entry carries the 7-day supply-chain cooldown from CLAUDE.md, so a
+# version-update PR never proposes a release younger than the rule allows
+# (check-action-pins.sh and bunfig.toml enforce the same window in CI and at
+# install). Dependabot does not apply cooldown to security updates; a
+# security fix inside the window still needs an explicit user override.
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore(actions)
@@ -31,6 +36,8 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: chore(backend)
@@ -47,11 +54,30 @@ updates:
         patterns:
           - "golang.org/x/*"
 
+  # The frontend is managed by Bun (bun.lock). Without this entry,
+  # Dependabot's security updates fall back to npm_and_yarn, which cannot
+  # update bun.lock and fails the job.
+  - package-ecosystem: bun
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(frontend)
+    labels:
+      - dependencies
+      - frontend
+
   - package-ecosystem: docker
     directory: /backend
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 2
     commit-message:
       prefix: chore(docker)
@@ -64,6 +90,8 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 2
     commit-message:
       prefix: chore(docker)
