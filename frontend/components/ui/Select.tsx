@@ -1,7 +1,8 @@
-import type { ComponentChildren, JSX } from "preact";
+import type { AccessibleSelectHTMLAttributes, ComponentChildren } from "preact";
 
-// SelectHTMLAttributes provides value/multiple/etc.; HTMLAttributes alone does not.
-interface SelectProps extends JSX.SelectHTMLAttributes<HTMLSelectElement> {
+// The accessible variant is what `<select>` itself accepts: it pairs `role`
+// with `multiple`/`size`, so the spread below stays assignable.
+type SelectProps = AccessibleSelectHTMLAttributes<HTMLSelectElement> & {
   label?: string;
   error?: string;
   /** Renders a red asterisk after the label. */
@@ -12,7 +13,7 @@ interface SelectProps extends JSX.SelectHTMLAttributes<HTMLSelectElement> {
   options?: Array<{ value: string; label: string }>;
   /** Use children for richer markup like <optgroup>. */
   children?: ComponentChildren;
-}
+};
 
 export function Select({
   label,

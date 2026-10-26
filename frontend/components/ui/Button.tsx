@@ -1,11 +1,11 @@
-import type { JSX } from "preact";
+import type { ButtonHTMLAttributes } from "preact";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 
 type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
 type ButtonSize = "sm" | "md" | "lg";
 
 interface ButtonProps
-  extends Omit<JSX.HTMLAttributes<HTMLButtonElement>, "size"> {
+  extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "size"> {
   type?: "button" | "submit" | "reset";
   variant?: ButtonVariant;
   size?: ButtonSize;

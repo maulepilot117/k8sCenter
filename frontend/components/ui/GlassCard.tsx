@@ -1,4 +1,4 @@
-import type { ComponentChildren, JSX } from "preact";
+import type { ComponentChildren, CSSProperties } from "preact";
 
 interface GlassCardProps {
   children: ComponentChildren;
@@ -6,7 +6,7 @@ interface GlassCardProps {
   tier?: "surface" | "elevated";
   padding?: number | string;
   radius?: number;
-  style?: JSX.CSSProperties;
+  style?: CSSProperties;
   class?: string;
 }
 
