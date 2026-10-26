@@ -19,7 +19,7 @@
     "@astrojs/preact": "^6.0.5",
     "vite": "^7.3.7",
     "@babel/core": "^7.29.6",
-    "preact": "^10.28.3",
+    "preact": "^11.0.1",
     "@preact/signals": "^2.11.3",
     "@tailwindcss/vite": "^4.1.10",
     "tailwindcss": "^4.1.10",
