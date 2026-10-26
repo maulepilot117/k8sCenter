@@ -19,7 +19,11 @@ export default function TextField({
 }: TextFieldProps) {
   return (
     <input
-      type={type}
+      // Preact types <input> as a union keyed on a literal `type`, so the
+      // two-way choice is resolved to one branch before it is spread.
+      {...(type === "password"
+        ? { type: "password" as const }
+        : { type: "text" as const })}
       value={value}
       placeholder={placeholder}
       onInput={(e) => onInput((e.target as HTMLInputElement).value)}

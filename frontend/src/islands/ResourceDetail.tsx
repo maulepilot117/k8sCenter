@@ -1237,7 +1237,7 @@ export default function ResourceDetail({
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-function primaryButtonStyle(disabled: boolean): preact.JSX.CSSProperties {
+function primaryButtonStyle(disabled: boolean): preact.CSSProperties {
   return {
     padding: "6px 14px",
     borderRadius: "9px",

@@ -1,4 +1,5 @@
 import { useSignal } from "@preact/signals";
+import type { CSSProperties } from "preact";
 import { useEffect } from "preact/hooks";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
@@ -500,7 +501,7 @@ function getDetailHref(
   }
 }
 
-const thStyle: JSX.CSSProperties = {
+const thStyle: CSSProperties = {
   fontSize: "11px",
   fontWeight: 600,
   textTransform: "uppercase",
@@ -510,35 +511,33 @@ const thStyle: JSX.CSSProperties = {
   textAlign: "left",
 };
 
-const tdStyle: JSX.CSSProperties = {
+const tdStyle: CSSProperties = {
   padding: "8px 12px",
   color: "var(--text-primary)",
   fontSize: "14px",
 };
 
-const tdSecStyle: JSX.CSSProperties = {
+const tdSecStyle: CSSProperties = {
   padding: "8px 12px",
   color: "var(--text-secondary)",
   fontSize: "14px",
 };
 
-const tableWrapStyle: JSX.CSSProperties = {
+const tableWrapStyle: CSSProperties = {
   overflowX: "auto",
   borderRadius: "9px",
   border: "1px solid var(--border-primary)",
 };
 
-const theadRowStyle: JSX.CSSProperties = {
+const theadRowStyle: CSSProperties = {
   borderBottom: "1px solid var(--border-primary)",
   background: "var(--surface)",
 };
 
-const tbodyRowStyle: JSX.CSSProperties = {
+const tbodyRowStyle: CSSProperties = {
   borderBottom: "1px solid var(--border-subtle)",
   cursor: "pointer",
 };
-
-import type { JSX } from "preact";
 
 function renderTable(
   kind: GatewayResourceKind,

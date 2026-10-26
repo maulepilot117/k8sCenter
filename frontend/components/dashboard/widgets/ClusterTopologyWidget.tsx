@@ -1,4 +1,4 @@
-import type { JSX } from "preact";
+import type { CSSProperties } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { dashboardData } from "@/lib/dashboard/data.ts";
@@ -534,7 +534,7 @@ function NodeGlyph({
  */
 function DetailPanel({ node, at }: { node: TopologyNode; at: Active }) {
   const OFFSET = 14;
-  const style: JSX.CSSProperties = {
+  const style: CSSProperties = {
     ...(at.x > at.w / 2
       ? { right: `${Math.max(0, at.w - at.x + OFFSET)}px` }
       : { left: `${at.x + OFFSET}px` }),

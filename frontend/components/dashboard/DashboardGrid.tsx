@@ -1,5 +1,9 @@
 import { useSignal } from "@preact/signals";
-import type { JSX } from "preact";
+import type {
+  CSSProperties,
+  TargetedKeyboardEvent,
+  TargetedPointerEvent,
+} from "preact";
 import { useLayoutEffect, useRef } from "preact/hooks";
 import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
@@ -152,9 +156,9 @@ interface GridItemProps {
   dragging: boolean;
   /** True while this item is the one being resized. */
   resizing: boolean;
-  onDragStart: (event: JSX.TargetedPointerEvent<HTMLElement>) => void;
-  onResizeStart: (event: JSX.TargetedPointerEvent<HTMLElement>) => void;
-  onKeyDown: (event: JSX.TargetedKeyboardEvent<HTMLElement>) => void;
+  onDragStart: (event: TargetedPointerEvent<HTMLElement>) => void;
+  onResizeStart: (event: TargetedPointerEvent<HTMLElement>) => void;
+  onKeyDown: (event: TargetedKeyboardEvent<HTMLElement>) => void;
   /** Takes this widget off the working copy. */
   onRemove: () => void;
   /**
@@ -190,7 +194,7 @@ export function GridItem({
   onRemove,
   onReparameterize,
 }: GridItemProps) {
-  const style: JSX.CSSProperties = narrow
+  const style: CSSProperties = narrow
     ? { gridColumn: "1 / -1", gridRow: `span ${item.h}` }
     : {
         gridColumn: `${item.x + 1} / span ${item.w}`,
@@ -643,7 +647,7 @@ export default function DashboardGrid({
   function startSession(
     kind: SessionKind,
     instanceId: string,
-    event: JSX.TargetedPointerEvent<HTMLElement>,
+    event: TargetedPointerEvent<HTMLElement>,
     begin: (start: LayoutItem, origin: Cell) => (cell: Cell) => void,
   ) {
     const el = gridRef.current;
@@ -807,7 +811,7 @@ export default function DashboardGrid({
   /** Moves a widget: the pointer's travel in cells applied to where it began. */
   function startDrag(
     instanceId: string,
-    event: JSX.TargetedPointerEvent<HTMLElement>,
+    event: TargetedPointerEvent<HTMLElement>,
   ) {
     startSession("drag", instanceId, event, (start, origin) => {
       let last = origin;
@@ -827,7 +831,7 @@ export default function DashboardGrid({
   function startResize(
     instanceId: string,
     def: WidgetDef,
-    event: JSX.TargetedPointerEvent<HTMLElement>,
+    event: TargetedPointerEvent<HTMLElement>,
   ) {
     startSession("resize", instanceId, event, (_start, origin) => {
       let last = origin;
@@ -864,7 +868,7 @@ export default function DashboardGrid({
   function handleItemKey(
     item: LayoutItem,
     def: WidgetDef,
-    event: JSX.TargetedKeyboardEvent<HTMLElement>,
+    event: TargetedKeyboardEvent<HTMLElement>,
   ) {
     // Ctrl, Alt and Meta with an arrow belong to the browser and the window
     // manager -- back, forward, workspace switching. Shift is ours. Checked
@@ -931,7 +935,7 @@ export default function DashboardGrid({
   const ordered = resolveRenderable(items.value, getWidget);
   const active = session.value;
 
-  const style: JSX.CSSProperties = narrow.value
+  const style: CSSProperties = narrow.value
     ? {
         display: "grid",
         gridTemplateColumns: "minmax(0, 1fr)",

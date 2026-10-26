@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import type { JSX } from "preact";
+import type { CSSProperties } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
@@ -90,7 +90,7 @@ interface StreamFrame {
   retryable?: boolean;
 }
 
-function verdictStyle(verdict: string): JSX.CSSProperties {
+function verdictStyle(verdict: string): CSSProperties {
   switch (verdict) {
     case "FORWARDED":
       return {
