@@ -581,6 +581,20 @@ export default function DashboardGrid({
   /** Ends the session in flight, if there is one. Set for the grid's life. */
   const endSession = useRef<((restore: boolean) => void) | null>(null);
   /**
+   * Scroll offsets of every box above the grid, taken just before a layout
+   * change and put back once it has rendered.
+   *
+   * Where the browser has `moveBefore`, Preact moves a reordered cell with it,
+   * and that keeps focus on the cell -- so the browser scrolls whatever it
+   * takes to keep the focused cell in view, `<main>` and the page included.
+   * `insertBefore` blurred the cell instead, and the focus hook puts focus
+   * back with `preventScroll`. Either way the user asked to move a widget, not
+   * the dashboard under it, and a pointer session re-measures the grid on
+   * every pointermove, so a scroll mid-drag would also land the widget in the
+   * wrong cell.
+   */
+  const heldScroll = useRef<Array<[Element, number, number]> | null>(null);
+  /**
    * The one way the working copy changes, so that nothing can reshape the
    * layout without the caller hearing about it.
    *
@@ -589,9 +603,32 @@ export default function DashboardGrid({
    * by three of those four paths is worse than no Save button at all.
    */
   function setItems(next: LayoutItem[]) {
+    const grid = gridRef.current;
+    // Only a focused cell drags the scroll along with it. An unchanged array
+    // renders nothing, so an offset held for it would be put back on some
+    // later, unrelated render.
+    if (next !== items.value && grid?.contains(document.activeElement)) {
+      const held: Array<[Element, number, number]> = [];
+      for (let el = grid.parentElement; el; el = el.parentElement) {
+        held.push([el, el.scrollTop, el.scrollLeft]);
+      }
+      heldScroll.current = held;
+    }
     items.value = next;
     onChange?.(next);
   }
+
+  // No dependencies: this has to run after whichever render carried the held
+  // change, and that render is the one moving the cell.
+  useLayoutEffect(() => {
+    const held = heldScroll.current;
+    if (!held) return;
+    heldScroll.current = null;
+    for (const [el, top, left] of held) {
+      if (el.scrollTop !== top) el.scrollTop = top;
+      if (el.scrollLeft !== left) el.scrollLeft = left;
+    }
+  });
 
   // Layout effect, so the first paint already uses the right mode rather than
   // flashing twelve squeezed columns on a narrow screen.

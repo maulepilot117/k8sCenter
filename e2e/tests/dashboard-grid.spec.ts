@@ -942,6 +942,38 @@ test.describe("Dashboard grid keyboard", () => {
     expect(await scroll()).toEqual(before);
   });
 
+  test("an arrow move keeps a dashboard that is already scrolled where it was", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    // The test above starts from the top, where "stays put" and "reset to 0"
+    // look the same. Moving a cell that keeps focus makes the browser scroll
+    // to it, so what has to survive is wherever the user had scrolled to.
+    const scroll = () =>
+      page.evaluate(() => ({
+        main: document.querySelector("main")?.scrollTop ?? 0,
+        page: globalThis.scrollY,
+      }));
+
+    await widget(page, "d-cluster-health").focus();
+    await page.evaluate(() => {
+      const main = document.querySelector("main");
+      if (main) main.scrollTop = 120;
+    });
+    const before = await scroll();
+    expect(before.main).toBeGreaterThan(0);
+
+    // Two presses, as above: the first downward step is absorbed by design,
+    // and the second is the one that reorders the cell in the DOM.
+    await page.keyboard.press("ArrowDown");
+    await expect(widget(page, "d-cluster-health")).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(widget(page, "d-cluster-health")).toBeFocused();
+
+    expect(await scroll()).toEqual(before);
+  });
+
   test("edit mode is the widget and its remove button, and nothing else", async ({
     page,
   }) => {
