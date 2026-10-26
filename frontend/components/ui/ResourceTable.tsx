@@ -26,6 +26,12 @@ interface ResourceTableProps {
   sortDir?: "asc" | "desc";
   /** called with a column key when a sortable header is clicked */
   onSort?: (key: string) => void;
+  /**
+   * The rows are placeholders while a load is in flight. Exposed as
+   * aria-busy, so assistive tech (and a test) can tell a loading table from a
+   * loaded one with the same row count.
+   */
+  busy?: boolean;
 }
 
 /**
@@ -44,6 +50,7 @@ export default function ResourceTable({
   sortKey,
   sortDir,
   onSort,
+  busy,
 }: ResourceTableProps) {
   const grid =
     columns.map((c) => c.width ?? "1fr").join(" ") + (chevron ? " 40px" : "");
@@ -51,6 +58,7 @@ export default function ResourceTable({
   return (
     <div
       role="table"
+      aria-busy={busy ? "true" : undefined}
       style={{
         background: "var(--bg-surface)",
         border: "1px solid var(--border-primary)",
