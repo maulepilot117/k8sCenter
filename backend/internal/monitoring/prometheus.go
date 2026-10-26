@@ -48,22 +48,26 @@ func newPrometheusClient(cfg api.Config) (*PrometheusClient, error) {
 	return &PrometheusClient{api: v1.NewAPI(client)}, nil
 }
 
-// Query runs a PromQL instant query.
+// Query runs a PromQL instant query. Prometheus's info-level annotations
+// (v1.Infos) are dropped: only warnings are surfaced to callers.
 func (p *PrometheusClient) Query(ctx context.Context, query string, ts time.Time) (model.Value, v1.Warnings, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return p.api.Query(ctx, query, ts)
+	val, warnings, _, err := p.api.Query(ctx, query, ts)
+	return val, warnings, err
 }
 
-// QueryRange runs a PromQL range query.
+// QueryRange runs a PromQL range query. Info-level annotations are dropped,
+// as in Query.
 func (p *PrometheusClient) QueryRange(ctx context.Context, query string, start, end time.Time, step time.Duration) (model.Value, v1.Warnings, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	return p.api.QueryRange(ctx, query, v1.Range{
+	val, warnings, _, err := p.api.QueryRange(ctx, query, v1.Range{
 		Start: start,
 		End:   end,
 		Step:  step,
 	})
+	return val, warnings, err
 }
 
 // QueryTemplate is a named PromQL query with variable substitution.
