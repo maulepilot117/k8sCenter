@@ -10,7 +10,7 @@
 # Deno image's `--platform=linux/amd64` pin, which existed because Deno's WASM
 # loader crashed under QEMU ARM64: there is no emulation here to crash.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM oven/bun:1.4.2-debian@sha256:4f6e31d1a54d6a3dd312daef655fc998101b5043d52e12592ac293ef04b9bc73 AS builder
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.3-debian@sha256:923bedb355f7746666659f71e724998159a5c8c54bd1cb1030e1975a0698415b AS builder
 
 ARG TARGETARCH
 
@@ -104,7 +104,7 @@ RUN set -eux; \
 # compare against. A non-Debian base would mean rebuilding this gate from
 # scratch. distroless/base is not an option either -- it ships no libstdc++,
 # and Bun will not start without it.
-FROM gcr.io/distroless/cc-debian13@sha256:159783207c2cd44c2aa5715961d13c8612368ac9bd450f887e3f08fc8ea461e3 AS runtime-base
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1 AS runtime-base
 
 # debian:trixie (NOT -slim) -- the slim variant ships
 # /etc/dpkg/dpkg.cfg.d/docker-clean which path-excludes /usr/share/doc/*,
@@ -176,7 +176,7 @@ RUN set -e && \
 # for the same reason -- shipping a toolchain the running container cannot
 # load still hands Trivy a set of packages to raise release-blocking CVEs on.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian13@sha256:159783207c2cd44c2aa5715961d13c8612368ac9bd450f887e3f08fc8ea461e3
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1
 
 # Overlay patched libraries and their updated package metadata.
 COPY --from=security-patch /patch/usr/lib/ /usr/lib/
