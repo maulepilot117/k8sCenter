@@ -71,6 +71,7 @@ Preact 11 also changes runtime behavior in ways the type checker cannot see:
 ### Key Decisions
 
 - **The specs are the contract.** The two failing e2e specs describe intended behavior, so each regression is fixed in app code. Governs R4, R5, R7, R8. (session-settled: user-approved — chosen over weakening the specs or routing the behavior through `preact/compat`: the specs encode accessibility and validation rules the product depends on.)
+  - **Outcome:** R4 was a real app regression and was fixed in app code (KTD5). The R5 failure was not a regression: the dialog rendered the right options, and the spec checked them through an attribute Preact 11 no longer writes (KTD6). That spec now asserts the exact option list, which is stricter than before, not weaker.
 
 ### Success Criteria
 
@@ -110,7 +111,7 @@ Preact 11 also changes runtime behavior in ways the type checker cannot see:
 ### Key Technical Decisions
 
 - KTD1. **Target `preact@11.0.1`.** It is 18 days old, so it clears the cooldown today. (session-settled: user-approved — chosen over waiting until 2026-10-30 to go straight to 11.0.2: the work can start now, and 11.0.2's type changes are a smaller follow-up.)
-  - **Conflict call-out:** the e2e trace ranks Preact issue #5264 as the most likely cause (~45%) of the R5 failure. In that issue, a render error elsewhere leaves a component marked dirty so that its later re-renders are dropped. The fix shipped in 11.0.2 (#5265). The plan stays on 11.0.1 because the trigger is itself a render error in our code, which U6 fixes regardless. The 11.0.2 stop condition in the Goal Capsule applies only if no such error exists and the drop still happens.
+  - **Conflict call-out, resolved:** the pre-diagnosis trace ranked Preact issue #5264, a render error leaving a component's later re-renders dropped and fixed in 11.0.2, as the likeliest cause of the R5 failure. The CI trace from PR #648 showed no page error and the correct options rendered, so the R5 failure never depended on 11.0.2 (KTD6).
 - KTD2. **Work on a fresh branch `chore/preact-11` off `main`, and close #639 as superseded.** (session-settled: user-approved — chosen over pushing to Dependabot's branch: Dependabot stops managing a branch once someone else commits to it.)
 - KTD3. **Bump `@astrojs/preact` to 6.1.0 and `preact-render-to-string` to ^6.8.1 in the same change.**
   - `@astrojs/preact@6.0.5` declares the peer `preact ^10.6.5`; 6.1.0 is the first release whose peer allows `^11.0.0`.
@@ -124,12 +125,18 @@ Preact 11 also changes runtime behavior in ways the type checker cannot see:
   - Fix the shared wrappers first and re-run `astro check` before touching consumers. Most of the 171 implicit-`any` and 173 assignability errors should vanish without edits to the ~40 consumer files, so only real residue gets fixed.
 - KTD5. **Restore the scroll position after a keyboard reorder instead of preventing the DOM move.** The full sequence is in High-Level Technical Design.
   - Preact 11 moves the focused cell with `moveBefore`, which keeps focus. That means the existing blur-restore in `frontend/lib/hooks/use-dashboard-focus.ts` (`focus({ preventScroll: true })`) never fires, and Chromium scrolls the moved, still-focused cell into view.
-  - **Fix:** capture `<main>`'s scroll offset before the reorder write and restore it after the patch.
+  - Confirmed in an isolated Chromium 152 page. A focused node moved with `moveBefore` keeps focus, and the browser scrolls its container synchronously during the move. `insertBefore` drops focus and does not scroll.
+  - **Fix:** `setItems`, the one path every layout change takes, records the scroll offsets of every box above the grid when focus is inside it. A layout effect restores them after the render that moved the cell. Walking up to `<html>` covers both `<main>` and the page. The pointer sessions get the same guard, since they re-measure the grid on every pointermove.
   - Keep the blur-restore, since it is still the path on Preact 10 semantics and in browsers without `moveBefore`. Keep DOM order equal to visual order, since it is the tab order on purpose.
-- KTD6. **Diagnose the service-picker failure before choosing a fix.** The trace narrows it to three hypotheses that one instrumented run can tell apart (see High-Level Technical Design).
-  - **Render error (H1):** fix the throwing component.
-  - **Stale or never-applied response (H2):** key the fetched list to its namespace by storing `{namespace, names}`, and render only a list whose namespace matches the current selection. This replaces the synchronous clear at the top of the effect in `frontend/lib/hooks/use-services.ts`.
-  - **Lost signal subscription (H3):** hold the namespace-keyed list in hook state (`useState`) instead of a signal, so a resolved response re-renders the dialog through hook state rather than the signal-to-component subscription. The dialog already reads the signal during render, so reading it there again would not change anything.
+- KTD6. **The service-picker failure was a spec selector, not an app regression; fix the assertion.**
+  - The CI trace from PR #648 showed:
+    - `/services/staging` returned 200 with `["preview"]`;
+    - there was no page error;
+    - the page snapshot taken at the failure showed the picker offering "preview".
+  - Cause: Preact 10.29.8 always wrote `value` onto a new `<option>`, through an IE11 clause (`nodeType == 'option' && inputValue != oldProps[i]`). Preact 11.0.1 dropped that clause and writes `value` only when it differs from `dom.value`. An option without the attribute reports its text as its value, so `<option value="preview">preview</option>` gets no attribute.
+  - Consequence: selection and form values are unchanged, but `option[value="preview"]` matched nothing. The neighbouring `option[value="checkout"]` -> 0 check had been passing vacuously for the same reason.
+  - Fix: the spec compares the select's whole list of option values, read from each option's value property, with `["", "preview"]`. `use-services.ts` and `WidgetParamDialog.tsx` stay unchanged.
+  - The three pre-diagnosis hypotheses (a render error, a dropped response, a lost signal subscription) were each ruled out by the trace.
 
 ### High-Level Technical Design
 
@@ -142,29 +149,16 @@ sequenceDiagram
   participant P as Preact 11
   participant B as Chromium
   U->>G: ArrowRight on focused cell
-  G->>G: preventDefault, capture main.scrollTop / scrollLeft
+  G->>G: preventDefault; setItems records every ancestor's scroll offsets
   G->>P: write reordered items
   P->>B: moveBefore(cell) — focus kept, no blur
-  B-->>B: scrolls focused moved cell into view (the regression)
+  B-->>B: synchronously scrolls the focused moved cell into view (the regression)
   P->>G: layout effect after patch
-  G->>B: restore captured main scroll offset
+  G->>B: restore the recorded offsets, before paint
   Note over G: existing blur-restore still covers insertBefore paths
 ```
 
-If the confirming experiment shows the browser scroll lands after layout effects, the restore moves to a one-shot `scroll` listener on `<main>` that is armed by the keydown and disarmed after one frame.
-
-Service-picker diagnosis (KTD6):
-
-```mermaid
-flowchart TB
-  A[Instrumented run: pageerror, console, /services/staging request, click confirm before asserting preview] --> B{pageerror during namespace change?}
-  B -->|yes| H1[H1: dirty flag left by render error. Fix the throwing component]
-  B -->|no| C{preview appears only after the confirm click?}
-  C -->|yes| H3[H3: lost signal subscription. Namespace-keyed list held in hook state]
-  C -->|no| D{request fulfilled with preview?}
-  D -->|yes| H2[H2: response dropped by live flag or ordering. Namespace-keyed list]
-  D -->|no| E[Stop: backend or e2e fixture issue, outside this plan]
-```
+The browser scrolls during the move itself, so a layout effect restores the offsets before anything paints, and no deferred scroll listener is needed.
 
 ---
 
@@ -253,14 +247,11 @@ flowchart TB
   - `frontend/lib/hooks/use-dashboard-focus.ts` (only if the restore belongs beside the existing blur-restore)
   - `e2e/tests/dashboard-grid.spec.ts` (new scenario only; existing assertions unchanged)
 - **Approach:**
-  1. Confirm the trigger before writing the fix. Run the failing spec once with an init script that deletes `Element.prototype.moveBefore` (a pass confirms the trigger). Log a stack from a `scroll` listener on `<main>` to see whether the scroll is browser-initiated. Do not commit the instrumentation.
-     - Apply KTD5's capture-and-restore only when `moveBefore` is confirmed as the trigger and the scroll is browser-initiated.
-     - If the spec still fails with `moveBefore` deleted, or the stack shows an app-code `focus()` or `scrollIntoView` call, fix that call site instead.
-     - If neither experiment points to a cause, stop and ask rather than masking an unknown cause with a restore.
-  2. Implement KTD5. Capture `<main>`'s offsets in the keyboard path before the reorder write, and restore them in a layout effect that runs after the patch. Switch to the one-shot scroll-listener variant only if the experiment shows the scroll lands later.
+  1. Confirm the trigger before writing the fix. No local e2e stack was available, so the trigger was confirmed in an isolated Chromium 152 page (KTD5). A focused node moved with `moveBefore` scrolled its container by 264-952px, while `insertBefore` dropped focus and did not scroll. The PR's CI e2e run then confirmed the fix against the real app.
+  2. Implement KTD5 in `setItems` and a layout effect.
   3. Leave the deliberate `scrollIntoView({ block: "nearest" })` on focus moves between widgets alone.
   4. `DashboardGrid.tsx` is over 300 LOC. If the change grows beyond a localized capture-and-restore, apply the project's Step 0 rule: a separate dead-code cleanup commit first.
-- **Execution note:** Confirm the trigger with the experiment before writing the fix. The fix direction depends on when the scroll happens.
+- **Execution note:** Confirm the trigger before writing the fix; the restore's timing depends on when the browser scrolls.
 - **Patterns to follow:** the capture-before-patch and restore-in-layout-effect shape already used for `activePlacement` in `frontend/lib/hooks/use-dashboard-focus.ts`.
 - **Test scenarios:**
   - With `<main>` at scroll 0, press ArrowRight twice on `d-cluster-health` in edit mode. Main and page scroll stay `{0, 0}` and the widget stays focused (existing spec line 921).
@@ -272,31 +263,41 @@ flowchart TB
 
 ### U6. Widget parameter service picker follows the namespace
 
-- **Goal:** The service picker shows the selected namespace's services after a namespace change.
+- **Goal:** The service picker shows the selected namespace's services after a namespace change, and the spec proves it.
 - **Requirements:** R5, R7, R8. KTD6.
 - **Dependencies:** U3.
 - **Files:**
-  - `frontend/lib/hooks/use-services.ts`
-  - `frontend/components/dashboard/WidgetParamDialog.tsx`
+  - `e2e/tests/dashboard-catalog.spec.ts` (the option assertion at line 334)
   - `frontend/lib/hooks/use-services_test.tsx` (new)
-  - Under H1 only: the throwing component the instrumented run names, which is not knowable now.
 - **Approach:**
-  1. Run the KTD6 diagnostic once (failing spec `e2e/tests/dashboard-catalog.spec.ts:319` with request, console and `pageerror` logging) and pick the branch.
-  2. Under H2 or H3, make the hook return the namespace-keyed list, held in hook state under H3 per KTD6. The dialog then renders options only when the list's namespace equals the current selection.
+  1. Diagnose from the PR #648 CI trace. Its network log, console and failure snapshot settled the cause (KTD6) with no instrumented run.
+  2. Replace the two `option[value=...]` count assertions with one comparison of the select's option-value list against `["", "preview"]`.
   3. Keep the existing contracts: an empty list disables the select, and there is never a free-text fallback.
-  4. Remove the diagnostic logging before commit.
-- **Execution note:** Diagnose first. The fix is chosen by the experiment's outcome, not in advance.
-- **Patterns to follow:** the current hook's `live` flag and `AbortController` handling. The hook tests that use `@happy-dom/global-registrator` with `act` and `render`, such as `frontend/lib/hooks/use-poll_test.tsx`.
+- **Patterns to follow:** the hook tests that use `@happy-dom/global-registrator` with `act` and `render`, such as `frontend/lib/hooks/use-poll_test.tsx`.
 - **Test scenarios:**
-  - Namespace `default` resolves `["checkout"]`. Switch to `staging`, which resolves `["preview"]`. The hook yields `staging` with `["preview"]`, and `checkout` never appears under `staging` (covers the spec at line 319).
+  - Namespace `prod` resolves `["checkout"]`. Switch to `staging`, which resolves `["preview"]`. The previous list is gone before the new one arrives, then exactly `["preview"]` is offered (covers the spec at line 319).
   - Switch from `default` to `staging` and back to `default` before `staging` resolves. The late `staging` response is not shown under `default`.
-  - A namespace whose list request fails or returns 403 yields an empty list and a disabled select, with no free-text input.
+  - A namespace whose list request returns 403 yields an empty list and a disabled select, with no free-text input.
   - Clearing the namespace to an empty string yields an empty list without a request.
-  - A widget that declares no service key still renders the dialog without error, because the hook still runs.
 - **Verification:**
   - `e2e/tests/dashboard-catalog.spec.ts` passes in full.
   - The new hook tests pass.
-  - Under H1, the named component no longer throws, and a unit test reproduces its old throw.
+
+### U7. Resource tables report when they have finished loading
+
+- **Goal:** `resource-browse.spec.ts` counts rows only after the table holds real data, so its two row-count specs stop flaking.
+- **Requirements:** R7.
+- **Dependencies:** none.
+- **Files:**
+  - `frontend/components/ui/ResourceTable.tsx`
+  - `frontend/src/islands/ResourceTable.tsx`
+  - `e2e/helpers.ts`
+- **Approach:**
+  1. Cause: `waitForTableLoaded` waited for `.animate-spin` to disappear, but the resource table's refresh spinner animates with an inline style. So the wait returned as soon as the table was visible, while it still showed a header plus one placeholder row, and a count taken then read 2. This predates Preact 11: the same specs flake on unrelated Preact 10 branches.
+  2. Add an optional `busy` prop to the shared table, rendered as `aria-busy`, and have the island pass its loading state. That also tells assistive tech the table is loading.
+  3. Make `waitForTableLoaded` wait until no `[role="table"][aria-busy="true"]` remains, then check the spinner as before.
+- **Test expectation:** none — the existing `resource-browse.spec.ts` and `websocket.spec.ts` callers of the helper are the proof.
+- **Verification:** the final PR run reports zero flaky tests.
 
 ---
 
@@ -318,7 +319,7 @@ flowchart TB
 
 ## Definition of Done
 
-- **U1–U6:** each unit's Verification holds.
+- **U1–U7:** each unit's Verification holds.
 - **Gates:** every gate in the Verification Contract has passed on the final commit. The checks were run repo-wide, not scoped.
 - **PR:** the PR supersedes #639, links it, and #639 is closed.
 - **Clean diff:** no diagnostic instrumentation from U5 or U6 is left in the diff, and no abandoned-attempt code remains. The diff contains no `any` casts, `ts-ignore` or `ts-expect-error`, no `preact/compat` import, and no new baseline-file entry.
