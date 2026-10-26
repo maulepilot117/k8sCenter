@@ -1,4 +1,4 @@
-import type { JSX } from "preact";
+import type { CSSProperties } from "preact";
 
 /**
  * Animated loading skeleton placeholder.
@@ -15,7 +15,7 @@ export function Skeleton({
   style,
 }: {
   class?: string;
-  style?: JSX.CSSProperties;
+  style?: CSSProperties;
 }) {
   return (
     <div

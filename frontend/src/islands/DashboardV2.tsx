@@ -1,5 +1,5 @@
 import { useComputed, useSignal } from "@preact/signals";
-import type { JSX } from "preact";
+import type { CSSProperties } from "preact";
 import { useEffect, useMemo, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import EditToolbar from "@/components/dashboard/EditToolbar.tsx";
@@ -78,7 +78,7 @@ type TimeRange = (typeof TIME_RANGES)[number];
 
 // Shared by the SSR placeholder and the hydrated root. Preact hydration keeps
 // the server-rendered root's props, so the two must not diverge.
-const ROOT_STYLE: JSX.CSSProperties = { minHeight: "400px" };
+const ROOT_STYLE: CSSProperties = { minHeight: "400px" };
 
 /**
  * Every source this layout's widgets read, plus the two the header reads for

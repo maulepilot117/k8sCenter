@@ -893,6 +893,7 @@ export default function ResourceTableIsland({
           sortKey={sortKey.value}
           sortDir={sortDir.value}
           onSort={handleSort}
+          busy={loading.value}
         />
       )}
 

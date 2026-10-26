@@ -1,15 +1,16 @@
-import type { JSX } from "preact";
+import type { AccessibleInputHTMLAttributes } from "preact";
 
-// Use InputHTMLAttributes for input-specific props (value, type, etc.).
-// HTMLAttributes alone lacks them in this Preact JSX type setup.
-interface InputProps extends JSX.InputHTMLAttributes<HTMLInputElement> {
+// The accessible variant is what `<input>` itself accepts: a union that pairs
+// each `type` with the `role` and `list` values valid for it. Building on the
+// looser InputHTMLAttributes would leave the spread below unassignable.
+type InputProps = AccessibleInputHTMLAttributes<HTMLInputElement> & {
   label?: string;
   error?: string;
   /** Renders a red asterisk after the label. */
   required?: boolean;
   /** Helper text shown below the input (above any error). */
   description?: string;
-}
+};
 
 export function Input({
   label,

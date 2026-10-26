@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import type { MutableRef } from "preact/hooks";
+import type { RefObject } from "preact";
 import { useLayoutEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
@@ -52,13 +52,13 @@ export interface DashboardFocus {
    * somewhere deliberate, and where editing started is the only place the user
    * asked for.
    */
-  editButton: MutableRef<HTMLButtonElement | null>;
+  editButton: RefObject<HTMLButtonElement | null>;
   /** The Cancel button. It unmounts the moment the session closes. */
-  cancelButton: MutableRef<HTMLButtonElement | null>;
+  cancelButton: RefObject<HTMLButtonElement | null>;
   /** The palette's opener, so closing the dialog puts focus back on it. */
-  addButton: MutableRef<HTMLButtonElement | null>;
+  addButton: RefObject<HTMLButtonElement | null>;
   /** The copy dialog's opener. Same contract as `addButton`. */
-  copyButton: MutableRef<HTMLButtonElement | null>;
+  copyButton: RefObject<HTMLButtonElement | null>;
   /**
    * The Reset button, so its confirmation can hand the keyboard back.
    *
@@ -69,7 +69,7 @@ export interface DashboardFocus {
    * go, focus falls to the body and the keyboard restarts at the top of the
    * page -- with the whole dashboard having just changed underneath it.
    */
-  resetButton: MutableRef<HTMLButtonElement | null>;
+  resetButton: RefObject<HTMLButtonElement | null>;
   /**
    * The user asked to start editing: move focus to Cancel on the render that
    * has it.

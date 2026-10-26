@@ -1,4 +1,4 @@
-import type { MutableRef } from "preact/hooks";
+import type { RefObject } from "preact";
 import { useRef } from "preact/hooks";
 
 /**
@@ -47,7 +47,7 @@ const FOCUSABLE_SELECTOR = [
 
 export interface ModalDialogKeys {
   /** Attach to the dialog panel -- the element carrying `role="dialog"`. */
-  dialogRef: MutableRef<HTMLDivElement | null>;
+  dialogRef: RefObject<HTMLDivElement | null>;
   /** Attach to that same element's `onKeyDown`. */
   onKeyDown: (e: KeyboardEvent) => void;
 }

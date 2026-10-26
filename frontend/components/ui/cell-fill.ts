@@ -1,4 +1,4 @@
-import type { JSX } from "preact";
+import type { CSSProperties } from "preact";
 import { createContext } from "preact";
 import { useContext } from "preact/hooks";
 
@@ -19,6 +19,6 @@ export const CellFillContext = createContext(false);
  * tile's link. In a grid cell the wrapper must pass the cell's height through,
  * or the card's own fill has nothing to fill; elsewhere it adds nothing.
  */
-export function useCellFillHeight(): JSX.CSSProperties {
+export function useCellFillHeight(): CSSProperties {
   return useContext(CellFillContext) ? { height: "100%" } : {};
 }

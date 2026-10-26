@@ -1,4 +1,4 @@
-import type { ComponentChildren, JSX } from "preact";
+import type { ComponentChildren, CSSProperties } from "preact";
 import { useContext } from "preact/hooks";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import GlassCard from "@/components/ui/GlassCard.tsx";
@@ -9,7 +9,7 @@ interface WidgetShellProps {
   action?: ComponentChildren;
   children: ComponentChildren;
   padding?: number;
-  style?: JSX.CSSProperties;
+  style?: CSSProperties;
 }
 
 /**

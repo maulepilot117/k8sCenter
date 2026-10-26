@@ -1,5 +1,9 @@
 import { useSignal } from "@preact/signals";
-import type { JSX } from "preact";
+import type {
+  CSSProperties,
+  TargetedKeyboardEvent,
+  TargetedPointerEvent,
+} from "preact";
 import { useLayoutEffect, useRef } from "preact/hooks";
 import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
@@ -152,9 +156,9 @@ interface GridItemProps {
   dragging: boolean;
   /** True while this item is the one being resized. */
   resizing: boolean;
-  onDragStart: (event: JSX.TargetedPointerEvent<HTMLElement>) => void;
-  onResizeStart: (event: JSX.TargetedPointerEvent<HTMLElement>) => void;
-  onKeyDown: (event: JSX.TargetedKeyboardEvent<HTMLElement>) => void;
+  onDragStart: (event: TargetedPointerEvent<HTMLElement>) => void;
+  onResizeStart: (event: TargetedPointerEvent<HTMLElement>) => void;
+  onKeyDown: (event: TargetedKeyboardEvent<HTMLElement>) => void;
   /** Takes this widget off the working copy. */
   onRemove: () => void;
   /**
@@ -190,7 +194,7 @@ export function GridItem({
   onRemove,
   onReparameterize,
 }: GridItemProps) {
-  const style: JSX.CSSProperties = narrow
+  const style: CSSProperties = narrow
     ? { gridColumn: "1 / -1", gridRow: `span ${item.h}` }
     : {
         gridColumn: `${item.x + 1} / span ${item.w}`,
@@ -577,6 +581,20 @@ export default function DashboardGrid({
   /** Ends the session in flight, if there is one. Set for the grid's life. */
   const endSession = useRef<((restore: boolean) => void) | null>(null);
   /**
+   * Scroll offsets of every box above the grid, taken just before a layout
+   * change and put back once it has rendered.
+   *
+   * Where the browser has `moveBefore`, Preact moves a reordered cell with it,
+   * and that keeps focus on the cell -- so the browser scrolls whatever it
+   * takes to keep the focused cell in view, `<main>` and the page included.
+   * `insertBefore` blurred the cell instead, and the focus hook puts focus
+   * back with `preventScroll`. Either way the user asked to move a widget, not
+   * the dashboard under it, and a pointer session re-measures the grid on
+   * every pointermove, so a scroll mid-drag would also land the widget in the
+   * wrong cell.
+   */
+  const heldScroll = useRef<Array<[Element, number, number]> | null>(null);
+  /**
    * The one way the working copy changes, so that nothing can reshape the
    * layout without the caller hearing about it.
    *
@@ -585,9 +603,32 @@ export default function DashboardGrid({
    * by three of those four paths is worse than no Save button at all.
    */
   function setItems(next: LayoutItem[]) {
+    const grid = gridRef.current;
+    // Only a focused cell drags the scroll along with it. An unchanged array
+    // renders nothing, so an offset held for it would be put back on some
+    // later, unrelated render.
+    if (next !== items.value && grid?.contains(document.activeElement)) {
+      const held: Array<[Element, number, number]> = [];
+      for (let el = grid.parentElement; el; el = el.parentElement) {
+        held.push([el, el.scrollTop, el.scrollLeft]);
+      }
+      heldScroll.current = held;
+    }
     items.value = next;
     onChange?.(next);
   }
+
+  // No dependencies: this has to run after whichever render carried the held
+  // change, and that render is the one moving the cell.
+  useLayoutEffect(() => {
+    const held = heldScroll.current;
+    if (!held) return;
+    heldScroll.current = null;
+    for (const [el, top, left] of held) {
+      if (el.scrollTop !== top) el.scrollTop = top;
+      if (el.scrollLeft !== left) el.scrollLeft = left;
+    }
+  });
 
   // Layout effect, so the first paint already uses the right mode rather than
   // flashing twelve squeezed columns on a narrow screen.
@@ -643,7 +684,7 @@ export default function DashboardGrid({
   function startSession(
     kind: SessionKind,
     instanceId: string,
-    event: JSX.TargetedPointerEvent<HTMLElement>,
+    event: TargetedPointerEvent<HTMLElement>,
     begin: (start: LayoutItem, origin: Cell) => (cell: Cell) => void,
   ) {
     const el = gridRef.current;
@@ -807,7 +848,7 @@ export default function DashboardGrid({
   /** Moves a widget: the pointer's travel in cells applied to where it began. */
   function startDrag(
     instanceId: string,
-    event: JSX.TargetedPointerEvent<HTMLElement>,
+    event: TargetedPointerEvent<HTMLElement>,
   ) {
     startSession("drag", instanceId, event, (start, origin) => {
       let last = origin;
@@ -827,7 +868,7 @@ export default function DashboardGrid({
   function startResize(
     instanceId: string,
     def: WidgetDef,
-    event: JSX.TargetedPointerEvent<HTMLElement>,
+    event: TargetedPointerEvent<HTMLElement>,
   ) {
     startSession("resize", instanceId, event, (_start, origin) => {
       let last = origin;
@@ -864,7 +905,7 @@ export default function DashboardGrid({
   function handleItemKey(
     item: LayoutItem,
     def: WidgetDef,
-    event: JSX.TargetedKeyboardEvent<HTMLElement>,
+    event: TargetedKeyboardEvent<HTMLElement>,
   ) {
     // Ctrl, Alt and Meta with an arrow belong to the browser and the window
     // manager -- back, forward, workspace switching. Shift is ours. Checked
@@ -931,7 +972,7 @@ export default function DashboardGrid({
   const ordered = resolveRenderable(items.value, getWidget);
   const active = session.value;
 
-  const style: JSX.CSSProperties = narrow.value
+  const style: CSSProperties = narrow.value
     ? {
         display: "grid",
         gridTemplateColumns: "minmax(0, 1fr)",

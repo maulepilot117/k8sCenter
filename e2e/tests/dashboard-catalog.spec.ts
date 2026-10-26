@@ -331,8 +331,18 @@ test.describe("dashboard catalog", () => {
     await service.selectOption("checkout");
     await namespace.selectOption("staging");
     await expect(service).toHaveValue("");
-    await expect(service.locator('option[value="checkout"]')).toHaveCount(0);
-    await expect(service.locator('option[value="preview"]')).toHaveCount(1);
+    // The whole list, read from each option's value property. Preact only
+    // writes an option's `value` attribute when it differs from the option's
+    // text, so an attribute selector like option[value="preview"] cannot see
+    // these options, and a zero count for "checkout" would pass for the same
+    // reason. An exact list proves "checkout" is gone and "preview" arrived.
+    await expect
+      .poll(() =>
+        service.evaluate((el) =>
+          [...(el as HTMLSelectElement).options].map((o) => o.value),
+        ),
+      )
+      .toEqual(["", "preview"]);
     await page.getByTestId("confirm-widget-params").click();
     await expect(page.getByTestId("widget-param-error")).toContainText(
       "Choose a service",

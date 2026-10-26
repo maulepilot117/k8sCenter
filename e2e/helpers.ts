@@ -111,7 +111,13 @@ export async function deleteClusterResource(
 /** Wait for the resource table to finish loading (data rows present) */
 export async function waitForTableLoaded(page: Page) {
   await expect(page.getByRole("table")).toBeVisible();
-  // Wait for spinner to disappear AND at least the table to be stable
+  // The table marks itself aria-busy while its rows are placeholders. Its
+  // refresh spinner animates with an inline style rather than .animate-spin,
+  // so the check below alone passed while a header plus one placeholder row
+  // was showing, and a count taken then read as a two-row table.
+  await expect(page.locator('[role="table"][aria-busy="true"]')).toHaveCount(
+    0,
+  );
   await expect(page.locator(".animate-spin")).not.toBeVisible();
 }
 

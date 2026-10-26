@@ -1,4 +1,4 @@
-import type { JSX } from "preact";
+import type { TargetedEvent } from "preact";
 
 interface SearchBarProps {
   value: string;
@@ -27,7 +27,7 @@ export function SearchBar({
       <input
         type="text"
         value={value}
-        onInput={(e: JSX.TargetedEvent<HTMLInputElement>) =>
+        onInput={(e: TargetedEvent<HTMLInputElement>) =>
           onInput(e.currentTarget.value)
         }
         placeholder={placeholder}

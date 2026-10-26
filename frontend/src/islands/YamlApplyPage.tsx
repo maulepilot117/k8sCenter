@@ -706,7 +706,7 @@ function ApplyResults({ response }: { response: ApplyResponse }) {
 
 // ── Shared style helpers ──────────────────────────────────────────────────────
 
-function ghostButtonStyle(disabled: boolean): preact.JSX.CSSProperties {
+function ghostButtonStyle(disabled: boolean): preact.CSSProperties {
   return {
     display: "inline-flex",
     alignItems: "center",
