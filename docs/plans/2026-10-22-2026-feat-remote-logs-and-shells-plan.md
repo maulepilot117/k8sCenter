@@ -183,7 +183,7 @@ This plan covers logs and shells on remote clusters. The breakdown below is the 
 
 #### Deferred to Follow-Up Work
 
-- Retire the duplicated `clusterLabel` in `YamlApplyPage` and `FlowViewer` now that `frontend/src/lib/cluster-label.ts` exists.
+- After U8 extracts `frontend/src/lib/cluster-label.ts`, retire the local `clusterLabel` in `YamlApplyPage.tsx` and the prop threaded into `RepairBanner`.
 
 ### Dependencies / Assumptions
 
@@ -201,7 +201,7 @@ This plan covers logs and shells on remote clusters. The breakdown below is the 
 - `backend/internal/k8s/stream_transport.go` — the only remote SPDY builder; closed command set; no stdin or TTY; setup timeout applied to the whole stream.
 - `backend/internal/store/cluster_metrics.go`, `backend/internal/server/handle_cluster_metrics.go`, `backend/internal/monitoring/resolver.go` — per-cluster binding, validation and resolver patterns.
 - `backend/internal/incidents/retention.go` — hourly retention sweep with a lowering guard.
-- `frontend/src/islands/ClusterSwitcher.tsx` — reload-on-switch by design; `frontend/src/lib/yaml-apply.ts` — pinned-target stale notice.
+- `frontend/src/islands/ClusterSwitcher.tsx` — reload-on-switch by design; `frontend/lib/yaml-apply.ts` — pinned-target stale notice.
 - `docs/solutions/tracked-apply-durable-intent.md`, `docs/solutions/backend-resilience-conventions.md`, `docs/solutions/go-typed-nil-interface.md`, `docs/solutions/postgres-test-harness-conventions.md`.
 - `docs/plans/2026-09-10-release-c-remote-workflow-impl.md` (DA2), `docs/plans/2026-10-11-1751-feat-remote-cilium-networking-plan.md` (KTD1, KTD2, KTD8, KTD9, KTD11, KTD13).
 - client-go v0.35 `tools/remotecommand`: the WebSocket executor has no dial hook, while SPDY accepts a custom upgrade transport. Kubernetes 1.35 authorizes WebSocket exec and port-forward upgrades as `create`. The apiserver's `services/proxy` strips `Authorization`.
@@ -269,7 +269,7 @@ This plan covers logs and shells on remote clusters. The breakdown below is the 
   - **This tab:** `ClusterSwitcher` asks for confirmation when this tab has an open session.
   - **Other tabs:** they listen for the persisted selection's `storage` event, keep their own selection, and `SessionClusterBadge` shows "You are now viewing B. This session is on A." with an action to switch this tab too (R11, R12).
 - KTD16. **Shutdown ends live streams before the server stops.** Before `httpServer.Shutdown`, the server calls `CancelAll(server_restarting)` and waits up to 10s for sessions to finalize their recordings. Only then does the database pool close (R10, R14).
-- KTD17. **Old browser tabs after a deploy get a reload instruction, not a dual protocol.** `cluster_required` and a missing in-band auth frame both map to "Reload the page" copy in `frontend/lib/stream-state.ts`.
+- KTD17. **Old browser tabs after a deploy get a reload instruction, not a dual protocol.** `cluster_required` and a missing in-band auth frame both map to "Reload the page" copy in `frontend/lib/stream-state.ts`. A stale tab still offering the legacy bearer subprotocol is refused by the proxy with HTTP 400 before the handshake (#660) and sees a failed connection, not reload copy, because accepting the handshake would echo its token.
 
 ### High-Level Technical Design
 
@@ -349,16 +349,16 @@ Five phases, each shippable alone. Phase 1 is the security fix and goes first. I
 
 ```mermaid
 flowchart TB
-  P1[Phase 1: close leaks U1-U5, U28, U29] --> P2[Phase 2: remote log tail U6-U8]
+  P1[Phase 1: close leaks U1-U5, U28, U29] --> P2[Phase 2: remote log tail U6-U8, U34]
   P2 --> P3[Phase 3: remote Loki search U9-U14, U30]
-  P2 --> P4[Phase 4: shell lifecycle and recording U15-U23, U31-U33]
-  P4 --> P5[Phase 5: remote shells and switching U24-U27]
+  P2 --> P4[Phase 4: shell lifecycle and recording U15-U23, U32, U33]
+  P4 --> P5[Phase 5: remote shells and switching U24-U27, U31, U35]
   P3 --> P5
 ```
 
 ### System-Wide Impact
 
-- **Auth boundary:** exec changes how it authenticates (KTD2), and every stream now carries its cluster. This is the security-review surface (`security-review` agent per CLAUDE.md for each Phase 1 and Phase 5 unit).
+- **Auth boundary:** exec changes how it authenticates (KTD2), and every stream now carries its cluster. This is the security-review surface (`security-review` agent on the units the Verification Contract lists).
 - **Data lifecycle:** two new tables (recordings and chunks), new `cluster_monitoring` columns, a new `app_settings` column, and a new retention sweep.
 - **Operators:** shells now end on idle, revocation and deploys. Recording is on by default, and recordings hold terminal output, which may include echoed secrets. Admin-only replay is the control.
 - **Shared infrastructure:** flows moves onto the shared stream lifecycle (U6). Its behaviour must not change.
@@ -368,7 +368,7 @@ flowchart TB
 
 | Risk | Mitigation |
 |---|---|
-| Moving exec auth breaks terminals in tabs opened before the deploy | KTD17 reload copy; U3 keeps the old path until U4 |
+| Moving exec auth breaks terminals in tabs opened before the deploy | KTD17: a stale tab offering the bearer subprotocol is refused with 400 before the handshake and sees a failed connection, which a reload fixes; U3 keeps the old path until U4, and U29 removes it |
 | Refactoring flows onto the shared lifecycle regresses Hubble streams | U6 is behaviour-preserving, with the existing `handle_ws_flows_remote_test.go` suite unchanged and passing |
 | A database failover longer than 3s ends every open shell and refuses new ones until it completes | Accepted under fail-closed recording; the 3s budget absorbs only brief blips (KTD10) |
 | Recordings capture echoed secrets | Admin-only replay, audited (R16); retention (R17) |
@@ -377,10 +377,9 @@ flowchart TB
 
 ### Documentation / Operational Notes
 
-- README "Remote cluster support" rows change with each capability flip (U7, U30, U25).
+- README "Remote cluster support" rows change with each capability flip (U34, U30, U35).
 - `backend/internal/store/migrations/NOTES.txt` gets blocks for `000030` and `000031`.
-- New configuration (`KUBECENTER_SHELL_IDLETIMEOUT`, `KUBECENTER_RECORDINGS_RETENTIONDAYS`, `KUBECENTER_RECORDINGS_RETENTIONLOWERINGCONFIRMED`) is documented in the Helm `values.yaml` comments and the README configuration section in the units that add it.
-- CLAUDE.md's WebSocket route list drops the exec subprotocol note once U4 lands.
+- New configuration (`KUBECENTER_SHELL_IDLETIMEOUT`, `KUBECENTER_RECORDINGS_RETENTIONDAYS`, `KUBECENTER_RECORDINGS_RETENTIONLOWERINGCONFIRMED`) is documented in the Helm `values.yaml` comments and the README in U33, after U15 and U32 add it, so neither of those units passes five files.
 
 ---
 
@@ -396,7 +395,8 @@ flowchart TB
 | U29 | Retire the legacy exec path | `frontend/src/lib/ws-exec-auth.ts`, `server/routes.go` | U4 |
 | U5 | Loki joins the routing guard | `scripts/check-cluster-routing.sh`, `loki/discovery.go` | U28 |
 | U6 | Shared stream lifecycle | `server/stream_lifecycle.go`, `server/flow_streams.go` | — |
-| U7 | Remote live log tail | `server/handle_ws_logs.go`, `server/handle_capabilities.go`, `README.md` | U2, U6 |
+| U7 | Remote live log tail | `server/handle_ws_logs.go`, `server/handle_ws_logs_remote_test.go` | U2, U6 |
+| U34 | Live log stream capability flip | `server/handle_capabilities.go`, `README.md`, `e2e/tests/remote-capabilities.spec.ts` | U7 |
 | U8 | Log viewer resume and cluster badge | `LogViewer.tsx`, `frontend/src/components/SessionClusterBadge.tsx` | U1, U7 |
 | U9 | Shared Service-backend selection | `k8s/service_backend.go`, `networking/relay_tunnel.go` | — |
 | U10 | Loki binding storage | `store/migrations/000030_*`, `store/cluster_logs.go` | — |
@@ -408,7 +408,6 @@ flowchart TB
 | U15 | Shell session lifecycle | `k8s/resources/exec_session.go`, `server/handle_ws_exec.go` | U3, U6 |
 | U16 | Graceful shutdown of live streams | `cmd/kubecenter/main.go`, `server/stream_lifecycle.go` | U6 |
 | U17 | Terminal renewal, end reasons, badge | `PodTerminal.tsx`, `frontend/src/lib/active-sessions.ts` | U4, U8, U15 |
-| U31 | Log streams register as active sessions | `LogViewer.tsx`, `LogLiveTail.tsx` | U14, U17 |
 | U18 | Recording storage | `store/migrations/000031_*`, `store/shell_recordings.go` | — |
 | U19 | Recorder package | `internal/recording/recorder.go`, `.github/workflows/fuzz.yml` | U18 |
 | U20 | Recording wired into shells | `k8s/resources/exec_session.go`, `cmd/kubecenter/main.go`, `store/settings.go` | U15, U19 |
@@ -416,11 +415,13 @@ flowchart TB
 | U32 | Recording retention and reaper | `internal/recording/retention.go`, `config/config.go`, `cmd/kubecenter/main.go` | U18, U20 |
 | U22 | Replay API | `server/handle_recordings.go`, `server/routes.go` | U18 |
 | U23 | Replay UI | `RecordingsPage.tsx`, `RecordingPlayer.tsx`, `frontend/lib/asciicast.ts` | U22 |
-| U33 | Recording toggle and settings link | `SettingsPage.tsx`, `SettingsDashboard.tsx` | U21, U23 |
+| U33 | Recording toggle, settings link and config docs | `SettingsPage.tsx`, `SettingsDashboard.tsx`, `values.yaml`, `README.md` | U21, U23, U32 |
 | U24 | Interactive remote stream transport | `k8s/stream_transport.go`, `k8s/resources/exec_session.go` | U15 |
-| U25 | Remote shells enabled | `server/handle_ws_exec.go`, `server/handle_capabilities.go`, `README.md` | U20, U21, U32, U24 |
+| U25 | Remote shells enabled | `server/handle_ws_exec.go`, `server/handle_ws_exec_test.go` | U20, U21, U32, U24 |
+| U35 | Remote shell capability flip | `server/handle_capabilities.go`, `README.md`, `e2e/tests/remote-capabilities.spec.ts` | U25 |
+| U31 | Log streams register as active sessions | `LogViewer.tsx`, `LogLiveTail.tsx` | U14, U17 |
 | U26 | Cluster switch confirmation and cross-tab notice | `ClusterSwitcher.tsx`, `frontend/src/lib/cluster.ts` | U8, U17, U31 |
-| U27 | End-to-end coverage | `e2e/tests/remote-capabilities.spec.ts`, `e2e/tests/shell-recording.spec.ts` | U7, U30, U25, U33 |
+| U27 | End-to-end coverage | `e2e/tests/remote-capabilities.spec.ts`, `e2e/tests/shell-recording.spec.ts` | U34, U30, U35, U33 |
 
 Backend paths are under `backend/internal/` unless shown in full.
 
@@ -436,7 +437,7 @@ Backend paths are under `backend/internal/` unless shown in full.
 - `frontend/src/islands/LogViewer.tsx`
 - `frontend/src/islands/LogLiveTail.tsx`
 - `frontend/lib/stream-state.ts` (new)
-- `frontend/lib/stream-state.test.ts` (new)
+- `frontend/lib/stream-state_test.ts` (new)
 
 **Approach:**
 1. Take `currentTarget()` once when each island mounts and send `clusterId` and `generation` (omitted when `UNKNOWN_GENERATION`) in the auth frame, mirroring `FlowViewer.tsx`.
@@ -521,7 +522,7 @@ Backend paths are under `backend/internal/` unless shown in full.
 1. Split `HandlePodExec` into an upgrade step and a session runner that takes an upgraded connection, the user and the target context.
 2. Add a server handler that runs `wsAuthAndUpgradeFor` with `requireCluster: true` (local only, `acceptsRemoteInBand: false`), checks `create pods/exec`, then calls the runner.
 3. Route requests without an `Authorization` header to the new handler; keep the old middleware path for requests that carry one.
-4. After in-band auth, the runner raises the connection's read limit to 16 KiB as `HandlePodExec` does today. The shared helper sets 4 KiB, which is sized for auth frames.
+4. After in-band auth, the runner raises the connection's read limit to 16 KiB as `HandlePodExec` does today. The shared helper reads the auth frame under its own 16 KiB limit (`wsAuthMaxReadSize`) and then drops to 4 KiB (`wsMaxReadSize`), which is sized for filter messages, not input frames.
 
 **Patterns to follow:** `server/handle_ws_flows.go` for auth and audit; existing `HandlePodExec` access check and shell detection.
 
@@ -559,7 +560,7 @@ Backend paths are under `backend/internal/` unless shown in full.
 **Test scenarios:**
 - Covers AE13. The terminal's first frame carries the selected cluster; a remote selection shows the unsupported copy and no shell.
 - The proxy forwards an exec upgrade with no `Authorization` header and relays the first frame unchanged.
-- A legacy client offering a bearer subprotocol gets a refusal that maps to reload copy.
+- A legacy client offering a bearer subprotocol is refused with HTTP 400 before the handshake, with no subprotocol echoed and no backend leg opened.
 
 **Verification:** `bun run check`, `bun test` and the E2E suite pass; a local terminal works end to end in the homelab smoke test.
 
@@ -642,23 +643,19 @@ Backend paths are under `backend/internal/` unless shown in full.
 
 **Goal:** An admin's log tail on a remote cluster streams from that cluster as the admin, ending at token expiry and on revocation or cluster removal.
 
-**Requirements:** R2, R3, R4, R20, AE4; KTD5.
+**Requirements:** R2, R3, R4, AE4; KTD5.
 
 **Dependencies:** U2, U6.
 
 **Files:**
 - `backend/internal/server/handle_ws_logs.go`
 - `backend/internal/server/handle_ws_logs_remote_test.go`
-- `backend/internal/server/handle_capabilities.go`
-- `backend/internal/server/handle_capabilities_test.go`
-- `README.md`
 
 **Approach:**
 1. Set `acceptsRemoteInBand: true` and remove the remote gate.
 2. For a remote target, get the client with `ClusterRouter.ClientForCluster` as the user and open `GetLogs` with `Follow`.
 3. Register with the lifecycle. The revalidate function checks that the cluster is registered and that `get pods/log` still holds.
 4. Run the reader goroutine under `recoverutil.Safe` and audit one row per open with the cluster id.
-5. Mark `logs.stream` remote-supported, remove it from the capabilities test's remote-unsupported list, and update the README row in the same change.
 
 **Patterns to follow:** `server/handle_ws_flows.go` remote branch; `k8s/resources/pods.go` `HandlePodLogs` client path.
 
@@ -670,7 +667,28 @@ Backend paths are under `backend/internal/` unless shown in full.
 - Evicting the cluster ends the stream with `cluster_removed` without deadlock.
 - A non-admin naming a remote cluster is refused before any client is built.
 
-**Verification:** The capability parity test passes with the new README row.
+**Verification:** Handler tests pass under `-race`; the capability stays remote-unsupported until U34.
+
+### U34. Live log stream capability flip
+
+**Goal:** `logs.stream` is declared remote-supported once the remote live tail works.
+
+**Requirements:** R20.
+
+**Dependencies:** U7.
+
+**Files:**
+- `backend/internal/server/handle_capabilities.go`
+- `backend/internal/server/handle_capabilities_test.go`
+- `README.md`
+- `e2e/tests/remote-capabilities.spec.ts`
+
+**Approach:** Mark `logs.stream` remote-supported, remove it from the capabilities test's remote-unsupported list, update the README row, and remove it from the remote spec's unsupported loop.
+
+**Test scenarios:**
+- The capabilities endpoint reports `logs.stream` platform-supported for a registered remote cluster.
+
+**Verification:** The capability parity test passes; the remote spec no longer expects `logs.stream` unsupported.
 
 ### U8. Log viewer resume and cluster badge
 
@@ -685,7 +703,7 @@ Backend paths are under `backend/internal/` unless shown in full.
 - `frontend/src/components/SessionClusterBadge.tsx` (new)
 - `frontend/src/lib/cluster-label.ts` (new)
 - `frontend/lib/stream-state.ts`
-- `frontend/lib/stream-state.test.ts`
+- `frontend/lib/stream-state_test.ts`
 
 **Approach:**
 1. Add FlowViewer's retry loop (2s, 5s, 10s), calling `refreshSession()` before reconnecting on `token_expired` and reusing the session's pinned target. On resume the viewer keeps its lines, skips replayed lines whose timestamp is not later than the last line shown, and inserts one "reconnected" marker at the join.
@@ -987,7 +1005,7 @@ Backend paths are under `backend/internal/` unless shown in full.
 **Files:**
 - `frontend/src/islands/PodTerminal.tsx`
 - `frontend/src/lib/active-sessions.ts` (new)
-- `frontend/src/lib/active-sessions.test.ts` (new)
+- `frontend/src/lib/active-sessions_test.ts` (new)
 - `frontend/lib/stream-state.ts`
 
 **Approach:**
@@ -1005,27 +1023,6 @@ Backend paths are under `backend/internal/` unless shown in full.
 - The registry reports an open session while a terminal is connected and none after it closes.
 
 **Verification:** `bun test` passes; in the homelab, a shell stays open past 15 minutes of use.
-
-### U31. Log streams register as active sessions
-
-**Goal:** Open log tails count as active sessions, so a cluster switch in their tab asks first.
-
-**Requirements:** R12; KTD15.
-
-**Dependencies:** U14, U17.
-
-**Files:**
-- `frontend/src/islands/LogViewer.tsx`
-- `frontend/src/islands/LogLiveTail.tsx`
-- `frontend/src/lib/active-sessions.test.ts`
-
-**Approach:** Register each log island with `active-sessions` when its stream opens and unregister when it closes or unmounts.
-
-**Test scenarios:**
-- An open log tail registers; closing it or unmounting unregisters.
-- A failed connection never leaves a stale registration.
-
-**Verification:** `bun test` passes.
 
 ### U18. Recording storage
 
@@ -1229,7 +1226,7 @@ Backend paths are under `backend/internal/` unless shown in full.
 - `frontend/src/islands/RecordingsPage.tsx` (new)
 - `frontend/src/islands/RecordingPlayer.tsx` (new)
 - `frontend/lib/asciicast.ts` (new)
-- `frontend/lib/asciicast.test.ts` (new)
+- `frontend/lib/asciicast_test.ts` (new)
 
 **Approach:**
 1. Add a `/settings/recordings` page with a filterable list.
@@ -1245,25 +1242,27 @@ Backend paths are under `backend/internal/` unless shown in full.
 
 **Verification:** `bun run check` and `bun run build` pass; the page needs no CSP change.
 
-### U33. Recording toggle and settings link
+### U33. Recording toggle, settings link and config docs
 
-**Goal:** Admins can turn recording on or off and reach the Recordings page from Settings.
+**Goal:** Admins can turn recording on or off and reach the Recordings page from Settings, and the configuration Phase 4 adds is documented.
 
 **Requirements:** R15, R16.
 
-**Dependencies:** U21, U23.
+**Dependencies:** U21, U23, U32.
 
 **Files:**
 - `frontend/src/islands/SettingsPage.tsx`
 - `frontend/src/islands/SettingsDashboard.tsx`
+- `helm/kubecenter/values.yaml`
+- `README.md`
 
-**Approach:** Add the toggle to `SettingsPage` with copy explaining fail-closed behaviour, and link `/settings/recordings` from the dashboard for admins.
+**Approach:** Add the toggle to `SettingsPage` with copy explaining fail-closed behaviour, and link `/settings/recordings` from the dashboard for admins. Document `KUBECENTER_SHELL_IDLETIMEOUT` (U15), `KUBECENTER_RECORDINGS_RETENTIONDAYS` and `KUBECENTER_RECORDINGS_RETENTIONLOWERINGCONFIRMED` (U32) in the `values.yaml` comments and the README.
 
 **Test scenarios:**
 - The toggle shows the current value and sends only the changed field.
 - A non-admin sees no Recordings link.
 
-**Verification:** `bun run check` passes.
+**Verification:** `bun run check` and `make helm-lint` pass.
 
 ### U24. Interactive remote stream transport
 
@@ -1298,25 +1297,21 @@ Backend paths are under `backend/internal/` unless shown in full.
 
 ### U25. Remote shells enabled
 
-**Goal:** Admins can open recorded shells on remote clusters, and `pod.exec` is declared remote-supported.
+**Goal:** Admins can open recorded shells on remote clusters.
 
-**Requirements:** R18, R19, R20, AE11; KTD9, KTD14.
+**Requirements:** R18, R19, AE11; KTD9, KTD14.
 
 **Dependencies:** U20, U21, U32, U24.
 
 **Files:**
 - `backend/internal/server/handle_ws_exec.go`
 - `backend/internal/server/handle_ws_exec_test.go`
-- `backend/internal/server/handle_capabilities.go`
-- `backend/internal/server/handle_capabilities_test.go`
-- `README.md`
 
 **Approach:**
 1. Set `acceptsRemoteInBand: true`.
 2. For a remote target, check `create pods/exec` on that cluster and build the remote executor through the stream transport as the user.
 3. Run the same session and recording path as local.
 4. Revalidation also checks that the cluster is registered.
-5. Flip `pod.exec` to remote-supported and update the README row and the capabilities test.
 
 **Patterns to follow:** U7 remote branch.
 
@@ -1326,7 +1321,49 @@ Backend paths are under `backend/internal/` unless shown in full.
 - Evicting the cluster ends the shell with `cluster_removed` and closes its recording.
 - Remote shell output is recorded identically to local.
 
-**Verification:** Capability parity and capabilities tests pass.
+**Verification:** Handler tests pass under `-race`; the capability stays remote-unsupported until U35.
+
+### U35. Remote shell capability flip
+
+**Goal:** `pod.exec` is declared remote-supported once remote shells work.
+
+**Requirements:** R20.
+
+**Dependencies:** U25.
+
+**Files:**
+- `backend/internal/server/handle_capabilities.go`
+- `backend/internal/server/handle_capabilities_test.go`
+- `README.md`
+- `e2e/tests/remote-capabilities.spec.ts`
+
+**Approach:** Mark `pod.exec` remote-supported, remove it from the capabilities test's remote-unsupported list, update the README row, and remove it from the remote spec's unsupported loop.
+
+**Test scenarios:**
+- The capabilities endpoint reports `pod.exec` platform-supported for a registered remote cluster.
+
+**Verification:** The capability parity test passes; the remote spec no longer expects `pod.exec` unsupported.
+
+### U31. Log streams register as active sessions
+
+**Goal:** Open log tails count as active sessions, so a cluster switch in their tab asks first.
+
+**Requirements:** R12; KTD15.
+
+**Dependencies:** U14, U17.
+
+**Files:**
+- `frontend/src/islands/LogViewer.tsx`
+- `frontend/src/islands/LogLiveTail.tsx`
+- `frontend/src/lib/active-sessions_test.ts`
+
+**Approach:** Register each log island with `active-sessions` when its stream opens and unregister when it closes or unmounts.
+
+**Test scenarios:**
+- An open log tail registers; closing it or unmounting unregisters.
+- A failed connection never leaves a stale registration.
+
+**Verification:** `bun test` passes.
 
 ### U26. Cluster switch confirmation and cross-tab notice
 
@@ -1341,7 +1378,7 @@ Backend paths are under `backend/internal/` unless shown in full.
 - `frontend/src/lib/cluster.ts`
 - `frontend/src/lib/active-sessions.ts`
 - `frontend/src/components/SessionClusterBadge.tsx`
-- `frontend/src/lib/active-sessions.test.ts`
+- `frontend/src/lib/active-sessions_test.ts`
 
 **Approach:**
 1. `active-sessions.ts` exposes one confirmation step for any switch that would reload a tab with an open session.
@@ -1349,7 +1386,7 @@ Backend paths are under `backend/internal/` unless shown in full.
 3. `cluster.ts` exposes a signal for the selection persisted by another tab, fed by the `storage` event, without changing this tab's selection.
 4. The badge shows the stale notice and a "switch this tab" action, which goes through the same confirmation before applying the other selection and reloading.
 
-**Patterns to follow:** `frontend/src/lib/yaml-apply.ts` `pinStale`.
+**Patterns to follow:** `frontend/lib/yaml-apply.ts` `pinStale`.
 
 **Test scenarios:**
 - Covers AE10. Choosing another cluster with an open session shows the confirmation; declining keeps the selection and the session.
@@ -1365,14 +1402,14 @@ Backend paths are under `backend/internal/` unless shown in full.
 
 **Requirements:** R16, R20, Success Criteria.
 
-**Dependencies:** U7, U30, U25, U33.
+**Dependencies:** U34, U30, U35, U33.
 
 **Files:**
 - `e2e/tests/remote-capabilities.spec.ts`
 - `e2e/tests/shell-recording.spec.ts` (new)
 
 **Approach:**
-1. The remote capabilities spec expects `logs.stream`, `logs.search` and `pod.exec` remote-supported; it stays gated on `K8SCENTER_REMOTE_CLUSTER_ID` (Q2).
+1. U34 and U35 already removed `logs.stream` and `pod.exec` from the remote capabilities spec's unsupported loop. This unit adds `logs.stream`, `logs.search` and `pod.exec` to its supported assertions; it stays gated on `K8SCENTER_REMOTE_CLUSTER_ID` (Q2).
 2. The recording spec runs on the local kind cluster: open a shell, run a command, close; an admin replays the recording and sees the output; a non-admin cannot open Recordings.
 
 **Patterns to follow:** existing `e2e/tests/*.spec.ts` login and cleanup backstops.
@@ -1396,7 +1433,7 @@ Backend paths are under `backend/internal/` unless shown in full.
 | Routing guard | `scripts/check-cluster-routing.sh` | U5, U24, and any unit touching `loki`, `k8s/resources` or `server` handlers |
 | Frontend checks | `cd frontend && bun run check && bun test && bun run build` | Every unit touching `frontend/` |
 | Fuzz listing | `go test -list 'Fuzz.*' ./internal/recording/...` matches the `fuzz.yml` row | U19 |
-| E2E | Playwright suite in CI; `scripts/test-remote-capabilities.sh` plus the remote spec when a public remote cluster exists | U27 |
+| E2E | Playwright suite in CI; `scripts/test-remote-capabilities.sh` plus the remote spec when a public remote cluster exists | U34, U35, U27 |
 | Security review | `security-review` agent on the diff | U2, U28, U3, U4, U29, U7, U11, U12, U15, U20, U24, U25 |
 
 Run checks repo-wide, not scoped to changed files (CLAUDE.md directive 4).
@@ -1404,7 +1441,7 @@ Run checks repo-wide, not scoped to changed files (CLAUDE.md directive 4).
 ## Definition of Done
 
 - Every unit's test scenarios exist and pass, and every gate that applies to it is green in CI.
-- The README "Remote cluster support" table, `handle_capabilities.go` and the capability parity test agree after U7, U13 and U25.
+- The README "Remote cluster support" table, `handle_capabilities.go`, the capability parity test and the remote capabilities spec agree after U34, U30 and U35.
 - With a remote cluster selected, no web log tail, log search or shell shows data from another cluster (AE1, AE13).
 - A local shell in the homelab is recorded, replayable by an admin, ends on idle and on revocation, and survives token refresh.
 - Migrations have `NOTES.txt` blocks and round-trip tests.
