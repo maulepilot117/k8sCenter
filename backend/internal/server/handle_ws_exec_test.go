@@ -393,3 +393,42 @@ func TestWSExec_AuthorizationHeaderWithoutAuthFrameRefused(t *testing.T) {
 		t.Fatalf("built %d executors without an auth frame, want 0", n)
 	}
 }
+
+// Outside dev mode the exec upgrade is refused before the handshake for a
+// foreign Origin and for none, so a cross-site page cannot open a shell.
+func TestWSExec_OriginRefusedBeforeUpgrade(t *testing.T) {
+	cases := []struct {
+		name   string
+		origin string
+	}{
+		{name: "foreign origin", origin: "http://evil.example"},
+		{name: "no origin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newWSExecTest(t, resources.NewAlwaysAllowAccessChecker())
+			e.srv.Config.Dev = false
+			e.srv.Config.CORS.AllowedOrigins = []string{"http://localhost"}
+
+			h := http.Header{"X-Cluster-ID": {"local"}}
+			if tc.origin != "" {
+				h.Set("Origin", tc.origin)
+			}
+			conn, resp, err := websocket.DefaultDialer.Dial(e.url, h)
+			if err == nil {
+				conn.Close()
+				t.Fatal("dial upgraded, want the Origin check to refuse it")
+			}
+			if resp == nil || resp.StatusCode != http.StatusForbidden {
+				status := 0
+				if resp != nil {
+					status = resp.StatusCode
+				}
+				t.Fatalf("dial: err=%v status=%d, want 403", err, status)
+			}
+			if n := e.builds.Load(); n != 0 {
+				t.Fatalf("built %d executors for a refused origin, want 0", n)
+			}
+		})
+	}
+}
