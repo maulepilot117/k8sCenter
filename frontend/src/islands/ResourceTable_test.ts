@@ -4,6 +4,7 @@ import {
   namespaceFromQuery,
   namespaceSwitchNotice,
   podChipStatus,
+  podPhasesForChip,
   statusFilterFromQuery,
   syncStatusParam,
 } from "@/src/islands/ResourceTable.tsx";
@@ -116,5 +117,28 @@ describe("namespaceFromQuery", () => {
       "Namespace switched to all namespaces for every page, not just this table.",
     );
     expect(namespaceSwitchNotice("minigolf")).toContain("to minigolf for");
+  });
+});
+
+describe("podPhasesForChip", () => {
+  test("asks the server for exactly the phases the dashboard counts", () => {
+    expect(podPhasesForChip("failed")).toEqual(["Failed"]);
+    expect(podPhasesForChip("running")).toEqual(["Running", "Succeeded"]);
+    expect(podPhasesForChip("pending")).toEqual(["Pending"]);
+  });
+
+  test("sends no phase for All or an unknown chip", () => {
+    expect(podPhasesForChip("all")).toEqual([]);
+    expect(podPhasesForChip("progressing")).toEqual([]);
+  });
+
+  test("the server filter and the row check agree for every chip", () => {
+    // Live WS events are checked client-side with podChipStatus; a pod the
+    // server returns for a chip must also pass that check, or it vanishes.
+    for (const chip of ["running", "pending", "failed"]) {
+      for (const phase of podPhasesForChip(chip)) {
+        expect(podChipStatus(phase)).toBe(chip);
+      }
+    }
   });
 });

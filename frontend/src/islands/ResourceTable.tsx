@@ -102,15 +102,31 @@ function dropQueryParam(name: string): void {
 }
 
 /**
- * The status chip a pod falls under, from its phase. Failed means phase
- * Failed only, the same set the dashboard's "Failed pods" count reads
- * (`dashboard.go`). Unknown (the node lost contact) is not a failure: it
- * matches no chip and shows under All.
+ * The pod phases each pod status chip holds. Failed means phase Failed only,
+ * the same set the dashboard's "Failed pods" count reads (`dashboard.go`).
+ * Unknown (the node lost contact) is not a failure: it is in no chip and
+ * shows under All.
  */
+const POD_CHIP_PHASES: Record<string, readonly string[]> = {
+  running: ["Running", "Succeeded"],
+  pending: ["Pending"],
+  failed: ["Failed"],
+};
+
+/**
+ * The phases to ask the server for when a pod chip is active, sent as
+ * repeated `?phase=`. The server filters before it paginates, so a chip
+ * covers the whole list, not just the pages already loaded. Empty for All.
+ */
+export function podPhasesForChip(chip: string): readonly string[] {
+  return POD_CHIP_PHASES[chip] ?? [];
+}
+
+/** The status chip a pod falls under, from its phase, or "unknown". */
 export function podChipStatus(phase: string | undefined): string {
-  if (phase === "Running" || phase === "Succeeded") return "running";
-  if (phase === "Pending") return "pending";
-  if (phase === "Failed") return "failed";
+  for (const [chip, phases] of Object.entries(POD_CHIP_PHASES)) {
+    if (phase !== undefined && phases.includes(phase)) return chip;
+  }
   return "unknown";
 }
 
@@ -356,6 +372,11 @@ export default function ResourceTableIsland({
           ? `/v1/resources/${kind}/${ns.value}`
           : `/v1/resources/${kind}`;
         const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+        if (kind === "pods") {
+          for (const phase of podPhasesForChip(statusFilter.peek())) {
+            params.append("phase", phase);
+          }
+        }
         if (append && continueToken.value) {
           params.set("continue", continueToken.value);
         }
@@ -446,6 +467,12 @@ export default function ResourceTableIsland({
     items.value = current;
   }, [kind]);
 
+  // A pod chip is a server-side filter (?phase=), so changing it reloads the
+  // list from the first page. Other kinds' chips filter loaded rows only. The
+  // client-side check in `displayed` stays for every kind: live WS events add
+  // and change pods whatever their phase.
+  const podChip = kind === "pods" ? statusFilter.value : "";
+
   // Unified effect: subscribe WS first, then fetch REST to close the event gap.
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -480,7 +507,7 @@ export default function ResourceTableIsland({
       }
       eventQueue.current.length = 0;
     };
-  }, [kind, ns.value, enableWS, selectedCluster.value]);
+  }, [kind, ns.value, enableWS, selectedCluster.value, podChip]);
 
   // Compute status string for a resource (used by filter chips)
   const getResourceStatus = useCallback(
