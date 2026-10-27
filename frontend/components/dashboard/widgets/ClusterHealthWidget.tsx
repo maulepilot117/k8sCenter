@@ -17,6 +17,9 @@ import { healthStatusColor } from "@/lib/score-color.ts";
 
 type CheckStatus = CheckItemProps["status"];
 
+/** The pod list opened on its Failed chip (ResourceTable reads `?status=`). */
+const FAILED_PODS_HREF = "/workloads/pods?status=failed";
+
 /**
  * Signals whose `skipped` still means the underlying list WAS read.
  *
@@ -76,8 +79,10 @@ function ClusterHealth({ mode }: WidgetProps) {
   // so the second operand is unreachable for every value nodes.total can take.
   const nodeCount = s?.nodes.total ?? 0;
   const nodesReady = s?.nodes.ready ?? 0;
-  // Workloads degraded: approximate from pods failed, as the island did.
-  const workloadsDegraded = s?.pods.failed ?? 0;
+  // Pods in phase Failed, cluster-wide. Most are leftovers from Jobs, not
+  // Deployment replicas, so the row names pods and links to the pod list
+  // rather than reading as "workloads degraded".
+  const failedPods = s?.pods.failed ?? 0;
   const criticalAlerts = s?.alerts.critical ?? 0;
 
   const health = s?.health;
@@ -99,9 +104,9 @@ function ClusterHealth({ mode }: WidgetProps) {
     value: `${nodesReady} / ${nodeCount}`,
     status: nodesReady === nodeCount && nodeCount > 0 ? "success" : "warning",
   });
-  const degradedCheck = checkValue(s, "pods", "pods", {
-    value: String(workloadsDegraded),
-    status: workloadsDegraded > 0 ? "warning" : "success",
+  const failedPodsCheck = checkValue(s, "pods", "pods", {
+    value: String(failedPods),
+    status: failedPods > 0 ? "warning" : "success",
   });
   const alertsCheck = checkValue(s, "alerts", "alerts", {
     value: String(criticalAlerts),
@@ -183,11 +188,12 @@ function ClusterHealth({ mode }: WidgetProps) {
                 status={nodesCheck.status}
               />
             </div>
-            <div title={degradedCheck.reason}>
+            <div title={failedPodsCheck.reason}>
               <CheckItem
-                label="Workloads degraded"
-                value={degradedCheck.value}
-                status={degradedCheck.status}
+                label="Failed pods"
+                value={failedPodsCheck.value}
+                status={failedPodsCheck.status}
+                href={FAILED_PODS_HREF}
               />
             </div>
             <div title={alertsCheck.reason}>

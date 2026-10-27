@@ -58,6 +58,20 @@ interface ResourceTableIslandProps {
 const PAGE_SIZE = 100;
 
 /**
+ * The status chip a link asked for with `?status=`, or null. The dashboard's
+ * "Failed pods" row opens `/workloads/pods?status=failed`. Only a chip this
+ * table offers is honoured, so an unknown value leaves the filter on "all".
+ */
+export function statusFilterFromQuery(
+  search: string,
+  chips: readonly string[],
+): string | null {
+  const wanted = new URLSearchParams(search).get("status")?.toLowerCase();
+  if (!wanted) return null;
+  return chips.some((c) => c.toLowerCase() === wanted) ? wanted : null;
+}
+
+/**
  * Per-row kebab action menu. Defined at module scope (not inside the island)
  * so its `actionMenuOpen.value` read is scoped to THIS component's render —
  * toggling the menu re-renders only the kebab cells, not the full `uiRows`
@@ -404,6 +418,25 @@ export default function ResourceTableIsland({
   const filterChips = podFilterKind
     ? ["All", "Running", "Pending", "Failed"]
     : ["All", "Running", "Progressing", "Failed"];
+
+  // Open on the chip the URL names, and keep the URL in step when a chip is
+  // clicked, so a reload or a shared link shows the same filtered list.
+  useEffect(() => {
+    if (!IS_BROWSER || !showFilterChips) return;
+    const wanted = statusFilterFromQuery(
+      globalThis.location.search,
+      filterChips,
+    );
+    if (wanted !== null) statusFilter.value = wanted;
+  }, [kind]);
+
+  const selectStatusChip = (val: string) => {
+    statusFilter.value = val;
+    const url = new URL(globalThis.location.href);
+    if (val === "all") url.searchParams.delete("status");
+    else url.searchParams.set("status", val);
+    globalThis.history.replaceState(globalThis.history.state, "", url);
+  };
 
   // Client-side filter + sort
   const displayed = useComputed(() => {
@@ -832,9 +865,7 @@ export default function ResourceTableIsland({
                 <button
                   key={chip}
                   type="button"
-                  onClick={() => {
-                    statusFilter.value = val;
-                  }}
+                  onClick={() => selectStatusChip(val)}
                   style={{
                     padding: "4px 10px",
                     borderRadius: "9px",
