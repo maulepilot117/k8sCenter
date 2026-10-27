@@ -861,7 +861,10 @@ describe("widget bodies", () => {
     const html = body("cluster-health");
     expect(html).toContain("Failed pods");
     expect(html).not.toContain("Workloads degraded");
-    expect(html).toContain('href="/workloads/pods?status=failed"');
+    // namespace=all: the count is cluster-wide, so the list must be too.
+    expect(html).toContain(
+      'href="/workloads/pods?status=failed&amp;namespace=all"',
+    );
   });
 
   test("with every signal ok the checklist is unchanged", () => {

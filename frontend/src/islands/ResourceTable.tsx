@@ -71,6 +71,49 @@ export function statusFilterFromQuery(
   return chips.some((c) => c.toLowerCase() === wanted) ? wanted : null;
 }
 
+/** Kubernetes namespace names are DNS labels (RFC 1123). */
+const NAMESPACE_NAME = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+
+/**
+ * The namespace a link asked for with `?namespace=`: "all" or a namespace
+ * name, or null when the parameter is absent or not a valid name. The
+ * dashboard's "Failed pods" row sends `namespace=all`, because its count
+ * covers every namespace.
+ */
+export function namespaceFromQuery(search: string): string | null {
+  const ns = new URLSearchParams(search).get("namespace");
+  if (!ns) return null;
+  return ns === "all" || NAMESPACE_NAME.test(ns) ? ns : null;
+}
+
+/** The notice shown when this table changes the app-wide namespace. */
+export function namespaceSwitchNotice(ns: string): string {
+  return `Namespace switched to ${
+    ns === "all" ? "all namespaces" : ns
+  } for every page, not just this table.`;
+}
+
+/** Removes one query parameter from the address bar, keeping the rest. */
+function dropQueryParam(name: string): void {
+  const url = new URL(globalThis.location.href);
+  if (!url.searchParams.has(name)) return;
+  url.searchParams.delete(name);
+  globalThis.history.replaceState(globalThis.history.state, "", url);
+}
+
+/**
+ * The status chip a pod falls under, from its phase. Failed means phase
+ * Failed only, the same set the dashboard's "Failed pods" count reads
+ * (`dashboard.go`). Unknown (the node lost contact) is not a failure: it
+ * matches no chip and shows under All.
+ */
+export function podChipStatus(phase: string | undefined): string {
+  if (phase === "Running" || phase === "Succeeded") return "running";
+  if (phase === "Pending") return "pending";
+  if (phase === "Failed") return "failed";
+  return "unknown";
+}
+
 /**
  * Writes the status chip into the address bar: `?status=<chip>`, or no
  * parameter for "all". Other parameters and the history entry's state are
@@ -248,11 +291,7 @@ export default function ResourceTableIsland({
 
       const notices = [...warnings];
       if (namespaceChanges) {
-        notices.push(
-          `Namespace switched to ${
-            restoredNs === "all" ? "all namespaces" : restoredNs
-          } for every page, not just this table.`,
-        );
+        notices.push(namespaceSwitchNotice(restoredNs));
       }
 
       batch(() => {
@@ -268,6 +307,33 @@ export default function ResourceTableIsland({
     },
     [kind, clusterScoped],
   );
+
+  /**
+   * Opens the table on the filters a link names.
+   *
+   * `?status=` picks the chip; setStatusFilter keeps it in the URL from then
+   * on. `?namespace=` switches the app-wide namespace, as restoring a saved
+   * view does, so it shows the same notice. It is then dropped from the URL:
+   * the selection persists on its own, and a parameter left behind would undo
+   * the user's next namespace pick on reload. Declared before the fetch
+   * effect so the first load already uses both.
+   */
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const query = globalThis.location.search;
+    const wantedStatus = showFilterChips
+      ? statusFilterFromQuery(query, filterChips)
+      : null;
+    const wantedNs = clusterScoped ? null : namespaceFromQuery(query);
+    batch(() => {
+      if (wantedStatus !== null) statusFilter.value = wantedStatus;
+      if (wantedNs !== null && wantedNs !== selectedNamespace.value) {
+        selectedNamespace.value = wantedNs;
+        restoreWarnings.value = [namespaceSwitchNotice(wantedNs)];
+      }
+    });
+    if (!clusterScoped) dropQueryParam("namespace");
+  }, [kind]);
 
   // Fetch resources via REST with pagination
   const fetchAbort = useRef<AbortController | null>(null);
@@ -432,26 +498,12 @@ export default function ResourceTableIsland({
         return "running";
       }
       if (kind === "pods") {
-        const phase = (r as Pod).status?.phase ?? "Unknown";
-        if (phase === "Running" || phase === "Succeeded") return "running";
-        if (phase === "Pending") return "pending";
-        return "failed";
+        return podChipStatus((r as Pod).status?.phase);
       }
       return "running";
     },
     [kind],
   );
-
-  // Open on the chip the URL names. `setStatusFilter` keeps the URL in step
-  // from then on.
-  useEffect(() => {
-    if (!IS_BROWSER || !showFilterChips) return;
-    const wanted = statusFilterFromQuery(
-      globalThis.location.search,
-      filterChips,
-    );
-    if (wanted !== null) statusFilter.value = wanted;
-  }, [kind]);
 
   // Client-side filter + sort
   const displayed = useComputed(() => {

@@ -17,8 +17,11 @@ import { healthStatusColor } from "@/lib/score-color.ts";
 
 type CheckStatus = CheckItemProps["status"];
 
-/** The pod list opened on its Failed chip (ResourceTable reads `?status=`). */
-const FAILED_PODS_HREF = "/workloads/pods?status=failed";
+/**
+ * The pod list opened on its Failed chip across all namespaces, matching what
+ * `pods.failed` counts (ResourceTable reads `?status=` and `?namespace=`).
+ */
+const FAILED_PODS_HREF = "/workloads/pods?status=failed&namespace=all";
 
 /**
  * Signals whose `skipped` still means the underlying list WAS read.
