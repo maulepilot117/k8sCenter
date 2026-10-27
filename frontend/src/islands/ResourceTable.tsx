@@ -72,6 +72,19 @@ export function statusFilterFromQuery(
 }
 
 /**
+ * Writes the status chip into the address bar: `?status=<chip>`, or no
+ * parameter for "all". Other parameters and the history entry's state are
+ * kept, and nothing is written when the URL would not change.
+ */
+export function syncStatusParam(status: string): void {
+  const url = new URL(globalThis.location.href);
+  if (status === "all") url.searchParams.delete("status");
+  else url.searchParams.set("status", status);
+  if (url.href === globalThis.location.href) return;
+  globalThis.history.replaceState(globalThis.history.state, "", url);
+}
+
+/**
  * Per-row kebab action menu. Defined at module scope (not inside the island)
  * so its `actionMenuOpen.value` read is scoped to THIS component's render —
  * toggling the menu re-renders only the kebab cells, not the full `uiRows`
@@ -173,6 +186,28 @@ export default function ResourceTableIsland({
 
   const columns = RESOURCE_COLUMNS[kind] ?? [];
 
+  // Determine which filter chips to show
+  const filterChipKinds = new Set([
+    "deployments",
+    "statefulsets",
+    "daemonsets",
+  ]);
+  const podFilterKind = kind === "pods";
+  const showFilterChips = filterChipKinds.has(kind) || podFilterKind;
+  const filterChips = podFilterKind
+    ? ["All", "Running", "Pending", "Failed"]
+    : ["All", "Running", "Progressing", "Failed"];
+
+  /**
+   * The one write path for the status filter. A chip click and a saved-view
+   * restore both go through here, so the URL always names the chip on screen
+   * and a reload or a shared link reopens the same list.
+   */
+  const setStatusFilter = (val: string) => {
+    statusFilter.value = val;
+    if (IS_BROWSER && showFilterChips) syncStatusParam(val);
+  };
+
   // Namespace for API calls
   const ns = useComputed(() =>
     clusterScoped
@@ -222,7 +257,7 @@ export default function ResourceTableIsland({
 
       batch(() => {
         search.value = state.search;
-        statusFilter.value = state.statusFilter;
+        setStatusFilter(state.statusFilter);
         sortKey.value = state.sortKey;
         sortDir.value = state.sortDir === "desc" ? "desc" : "asc";
         restoreWarnings.value = notices;
@@ -407,20 +442,8 @@ export default function ResourceTableIsland({
     [kind],
   );
 
-  // Determine which filter chips to show
-  const filterChipKinds = new Set([
-    "deployments",
-    "statefulsets",
-    "daemonsets",
-  ]);
-  const podFilterKind = kind === "pods";
-  const showFilterChips = filterChipKinds.has(kind) || podFilterKind;
-  const filterChips = podFilterKind
-    ? ["All", "Running", "Pending", "Failed"]
-    : ["All", "Running", "Progressing", "Failed"];
-
-  // Open on the chip the URL names, and keep the URL in step when a chip is
-  // clicked, so a reload or a shared link shows the same filtered list.
+  // Open on the chip the URL names. `setStatusFilter` keeps the URL in step
+  // from then on.
   useEffect(() => {
     if (!IS_BROWSER || !showFilterChips) return;
     const wanted = statusFilterFromQuery(
@@ -429,14 +452,6 @@ export default function ResourceTableIsland({
     );
     if (wanted !== null) statusFilter.value = wanted;
   }, [kind]);
-
-  const selectStatusChip = (val: string) => {
-    statusFilter.value = val;
-    const url = new URL(globalThis.location.href);
-    if (val === "all") url.searchParams.delete("status");
-    else url.searchParams.set("status", val);
-    globalThis.history.replaceState(globalThis.history.state, "", url);
-  };
 
   // Client-side filter + sort
   const displayed = useComputed(() => {
@@ -865,7 +880,7 @@ export default function ResourceTableIsland({
                 <button
                   key={chip}
                   type="button"
-                  onClick={() => selectStatusChip(val)}
+                  onClick={() => setStatusFilter(val)}
                   style={{
                     padding: "4px 10px",
                     borderRadius: "9px",
