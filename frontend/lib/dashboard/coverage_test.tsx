@@ -854,6 +854,19 @@ describe("widget bodies", () => {
     expect(html).toContain(">1<");
   });
 
+  test("the failed-pod row names pods and links to the filtered pod list", () => {
+    // pods.failed counts every pod in phase Failed -- mostly Job leftovers --
+    // so the row must not read as degraded workloads.
+    seedSummary(localHealth({}));
+    const html = body("cluster-health");
+    expect(html).toContain("Failed pods");
+    expect(html).not.toContain("Workloads degraded");
+    // namespace=all: the count is cluster-wide, so the list must be too.
+    expect(html).toContain(
+      'href="/workloads/pods?status=failed&amp;namespace=all"',
+    );
+  });
+
   test("with every signal ok the checklist is unchanged", () => {
     seedSummary(localHealth({}));
     const html = body("cluster-health");

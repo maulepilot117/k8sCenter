@@ -58,6 +58,92 @@ interface ResourceTableIslandProps {
 const PAGE_SIZE = 100;
 
 /**
+ * The status chip a link asked for with `?status=`, or null. The dashboard's
+ * "Failed pods" row opens `/workloads/pods?status=failed`. Only a chip this
+ * table offers is honoured, so an unknown value leaves the filter on "all".
+ */
+export function statusFilterFromQuery(
+  search: string,
+  chips: readonly string[],
+): string | null {
+  const wanted = new URLSearchParams(search).get("status")?.toLowerCase();
+  if (!wanted) return null;
+  return chips.some((c) => c.toLowerCase() === wanted) ? wanted : null;
+}
+
+/** Kubernetes namespace names are DNS labels (RFC 1123). */
+const NAMESPACE_NAME = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/;
+
+/**
+ * The namespace a link asked for with `?namespace=`: "all" or a namespace
+ * name, or null when the parameter is absent or not a valid name. The
+ * dashboard's "Failed pods" row sends `namespace=all`, because its count
+ * covers every namespace.
+ */
+export function namespaceFromQuery(search: string): string | null {
+  const ns = new URLSearchParams(search).get("namespace");
+  if (!ns) return null;
+  return ns === "all" || NAMESPACE_NAME.test(ns) ? ns : null;
+}
+
+/** The notice shown when this table changes the app-wide namespace. */
+export function namespaceSwitchNotice(ns: string): string {
+  return `Namespace switched to ${
+    ns === "all" ? "all namespaces" : ns
+  } for every page, not just this table.`;
+}
+
+/** Removes one query parameter from the address bar, keeping the rest. */
+function dropQueryParam(name: string): void {
+  const url = new URL(globalThis.location.href);
+  if (!url.searchParams.has(name)) return;
+  url.searchParams.delete(name);
+  globalThis.history.replaceState(globalThis.history.state, "", url);
+}
+
+/**
+ * The pod phases each pod status chip holds. Failed means phase Failed only,
+ * the same set the dashboard's "Failed pods" count reads (`dashboard.go`).
+ * Unknown (the node lost contact) is not a failure: it is in no chip and
+ * shows under All.
+ */
+const POD_CHIP_PHASES: Record<string, readonly string[]> = {
+  running: ["Running", "Succeeded"],
+  pending: ["Pending"],
+  failed: ["Failed"],
+};
+
+/**
+ * The phases to ask the server for when a pod chip is active, sent as
+ * repeated `?phase=`. The server filters before it paginates, so a chip
+ * covers the whole list, not just the pages already loaded. Empty for All.
+ */
+export function podPhasesForChip(chip: string): readonly string[] {
+  return POD_CHIP_PHASES[chip] ?? [];
+}
+
+/** The status chip a pod falls under, from its phase, or "unknown". */
+export function podChipStatus(phase: string | undefined): string {
+  for (const [chip, phases] of Object.entries(POD_CHIP_PHASES)) {
+    if (phase !== undefined && phases.includes(phase)) return chip;
+  }
+  return "unknown";
+}
+
+/**
+ * Writes the status chip into the address bar: `?status=<chip>`, or no
+ * parameter for "all". Other parameters and the history entry's state are
+ * kept, and nothing is written when the URL would not change.
+ */
+export function syncStatusParam(status: string): void {
+  const url = new URL(globalThis.location.href);
+  if (status === "all") url.searchParams.delete("status");
+  else url.searchParams.set("status", status);
+  if (url.href === globalThis.location.href) return;
+  globalThis.history.replaceState(globalThis.history.state, "", url);
+}
+
+/**
  * Per-row kebab action menu. Defined at module scope (not inside the island)
  * so its `actionMenuOpen.value` read is scoped to THIS component's render —
  * toggling the menu re-renders only the kebab cells, not the full `uiRows`
@@ -159,6 +245,28 @@ export default function ResourceTableIsland({
 
   const columns = RESOURCE_COLUMNS[kind] ?? [];
 
+  // Determine which filter chips to show
+  const filterChipKinds = new Set([
+    "deployments",
+    "statefulsets",
+    "daemonsets",
+  ]);
+  const podFilterKind = kind === "pods";
+  const showFilterChips = filterChipKinds.has(kind) || podFilterKind;
+  const filterChips = podFilterKind
+    ? ["All", "Running", "Pending", "Failed"]
+    : ["All", "Running", "Progressing", "Failed"];
+
+  /**
+   * The one write path for the status filter. A chip click and a saved-view
+   * restore both go through here, so the URL always names the chip on screen
+   * and a reload or a shared link reopens the same list.
+   */
+  const setStatusFilter = (val: string) => {
+    statusFilter.value = val;
+    if (IS_BROWSER && showFilterChips) syncStatusParam(val);
+  };
+
   // Namespace for API calls
   const ns = useComputed(() =>
     clusterScoped
@@ -199,16 +307,12 @@ export default function ResourceTableIsland({
 
       const notices = [...warnings];
       if (namespaceChanges) {
-        notices.push(
-          `Namespace switched to ${
-            restoredNs === "all" ? "all namespaces" : restoredNs
-          } for every page, not just this table.`,
-        );
+        notices.push(namespaceSwitchNotice(restoredNs));
       }
 
       batch(() => {
         search.value = state.search;
-        statusFilter.value = state.statusFilter;
+        setStatusFilter(state.statusFilter);
         sortKey.value = state.sortKey;
         sortDir.value = state.sortDir === "desc" ? "desc" : "asc";
         restoreWarnings.value = notices;
@@ -219,6 +323,33 @@ export default function ResourceTableIsland({
     },
     [kind, clusterScoped],
   );
+
+  /**
+   * Opens the table on the filters a link names.
+   *
+   * `?status=` picks the chip; setStatusFilter keeps it in the URL from then
+   * on. `?namespace=` switches the app-wide namespace, as restoring a saved
+   * view does, so it shows the same notice. It is then dropped from the URL:
+   * the selection persists on its own, and a parameter left behind would undo
+   * the user's next namespace pick on reload. Declared before the fetch
+   * effect so the first load already uses both.
+   */
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const query = globalThis.location.search;
+    const wantedStatus = showFilterChips
+      ? statusFilterFromQuery(query, filterChips)
+      : null;
+    const wantedNs = clusterScoped ? null : namespaceFromQuery(query);
+    batch(() => {
+      if (wantedStatus !== null) statusFilter.value = wantedStatus;
+      if (wantedNs !== null && wantedNs !== selectedNamespace.value) {
+        selectedNamespace.value = wantedNs;
+        restoreWarnings.value = [namespaceSwitchNotice(wantedNs)];
+      }
+    });
+    if (!clusterScoped) dropQueryParam("namespace");
+  }, [kind]);
 
   // Fetch resources via REST with pagination
   const fetchAbort = useRef<AbortController | null>(null);
@@ -241,6 +372,11 @@ export default function ResourceTableIsland({
           ? `/v1/resources/${kind}/${ns.value}`
           : `/v1/resources/${kind}`;
         const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+        if (kind === "pods") {
+          for (const phase of podPhasesForChip(statusFilter.peek())) {
+            params.append("phase", phase);
+          }
+        }
         if (append && continueToken.value) {
           params.set("continue", continueToken.value);
         }
@@ -331,6 +467,12 @@ export default function ResourceTableIsland({
     items.value = current;
   }, [kind]);
 
+  // A pod chip is a server-side filter (?phase=), so changing it reloads the
+  // list from the first page. Other kinds' chips filter loaded rows only. The
+  // client-side check in `displayed` stays for every kind: live WS events add
+  // and change pods whatever their phase.
+  const podChip = kind === "pods" ? statusFilter.value : "";
+
   // Unified effect: subscribe WS first, then fetch REST to close the event gap.
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -365,7 +507,7 @@ export default function ResourceTableIsland({
       }
       eventQueue.current.length = 0;
     };
-  }, [kind, ns.value, enableWS, selectedCluster.value]);
+  }, [kind, ns.value, enableWS, selectedCluster.value, podChip]);
 
   // Compute status string for a resource (used by filter chips)
   const getResourceStatus = useCallback(
@@ -383,27 +525,12 @@ export default function ResourceTableIsland({
         return "running";
       }
       if (kind === "pods") {
-        const phase = (r as Pod).status?.phase ?? "Unknown";
-        if (phase === "Running" || phase === "Succeeded") return "running";
-        if (phase === "Pending") return "pending";
-        return "failed";
+        return podChipStatus((r as Pod).status?.phase);
       }
       return "running";
     },
     [kind],
   );
-
-  // Determine which filter chips to show
-  const filterChipKinds = new Set([
-    "deployments",
-    "statefulsets",
-    "daemonsets",
-  ]);
-  const podFilterKind = kind === "pods";
-  const showFilterChips = filterChipKinds.has(kind) || podFilterKind;
-  const filterChips = podFilterKind
-    ? ["All", "Running", "Pending", "Failed"]
-    : ["All", "Running", "Progressing", "Failed"];
 
   // Client-side filter + sort
   const displayed = useComputed(() => {
@@ -832,9 +959,7 @@ export default function ResourceTableIsland({
                 <button
                   key={chip}
                   type="button"
-                  onClick={() => {
-                    statusFilter.value = val;
-                  }}
+                  onClick={() => setStatusFilter(val)}
                   style={{
                     padding: "4px 10px",
                     borderRadius: "9px",
