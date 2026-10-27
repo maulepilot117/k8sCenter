@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkWsPath, isExecPath, remapCloseCode } from "./ws-allowlist.ts";
+import { checkWsPath, remapCloseCode } from "./ws-allowlist.ts";
 
 const ALLOWED = [
   "/ws/v1/ws/resources",
@@ -71,12 +71,6 @@ test("checkWsPath strips the query string before matching", () => {
   const result = checkWsPath("/ws/v1/ws/resources?foo=bar");
   expect(result.ok).toBe(true);
   if (result.ok) expect(result.path).toBe("v1/ws/resources");
-});
-
-test("isExecPath is true only for the exec route", () => {
-  expect(isExecPath("v1/ws/exec/default/mypod/main")).toBe(true);
-  expect(isExecPath("v1/ws/resources")).toBe(false);
-  expect(isExecPath("v1/ws/logs/default/mypod/main")).toBe(false);
 });
 
 test("remapCloseCode passes through valid codes unchanged", () => {
