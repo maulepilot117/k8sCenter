@@ -107,8 +107,27 @@ function startProxy(
   });
 }
 
+function upgradeRequestText(
+  path: string,
+  extraHeaders: Record<string, string>,
+): string {
+  return [
+    `GET ${path} HTTP/1.1`,
+    "Host: 127.0.0.1",
+    "Connection: Upgrade",
+    "Upgrade: websocket",
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+    "Sec-WebSocket-Version: 13",
+    ...Object.entries(extraHeaders).map(([k, v]) => `${k}: ${v}`),
+    "",
+    "",
+  ].join("\r\n");
+}
+
 /** Raw wire-level upgrade request, for asserting exact rejection status codes
- * and headers without a WebSocket client library getting in the way. */
+ * and headers without a WebSocket client library getting in the way.
+ * Resolves once the full response head (through the blank line) has
+ * arrived; a body sent after the head is not waited for. */
 function rawUpgradeRequest(
   port: number,
   path: string,
@@ -116,26 +135,47 @@ function rawUpgradeRequest(
 ): Promise<{ statusLine: string; raw: string; socket: Socket }> {
   return new Promise((resolvePromise, reject) => {
     const socket = connect(port, "127.0.0.1", () => {
-      const headerLines = [
-        `GET ${path} HTTP/1.1`,
-        "Host: 127.0.0.1",
-        "Connection: Upgrade",
-        "Upgrade: websocket",
-        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-        "Sec-WebSocket-Version: 13",
-        ...Object.entries(extraHeaders).map(([k, v]) => `${k}: ${v}`),
-        "",
-        "",
-      ].join("\r\n");
-      socket.write(headerLines);
+      socket.write(upgradeRequestText(path, extraHeaders));
     });
     let buf = "";
     socket.on("data", (chunk) => {
       buf += chunk.toString("utf-8");
-      if (buf.includes("\r\n\r\n") || buf.includes("\r\n")) {
+      if (buf.includes("\r\n\r\n")) {
         resolvePromise({ statusLine: buf.split("\r\n")[0], raw: buf, socket });
       }
     });
+    socket.on("error", reject);
+  });
+}
+
+/** Like rawUpgradeRequest, but collects the whole response: everything up to
+ * the server closing the socket, so a header or body arriving in a later
+ * packet is still asserted on. If the server instead completes the
+ * handshake and holds the socket open, it resolves `graceMs` after the
+ * response head, so a regression fails its assertions rather than hanging. */
+function rawUpgradeResponse(
+  port: number,
+  path: string,
+  extraHeaders: Record<string, string> = {},
+  graceMs = 250,
+): Promise<{ statusLine: string; raw: string; socket: Socket }> {
+  return new Promise((resolvePromise, reject) => {
+    const socket = connect(port, "127.0.0.1", () => {
+      socket.write(upgradeRequestText(path, extraHeaders));
+    });
+    let buf = "";
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      clearTimeout(graceTimer);
+      resolvePromise({ statusLine: buf.split("\r\n")[0], raw: buf, socket });
+    };
+    socket.on("data", (chunk) => {
+      buf += chunk.toString("utf-8");
+      if (graceTimer === undefined && buf.includes("\r\n\r\n")) {
+        graceTimer = setTimeout(finish, graceMs);
+      }
+    });
+    socket.on("close", finish);
     socket.on("error", reject);
   });
 }
@@ -516,12 +556,14 @@ for (const path of [
     const { server, port } = await startProxy(backend.port);
     cleanups.push(() => server.close());
 
-    const { statusLine, raw, socket } = await rawUpgradeRequest(port, path, {
+    const { statusLine, raw, socket } = await rawUpgradeResponse(port, path, {
       "Sec-WebSocket-Protocol": STALE_TAB_PROTOCOLS,
     });
     cleanups.push(() => socket.destroy());
 
     expect(statusLine).toContain("400");
+    // The body ties the 400 to this guard rather than another 400 path.
+    expect(raw).toContain("WebSocket subprotocols are not supported");
     expect(raw.toLowerCase()).not.toContain("sec-websocket-protocol");
     expect(raw).not.toContain(STALE_TAB_BEARER);
 
