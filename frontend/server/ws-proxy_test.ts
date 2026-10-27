@@ -2,10 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
 import { WebSocketServer } from "ws";
-import {
-  encodeBearerSubprotocol,
-  WS_AUTH_SENTINEL_PROTOCOL,
-} from "@/src/lib/ws-exec-auth.ts";
 import { applySecurityHeaders } from "./headers.ts";
 import {
   attachWsProxy,
@@ -13,7 +9,6 @@ import {
   handleWsHttpRequest,
   IDLE_TIMEOUT_MS,
   KEEPALIVE_PING_MS,
-  LEGACY_EXEC_CLIENT_MESSAGE,
   MAX_QUEUE_BYTES,
   MAX_QUEUE_MESSAGES,
 } from "./ws-proxy.ts";
@@ -495,8 +490,15 @@ test("the exec route relays the in-band auth frame to the backend unchanged", as
   expect(backend.receivedAuth).toEqual([undefined]);
 });
 
-// A tab loaded before the change still offers its token as a subprotocol and
-// sends no auth frame. It is told to reload, and the token goes nowhere.
+// What a tab loaded before exec moved to in-band auth offers: its token,
+// base64url-encoded, as a subprotocol, beside a plain sentinel.
+const STALE_TAB_BEARER =
+  "base64url.bearer.authorization.k8scenter.io.c3RhbGUtdGFiLXRva2Vu";
+const STALE_TAB_PROTOCOLS = `${STALE_TAB_BEARER}, k8scenter.v1`;
+
+// An upgrade offering any subprotocol is refused before the handshake, so a
+// credential offered there is never echoed back and no backend leg opens.
+// Bun's `ws` would otherwise echo the first offer.
 //
 // rawUpgradeRequest rather than a native `new WebSocket(url, protocols)`
 // client, deliberately: a native Bun WebSocket client that negotiates a
@@ -504,55 +506,29 @@ test("the exec route relays the in-band auth frame to the backend unchanged", as
 // Bun's own built-in `ws` fast path (github.com/oven-sh/bun; reproduced
 // standalone outside bun:test too), so a later raw-socket upgrade offering a
 // Sec-WebSocket-Protocol header throws inside `ws`'s `completeUpgrade`.
-test("a legacy exec client offering a bearer subprotocol is told to reload, and no backend leg opens", async () => {
-  const backend = await startStubBackend();
-  cleanups.push(backend.close);
-  const { server, port } = await startProxy(backend.port);
-  cleanups.push(() => server.close());
+for (const path of [
+  "/ws/v1/ws/exec/default/mypod/main",
+  "/ws/v1/ws/resources",
+]) {
+  test(`an upgrade offering a subprotocol is refused without echoing it (${path})`, async () => {
+    const backend = await startStubBackend();
+    cleanups.push(backend.close);
+    const { server, port } = await startProxy(backend.port);
+    cleanups.push(() => server.close());
 
-  const bearer = encodeBearerSubprotocol("legacy-token");
-  const { statusLine, raw, socket } = await rawUpgradeRequest(
-    port,
-    "/ws/v1/ws/exec/default/mypod/main",
-    { "Sec-WebSocket-Protocol": `${bearer}, ${WS_AUTH_SENTINEL_PROTOCOL}` },
-  );
-  cleanups.push(() => socket.destroy());
+    const { statusLine, raw, socket } = await rawUpgradeRequest(port, path, {
+      "Sec-WebSocket-Protocol": STALE_TAB_PROTOCOLS,
+    });
+    cleanups.push(() => socket.destroy());
 
-  // The handshake completes, echoing only the sentinel, so the client can
-  // read the instruction; the credential is never echoed.
-  expect(statusLine).toContain("101");
-  expect(raw).toContain(
-    `Sec-WebSocket-Protocol: ${WS_AUTH_SENTINEL_PROTOCOL}\r\n`,
-  );
-  expect(raw).not.toContain(bearer);
+    expect(statusLine).toContain("400");
+    expect(raw.toLowerCase()).not.toContain("sec-websocket-protocol");
+    expect(raw).not.toContain(STALE_TAB_BEARER);
 
-  // Server frames are unmasked, so the instruction is readable on the wire.
-  let wire = raw;
-  socket.on("data", (chunk) => {
-    wire += chunk.toString("utf-8");
+    await new Promise((res) => setTimeout(res, 50));
+    expect(backend.upgradeAttempts).toBe(0);
   });
-  await new Promise<void>((res) => socket.once("close", () => res()));
-  expect(wire).toContain(LEGACY_EXEC_CLIENT_MESSAGE);
-  expect(backend.upgradeAttempts).toBe(0);
-});
-
-test("a bearer subprotocol on a non-exec route is bridged as usual, without the credential", async () => {
-  const backend = await startStubBackend();
-  cleanups.push(backend.close);
-  const { server, port } = await startProxy(backend.port);
-  cleanups.push(() => server.close());
-
-  await rawUpgradeRequest(port, "/ws/v1/ws/resources", {
-    "Sec-WebSocket-Protocol": `${encodeBearerSubprotocol(
-      "should-not-forward",
-    )}, ${WS_AUTH_SENTINEL_PROTOCOL}`,
-  });
-  await new Promise((res) => setTimeout(res, 50));
-  // The reload refusal is exec's alone: this route still gets a backend leg.
-  expect(backend.upgradeAttempts).toBe(1);
-  expect(backend.receivedAuth).toHaveLength(1);
-  expect(backend.receivedAuth[0]).toBeUndefined();
-});
+}
 
 test("non-exec routes carry no Authorization header even when the client's request has one", async () => {
   const backend = await startStubBackend();
