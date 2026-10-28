@@ -20,7 +20,10 @@ permissions: {}
 
 jobs:
   e2e:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to ubuntu-26.04 on 2026-10-27, and
+    # Playwright cannot install Chromium there yet ("Playwright does not
+    # support chromium on ubuntu26.04-x64"). Move back once it can.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
