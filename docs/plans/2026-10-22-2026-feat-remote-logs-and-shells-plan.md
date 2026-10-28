@@ -24,7 +24,7 @@ execution: code
 
 ## Product Contract
 
-Product Contract preservation: changed. R1 is narrowed to Loki search and the new R21 owns the web streams' cluster naming. R4 is narrowed to the backend's mobile path, because mobile WebSockets behind the default ingress reach the frontend, which does not bridge `/api/v1/ws`. R9 gains the sign-out bound and the same-user rule. R12 and AE10 follow the reload-on-switch design. R15 loses the no-database branch, because the server will not start without PostgreSQL (`backend/cmd/kubecenter/main.go`), and AE8 is removed with it. New: R21, AE12, AE13. Every change was confirmed in the planning dialogue.
+Product Contract preservation: changed. R1 is narrowed to Loki search and the new R21 owns the web streams' cluster naming. R4 is narrowed to the backend's mobile path, because mobile WebSockets behind the default ingress reach the frontend, which does not bridge `/api/v1/ws`. R9 gains the sign-out bound (one access-token lifetime plus KTD9's 60-second renewal grace) and the same-user rule. R12 and AE10 follow the reload-on-switch design. R15 loses the no-database branch, because the server will not start without PostgreSQL (`backend/cmd/kubecenter/main.go`), and AE8 is removed with it. New: R21, AE12, AE13. Every change was confirmed in the planning dialogue.
 
 ### Summary
 
@@ -48,7 +48,7 @@ Shells raise a second problem for an organization-wide console. A shell is the m
 - **Reaching private-network clusters is a separate brainstorm.** Logs and shells are worth having on any cluster k8sCenter can reach today. Reachability is upstream of every remote feature and gets its own Product Contract. (session-settled: user-approved — chosen over switching this brainstorm to reachability first: logs and shells are independently valuable and their requirements do not depend on how a cluster is reached.)
 - **Loki is found automatically, with an optional per-cluster URL.** Switching clusters should need no setup when Loki runs in the cluster, while a shared or external Loki still has a way in. Governs R5, R6. (session-settled: user-approved — chosen over a configured URL only, like the Prometheus binding, which would require Loki exposed on public HTTPS, and over auto only, which leaves a shared Loki unsupported.)
 - **Shells end on revocation, cluster removal, sign-out or idle, not on token expiry.** A shell cannot reconnect without losing its state, so the 15-minute access-token boundary that ends a flow stream would drop shells constantly. Governs R8, R9. (session-settled: user-approved — chosen over ending at token expiry, which drops shells about every 15 minutes, and over today's unlimited local behaviour.)
-- **Sign-out elsewhere ends a shell within one access-token lifetime.** No server-side session signal exists today, and an instant end would need new session tracking across replicas. Governs R9. (session-settled: user-approved — chosen over instant sign-out via a new session-family claim and logout registry: the 15-minute bound needs no new auth state.)
+- **Sign-out elsewhere ends a shell within one access-token lifetime plus a 60-second renewal grace.** No server-side session signal exists today, and an instant end would need new session tracking across replicas. The grace lets a client that is mid-refresh at expiry finish renewing (KTD9). Governs R9. (session-settled: user-approved — chosen over instant sign-out via a new session-family claim and logout registry: the bound of about 16 minutes needs no new auth state. The 60-second grace was added to this bound in review, user-approved, rather than removed from KTD9.)
 - **Live log tails end at token expiry and reconnect on their own.** Losing a tail costs nothing, so tails follow the remote Hubble flow pattern rather than the shell rule. Governs R3.
 - **Shells are recorded.** An organization's control plane needs evidence of what was done in a shell, not just that one was opened. Governs R13–R17. (session-settled: user-directed — chosen over start-and-end audit rows only and over today's single start row: compliance needs replayable evidence.)
 - **A recording captures screen output only.** Typed commands appear because the shell echoes them, while passwords typed at hidden prompts are not stored. Governs R13. (session-settled: user-approved — chosen over screen plus raw keystrokes, which would store hidden-prompt passwords.)
@@ -98,7 +98,7 @@ This plan covers logs and shells on remote clusters. The breakdown below is the 
 **Shell lifecycle (all shells, local and remote)**
 
 - R8. A shell stays open across access-token refreshes.
-- R9. A shell ends when the user's exec access in that namespace is revoked, the cluster is removed, the shell has been idle past the idle limit, or the user signs out; sign-out elsewhere takes effect within one access-token lifetime, and a refreshed token for a different user ends the shell.
+- R9. A shell ends when the user's exec access in that namespace is revoked, the cluster is removed, the shell has been idle past the idle limit, or the user signs out; sign-out elsewhere takes effect within one access-token lifetime plus a 60-second renewal grace, and a refreshed token for a different user ends the shell.
 - R10. When a shell ends for any reason other than the user closing it, the terminal says why.
 
 **Sessions follow the cluster where they were opened**
@@ -156,7 +156,7 @@ This plan covers logs and shells on remote clusters. The breakdown below is the 
 - AE9. **Covers R16.** Given a non-admin user, when they try to list or replay recordings, then access is refused.
 - AE10. **Covers R12.** Given a shell open on cluster A in this tab, when the admin chooses cluster B, then a confirmation says the shell will end, and cancelling keeps the shell on A; given a log tail on A in another tab, then that tab keeps streaming from A and shows that the selection is B.
 - AE11. **Covers R19.** Given recording not yet shipped, then `pod.exec` remains remote-unsupported.
-- AE12. **Covers R9.** Given an open shell for user U, when another tab signs out and user V signs in, then U's shell ends at its next token renewal and the terminal says the user signed out.
+- AE12. **Covers R9.** Given an open shell for user U, when another tab signs out and user V signs in, then U's shell ends at its next token renewal, or at token expiry plus 60 seconds if no renewal arrives, and the terminal says the user signed out.
 - AE13. **Covers R21.** Given a remote cluster selected in the web UI and a local pod with the same namespace and name, when the admin opens that pod's Terminal or follows its logs before remote support ships, then the stream is refused with the remote-unsupported state and nothing from the local pod is shown.
 
 ### Success Criteria
@@ -240,7 +240,7 @@ This plan covers logs and shells on remote clusters. The breakdown below is the 
   - **Idle:** 30 minutes with no input frame, configurable as `KUBECENTER_SHELL_IDLETIMEOUT`.
   - **Other ends:** `cluster_removed` through the registry and `server_restarting` through `CancelAll`.
 
-  (R8, R9, R10.) (session-settled: user-approved — chosen over instant sign-out via a new session-family claim: in-band renewal bounds sign-out to one token lifetime without new auth state.)
+  (R8, R9, R10.) (session-settled: user-approved — chosen over instant sign-out via a new session-family claim: in-band renewal bounds sign-out to one token lifetime plus the 60-second grace without new auth state.)
 - KTD10. **Recording is a synchronous, fail-closed tee of the output choke point.**
   - **Format and start:** events are asciicast v2 (`o` output, `r` resize). The recording row is inserted before the exec stream opens.
   - **Encoding:** the encoder carries an incomplete trailing UTF-8 sequence into the next event and turns only invalid bytes into U+FFFD. It splits one output event into several at UTF-8 boundaries, so no chunk exceeds the 64 KiB ceiling however heavily the output escapes.
