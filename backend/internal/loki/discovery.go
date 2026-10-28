@@ -152,6 +152,7 @@ func (d *Discoverer) discoverLoki(ctx context.Context) (string, string) {
 		return d.config.URL, "config-override"
 	}
 
+	// nolint:cluster-routing local path: in-cluster discovery finds the local Loki only; handler.go refuseRemote turns away remote targets.
 	cs := d.k8sClient.BaseClientset()
 
 	// 2. Well-known service names
@@ -184,6 +185,7 @@ func (d *Discoverer) discoverLoki(ctx context.Context) (string, string) {
 // (or all namespaces if empty). When component is non-empty, it additionally
 // filters on `app.kubernetes.io/component`.
 func (d *Discoverer) findServiceByLabel(ctx context.Context, namespace, labelKey, labelValue, component string) (string, string) {
+	// nolint:cluster-routing local path: in-cluster discovery searches the local cluster's Services only.
 	cs := d.k8sClient.BaseClientset()
 	selector := fmt.Sprintf("%s=%s", labelKey, labelValue)
 	if component != "" {

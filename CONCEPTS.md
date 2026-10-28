@@ -87,3 +87,12 @@ report. **Error** is a failure that may resolve on its own.
 Conflating the first with the third is the failure this distinction exists to prevent: a
 compliance card on a cluster with no policy engine would otherwise read as full
 compliance.
+
+## Shells
+
+### Shell Recording
+The replayable record of an interactive pod shell, kept as the terminal output the shell
+displayed rather than the keys sent, so a password typed at a hidden prompt is never stored.
+Recording is an admin setting that is on by default, and while it is on it fails closed: a
+shell whose recording cannot be started or continued is refused or ended rather than run
+unrecorded. Only admins list or replay recordings, and each replay is itself audit-logged.
