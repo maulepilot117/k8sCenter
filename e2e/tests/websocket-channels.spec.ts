@@ -46,8 +46,8 @@ import { E2E_PASSWORD, E2E_USERNAME, loginViaApi } from "../helpers.ts";
  * browser cannot put a header on a WebSocket handshake, so nothing rides on
  * the handshake, and the credential never appears in a URL, which an
  * ingress in front of the frontend pod logs by default. Exec used to carry
- * its token in a Sec-WebSocket-Protocol value; the bridge's reload answer
- * for a tab still running that client is covered in ws-proxy_test.ts.
+ * its token in a Sec-WebSocket-Protocol value; the bridge now refuses any
+ * upgrade that offers a subprotocol (covered in ws-proxy_test.ts).
  */
 
 /** Namespace seeded by e2e/fixtures/k8s/ -- the one that reliably exists. */

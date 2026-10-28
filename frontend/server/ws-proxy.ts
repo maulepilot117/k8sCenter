@@ -1,12 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { type WebSocket as ServerClientSocket, WebSocketServer } from "ws";
-import {
-  findBearerInSubprotocols,
-  selectWsSubprotocol,
-} from "@/src/lib/ws-exec-auth.ts";
 import { rawHeaderLines } from "./headers.ts";
-import { checkWsPath, isExecPath, remapCloseCode } from "./ws-allowlist.ts";
+import { checkWsPath, remapCloseCode } from "./ws-allowlist.ts";
 
 /**
  * The native WebSocket bridge to the Go backend (KD5, KTD2). Ported from
@@ -20,17 +16,8 @@ import { checkWsPath, isExecPath, remapCloseCode } from "./ws-allowlist.ts";
  *
  * Every route, exec included, authenticates in-band with its first message,
  * so the bridge forwards no credential and opens every backend leg without
- * headers. Exec used to carry its token in a Sec-WebSocket-Protocol value
- * that the bridge converted to an Authorization header; a tab still running
- * that client gets a reload instruction instead (refuseLegacyExecClient).
+ * headers.
  */
-
-/**
- * What a tab still running the subprotocol exec client is told. That client
- * shows an error frame's message as sent, so the instruction is the message.
- */
-export const LEGACY_EXEC_CLIENT_MESSAGE =
-  "This page is out of date. Reload the page to open a terminal.";
 
 export const MAX_QUEUE_MESSAGES = 32;
 export const MAX_QUEUE_BYTES = 256 * 1024;
@@ -158,14 +145,7 @@ export function attachWsProxy(
   options: AttachWsProxyOptions = {},
 ): void {
   const ownUnmatchedPaths = options.ownUnmatchedPaths ?? true;
-  // Only a tab running the legacy exec client offers subprotocols, and its
-  // handshake has to complete for it to read the reload instruction. `ws`
-  // defaults to echoing whichever subprotocol the client listed first, which
-  // would be the credential-bearing one; this pins the echo to the sentinel.
-  const wss = new WebSocketServer({
-    noServer: true,
-    handleProtocols: selectWsSubprotocol,
-  });
+  const wss = new WebSocketServer({ noServer: true });
 
   httpServer.on(
     "upgrade",
@@ -191,11 +171,19 @@ export function attachWsProxy(
         return;
       }
 
-      // Presence only: the token itself is never read or forwarded.
-      const legacyExecClient =
-        isExecPath(check.path) &&
-        findBearerInSubprotocols(req.headers["sec-websocket-protocol"]) !==
-          undefined;
+      // No client negotiates a subprotocol, and a tab loaded before exec moved
+      // to in-band auth offers its bearer token as one. Under Bun, `ws` echoes
+      // the first offered subprotocol unless handleProtocols names another,
+      // which would put that token in a response header, so an offer is
+      // refused before the handshake.
+      if (req.headers["sec-websocket-protocol"] !== undefined) {
+        writeRawRejection(
+          socket,
+          400,
+          "WebSocket subprotocols are not supported",
+        );
+        return;
+      }
 
       wss.handleUpgrade(req, socket, head, (clientWs) => {
         // An 'upgrade' listener runs outside any request-scoped error
@@ -204,10 +192,6 @@ export function attachWsProxy(
         // whole frontend for every user. Everything below this line is
         // reachable from an unauthenticated request, so it is contained.
         try {
-          if (legacyExecClient) {
-            refuseLegacyExecClient(clientWs);
-            return;
-          }
           bridgeConnection(clientWs, check.path, {
             backendUrl: options.backendUrl ?? getBackendUrl(),
             maxQueueMessages: options.maxQueueMessages ?? MAX_QUEUE_MESSAGES,
@@ -228,22 +212,6 @@ export function attachWsProxy(
       });
     },
   );
-}
-
-/**
- * Ends an exec connection from a tab loaded before exec moved to in-band
- * auth (KTD17). That client puts its token in a subprotocol and sends no
- * auth frame, so the backend would only time it out; it is told to reload
- * instead, and no backend leg is opened. Goes once that client is retired
- * (U29).
- */
-function refuseLegacyExecClient(clientWs: ServerClientSocket): void {
-  // As in bridgeConnection: an unhandled 'error' on a socket is a crash.
-  clientWs.on("error", () => {});
-  clientWs.send(
-    JSON.stringify({ type: "error", message: LEGACY_EXEC_CLIENT_MESSAGE }),
-  );
-  clientWs.close(1008, "reload required");
 }
 
 /**
