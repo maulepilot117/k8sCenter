@@ -355,7 +355,7 @@ var capabilityOperations = []capabilityOp{
 	{
 		// Pod exec requires an SPDY stream upgrade against the target
 		// cluster's own API server, not yet supported for remote clusters.
-		// k8s/resources/pods.go:164 (501).
+		// server/handle_ws_exec.go (in-band error frame).
 		//
 		// Subresource shape: CanAccess splits "pods/exec" into
 		// Resource:"pods", Subresource:"exec" (access.go:137-143);

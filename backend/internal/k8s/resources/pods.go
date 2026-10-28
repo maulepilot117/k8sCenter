@@ -17,8 +17,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
-	"github.com/kubecenter/kubecenter/internal/k8s"
-	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/remotecommand"
 )
@@ -125,75 +123,8 @@ func (h *Handler) HandlePodLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandlePodExec upgrades to WebSocket and opens an exec session to a pod container.
-// WS /api/v1/ws/exec/{namespace}/{name}/{container}
-//
-// This is the legacy path, authenticated by middleware from an Authorization
-// header. The in-band path (server/handle_ws_exec.go) authenticates the first
-// frame instead; both share RunExecSession.
-func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
-	// Connection limit check
-	if ExecAtCapacity() {
-		writeError(w, http.StatusServiceUnavailable, "too many exec connections", "")
-		return
-	}
-
-	user, ok := requireUser(w, r)
-	if !ok {
-		return
-	}
-	ns := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
-	container := chi.URLParam(r, "container")
-
-	if !h.checkAccess(w, r, user, "create", "pods/exec", ns) {
-		return
-	}
-
-	if container != "" && !validContainerName.MatchString(container) {
-		writeError(w, http.StatusBadRequest, "invalid container name", "")
-		return
-	}
-
-	// P2-5: pod exec requires SPDY stream upgrade against the target cluster's
-	// API server, which is not yet supported for remote clusters. Reject with
-	// HTTP 501 before the WebSocket upgrade so the error is delivered cleanly.
-	execClusterID := middleware.ClusterIDFromContext(r.Context())
-	if !k8s.IsLocalClusterID(execClusterID) {
-		h.Logger.Warn("pod exec rejected on remote cluster",
-			"user", user.Username,
-			"clusterID", execClusterID,
-			"namespace", ns,
-			"pod", name,
-		)
-		h.auditWrite(r, user, audit.ActionCreate, "Pod/exec", ns, name, audit.ResultFailure)
-		writeError(w, http.StatusNotImplemented, "pod exec not yet supported on remote clusters", "")
-		return
-	}
-
-	// Validate WebSocket origin
-	if h.OriginValidator != nil && !h.OriginValidator(w, r) {
-		return // origin validator already wrote the HTTP error
-	}
-
-	// Upgrade to WebSocket
-	upgrader := websocket.Upgrader{
-		ReadBufferSize:  4096,
-		WriteBufferSize: 4096,
-		CheckOrigin:     func(r *http.Request) bool { return true }, // origin already validated above
-	}
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		h.Logger.Error("websocket upgrade failed", "error", err)
-		return
-	}
-	defer conn.Close()
-
-	h.RunExecSession(r, conn, user, ns, name, container)
-}
-
 // ExecAtCapacity reports whether the concurrent exec connection limit is
-// reached. Both exec paths check it before upgrading.
+// reached. The exec handler checks it before upgrading.
 func ExecAtCapacity() bool {
 	return execWSCount.Load() >= maxExecConnections
 }
@@ -214,13 +145,13 @@ type ExecExecutorFunc func(ns, name, container, shell string) (remotecommand.Exe
 // effective cluster for the client and the audit row. The caller closes conn.
 func (h *Handler) RunExecSession(r *http.Request, conn *websocket.Conn, user *auth.User, ns, name, container string) {
 	// Limit incoming message size (16KB — sufficient for input + resize JSON).
-	// The in-band path arrives with the auth frame's smaller limit and read
+	// The connection arrives with the auth frame's smaller limit and read
 	// deadline, so both are reset here.
 	conn.SetReadLimit(16384)
 	conn.SetReadDeadline(time.Time{})
 
-	// Reserve a connection slot. The callers' ExecAtCapacity check runs
-	// before the upgrade; the in-band path then waits on the client's auth
+	// Reserve a connection slot. The caller's ExecAtCapacity check runs
+	// before the upgrade; the handler then waits on the client's auth
 	// frame, so many connections can pass that check before any of them
 	// holds a slot.
 	if execWSCount.Add(1) > maxExecConnections {
@@ -321,7 +252,7 @@ func (h *Handler) spdyExecExecutor(r *http.Request, user *auth.User) (ExecExecut
 		return nil, err
 	}
 
-	// nolint:cluster-routing local path: pod exec is local-only; both exec paths refuse a remote cluster before the session starts
+	// nolint:cluster-routing local path: pod exec is local-only; the exec handler refuses a remote cluster before the session starts
 	cfg := h.K8sClient.BaseConfig()
 	cfg.Impersonate.UserName = user.KubernetesUsername
 	cfg.Impersonate.Groups = user.KubernetesGroups
@@ -339,7 +270,7 @@ func (h *Handler) spdyExecExecutor(r *http.Request, user *auth.User) (ExecExecut
 			Param("tty", "true").
 			Param("command", shell)
 
-		// nolint:cluster-routing local path: pod exec is local-only; both exec paths refuse a remote cluster before the session starts
+		// nolint:cluster-routing local path: pod exec is local-only; the exec handler refuses a remote cluster before the session starts
 		return remotecommand.NewSPDYExecutor(cfg, "POST", execReq.URL())
 	}, nil
 }

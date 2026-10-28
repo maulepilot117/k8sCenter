@@ -2,10 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
 import { WebSocketServer } from "ws";
-import {
-  encodeBearerSubprotocol,
-  WS_AUTH_SENTINEL_PROTOCOL,
-} from "@/src/lib/ws-exec-auth.ts";
 import { applySecurityHeaders } from "./headers.ts";
 import {
   attachWsProxy,
@@ -13,7 +9,6 @@ import {
   handleWsHttpRequest,
   IDLE_TIMEOUT_MS,
   KEEPALIVE_PING_MS,
-  LEGACY_EXEC_CLIENT_MESSAGE,
   MAX_QUEUE_BYTES,
   MAX_QUEUE_MESSAGES,
 } from "./ws-proxy.ts";
@@ -112,8 +107,27 @@ function startProxy(
   });
 }
 
+function upgradeRequestText(
+  path: string,
+  extraHeaders: Record<string, string>,
+): string {
+  return [
+    `GET ${path} HTTP/1.1`,
+    "Host: 127.0.0.1",
+    "Connection: Upgrade",
+    "Upgrade: websocket",
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+    "Sec-WebSocket-Version: 13",
+    ...Object.entries(extraHeaders).map(([k, v]) => `${k}: ${v}`),
+    "",
+    "",
+  ].join("\r\n");
+}
+
 /** Raw wire-level upgrade request, for asserting exact rejection status codes
- * and headers without a WebSocket client library getting in the way. */
+ * and headers without a WebSocket client library getting in the way.
+ * Resolves once the full response head (through the blank line) has
+ * arrived; a body sent after the head is not waited for. */
 function rawUpgradeRequest(
   port: number,
   path: string,
@@ -121,26 +135,47 @@ function rawUpgradeRequest(
 ): Promise<{ statusLine: string; raw: string; socket: Socket }> {
   return new Promise((resolvePromise, reject) => {
     const socket = connect(port, "127.0.0.1", () => {
-      const headerLines = [
-        `GET ${path} HTTP/1.1`,
-        "Host: 127.0.0.1",
-        "Connection: Upgrade",
-        "Upgrade: websocket",
-        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-        "Sec-WebSocket-Version: 13",
-        ...Object.entries(extraHeaders).map(([k, v]) => `${k}: ${v}`),
-        "",
-        "",
-      ].join("\r\n");
-      socket.write(headerLines);
+      socket.write(upgradeRequestText(path, extraHeaders));
     });
     let buf = "";
     socket.on("data", (chunk) => {
       buf += chunk.toString("utf-8");
-      if (buf.includes("\r\n\r\n") || buf.includes("\r\n")) {
+      if (buf.includes("\r\n\r\n")) {
         resolvePromise({ statusLine: buf.split("\r\n")[0], raw: buf, socket });
       }
     });
+    socket.on("error", reject);
+  });
+}
+
+/** Like rawUpgradeRequest, but collects the whole response: everything up to
+ * the server closing the socket, so a header or body arriving in a later
+ * packet is still asserted on. If the server instead completes the
+ * handshake and holds the socket open, it resolves `graceMs` after the
+ * response head, so a regression fails its assertions rather than hanging. */
+function rawUpgradeResponse(
+  port: number,
+  path: string,
+  extraHeaders: Record<string, string> = {},
+  graceMs = 250,
+): Promise<{ statusLine: string; raw: string; socket: Socket }> {
+  return new Promise((resolvePromise, reject) => {
+    const socket = connect(port, "127.0.0.1", () => {
+      socket.write(upgradeRequestText(path, extraHeaders));
+    });
+    let buf = "";
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      clearTimeout(graceTimer);
+      resolvePromise({ statusLine: buf.split("\r\n")[0], raw: buf, socket });
+    };
+    socket.on("data", (chunk) => {
+      buf += chunk.toString("utf-8");
+      if (graceTimer === undefined && buf.includes("\r\n\r\n")) {
+        graceTimer = setTimeout(finish, graceMs);
+      }
+    });
+    socket.on("close", finish);
     socket.on("error", reject);
   });
 }
@@ -495,8 +530,15 @@ test("the exec route relays the in-band auth frame to the backend unchanged", as
   expect(backend.receivedAuth).toEqual([undefined]);
 });
 
-// A tab loaded before the change still offers its token as a subprotocol and
-// sends no auth frame. It is told to reload, and the token goes nowhere.
+// What a tab loaded before exec moved to in-band auth offers: its token,
+// base64url-encoded, as a subprotocol, beside a plain sentinel.
+const STALE_TAB_BEARER =
+  "base64url.bearer.authorization.k8scenter.io.c3RhbGUtdGFiLXRva2Vu";
+const STALE_TAB_PROTOCOLS = `${STALE_TAB_BEARER}, k8scenter.v1`;
+
+// An upgrade offering any subprotocol is refused before the handshake, so a
+// credential offered there is never echoed back and no backend leg opens.
+// Bun's `ws` would otherwise echo the first offer.
 //
 // rawUpgradeRequest rather than a native `new WebSocket(url, protocols)`
 // client, deliberately: a native Bun WebSocket client that negotiates a
@@ -504,55 +546,31 @@ test("the exec route relays the in-band auth frame to the backend unchanged", as
 // Bun's own built-in `ws` fast path (github.com/oven-sh/bun; reproduced
 // standalone outside bun:test too), so a later raw-socket upgrade offering a
 // Sec-WebSocket-Protocol header throws inside `ws`'s `completeUpgrade`.
-test("a legacy exec client offering a bearer subprotocol is told to reload, and no backend leg opens", async () => {
-  const backend = await startStubBackend();
-  cleanups.push(backend.close);
-  const { server, port } = await startProxy(backend.port);
-  cleanups.push(() => server.close());
+for (const path of [
+  "/ws/v1/ws/exec/default/mypod/main",
+  "/ws/v1/ws/resources",
+]) {
+  test(`an upgrade offering a subprotocol is refused without echoing it (${path})`, async () => {
+    const backend = await startStubBackend();
+    cleanups.push(backend.close);
+    const { server, port } = await startProxy(backend.port);
+    cleanups.push(() => server.close());
 
-  const bearer = encodeBearerSubprotocol("legacy-token");
-  const { statusLine, raw, socket } = await rawUpgradeRequest(
-    port,
-    "/ws/v1/ws/exec/default/mypod/main",
-    { "Sec-WebSocket-Protocol": `${bearer}, ${WS_AUTH_SENTINEL_PROTOCOL}` },
-  );
-  cleanups.push(() => socket.destroy());
+    const { statusLine, raw, socket } = await rawUpgradeResponse(port, path, {
+      "Sec-WebSocket-Protocol": STALE_TAB_PROTOCOLS,
+    });
+    cleanups.push(() => socket.destroy());
 
-  // The handshake completes, echoing only the sentinel, so the client can
-  // read the instruction; the credential is never echoed.
-  expect(statusLine).toContain("101");
-  expect(raw).toContain(
-    `Sec-WebSocket-Protocol: ${WS_AUTH_SENTINEL_PROTOCOL}\r\n`,
-  );
-  expect(raw).not.toContain(bearer);
+    expect(statusLine).toContain("400");
+    // The body ties the 400 to this guard rather than another 400 path.
+    expect(raw).toContain("WebSocket subprotocols are not supported");
+    expect(raw.toLowerCase()).not.toContain("sec-websocket-protocol");
+    expect(raw).not.toContain(STALE_TAB_BEARER);
 
-  // Server frames are unmasked, so the instruction is readable on the wire.
-  let wire = raw;
-  socket.on("data", (chunk) => {
-    wire += chunk.toString("utf-8");
+    await new Promise((res) => setTimeout(res, 50));
+    expect(backend.upgradeAttempts).toBe(0);
   });
-  await new Promise<void>((res) => socket.once("close", () => res()));
-  expect(wire).toContain(LEGACY_EXEC_CLIENT_MESSAGE);
-  expect(backend.upgradeAttempts).toBe(0);
-});
-
-test("a bearer subprotocol on a non-exec route is bridged as usual, without the credential", async () => {
-  const backend = await startStubBackend();
-  cleanups.push(backend.close);
-  const { server, port } = await startProxy(backend.port);
-  cleanups.push(() => server.close());
-
-  await rawUpgradeRequest(port, "/ws/v1/ws/resources", {
-    "Sec-WebSocket-Protocol": `${encodeBearerSubprotocol(
-      "should-not-forward",
-    )}, ${WS_AUTH_SENTINEL_PROTOCOL}`,
-  });
-  await new Promise((res) => setTimeout(res, 50));
-  // The reload refusal is exec's alone: this route still gets a backend leg.
-  expect(backend.upgradeAttempts).toBe(1);
-  expect(backend.receivedAuth).toHaveLength(1);
-  expect(backend.receivedAuth[0]).toBeUndefined();
-});
+}
 
 test("non-exec routes carry no Authorization header even when the client's request has one", async () => {
   const backend = await startStubBackend();

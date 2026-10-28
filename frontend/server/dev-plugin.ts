@@ -21,7 +21,7 @@ import { attachWsProxy, handleWsHttpRequest } from "./ws-proxy.ts";
  * plugin's own routes), and attach ws-proxy.ts's identical 'upgrade'
  * handler to the httpServer Vite already created. U1 proved this exact
  * shape end to end: dev and the built server run through the same
- * allowlist, traversal guard, queueing, and exec Bearer-header logic. U6
+ * allowlist, traversal guard, queueing, and subprotocol refusal. U6
  * adds the same guarantee for /api/*: without this branch, `astro dev`
  * has nothing that answers /api/v1/* at all (the Fresh route files under
  * routes/api/ are not Astro routes), so every API call would 404.
