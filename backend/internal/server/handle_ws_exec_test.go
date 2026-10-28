@@ -364,28 +364,71 @@ func TestWSExec_InBandRefusals(t *testing.T) {
 	}
 }
 
-// A request carrying an Authorization header still takes the legacy path,
-// which refuses a remote cluster with a plain HTTP 501 before upgrading. The
-// same request without the header upgrades and authenticates in-band.
-func TestWSExec_AuthorizationHeaderTakesLegacyPath(t *testing.T) {
+// A valid Authorization header no longer authenticates exec: the request still
+// has to send an auth frame first, and input in its place opens no shell.
+func TestWSExec_AuthorizationHeaderWithoutAuthFrameRefused(t *testing.T) {
 	e := newWSExecTest(t, resources.NewAlwaysAllowAccessChecker())
 	token := issueWSToken(t, e.srv, true)
 
-	h := http.Header{"Origin": {"http://localhost"}, "X-Cluster-ID": {"remote-1"}}
+	h := http.Header{"Origin": {"http://localhost"}, "X-Cluster-ID": {"local"}}
 	h.Set("Authorization", "Bearer "+token)
-	_, resp, err := websocket.DefaultDialer.Dial(e.url, h)
-	if err == nil || resp == nil || resp.StatusCode != http.StatusNotImplemented {
-		status := 0
-		if resp != nil {
-			status = resp.StatusCode
-		}
-		t.Fatalf("legacy dial: err=%v status=%d, want the legacy 501", err, status)
-	}
-
-	h.Del("Authorization")
 	conn, _, err := websocket.DefaultDialer.Dial(e.url, h)
 	if err != nil {
-		t.Fatalf("in-band dial should upgrade: %v", err)
+		t.Fatalf("dial: %v", err)
 	}
-	conn.Close()
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{"type": "input", "data": "id\n"}); err != nil {
+		t.Fatalf("WriteJSON input: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var msg map[string]any
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if msg["type"] != "error" || msg["message"] != "invalid auth message" {
+		t.Fatalf("frame = %v, want the invalid auth message error", msg)
+	}
+	if n := e.builds.Load(); n != 0 {
+		t.Fatalf("built %d executors without an auth frame, want 0", n)
+	}
+}
+
+// Outside dev mode the exec upgrade is refused before the handshake for a
+// foreign Origin and for none, so a cross-site page cannot open a shell.
+func TestWSExec_OriginRefusedBeforeUpgrade(t *testing.T) {
+	cases := []struct {
+		name   string
+		origin string
+	}{
+		{name: "foreign origin", origin: "http://evil.example"},
+		{name: "no origin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newWSExecTest(t, resources.NewAlwaysAllowAccessChecker())
+			e.srv.Config.Dev = false
+			e.srv.Config.CORS.AllowedOrigins = []string{"http://localhost"}
+
+			h := http.Header{"X-Cluster-ID": {"local"}}
+			if tc.origin != "" {
+				h.Set("Origin", tc.origin)
+			}
+			conn, resp, err := websocket.DefaultDialer.Dial(e.url, h)
+			if err == nil {
+				conn.Close()
+				t.Fatal("dial upgraded, want the Origin check to refuse it")
+			}
+			if resp == nil || resp.StatusCode != http.StatusForbidden {
+				status := 0
+				if resp != nil {
+					status = resp.StatusCode
+				}
+				t.Fatalf("dial: err=%v status=%d, want 403", err, status)
+			}
+			if n := e.builds.Load(); n != 0 {
+				t.Fatalf("built %d executors for a refused origin, want 0", n)
+			}
+		})
+	}
 }

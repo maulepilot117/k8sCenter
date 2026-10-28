@@ -15,18 +15,9 @@ import (
 var execWSRoute = wsRoute{requireCluster: true, auditAction: audit.ActionCreate, auditKind: "Pod/exec"}
 
 // wsExecHandler serves WS /api/v1/ws/exec/{namespace}/{name}/{container}.
-// A request carrying an Authorization header takes the legacy path, which
-// authenticates by middleware; any other request authenticates in-band. The
-// legacy branch goes once the web terminal sends its auth frame (U4, U29).
+// Every request authenticates in-band; an Authorization header is ignored.
 func (s *Server) wsExecHandler() http.Handler {
-	legacy := middleware.Auth(s.TokenManager)(middleware.CSRF(http.HandlerFunc(s.ResourceHandler.HandlePodExec)))
-	return middleware.WSClusterContext(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "" {
-			legacy.ServeHTTP(w, r)
-			return
-		}
-		s.handleWSExec(w, r)
-	}))
+	return middleware.WSClusterContext(http.HandlerFunc(s.handleWSExec))
 }
 
 // handleWSExec opens a pod shell after in-band auth. Protocol: the client

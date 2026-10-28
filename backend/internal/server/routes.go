@@ -49,8 +49,7 @@ func (s *Server) registerRoutes() {
 		}
 	})
 
-	// Pod exec WebSocket — no timeout. Auth is in-band, or by middleware for
-	// a legacy request carrying an Authorization header (wsExecHandler).
+	// Pod exec WebSocket — no timeout. Auth is in-band (wsExecHandler).
 	if s.ResourceHandler != nil {
 		s.Router.Get("/api/v1/ws/exec/{namespace}/{name}/{container}", s.wsExecHandler().ServeHTTP)
 	}
