@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -62,6 +64,17 @@ var logStreamEnds = newStreamEnds("the log stream", "these logs")
 // errLogReaderPanicked is the reader result when the log reader panicked;
 // the panic itself is recovered and logged.
 var errLogReaderPanicked = errors.New("log reader panicked")
+
+// logOpenTimeout bounds how long a log stream may take to open: the access
+// check, the client and the log request together. It stays under
+// wsPongWait, whose read deadline would otherwise end a stalled open with no
+// frame. Tests shorten it.
+var logOpenTimeout = 30 * time.Second
+
+// errLogOpenTimeout is the cancel cause of an open that ran past
+// logOpenTimeout. It wraps context.DeadlineExceeded, which
+// k8s.ClassifyTargetErr reports as unreachable.
+var errLogOpenTimeout = fmt.Errorf("log stream open timed out: %w", context.DeadlineExceeded)
 
 // handleWSLogs handles WebSocket connections for real-time pod log streaming.
 // Protocol: client sends auth message (JWT), then filter message, then receives log lines.
@@ -137,55 +150,103 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	logWSCount.Add(1)
 	defer logWSCount.Add(-1)
 
-	// RBAC check — get on pods/log subresource, asked of the target cluster.
-	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-		reqCtx, clusterID, user.KubernetesUsername, user.KubernetesGroups,
-		"get", "pods/log", ns,
-	)
-	if err != nil {
-		conn.WriteJSON(map[string]any{"type": "error", "message": "permission check failed"})
-		return
-	}
-	if !allowed {
-		conn.WriteJSON(map[string]any{"type": "error", "message": "no permission to view logs in this namespace"})
-		return
-	}
-
 	// The stream's context ends when the WebSocket closes, or with a
 	// *streamEnd cause when a remote stream must end.
 	ctx, cancel := context.WithCancelCause(reqCtx)
 	defer cancel(nil)
 
-	// Create impersonating client for the log stream
-	var cs kubernetes.Interface
+	// The keepalive, the lifecycle watch and the open bound all start before
+	// the stream opens, so an open that stalls still ends when the client
+	// leaves, at token expiry, on revocation or removal, or at the bound.
+	ticker := wsStartKeepalive(conn, func() { cancel(nil) })
+	defer ticker.Stop()
 	if remote {
-		// Registered before the client is built, so a cluster removed while
-		// the stream is still opening ends it too.
 		remove := s.logStreams.add(clusterID, cancel)
 		defer remove()
-		cs, err = s.remoteLogClient(ctx, clusterID, user)
-		if ctx.Err() != nil {
+		s.watchStream(ctx, cancel, logStreamEnds, "ws log revalidate", logRevalidateInterval, func(ctx context.Context) *streamEnd {
+			return s.revalidateLogStream(ctx, clusterID, user, ns)
+		})
+	}
+	openBound := time.AfterFunc(logOpenTimeout, func() { cancel(errLogOpenTimeout) })
+
+	// failOpen answers an open that did not complete. A stream whose context
+	// ended sends its end. A remote cluster that could not be reached is
+	// refused with a reason and a failure audit row, never with a word the
+	// mobile client treats as fatal (stream_lifecycle.go).
+	failOpen := func(err error, message string, reachFailure bool) {
+		openBound.Stop()
+		if errors.Is(context.Cause(ctx), errLogOpenTimeout) {
+			err, reachFailure = errLogOpenTimeout, true
+		} else if ctx.Err() != nil {
 			writeStreamEnd(conn, ctx)
 			return
 		}
-		if err != nil {
-			s.Logger.Warn("remote log stream refused", "user", user.Username, "cluster", clusterID, "error", err)
-			s.auditLogStream(r, reqCtx, user, clusterID, ns, pod, audit.ResultFailure, "remote log stream refused: cluster unreachable")
-			conn.WriteJSON(map[string]any{
-				"type":    "error",
-				"message": "failed to reach the selected cluster",
-				"reason":  string(k8s.ReasonUnreachable),
-			})
+		if remote && reachFailure {
+			s.refuseRemoteLogs(conn, r, reqCtx, user, clusterID, ns, pod, err)
 			return
 		}
+		s.Logger.Warn("log stream open failed", "error", err, "cluster", clusterID, "pod", pod, "namespace", ns)
+		if remote {
+			s.auditLogStream(r, reqCtx, user, clusterID, ns, pod, audit.ResultFailure, "remote log stream refused: "+message)
+		}
+		conn.WriteJSON(map[string]any{"type": "error", "message": message})
+	}
+
+	// RBAC check — get on pods/log subresource, asked of the target cluster.
+	// On a remote cluster the check is the first call to reach it, so its
+	// error is a reach failure, not a denial.
+	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
+		ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups,
+		"get", "pods/log", ns,
+	)
+	if err != nil || ctx.Err() != nil {
+		failOpen(err, "permission check failed", true)
+		return
+	}
+	if !allowed {
+		failOpen(nil, "no permission to view logs in this namespace", false)
+		return
+	}
+
+	// Create impersonating client for the log stream
+	var cs kubernetes.Interface
+	if remote {
+		cs, err = s.remoteLogClient(ctx, clusterID, user)
 	} else {
 		// nolint:cluster-routing carve-out: the local log stream reads through the local factory; a remote one routes through ClusterRouter above.
 		cs, err = s.ResourceHandler.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-		if err != nil {
-			conn.WriteJSON(map[string]any{"type": "error", "message": "failed to create client"})
-			return
-		}
 	}
+	if err != nil || ctx.Err() != nil {
+		failOpen(err, "failed to create client", true)
+		return
+	}
+
+	opts := &corev1.PodLogOptions{
+		Container:  filter.Container,
+		Follow:     true,
+		TailLines:  &filter.TailLines,
+		Previous:   filter.Previous,
+		Timestamps: filter.Timestamps,
+	}
+
+	// Open the log stream. An error the cluster answered with (no such pod
+	// or container) is not a reach failure.
+	stream, err := cs.CoreV1().Pods(ns).GetLogs(pod, opts).Stream(ctx)
+	if err == nil && !openBound.Stop() {
+		// The bound fired as the open returned: the stream is already
+		// cancelled, so it ends as a timed-out open.
+		stream.Close()
+		stream, err = nil, errLogOpenTimeout
+	}
+	if err != nil || ctx.Err() != nil {
+		if stream != nil {
+			stream.Close()
+		}
+		var status apierrors.APIStatus
+		failOpen(err, "failed to open log stream", !errors.As(err, &status))
+		return
+	}
+	defer stream.Close()
 
 	// Confirm subscription
 	conn.WriteJSON(map[string]any{
@@ -204,38 +265,6 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		"pod", pod,
 		"container", filter.Container,
 	)
-
-	// Build log options
-	opts := &corev1.PodLogOptions{
-		Container:  filter.Container,
-		Follow:     true,
-		TailLines:  &filter.TailLines,
-		Previous:   filter.Previous,
-		Timestamps: filter.Timestamps,
-	}
-
-	// Open the log stream
-	stream, err := cs.CoreV1().Pods(ns).GetLogs(pod, opts).Stream(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			writeStreamEnd(conn, ctx)
-			return
-		}
-		conn.WriteJSON(map[string]any{"type": "error", "message": "failed to open log stream"})
-		s.Logger.Warn("log stream open failed", "error", err, "cluster", clusterID, "pod", pod, "namespace", ns)
-		return
-	}
-	defer stream.Close()
-
-	// Ping/pong keepalive + read pump
-	ticker := wsStartKeepalive(conn, func() { cancel(nil) })
-	defer ticker.Stop()
-
-	if remote {
-		s.watchStream(ctx, cancel, logStreamEnds, "ws log revalidate", logRevalidateInterval, func(ctx context.Context) *streamEnd {
-			return s.revalidateLogStream(ctx, clusterID, user, ns)
-		})
-	}
 
 	// Log reader goroutine: scan lines from k8s stream into bounded channel.
 	// readErr is written before logCh closes, so the write loop may read it
@@ -341,9 +370,14 @@ func (s *Server) revalidateLogStream(ctx context.Context, clusterID string, user
 			return logStreamEnds.clusterRemoved
 		}
 	}
-	var access networking.NamespaceAccess = s.ResourceHandler.AccessChecker
-	if s.logAccess != nil {
+	var access networking.NamespaceAccess
+	switch {
+	case s.logAccess != nil:
 		access = s.logAccess
+	case s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil:
+		access = s.ResourceHandler.AccessChecker
+	default:
+		return nil
 	}
 	allowed, err := access.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "get", "pods/log", namespace)
 	if err != nil {
@@ -354,6 +388,20 @@ func (s *Server) revalidateLogStream(ctx context.Context, clusterID string, user
 		return logStreamEnds.accessRevoked
 	}
 	return nil
+}
+
+// refuseRemoteLogs answers a remote log stream whose cluster could not be
+// reached or whose client could not be built: a fixed message, the reason
+// k8s.ClassifyTargetErr gives err, and a failure audit row.
+func (s *Server) refuseRemoteLogs(conn *websocket.Conn, r *http.Request, ctx context.Context, user *auth.User, clusterID, namespace, pod string, err error) {
+	reason := string(k8s.ClassifyTargetErr(err))
+	s.Logger.Warn("remote log stream refused", "user", user.Username, "cluster", clusterID, "reason", reason, "error", err)
+	s.auditLogStream(r, ctx, user, clusterID, namespace, pod, audit.ResultFailure, "remote log stream refused: "+reason)
+	conn.WriteJSON(map[string]any{
+		"type":    "error",
+		"message": "failed to reach the selected cluster",
+		"reason":  reason,
+	})
 }
 
 // auditLogStream writes the audit row of a log stream open: the user, the
