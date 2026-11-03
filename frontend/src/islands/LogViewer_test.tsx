@@ -39,10 +39,14 @@ class FakeWebSocket {
   constructor(public url: string) {
     FakeWebSocket.instances.push(this);
   }
+  closed = false;
   send(data: string) {
     this.sent.push(JSON.parse(data));
   }
-  close() {}
+  /** Records the close; a test fires onclose itself, as a browser would later. */
+  close() {
+    this.closed = true;
+  }
 }
 
 const REMOTE = "c-remote";
@@ -53,6 +57,9 @@ const realRaf = globalThis.requestAnimationFrame;
 const realCancelRaf = globalThis.cancelAnimationFrame;
 let originalFetch: typeof globalThis.fetch | undefined;
 let host: HTMLElement | null = null;
+let refreshCalls = 0;
+/** When set, a session refresh waits for it before answering. */
+let refreshGate: Promise<void> | null = null;
 
 function json(data: unknown): Response {
   return new Response(JSON.stringify({ data }), {
@@ -71,10 +78,15 @@ beforeEach(() => {
   globalThis.cancelAnimationFrame = ((id: number) =>
     clearTimeout(id)) as unknown as typeof cancelAnimationFrame;
   originalFetch = globalThis.fetch;
+  refreshCalls = 0;
+  refreshGate = null;
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = String(input);
-    if (url.includes("/auth/refresh"))
+    if (url.includes("/auth/refresh")) {
+      refreshCalls++;
+      if (refreshGate) await refreshGate;
       return json({ accessToken: "fresh-token" });
+    }
     if (url.includes(`/v1/clusters/${REMOTE}`)) {
       return json({ id: REMOTE, name: "prod-east" });
     }
@@ -280,6 +292,125 @@ test("a resume skips the replayed lines and marks the join once", async () => {
       "--- reconnected ---",
       "2026-11-03T15:00:03Z four",
     ]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a resume whose socket closes before subscribing counts as a failed try", async () => {
+  jest.useFakeTimers();
+  try {
+    let ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    deliver(ws, {
+      type: "error",
+      reason: "server_restarting",
+      retryable: true,
+    });
+    // The backend is still down: the proxy closes each resumed socket
+    // before the stream subscribes, with no end frame.
+    for (const delay of [2_000, 5_000, 10_000]) {
+      ws = await reconnectAfter(delay);
+      expect(host?.textContent).toContain("Reconnecting...");
+      act(() => ws.onerror?.());
+      act(() => ws.onclose?.());
+    }
+    const before = FakeWebSocket.instances.length;
+    jest.advanceTimersByTime(30_000);
+    await settle();
+    expect(FakeWebSocket.instances.length).toBe(before);
+    expect(host?.textContent).toContain("could not reconnect");
+    expect(host?.textContent).not.toContain("Reconnecting...");
+    expect(host?.textContent).not.toContain("WebSocket connection failed");
+    expect(reconnectButton()).toBeDefined();
+    // Only an expired token refreshes the session.
+    expect(refreshCalls).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a resume refused without a reason shows the refusal and Reconnect", async () => {
+  jest.useFakeTimers();
+  try {
+    const first = mountViewer();
+    deliver(first, { type: "subscribed" });
+    deliver(first, {
+      type: "error",
+      reason: "server_restarting",
+      retryable: true,
+    });
+    const second = await reconnectAfter(2_000);
+    deliver(second, { type: "error", message: "invalid token" });
+    act(() => second.onclose?.());
+    const before = FakeWebSocket.instances.length;
+    jest.advanceTimersByTime(30_000);
+    await settle();
+    expect(FakeWebSocket.instances.length).toBe(before);
+    expect(host?.textContent).toContain("invalid token");
+    expect(host?.textContent).not.toContain("Reconnecting...");
+    expect(reconnectButton()).toBeDefined();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a resume waiting on a session refresh opens nothing once the viewer is gone", async () => {
+  jest.useFakeTimers();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    let release: () => void = () => {};
+    refreshGate = new Promise((r) => {
+      release = r;
+    });
+    deliver(ws, { type: "error", reason: "token_expired", retryable: true });
+    jest.advanceTimersByTime(2_000);
+    await settle();
+    expect(refreshCalls).toBe(1);
+
+    const before = FakeWebSocket.instances.length;
+    act(() => render(null, host as HTMLElement));
+    release();
+    await settle();
+    expect(FakeWebSocket.instances.length).toBe(before);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a replaced socket's late events leave the resumed tail alone", async () => {
+  jest.useFakeTimers();
+  try {
+    const first = mountViewer();
+    deliver(first, { type: "subscribed" });
+    deliver(first, {
+      type: "error",
+      reason: "server_restarting",
+      retryable: true,
+    });
+    expect(first.closed).toBe(true);
+    const second = await reconnectAfter(2_000);
+    deliver(second, { type: "subscribed" });
+
+    // The old socket's close and stray frames arrive after the swap.
+    act(() => first.onerror?.());
+    act(() => first.onclose?.());
+    deliver(first, { type: "error", reason: "cluster_removed" });
+    await deliverLines(first, ["2026-11-03T15:00:09Z stray"]);
+    expect(host?.textContent).toContain("Streaming");
+    expect(host?.textContent).not.toContain("WebSocket connection failed");
+    expect(host?.textContent).not.toContain("removed from k8sCenter");
+    expect(shownLines()).not.toContain("2026-11-03T15:00:09Z stray");
+
+    // The tab still holds its new socket, so a later end on it resumes.
+    deliver(second, {
+      type: "error",
+      reason: "server_restarting",
+      retryable: true,
+    });
+    expect(second.closed).toBe(true);
+    await reconnectAfter(2_000);
   } finally {
     jest.useRealTimers();
   }

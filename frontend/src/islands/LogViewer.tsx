@@ -95,6 +95,10 @@ export default function LogViewer({
   const retryTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(
     new Map(),
   );
+  // Bumped whenever a tab's pending resume is cancelled. A resume that
+  // awaited a session refresh checks it before connecting, so one that
+  // outlived its tab, its mode or the viewer opens nothing.
+  const resumeEpoch = useRef<Map<number, number>>(new Map());
   const lastTimestamp = useRef<Map<number, [string, number]>>(new Map());
   const resumeAfter = useRef<Map<number, [string, number] | null>>(new Map());
 
@@ -199,13 +203,20 @@ export default function LogViewer({
     }
   };
 
-  // Close a specific tab's WS connection and cancel a pending resume
-  const closeTabWS = (tabIdx: number) => {
+  // Cancel a tab's pending resume, including one already past its timer and
+  // waiting on a session refresh.
+  const cancelResume = (tabIdx: number) => {
+    resumeEpoch.current.set(tabIdx, (resumeEpoch.current.get(tabIdx) ?? 0) + 1);
     const timer = retryTimers.current.get(tabIdx);
     if (timer) {
       clearTimeout(timer);
       retryTimers.current.delete(tabIdx);
     }
+  };
+
+  // Close a specific tab's WS connection and cancel a pending resume
+  const closeTabWS = (tabIdx: number) => {
+    cancelResume(tabIdx);
     const ws = wsRefs.current.get(tabIdx);
     if (ws) {
       ws.close();
@@ -232,11 +243,13 @@ export default function LogViewer({
     if (frame.retryable && delay !== undefined) {
       triesRef.current.set(tabIdx, tries + 1);
       updateTabState(tabIdx, { connected: false, reconnecting: true });
+      const epoch = resumeEpoch.current.get(tabIdx);
       retryTimers.current.set(
         tabIdx,
         setTimeout(async () => {
           retryTimers.current.delete(tabIdx);
           if (frame.reason === "token_expired") await refreshSession();
+          if (resumeEpoch.current.get(tabIdx) !== epoch) return;
           if (mode.value === "follow") connectWS(tabIdx, true);
         }, delay),
       );
@@ -278,14 +291,26 @@ export default function LogViewer({
 
       const ws = new WebSocket(url);
       wsRefs.current.set(tabIdx, ws);
-      updateTabState(tabIdx, { error: "", connected: false });
+      // A resume stays "Reconnecting..." until it subscribes or ends.
+      updateTabState(tabIdx, {
+        error: "",
+        connected: false,
+        ...(resume ? {} : { reconnecting: false }),
+      });
+      // A resume that closes before it subscribes, with no end frame (the
+      // backend still down behind the proxy), is a failed try, not an end.
+      let subscribed = false;
+      let ended = false;
 
       ws.onopen = () => {
         const token = getAccessToken();
         if (!token) {
           ws.close();
           wsRefs.current.delete(tabIdx);
-          updateTabState(tabIdx, { error: "Not authenticated" });
+          updateTabState(tabIdx, {
+            error: "Not authenticated",
+            reconnecting: false,
+          });
           return;
         }
         pinRef.current ??= currentTarget();
@@ -310,6 +335,7 @@ export default function LogViewer({
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "subscribed") {
+            subscribed = true;
             triesRef.current.set(tabIdx, 0);
             updateTabState(tabIdx, {
               connected: true,
@@ -351,8 +377,10 @@ export default function LogViewer({
             if (msg.reason) {
               endTab(tabIdx, msg);
             } else {
+              ended = true;
               updateTabState(tabIdx, {
                 error: streamErrorMessage(msg, "Live log streaming"),
+                reconnecting: false,
               });
             }
             return;
@@ -371,11 +399,17 @@ export default function LogViewer({
       ws.onclose = () => {
         if (wsRefs.current.get(tabIdx) !== ws) return;
         wsRefs.current.delete(tabIdx);
+        if (resume && !subscribed && !ended) {
+          endTab(tabIdx, { reason: "connect_failed", retryable: true });
+          return;
+        }
         updateTabState(tabIdx, { connected: false });
       };
 
+      // A failed resume is left to onclose, which always follows an error.
       ws.onerror = () => {
         if (wsRefs.current.get(tabIdx) !== ws) return;
+        if (resume && !subscribed && !ended) return;
         updateTabState(tabIdx, { error: "WebSocket connection failed" });
       };
     },
@@ -448,10 +482,7 @@ export default function LogViewer({
         ws.close();
       }
       wsRefs.current.clear();
-      for (const [, timer] of retryTimers.current) {
-        clearTimeout(timer);
-      }
-      retryTimers.current.clear();
+      for (let i = 0; i < allContainers.length; i++) cancelResume(i);
       // Cancel pending RAFs
       if (flushRafId.current) cancelAnimationFrame(flushRafId.current);
       if (scrollRafId.current) cancelAnimationFrame(scrollRafId.current);

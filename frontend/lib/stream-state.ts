@@ -28,8 +28,8 @@ export interface StreamErrorFrame {
 
 /**
  * Backoff before each automatic reconnect after a retryable end: three
- * tries, reset once a stream subscribes again. The flow viewer uses the same
- * schedule.
+ * tries, reset once a stream subscribes again. The flow viewer still keeps
+ * its own copy of this schedule.
  */
 export const RECONNECT_DELAYS_MS = [2_000, 5_000, 10_000];
 
@@ -79,6 +79,10 @@ export function streamErrorMessage(
       return `You signed out, so ${subject} ended.`;
     case "idle_timeout":
       return `${what} was idle too long and ended.`;
+    // The client's own reason for a resume whose socket closed before it
+    // subscribed; never sent by the server.
+    case "connect_failed":
+      return `${what} could not reconnect.`;
     // A remote stream that could not reach its cluster
     // (k8s.ClassifyTargetErr).
     case "unreachable":
