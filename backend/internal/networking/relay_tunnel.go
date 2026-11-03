@@ -14,7 +14,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,8 +22,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/yaml"
 
@@ -353,25 +350,20 @@ func findRelay(ctx context.Context, cs kubernetes.Interface, info *CNIInfo) (*re
 		svc = s
 		break
 	}
-	if svc == nil || len(svc.Spec.Selector) == 0 || len(svc.Spec.Ports) == 0 {
+	if svc == nil || len(svc.Spec.Ports) == 0 {
 		return nil, errRelayNotFound(nil)
 	}
 
-	pods, err := cs.CoreV1().Pods(svc.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labels.SelectorFromSet(svc.Spec.Selector).String(),
-	})
-	if err != nil {
+	backend, err := k8s.SelectServiceBackend(ctx, cs, svc, relayServicePort(svc))
+	switch {
+	case errors.Is(err, k8s.ErrServiceNoSelector), errors.Is(err, k8s.ErrBackendPortUndeclared):
+		return nil, errRelayNotFound(nil)
+	case errors.Is(err, k8s.ErrNoReadyBackend):
+		return nil, errRelayNotReady(nil)
+	case err != nil:
 		return nil, flowReadFailure(err)
 	}
-	pod := longestReadyPod(pods.Items)
-	if pod == nil {
-		return nil, errRelayNotReady(nil)
-	}
-	port, ok := containerPortFor(pod, relayServicePort(svc))
-	if !ok {
-		return nil, errRelayNotFound(nil)
-	}
-	return &relayTarget{namespace: svc.Namespace, pod: pod.Name, port: port}, nil
+	return &relayTarget{namespace: backend.Namespace, pod: backend.Pod, port: backend.Port}, nil
 }
 
 // relayServicePort is the Service port named grpc, else its first port.
@@ -382,58 +374,6 @@ func relayServicePort(svc *corev1.Service) corev1.ServicePort {
 		}
 	}
 	return svc.Spec.Ports[0]
-}
-
-// containerPortFor resolves a Service port's targetPort to a port the pod
-// declares. A port the pod does not declare is not resolved.
-func containerPortFor(pod *corev1.Pod, sp corev1.ServicePort) (int32, bool) {
-	want := sp.TargetPort
-	if want.Type == intstr.Int && want.IntVal == 0 {
-		want = intstr.FromInt32(sp.Port)
-	}
-	for _, c := range pod.Spec.Containers {
-		for _, p := range c.Ports {
-			if p.Protocol != "" && p.Protocol != corev1.ProtocolTCP {
-				continue
-			}
-			if (want.Type == intstr.String && p.Name == want.StrVal) || (want.Type == intstr.Int && p.ContainerPort == want.IntVal) {
-				return p.ContainerPort, true
-			}
-		}
-	}
-	return 0, false
-}
-
-// longestReadyPod is the Running, Ready, non-terminating pod that has been
-// ready longest, or nil when there is none.
-func longestReadyPod(pods []corev1.Pod) *corev1.Pod {
-	type candidate struct {
-		pod   *corev1.Pod
-		since time.Time
-	}
-	var ready []candidate
-	for i := range pods {
-		p := &pods[i]
-		if p.Status.Phase != corev1.PodRunning || p.DeletionTimestamp != nil {
-			continue
-		}
-		for _, c := range p.Status.Conditions {
-			if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-				ready = append(ready, candidate{pod: p, since: c.LastTransitionTime.Time})
-				break
-			}
-		}
-	}
-	if len(ready) == 0 {
-		return nil
-	}
-	sort.Slice(ready, func(i, j int) bool {
-		if !ready[i].since.Equal(ready[j].since) {
-			return ready[i].since.Before(ready[j].since)
-		}
-		return ready[i].pod.Name < ready[j].pod.Name
-	})
-	return ready[0].pod
 }
 
 type relayMode int
