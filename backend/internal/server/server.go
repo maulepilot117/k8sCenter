@@ -133,8 +133,8 @@ type Server struct {
 	complianceSnapshotter complianceSnapshotter
 
 	// flowStreams tracks live remote flow streams, so a cluster's removal
-	// ends them (flow_streams.go).
-	flowStreams flowStreamRegistry
+	// ends them (flow_streams.go, stream_lifecycle.go).
+	flowStreams *streamRegistry
 	// openRemoteFlows opens a live remote flow source. Nil in production,
 	// which opens one through NetworkingHandler; tests stub the relay.
 	openRemoteFlows flowStreamOpener
@@ -246,6 +246,7 @@ func New(deps Deps) *Server {
 		Hub:                  deps.Hub,
 		ready:                deps.ReadyFn,
 		dbPing:               deps.DBPing,
+		flowStreams:          newStreamRegistry(flowStreamEnds),
 	}
 
 	// One metrics resolver serves the monitoring handler, the dashboard
@@ -355,10 +356,12 @@ func New(deps Deps) *Server {
 	if deps.NetworkingHandler != nil {
 		s.NetworkingHandler = deps.NetworkingHandler
 	}
-	// Removing a cluster ends its live remote flow streams on this replica
-	// at once; other replicas end theirs at the next revalidation.
+	// Removing a cluster ends its live remote streams on this replica at
+	// once; other replicas end theirs at the next revalidation.
 	if deps.ClusterRouter != nil {
-		deps.ClusterRouter.RegisterEvictHook(s.flowStreams.CancelCluster)
+		for _, reg := range s.streamRegistries() {
+			deps.ClusterRouter.RegisterEvictHook(reg.CancelCluster)
+		}
 	}
 
 	// Alerting handler
