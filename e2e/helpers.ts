@@ -83,29 +83,57 @@ export function e2eName(kind: string): string {
   return `e2e-${kind}-${rand}`;
 }
 
-/** Delete a namespaced k8s resource via the API */
+/**
+ * Delete a k8s resource through the resource API, as the admin `api` names.
+ *
+ * Takes a CleanupApi rather than the bare `request` fixture on purpose. The
+ * fixture restores storageState's cookies, but the only cookie there is the
+ * refresh token, and /api/v1/resources authenticates by Bearer header alone.
+ * These helpers used to send the fixture with no Authorization header and
+ * failOnStatusCode:false, so every cleanup answered 401 and nobody heard:
+ * wizard-flows left a Deployment, ConfigMap, NetworkPolicy and Namespace
+ * behind on every run, and the NetworkPolicies (podSelector: {}, Ingress
+ * only) denied all ingress in `default` on the cluster they landed on.
+ *
+ * A 404 counts as done; any other failure throws.
+ */
+async function deleteResourceAt(
+  api: CleanupApi,
+  path: string,
+  label: string,
+): Promise<void> {
+  const res = await api.request.delete(`/api/v1/resources/${path}`, {
+    headers: api.headers,
+    failOnStatusCode: false,
+  });
+  if (!res.ok() && res.status() !== 404) {
+    throw new Error(
+      `could not delete ${label}: ${res.status()} ${await res.text()}`,
+    );
+  }
+}
+
+/** Delete a namespaced k8s resource (see deleteResourceAt). */
 export async function deleteResource(
-  request: APIRequestContext,
+  api: CleanupApi,
   kind: string,
   namespace: string,
   name: string,
-) {
-  await request.delete(`/api/v1/resources/${kind}/${namespace}/${name}`, {
-    headers: { "X-Requested-With": "XMLHttpRequest" },
-    failOnStatusCode: false,
-  });
+): Promise<void> {
+  await deleteResourceAt(
+    api,
+    `${kind}/${namespace}/${name}`,
+    `${kind} ${namespace}/${name}`,
+  );
 }
 
-/** Delete a cluster-scoped k8s resource via the API */
+/** Delete a cluster-scoped k8s resource (see deleteResourceAt). */
 export async function deleteClusterResource(
-  request: APIRequestContext,
+  api: CleanupApi,
   kind: string,
   name: string,
-) {
-  await request.delete(`/api/v1/resources/${kind}/${name}`, {
-    headers: { "X-Requested-With": "XMLHttpRequest" },
-    failOnStatusCode: false,
-  });
+): Promise<void> {
+  await deleteResourceAt(api, `${kind}/${name}`, `${kind} ${name}`);
 }
 
 /** Wait for the resource table to finish loading (data rows present) */

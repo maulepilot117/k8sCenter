@@ -1,5 +1,11 @@
 import { test, expect } from "../fixtures/base.ts";
-import { e2eName, deleteResource, deleteClusterResource } from "../helpers.ts";
+import {
+  CleanupBackstop,
+  deleteClusterResource,
+  deleteResource,
+  e2eName,
+  withCleanup,
+} from "../helpers.ts";
 
 interface WizardConfig {
   kind: string;
@@ -58,14 +64,34 @@ const WIZARDS: WizardConfig[] = [
   },
 ];
 
+// Each wizard really creates its object on the cluster, so its teardown is
+// tracked: the in-test cleanup deletes it through the admin page, and if a
+// timeout kills the page first, afterAll retries through a fresh context and
+// fails naming whatever it still could not delete.
+const backstop = new CleanupBackstop();
+test.afterAll(({ playwright }, info) =>
+  backstop.drain(playwright, info.project.use.baseURL)
+);
+
 for (const w of WIZARDS) {
   test.describe(`${w.kind} wizard`, () => {
-    test(`creates ${w.kind} via wizard`, async ({ page, request }) => {
+    test(`creates ${w.kind} via wizard`, async ({ page }) => {
       const resourceName = e2eName(w.kind);
 
-      try {
-        await page.goto(w.createPath);
+      // Nothing exists yet, so this runs before the cleanup is tracked: a
+      // failed navigation has nothing to leak.
+      await page.goto(w.createPath);
+      await backstop.adopt(page);
+      const ns = w.namespace;
+      const cleanup = backstop.track(
+        (api) =>
+          ns
+            ? deleteResource(api, w.apiKind, ns, resourceName)
+            : deleteClusterResource(api, w.apiKind, resourceName),
+        `${w.apiKind} ${ns ? `${ns}/` : ""}${resourceName}`,
+      );
 
+      await withCleanup(async () => {
         // Fill form fields
         for (const field of w.fields) {
           const value = field.generated ? resourceName : field.value;
@@ -160,14 +186,7 @@ for (const w of WIZARDS) {
             `${w.kind} wizard: no success confirmation or redirect after Apply`,
           );
         });
-      } finally {
-        // Always clean up, regardless of test outcome
-        if (w.namespace) {
-          await deleteResource(request, w.apiKind, w.namespace, resourceName);
-        } else {
-          await deleteClusterResource(request, w.apiKind, resourceName);
-        }
-      }
+      }, [cleanup]);
     });
   });
 }

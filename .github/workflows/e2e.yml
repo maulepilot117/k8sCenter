@@ -132,6 +132,30 @@ jobs:
           E2E_ALT_BASE_URL: "http://localhost:5173"
         run: npx playwright test
 
+      # Specs delete what they create, and the delete helpers throw on any
+      # failure but a 404. This proves it end to end: an object named the way
+      # e2eName() names things (e2e-<kind>-<8 chars>) that is still alive,
+      # unowned, and not already being deleted is a leak. Owned objects (a
+      # Deployment's ReplicaSets and Pods) are left to the garbage collector,
+      # and a Terminating namespace is a delete that worked. It runs before the
+      # label-based cleanup below, which never matched wizard-created objects
+      # anyway: they carry no e2e=true label.
+      - name: Fail on leaked E2E resources
+        if: ${{ !cancelled() }}
+        run: |
+          leaks=$(kubectl get deployments,configmaps,secrets,services,pods,networkpolicies,namespaces \
+              --all-namespaces -o json \
+            | jq -r '.items[]
+                | select(.metadata.name | test("^e2e-[a-z-]+-[a-z0-9]{1,8}$"))
+                | select(.metadata.deletionTimestamp == null)
+                | select((.metadata.ownerReferences // []) | length == 0)
+                | "\(.kind) \(.metadata.namespace // "-")/\(.metadata.name)"')
+          if [ -n "$leaks" ]; then
+            echo "::error::E2E specs left resources on the cluster:"
+            echo "$leaks"
+            exit 1
+          fi
+
       - name: Cleanup orphaned E2E resources
         if: ${{ !cancelled() }}
         run: |

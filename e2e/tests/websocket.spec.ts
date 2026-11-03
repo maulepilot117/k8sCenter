@@ -1,10 +1,13 @@
 import { expect, test } from "../fixtures/base.ts";
 import {
+  deleteResource,
   e2eName,
   getAuthHeaders,
   loginThroughUI,
+  pageCleanupApi,
   waitForTableLoaded,
   watchForSubscription,
+  withCleanup,
 } from "../helpers.ts";
 
 /**
@@ -31,9 +34,11 @@ import {
 test.describe("WebSocket live updates", () => {
   test("new resource appears in and disappears from a table live", async ({ browser }) => {
     const context = await browser.newContext();
-    try {
-      const page = await context.newPage();
-
+    const page = await context.newPage();
+    const name = e2eName("ws");
+    // Runs while the context is still open: deleting through a closed page
+    // would fail, and the ConfigMap would outlive the run.
+    await withCleanup(async () => {
       // Registered before any navigation: the acknowledgement arrives during
       // the page load that follows.
       const subscribed = watchForSubscription(page, "configmaps");
@@ -45,7 +50,6 @@ test.describe("WebSocket live updates", () => {
 
       const headers = await getAuthHeaders(page);
 
-      const name = e2eName("ws");
       const created = await page.request.post(
         "/api/v1/resources/configmaps/default",
         {
@@ -63,14 +67,19 @@ test.describe("WebSocket live updates", () => {
       // Arrives over the socket: nothing here reloads the page.
       await expect(page.getByText(name)).toBeVisible({ timeout: 15_000 });
 
-      await page.request.delete(
-        `/api/v1/resources/configmaps/default/${name}`,
-        { headers, failOnStatusCode: false },
+      await deleteResource(
+        { request: page.request, headers },
+        "configmaps",
+        "default",
+        name,
       );
 
       await expect(page.getByText(name)).not.toBeVisible({ timeout: 15_000 });
-    } finally {
-      await context.close();
-    }
+    }, [
+      // A 404 here means the in-body delete already ran.
+      async () =>
+        deleteResource(await pageCleanupApi(page), "configmaps", "default", name),
+      () => context.close(),
+    ]);
   });
 });
