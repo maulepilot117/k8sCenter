@@ -29,9 +29,8 @@ const maxLogSearchConnections = 50
 // logSearchWSCount tracks active log search WebSocket connections.
 var logSearchWSCount atomic.Int64
 
-// logsSearchWSRoute is the Loki tail's cluster contract, the same as the log
-// stream's (logsWSRoute): it must name its cluster and may not name a remote
-// one in-band yet.
+// logsSearchWSRoute is the Loki tail's cluster contract: it must name its
+// cluster and may not name a remote one in-band yet.
 var logsSearchWSRoute = wsRoute{
 	requireCluster: true,
 	auditAction:    audit.ActionReadLogs,

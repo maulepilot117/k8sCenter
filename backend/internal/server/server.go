@@ -141,6 +141,17 @@ type Server struct {
 	// flowAccess is the check live-stream revalidation runs. Nil in
 	// production, which uses ResourceHandler.AccessChecker.
 	flowAccess networking.NamespaceAccess
+
+	// logStreams tracks live remote log streams, so a cluster's removal
+	// ends them (handle_ws_logs.go, stream_lifecycle.go).
+	logStreams *streamRegistry
+	// logClient resolves the impersonating clientset a remote log stream
+	// reads through. Nil in production, which routes through ClusterRouter;
+	// tests stub the remote API server.
+	logClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
+	// logAccess is the check log-stream revalidation runs. Nil in
+	// production, which uses ResourceHandler.AccessChecker.
+	logAccess networking.NamespaceAccess
 }
 
 // Deps holds all dependencies needed to create a Server.
@@ -247,6 +258,7 @@ func New(deps Deps) *Server {
 		ready:                deps.ReadyFn,
 		dbPing:               deps.DBPing,
 		flowStreams:          newStreamRegistry(flowStreamEnds),
+		logStreams:           newStreamRegistry(logStreamEnds),
 	}
 
 	// One metrics resolver serves the monitoring handler, the dashboard

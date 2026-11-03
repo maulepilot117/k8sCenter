@@ -6,7 +6,8 @@ package server
 // the cause becomes the stream's final error frame. This file owns those
 // ends, the per-cluster registry that ends a removed cluster's streams at
 // once, and the watcher that ends a stream at token expiry or when
-// revalidation fails. Flows use it today (flow_streams.go).
+// revalidation fails. Flows (flow_streams.go) and log tails
+// (handle_ws_logs.go) use it.
 
 import (
 	"context"
@@ -138,7 +139,7 @@ func (r *streamRegistry) CancelAll(end *streamEnd) {
 // streamRegistries lists the registry of every stream kind, so cluster
 // eviction and shutdown reach them all.
 func (s *Server) streamRegistries() []*streamRegistry {
-	return []*streamRegistry{s.flowStreams}
+	return []*streamRegistry{s.flowStreams, s.logStreams}
 }
 
 // watchStream ends a live stream with its tokenExpired end when the access
