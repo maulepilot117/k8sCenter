@@ -376,9 +376,9 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "create", AuthGroup: "", AuthResource: "pods/exec",
 	},
 	{
-		// WebSocket log streams against remote clusters are not yet
-		// supported — the watch connection lifecycle differs for remote API
-		// servers. handle_ws_logs.go:103.
+		// The remote live log tail is served (handle_ws_logs.go) but stays
+		// declared unsupported until the viewer can resume a tail that ends
+		// at token expiry (remote logs and shells plan, U8 and U34).
 		//
 		// Same "pods/log" subresource caveat as pod.exec above: an identity
 		// granted access only via a `resources: ["*/log"]` wildcard rule

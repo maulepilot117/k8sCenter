@@ -96,11 +96,12 @@ func TestStreamRegistry_CancelAllEndsEveryStream(t *testing.T) {
 	}
 }
 
+// Every registry New builds carries its ends, so eviction and shutdown can
+// end each kind's streams with that kind's wording.
 func TestStreamRegistry_EveryKindIsEvicted(t *testing.T) {
-	s := &Server{flowStreams: newStreamRegistry(flowStreamEnds)}
-	regs := s.streamRegistries()
-	if len(regs) == 0 {
-		t.Fatal("no stream registries")
+	regs := testServer(t).streamRegistries()
+	if len(regs) != 2 {
+		t.Fatalf("got %d stream registries, want flows and logs", len(regs))
 	}
 	for i, reg := range regs {
 		if reg == nil || reg.ends == nil {
@@ -195,7 +196,7 @@ func TestStreamEnds_MessagesAvoidMobileFatalWords(t *testing.T) {
 	snake := regexp.MustCompile(`^[a-z]+(_[a-z]+)*$`)
 	kinds := map[string]*streamEnds{
 		"flows":  flowStreamEnds,
-		"logs":   newStreamEnds("the log stream", "these logs"),
+		"logs":   logStreamEnds,
 		"shells": newStreamEnds("the shell", "this shell"),
 	}
 	retryable := map[string]bool{"token_expired": true, "server_restarting": true}

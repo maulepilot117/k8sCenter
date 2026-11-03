@@ -30,8 +30,9 @@ const (
 // wsRoute describes how a WebSocket route takes its target cluster and how
 // its refusals are audited (#608 KTD10).
 type wsRoute struct {
-	// acceptsRemoteInBand lets the auth message name a remote cluster. Only
-	// the flows stream sets it; elsewhere a remote in-band value is refused.
+	// acceptsRemoteInBand lets the auth message name a remote cluster. The
+	// flows and log streams set it; elsewhere a remote in-band value is
+	// refused.
 	acceptsRemoteInBand bool
 	// requireCluster refuses a connection that names no cluster in-band and
 	// sent no X-Cluster-ID header, rather than defaulting to local.
