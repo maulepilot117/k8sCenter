@@ -170,7 +170,7 @@ test.describe.serial("Remote cluster capabilities", () => {
     const byId = new Map(caps.map((c) => [c.operation, c]));
 
     // Unsupported on remote, and said so as unsupported -- not as an error.
-    for (const id of ["pod.exec", "logs.stream"]) {
+    for (const id of ["pod.exec"]) {
       expect(byId.get(id)?.platformSupported, id).toBe(false);
       expect(byId.get(id)?.reasonCode, id).toBe("unsupported_platform");
     }
@@ -219,6 +219,8 @@ test.describe.serial("Remote cluster capabilities", () => {
       "flows.stream",
       // #608: snapshots taken as each cluster's background identity.
       "policy.compliance_history",
+      // Remote logs and shells U7: the tail reads the selected cluster.
+      "logs.stream",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");

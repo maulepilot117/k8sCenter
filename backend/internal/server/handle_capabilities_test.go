@@ -274,9 +274,11 @@ var (
 		"flows.stream",
 		// #608: snapshots taken as each cluster's background identity.
 		"policy.compliance_history",
+		// Remote logs and shells U7: the tail reads the selected cluster.
+		"logs.stream",
 	}
 	wantRemoteUnsupported = []string{
-		"pod.exec", "logs.stream", "logs.search", "eso.write",
+		"pod.exec", "logs.search", "eso.write",
 		"eso.history", "eso.metrics",
 		"velero.assurance",
 		"incidents.capture",

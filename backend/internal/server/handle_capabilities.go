@@ -376,16 +376,18 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "create", AuthGroup: "", AuthResource: "pods/exec",
 	},
 	{
-		// The remote live log tail is served (handle_ws_logs.go) but stays
-		// declared unsupported until the viewer can resume a tail that ends
-		// at token expiry (remote logs and shells plan, U8 and U34).
+		// The tail reads the selected cluster as the user, through
+		// ClusterRouter (handle_ws_logs.go). A remote tail ends with its
+		// reason at token expiry (retryable), on revocation of get pods/log
+		// or removal of the cluster, and a cluster that cannot be reached is
+		// refused with its reason.
 		//
 		// Same "pods/log" subresource caveat as pod.exec above: an identity
 		// granted access only via a `resources: ["*/log"]` wildcard rule
 		// comes back Allowed: false and is reported authz_namespace_scoped (pods/log
 		// is namespaced) rather than forbidden — see pod.exec's comment.
 		ID: "logs.stream", Label: "Live log stream",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "pods/log",
 	},
 	{
