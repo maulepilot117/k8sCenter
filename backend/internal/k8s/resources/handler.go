@@ -169,9 +169,6 @@ type Handler struct {
 	// remoteClient overrides remote-cluster client resolution for tests of every
 	// remote read path. When nil, h.ClusterRouter.ClientForCluster is used.
 	remoteClient func(ctx context.Context, clusterID string, user *auth.User) (kubernetes.Interface, error)
-	// OriginValidator checks the Origin header for WebSocket connections.
-	// Set by the server at wiring time. If nil, rejects all WS upgrades.
-	OriginValidator func(w http.ResponseWriter, r *http.Request) bool
 	// ExecExecutor overrides how an exec session builds its executors; tests
 	// substitute a fake. When nil, each session builds SPDY executors that
 	// impersonate the user against the local API server.

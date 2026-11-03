@@ -111,7 +111,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	// because the watch connection lifecycle differs for remote API servers.
 	// Reject with an error frame BEFORE bumping the connection counter, running
 	// the RBAC check, emitting the audit "subscribed" entry, or opening the k8s
-	// stream — mirrors HandlePodExec ordering in pods.go.
+	// stream — the same order handleWSExec refuses a remote cluster in.
 	wsLogsClusterID := middleware.ClusterIDFromContext(reqCtx)
 	if !k8s.IsLocalClusterID(wsLogsClusterID) {
 		s.Logger.Warn("ws log stream rejected on remote cluster",
@@ -121,9 +121,9 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 			"pod", pod,
 		)
 		// F#7 (round-2) — emit a failure audit entry on the rejection path
-		// so the operator-observable trail isn't just a slog warning. Mirrors
-		// HandlePodExec at pods.go:163 (which has the same rejection pattern
-		// for exec WS on remote clusters). Without this, the only forensic
+		// so the operator-observable trail isn't just a slog warning, as
+		// handleWSExec does when it refuses exec on a remote cluster
+		// (handle_ws_exec.go). Without this, the only forensic
 		// record of "user attempted remote pod logs" is the JSON log; the
 		// audit table — what compliance reviews actually read — stays blank.
 		if s.AuditLogger != nil {

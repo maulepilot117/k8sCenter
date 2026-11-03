@@ -61,15 +61,6 @@ export function checkWsPath(rawUrl: string): WsPathCheck {
 }
 
 /**
- * True for the one WS route the backend gates with middleware.Auth at
- * upgrade time rather than in-band (see "Add the exec Bearer header" in
- * U5's brief, and backend/internal/server/routes.go).
- */
-export function isExecPath(path: string): boolean {
-  return /^v1\/ws\/exec\//.test(path);
-}
-
-/**
  * Reserved/invalid WebSocket close codes can only be received, never sent —
  * calling .close(1006) throws. Ported verbatim from the original route's
  * remap, which only excludes 1006 explicitly; that is the one case the
