@@ -5,7 +5,6 @@ import { Alert } from "@/components/ui/Alert.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
 import { ValidationResults } from "@/components/ui/ValidationResults.tsx";
-import { apiGet } from "@/lib/api.ts";
 import {
   type CapabilityExplanation,
   type CapabilityTone,
@@ -35,9 +34,12 @@ import YamlEditor from "@/src/islands/YamlEditor.tsx";
 import {
   clusterEpoch,
   currentTarget,
-  LOCAL_CLUSTER_ID,
   selectedCluster,
 } from "@/src/lib/cluster.ts";
+import {
+  clusterLabel as labelCluster,
+  useClusterNames,
+} from "@/src/lib/cluster-label.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const PLACEHOLDER_YAML = `# Paste or type your Kubernetes YAML here.
@@ -62,12 +64,6 @@ type CapabilityState =
   | { status: "loading" }
   | { status: "ready"; caps: CapabilitiesResponse }
   | { status: "error" };
-
-interface ClusterRecord {
-  id: string;
-  name: string;
-  displayName?: string;
-}
 
 export default function YamlApplyPage() {
   const forceConflicts = useSignal(false);
@@ -97,7 +93,6 @@ export default function YamlApplyPage() {
     repairOf,
   });
   const capability = useSignal<CapabilityState>({ status: "loading" });
-  const clusterNames = useSignal<ReadonlyMap<string, string>>(new Map());
 
   // Reading the epoch here subscribes the page to cluster switches, so the
   // capability check below re-runs for whichever cluster is now selected.
@@ -140,41 +135,18 @@ export default function YamlApplyPage() {
   const repairClusterId =
     repair.value.status === "valid" ? repair.value.clusterId : undefined;
   const pinnedClusterId = pin.value?.target.clusterId;
-  useEffect(() => {
-    const known = clusterNames.peek();
-    const wanted = [
-      selectedCluster.peek(),
-      pinnedClusterId,
-      repairClusterId,
-    ].filter(
-      (id): id is string => !!id && id !== LOCAL_CLUSTER_ID && !known.has(id),
-    );
-    const controller = new AbortController();
-    for (const id of new Set(wanted)) {
-      apiGet<ClusterRecord>(`/v1/clusters/${encodeURIComponent(id)}`, {
-        signal: controller.signal,
-      })
-        .then((res) => {
-          const c = res.data;
-          if (!c) return;
-          const next = new Map(clusterNames.peek());
-          next.set(id, c.displayName || c.name || id);
-          clusterNames.value = next;
-        })
-        .catch(() => {});
-    }
-    return () => controller.abort();
-  }, [epoch, pinnedClusterId, repairClusterId]);
+  const clusterNames = useClusterNames([
+    selectedCluster.value,
+    pinnedClusterId,
+    repairClusterId,
+  ]);
 
   // Change tracking (Release E): whether the server can keep a record, and
   // who manages the previewed objects.
   const trackingAvailability = useTrackingAvailability(tracked);
   const ownership = useOwnershipPreview(preview, pin, yamlContent);
 
-  const clusterLabel = (id: string) =>
-    id === LOCAL_CLUSTER_ID
-      ? "the local cluster"
-      : (clusterNames.value.get(id) ?? id);
+  const clusterLabel = (id: string) => labelCluster(id, clusterNames.value);
 
   const handleRepreview = useCallback(() => {
     clearPin();

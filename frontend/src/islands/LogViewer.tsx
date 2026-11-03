@@ -3,8 +3,16 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
-import { apiGet, getAccessToken } from "@/lib/api.ts";
-import { streamAuthFrame, streamErrorMessage } from "@/lib/stream-state.ts";
+import { apiGet, getAccessToken, refreshSession } from "@/lib/api.ts";
+import {
+  isReplayedLine,
+  logLineTimestamp,
+  RECONNECT_DELAYS_MS,
+  type StreamErrorFrame,
+  streamAuthFrame,
+  streamErrorMessage,
+} from "@/lib/stream-state.ts";
+import { SessionClusterBadge } from "@/src/components/SessionClusterBadge.tsx";
 import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
@@ -31,10 +39,26 @@ interface TabState {
   lines: LogLine[];
   droppedCount: number;
   connected: boolean;
+  /** Waiting out a backoff before resuming after a retryable end. */
+  reconnecting: boolean;
   error: string;
 }
 
 const MAX_LINES = 10_000;
+
+/** Where a resumed tail rejoins the lines already shown. */
+const RECONNECTED_MARKER: LogLine = {
+  raw: "--- reconnected ---",
+  html: '<span class="text-text-muted">--- reconnected ---</span>',
+};
+
+const EMPTY_TAB: TabState = {
+  lines: [],
+  droppedCount: 0,
+  connected: false,
+  reconnecting: false,
+  error: "",
+};
 
 export default function LogViewer({
   namespace,
@@ -49,14 +73,7 @@ export default function LogViewer({
   const splitView = useSignal(false);
   const splitTab = useSignal(1); // second tab in split view
   // Per-tab state stored as array signal (display-relevant data only)
-  const tabStates = useSignal<TabState[]>(
-    containers.map(() => ({
-      lines: [],
-      droppedCount: 0,
-      connected: false,
-      error: "",
-    })),
-  );
+  const tabStates = useSignal<TabState[]>(containers.map(() => EMPTY_TAB));
   const loading = useSignal(true);
   const autoScroll = useSignal(true);
   const preRefs = useRef<(HTMLPreElement | null)[]>([]);
@@ -65,10 +82,28 @@ export default function LogViewer({
 
   // WS refs — tracked separately from signal to avoid storing non-serializable objects in signals
   const wsRefs = useRef<Map<number, WebSocket>>(new Map());
+  // The cluster this viewer streams from, taken once when it opens and kept
+  // across every reconnect, so a resume never follows a changed selection
+  // (KTD1).
   const pinRef = useRef<ClusterTarget | null>(null);
+  if (IS_BROWSER && pinRef.current === null) pinRef.current = currentTarget();
+
+  // Per-tab resume state. A retryable end reconnects after a backoff; the
+  // resumed tail replays its last lines, so the ones at or before the last
+  // timestamp shown are skipped and one marker shows the join.
+  const triesRef = useRef<Map<number, number>>(new Map());
+  const retryTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
+  // Bumped whenever a tab's pending resume is cancelled. A resume that
+  // awaited a session refresh checks it before connecting, so one that
+  // outlived its tab, its mode or the viewer opens nothing.
+  const resumeEpoch = useRef<Map<number, number>>(new Map());
+  const lastTimestamp = useRef<Map<number, [string, number]>>(new Map());
+  const resumeAfter = useRef<Map<number, [string, number] | null>>(new Map());
 
   // RAF batching — accumulate incoming lines, flush once per animation frame
-  const pendingLines = useRef<Map<number, string[]>>(new Map());
+  const pendingLines = useRef<Map<number, (string | LogLine)[]>>(new Map());
   const pendingDrops = useRef<Map<number, number>>(new Map());
   const flushRafId = useRef(0);
   const scrollRafId = useRef(0);
@@ -106,12 +141,7 @@ export default function LogViewer({
 
   // Get current tab state
   const getTabState = (idx: number): TabState =>
-    tabStates.value[idx] ?? {
-      lines: [],
-      droppedCount: 0,
-      connected: false,
-      error: "",
-    };
+    tabStates.value[idx] ?? EMPTY_TAB;
 
   const updateTabState = (idx: number, update: Partial<TabState>) => {
     const states = [...tabStates.value];
@@ -136,7 +166,9 @@ export default function LogViewer({
     const states = [...tabStates.value];
     for (const [idx, rawLines] of pendingLines.current) {
       if (rawLines.length === 0) continue;
-      const logLines = rawLines.map(toLogLine);
+      const logLines = rawLines.map((l) =>
+        typeof l === "string" ? toLogLine(l) : l,
+      );
       const merged = [...(states[idx]?.lines ?? []), ...logLines];
       const trimmed =
         merged.length > MAX_LINES
@@ -171,8 +203,20 @@ export default function LogViewer({
     }
   };
 
-  // Close a specific tab's WS connection
+  // Cancel a tab's pending resume, including one already past its timer and
+  // waiting on a session refresh.
+  const cancelResume = (tabIdx: number) => {
+    resumeEpoch.current.set(tabIdx, (resumeEpoch.current.get(tabIdx) ?? 0) + 1);
+    const timer = retryTimers.current.get(tabIdx);
+    if (timer) {
+      clearTimeout(timer);
+      retryTimers.current.delete(tabIdx);
+    }
+  };
+
+  // Close a specific tab's WS connection and cancel a pending resume
   const closeTabWS = (tabIdx: number) => {
+    cancelResume(tabIdx);
     const ws = wsRefs.current.get(tabIdx);
     if (ws) {
       ws.close();
@@ -180,28 +224,93 @@ export default function LogViewer({
     }
   };
 
-  // Connect WS for follow mode — returns the WS for cleanup tracking
+  const queueLine = (tabIdx: number, line: string | LogLine) => {
+    const pending = pendingLines.current.get(tabIdx) ?? [];
+    pending.push(line);
+    pendingLines.current.set(tabIdx, pending);
+    if (!flushRafId.current) {
+      flushRafId.current = requestAnimationFrame(flushPendingLines);
+    }
+  };
+
+  // A tab's stream ended with a reason. A retryable end resumes on the same
+  // cluster after a backoff, refreshing the session first when the token
+  // expired; otherwise, or once the tries are spent, the end is shown.
+  const endTab = (tabIdx: number, frame: StreamErrorFrame) => {
+    closeTabWS(tabIdx);
+    const tries = triesRef.current.get(tabIdx) ?? 0;
+    const delay = RECONNECT_DELAYS_MS[tries];
+    if (frame.retryable && delay !== undefined) {
+      triesRef.current.set(tabIdx, tries + 1);
+      updateTabState(tabIdx, { connected: false, reconnecting: true });
+      const epoch = resumeEpoch.current.get(tabIdx);
+      retryTimers.current.set(
+        tabIdx,
+        setTimeout(async () => {
+          retryTimers.current.delete(tabIdx);
+          if (frame.reason === "token_expired") await refreshSession();
+          if (resumeEpoch.current.get(tabIdx) !== epoch) return;
+          if (mode.value === "follow") connectWS(tabIdx, true);
+        }, delay),
+      );
+      return;
+    }
+    updateTabState(tabIdx, {
+      connected: false,
+      reconnecting: false,
+      error: streamErrorMessage(frame, "Live log streaming"),
+    });
+  };
+
+  // "Reconnect" resumes with a fresh set of tries.
+  const reconnectTab = (tabIdx: number) => {
+    triesRef.current.set(tabIdx, 0);
+    connectWS(tabIdx, true);
+  };
+
+  // Connect WS for follow mode. A resume keeps the lines already shown.
   const connectWS = useCallback(
-    (tabIdx: number) => {
+    (tabIdx: number, resume = false) => {
       const container = allContainers[tabIdx]?.name;
       if (!container) return;
 
       // Close existing connection for this tab
       closeTabWS(tabIdx);
+      if (resume) {
+        resumeAfter.current.set(
+          tabIdx,
+          lastTimestamp.current.get(tabIdx) ?? null,
+        );
+      } else {
+        triesRef.current.set(tabIdx, 0);
+        resumeAfter.current.delete(tabIdx);
+      }
 
       const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
       const url = `${proto}//${globalThis.location.host}/ws/v1/ws/logs/${namespace}/${pod}/${container}`;
 
       const ws = new WebSocket(url);
       wsRefs.current.set(tabIdx, ws);
-      updateTabState(tabIdx, { error: "", connected: false });
+      // A resume stays "Reconnecting..." until it subscribes or ends.
+      updateTabState(tabIdx, {
+        error: "",
+        connected: false,
+        ...(resume ? {} : { reconnecting: false }),
+      });
+      // A resume that closes before it subscribes, with no end frame (the
+      // backend still down behind the proxy), is a failed try, not an end.
+      let subscribed = false;
+      let ended = false;
 
       ws.onopen = () => {
         const token = getAccessToken();
         if (!token) {
           ws.close();
           wsRefs.current.delete(tabIdx);
-          updateTabState(tabIdx, { error: "Not authenticated" });
+          updateTabState(tabIdx, {
+            error: "Not authenticated",
+            reconnecting: false,
+          });
           return;
         }
         pinRef.current ??= currentTarget();
@@ -217,24 +326,41 @@ export default function LogViewer({
       };
 
       ws.onmessage = (event) => {
-        // Mode guard: discard messages if we've switched to snapshot mode
-        if (mode.value !== "follow") return;
+        // Mode guard: discard messages if we've switched to snapshot mode,
+        // or if this socket was already replaced
+        if (mode.value !== "follow" || wsRefs.current.get(tabIdx) !== ws) {
+          return;
+        }
 
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "subscribed") {
-            updateTabState(tabIdx, { connected: true });
+            subscribed = true;
+            triesRef.current.set(tabIdx, 0);
+            updateTabState(tabIdx, {
+              connected: true,
+              reconnecting: false,
+              error: "",
+            });
             loading.value = false;
+            if (resume) queueLine(tabIdx, RECONNECTED_MARKER);
             return;
           }
           if (msg.type === "log") {
-            // Batch into pending buffer — flushed once per RAF
-            const pending = pendingLines.current.get(tabIdx) ?? [];
-            pending.push(msg.data);
-            pendingLines.current.set(tabIdx, pending);
-            if (!flushRafId.current) {
-              flushRafId.current = requestAnimationFrame(flushPendingLines);
+            const line = String(msg.data ?? "");
+            if (resumeAfter.current.has(tabIdx)) {
+              if (
+                isReplayedLine(line, resumeAfter.current.get(tabIdx) ?? null)
+              ) {
+                return;
+              }
+              // The first line past the join ends the replay.
+              resumeAfter.current.delete(tabIdx);
             }
+            const ts = logLineTimestamp(line);
+            if (ts) lastTimestamp.current.set(tabIdx, ts);
+            // Batch into pending buffer — flushed once per RAF
+            queueLine(tabIdx, line);
             return;
           }
           if (msg.type === "dropped") {
@@ -246,9 +372,17 @@ export default function LogViewer({
             return;
           }
           if (msg.type === "error") {
-            updateTabState(tabIdx, {
-              error: streamErrorMessage(msg, "Live log streaming"),
-            });
+            // An end with a reason follows the lifecycle; a frame without
+            // one (a bad container name, a failed open) keeps its message.
+            if (msg.reason) {
+              endTab(tabIdx, msg);
+            } else {
+              ended = true;
+              updateTabState(tabIdx, {
+                error: streamErrorMessage(msg, "Live log streaming"),
+                reconnecting: false,
+              });
+            }
             return;
           }
           if (msg.type === "end") {
@@ -260,12 +394,22 @@ export default function LogViewer({
         }
       };
 
+      // A socket this tab already replaced (a resume closes the old one
+      // first) must not touch the tab's state or its new socket.
       ws.onclose = () => {
+        if (wsRefs.current.get(tabIdx) !== ws) return;
         wsRefs.current.delete(tabIdx);
+        if (resume && !subscribed && !ended) {
+          endTab(tabIdx, { reason: "connect_failed", retryable: true });
+          return;
+        }
         updateTabState(tabIdx, { connected: false });
       };
 
+      // A failed resume is left to onclose, which always follows an error.
       ws.onerror = () => {
+        if (wsRefs.current.get(tabIdx) !== ws) return;
+        if (resume && !subscribed && !ended) return;
         updateTabState(tabIdx, { error: "WebSocket connection failed" });
       };
     },
@@ -320,21 +464,25 @@ export default function LogViewer({
         connectWS(splitTab.value);
       }
     } else {
-      // Close ALL WS connections when switching to snapshot mode
-      for (const [i, ws] of wsRefs.current) {
-        ws.close();
-        wsRefs.current.delete(i);
-        updateTabState(i, { connected: false });
+      // Close ALL WS connections, and cancel any resume, when switching to
+      // snapshot mode
+      for (const i of new Set([
+        ...wsRefs.current.keys(),
+        ...retryTimers.current.keys(),
+      ])) {
+        closeTabWS(i);
+        updateTabState(i, { connected: false, reconnecting: false });
       }
       fetchSnapshot(idx);
     }
 
     return () => {
-      // Cleanup all WS on unmount or dependency change
+      // Cleanup all WS and pending resumes on unmount or dependency change
       for (const [, ws] of wsRefs.current) {
         ws.close();
       }
       wsRefs.current.clear();
+      for (let i = 0; i < allContainers.length; i++) cancelResume(i);
       // Cancel pending RAFs
       if (flushRafId.current) cancelAnimationFrame(flushRafId.current);
       if (scrollRafId.current) cancelAnimationFrame(scrollRafId.current);
@@ -569,9 +717,28 @@ export default function LogViewer({
                   : "bg-text-muted"
               }`}
             />
-            {currentState.connected ? "Streaming" : "Disconnected"}
+            {currentState.connected
+              ? "Streaming"
+              : currentState.reconnecting
+                ? "Reconnecting..."
+                : "Disconnected"}
           </span>
         )}
+        {mode.value === "follow" && pinRef.current && (
+          <SessionClusterBadge clusterId={pinRef.current.clusterId} />
+        )}
+        {mode.value === "follow" &&
+          currentState.error &&
+          !currentState.connected &&
+          !currentState.reconnecting && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => reconnectTab(activeTab.value)}
+            >
+              Reconnect
+            </Button>
+          )}
 
         <span class="text-xs text-text-muted">
           {getTabState(activeTab.value).lines.length} lines
