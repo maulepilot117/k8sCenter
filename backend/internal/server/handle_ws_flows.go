@@ -123,7 +123,7 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The stream's context ends when the WebSocket closes, or with a
-	// *flowStreamEnd cause when a remote stream must end.
+	// *streamEnd cause when a remote stream must end.
 	ctx, cancel := context.WithCancelCause(reqCtx)
 	defer cancel(nil)
 
@@ -143,7 +143,7 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 			src.Close()
 		}
 		if ctx.Err() != nil {
-			s.endFlowStream(conn, ctx)
+			writeStreamEnd(conn, ctx)
 			return
 		}
 		if err != nil {
@@ -191,7 +191,10 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 	var relayDone <-chan struct{}
 	if remote {
 		relayDone = src.Done()
-		s.watchRemoteFlowStream(ctx, cancel, flowsClusterID, user, filter.Namespace, src.RelayNamespace())
+		relayNamespace := src.RelayNamespace()
+		s.watchStream(ctx, cancel, flowStreamEnds, "ws flow revalidate", flowRevalidateInterval, func(ctx context.Context) *streamEnd {
+			return s.revalidateFlowStream(ctx, flowsClusterID, user, filter.Namespace, relayNamespace)
+		})
 	}
 
 	// Stream flows from gRPC → WebSocket
@@ -234,7 +237,7 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 
 		case err := <-streamErr:
 			if ctx.Err() != nil {
-				s.endFlowStream(conn, ctx)
+				writeStreamEnd(conn, ctx)
 				return
 			}
 			switch {
@@ -258,49 +261,9 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 			return
 
 		case <-ctx.Done():
-			s.endFlowStream(conn, ctx)
+			writeStreamEnd(conn, ctx)
 			return
 		}
-	}
-}
-
-// watchRemoteFlowStream ends a live remote stream at its token's expiry and
-// when revalidation finds its cluster removed or the user's access revoked
-// (KTD11). Both stop when ctx ends.
-func (s *Server) watchRemoteFlowStream(ctx context.Context, cancel context.CancelCauseFunc, clusterID string, user *auth.User, namespace, relayNamespace string) {
-	if exp, ok := wsTokenExpiry(ctx); ok {
-		expiry := time.AfterFunc(time.Until(exp), func() { cancel(endTokenExpired) })
-		context.AfterFunc(ctx, func() { expiry.Stop() })
-	}
-	interval := flowRevalidateInterval
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-			var end *flowStreamEnd
-			recoverutil.Tick(ctx, s.Logger, "ws flow revalidate", func(ctx context.Context) {
-				end = s.revalidateFlowStream(ctx, clusterID, user, namespace, relayNamespace)
-			})
-			if end != nil {
-				cancel(end)
-				return
-			}
-		}
-	}()
-}
-
-// endFlowStream sends the final frame of a stream whose context ended. A
-// stream the client closed gets none.
-func (s *Server) endFlowStream(conn *websocket.Conn, ctx context.Context) {
-	var end *flowStreamEnd
-	if errors.As(context.Cause(ctx), &end) {
-		conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
-		conn.WriteJSON(end.frame())
 	}
 }
 

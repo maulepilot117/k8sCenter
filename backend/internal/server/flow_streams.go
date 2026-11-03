@@ -14,7 +14,6 @@ package server
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -73,76 +72,13 @@ func (s *Server) flowStreamAccess() networking.NamespaceAccess {
 	return s.ResourceHandler.AccessChecker
 }
 
-// flowStreamEnd is why a live stream ended. It is the cancel cause of the
-// stream's context, and becomes the stream's final error frame.
-type flowStreamEnd struct {
-	reason    string
-	message   string
-	retryable bool
-}
+// flowStreamEnds are the lifecycle ends of a live flow stream
+// (stream_lifecycle.go).
+var flowStreamEnds = newStreamEnds("the flow stream", "these flows")
 
-func (e *flowStreamEnd) Error() string { return e.reason }
-
-func (e *flowStreamEnd) frame() map[string]any {
-	f := map[string]any{"type": "error", "message": e.message, "reason": e.reason}
-	if e.retryable {
-		f["retryable"] = true
-	}
-	return f
-}
-
-var (
-	endClusterRemoved = &flowStreamEnd{reason: "cluster_removed", message: "the cluster was removed from k8sCenter; the flow stream ended"}
-	endAccessRevoked  = &flowStreamEnd{reason: "access_revoked", message: "your access to these flows was revoked; the flow stream ended"}
-	endTokenExpired   = &flowStreamEnd{reason: "token_expired", message: "your session needs refreshing; reconnecting", retryable: true}
-	endRelayRestarted = &flowStreamEnd{reason: networking.ReasonRelayRestarted, message: "Hubble Relay restarted; reconnecting", retryable: true}
-)
-
-// flowStreamRegistry tracks active remote streams per cluster, so removing
-// a cluster ends its streams at once. The zero value is ready to use.
-type flowStreamRegistry struct {
-	mu      sync.Mutex
-	next    uint64
-	streams map[string]map[uint64]context.CancelCauseFunc
-}
-
-// add registers a stream's cancel under clusterID. The returned remove
-// unregisters it.
-func (r *flowStreamRegistry) add(clusterID string, cancel context.CancelCauseFunc) (remove func()) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.streams == nil {
-		r.streams = map[string]map[uint64]context.CancelCauseFunc{}
-	}
-	if r.streams[clusterID] == nil {
-		r.streams[clusterID] = map[uint64]context.CancelCauseFunc{}
-	}
-	r.next++
-	id := r.next
-	r.streams[clusterID][id] = cancel
-	return func() {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		delete(r.streams[clusterID], id)
-		if len(r.streams[clusterID]) == 0 {
-			delete(r.streams, clusterID)
-		}
-	}
-}
-
-// CancelCluster ends every live stream on clusterID with cluster_removed.
-// Registered as a ClusterRouter evict hook; it never blocks on a stream.
-func (r *flowStreamRegistry) CancelCluster(clusterID string) {
-	r.mu.Lock()
-	cancels := make([]context.CancelCauseFunc, 0, len(r.streams[clusterID]))
-	for _, cancel := range r.streams[clusterID] {
-		cancels = append(cancels, cancel)
-	}
-	r.mu.Unlock()
-	for _, cancel := range cancels {
-		cancel(endClusterRemoved)
-	}
-}
+// endRelayRestarted ends a remote stream whose relay went away. It is the
+// one end flows have that the shared lifecycle does not.
+var endRelayRestarted = &streamEnd{reason: networking.ReasonRelayRestarted, message: "Hubble Relay restarted; reconnecting", retryable: true}
 
 // revalidateFlowStream rechecks a live remote stream: the cluster is still
 // registered, the user can still list pods in the flow namespace, and still
@@ -150,10 +86,10 @@ func (r *flowStreamRegistry) CancelCluster(clusterID string) {
 // authorized the tunnel. It returns the end to apply, or nil to continue. A
 // check that cannot be answered leaves the stream running; the token's
 // expiry still bounds it.
-func (s *Server) revalidateFlowStream(ctx context.Context, clusterID string, user *auth.User, namespace, relayNamespace string) *flowStreamEnd {
+func (s *Server) revalidateFlowStream(ctx context.Context, clusterID string, user *auth.User, namespace, relayNamespace string) *streamEnd {
 	if records := s.metricsClusterGetter(); records != nil {
 		if _, err := records.Get(ctx, clusterID); errors.Is(err, pgx.ErrNoRows) {
-			return endClusterRemoved
+			return flowStreamEnds.clusterRemoved
 		}
 	}
 	access := s.flowStreamAccess()
@@ -171,7 +107,7 @@ func (s *Server) revalidateFlowStream(ctx context.Context, clusterID string, use
 			continue
 		}
 		if !allowed {
-			return endAccessRevoked
+			return flowStreamEnds.accessRevoked
 		}
 	}
 	return nil
