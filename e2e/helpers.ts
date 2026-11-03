@@ -564,8 +564,13 @@ export class CleanupBackstop {
     const entry = { label, action, done: false };
     this.entries.push(entry);
     return async () => {
-      if (!this.page) throw new Error(`${label}: adopt(page) was never called`);
-      await entry.action(await pageCleanupApi(this.page));
+      if (!this.page || !this.headers) {
+        throw new Error(`${label}: adopt(page) was never called`);
+      }
+      // The headers captured at adopt(), not re-read from the page: by
+      // teardown the page may sit on a document whose localStorage is denied
+      // (the namespace wizard ends on one), and drain uses these same headers.
+      await entry.action({ request: this.page.request, headers: this.headers });
       entry.done = true;
     };
   }
