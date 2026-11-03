@@ -221,6 +221,16 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Confirm subscription before the log request: the frame proves auth,
+	// the path and the access check landed, so a client can tell a stream
+	// that failed to open from one that never got this far.
+	conn.WriteJSON(map[string]any{
+		"type":      "subscribed",
+		"pod":       pod,
+		"container": filter.Container,
+		"namespace": ns,
+	})
+
 	opts := &corev1.PodLogOptions{
 		Container:  filter.Container,
 		Follow:     true,
@@ -247,14 +257,6 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer stream.Close()
-
-	// Confirm subscription
-	conn.WriteJSON(map[string]any{
-		"type":      "subscribed",
-		"pod":       pod,
-		"container": filter.Container,
-		"namespace": ns,
-	})
 
 	s.auditLogStream(r, reqCtx, user, clusterID, ns, pod, audit.ResultSuccess, "")
 

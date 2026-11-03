@@ -644,6 +644,9 @@ func TestHandleWSLogs_RemoteDeniedBeforeClient(t *testing.T) {
 func TestHandleWSLogs_RemoteMissingPodIsNotAReachFailure(t *testing.T) {
 	env := newLogsEnv(t, fakeLogAPI{}, true)
 	conn := env.open(t, issueWSToken(t, env.srv, true), "", logsRemoteCluster, "missing")
+	if msg := readFrame(t, conn); msg["type"] != "subscribed" {
+		t.Fatalf("first frame = %v, want subscribed", msg)
+	}
 	if msg := readFrame(t, conn); msg["message"] != "failed to open log stream" || msg["reason"] != nil {
 		t.Fatalf("first frame = %v, want a reasonless open failure", msg)
 	}
