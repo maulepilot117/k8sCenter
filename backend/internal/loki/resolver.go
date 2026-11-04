@@ -114,6 +114,17 @@ func (r *Resolved) Done() <-chan struct{} {
 	return r.tunnel.Done()
 }
 
+// Failure reports whether a failed request through this Loki means it is
+// unavailable, and why, as QueryFailure does. On the port-forward path,
+// which sends no credentials, a refusal says the Loki needs them.
+func (r *Resolved) Failure(err error) *UnavailableError {
+	ue := QueryFailure(err)
+	if ue != nil && r.Source == SourcePortForward && ue.Reason == string(k8s.ReasonCredentialsInvalid) {
+		ue.Message = "Loki on the selected cluster requires credentials; configure a Loki URL and token for this cluster"
+	}
+	return ue
+}
+
 // Close ends the tunnel and every connection over it. It does nothing for a
 // client with no tunnel, and is safe to call more than once.
 func (r *Resolved) Close() {
@@ -183,24 +194,40 @@ type Resolver struct {
 // store and the cluster router. Any of them may be nil: no local Loki, no
 // remote binding, or no remote cluster reachable.
 func NewResolver(disc *Discoverer, bindings *store.ClusterLogsStore, router *k8s.ClusterRouter, logger *slog.Logger) *Resolver {
-	r := &Resolver{
+	// Each dependency is passed only when present, so a missing one is a
+	// true nil interface, never a typed nil (docs/solutions/go-typed-nil-interface.md).
+	var (
+		local     LocalLoki
+		bs        BindingStore
+		clients   RemoteClients
+		forwarder PortForwarder
+	)
+	if disc != nil {
+		local = disc
+	}
+	if bindings != nil {
+		bs = bindings
+	}
+	if router != nil {
+		clients = router
+		forwarder = routerPortForwarder{router: router}
+	}
+	return NewResolverWith(local, bs, clients, forwarder, logger)
+}
+
+// NewResolverWith returns a resolver over the given sources, any of which
+// may be nil. A missing source must be a nil interface, not a nil pointer
+// of a concrete type; NewResolver does that for the production types.
+func NewResolverWith(local LocalLoki, bindings BindingStore, clients RemoteClients, forwarder PortForwarder, logger *slog.Logger) *Resolver {
+	return &Resolver{
+		local:      local,
+		bindings:   bindings,
+		clients:    clients,
+		forwarder:  forwarder,
 		discovery:  remotecache.New[*lokiService](remotecache.DefaultTTL, remotecache.DefaultMaxEntries, logger),
 		strict:     k8s.StrictHTTPTransport(),
 		strictDial: k8s.StrictDialContext,
 	}
-	// Each dependency is set only when present, so a missing one is a true
-	// nil interface, never a typed nil (docs/solutions/go-typed-nil-interface.md).
-	if disc != nil {
-		r.local = disc
-	}
-	if bindings != nil {
-		r.bindings = bindings
-	}
-	if router != nil {
-		r.clients = router
-		r.forwarder = routerPortForwarder{router: router}
-	}
-	return r
 }
 
 // Evict drops what the resolver holds for clusterID, so the next request

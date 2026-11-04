@@ -2,13 +2,22 @@ package loki
 
 // LokiStatus is the cached discovery result.
 type LokiStatus struct {
-	Detected    bool   `json:"detected"`
-	URL         string `json:"url,omitempty"`
+	Detected bool   `json:"detected"`
+	URL      string `json:"url,omitempty"`
+	// DetectedVia is how Loki was found: a local discovery method
+	// (config-override, service-name, service-label), or for a remote
+	// cluster binding or port-forward.
 	DetectedVia string `json:"detectedVia,omitempty"`
+	// Namespace and Service name the Service a remote cluster's Loki is
+	// reached through by port-forward, so the admin can see which one
+	// answers.
+	Namespace   string `json:"namespace,omitempty"`
+	Service     string `json:"service,omitempty"`
 	LastChecked string `json:"lastChecked"`
-	// Reason explains a status that is not this discovery result, such as
-	// unsupported_platform for a remote cluster this Loki cannot answer for.
-	Reason string `json:"reason,omitempty"`
+	// Reason and Message explain a cluster whose Loki is unavailable, such
+	// as loki_not_found or forbidden.
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // QueryResponse is the response from Loki query endpoints.

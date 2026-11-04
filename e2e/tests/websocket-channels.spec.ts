@@ -25,13 +25,11 @@ import { E2E_PASSWORD, E2E_USERNAME, loginViaApi } from "../helpers.ts";
  * There is no Loki, no Hubble/Cilium, and no Alertmanager. The flows route
  * is always mounted and answers a stream naming the local cluster with an
  * in-band hubble_unavailable frame (#608 KTD10). /api/v1/ws/logs-search
- * answers 503 before the upgrade when no Loki was discovered
- * (backend/internal/server/routes.go). So for those channels the assertion
- * is the DOCUMENTED UNAVAILABLE behaviour, not a skip: for logs-search the
- * bridge completes the client handshake before its own backend
- * leg resolves, so the socket opens and is then torn down with a remapped
- * close code and no data frame. Asserting that is what keeps "the channel
- * is wired end to end" distinct from "the channel silently hangs".
+ * resolves the named cluster's Loki after in-band auth and answers an
+ * in-band loki_not_found frame when there is none (remote logs and shells
+ * U12). So for those channels the assertion is the DOCUMENTED UNAVAILABLE
+ * behaviour, not a skip. Asserting that is what keeps "the channel is wired
+ * end to end" distinct from "the channel silently hangs".
  *
  * /ws/v1/ws/alerts is a special case worth naming: the allowlist permits it
  * (ported verbatim from the Fresh route, R6) but the backend mounts no such
@@ -419,12 +417,12 @@ test.describe("WebSocket channels", () => {
   });
 
   /**
-   * Loki log search. Same shape as flows, one layer further in: the route
-   * IS mounted (the Loki handler is always constructed), but the handler
-   * answers 503 before the upgrade when discovery found no Loki service, so
-   * the observable outcome at the browser is identical.
+   * Loki log search. Same shape as flows: the route is always mounted, and
+   * after in-band auth and the subscribe frame it resolves the named
+   * cluster's Loki. The fixture runs none, so the answer is one in-band
+   * loki_not_found frame.
    */
-  test("logs-search reports unavailable without Loki", async ({ page }) => {
+  test("logs-search reports loki_not_found without Loki", async ({ page }) => {
     const probe = await probeWs(page, {
       path: "/ws/v1/ws/logs-search",
       send: [
@@ -436,9 +434,14 @@ test.describe("WebSocket channels", () => {
           limit: 5,
         }),
       ],
+      maxFrames: 1,
     });
 
-    expectChannelUnavailable(probe, "logs-search");
+    expect(probe.opened).toBe(true);
+    expect(probe.frames).toHaveLength(1);
+    const frame = JSON.parse(probe.frames[0]);
+    expect(frame.type).toBe("error");
+    expect(frame.reason).toBe("loki_not_found");
     expectNoCredentialInUrl(probe, accessToken as string);
   });
 });

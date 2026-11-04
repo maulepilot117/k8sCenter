@@ -18,10 +18,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
-	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
-	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -123,40 +121,6 @@ func wsFirstFrame(t *testing.T, url, header string, authMsg map[string]any) map[
 	return msg
 }
 
-// wsLogsSearchTestServer wires a minimal Server with a single WS logs-search
-// route. Uses a real Discoverer with a nil internal client so Client() returns
-// nil; that puts us at the pre-upgrade Loki-availability boundary, which is
-// where the F#1 gate matters most (any remote X-Cluster-ID must be rejected
-// before any Loki dial).
-func wsLogsSearchTestServer(t *testing.T, clusterID string) (*httptest.Server, func() string) {
-	t.Helper()
-
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	srv := testServer(t)
-	disc := loki.NewDiscoverer(nil, config.LokiConfig{}, logger)
-	srv.LokiHandler = &loki.Handler{
-		Discoverer: disc,
-		Logger:     logger,
-	}
-
-	mux := chi.NewRouter()
-	mux.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := middleware.WithClusterID(r.Context(), clusterID)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	})
-	mux.Get("/ws/logs-search", srv.handleWSLogsSearch)
-
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-
-	issueToken := func() string { return issueWSToken(t, srv, false) }
-
-	return ts, issueToken
-}
-
 // TestHandleWSFlows_RemoteWithoutRemoteFlows_Refused verifies that a remote
 // cluster, named by header or in-band, is refused with a reasoned frame and
 // a failure audit row carrying that cluster when remote flows are not wired.
@@ -232,30 +196,6 @@ func TestHandleWSFlows_RouteMountedWithoutHubble(t *testing.T) {
 	})
 	if msg["type"] != "error" || msg["reason"] != "hubble_unavailable" {
 		t.Fatalf("got %v, want a hubble_unavailable answer", msg)
-	}
-}
-
-// TestHandleWSLogsSearch_RemoteCluster_NilLokiReturns503 confirms the
-// pre-upgrade boundary: when Loki is unavailable (nil client), a remote
-// X-Cluster-ID never advances past the 503. This is the outer safety
-// envelope for F#1; the post-upgrade gate inside handleWSLogsSearch
-// covers the case where Loki IS available.
-func TestHandleWSLogsSearch_RemoteCluster_NilLokiReturns503(t *testing.T) {
-	ts, _ := wsLogsSearchTestServer(t, "remote-cluster-99")
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("handler panicked on nil Loki client with remote cluster: %v", r)
-		}
-	}()
-
-	resp, err := http.Get(ts.URL + "/ws/logs-search")
-	if err != nil {
-		t.Fatalf("GET /ws/logs-search: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("nil-Loki pre-upgrade boundary returned %d, want 503", resp.StatusCode)
 	}
 }
 

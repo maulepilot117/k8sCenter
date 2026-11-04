@@ -372,13 +372,8 @@ func (s *Server) revalidateLogStream(ctx context.Context, clusterID string, user
 			return logStreamEnds.clusterRemoved
 		}
 	}
-	var access networking.NamespaceAccess
-	switch {
-	case s.logAccess != nil:
-		access = s.logAccess
-	case s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil:
-		access = s.ResourceHandler.AccessChecker
-	default:
+	access := s.logStreamAccess()
+	if access == nil {
 		return nil
 	}
 	allowed, err := access.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "get", "pods/log", namespace)
@@ -390,6 +385,18 @@ func (s *Server) revalidateLogStream(ctx context.Context, clusterID string, user
 		return logStreamEnds.accessRevoked
 	}
 	return nil
+}
+
+// logStreamAccess returns the check log and Loki tail revalidation run, or
+// nil when none is wired.
+func (s *Server) logStreamAccess() networking.NamespaceAccess {
+	if s.logAccess != nil {
+		return s.logAccess
+	}
+	if s.ResourceHandler == nil || s.ResourceHandler.AccessChecker == nil {
+		return nil
+	}
+	return s.ResourceHandler.AccessChecker
 }
 
 // refuseRemoteLogs answers a remote log stream whose cluster could not be

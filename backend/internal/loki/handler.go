@@ -1,10 +1,13 @@
 package loki
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,70 +24,153 @@ var allowedSteps = map[string]bool{
 	"15m": true, "30m": true, "1h": true, "6h": true, "1d": true,
 }
 
-// Handler serves Loki log HTTP endpoints.
+// Handler serves Loki log HTTP endpoints. Every read resolves the Loki of
+// the request's cluster through Resolver; a remote cluster is never answered
+// from the local Loki.
 type Handler struct {
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
 	Logger        *slog.Logger
-	// Resolver answers which Loki serves a cluster. The read handlers
-	// still refuse remote clusters until they resolve through it (U12).
+	// Resolver answers which Loki serves a cluster. When it is nil, a
+	// resolver over Discoverer alone is used: the local cluster is served
+	// and every remote cluster is unsupported.
 	Resolver *Resolver
+
+	fallbackOnce sync.Once
+	fallback     *Resolver
 }
 
-// msgRemoteUnsupported is the fixed refusal for a remote cluster.
-const msgRemoteUnsupported = "Log search is not available for this cluster yet"
-
-// remoteTarget reports whether the request targets a remote cluster. The
-// discovered Loki belongs to the local cluster, so it can never answer for a
-// remote one: serving it would return the local cluster's logs under the
-// remote cluster's name.
-func remoteTarget(r *http.Request) bool {
-	return !k8s.IsLocalClusterID(middleware.ClusterIDFromContext(r.Context()))
-}
-
-// refuseRemote writes the remote-unsupported refusal and reports true when
-// the request targets a remote cluster. Each read handler calls it before it
-// resolves the Loki client.
-func refuseRemote(w http.ResponseWriter, r *http.Request) bool {
-	if !remoteTarget(r) {
-		return false
+func (h *Handler) resolver() *Resolver {
+	if h.Resolver != nil {
+		return h.Resolver
 	}
-	httputil.WriteErrorWithReason(w, http.StatusNotImplemented, msgRemoteUnsupported,
-		string(k8s.ReasonUnsupportedPlatform), nil)
-	return true
+	h.fallbackOnce.Do(func() { h.fallback = NewResolver(h.Discoverer, nil, nil, h.Logger) })
+	return h.fallback
 }
 
-// HandleStatus returns the current Loki discovery status. For a remote
-// cluster it reports Loki as not detected, with the reason, instead of the
-// local discovery result; clients already treat "not detected" as Loki
+// ResolveFor returns the Loki serving clusterID for user, for a caller that
+// holds it, such as a live tail. The caller must Close the result. A
+// failure is an *UnavailableError.
+func (h *Handler) ResolveFor(ctx context.Context, clusterID string, user *auth.User) (*Resolved, error) {
+	return h.resolver().Resolve(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+}
+
+// resolve returns the Loki of the request's cluster, for its user. When
+// there is none it writes the unavailable answer and returns nil. The
+// caller must Close the result.
+func (h *Handler) resolve(w http.ResponseWriter, r *http.Request) *Resolved {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return nil
+	}
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	res, err := h.resolver().Resolve(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.writeUnavailable(w, clusterID, err)
+		return nil
+	}
+	return res
+}
+
+// writeUnavailable answers a cluster whose Loki cannot be used, with the
+// reason's fixed status and message.
+func (h *Handler) writeUnavailable(w http.ResponseWriter, clusterID string, err error) {
+	ue := unavailableOf(err)
+	h.Logger.Warn("loki unavailable", "cluster", clusterID, "reason", ue.Reason, "error", ue.Err)
+	var extra map[string]any
+	if ue.Retryable {
+		extra = map[string]any{"retryable": true}
+	}
+	httputil.WriteErrorWithReason(w, ue.Status, ue.Message, ue.Reason, extra)
+}
+
+// queryFailed answers a Loki request that failed. A remote cluster's
+// failure that means its Loki is unavailable answers with that reason, so
+// the admin learns which of R7's states it is. Anything else is a failed
+// query with the fixed message: every local failure, as local failures
+// always were, and a request that ran out its own per-call time, since a
+// slow query is not an unavailable Loki.
+func (h *Handler) queryFailed(w http.ResponseWriter, r *http.Request, res *Resolved, err error, message string) {
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	if res.Source == SourceLocal || errors.Is(err, context.DeadlineExceeded) {
+		h.Logger.Warn("loki request failed", "cluster", clusterID, "error", err)
+		httputil.WriteError(w, http.StatusBadGateway, message, "")
+		return
+	}
+	if ue := res.Failure(err); ue != nil {
+		h.writeUnavailable(w, clusterID, ue)
+		return
+	}
+	h.Logger.Warn("loki request failed", "cluster", clusterID, "error", err)
+	httputil.WriteError(w, http.StatusBadGateway, message, "")
+}
+
+// unavailableOf returns err's *UnavailableError. The resolver returns no
+// other kind; anything else reads as Loki being unreachable.
+func unavailableOf(err error) *UnavailableError {
+	var ue *UnavailableError
+	if errors.As(err, &ue) {
+		return ue
+	}
+	return errLokiUnreachable(err)
+}
+
+// HandleStatus reports the Loki of the request's cluster. The local cluster
+// answers its discovery result. A remote cluster answers where its Loki is,
+// found without connecting to it: the configured URL, or the namespace and
+// Service the port-forward path chose. When it has none, Detected is false
+// with the reason and its message; clients treat "not detected" as Loki
 // being unavailable.
 // GET /api/v1/logs/status
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
-	if remoteTarget(r) {
-		httputil.WriteData(w, LokiStatus{
-			Detected:    false,
-			LastChecked: time.Now().UTC().Format(time.RFC3339),
-			Reason:      string(k8s.ReasonUnsupportedPlatform),
-		})
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	if k8s.IsLocalClusterID(clusterID) {
+		if h.Discoverer == nil {
+			httputil.WriteData(w, LokiStatus{LastChecked: time.Now().UTC().Format(time.RFC3339), Reason: ReasonLokiNotFound})
+			return
+		}
+		httputil.WriteData(w, h.Discoverer.Status())
 		return
 	}
-	httputil.WriteData(w, h.Discoverer.Status())
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	loc, err := h.resolver().Locate(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		ue := unavailableOf(err)
+		h.Logger.Warn("remote loki status unavailable", "cluster", clusterID, "reason", ue.Reason, "error", ue.Err)
+		httputil.WriteData(w, LokiStatus{LastChecked: now, Reason: ue.Reason, Message: ue.Message})
+		return
+	}
+	httputil.WriteData(w, LokiStatus{
+		Detected:    true,
+		URL:         withoutUserinfo(loc.URL),
+		DetectedVia: string(loc.Source),
+		Namespace:   loc.Namespace,
+		Service:     loc.Service,
+		LastChecked: now,
+	})
+}
+
+// withoutUserinfo drops any user:password from a URL, so a status answer
+// never echoes credentials embedded in a configured URL.
+func withoutUserinfo(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	return u.String()
 }
 
 // HandleQuery proxies a LogQL range query to Loki with namespace enforcement.
 // GET /api/v1/logs/query?query=...&start=...&end=...&limit=...&direction=...&namespace=...
 func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
-	if refuseRemote(w, r) {
-		return
-	}
-	client := h.Discoverer.Client()
-	if client == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable,
-			"Loki is not available",
-			"Log aggregation has not been detected. Deploy Loki or configure KUBECENTER_LOKI_URL.")
-		return
-	}
-
 	q := r.URL.Query()
 	query := q.Get("query")
 	if query == "" {
@@ -136,10 +222,14 @@ func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		direction = "forward"
 	}
 
-	result, err := client.QueryRange(r.Context(), enforced, start, end, limit, direction)
+	res := h.resolve(w, r)
+	if res == nil {
+		return
+	}
+	defer res.Close()
+	result, err := res.Client.QueryRange(r.Context(), enforced, start, end, limit, direction)
 	if err != nil {
-		h.Logger.Warn("loki query failed", "error", err)
-		httputil.WriteError(w, http.StatusBadGateway, "Log query failed", "")
+		h.queryFailed(w, r, res, err, "Log query failed")
 		return
 	}
 
@@ -157,15 +247,6 @@ func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 // still enumerate label values inside their permitted namespace via
 // /labels/{name}/values (which enforces a namespace-scoped LogQL selector).
 func (h *Handler) HandleLabels(w http.ResponseWriter, r *http.Request) {
-	if refuseRemote(w, r) {
-		return
-	}
-	client := h.Discoverer.Client()
-	if client == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "Loki is not available", "")
-		return
-	}
-
 	q := r.URL.Query()
 	var start, end time.Time
 	if s := q.Get("start"); s != "" {
@@ -179,10 +260,14 @@ func (h *Handler) HandleLabels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	labels, err := client.Labels(r.Context(), start, end)
+	res := h.resolve(w, r)
+	if res == nil {
+		return
+	}
+	defer res.Close()
+	labels, err := res.Client.Labels(r.Context(), start, end)
 	if err != nil {
-		h.Logger.Warn("loki labels query failed", "error", err)
-		httputil.WriteError(w, http.StatusBadGateway, "Label query failed", "")
+		h.queryFailed(w, r, res, err, "Label query failed")
 		return
 	}
 
@@ -192,15 +277,6 @@ func (h *Handler) HandleLabels(w http.ResponseWriter, r *http.Request) {
 // HandleLabelValues returns values for a specific label.
 // GET /api/v1/logs/labels/{name}/values?start=...&end=...&namespace=...
 func (h *Handler) HandleLabelValues(w http.ResponseWriter, r *http.Request) {
-	if refuseRemote(w, r) {
-		return
-	}
-	client := h.Discoverer.Client()
-	if client == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "Loki is not available", "")
-		return
-	}
-
 	// P2-5 fix: use chi.URLParam instead of manual path parsing
 	name := chi.URLParam(r, "name")
 	if name == "" {
@@ -240,10 +316,14 @@ func (h *Handler) HandleLabelValues(w http.ResponseWriter, r *http.Request) {
 		scopeQuery = built
 	}
 
-	values, err := client.LabelValues(r.Context(), name, start, end, scopeQuery)
+	res := h.resolve(w, r)
+	if res == nil {
+		return
+	}
+	defer res.Close()
+	values, err := res.Client.LabelValues(r.Context(), name, start, end, scopeQuery)
 	if err != nil {
-		h.Logger.Warn("loki label values query failed", "error", err)
-		httputil.WriteError(w, http.StatusBadGateway, "Label values query failed", "")
+		h.queryFailed(w, r, res, err, "Label values query failed")
 		return
 	}
 
@@ -253,15 +333,6 @@ func (h *Handler) HandleLabelValues(w http.ResponseWriter, r *http.Request) {
 // HandleVolume returns log volume data for the histogram.
 // GET /api/v1/logs/volume?query=...&start=...&end=...&step=...&namespace=...
 func (h *Handler) HandleVolume(w http.ResponseWriter, r *http.Request) {
-	if refuseRemote(w, r) {
-		return
-	}
-	client := h.Discoverer.Client()
-	if client == nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, "Loki is not available", "")
-		return
-	}
-
 	q := r.URL.Query()
 	query := q.Get("query")
 	if query == "" {
@@ -301,10 +372,14 @@ func (h *Handler) HandleVolume(w http.ResponseWriter, r *http.Request) {
 		step = s
 	}
 
-	result, err := client.VolumeRange(r.Context(), enforced, start, end, step, []string{"namespace"})
+	res := h.resolve(w, r)
+	if res == nil {
+		return
+	}
+	defer res.Close()
+	result, err := res.Client.VolumeRange(r.Context(), enforced, start, end, step, []string{"namespace"})
 	if err != nil {
-		h.Logger.Warn("loki volume query failed", "error", err)
-		httputil.WriteError(w, http.StatusBadGateway, "Volume query failed", "")
+		h.queryFailed(w, r, res, err, "Volume query failed")
 		return
 	}
 
