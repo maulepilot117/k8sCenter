@@ -809,3 +809,64 @@ Inspect:
     SELECT cluster_id, snapshot_date, reason, identity_revision
       FROM compliance_snapshot_gaps
      ORDER BY cluster_id, snapshot_date DESC;
+
+
+000030_cluster_loki_binding (remote logs and shells U10, KTD8, 2026-11-03)
+------------------------------------------------------------------------------
+
+Adds five nullable columns to cluster_monitoring: loki_url (TEXT), loki_token
+(BYTEA), loki_token_origin (TEXT), loki_tenant_id (TEXT) and loki_updated_at
+(TIMESTAMPTZ). Purely additive: no backfill.
+
+What it is for:
+  A remote cluster's Loki binding is an optional Loki URL, bearer token and
+  tenant, stored beside the metrics binding on the same row. A row holds a
+  Loki binding when loki_url is non-empty, whatever prometheus_url holds, and
+  a metrics binding when prometheus_url is non-empty, whatever loki_url holds.
+  loki_token is AES-256-GCM encrypted with the same master secret as the
+  cluster credentials (store.Encrypt) and is never returned by the API.
+  loki_token_origin records the origin of the Loki URL the token was entered
+  for; the store returns the token only while loki_url's origin equals it, as
+  000028 does for the Alertmanager token. loki_updated_at is the Loki
+  binding's own revision: Loki writes never touch updated_at, which stays the
+  metrics binding's, so editing one binding does not invalidate clients built
+  from the other.
+
+  Because the two bindings share a row, each store's Delete clears only its
+  own columns while the other binding is present, and removes the row only
+  when it would otherwise hold no binding. This release changes the metrics
+  store's Delete to do that; before it, a metrics delete removed the row.
+
+Lock impact:
+  The table has rows (metrics bindings). ADD COLUMN of nullable columns with
+  no default is catalog-only: no rewrite, and the ACCESS EXCLUSIVE lock is
+  brief.
+
+Rolling update:
+  A previous-release pod's metrics Delete still removes the whole row, which
+  would take a Loki binding with it. Nothing writes a Loki binding until the
+  binding API ships in a later release, so no Loki binding can exist while a
+  pod older than this release is running.
+
+Rollback:
+  Stop every pod of this release first, because its binding reads name the
+  new columns. Then either
+    (a) leave the columns in place (recommended): the previous release never
+        names them, and the store's origin check keeps a leftover token
+        unusable, or
+    (b) run the 000030 down file, which drops all five columns; every Loki
+        binding must then be entered again.
+  Then reset the recorded version:
+    UPDATE schema_migrations SET version = 29, dirty = false;
+  A later roll-forward re-runs the up file without error (ADD COLUMN IF NOT
+  EXISTS, COMMENT ON). Metrics bindings keep every column either way.
+  TestMigration000030_RoundTripKeepsMetricsBindings covers up, down and
+  re-apply.
+
+Inspect:
+    SELECT cluster_id, loki_url, loki_tenant_id,
+           loki_token IS NOT NULL AS has_token,
+           loki_token_origin, loki_updated_at
+      FROM cluster_monitoring
+     WHERE COALESCE(loki_url, '') <> ''
+     ORDER BY cluster_id;
