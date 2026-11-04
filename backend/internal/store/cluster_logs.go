@@ -217,32 +217,23 @@ func (s *ClusterLogsStore) Upsert(ctx context.Context, clusterID string, w LokiB
 	return b, nil
 }
 
-// Delete removes a cluster's Loki binding. While the row also holds a
-// metrics binding only the Loki columns are cleared; otherwise the row is
-// removed. It returns ErrLokiBindingNotFound when no Loki binding was stored.
+// Delete removes a cluster's Loki binding. The row also holds the metrics
+// binding, so only the Loki columns are cleared, and the row goes once
+// neither binding is left (clearBinding). It returns ErrLokiBindingNotFound
+// when no Loki binding was stored.
+//
+// The SET list names every Loki binding column: a column added to the
+// binding must be added here too, or it survives the delete.
 func (s *ClusterLogsStore) Delete(ctx context.Context, clusterID string) error {
-	var removed int
-	err := s.pool.QueryRow(ctx, `
-		WITH cleared AS (
-			UPDATE cluster_monitoring SET
-				loki_url = NULL, loki_token = NULL, loki_token_origin = NULL,
-				loki_tenant_id = NULL, loki_updated_at = NULL
-			WHERE cluster_id = $1
-			  AND COALESCE(loki_url, '') <> ''
-			  AND COALESCE(prometheus_url, '') <> ''
-			RETURNING 1
-		), deleted AS (
-			DELETE FROM cluster_monitoring
-			WHERE cluster_id = $1
-			  AND COALESCE(loki_url, '') <> ''
-			  AND COALESCE(prometheus_url, '') = ''
-			RETURNING 1
-		)
-		SELECT (SELECT count(*) FROM cleared) + (SELECT count(*) FROM deleted)`, clusterID).Scan(&removed)
+	cleared, err := clearBinding(ctx, s.pool, `
+		UPDATE cluster_monitoring SET
+			loki_url = NULL, loki_token = NULL, loki_token_origin = NULL,
+			loki_tenant_id = NULL, loki_updated_at = NULL
+		WHERE cluster_id = $1 AND COALESCE(loki_url, '') <> ''`, clusterID)
 	if err != nil {
 		return fmt.Errorf("deleting loki binding: %w", err)
 	}
-	if removed == 0 {
+	if !cleared {
 		return ErrLokiBindingNotFound
 	}
 	return nil

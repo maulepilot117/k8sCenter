@@ -288,31 +288,47 @@ func (s *ClusterMetricsStore) Upsert(ctx context.Context, clusterID string, w Me
 }
 
 // Delete removes a cluster's metrics binding. The row also holds the Loki
-// binding (ClusterLogsStore), so while one is stored only the metrics columns
-// are cleared; otherwise the row is removed, as before the Loki binding
-// existed. It returns ErrMetricsBindingNotFound when nothing was removed.
+// binding (ClusterLogsStore), so only the metrics columns are cleared, and
+// the row goes once neither binding is left (clearBinding). It returns
+// ErrMetricsBindingNotFound when no metrics binding was stored.
+//
+// The SET list names every metrics binding column: a column added to the
+// binding must be added here too, or it survives the delete.
 func (s *ClusterMetricsStore) Delete(ctx context.Context, clusterID string) error {
-	var removed int
-	err := s.pool.QueryRow(ctx, `
-		WITH cleared AS (
-			UPDATE cluster_monitoring SET
-				prometheus_url = NULL, prometheus_token = NULL, alertmanager_url = NULL,
-				alertmanager_token = NULL, alertmanager_token_origin = NULL, updated_at = now()
-			WHERE cluster_id = $1
-			  AND COALESCE(loki_url, '') <> ''
-			  AND COALESCE(prometheus_url, '') <> ''
-			RETURNING 1
-		), deleted AS (
-			DELETE FROM cluster_monitoring
-			WHERE cluster_id = $1 AND COALESCE(loki_url, '') = ''
-			RETURNING 1
-		)
-		SELECT (SELECT count(*) FROM cleared) + (SELECT count(*) FROM deleted)`, clusterID).Scan(&removed)
+	cleared, err := clearBinding(ctx, s.pool, `
+		UPDATE cluster_monitoring SET
+			prometheus_url = NULL, prometheus_token = NULL, alertmanager_url = NULL,
+			alertmanager_token = NULL, alertmanager_token_origin = NULL, updated_at = now()
+		WHERE cluster_id = $1 AND COALESCE(prometheus_url, '') <> ''`, clusterID)
 	if err != nil {
 		return fmt.Errorf("deleting metrics binding: %w", err)
 	}
-	if removed == 0 {
+	if !cleared {
 		return ErrMetricsBindingNotFound
 	}
 	return nil
+}
+
+// clearBinding runs one store's clear statement, which must be gated only on
+// that binding's own URL, then removes the row if it holds neither binding,
+// in one transaction. Gating on the store's own URL alone keeps a concurrent
+// write to the other binding from making the delete miss: the clear
+// re-checks only its own URL once it holds the row lock, and the cleanup
+// runs under that lock. It reports whether the clear changed a row.
+func clearBinding(ctx context.Context, pool *pgxpool.Pool, clear, clusterID string) (bool, error) {
+	var cleared bool
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, clear, clusterID)
+		if err != nil {
+			return err
+		}
+		cleared = tag.RowsAffected() > 0
+		_, err = tx.Exec(ctx, `
+			DELETE FROM cluster_monitoring
+			WHERE cluster_id = $1
+			  AND COALESCE(prometheus_url, '') = ''
+			  AND COALESCE(loki_url, '') = ''`, clusterID)
+		return err
+	})
+	return cleared, err
 }

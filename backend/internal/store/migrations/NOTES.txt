@@ -833,9 +833,13 @@ What it is for:
   from the other.
 
   Because the two bindings share a row, each store's Delete clears only its
-  own columns while the other binding is present, and removes the row only
-  when it would otherwise hold no binding. This release changes the metrics
-  store's Delete to do that; before it, a metrics delete removed the row.
+  own columns, gated on its own URL, and then removes the row once it holds
+  neither binding, in one transaction. Gating on its own URL alone keeps a
+  concurrent write to the other binding from making the delete miss. This
+  release changes the metrics store's Delete to do that; before it, a
+  metrics delete removed the row. A row without a Prometheus URL (a legacy
+  grafana-only row) now answers a metrics delete with not found, as a read
+  of it always has.
 
 Lock impact:
   The table has rows (metrics bindings). ADD COLUMN of nullable columns with
@@ -846,7 +850,11 @@ Rolling update:
   A previous-release pod's metrics Delete still removes the whole row, which
   would take a Loki binding with it. Nothing writes a Loki binding until the
   binding API ships in a later release, so no Loki binding can exist while a
-  pod older than this release is running.
+  pod older than this release is running. That stops holding once the
+  binding API has shipped: a rollback to, or a skip-version upgrade from, a
+  release older than 000030 runs that whole-row delete, and the Loki binding
+  goes with the metrics one. Nothing is exposed; the binding must be
+  entered again.
 
 Rollback:
   Stop every pod of this release first, because its binding reads name the
