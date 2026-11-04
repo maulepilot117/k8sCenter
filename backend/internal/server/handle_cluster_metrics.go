@@ -106,17 +106,36 @@ func (s *Server) evictMetricsClient(id string) {
 	}
 }
 
-// metricsPreamble runs the checks every binding route shares: a database is
-// wired, the id is not the local cluster, and the cluster is registered. It
-// writes the response and returns false when a check fails.
+// metricsPreamble runs the checks every metrics binding route shares.
 func (s *Server) metricsPreamble(w http.ResponseWriter, r *http.Request, id string) bool {
+	return s.clusterBindingPreamble(w, r, id, bindingRoute{
+		wired:        s.ClusterMetricsStore != nil,
+		noDatabase:   msgMetricsNoDatabase,
+		localCluster: msgMetricsLocalCluster,
+		logPrefix:    "metrics binding",
+	})
+}
+
+// bindingRoute is what a per-cluster binding route (metrics, logs) says in
+// the preamble its routes share.
+type bindingRoute struct {
+	wired        bool   // the binding's store is wired
+	noDatabase   string // fixed message when it is not
+	localCluster string // fixed message for the local cluster, which discovers in-cluster
+	logPrefix    string
+}
+
+// clusterBindingPreamble runs the checks every binding route shares: a
+// database is wired, the id is not the local cluster, and the cluster is
+// registered. It writes the response and returns false when a check fails.
+func (s *Server) clusterBindingPreamble(w http.ResponseWriter, r *http.Request, id string, route bindingRoute) bool {
 	clusters := s.metricsClusterGetter()
-	if s.ClusterMetricsStore == nil || clusters == nil {
-		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, msgMetricsNoDatabase, string(k8s.ReasonDBUnavailable), nil)
+	if !route.wired || clusters == nil {
+		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, route.noDatabase, string(k8s.ReasonDBUnavailable), nil)
 		return false
 	}
 	if k8s.IsLocalClusterID(id) {
-		httputil.WriteError(w, http.StatusBadRequest, msgMetricsLocalCluster, "")
+		httputil.WriteError(w, http.StatusBadRequest, route.localCluster, "")
 		return false
 	}
 	rec, err := clusters.Get(r.Context(), id)
@@ -126,12 +145,12 @@ func (s *Server) metricsPreamble(w http.ResponseWriter, r *http.Request, id stri
 			httputil.WriteTargetError(w, err)
 			return false
 		}
-		s.Logger.Error("metrics binding: reading cluster registry failed", "cluster", id, "error", err)
+		s.Logger.Error(route.logPrefix+": reading cluster registry failed", "cluster", id, "error", err)
 		httputil.WriteErrorWithReason(w, http.StatusServiceUnavailable, msgClusterRegistryFailure, string(k8s.ReasonDBUnavailable), nil)
 		return false
 	}
 	if rec != nil && rec.IsLocal {
-		httputil.WriteError(w, http.StatusBadRequest, msgMetricsLocalCluster, "")
+		httputil.WriteError(w, http.StatusBadRequest, route.localCluster, "")
 		return false
 	}
 	return true
@@ -372,10 +391,15 @@ func (s *Server) handleDeleteClusterMetrics(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// auditClusterMetrics records a binding write. The URL and token are left
-// out of the entry: a URL can carry identifying detail and the token is a
-// secret.
+// auditClusterMetrics records a metrics binding write.
 func (s *Server) auditClusterMetrics(r *http.Request, action audit.Action, clusterID, detail string) {
+	s.auditClusterBinding(r, "cluster-metrics", action, clusterID, detail)
+}
+
+// auditClusterBinding records a per-cluster binding write under kind. The
+// URL and token are left out of the entry: a URL can carry identifying
+// detail and the token is a secret.
+func (s *Server) auditClusterBinding(r *http.Request, kind string, action audit.Action, clusterID, detail string) {
 	if s.AuditLogger == nil {
 		return
 	}
@@ -384,7 +408,7 @@ func (s *Server) auditClusterMetrics(r *http.Request, action audit.Action, clust
 		return
 	}
 	entry := s.newAuditEntry(r, user.Username, action, audit.ResultSuccess)
-	entry.ResourceKind = "cluster-metrics"
+	entry.ResourceKind = kind
 	entry.ResourceName = clusterID
 	entry.Detail = detail
 	s.AuditLogger.Log(r.Context(), entry)

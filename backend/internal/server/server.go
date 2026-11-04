@@ -117,6 +117,12 @@ type Server struct {
 	// Nil in production, which uses monitoring.ProbeAlertmanager; tests stub
 	// it for the same reason as probePrometheus.
 	probeAlertmanager func(ctx context.Context, url, token string) error
+	// ClusterLogsStore persists per-cluster Loki bindings
+	// (/clusters/{id}/logs). Nil without a database: those routes answer 503.
+	ClusterLogsStore clusterLogsStore
+	// LokiResolver is the log search resolver; Loki binding writes evict
+	// from it. Nil-safe.
+	LokiResolver lokiResolverEvicter
 	// metricsClusters confirms the cluster exists for the binding routes.
 	// Nil in production, which reads ClusterStore; tests set a fake.
 	metricsClusters clusterRecordGetter
