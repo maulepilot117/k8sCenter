@@ -1160,6 +1160,12 @@ func main() {
 		srv.ClusterMetricsStore = clusterMetricsStore
 		srv.MetricsResolver = monHandler.Resolver
 	}
+	// The Loki binding admin API likewise writes through its store and
+	// evicts from the log search resolver.
+	if clusterLogsStore != nil {
+		srv.ClusterLogsStore = clusterLogsStore
+		srv.LokiResolver = lokiHandler.Resolver
+	}
 	httpServer := srv.HTTPServer()
 
 	// Start HTTP server — use errCh instead of os.Exit in goroutine
