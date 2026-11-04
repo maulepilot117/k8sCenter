@@ -148,21 +148,26 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancelCause(reqCtx)
 	defer cancel(nil)
 
-	// The keepalive and the registration start before Loki is resolved, so
-	// a tunnel that stalls while opening still ends when the client leaves
-	// or the cluster is removed.
+	// The keepalive, the registration and the lifecycle watch all start
+	// before Loki is resolved, so a resolve that stalls while opening a
+	// tunnel still ends when the client leaves, the cluster is removed or
+	// the token expires: no tunnel is opened as the user after expiry. The
+	// grant check needs the resolved Loki, so until resolution finishes the
+	// watch checks only that the cluster is still registered.
 	ticker := wsStartKeepalive(conn, func() { cancel(nil) })
 	defer ticker.Stop()
+	var target atomic.Pointer[lokiTailTarget]
 	if remote {
 		remove := s.logStreams.add(clusterID, cancel)
 		defer remove()
+		s.watchStream(ctx, cancel, logStreamEnds, "ws loki tail revalidate", lokiTailRevalidateInterval, func(ctx context.Context) *streamEnd {
+			return s.revalidateLokiTail(ctx, clusterID, user, target.Load())
+		})
 	}
 
 	res, err := s.LokiHandler.ResolveFor(ctx, clusterID, user)
-	if err == nil && ctx.Err() != nil {
-		res.Close()
-	}
 	if ctx.Err() != nil {
+		res.Close() // nil-safe; a resolve that won the race still holds a tunnel
 		writeStreamEnd(conn, ctx)
 		return
 	}
@@ -171,13 +176,7 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer res.Close()
-
-	if remote {
-		source, lokiNamespace := res.Source, res.Namespace
-		s.watchStream(ctx, cancel, logStreamEnds, "ws loki tail revalidate", lokiTailRevalidateInterval, func(ctx context.Context) *streamEnd {
-			return s.revalidateLokiTail(ctx, clusterID, user, source, lokiNamespace)
-		})
-	}
+	target.Store(&lokiTailTarget{source: res.Source, namespace: res.Namespace})
 
 	// Confirm subscription
 	conn.WriteJSON(map[string]any{
@@ -336,25 +335,33 @@ func (s *Server) failLokiTailDial(conn *websocket.Conn, r *http.Request, ctx con
 	conn.WriteJSON(frame)
 }
 
+// lokiTailTarget is the Loki a remote tail resolved to, which its
+// revalidation needs once resolution has finished.
+type lokiTailTarget struct {
+	source    loki.Source
+	namespace string
+}
+
 // revalidateLokiTail rechecks a live remote tail: the cluster is still
 // registered and, on the port-forward path, the user still holds create
 // pods/portforward in Loki's namespace, the grant that opened the tunnel. A
-// configured URL needs no Kubernetes grant. A check that cannot be answered
-// leaves the tail running; the token's expiry still bounds it.
-func (s *Server) revalidateLokiTail(ctx context.Context, clusterID string, user *auth.User, source loki.Source, lokiNamespace string) *streamEnd {
+// configured URL needs no Kubernetes grant, and target is nil while Loki is
+// still being resolved. A check that cannot be answered leaves the tail
+// running; the token's expiry still bounds it.
+func (s *Server) revalidateLokiTail(ctx context.Context, clusterID string, user *auth.User, target *lokiTailTarget) *streamEnd {
 	if records := s.metricsClusterGetter(); records != nil {
 		if _, err := records.Get(ctx, clusterID); errors.Is(err, pgx.ErrNoRows) {
 			return logStreamEnds.clusterRemoved
 		}
 	}
-	if source != loki.SourcePortForward {
+	if target == nil || target.source != loki.SourcePortForward {
 		return nil
 	}
 	access := s.logStreamAccess()
 	if access == nil {
 		return nil
 	}
-	allowed, err := access.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "create", "pods/portforward", lokiNamespace)
+	allowed, err := access.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "create", "pods/portforward", target.namespace)
 	if err != nil {
 		s.Logger.Warn("loki tail revalidation failed", "cluster", clusterID, "user", user.Username, "error", err)
 		return nil

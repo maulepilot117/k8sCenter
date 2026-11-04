@@ -142,7 +142,11 @@ type recordingAccess struct {
 	denied   map[string]bool
 	err      error
 	clusters []string
+	checks   []accessCheck
 }
+
+// accessCheck is one question asked of recordingAccess.
+type accessCheck struct{ cluster, verb, resource, namespace string }
 
 func (a *recordingAccess) deny(resource string) {
 	a.mu.Lock()
@@ -150,10 +154,11 @@ func (a *recordingAccess) deny(resource string) {
 	a.denied[resource] = true
 }
 
-func (a *recordingAccess) CanAccess(_ context.Context, clusterID, _ string, _ []string, _, resource, _ string) (bool, error) {
+func (a *recordingAccess) CanAccess(_ context.Context, clusterID, _ string, _ []string, verb, resource, namespace string) (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.clusters = append(a.clusters, clusterID)
+	a.checks = append(a.checks, accessCheck{clusterID, verb, resource, namespace})
 	if a.err != nil {
 		return false, a.err
 	}
@@ -164,6 +169,12 @@ func (a *recordingAccess) askedClusters() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.clusters...)
+}
+
+func (a *recordingAccess) askedChecks() []accessCheck {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]accessCheck(nil), a.checks...)
 }
 
 type logsEnv struct {

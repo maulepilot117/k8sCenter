@@ -24,6 +24,7 @@ import (
 	kfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/loki"
@@ -104,14 +105,22 @@ func (tt *tailTunnel) Close() error {
 	return nil
 }
 
-// tailForwarder opens a tailTunnel to target for each port-forward.
+// tailForwarder opens a tailTunnel to target for each port-forward. A
+// stalling one opens nothing and waits until its context ends.
 type tailForwarder struct {
-	target string
-	mu     sync.Mutex
-	opened []*tailTunnel
+	target  string
+	stall   bool
+	stalled chan struct{}
+	mu      sync.Mutex
+	opened  []*tailTunnel
 }
 
-func (f *tailForwarder) PortForward(_ context.Context, _, _ string, _ []string, _, _ string, _ int32) (k8s.Tunnel, error) {
+func (f *tailForwarder) PortForward(ctx context.Context, _, _ string, _ []string, _, _ string, _ int32) (k8s.Tunnel, error) {
+	if f.stall {
+		close(f.stalled)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	tt := &tailTunnel{target: f.target, done: make(chan struct{})}
@@ -372,6 +381,90 @@ func TestHandleWSLogsSearch_RemoteRevalidationEndsTail(t *testing.T) {
 	env.access.deny("pods/portforward")
 	if msg := readLogsUntilError(t, conn); msg["reason"] != "access_revoked" {
 		t.Fatalf("got %v, want access_revoked", msg)
+	}
+	want := accessCheck{lokiTailRemote, "create", "pods/portforward", "monitoring"}
+	var asked bool
+	for _, c := range env.access.askedChecks() {
+		if c == want {
+			asked = true
+		}
+	}
+	if !asked {
+		t.Fatalf("checks = %+v, want %+v", env.access.askedChecks(), want)
+	}
+}
+
+// revalidateLokiTail asks for create pods/portforward in Loki's namespace
+// only on the port-forward path: a configured URL, and a tail still being
+// resolved, need no Kubernetes grant. A cluster no longer registered ends
+// the tail on every path.
+func TestRevalidateLokiTail(t *testing.T) {
+	env := newLokiTailEnv(t, newFakeLokiTail(t, false))
+	env.access.deny("pods/portforward")
+	user := &auth.User{Username: "alice", KubernetesUsername: "alice"}
+	forwarded := &lokiTailTarget{source: loki.SourcePortForward, namespace: "monitoring"}
+	ctx := context.Background()
+
+	if end := env.srv.revalidateLokiTail(ctx, lokiTailRemote, user, &lokiTailTarget{source: loki.SourceBinding}); end != nil {
+		t.Fatalf("binding tail ended with %v, want it kept: it holds no Kubernetes grant", end)
+	}
+	if end := env.srv.revalidateLokiTail(ctx, lokiTailRemote, user, nil); end != nil {
+		t.Fatalf("tail still resolving ended with %v, want it kept", end)
+	}
+	if n := len(env.access.askedChecks()); n != 0 {
+		t.Fatalf("asked %d access checks without a port-forward, want none", n)
+	}
+	if end := env.srv.revalidateLokiTail(ctx, lokiTailRemote, user, forwarded); end != logStreamEnds.accessRevoked {
+		t.Fatalf("port-forwarded tail end = %v, want access_revoked", end)
+	}
+	want := accessCheck{lokiTailRemote, "create", "pods/portforward", "monitoring"}
+	if got := env.access.askedChecks(); len(got) != 1 || got[0] != want {
+		t.Fatalf("checks = %+v, want exactly %+v", got, want)
+	}
+
+	delete(env.srv.metricsClusters.(*fakeClusterRegistry).records, lokiTailRemote)
+	for _, target := range []*lokiTailTarget{nil, {source: loki.SourceBinding}, forwarded} {
+		if end := env.srv.revalidateLokiTail(ctx, lokiTailRemote, user, target); end != logStreamEnds.clusterRemoved {
+			t.Fatalf("target %+v on a removed cluster ended with %v, want cluster_removed", target, end)
+		}
+	}
+}
+
+// A token that expires while the tail's port-forward is still opening ends
+// the tail at expiry, and no tunnel is opened as the user afterwards.
+func TestHandleWSLogsSearch_TokenExpiryDuringResolve(t *testing.T) {
+	env := newLokiTailEnv(t, newFakeLokiTail(t, false), remoteLokiObjects()...)
+	env.fwd.stall, env.fwd.stalled = true, make(chan struct{})
+	conn := env.open(t, shortLivedAdminToken(t, 1500*time.Millisecond), lokiTailRemote)
+	select {
+	case <-env.fwd.stalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tail never started its port-forward")
+	}
+	msg := readLogsUntilError(t, conn)
+	if msg["reason"] != "token_expired" || msg["retryable"] != true {
+		t.Fatalf("got %v, want a retryable token_expired", msg)
+	}
+	waitLokiTailsDone(t)
+	if n := len(env.fwd.tunnels()); n != 0 {
+		t.Fatalf("tunnels opened = %d after the token expired, want none", n)
+	}
+}
+
+// A Loki that keeps sending lines keeps its tail alive past the idle bound:
+// each line refreshes it.
+func TestHandleWSLogsSearch_LinesKeepTailAlive(t *testing.T) {
+	prev := lokiTailIdleTimeout
+	lokiTailIdleTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { lokiTailIdleTimeout = prev })
+
+	env := newLokiTailEnv(t, newFakeLokiTail(t, false), remoteLokiObjects()...)
+	conn := env.dial(t, issueWSToken(t, env.srv, true))
+	until := time.Now().Add(4 * lokiTailIdleTimeout)
+	for time.Now().Before(until) {
+		if msg := readFrame(t, conn); msg["type"] != "log" {
+			t.Fatalf("frame = %v while Loki was sending lines, want only log lines", msg)
+		}
 	}
 }
 

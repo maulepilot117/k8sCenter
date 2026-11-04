@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -265,6 +266,9 @@ func TestLokiREST_RemoteQueryThroughTunnel(t *testing.T) {
 		if w := serve(fn, remoteID, `/logs/x?query={app="web"}`, map[string]string{"name": "pod"}); w.Code != http.StatusOK {
 			t.Errorf("%s = %d %s, want 200", name, w.Code, w.Body.String())
 		}
+		if !fwd.tunnel.closed.Load() {
+			t.Errorf("%s left its tunnel open after the request", name)
+		}
 	}
 }
 
@@ -348,4 +352,64 @@ func statusOf(t *testing.T, w *httptest.ResponseRecorder) LokiStatus {
 		t.Fatalf("decode: %v", err)
 	}
 	return body.Data
+}
+
+// A local Loki failure keeps the answer it always had: a 502 with the fixed
+// message and no unavailable reason, whatever the failure was.
+func TestLokiREST_LocalFailureKeepsFixedAnswer(t *testing.T) {
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ready" {
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(failing.Close)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	disc := NewDiscoverer(nil, config.LokiConfig{URL: failing.URL}, logger)
+	disc.Discover(context.Background())
+	if disc.Client() == nil {
+		t.Fatal("failing Loki was not discovered")
+	}
+	h := &Handler{Discoverer: disc, Logger: logger}
+
+	for name, tc := range map[string]struct {
+		fn      http.HandlerFunc
+		message string
+	}{
+		"query":        {h.HandleQuery, "Log query failed"},
+		"labels":       {h.HandleLabels, "Label query failed"},
+		"label values": {h.HandleLabelValues, "Label values query failed"},
+		"volume":       {h.HandleVolume, "Volume query failed"},
+	} {
+		w := serve(tc.fn, "local", `/logs/x?query={app="web"}`, map[string]string{"name": "pod"})
+		if w.Code != http.StatusBadGateway || errorReason(t, w) != "" || !strings.Contains(w.Body.String(), tc.message) {
+			t.Errorf("%s = %d %s, want 502 %q with no reason", name, w.Code, w.Body.String(), tc.message)
+		}
+		if strings.Contains(w.Body.String(), "retryable") {
+			t.Errorf("%s answered %s, want no retryable flag", name, w.Body.String())
+		}
+	}
+}
+
+// A remote query that runs out its time is a failed query, not an
+// unavailable Loki: a slow query does not mean Loki is down.
+func TestLokiREST_RemoteTimeoutIsFailedQuery(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(slow.Close)
+	h, _, _ := resolvingHandler(t, slow.Listener.Addr().String(), realLoki()...)
+
+	r := httptest.NewRequest(http.MethodGet, `/logs/query?query={namespace="shop"}`, nil)
+	ctx := auth.ContextWithUser(r.Context(), &auth.User{Username: "admin", Roles: []string{"admin"}})
+	ctx, cancel := context.WithTimeout(middleware.WithClusterID(ctx, remoteID), 300*time.Millisecond)
+	defer cancel()
+	w := httptest.NewRecorder()
+	h.HandleQuery(w, r.WithContext(ctx))
+	if w.Code != http.StatusBadGateway || errorReason(t, w) != "" || !strings.Contains(w.Body.String(), "Log query failed") {
+		t.Fatalf("got %d %s, want 502 Log query failed with no unavailable reason", w.Code, w.Body.String())
+	}
 }

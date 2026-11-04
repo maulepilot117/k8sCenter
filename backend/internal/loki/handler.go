@@ -84,10 +84,19 @@ func (h *Handler) writeUnavailable(w http.ResponseWriter, clusterID string, err 
 	httputil.WriteErrorWithReason(w, ue.Status, ue.Message, ue.Reason, extra)
 }
 
-// queryFailed answers a Loki request that failed: as Loki being
-// unavailable when it is, else as a failed query with the fixed message.
+// queryFailed answers a Loki request that failed. A remote cluster's
+// failure that means its Loki is unavailable answers with that reason, so
+// the admin learns which of R7's states it is. Anything else is a failed
+// query with the fixed message: every local failure, as local failures
+// always were, and a request that ran out its own per-call time, since a
+// slow query is not an unavailable Loki.
 func (h *Handler) queryFailed(w http.ResponseWriter, r *http.Request, res *Resolved, err error, message string) {
 	clusterID := middleware.ClusterIDFromContext(r.Context())
+	if res.Source == SourceLocal || errors.Is(err, context.DeadlineExceeded) {
+		h.Logger.Warn("loki request failed", "cluster", clusterID, "error", err)
+		httputil.WriteError(w, http.StatusBadGateway, message, "")
+		return
+	}
 	if ue := res.Failure(err); ue != nil {
 		h.writeUnavailable(w, clusterID, ue)
 		return
