@@ -61,16 +61,16 @@ func NewClusterMetricsStore(pool *pgxpool.Pool, encryptionKey string) *ClusterMe
 	return &ClusterMetricsStore{pool: pool, encryptionKey: encryptionKey}
 }
 
-// alertmanagerTokenState applies the Alertmanager token origin rule to a row:
-// a stored token is usable only when the Alertmanager URL is non-empty and
-// its origin equals the stored origin; a stored token that fails that check
-// while a URL is set is stale. It fails closed: an empty stored origin, or a
-// URL without an origin, never matches.
-func alertmanagerTokenState(alertmanagerURL string, tokenStored bool, storedOrigin string) (usable, stale bool) {
-	if !tokenStored || alertmanagerURL == "" {
+// pinnedTokenState applies the token origin rule (the Alertmanager and Loki
+// tokens) to a row: a stored token is usable only when its URL is non-empty
+// and that URL's origin equals the stored origin; a stored token that fails
+// that check while a URL is set is stale. It fails closed: an empty stored
+// origin, or a URL without an origin, never matches.
+func pinnedTokenState(url string, tokenStored bool, storedOrigin string) (usable, stale bool) {
+	if !tokenStored || url == "" {
 		return false, false
 	}
-	current := urlorigin.Of(alertmanagerURL)
+	current := urlorigin.Of(url)
 	if current != "" && storedOrigin == current {
 		return true, false
 	}
@@ -128,7 +128,7 @@ func (s *ClusterMetricsStore) Get(ctx context.Context, clusterID string) (Metric
 		}
 		toks.Prometheus = string(plain)
 	}
-	b.HasAlertmanagerToken, b.AlertmanagerTokenStale = alertmanagerTokenState(b.AlertmanagerURL, len(encAMTok) > 0, amOrigin)
+	b.HasAlertmanagerToken, b.AlertmanagerTokenStale = pinnedTokenState(b.AlertmanagerURL, len(encAMTok) > 0, amOrigin)
 	if b.HasAlertmanagerToken {
 		plain, err := Decrypt(encAMTok, s.encryptionKey)
 		if err != nil {
@@ -283,19 +283,52 @@ func (s *ClusterMetricsStore) Upsert(ctx context.Context, clusterID string, w Me
 	if err != nil {
 		return MetricsBinding{}, fmt.Errorf("upserting metrics binding: %w", err)
 	}
-	b.HasAlertmanagerToken, b.AlertmanagerTokenStale = alertmanagerTokenState(b.AlertmanagerURL, amTokenStored, amOrigin)
+	b.HasAlertmanagerToken, b.AlertmanagerTokenStale = pinnedTokenState(b.AlertmanagerURL, amTokenStored, amOrigin)
 	return b, nil
 }
 
-// Delete removes a cluster's binding row. It returns ErrMetricsBindingNotFound
-// when nothing was stored.
+// Delete removes a cluster's metrics binding. The row also holds the Loki
+// binding (ClusterLogsStore), so only the metrics columns are cleared, and
+// the row goes once neither binding is left (clearBinding). It returns
+// ErrMetricsBindingNotFound when no metrics binding was stored.
+//
+// The SET list names every metrics binding column: a column added to the
+// binding must be added here too, or it survives the delete.
 func (s *ClusterMetricsStore) Delete(ctx context.Context, clusterID string) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM cluster_monitoring WHERE cluster_id = $1`, clusterID)
+	cleared, err := clearBinding(ctx, s.pool, `
+		UPDATE cluster_monitoring SET
+			prometheus_url = NULL, prometheus_token = NULL, alertmanager_url = NULL,
+			alertmanager_token = NULL, alertmanager_token_origin = NULL, updated_at = now()
+		WHERE cluster_id = $1 AND COALESCE(prometheus_url, '') <> ''`, clusterID)
 	if err != nil {
 		return fmt.Errorf("deleting metrics binding: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !cleared {
 		return ErrMetricsBindingNotFound
 	}
 	return nil
+}
+
+// clearBinding runs one store's clear statement, which must be gated only on
+// that binding's own URL, then removes the row if it holds neither binding,
+// in one transaction. Gating on the store's own URL alone keeps a concurrent
+// write to the other binding from making the delete miss: the clear
+// re-checks only its own URL once it holds the row lock, and the cleanup
+// runs under that lock. It reports whether the clear changed a row.
+func clearBinding(ctx context.Context, pool *pgxpool.Pool, clear, clusterID string) (bool, error) {
+	var cleared bool
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, clear, clusterID)
+		if err != nil {
+			return err
+		}
+		cleared = tag.RowsAffected() > 0
+		_, err = tx.Exec(ctx, `
+			DELETE FROM cluster_monitoring
+			WHERE cluster_id = $1
+			  AND COALESCE(prometheus_url, '') = ''
+			  AND COALESCE(loki_url, '') = ''`, clusterID)
+		return err
+	})
+	return cleared, err
 }
