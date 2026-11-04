@@ -3,18 +3,27 @@ package loki
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	kruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	kfake "k8s.io/client-go/kubernetes/fake"
+
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/store"
 )
 
 // lokiTestHandler returns a Handler wired to a fake Loki that answers every
@@ -66,9 +75,9 @@ func serve(h http.HandlerFunc, cluster, target string, params map[string]string)
 	return w
 }
 
-// Covers AE1: under a remote cluster, every Loki REST read is refused with
-// the remote-unsupported reason and the local Loki is never asked.
-func TestLokiREST_RemoteClusterRefused(t *testing.T) {
+// Without a cluster router, a remote cluster is unsupported: every Loki
+// REST read is refused with that reason and the local Loki is never asked.
+func TestLokiREST_RemoteWithoutRouterUnsupported(t *testing.T) {
 	h, calls := lokiTestHandler(t)
 	cases := []struct {
 		name   string
@@ -105,10 +114,10 @@ func TestLokiREST_RemoteClusterRefused(t *testing.T) {
 	}
 }
 
-// TestLokiREST_RemoteRefusedWithoutLocalLoki verifies the remote refusal
-// comes before the local-availability check: on a server with no Loki of
-// its own, a remote request still gets the remote-unsupported reason, not
-// "Loki is not available", which would wrongly suggest installing it.
+// TestLokiREST_RemoteRefusedWithoutLocalLoki verifies a remote request is
+// never answered from the local cluster's availability: on a server with no
+// Loki of its own, it still gets the remote reason, not the local "not
+// detected", which would wrongly suggest installing Loki locally.
 func TestLokiREST_RemoteRefusedWithoutLocalLoki(t *testing.T) {
 	h := &Handler{
 		Discoverer:    NewDiscoverer(nil, config.LokiConfig{}, slog.New(slog.NewTextHandler(io.Discard, nil))),
@@ -127,10 +136,11 @@ func TestLokiREST_RemoteRefusedWithoutLocalLoki(t *testing.T) {
 	}
 }
 
-// TestLokiREST_RemoteStatusNotDetected verifies the status probe reports Loki
-// as not detected for a remote cluster, with the reason, rather than the
-// local discovery result. Web and mobile both treat detected:false as "Loki
-// unavailable", so the 200 keeps their existing degraded state.
+// TestLokiREST_RemoteStatusNotDetected verifies the status probe of a remote
+// cluster with no reachable Loki reports not detected, with the reason,
+// rather than the local discovery result. Web and mobile both treat
+// detected:false as "Loki unavailable", so the 200 keeps their degraded
+// state.
 func TestLokiREST_RemoteStatusNotDetected(t *testing.T) {
 	h, _ := lokiTestHandler(t)
 	w := serve(h.HandleStatus, "remote-cluster-99", "/logs/status", nil)
@@ -173,4 +183,169 @@ func TestLokiREST_LocalClusterServed(t *testing.T) {
 	if !body.Data.Detected || body.Data.Reason != "" {
 		t.Fatalf("local status = %+v, want detected with no reason", body.Data)
 	}
+}
+
+// --- per-cluster resolution (U12) ---
+
+// remoteLokiServer answers every Loki read with one remote log line, and
+// counts the requests it gets.
+func remoteLokiServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/query_range"):
+			_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"streams","result":[{"stream":{"namespace":"shop"},"values":[["1","remote-line"]]}]}}`)
+		case strings.HasSuffix(r.URL.Path, "/volume_range"):
+			_, _ = io.WriteString(w, `{"status":"success","data":{"result":[]}}`)
+		default:
+			_, _ = io.WriteString(w, `{"status":"success","data":["namespace"]}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// resolvingHandler serves the local cluster from the fake local Loki and a
+// remote cluster from objs, with tunnels reaching remoteAddr.
+func resolvingHandler(t *testing.T, remoteAddr string, objs ...kruntime.Object) (*Handler, *atomic.Int64, *fakeForwarder) {
+	t.Helper()
+	h, localCalls := lokiTestHandler(t)
+	r, _, fwd, _ := remoteResolver(t, remoteAddr, objs...)
+	r.local = h.Discoverer
+	h.Resolver = r
+	return h, localCalls, fwd
+}
+
+// Covers AE1: a remote cluster with no Loki answers loki_not_found on every
+// read, and the local Loki is never asked.
+func TestLokiREST_RemoteWithoutLokiIsNotFound(t *testing.T) {
+	h, localCalls, fwd := resolvingHandler(t, "127.0.0.1:1")
+	for name, fn := range map[string]http.HandlerFunc{
+		"query":        h.HandleQuery,
+		"labels":       h.HandleLabels,
+		"label values": h.HandleLabelValues,
+		"volume":       h.HandleVolume,
+	} {
+		w := serve(fn, remoteID, `/logs/x?query={app="web"}`, map[string]string{"name": "pod"})
+		if w.Code != http.StatusNotFound || errorReason(t, w) != ReasonLokiNotFound {
+			t.Errorf("%s: %d %s, want 404 loki_not_found", name, w.Code, w.Body.String())
+		}
+	}
+	if n := localCalls.Load(); n != 0 {
+		t.Fatalf("local Loki received %d requests for a remote cluster", n)
+	}
+	if len(fwd.called()) != 0 {
+		t.Fatal("a tunnel was opened with no Loki Service")
+	}
+}
+
+// A remote read goes through a tunnel to the remote Loki and returns its
+// lines; each request opens its own tunnel and closes it.
+func TestLokiREST_RemoteQueryThroughTunnel(t *testing.T) {
+	remote, remoteCalls := remoteLokiServer(t)
+	h, localCalls, fwd := resolvingHandler(t, remote.Listener.Addr().String(), realLoki()...)
+
+	w := serve(h.HandleQuery, remoteID, `/logs/query?query={namespace="shop"}`, nil)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "remote-line") {
+		t.Fatalf("remote query = %d %s, want the remote Loki's line", w.Code, w.Body.String())
+	}
+	if remoteCalls.Load() != 1 || localCalls.Load() != 0 {
+		t.Fatalf("remote got %d, local got %d requests; want 1 and 0", remoteCalls.Load(), localCalls.Load())
+	}
+	if len(fwd.called()) != 1 || !fwd.tunnel.closed.Load() {
+		t.Fatalf("tunnels opened %d, closed %v; want one, closed after the request", len(fwd.called()), fwd.tunnel.closed.Load())
+	}
+	for name, fn := range map[string]http.HandlerFunc{
+		"labels": h.HandleLabels, "label values": h.HandleLabelValues, "volume": h.HandleVolume,
+	} {
+		fwd.tunnel = newFakeTunnel(remote.Listener.Addr().String())
+		if w := serve(fn, remoteID, `/logs/x?query={app="web"}`, map[string]string{"name": "pod"}); w.Code != http.StatusOK {
+			t.Errorf("%s = %d %s, want 200", name, w.Code, w.Body.String())
+		}
+	}
+}
+
+// Covers AE2 at the API: a port-forward refusal answers forbidden naming
+// Loki's namespace.
+func TestLokiREST_RemotePortForwardForbidden(t *testing.T) {
+	h, _, fwd := resolvingHandler(t, "127.0.0.1:1", realLoki()...)
+	fwd.err = apierrors.NewForbidden(schema.GroupResource{Resource: "pods/portforward"}, "loki-gateway-0", errors.New("denied"))
+	w := serve(h.HandleQuery, remoteID, `/logs/query?query={app="web"}`, nil)
+	if w.Code != http.StatusForbidden || errorReason(t, w) != string(k8s.ReasonForbidden) {
+		t.Fatalf("got %d %s, want 403 forbidden", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "namespace monitoring") {
+		t.Fatalf("body %s does not name Loki's namespace", w.Body.String())
+	}
+}
+
+// A Loki that answers 401 over the port-forward path, which sends no
+// credentials, says the cluster needs a configured URL and token.
+func TestLokiREST_PortForwardUnauthorizedNamesBinding(t *testing.T) {
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(refusing.Close)
+	h, _, _ := resolvingHandler(t, refusing.Listener.Addr().String(), realLoki()...)
+	w := serve(h.HandleLabels, remoteID, "/logs/labels", nil)
+	if w.Code != http.StatusBadGateway || errorReason(t, w) != string(k8s.ReasonCredentialsInvalid) {
+		t.Fatalf("got %d %s, want 502 credentials_invalid", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "configure a Loki URL and token") {
+		t.Fatalf("body %s does not point at the binding", w.Body.String())
+	}
+}
+
+// The remote status names the namespace and Service the port-forward path
+// chose, or the configured URL without any userinfo.
+func TestLokiREST_RemoteStatusReportsLocation(t *testing.T) {
+	h, _, _ := resolvingHandler(t, "127.0.0.1:1", append(realLoki(), decoyLoki()...)...)
+	st := statusOf(t, serve(h.HandleStatus, remoteID, "/logs/status", nil))
+	if !st.Detected || st.DetectedVia != string(SourcePortForward) || st.Namespace != "monitoring" || st.Service != "loki-gateway" {
+		t.Fatalf("status = %+v, want monitoring/loki-gateway over port-forward", st)
+	}
+
+	h.Resolver.bindings = &fakeBindings{binding: store.LokiBinding{URL: "https://bob:hunter2@loki.example.com/base"}}
+	st = statusOf(t, serve(h.HandleStatus, remoteID, "/logs/status", nil))
+	if !st.Detected || st.DetectedVia != string(SourceBinding) || st.URL != "https://loki.example.com/base" {
+		t.Fatalf("status = %+v, want the binding URL without userinfo", st)
+	}
+
+	h.Resolver.bindings = nil
+	h.Resolver.Evict(remoteID)
+	h.Resolver.clients.(*fakeClients).cs = kfake.NewClientset()
+	st = statusOf(t, serve(h.HandleStatus, remoteID, "/logs/status", nil))
+	if st.Detected || st.Reason != ReasonLokiNotFound || st.Message == "" {
+		t.Fatalf("status = %+v, want not detected with loki_not_found and its message", st)
+	}
+}
+
+func errorReason(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Reason string `json:"reason"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", w.Body.String(), err)
+	}
+	return body.Error.Reason
+}
+
+func statusOf(t *testing.T, w *httptest.ResponseRecorder) LokiStatus {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d %s, want 200", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data LokiStatus `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return body.Data
 }
