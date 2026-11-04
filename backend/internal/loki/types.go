@@ -42,10 +42,3 @@ type VolumeEntry struct {
 	Metric map[string]string `json:"metric"`
 	Values [][]any           `json:"values"` // each: [timestamp, "count_string"]
 }
-
-// LokiError is the error response format from Loki.
-type LokiError struct {
-	Status    string `json:"status"`
-	ErrorType string `json:"errorType"`
-	Error     string `json:"error"`
-}
