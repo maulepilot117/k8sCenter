@@ -26,6 +26,9 @@ type Handler struct {
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
 	Logger        *slog.Logger
+	// Resolver answers which Loki serves a cluster. The read handlers
+	// still refuse remote clusters until they resolve through it (U12).
+	Resolver *Resolver
 }
 
 // msgRemoteUnsupported is the fixed refusal for a remote cluster.

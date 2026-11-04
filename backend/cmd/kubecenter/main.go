@@ -202,6 +202,7 @@ func main() {
 	var dbPing func(context.Context) error
 	var dbPool *pgxpool.Pool
 	var clusterMetricsStore *appstore.ClusterMetricsStore
+	var clusterLogsStore *appstore.ClusterLogsStore
 	if cfg.Database.URL != "" {
 		db, err := appstore.New(ctx, cfg.Database.URL, int32(cfg.Database.MaxConns), int32(cfg.Database.MinConns), logger)
 		if err != nil {
@@ -226,6 +227,7 @@ func main() {
 			// Metrics binding tokens use the same master secret as cluster
 			// credentials.
 			clusterMetricsStore = appstore.NewClusterMetricsStore(db.Pool, encKey)
+			clusterLogsStore = appstore.NewClusterLogsStore(db.Pool, encKey)
 			complianceStore = appstore.NewComplianceStore(db.Pool)
 			complianceIdentityStore = appstore.NewComplianceIdentityStore(db.Pool)
 
@@ -374,6 +376,12 @@ func main() {
 	// feature handlers that read remote clusters (R-8).
 	remotePresence := k8s.NewPresence(clusterRouter)
 	clusterRouter.RegisterEvictHook(remotePresence.EvictCluster)
+
+	// Per-cluster Loki: the local discoverer, remote bindings, and remote
+	// in-cluster Loki reached as the user. Removing a cluster drops what it
+	// found there.
+	lokiHandler.Resolver = loki.NewResolver(lokiDiscoverer, clusterLogsStore, clusterRouter, logger)
+	clusterRouter.RegisterEvictHook(lokiHandler.Resolver.Evict)
 
 	// Service Mesh integration (Istio + Linkerd) — hoisted above topology so
 	// the topology builder's mesh-overlay path has a route provider wired in.

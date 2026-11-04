@@ -2,24 +2,59 @@ package loki
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
+
+	"github.com/kubecenter/kubecenter/internal/urlorigin"
 )
+
+// DialFunc opens the network connection a Loki request or tail runs over.
+type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// StatusError is a Loki answer that was not 200 OK. It carries the status
+// only: Loki's response body, which a remote Loki controls, never reaches
+// an error message, a log line or a client.
+type StatusError struct {
+	Code int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("loki returned status %d", e.Code)
+}
+
+// errLokiTransport marks a request that got no answer from Loki: the
+// connection could not be made or broke. QueryFailure reports it as Loki
+// being unreachable.
+var errLokiTransport = errors.New("loki request failed")
 
 // Client is an HTTP client for the Loki API.
 type Client struct {
 	httpClient *http.Client
 	baseURL    string
 	tenantID   string // X-Scope-OrgID for multi-tenant Loki
+
+	// token is the bearer token, sent only to tokenOrigin, the https origin
+	// of baseURL; tokenOrigin is "" when no token may be sent.
+	token       string
+	tokenOrigin string
+	// tailDial and tailTLS are the tail dialer's connection and TLS
+	// settings; nil means the defaults.
+	tailDial DialFunc
+	tailTLS  *tls.Config
 }
 
-// NewClient creates a Loki API client.
+// NewClient creates a Loki API client for the local cluster's Loki.
 func NewClient(baseURL, tenantID string) *Client {
 	return &Client{
 		httpClient: &http.Client{
@@ -35,6 +70,32 @@ func NewClient(baseURL, tenantID string) *Client {
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		tenantID: tenantID,
 	}
+}
+
+// newRemoteClient creates a client for a remote cluster's Loki. Requests
+// go through rt and the tail dials through dial, so the caller decides
+// where a connection can go (the strict dialer, or a port-forward tunnel).
+// A redirect is never followed: the 3xx is the answer, and fails the
+// request, so Loki or a proxy in front of it cannot steer the request, or
+// the token, anywhere else. token is sent only when baseURL is https, and
+// only to its origin.
+func newRemoteClient(baseURL, tenantID, token string, rt http.RoundTripper, dial DialFunc) *Client {
+	c := &Client{
+		httpClient: &http.Client{
+			Timeout:   60 * time.Second,
+			Transport: rt,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		tenantID: tenantID,
+		tailDial: dial,
+	}
+	if origin := urlorigin.Of(c.baseURL); token != "" && strings.HasPrefix(origin, "https://") {
+		c.token, c.tokenOrigin = token, origin
+	}
+	return c
 }
 
 // BaseURL returns the base URL this client is configured for.
@@ -149,12 +210,12 @@ func (c *Client) Ready(ctx context.Context) error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("loki health check failed: %w", err)
+		return fmt.Errorf("loki health check: %w: %w", errLokiTransport, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("loki not ready: status %d", resp.StatusCode)
+		return &StatusError{Code: resp.StatusCode}
 	}
 	return nil
 }
@@ -177,6 +238,37 @@ func (c *Client) TailURL(query string, startNano int64, limit int) string {
 	return wsURL + "/loki/api/v1/tail?" + params.Encode()
 }
 
+// DialTail opens Loki's tail WebSocket for query, through the client's tail
+// dialer and with its tenant and token headers. A refused handshake is a
+// *StatusError; a connection that could not be made is a transport error.
+func (c *Client) DialTail(ctx context.Context, query string, startNano int64, limit int) (*websocket.Conn, error) {
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		NetDialContext:   c.tailDial,
+		TLSClientConfig:  c.tailTLS,
+	}
+	headers := http.Header{}
+	if c.tenantID != "" {
+		headers.Set("X-Scope-OrgID", c.tenantID)
+	}
+	// The tail URL is the base URL with its scheme swapped, so it has the
+	// token's origin exactly when the base URL is https.
+	if c.tokenOrigin != "" {
+		headers.Set("Authorization", "Bearer "+c.token)
+	}
+	conn, resp, err := dialer.DialContext(ctx, c.TailURL(query, startNano, limit), headers)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		if resp != nil {
+			return nil, &StatusError{Code: resp.StatusCode}
+		}
+		return nil, fmt.Errorf("loki tail: %w: %w", errLokiTransport, err)
+	}
+	return conn, nil
+}
+
 // get performs a GET request to a Loki API endpoint and decodes the response.
 func (c *Client) get(ctx context.Context, path string, params url.Values, result any) error {
 	reqURL := c.baseURL + path
@@ -192,32 +284,52 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, result
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("loki request failed: %w", err)
+		return fmt.Errorf("%w: %w", errLokiTransport, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB for errors
-		if err != nil {
-			return fmt.Errorf("reading error response: %w", err)
-		}
-		var lokiErr LokiError
-		if json.Unmarshal(body, &lokiErr) == nil && lokiErr.Error != "" {
-			return fmt.Errorf("loki error (%d): %s", resp.StatusCode, lokiErr.Error)
-		}
-		return fmt.Errorf("loki returned status %d: %s", resp.StatusCode, body)
+		// Drain a bounded amount so the connection can be reused; the body
+		// itself is never read into the error.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		return &StatusError{Code: resp.StatusCode}
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(result); err != nil {
-		return fmt.Errorf("decoding response: %w", err)
+	body := &io.LimitedReader{R: resp.Body, N: maxResponseBytes}
+	if err := json.NewDecoder(body).Decode(result); err != nil {
+		var syntaxErr *json.SyntaxError
+		var typeErr *json.UnmarshalTypeError
+		switch {
+		case errors.As(err, &syntaxErr), errors.As(err, &typeErr):
+			return fmt.Errorf("decoding response: %w", err)
+		case body.N == 0:
+			// The response reached the cap: Loki answered, with too much.
+			return fmt.Errorf("decoding response: larger than %d bytes", maxResponseBytes)
+		default:
+			// The body stopped arriving: the connection or the tunnel
+			// under it broke after the headers.
+			return fmt.Errorf("%w: reading response: %w", errLokiTransport, err)
+		}
 	}
 	return nil
 }
 
-// setHeaders adds common headers to a Loki request.
+// maxResponseBytes bounds a Loki response body.
+const maxResponseBytes = 10 << 20
+
+// setHeaders adds common headers to a Loki request, and the bearer token
+// when the request goes to the token's origin.
 func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("Accept", "application/json")
 	if c.tenantID != "" {
 		req.Header.Set("X-Scope-OrgID", c.tenantID)
 	}
+	if c.tokenOrigin != "" && urlorigin.Of(req.URL.String()) == c.tokenOrigin {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+}
+
+// closeIdle releases the client's pooled connections.
+func (c *Client) closeIdle() {
+	c.httpClient.CloseIdleConnections()
 }
