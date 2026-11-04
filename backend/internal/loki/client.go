@@ -295,11 +295,27 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, result
 		return &StatusError{Code: resp.StatusCode}
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(result); err != nil {
-		return fmt.Errorf("decoding response: %w", err)
+	body := &io.LimitedReader{R: resp.Body, N: maxResponseBytes}
+	if err := json.NewDecoder(body).Decode(result); err != nil {
+		var syntaxErr *json.SyntaxError
+		var typeErr *json.UnmarshalTypeError
+		switch {
+		case errors.As(err, &syntaxErr), errors.As(err, &typeErr):
+			return fmt.Errorf("decoding response: %w", err)
+		case body.N == 0:
+			// The response reached the cap: Loki answered, with too much.
+			return fmt.Errorf("decoding response: larger than %d bytes", maxResponseBytes)
+		default:
+			// The body stopped arriving: the connection or the tunnel
+			// under it broke after the headers.
+			return fmt.Errorf("%w: reading response: %w", errLokiTransport, err)
+		}
 	}
 	return nil
 }
+
+// maxResponseBytes bounds a Loki response body.
+const maxResponseBytes = 10 << 20
 
 // setHeaders adds common headers to a Loki request, and the bearer token
 // when the request goes to the token's origin.

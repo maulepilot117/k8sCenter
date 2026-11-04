@@ -158,15 +158,20 @@ func (d *Discoverer) discoverLoki(ctx context.Context) (string, string) {
 	}
 
 	// nolint:cluster-routing local path: in-cluster discovery finds the local Loki only; the resolver reaches a remote cluster's Loki separately.
-	cs := d.k8sClient.BaseClientset()
+	return localLokiURL(ctx, d.k8sClient.BaseClientset())
+}
 
-	// 2. The shared search order. Local discovery skips a step it cannot
-	// read, as it always has: it runs again at the next recheck.
+// localLokiURL finds the local Loki with cs in the shared search order and
+// returns its in-cluster URL and how it was found, or two empty strings.
+// Local discovery skips a step it cannot read, as it always has: it runs
+// again at the next recheck. A Service that declares no port is reached on
+// the port its search step expects.
+func localLokiURL(ctx context.Context, cs kubernetes.Interface) (string, string) {
 	found, _ := searchLokiService(ctx, cs, false)
 	if found == nil {
 		return "", ""
 	}
-	port := int32(3100)
+	port := found.defaultPort
 	if found.hasPort {
 		port = found.port.Port
 	}
@@ -189,13 +194,20 @@ const (
 )
 
 // lokiService is the Service chosen to serve Loki and the port it is
-// reached on. hasPort is false for a Service that declares no port.
+// reached on. hasPort is false for a Service that declares no port; local
+// discovery then uses defaultPort, the port its search step expects, and
+// the remote path cannot port-forward to it at all.
 type lokiService struct {
-	svc     *corev1.Service
-	port    corev1.ServicePort
-	hasPort bool
-	via     string
+	svc         *corev1.Service
+	port        corev1.ServicePort
+	hasPort     bool
+	defaultPort int32
+	via         string
 }
+
+// defaultLabelMatchPort is Loki's HTTP port, used locally for a label match
+// that declares no port.
+const defaultLabelMatchPort = 3100
 
 // searchLokiService finds Loki's Service with cs, in the order local
 // discovery and the remote resolver share (KTD6): the well-known names in
@@ -213,7 +225,7 @@ func searchLokiService(ctx context.Context, cs kubernetes.Interface, failClosed 
 		svc, err := cs.CoreV1().Services(wk.namespace).Get(ctx, wk.name, metav1.GetOptions{})
 		if err == nil {
 			port, ok := lokiServicePort(svc, wk.port)
-			return &lokiService{svc: svc, port: port, hasPort: ok, via: viaServiceName}, nil
+			return &lokiService{svc: svc, port: port, hasPort: ok, defaultPort: wk.port, via: viaServiceName}, nil
 		}
 		if failClosed && !apierrors.IsNotFound(err) {
 			return nil, err
@@ -239,7 +251,7 @@ func searchLokiService(ctx context.Context, cs kubernetes.Interface, failClosed 
 		})
 		svc := items[0]
 		port, ok := lokiServicePort(&svc, 0)
-		return &lokiService{svc: &svc, port: port, hasPort: ok, via: viaServiceLabel}, nil
+		return &lokiService{svc: &svc, port: port, hasPort: ok, defaultPort: defaultLabelMatchPort, via: viaServiceLabel}, nil
 	}
 	return nil, nil
 }

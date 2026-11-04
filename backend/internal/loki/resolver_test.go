@@ -597,21 +597,32 @@ func TestResolve_PortForwardRefusedIsForbidden(t *testing.T) {
 }
 
 func TestResolve_RemoteFailures(t *testing.T) {
+	portless := lokiSvc("monitoring", "loki-gateway", nil, realSelector, 80)
+	portless.Spec.Ports = nil
+	undeclared := readyPod("monitoring", "loki-gateway-0", realSelector, 8080)
+	undeclared.Spec.Containers[0].Ports = undeclared.Spec.Containers[0].Ports[:1] // grpc only
+
 	cases := []struct {
-		name   string
-		setup  func(*fakeClients, *fakeForwarder)
-		objs   []kruntime.Object
-		reason string
+		name      string
+		setup     func(*fakeClients, *fakeForwarder)
+		objs      []kruntime.Object
+		reason    string
+		status    int
+		retryable bool
+		// message, when set, must appear in the client message.
+		message string
+		// noPodList: the Service is refused before its pods are listed.
+		noPodList bool
 	}{
 		{
 			name:   "unregistered cluster",
 			setup:  func(c *fakeClients, _ *fakeForwarder) { c.err = fmt.Errorf("cluster lookup: %w", pgx.ErrNoRows) },
-			reason: string(k8s.ReasonClusterUnknown),
+			reason: string(k8s.ReasonClusterUnknown), status: http.StatusNotFound,
 		},
 		{
 			name:   "no ready Loki pod",
 			objs:   []kruntime.Object{lokiSvc("monitoring", "loki-gateway", nil, realSelector, 80)},
-			reason: ReasonLokiUnreachable,
+			reason: ReasonLokiUnreachable, status: http.StatusServiceUnavailable, retryable: true,
 		},
 		{
 			name: "tunnel cluster unreachable",
@@ -619,13 +630,13 @@ func TestResolve_RemoteFailures(t *testing.T) {
 			setup: func(_ *fakeClients, f *fakeForwarder) {
 				f.err = k8s.TargetError{Err: fmt.Errorf("lookup: %w", pgx.ErrNoRows)}
 			},
-			reason: string(k8s.ReasonClusterUnknown),
+			reason: string(k8s.ReasonClusterUnknown), status: http.StatusNotFound,
 		},
 		{
 			name:   "tunnel refused by the pod",
 			objs:   realLoki(),
 			setup:  func(_ *fakeClients, f *fakeForwarder) { f.err = k8s.ErrPortForwardFailed },
-			reason: ReasonLokiUnreachable,
+			reason: ReasonLokiUnreachable, status: http.StatusBadGateway, retryable: true,
 		},
 		{
 			name: "stored credentials rejected",
@@ -635,7 +646,25 @@ func TestResolve_RemoteFailures(t *testing.T) {
 					return true, nil, apierrors.NewUnauthorized("bad token")
 				})
 			},
-			reason: string(k8s.ReasonCredentialsInvalid),
+			reason: string(k8s.ReasonCredentialsInvalid), status: http.StatusBadGateway,
+		},
+		// A well-known Service that cannot be port-forwarded to ends the
+		// search: the gateway-labelled decoy beside it is never tried.
+		{
+			name:   "well-known Service declares no port",
+			objs:   append([]kruntime.Object{portless, readyPod("monitoring", "loki-gateway-0", realSelector, 8080)}, decoyLoki()...),
+			reason: ReasonLokiNotFound, status: http.StatusNotFound, message: "monitoring/loki-gateway",
+			noPodList: true,
+		},
+		{
+			name:   "well-known Service selects no pods",
+			objs:   append([]kruntime.Object{lokiSvc("monitoring", "loki-gateway", nil, nil, 80)}, decoyLoki()...),
+			reason: ReasonLokiNotFound, status: http.StatusNotFound, message: "monitoring/loki-gateway",
+		},
+		{
+			name:   "pod does not declare the target port",
+			objs:   append([]kruntime.Object{lokiSvc("monitoring", "loki-gateway", nil, realSelector, 80), undeclared}, decoyLoki()...),
+			reason: ReasonLokiNotFound, status: http.StatusNotFound, message: "monitoring/loki-gateway",
 		},
 	}
 	for _, tc := range cases {
@@ -645,11 +674,26 @@ func TestResolve_RemoteFailures(t *testing.T) {
 				tc.setup(clients, fwd)
 			}
 			_, err := r.Resolve(context.Background(), remoteID, "admin", nil)
-			if ue := asUnavailable(t, err); ue.Reason != tc.reason {
-				t.Fatalf("reason = %q, want %q (%v)", ue.Reason, tc.reason, ue.Err)
+			ue := asUnavailable(t, err)
+			if ue.Reason != tc.reason || ue.Status != tc.status || ue.Retryable != tc.retryable {
+				t.Fatalf("got %s/%d/retryable=%v, want %s/%d/retryable=%v (%v)",
+					ue.Reason, ue.Status, ue.Retryable, tc.reason, tc.status, tc.retryable, ue.Err)
+			}
+			if tc.message != "" && !strings.Contains(ue.Message, tc.message) {
+				t.Fatalf("message %q does not name %s", ue.Message, tc.message)
 			}
 			if local.calls.Load() != 0 {
 				t.Fatal("a remote failure fell back to the local Loki")
+			}
+			if tc.noPodList {
+				for _, a := range clients.cs.Actions() {
+					if a.GetVerb() == "list" && a.GetResource().Resource == "pods" {
+						t.Fatal("the pods of a Service with no port were listed")
+					}
+				}
+			}
+			if tc.reason == ReasonLokiNotFound && len(fwd.called()) != 0 {
+				t.Fatalf("a tunnel was opened for an unusable Service: %+v", fwd.called())
 			}
 		})
 	}
@@ -711,6 +755,10 @@ func TestQueryFailure(t *testing.T) {
 		{"server error", fmt.Errorf("wrapped: %w", &StatusError{Code: http.StatusBadGateway}), ReasonLokiUnreachable},
 		{"transport", fmt.Errorf("%w: dial refused", errLokiTransport), ReasonLokiUnreachable},
 		{"tunnel closed", k8s.ErrTunnelClosed, ReasonLokiUnreachable},
+		{"pod side broke the tunnel", fmt.Errorf("read: %w", k8s.ErrPortForwardFailed), ReasonLokiUnreachable},
+		{"deadline", context.DeadlineExceeded, ReasonLokiUnreachable},
+		{"not found", &StatusError{Code: http.StatusNotFound}, ""},
+		{"rate limited", &StatusError{Code: http.StatusTooManyRequests}, ""},
 		{"canceled", fmt.Errorf("%w: %w", errLokiTransport, context.Canceled), ""},
 		{"decode", errors.New("decoding response: unexpected EOF"), ""},
 		{"nil", nil, ""},
@@ -815,5 +863,187 @@ func TestSearchLokiService_LocalSkipsUnreadableSteps(t *testing.T) {
 	}
 	if _, err := searchLokiService(context.Background(), cs, true); err == nil {
 		t.Fatal("strict search skipped an unreadable step")
+	}
+}
+
+// --- review follow-ups: connection boundaries and response reading ---
+
+// The binding client NewResolver wires reaches only public addresses: a
+// binding naming a loopback server is refused before any request, for
+// queries and for the tail.
+func TestNewResolver_BindingClientDialsStrictly(t *testing.T) {
+	lokiSrv := newLabelsServer(t, false)
+	r := NewResolver(nil, nil, nil, nil)
+	r.bindings = &fakeBindings{binding: store.LokiBinding{URL: lokiSrv.URL, HasToken: true}, token: "s3cret"}
+
+	got, err := r.Resolve(context.Background(), remoteID, "admin", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	defer got.Close()
+	_, err = got.Client.Labels(context.Background(), time.Time{}, time.Time{})
+	if ue := QueryFailure(err); ue == nil || ue.Reason != ReasonLokiUnreachable {
+		t.Fatalf("Labels to a loopback binding = %v (%+v), want loki_unreachable", err, ue)
+	}
+	_, err = got.Client.DialTail(context.Background(), `{app="x"}`, 0, 10)
+	if ue := QueryFailure(err); ue == nil || ue.Reason != ReasonLokiUnreachable {
+		t.Fatalf("DialTail to a loopback binding = %v (%+v), want loki_unreachable", err, ue)
+	}
+	if n := len(lokiSrv.requests()); n != 0 {
+		t.Fatalf("the loopback server got %d requests, want none", n)
+	}
+}
+
+// The port-forward client's tail goes through the tunnel, to the Service's
+// in-cluster name, and fails once the tunnel is closed.
+func TestResolve_PortForwardTailUsesTunnel(t *testing.T) {
+	hosts := make(chan string, 1)
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		hosts <- req.Host
+		if c, err := upgrader.Upgrade(w, req, nil); err == nil {
+			_ = c.Close()
+		}
+	}))
+	defer srv.Close()
+
+	r, _, _, _ := remoteResolver(t, srv.Listener.Addr().String(), realLoki()...)
+	got, err := r.Resolve(context.Background(), remoteID, "admin", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	conn, err := got.Client.DialTail(context.Background(), `{app="x"}`, 0, 10)
+	if err != nil {
+		t.Fatalf("DialTail over the tunnel: %v", err)
+	}
+	_ = conn.Close()
+	if host := <-hosts; host != "loki-gateway.monitoring.svc:80" {
+		t.Fatalf("tail Host = %q, want the Service's in-cluster name", host)
+	}
+
+	got.Close()
+	_, err = got.Client.DialTail(context.Background(), `{app="x"}`, 0, 10)
+	if ue := QueryFailure(err); ue == nil || ue.Reason != ReasonLokiUnreachable {
+		t.Fatalf("DialTail after Close = %v (%+v), want loki_unreachable", err, ue)
+	}
+}
+
+// A body that stops arriving is Loki being unreachable; malformed JSON and
+// an oversized answer are failed queries.
+func TestClient_ResponseReadFailures(t *testing.T) {
+	cases := []struct {
+		name        string
+		handler     http.HandlerFunc
+		unreachable bool
+	}{
+		{
+			name: "connection drops mid-body",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Length", "1000")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"status":"success","data":["na`))
+				w.(http.Flusher).Flush()
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+			},
+			unreachable: true,
+		},
+		{
+			name: "malformed JSON",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"status":"success","data":[nope]}`))
+			},
+		},
+		{
+			name: "larger than the cap",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"status":"success","data":["`))
+				_, _ = w.Write([]byte(strings.Repeat("a", maxResponseBytes)))
+				_, _ = w.Write([]byte(`"]}`))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+			_, err := NewClient(srv.URL, "").Labels(context.Background(), time.Time{}, time.Time{})
+			if err == nil {
+				t.Fatal("Labels succeeded, want an error")
+			}
+			if got := QueryFailure(err) != nil; got != tc.unreachable {
+				t.Fatalf("QueryFailure(%v) unavailable = %v, want %v", err, got, tc.unreachable)
+			}
+		})
+	}
+}
+
+func TestLokiServicePort(t *testing.T) {
+	ports := func(ps ...corev1.ServicePort) *corev1.Service {
+		return &corev1.Service{Spec: corev1.ServiceSpec{Ports: ps}}
+	}
+	grpc := corev1.ServicePort{Name: "grpc", Port: 9095}
+	metrics := corev1.ServicePort{Name: "http-metrics", Port: 3100}
+	httpPort := corev1.ServicePort{Name: "http", Port: 8080}
+	gateway := corev1.ServicePort{Name: "web", Port: 80}
+	cases := []struct {
+		name   string
+		svc    *corev1.Service
+		want   int32
+		expect int32
+		ok     bool
+	}{
+		{"expected number wins", ports(grpc, metrics, gateway), 80, 80, true},
+		{"http-metrics by name", ports(grpc, httpPort, metrics), 0, 3100, true},
+		{"http by name", ports(grpc, httpPort), 0, 8080, true},
+		{"first when none is named", ports(grpc, gateway), 0, 9095, true},
+		{"expected number absent falls to names", ports(grpc, metrics), 80, 3100, true},
+		{"no ports", ports(), 80, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, ok := lokiServicePort(tc.svc, tc.want)
+			if ok != tc.ok || p.Port != tc.expect {
+				t.Fatalf("lokiServicePort = %d, %v; want %d, %v", p.Port, ok, tc.expect, tc.ok)
+			}
+		})
+	}
+}
+
+// Local discovery builds the in-cluster URL from the shared search.
+func TestLocalLokiURL(t *testing.T) {
+	portless := func(svc *corev1.Service) *corev1.Service {
+		svc.Spec.Ports = nil
+		return svc
+	}
+	cases := []struct {
+		name    string
+		objs    []kruntime.Object
+		wantURL string
+		wantVia string
+	}{
+		{"well-known name", realLoki(), "http://loki-gateway.monitoring:80", viaServiceName},
+		{"well-known name without ports keeps the table port",
+			[]kruntime.Object{portless(lokiSvc("monitoring", "loki-gateway", nil, realSelector, 80))},
+			"http://loki-gateway.monitoring:80", viaServiceName},
+		{"well-known name beats a decoy", append(realLoki(), decoyLoki()...), "http://loki-gateway.monitoring:80", viaServiceName},
+		{"label match on its http port", decoyLoki(), "http://evil-gateway.aaa-tenant:80", viaServiceLabel},
+		{"label match without ports",
+			[]kruntime.Object{portless(lokiSvc("logging", "loki", map[string]string{"app.kubernetes.io/name": "loki"}, decoySelector, 3100))},
+			"http://loki.logging:3100", viaServiceLabel},
+		{"app=loki label",
+			[]kruntime.Object{lokiSvc("logging", "old-loki", map[string]string{"app": "loki"}, decoySelector, 3100)},
+			"http://old-loki.logging:3100", viaServiceLabel},
+		{"nothing found", nil, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			url, via := localLokiURL(context.Background(), kfake.NewClientset(tc.objs...))
+			if url != tc.wantURL || via != tc.wantVia {
+				t.Fatalf("localLokiURL = %q, %q; want %q, %q", url, via, tc.wantURL, tc.wantVia)
+			}
+		})
 	}
 }

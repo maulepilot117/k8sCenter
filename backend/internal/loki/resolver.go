@@ -321,8 +321,11 @@ func (r *Resolver) findService(ctx context.Context, clusterID, username string, 
 	if err != nil {
 		return nil, nil, apiFailure(err)
 	}
-	if svc == nil || !svc.hasPort {
+	if svc == nil {
 		return nil, nil, errLokiNotFound(nil)
+	}
+	if !svc.hasPort {
+		return nil, nil, errLokiUnusable(svc, nil)
 	}
 	return cs, svc, nil
 }
@@ -337,7 +340,7 @@ func (r *Resolver) portForward(ctx context.Context, clusterID, username string, 
 	backend, err := k8s.SelectServiceBackend(ctx, cs, svc.svc, svc.port)
 	switch {
 	case errors.Is(err, k8s.ErrServiceNoSelector), errors.Is(err, k8s.ErrBackendPortUndeclared):
-		return nil, errLokiNotFound(err)
+		return nil, errLokiUnusable(svc, err)
 	case errors.Is(err, k8s.ErrNoReadyBackend):
 		return nil, unavailable(ReasonLokiUnreachable, http.StatusServiceUnavailable,
 			"Loki on the selected cluster has no ready pod", true, err)
@@ -376,6 +379,16 @@ func portForwardLocation(svc *lokiService) Location {
 func errLokiNotFound(err error) *UnavailableError {
 	return unavailable(ReasonLokiNotFound, http.StatusNotFound,
 		"Loki was not found on the selected cluster", false, err)
+}
+
+// errLokiUnusable is a Loki Service that won the search but cannot be
+// port-forwarded to: it declares no port, selects no pods, or its pods do
+// not declare its target port. The search does not move on to a
+// lower-ranked Service, so a label match never stands in for it.
+func errLokiUnusable(svc *lokiService, err error) *UnavailableError {
+	return unavailable(ReasonLokiNotFound, http.StatusNotFound,
+		"the Loki Service "+svc.svc.Namespace+"/"+svc.svc.Name+
+			" on the selected cluster cannot be reached by port-forward: it has no pod selector or no declared port", false, err)
 }
 
 // targetFailure classifies a failure to reach a remote cluster at all.
@@ -461,7 +474,8 @@ func QueryFailure(err error) *UnavailableError {
 		}
 		return nil
 	}
-	if errors.Is(err, errLokiTransport) || errors.Is(err, k8s.ErrTunnelClosed) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, errLokiTransport) || errors.Is(err, k8s.ErrTunnelClosed) ||
+		errors.Is(err, k8s.ErrPortForwardFailed) || errors.Is(err, context.DeadlineExceeded) {
 		return errLokiUnreachable(err)
 	}
 	return nil
