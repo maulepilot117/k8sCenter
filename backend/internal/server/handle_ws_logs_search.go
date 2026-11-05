@@ -178,18 +178,6 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 	defer res.Close()
 	target.Store(&lokiTailTarget{source: res.Source, namespace: res.Namespace})
 
-	// Confirm subscription
-	conn.WriteJSON(map[string]any{
-		"type":  "subscribed",
-		"query": enforcedQuery,
-	})
-
-	s.Logger.Info("log search stream started",
-		"user", user.Username,
-		"cluster", clusterID,
-		"query", enforcedQuery,
-	)
-
 	// Connect to Loki's tail through the resolved client: the local Loki,
 	// the strict dialer for a configured URL, or the held tunnel.
 	limit := sub.Limit
@@ -209,6 +197,25 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 	if remote {
 		s.auditLokiTail(r, reqCtx, user, clusterID, audit.ResultSuccess, "remote loki tail opened via "+string(res.Source))
 	}
+
+	// Confirm the subscription only once Loki's tail is open. A configured
+	// URL and the local Loki resolve without contacting Loki, so a down Loki
+	// first shows up as a failed dial; a client that took "subscribed" as a
+	// live stream would reset its retry budget on every failed attempt and
+	// reconnect forever.
+	conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
+	if err := conn.WriteJSON(map[string]any{
+		"type":  "subscribed",
+		"query": enforcedQuery,
+	}); err != nil {
+		return
+	}
+
+	s.Logger.Info("log search stream started",
+		"user", user.Username,
+		"cluster", clusterID,
+		"query", enforcedQuery,
+	)
 
 	// Loki's connection stays alive while anything arrives on it.
 	alive := func() { _ = lokiConn.SetReadDeadline(time.Now().Add(lokiTailIdleTimeout)) }
