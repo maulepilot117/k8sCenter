@@ -93,8 +93,24 @@ export function streamErrorMessage(
       return "k8sCenter could not connect to the selected cluster with its stored credentials.";
     case "db_unavailable":
       return "The cluster registry is unavailable. Try again shortly.";
+    // A Loki tail whose cluster has no Loki, or whose Loki could not be
+    // reached (loki/resolver.go). A lost connection is retryable, so it
+    // reaches the page only once the reconnects are spent.
+    case "loki_not_found":
+      return `No Loki was found on the selected cluster, so ${subject} is unavailable.`;
+    case "loki_unreachable":
+      return "Loki on the selected cluster could not be reached.";
   }
   return `${what} stopped unexpectedly.`;
+}
+
+/**
+ * Whether Loki timestamp a (nanoseconds since the epoch, as a decimal
+ * string) is later than b. The values exceed what a JS number holds
+ * exactly, so they are compared as digit strings.
+ */
+export function lokiLaterThan(a: string, b: string): boolean {
+  return a.length === b.length ? a > b : a.length > b.length;
 }
 
 // --- Resuming a log tail ---

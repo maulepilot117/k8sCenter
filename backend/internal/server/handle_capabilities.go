@@ -401,6 +401,12 @@ var capabilityOperations = []capabilityOp{
 		// is unavailable. A remote tail ends at token expiry, on cluster
 		// removal and, on the port-forward path, when the user's
 		// create pods/portforward grant in Loki's namespace is revoked.
+		// This row probes only list pods. The port-forward path also needs
+		// get services in the monitoring, loki or observability namespace
+		// and list services cluster-wide (to find Loki), and create
+		// pods/portforward and list pods in Loki's namespace; without them
+		// the read is refused as forbidden. A configured Loki URL needs none
+		// of those.
 		ID: "logs.search", Label: "Log search",
 		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
