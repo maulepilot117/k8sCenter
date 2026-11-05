@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ApiError, apiDelete, apiGet, apiPut } from "@/lib/api.ts";
+import { sameOrigin } from "@/lib/origin.ts";
 import { showToast } from "@/src/islands/ToastProvider.tsx";
 
 /**
@@ -51,14 +52,6 @@ function lokiErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-function originOf(raw: string): string {
-  try {
-    return new URL(raw.trim()).origin;
-  } catch {
-    return raw.trim();
-  }
-}
-
 export default function LokiBindingForm({ clusterId, onBinding }: Props) {
   const busy = useSignal(true);
   const configured = useSignal(false);
@@ -72,6 +65,9 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
   const clearToken = useSignal(false);
   // The URL as stored, to tell an edit to another host.
   const storedUrl = useSignal("");
+  // The stored binding could not be read. Saving then would replace a
+  // tenant (and judge a token) the form never saw, so Save stays off.
+  const loadFailed = useSignal(false);
   const baseId = useRef(`lb-${Math.random().toString(36).slice(2, 8)}`).current;
 
   // Bumped by every load/save/remove and when the form unmounts (closed or
@@ -105,6 +101,7 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
         if (err instanceof ApiError && err.reason === "loki_not_configured") {
           onBinding(clusterId, "not-configured");
         } else {
+          loadFailed.value = true;
           showToast(
             lokiErrorMessage(err, "Could not load the Loki binding"),
             "error",
@@ -162,8 +159,7 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
     }
     const g = ++gen.current;
     busy.value = true;
-    try {
-      await apiDelete(`/v1/clusters/${clusterId}/logs`);
+    const removed = () => {
       onBinding(clusterId, "not-configured");
       if (gen.current !== g) return;
       applyBinding({
@@ -176,7 +172,16 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
       });
       configured.value = false;
       showToast("Loki binding removed", "success");
+    };
+    try {
+      await apiDelete(`/v1/clusters/${clusterId}/logs`);
+      removed();
     } catch (err) {
+      // Already gone (another admin removed it): the outcome asked for.
+      if (err instanceof ApiError && err.reason === "loki_not_configured") {
+        removed();
+        return;
+      }
       if (gen.current !== g) return;
       showToast(
         lokiErrorMessage(err, "Failed to remove the Loki binding"),
@@ -187,10 +192,12 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
     }
   }
 
+  // The same origin rule the server applies (lib/origin.ts), so an explicit
+  // default port counts as a move just as it does there.
   const urlMoved =
     hasToken.value &&
     url.value.trim() !== "" &&
-    originOf(url.value) !== originOf(storedUrl.value);
+    !sameOrigin(storedUrl.value, url.value);
   // A stale token is reported with hasToken false (the store withholds a
   // token whose origin no longer matches), and the server refuses any save
   // that would keep it, so staleness alone must prompt.
@@ -216,6 +223,7 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
           type="text"
           class={INPUT_CLASS}
           value={url.value}
+          autocomplete="off"
           placeholder="https://loki.example.com"
           onInput={(e) => {
             url.value = e.currentTarget.value;
@@ -231,6 +239,7 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
           type="password"
           class={INPUT_CLASS}
           value={token.value}
+          autocomplete="new-password"
           required={needsEntry && !clearToken.value}
           aria-required={needsEntry && !clearToken.value}
           aria-invalid={tokenMissing}
@@ -246,8 +255,8 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
         />
         {needsEntry && (
           <p id={messageId} class="mt-1.5 text-xs text-warning">
-            A different Loki host needs its token entered again. The stored
-            token will not be sent there.
+            A different Loki host or port needs its token entered again. The
+            stored token will not be sent there.
           </p>
         )}
         {(hasToken.value || tokenStale.value) && (
@@ -280,6 +289,7 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
           type="text"
           class={INPUT_CLASS}
           value={tenant.value}
+          autocomplete="off"
           placeholder="team-a"
           onInput={(e) => {
             tenant.value = e.currentTarget.value;
@@ -289,12 +299,23 @@ export default function LokiBindingForm({ clusterId, onBinding }: Props) {
           Sent as X-Scope-OrgID. Separate several tenants with |.
         </p>
       </div>
+      {loadFailed.value && (
+        <p role="alert" class="text-xs text-error">
+          The stored binding could not be loaded, so it cannot be saved here.
+          Close and reopen the form to try again.
+        </p>
+      )}
       <div class="flex gap-1.5">
         <Button
           type="button"
           variant="primary"
           size="sm"
-          disabled={busy.value || url.value.trim() === "" || tokenMissing}
+          disabled={
+            busy.value ||
+            loadFailed.value ||
+            url.value.trim() === "" ||
+            tokenMissing
+          }
           onClick={save}
         >
           Save

@@ -29,8 +29,12 @@ interface Call {
 type Reply = { status: number; body?: unknown };
 
 // putGate, when set, holds every PUT until it resolves, so a test can act
-// while a save is in flight.
+// while a save is in flight. getGates holds the next GETs, one gate each.
+// A request's reply is chosen when it is sent, so a held answer stays the
+// one its cluster was given.
 let putGate: Promise<void> | null = null;
+let getGates: Array<Promise<void>> = [];
+const originalConfirm = globalThis.confirm;
 
 let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
@@ -64,6 +68,7 @@ beforeEach(() => {
   replies = {};
   badges = [];
   putGate = null;
+  getGates = [];
   originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -72,8 +77,10 @@ beforeEach(() => {
       url: String(input),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     });
-    if (method === "PUT" && putGate) await putGate;
     const reply = replies[method] ?? { status: 500, body: {} };
+    if (method === "PUT" && putGate) await putGate;
+    const gate = method === "GET" ? getGates.shift() : undefined;
+    if (gate) await gate;
     if (reply.status === 204) return new Response(null, { status: 204 });
     return new Response(JSON.stringify(reply.body ?? {}), {
       status: reply.status,
@@ -90,6 +97,7 @@ afterEach(() => {
     host = null;
   }
   if (originalFetch) globalThis.fetch = originalFetch;
+  globalThis.confirm = originalConfirm;
   setAccessToken(null);
 });
 
@@ -159,7 +167,7 @@ const URL_FIELD = "Loki URL";
 const TOKEN = "Bearer token (optional)";
 const TENANT = "Tenant ID (optional)";
 const CLEAR = "Clear the stored token on save";
-const REENTRY = "A different Loki host needs its token entered again";
+const REENTRY = "A different Loki host or port needs its token entered again";
 
 function puts() {
   return calls.filter((c) => c.method === "PUT");
@@ -365,4 +373,147 @@ test("a save that finishes after the form moved to another cluster badges its ow
   expect(byLabel(root, URL_FIELD).value).toBe("https://loki-c2.example.com");
   expect(toasts).toEqual([]);
   expect(button(root, "Save").disabled).toBe(false);
+});
+
+test("adding an explicit default port counts as a move, as it does on the server", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+  await type(byLabel(root, URL_FIELD), "https://loki.example.com:443");
+  expect(root.textContent).toContain(REENTRY);
+  expect(button(root, "Save").disabled).toBe(true);
+});
+
+test("a typed token wins over a ticked clear box", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  replies.PUT = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+  await click(byLabel(root, CLEAR));
+  await type(byLabel(root, TOKEN), "fresh-secret");
+  await click(button(root, "Save"));
+  expect(puts()[0].body?.token).toBe("fresh-secret");
+});
+
+test("the token field asks password managers not to fill a saved password", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  const root = await mount();
+  expect(byLabel(root, TOKEN).getAttribute("autocomplete")).toBe(
+    "new-password",
+  );
+  expect(byLabel(root, URL_FIELD).getAttribute("autocomplete")).toBe("off");
+  expect(byLabel(root, TENANT).getAttribute("autocomplete")).toBe("off");
+});
+
+test("a failed load keeps Save off, so a save cannot replace a tenant the form never saw", async () => {
+  replies.GET = {
+    status: 503,
+    body: {
+      error: {
+        code: 503,
+        message: "the Loki binding could not be read or saved",
+      },
+    },
+  };
+  const root = await mount();
+  expect(toasts.at(-1)).toEqual({
+    message: "the Loki binding could not be read or saved",
+    type: "error",
+  });
+  expect(badges).toEqual([]);
+  expect(root.textContent).toContain("could not be loaded");
+  await type(byLabel(root, URL_FIELD), "https://loki.example.com");
+  expect(button(root, "Save").disabled).toBe(true);
+});
+
+test("an unexpected load failure shows the fallback, not the server text", async () => {
+  replies.GET = {
+    status: 500,
+    body: { error: { code: 500, message: "internal detail" } },
+  };
+  await mount();
+  expect(toasts.at(-1)).toEqual({
+    message: "Could not load the Loki binding",
+    type: "error",
+  });
+});
+
+test("a load that answers after the form moved to another cluster leaves the new form alone", async () => {
+  let releaseFirst = () => {};
+  getGates = [
+    new Promise<void>((r) => {
+      releaseFirst = r;
+    }),
+  ];
+  replies.GET = { status: 200, body: { data: BINDING } };
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  renderForm("c1");
+  await settle();
+
+  replies.GET = {
+    status: 200,
+    body: {
+      data: {
+        ...BINDING,
+        clusterId: "c2",
+        url: "https://loki-c2.example.com",
+        tenantId: "team-c2",
+      },
+    },
+  };
+  renderForm("c2");
+  await settle();
+  expect(byLabel(host, URL_FIELD).value).toBe("https://loki-c2.example.com");
+
+  releaseFirst();
+  await settle();
+  expect(byLabel(host, URL_FIELD).value).toBe("https://loki-c2.example.com");
+  expect(byLabel(host, TENANT).value).toBe("team-c2");
+  // Only c2's load reported: c1's answer arrived for a form no longer shown.
+  expect(badges).toEqual([["c2", "configured"]]);
+});
+
+test("declining the remove confirmation sends nothing", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  globalThis.confirm = () => false;
+  const root = await mount();
+  await click(button(root, "Remove binding"));
+  expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  expect(byLabel(root, URL_FIELD).value).toBe("https://loki.example.com");
+});
+
+test("a binding another admin already removed is reported as removed", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  replies.DELETE = NOT_CONFIGURED;
+  globalThis.confirm = () => true;
+  const root = await mount();
+  await click(button(root, "Remove binding"));
+  expect(badges.at(-1)).toEqual(["c1", "not-configured"]);
+  expect(toasts.at(-1)).toEqual({
+    message: "Loki binding removed",
+    type: "success",
+  });
+  expect(() => button(root, "Remove binding")).toThrow();
+});
+
+test("a failed remove keeps the form and its badge as they were", async () => {
+  replies.GET = { status: 200, body: { data: BINDING } };
+  replies.DELETE = {
+    status: 503,
+    body: {
+      error: {
+        code: 503,
+        message: "the Loki binding could not be read or saved",
+      },
+    },
+  };
+  globalThis.confirm = () => true;
+  const root = await mount();
+  await click(button(root, "Remove binding"));
+  expect(toasts.at(-1)).toEqual({
+    message: "the Loki binding could not be read or saved",
+    type: "error",
+  });
+  expect(badges).toEqual([["c1", "configured"]]);
+  expect(byLabel(root, URL_FIELD).value).toBe("https://loki.example.com");
+  expect(button(root, "Remove binding").disabled).toBe(false);
 });
