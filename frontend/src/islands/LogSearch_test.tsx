@@ -63,6 +63,8 @@ const realWebSocket = globalThis.WebSocket;
 let originalFetch: typeof globalThis.fetch | undefined;
 let host: HTMLElement | null = null;
 let refreshCalls = 0;
+/** When set, a session refresh waits for it before answering. */
+let refreshGate: Promise<void> | null = null;
 /** What GET /logs/status answers; set per test. */
 let statusReply: { status: number; body: unknown } = {
   status: 200,
@@ -86,12 +88,14 @@ beforeEach(() => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   originalFetch = globalThis.fetch;
   refreshCalls = 0;
+  refreshGate = null;
   statusReply = { status: 200, body: { data: { detected: false } } };
   queryReply = { status: 200, body: { data: { data: { result: [] } } } };
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = String(input);
     if (url.includes("/auth/refresh")) {
       refreshCalls++;
+      if (refreshGate) await refreshGate;
       return reply(200, { data: { accessToken: "fresh-token" } });
     }
     if (url.includes(`/v1/clusters/${REMOTE}`)) {
@@ -184,13 +188,18 @@ const unavailable = (reason: string) => ({
 
 test("each reason Loki is unavailable on a remote cluster has its own copy", async () => {
   selectRemote();
-  const seen = new Map<string, string>();
-  for (const reason of [
+  const reasons = [
     "loki_not_found",
     "loki_unreachable",
     "forbidden",
     "credentials_invalid",
-  ]) {
+    "unreachable",
+    "cluster_unknown",
+    "db_unavailable",
+    "unsupported_platform",
+  ];
+  const seen = new Map<string, string>();
+  for (const reason of reasons) {
     statusReply = unavailable(reason);
     await mountExplorer();
     const shown = byTestId("loki-unavailable")?.textContent ?? "";
@@ -201,12 +210,24 @@ test("each reason Loki is unavailable on a remote cluster has its own copy", asy
     host?.remove();
     host = null;
   }
-  expect(new Set(seen.values()).size).toBe(4);
+  expect(new Set(seen.values()).size).toBe(reasons.length);
   expect(seen.get("loki_not_found")).toContain("Loki Not Found");
   expect(seen.get("loki_not_found")).toContain("Settings > Clusters");
   expect(seen.get("loki_unreachable")).toContain("Loki Unreachable");
+  // Discovery lists Services cluster-wide when no well-known name answers,
+  // so a grant without it still fails (loki/discovery.go).
+  expect(seen.get("forbidden")).toContain("list on services cluster-wide");
   expect(seen.get("forbidden")).toContain("pods/portforward");
   expect(seen.get("credentials_invalid")).toContain("Credentials Refused");
+});
+
+test("a status request that fails without a reason does not claim Loki is missing", async () => {
+  selectRemote();
+  statusReply = { status: 500, body: {} };
+  await mountExplorer();
+  const shown = byTestId("loki-unavailable")?.textContent ?? "";
+  expect(shown).toContain("Loki Status Unavailable");
+  expect(shown).not.toContain("Not Found");
 });
 
 test("the local cluster with no Loki keeps the deployment hint", async () => {
@@ -530,4 +551,123 @@ test("a pending resume opens nothing once the tail is stopped", async () => {
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("a Loki that subscribes and then drops at once still runs out of tries", async () => {
+  jest.useFakeTimers();
+  try {
+    mount(<LogLiveTail {...tailProps()} />);
+    let ws = openLatest();
+    const end = { type: "error", reason: "loki_unreachable", retryable: true };
+    // Each attempt confirms the subscription and then ends before any line.
+    deliver(ws, { type: "subscribed" });
+    deliver(ws, end);
+    for (const delay of [2_000, 5_000, 10_000]) {
+      ws = await reconnectAfter(delay);
+      deliver(ws, { type: "subscribed" });
+      deliver(ws, end);
+    }
+    const before = FakeWebSocket.instances.length;
+    jest.advanceTimersByTime(30_000);
+    await flush();
+    expect(FakeWebSocket.instances.length).toBe(before);
+    expect(text()).toContain(
+      "Loki on the selected cluster could not be reached.",
+    );
+    expect(buttonNamed("Reconnect")).toBeDefined();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a stream that carried lines earns a fresh set of tries", async () => {
+  jest.useFakeTimers();
+  try {
+    mount(<LogLiveTail {...tailProps()} />);
+    let ws = openLatest();
+    const end = { type: "error", reason: "loki_unreachable", retryable: true };
+    deliver(ws, { type: "subscribed" });
+    deliver(ws, end);
+    ws = await reconnectAfter(2_000);
+    deliver(ws, { type: "subscribed" });
+    deliverEntries(ws, [[T1, "one"]]);
+    deliver(ws, end);
+    // The lines reset the budget: the next try waits the first delay again.
+    await reconnectAfter(2_000);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a resume waiting on a session refresh opens nothing once the tail is stopped", async () => {
+  jest.useFakeTimers();
+  try {
+    let release = () => {};
+    refreshGate = new Promise<void>((r) => {
+      release = r;
+    });
+    const props = tailProps();
+    mount(<LogLiveTail {...props} />);
+    const ws = openLatest();
+    deliver(ws, { type: "subscribed" });
+    deliver(ws, { type: "error", reason: "token_expired", retryable: true });
+    jest.advanceTimersByTime(2_000);
+    await flush();
+    // The backoff has fired and the resume is waiting on the refresh.
+    expect(refreshCalls).toBe(1);
+    const before = FakeWebSocket.instances.length;
+    act(() => {
+      props.active.value = false;
+    });
+    release();
+    await flush();
+    jest.advanceTimersByTime(30_000);
+    await flush();
+    expect(FakeWebSocket.instances.length).toBe(before);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a resume with no session left shows it and does not retry", async () => {
+  jest.useFakeTimers();
+  try {
+    mount(<LogLiveTail {...tailProps()} />);
+    const first = openLatest();
+    deliver(first, { type: "subscribed" });
+    deliver(first, {
+      type: "error",
+      reason: "server_restarting",
+      retryable: true,
+    });
+    setAccessToken(null);
+    const second = await reconnectAfter(2_000);
+    expect(second.sent).toEqual([]);
+    expect(text()).toContain("Not authenticated");
+    const before = FakeWebSocket.instances.length;
+    jest.advanceTimersByTime(30_000);
+    await flush();
+    expect(FakeWebSocket.instances.length).toBe(before);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a new query starts a fresh tail with no start", async () => {
+  const props = tailProps();
+  mount(<LogLiveTail {...props} />);
+  const first = openLatest();
+  deliver(first, { type: "subscribed" });
+  deliverEntries(first, [[T1, "one"]]);
+  act(() => {
+    props.query.value = '{app="api"}';
+  });
+  const second = openLatest();
+  expect(second).not.toBe(first);
+  expect(second.sent[1]).toEqual({
+    type: "subscribe",
+    query: '{app="api"}',
+    namespace: "default",
+    limit: 30,
+  });
 });

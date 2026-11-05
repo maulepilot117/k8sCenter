@@ -1,5 +1,5 @@
 import { type Signal, useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { getAccessToken, refreshSession } from "@/lib/api.ts";
 import {
@@ -63,8 +63,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
   // The cluster this tail streams from, taken once when it opens and kept
   // across every reconnect and query change, so a resume never follows a
   // changed selection (KTD1).
-  const pinRef = useRef<ClusterTarget | null>(null);
-  if (IS_BROWSER && pinRef.current === null) pinRef.current = currentTarget();
+  const [pin] = useState<ClusterTarget>(currentTarget);
 
   // Resume state. A retryable end reconnects after a backoff from the last
   // line shown; Loki's start is inclusive, so lines at or before it are
@@ -182,6 +181,10 @@ export default function LogLiveTail(props: LogLiveTailProps) {
     // backend still down behind the proxy), is a failed try, not an end.
     let subscribed = false;
     let ended = false;
+    // Whether this socket delivered a log line. Only a stream that carried
+    // lines resets the retry budget: a Loki that accepts the tail and drops
+    // it at once must still run out of tries.
+    let streamed = false;
 
     ws.onopen = () => {
       if (wsRef.current !== ws) return;
@@ -194,8 +197,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
         error.value = "Not authenticated";
         return;
       }
-      pinRef.current ??= currentTarget();
-      ws.send(JSON.stringify(streamAuthFrame(token, pinRef.current)));
+      ws.send(JSON.stringify(streamAuthFrame(token, pin)));
       ws.send(
         subscribeFrame(
           props.query.value,
@@ -212,7 +214,6 @@ export default function LogLiveTail(props: LogLiveTailProps) {
         const msg = JSON.parse(event.data);
         if (msg.type === "subscribed") {
           subscribed = true;
-          triesRef.current = 0;
           status.value = "connected";
           error.value = "";
           if (resume) appendLines([RECONNECTED_MARKER]);
@@ -231,6 +232,10 @@ export default function LogLiveTail(props: LogLiveTailProps) {
           return;
         }
         if (msg.type === "log" && msg.payload) {
+          if (!streamed) {
+            streamed = true;
+            triesRef.current = 0;
+          }
           const payload =
             typeof msg.payload === "string"
               ? JSON.parse(msg.payload)
@@ -307,9 +312,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
           <span class="text-text-muted capitalize">
             {status.value === "reconnecting" ? "Reconnecting..." : status.value}
           </span>
-          {pinRef.current && (
-            <SessionClusterBadge clusterId={pinRef.current.clusterId} />
-          )}
+          <SessionClusterBadge clusterId={pin.clusterId} />
           <span class="text-text-muted">
             &middot; {props.lines.value.length} lines
           </span>

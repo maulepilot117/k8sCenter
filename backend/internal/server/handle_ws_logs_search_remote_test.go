@@ -497,3 +497,24 @@ func TestHandleWSLogsSearch_SilentLokiEndsTail(t *testing.T) {
 		t.Fatal("the silent tail's tunnel was left open")
 	}
 }
+
+// A Loki whose tail cannot be opened refuses the tail before it is
+// confirmed: the first frame is the retryable loki_unreachable end, never
+// "subscribed". A client treats "subscribed" as a live stream and resets
+// its retry budget on it, so confirming before the dial made a down Loki
+// reconnect forever.
+func TestHandleWSLogsSearch_DialFailureIsNotSubscribed(t *testing.T) {
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ready" {
+			return
+		}
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(down.Close)
+	env := newLokiTailEnv(t, &fakeLokiTail{Server: down, hosts: make(chan string, 16)}, remoteLokiObjects()...)
+	conn := env.open(t, issueWSToken(t, env.srv, true), lokiTailRemote)
+	msg := readFrame(t, conn)
+	if msg["type"] != "error" || msg["reason"] != loki.ReasonLokiUnreachable || msg["retryable"] != true {
+		t.Fatalf("first frame = %v, want a retryable loki_unreachable error before any subscribed", msg)
+	}
+}
