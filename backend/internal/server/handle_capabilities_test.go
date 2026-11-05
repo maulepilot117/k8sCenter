@@ -276,9 +276,11 @@ var (
 		"policy.compliance_history",
 		// Remote logs and shells U7: the tail reads the selected cluster.
 		"logs.stream",
+		// Remote logs and shells U30: search reads the selected cluster's Loki.
+		"logs.search",
 	}
 	wantRemoteUnsupported = []string{
-		"pod.exec", "logs.search", "eso.write",
+		"pod.exec", "eso.write",
 		"eso.history", "eso.metrics",
 		"velero.assurance",
 		"incidents.capture",
