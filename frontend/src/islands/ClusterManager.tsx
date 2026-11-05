@@ -14,6 +14,9 @@ import { api, apiGet, apiPost } from "@/lib/api.ts";
 import ComplianceIdentityForm, {
   type ComplianceIdentityState,
 } from "@/src/islands/ComplianceIdentityForm.tsx";
+import LokiBindingForm, {
+  type LokiState,
+} from "@/src/islands/LokiBindingForm.tsx";
 import MetricsBindingForm, {
   type MetricsState,
 } from "@/src/islands/MetricsBindingForm.tsx";
@@ -72,6 +75,9 @@ export default function ClusterManager() {
   // fields, this island keeps which cluster is open and each cluster's badge.
   const metricsFor = useSignal<string | null>(null);
   const metricsState = useSignal<Record<string, MetricsState>>({});
+  // Same shape for the optional Loki binding form.
+  const logsFor = useSignal<string | null>(null);
+  const logsState = useSignal<Record<string, LokiState>>({});
   // Same shape for the compliance-history identity form.
   const identityFor = useSignal<string | null>(null);
   const identityState = useSignal<Record<string, ComplianceIdentityState>>({});
@@ -85,6 +91,10 @@ export default function ClusterManager() {
     metricsState.value = { ...metricsState.value, [id]: state };
   }
 
+  function setLogsState(id: string, state: LokiState) {
+    logsState.value = { ...logsState.value, [id]: state };
+  }
+
   function setIdentityState(id: string, state: ComplianceIdentityState) {
     identityState.value = { ...identityState.value, [id]: state };
   }
@@ -95,6 +105,10 @@ export default function ClusterManager() {
 
   function toggleMetrics(id: string) {
     metricsFor.value = metricsFor.value === id ? null : id;
+  }
+
+  function toggleLogs(id: string) {
+    logsFor.value = logsFor.value === id ? null : id;
   }
 
   async function loadClusters() {
@@ -426,6 +440,18 @@ export default function ClusterManager() {
               />
             </div>
           )}
+          {!c.isLocal && logsState.value[c.id] && (
+            <div style={{ marginTop: "4px" }}>
+              <StatusBadge
+                label={
+                  logsState.value[c.id] === "configured"
+                    ? "logs: configured Loki URL"
+                    : "logs: in-cluster Loki"
+                }
+                tone={logsState.value[c.id] === "configured" ? "ok" : "neutral"}
+              />
+            </div>
+          )}
           {!c.isLocal && identityState.value[c.id] && (
             <div style={{ marginTop: "4px" }}>
               <StatusBadge
@@ -452,6 +478,13 @@ export default function ClusterManager() {
               key={c.id}
               clusterId={c.id}
               onBinding={setMetricsState}
+            />
+          )}
+          {!c.isLocal && logsFor.value === c.id && (
+            <LokiBindingForm
+              key={c.id}
+              clusterId={c.id}
+              onBinding={setLogsState}
             />
           )}
           {c.status !== "connected" && c.statusMessage && (
@@ -535,6 +568,14 @@ export default function ClusterManager() {
             onClick={() => toggleMetrics(c.id)}
           >
             Metrics
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => toggleLogs(c.id)}
+          >
+            Logs
           </Button>
           <Button
             type="button"

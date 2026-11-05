@@ -83,6 +83,7 @@ const BINDING = {
 
 type Reply = { status: number; body?: unknown };
 let metricsReplies: Record<string, Reply> = {};
+let logsReplies: Record<string, Reply> = {};
 // Per-path override (path -> method -> reply promise) so a test can hold a
 // response open; and an opt-in second remote cluster.
 let pathReplies: Record<string, Record<string, Promise<Reply>>> = {};
@@ -92,6 +93,7 @@ beforeEach(() => {
   toasts.length = 0;
   calls = [];
   metricsReplies = {};
+  logsReplies = {};
   pathReplies = {};
   withSecondRemote = false;
   originalFetch = globalThis.fetch;
@@ -113,6 +115,8 @@ beforeEach(() => {
       reply = held
         ? await held
         : (metricsReplies[method] ?? { status: 500, body: {} });
+    } else if (path.endsWith("/logs")) {
+      reply = logsReplies[method] ?? { status: 500, body: {} };
     }
     if (reply.status === 204) return new Response(null, { status: 204 });
     return new Response(JSON.stringify(reply.body ?? {}), {
@@ -189,6 +193,56 @@ test("only remote clusters get a Metrics button", async () => {
     (b) => b.textContent?.trim() === "Metrics",
   );
   expect(buttons.length).toBe(1);
+});
+
+test("only remote clusters get a Logs button", async () => {
+  const root = await mount();
+  const buttons = Array.from(root.querySelectorAll("button")).filter(
+    (b) => b.textContent?.trim() === "Logs",
+  );
+  expect(buttons.length).toBe(1);
+});
+
+test("the Logs button opens the Loki binding form and badges how the cluster's Loki is found", async () => {
+  logsReplies.GET = {
+    status: 404,
+    body: {
+      error: {
+        code: 404,
+        message: "a Loki URL is not configured for the selected cluster",
+        reason: "loki_not_configured",
+      },
+    },
+  };
+  const root = await mount();
+  await click(button(root, "Logs"));
+  expect(root.querySelector('[data-testid="loki-form"]')).not.toBeNull();
+  expect(root.textContent).toContain("logs: in-cluster Loki");
+  expect(
+    calls.some(
+      (c) =>
+        c.method === "GET" && c.path.endsWith("/v1/clusters/c-remote/logs"),
+    ),
+  ).toBe(true);
+
+  // Closing and reopening against a bound cluster flips the badge.
+  await click(button(root, "Logs"));
+  expect(root.querySelector('[data-testid="loki-form"]')).toBeNull();
+  logsReplies.GET = {
+    status: 200,
+    body: {
+      data: {
+        clusterId: "c-remote",
+        url: "https://loki.example.com",
+        tenantId: "",
+        hasToken: false,
+        tokenStale: false,
+        updatedAt: "2026-11-05T00:00:00Z",
+      },
+    },
+  };
+  await click(button(root, "Logs"));
+  expect(root.textContent).toContain("logs: configured Loki URL");
 });
 
 test("opening the form on an unbound cluster shows the not-configured badge", async () => {
