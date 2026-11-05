@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ApiError, apiDelete, apiGet, apiPut } from "@/lib/api.ts";
+import { sameOrigin } from "@/lib/origin.ts";
 import { showToast } from "@/src/islands/ToastProvider.tsx";
 
 /**
@@ -50,14 +51,6 @@ function metricsErrorMessage(err: unknown, fallback: string): string {
     }
   }
   return fallback;
-}
-
-function originOf(raw: string): string {
-  try {
-    return new URL(raw.trim()).origin;
-  } catch {
-    return raw.trim();
-  }
 }
 
 export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
@@ -198,10 +191,12 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
     }
   }
 
+  // The same origin rule the server applies (lib/origin.ts), so an explicit
+  // default port counts as a move just as it does there.
   const amUrlMoved =
     hasAmToken.value &&
     amUrl.value.trim() !== "" &&
-    originOf(amUrl.value) !== originOf(storedAmUrl.value);
+    !sameOrigin(storedAmUrl.value, amUrl.value);
   // A stale token is reported with hasAlertmanagerToken false (the store
   // withholds a token whose origin no longer matches), so staleness alone
   // must prompt. Removing the Alertmanager URL clears the token server-side.
@@ -225,6 +220,7 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
           type="text"
           class={INPUT_CLASS}
           value={promUrl.value}
+          autocomplete="off"
           placeholder="https://prometheus.example.com"
           onInput={(e) => {
             promUrl.value = e.currentTarget.value;
@@ -240,6 +236,7 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
           type="password"
           class={INPUT_CLASS}
           value={promToken.value}
+          autocomplete="new-password"
           placeholder="leave blank to keep the stored token"
           onInput={(e) => {
             promToken.value = e.currentTarget.value;
@@ -273,6 +270,7 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
           type="text"
           class={INPUT_CLASS}
           value={amUrl.value}
+          autocomplete="off"
           placeholder="https://alertmanager.example.com"
           onInput={(e) => {
             amUrl.value = e.currentTarget.value;
@@ -288,6 +286,7 @@ export default function MetricsBindingForm({ clusterId, onBinding }: Props) {
           type="password"
           class={INPUT_CLASS}
           value={amToken.value}
+          autocomplete="new-password"
           required={amNeedsEntry && !clearAmToken.value}
           aria-required={amNeedsEntry && !clearAmToken.value}
           aria-invalid={amTokenMissing}
