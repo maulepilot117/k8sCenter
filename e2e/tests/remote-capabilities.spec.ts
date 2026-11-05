@@ -221,6 +221,8 @@ test.describe.serial("Remote cluster capabilities", () => {
       "policy.compliance_history",
       // Remote logs and shells U7: the tail reads the selected cluster.
       "logs.stream",
+      // Remote logs and shells U30: search reads the selected cluster's Loki.
+      "logs.search",
     ]) {
       expect(byId.get(id)?.platformSupported, id).toBe(true);
       expect(byId.get(id)?.reasonCode, id).not.toBe("unsupported_platform");

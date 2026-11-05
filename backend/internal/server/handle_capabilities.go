@@ -391,13 +391,18 @@ var capabilityOperations = []capabilityOp{
 		AuthVerb: "get", AuthGroup: "", AuthResource: "pods/log",
 	},
 	{
-		// The discovered Loki is the LOCAL cluster's; a remote X-Cluster-ID
-		// would return local logs under the remote cluster's name (confused
-		// deputy). The tail refuses in handle_ws_logs_search.go; the REST
-		// reads refuse in loki/handler.go refuseRemote (501), and
-		// /logs/status reports detected:false with the reason.
+		// Every Loki read resolves the Loki of the cluster it names
+		// (loki/resolver.go), never the local one: a remote cluster's
+		// configured Loki URL (PUT /clusters/{id}/logs), or else its
+		// in-cluster Loki Service, found as the user and reached by a
+		// port-forward tunnel opened as the user. The REST reads
+		// (loki/handler.go) and the tail (handle_ws_logs_search.go) share
+		// the resolver; /logs/status reports the source or the reason Loki
+		// is unavailable. A remote tail ends at token expiry, on cluster
+		// removal and, on the port-forward path, when the user's
+		// create pods/portforward grant in Loki's namespace is revoked.
 		ID: "logs.search", Label: "Log search",
-		LocalSupported: true, RemoteSupported: false,
+		LocalSupported: true, RemoteSupported: true,
 		AuthVerb: "list", AuthGroup: "", AuthResource: "pods",
 	},
 	{
