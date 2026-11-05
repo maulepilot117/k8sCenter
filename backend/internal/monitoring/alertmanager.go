@@ -163,6 +163,22 @@ func (c *AlertmanagerClient) list(ctx context.Context, filter string) ([]amAlert
 	}
 	defer resp.Body.Close()
 
+	alerts, err := readAlerts(resp)
+	if err != nil {
+		// An answer can reach the client just as the deadline passes,
+		// before the transport notices it. A failure after the context
+		// ended is a timeout, whatever the answer looked like.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("%w: %w", ErrAlertmanagerUnreachable, ctxErr)
+		}
+		return nil, err
+	}
+	return alerts, nil
+}
+
+// readAlerts classifies an alerts answer by status, then reads and decodes
+// a 2xx body.
+func readAlerts(resp *http.Response) ([]amAlertJSON, error) {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// Drain a little for connection reuse; the body is never read
 		// into an error.

@@ -1,9 +1,11 @@
 package monitoring
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -243,6 +245,88 @@ func TestAlertmanagerClient_TimeoutIsUnreachable(t *testing.T) {
 	defer cancel()
 	_, err := testAMClient(t, srv.URL, "").Counts(ctx)
 	assertAMClass(t, err, ErrAlertmanagerUnreachable)
+}
+
+// cancelAfterResponse buffers each answer's body and then cancels the
+// read's context, so the client sees a complete answer that arrived just
+// as its deadline passed. That is the race a slow Alertmanager can win
+// against the transport's deadline check.
+type cancelAfterResponse struct {
+	base   http.RoundTripper
+	cancel context.CancelFunc
+}
+
+func (rt cancelAfterResponse) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	rt.cancel()
+	return resp, nil
+}
+
+// An answer that lands after the read's context ended is a timeout, whatever
+// it looked like: an empty 200 is not an unreadable answer, and a 401 is not
+// a refusal the operator should fix.
+func TestAlertmanagerClient_AnswerAfterContextEndIsUnreachable(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		body string
+	}{
+		{"empty 200", http.StatusOK, ""},
+		{"junk 200", http.StatusOK, "<html>" + bodyMarker + "</html>"},
+		{"401", http.StatusUnauthorized, bodyMarker},
+		{"302", http.StatusFound, bodyMarker},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(c.code)
+				fmt.Fprint(w, c.body)
+			}))
+			t.Cleanup(srv.Close)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			rt := cancelAfterResponse{base: testTransport(), cancel: cancel}
+			am, err := newAlertmanagerClient(srv.URL, newBearerRoundTripper(rt, srv.URL, ""))
+			if err != nil {
+				t.Fatalf("building client: %v", err)
+			}
+			_, err = am.Counts(ctx)
+			assertAMClass(t, err, ErrAlertmanagerUnreachable)
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("error %q does not wrap the context's end", err)
+			}
+		})
+	}
+}
+
+// A complete, valid answer is still counted even if the context ends
+// right after it arrives: only a failure is reclassified.
+func TestAlertmanagerClient_ValidAnswerAfterContextEndIsCounted(t *testing.T) {
+	fa := newFakeAlertmanager(t, amList(amAlert("KubePodCrashLooping", "critical", "active")))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt := cancelAfterResponse{base: testTransport(), cancel: cancel}
+	am, err := newAlertmanagerClient(fa.srv.URL, newBearerRoundTripper(rt, fa.srv.URL, ""))
+	if err != nil {
+		t.Fatalf("building client: %v", err)
+	}
+	got, err := am.Counts(ctx)
+	if err != nil {
+		t.Fatalf("Counts: %v", err)
+	}
+	if got != (AlertCounts{Active: 1, Critical: 1}) {
+		t.Fatalf("got %+v", got)
+	}
 }
 
 // redirectingAM binds an https Alertmanager that answers every request with
