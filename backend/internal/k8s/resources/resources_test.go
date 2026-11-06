@@ -515,6 +515,53 @@ func TestListNamespaces(t *testing.T) {
 	}
 }
 
+// A cluster-scoped kind's detail URL is /resources/{kind}/{name}. The router
+// binds that two-segment shape to HandleListResource (it is also the
+// namespaced list route), so the handler must answer it with the one named
+// object, not the whole list.
+func TestGetClusterScoped_TwoSegmentRoute(t *testing.T) {
+	h, _ := testHandler(t,
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "adguard"}},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}},
+	)
+
+	get := func(kind, name string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		req := requestWithUser("GET", "/api/v1/resources/"+kind+"/"+name, "")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("kind", kind)
+		rctx.URLParams.Add("namespace", name)
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		h.HandleListResource(rr, req)
+		return rr
+	}
+
+	for _, tc := range []struct{ kind, name string }{
+		{"namespaces", "adguard"},
+		{"nodes", "worker-1"},
+	} {
+		rr := get(tc.kind, tc.name)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s/%s: expected 200, got %d: %s", tc.kind, tc.name, rr.Code, rr.Body.String())
+		}
+		var body struct {
+			Data map[string]any `json:"data"`
+		}
+		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+			t.Fatalf("%s/%s: data is not a single object: %v", tc.kind, tc.name, err)
+		}
+		meta, _ := body.Data["metadata"].(map[string]any)
+		if got := meta["name"]; got != tc.name {
+			t.Fatalf("%s/%s: expected object named %q, got %v", tc.kind, tc.name, tc.name, got)
+		}
+	}
+
+	if rr := get("namespaces", "missing"); rr.Code != http.StatusNotFound {
+		t.Fatalf("missing namespace: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestListServices(t *testing.T) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-svc", Namespace: "default"},
