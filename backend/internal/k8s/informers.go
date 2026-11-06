@@ -441,7 +441,11 @@ func (m *InformerManager) RegisterEventHandlers(cb EventCallback) {
 func (m *InformerManager) emitEvent(cb EventCallback, eventType, kind string, obj interface{}) {
 	// Deep copy first to avoid data races with informer cache
 	if copier, ok := obj.(runtime.Object); ok {
-		obj = copier.DeepCopyObject()
+		cp := copier.DeepCopyObject()
+		// The copy is ours, so stamp it in place: a detail page swaps in the
+		// event object and must still render a re-appliable manifest.
+		StampTypeMeta(cp)
+		obj = cp
 	}
 	meta, ok := obj.(metav1.Object)
 	if !ok {

@@ -32,6 +32,7 @@ import type {
   Pod,
   StatefulSet,
 } from "@/lib/k8s-types.ts";
+import type { ApplyResponse } from "@/lib/yaml-apply.ts";
 import { getOverviewComponent } from "@/src/components/k8s/detail/index.tsx";
 import { PinToggle } from "@/src/components/k8s/PinToggle.tsx";
 import { CodeMirrorEditor } from "@/src/components/ui/CodeMirrorEditor.tsx";
@@ -195,6 +196,34 @@ function deriveSubtitle(
   }
 
   return parts.join(" · ");
+}
+
+/**
+ * The error to show for an apply whose documents the server rejected, or
+ * null when every document applied.
+ */
+function applyFailureMessage(res: ApplyResponse | undefined): string | null {
+  if (!res?.summary || res.summary.failed === 0) return null;
+  const errors = (res.results ?? [])
+    .filter((r) => r.action === "failed")
+    .map((r) => r.error ?? `${r.kind} ${r.name} was not applied`);
+  return errors.length > 0 ? errors.join("; ") : "Apply failed";
+}
+
+/** Renders a resource as the YAML the detail page shows and edits. */
+function resourceToYaml(
+  resource: K8sResource,
+  includeManagedFields: boolean,
+): string {
+  const obj = structuredClone(resource);
+  if (!includeManagedFields) {
+    delete obj.metadata.managedFields;
+  }
+  try {
+    return stringify(obj, { lineWidth: 0 });
+  } catch {
+    return JSON.stringify(obj, null, 2);
+  }
 }
 
 // Kinds that get a live metrics rail
@@ -470,18 +499,13 @@ export default function ResourceDetail({
   );
 
   // Generate YAML from resource
-  const yamlContent = useMemo(() => {
-    if (!resource.value) return "";
-    const obj = structuredClone(resource.value);
-    if (!showManagedFields.value) {
-      delete obj.metadata.managedFields;
-    }
-    try {
-      return stringify(obj, { lineWidth: 0 });
-    } catch {
-      return JSON.stringify(obj, null, 2);
-    }
-  }, [resource.value, showManagedFields.value]);
+  const yamlContent = useMemo(
+    () =>
+      resource.value
+        ? resourceToYaml(resource.value, showManagedFields.value)
+        : "",
+    [resource.value, showManagedFields.value],
+  );
 
   // Keep ref in sync for the dirty guard computed signal
   yamlContentRef.current = yamlContent;
@@ -702,7 +726,13 @@ export default function ResourceDetail({
                     <>
                       <GhostButton
                         onClick={() => {
-                          yamlEditContent.value = yamlContent;
+                          // An apply that carries managedFields is rejected
+                          // by the API server, so editing always starts from
+                          // the manifest without them.
+                          showManagedFields.value = false;
+                          yamlEditContent.value = resource.value
+                            ? resourceToYaml(resource.value, false)
+                            : "";
                           yamlEditing.value = true;
                           yamlApplyError.value = null;
                           yamlApplySuccess.value = false;
@@ -764,10 +794,19 @@ export default function ResourceDetail({
                           yamlApplyError.value = null;
                           yamlApplySuccess.value = false;
                           try {
-                            await apiPostRaw(
+                            const res = await apiPostRaw<ApplyResponse>(
                               "/v1/yaml/apply",
                               yamlEditContent.value,
                             );
+                            // /yaml/apply answers 200 even when the
+                            // server-side apply rejects the document (a field
+                            // ownership conflict, a stale resourceVersion, an
+                            // invalid field). Keep the edit and show why.
+                            const failure = applyFailureMessage(res.data);
+                            if (failure) {
+                              yamlApplyError.value = failure;
+                              return;
+                            }
                             yamlApplySuccess.value = true;
                             yamlEditing.value = false;
                             await fetchResource();
@@ -1094,9 +1133,17 @@ export default function ResourceDetail({
     </>
   ) : undefined;
 
-  // Metrics rail — only for rail-eligible kinds with a namespace
+  // Metrics rail — only for rail-eligible kinds with a namespace.
+  //
+  // Never gate this on IS_BROWSER. The rail decides whether DetailShell
+  // renders its two-column grid, so the server and the first browser render
+  // must agree on it: hydration adopts the server's elements without
+  // re-applying their props, and a grid the server did not emit strands every
+  // element below it one level off (the loaded tab ends up inside the loading
+  // spinner's flex box). MetricsRail is SSR-safe on its own: it renders
+  // nothing on the server.
   const metricsRail =
-    IS_BROWSER && RAIL_KINDS.has(kind) && namespace ? (
+    RAIL_KINDS.has(kind) && namespace ? (
       <MetricsRail kind={kind} name={name} namespace={namespace} />
     ) : undefined;
 

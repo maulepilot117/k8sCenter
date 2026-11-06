@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 const (
@@ -128,7 +129,21 @@ func (h *Handler) HandleGetResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeData(w, item)
+	writeData(w, withTypeMeta(item))
+}
+
+// withTypeMeta returns item ready to serve as a complete manifest: a copy
+// carrying apiVersion and kind when the typed object arrived without them.
+// It copies rather than stamping in place because a local item is the
+// informer cache's own object, shared with every concurrent reader.
+func withTypeMeta(item any) any {
+	obj, ok := item.(runtime.Object)
+	if !ok || !obj.GetObjectKind().GroupVersionKind().Empty() {
+		return item
+	}
+	cp := obj.DeepCopyObject()
+	k8s.StampTypeMeta(cp)
+	return cp
 }
 
 // HandleCreateResource handles POST /api/v1/resources/{kind}[/{namespace}]
@@ -362,7 +377,7 @@ func (h *Handler) getRemote(
 		return
 	}
 
-	writeData(w, item)
+	writeData(w, withTypeMeta(item))
 }
 
 // inNamespace renders the " in namespace <ns>" clause of an error message,
