@@ -25,16 +25,41 @@ import { canPerform } from "@/lib/permissions.ts";
 /** Valid action identifiers. */
 export type ActionId = "scale" | "restart" | "delete" | "suspend" | "trigger";
 
-/** Actions available per resource kind. */
+/**
+ * Actions available per resource kind, keyed by the web's adapter slug
+ * (`pvcs`, not mobile's `persistentvolumeclaims`; see RBAC_RESOURCE_FOR_KIND).
+ *
+ * Differences from the mobile map, on purpose: mobile has `rollback` on
+ * deployments and defers rolebinding / clusterrolebinding delete. Endpoints
+ * are absent on both: the backend adapter is read-only because the endpoints
+ * controller owns them.
+ */
 export const ACTIONS_BY_KIND: Record<string, ActionId[]> = {
   deployments: ["scale", "restart", "delete"],
   statefulsets: ["scale", "restart", "delete"],
   daemonsets: ["restart", "delete"],
+  replicasets: ["delete"],
   pods: ["delete"],
   jobs: ["suspend", "delete"],
   cronjobs: ["suspend", "trigger", "delete"],
+  services: ["delete"],
+  ingresses: ["delete"],
+  networkpolicies: ["delete"],
+  configmaps: ["delete"],
+  secrets: ["delete"],
+  pvcs: ["delete"],
+  namespaces: ["delete"],
   rolebindings: ["delete"],
   clusterrolebindings: ["delete"],
+};
+
+/**
+ * The RBAC summary keys on Kubernetes resource names. Where the web's slug
+ * differs, permission checks use this name; without it a PVC's actions never
+ * pass the check.
+ */
+const RBAC_RESOURCE_FOR_KIND: Record<string, string> = {
+  pvcs: "persistentvolumeclaims",
 };
 
 /** Maps action IDs to the k8s verb needed to perform them. */
@@ -54,8 +79,9 @@ export function getVisibleActions(
 ): ActionId[] {
   const all = ACTIONS_BY_KIND[kind] ?? [];
   if (!rbac) return all; // Permissions not loaded — show all (optimistic)
+  const resource = RBAC_RESOURCE_FOR_KIND[kind] ?? kind;
   return all.filter((actionId) =>
-    canPerform(rbac, kind, ACTION_VERB_MAP[actionId], namespace),
+    canPerform(rbac, resource, ACTION_VERB_MAP[actionId], namespace),
   );
 }
 
@@ -77,10 +103,15 @@ export interface ActionMeta {
   confirmMessage?: string;
 }
 
-/** Get display metadata for an action, considering the resource's current state. */
+/**
+ * Get display metadata for an action, considering the resource's current
+ * state. `kind` is the caller's slug; list rows carry no `kind` field, so
+ * without it a namespace delete could not be told apart.
+ */
 export function getActionMeta(
   actionId: ActionId,
   resource: K8sResource,
+  kind?: string,
 ): ActionMeta {
   switch (actionId) {
     case "scale":
@@ -95,10 +126,16 @@ export function getActionMeta(
     case "delete": {
       const owners = resource.metadata.ownerReferences;
       const owner = owners && owners.length > 0 ? owners[0] : null;
-      const kind = (resource as { kind?: string }).kind ?? "resource";
-      const msg = owner
-        ? `This ${kind} is managed by ${owner.kind}/${owner.name} and will be recreated after deletion.`
-        : `This will permanently delete "${resource.metadata.name}".`;
+      const resourceKind = (resource as { kind?: string }).kind ?? "resource";
+      const name = resource.metadata.name;
+      // A namespace delete cascades to everything in it; the type-to-confirm
+      // gate only means something if the message says so (as on mobile).
+      const isNamespace = resourceKind === "Namespace" || kind === "namespaces";
+      const msg = isNamespace
+        ? `This will delete namespace "${name}" AND every resource inside it (pods, services, configmaps, secrets, etc.). This cannot be undone.`
+        : owner
+          ? `This ${resourceKind} is managed by ${owner.kind}/${owner.name} and will be recreated after deletion.`
+          : `This will permanently delete "${name}".`;
       return {
         label: "Delete",
         danger: true,
@@ -128,6 +165,23 @@ export function getActionMeta(
   }
 }
 
+/**
+ * The API path of one resource. A cluster-scoped resource (empty namespace)
+ * has no namespace segment: `/resources/namespaces/<name>`, never
+ * `/resources/namespaces//<name>`, which the backend reads as an empty name.
+ * Mirrors `_resourceBase` in mobile/lib/api/resource_actions.dart.
+ */
+export function resourcePath(
+  kind: string,
+  namespace: string,
+  name: string,
+): string {
+  const segs = ["/v1/resources", encodeURIComponent(kind)];
+  if (namespace) segs.push(encodeURIComponent(namespace));
+  segs.push(encodeURIComponent(name));
+  return segs.join("/");
+}
+
 /** Execute a resource action. Returns a result message on success, throws on error. */
 export async function executeAction(
   actionId: ActionId,
@@ -136,7 +190,7 @@ export async function executeAction(
   name: string,
   params?: Record<string, unknown>,
 ): Promise<string> {
-  const path = `/v1/resources/${kind}/${namespace}/${name}`;
+  const path = resourcePath(kind, namespace, name);
 
   switch (actionId) {
     case "scale": {

@@ -306,7 +306,7 @@ export default function ResourceDetail({
 
   const handleAction = (actionId: ActionId) => {
     if (actionLoading.value || !resource.value) return;
-    const meta = getActionMeta(actionId, resource.value);
+    const meta = getActionMeta(actionId, resource.value, kind);
 
     if (actionId === "scale") {
       const spec = resource.value.spec as { replicas?: number } | undefined;
@@ -1223,6 +1223,7 @@ export default function ResourceDetail({
           const meta = getActionMeta(
             confirmAction.value!.actionId,
             resource.value!,
+            kind,
           );
           const isDestructive = meta.confirm === "destructive";
           return (

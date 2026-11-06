@@ -318,6 +318,7 @@ void main() {
             'secrets': ['*'],
             'replicasets': ['*'],
             'ingresses': ['*'],
+            'networkpolicies': ['*'],
             'persistentvolumeclaims': ['*'],
             'namespaces': ['*'],
           },
@@ -329,6 +330,7 @@ void main() {
         'secrets',
         'replicasets',
         'ingresses',
+        'networkpolicies',
         'persistentvolumeclaims',
         'namespaces',
       ]) {

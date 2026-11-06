@@ -40,6 +40,10 @@ enum ActionId { scale, restart, delete, suspend, trigger, rollback }
 ///     assumes namespaced resources, which produces a malformed
 ///     `/.../<kind>//<name>` for cluster-scoped delete. Tracked for M3.)
 ///   - nodes (delete is not a routine oncall verb; deferred per master plan.)
+///
+/// Keys are K8s plurals; the web map keys PVCs by its adapter slug `pvcs`
+/// (see [_routeKindAliases]). Endpoints are absent on both: the backend
+/// adapter is read-only because the endpoints controller owns them.
 const Map<String, List<ActionId>> actionsByKind = {
   'deployments': [
     ActionId.scale,
@@ -55,6 +59,7 @@ const Map<String, List<ActionId>> actionsByKind = {
   'cronjobs': [ActionId.suspend, ActionId.trigger, ActionId.delete],
   'services': [ActionId.delete],
   'ingresses': [ActionId.delete],
+  'networkpolicies': [ActionId.delete],
   'configmaps': [ActionId.delete],
   'secrets': [ActionId.delete],
   'persistentvolumeclaims': [ActionId.delete],

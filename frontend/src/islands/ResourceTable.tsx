@@ -630,7 +630,7 @@ export default function ResourceTableIsland({
   const handleActionClick = (actionId: ActionId, resource: K8sResource) => {
     if (actionLoading.value) return;
     actionMenuOpen.value = null;
-    const meta = getActionMeta(actionId, resource);
+    const meta = getActionMeta(actionId, resource, kind);
 
     if (actionId === "scale") {
       const spec = resource.spec as { replicas?: number } | undefined;
@@ -740,7 +740,11 @@ export default function ResourceTableIsland({
 
   // Confirmation dialog
   const confirmMeta = confirmAction.value
-    ? getActionMeta(confirmAction.value.actionId, confirmAction.value.resource)
+    ? getActionMeta(
+        confirmAction.value.actionId,
+        confirmAction.value.resource,
+        kind,
+      )
     : null;
   const isDestructive = confirmMeta?.confirm === "destructive";
   const confirmName = confirmAction.value?.resource.metadata.name ?? "";
