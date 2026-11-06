@@ -85,6 +85,10 @@ func (h *Handler) HandlePodLogs(w http.ResponseWriter, r *http.Request) {
 
 	stream, err := cs.CoreV1().Pods(ns).GetLogs(name, opts).Stream(r.Context())
 	if err != nil {
+		if previous && IsNoPreviousContainer(err) {
+			writeError(w, http.StatusNotFound, NoPreviousContainerMessage, "")
+			return
+		}
 		mapK8sError(w, err, "get", "Pod logs", ns, name)
 		return
 	}

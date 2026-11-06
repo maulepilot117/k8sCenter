@@ -11,6 +11,7 @@ import type { DiagnosticResult } from "@/src/islands/DiagnosticChecklist.tsx";
 import DiagnosticChecklist from "@/src/islands/DiagnosticChecklist.tsx";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { selectedNamespace } from "@/src/lib/namespace.ts";
 
 interface DiagnosticResponse {
   target: { kind: string; name: string; namespace: string };
@@ -104,7 +105,11 @@ export default function DiagnosticWorkspace() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     const params = new URLSearchParams(globalThis.location.search);
-    const ns = params.get("namespace") ?? "";
+    // A namespace in the URL wins; otherwise start from the top-bar
+    // selection, unless that is "all", which names no namespace.
+    const global = selectedNamespace.value;
+    const ns =
+      params.get("namespace") ?? (global && global !== "all" ? global : "");
     const k = params.get("kind") ?? "";
     const n = params.get("name") ?? "";
 

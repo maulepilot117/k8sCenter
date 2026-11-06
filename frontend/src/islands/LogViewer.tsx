@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
-import { apiGet, getAccessToken, refreshSession } from "@/lib/api.ts";
+import { ApiError, apiGet, getAccessToken, refreshSession } from "@/lib/api.ts";
 import {
   isReplayedLine,
   logLineTimestamp,
@@ -443,9 +443,15 @@ export default function LogViewer({
           if (pre) pre.scrollTop = pre.scrollHeight;
         });
       } catch (err) {
-        updateTabState(tabIdx, {
-          error: err instanceof Error ? err.message : "Failed to fetch logs",
-        });
+        // The server's own message ("this container has no previous
+        // instance…") reads better than "API error 404: …".
+        const message =
+          err instanceof ApiError && err.body?.error?.message
+            ? err.body.error.message
+            : err instanceof Error
+              ? err.message
+              : "Failed to fetch logs";
+        updateTabState(tabIdx, { lines: [], error: message });
         loading.value = false;
       }
     },
@@ -653,6 +659,16 @@ export default function LogViewer({
             type="checkbox"
             checked={previous.value}
             onChange={(e) => {
+              // The lines shown belong to the other instance; keeping them
+              // would put a "no previous instance" error above current logs.
+              lastTimestamp.current.clear();
+              resumeAfter.current.clear();
+              tabStates.value = tabStates.value.map((s) => ({
+                ...s,
+                lines: [],
+                droppedCount: 0,
+                error: "",
+              }));
               previous.value = (e.target as HTMLInputElement).checked;
             }}
           />

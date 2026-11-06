@@ -236,6 +236,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 			}), func(m resourceMeta) (Health, string) {
 				return replicaSetHealth(m.obj.(*appsv1.ReplicaSet))
 			})
+			markIdleReplicaSets(graph, replicaSets)
 		}
 	}
 
@@ -699,6 +700,25 @@ func deploymentHealth(dep *appsv1.Deployment) (Health, string) {
 		return HealthDegraded, summary
 	}
 	return HealthFailing, summary
+}
+
+// markIdleReplicaSets sets Idle on each ReplicaSet node scaled to zero with no
+// pods left. An unset spec.replicas defaults to 1, so it is never idle.
+func markIdleReplicaSets(graph *Graph, replicaSets []*appsv1.ReplicaSet) {
+	idle := make(map[string]bool)
+	for _, rs := range replicaSets {
+		if rs.Spec.Replicas != nil && *rs.Spec.Replicas == 0 && rs.Status.Replicas == 0 {
+			idle[string(rs.UID)] = true
+		}
+	}
+	if len(idle) == 0 {
+		return
+	}
+	for i := range graph.Nodes {
+		if graph.Nodes[i].Kind == "ReplicaSet" && idle[graph.Nodes[i].ID] {
+			graph.Nodes[i].Idle = true
+		}
+	}
 }
 
 func replicaSetHealth(rs *appsv1.ReplicaSet) (Health, string) {

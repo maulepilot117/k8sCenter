@@ -299,3 +299,39 @@ test("a complete blast radius renders no truncation notice", async () => {
   ).toBeNull();
   expect(root.textContent).not.toContain("Blast radius is incomplete");
 });
+
+// B7: with no namespace in the URL, the form starts from the top-bar
+// selection; "all" names no namespace, and a URL namespace still wins.
+test("the namespace field starts from the top-bar selection", async () => {
+  const { selectedNamespace } = await import("@/src/lib/namespace.ts");
+  const before = selectedNamespace.value;
+  const field = () =>
+    (host as HTMLElement).querySelector(
+      'input[id$="-namespace"]',
+    ) as HTMLInputElement;
+  const mountAt = (url: string) => {
+    if (host) {
+      act(() => render(null, host as HTMLElement));
+      host.remove();
+    }
+    globalThis.history.replaceState(null, "", url);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+  };
+  try {
+    selectedNamespace.value = "team-b";
+    mountAt("/");
+    expect(field().value).toBe("team-b");
+
+    selectedNamespace.value = "all";
+    mountAt("/");
+    expect(field().value).toBe("");
+
+    selectedNamespace.value = "team-b";
+    mountAt("/?namespace=team-a");
+    expect(field().value).toBe("team-a");
+  } finally {
+    selectedNamespace.value = before;
+  }
+});

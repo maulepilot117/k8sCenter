@@ -434,3 +434,40 @@ test("the badge names a remote cluster by its registered name", async () => {
     host?.querySelector('[data-testid="session-cluster-badge"]')?.textContent,
   ).toBe("On prod-east");
 });
+
+// B6: the current container's lines must not stay under a "no previous
+// instance" refusal, and the refusal is the server's own sentence.
+test("Previous on a container that never restarted shows the refusal alone", async () => {
+  jest.useFakeTimers();
+  try {
+    const first = mountViewer();
+    deliver(first, { type: "subscribed" });
+    await deliverLines(first, ["current line 1", "current line 2"]);
+    expect(shownLines()).toEqual(["current line 1", "current line 2"]);
+
+    const box = host?.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    box.checked = true;
+    act(() => {
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+
+    const second = latestSocket();
+    expect(second).not.toBe(first);
+    act(() => second.onopen?.());
+    expect(second.sent.at(-1)).toMatchObject({ previous: true });
+    deliver(second, { type: "subscribed" });
+    deliver(second, {
+      type: "error",
+      message: "this container has no previous instance: it has not restarted",
+    });
+    await settle();
+
+    expect(host?.textContent).toContain("no previous instance");
+    expect(host?.textContent).not.toContain("current line");
+  } finally {
+    jest.useRealTimers();
+  }
+});
