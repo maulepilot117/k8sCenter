@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   fetchCounts,
   formatCount,
+  getCount,
   REMOTE_COUNT_CAP,
   resetCountsForTest,
   resourceCounts,
@@ -132,5 +133,32 @@ describe("fetchCounts", () => {
     expect(calls[0].url).toContain("/v1/resources/counts?namespace=default");
     expect(calls[0].clusterHeader).toBe("local");
     expect(resourceCounts.value).toEqual({ pods: 3 });
+  });
+});
+
+describe("getCount", () => {
+  // The counts map is keyed by API resource name, but several list pages
+  // name their kind by the backend adapter's short kind.
+  test("a short adapter kind reads its API resource's count", () => {
+    resourceCounts.value = {
+      persistentvolumeclaims: 16,
+      persistentvolumes: 18,
+      horizontalpodautoscalers: 2,
+      poddisruptionbudgets: 1,
+    };
+    expect(getCount("pvcs")).toBe(16);
+    expect(getCount("pvs")).toBe(18);
+    expect(getCount("hpas")).toBe(2);
+    expect(getCount("pdbs")).toBe(1);
+    expect(getCount("persistentvolumeclaims")).toBe(16);
+  });
+
+  // Secrets are never counted, and a kind the user may not list is omitted:
+  // either way the count is unknown, which is not the same as zero.
+  test("a kind the backend did not count is unknown, not zero", () => {
+    resourceCounts.value = { configmaps: 4 };
+    expect(getCount("secrets")).toBeNull();
+    expect(formatCount("secrets")).toBeNull();
+    expect(getCount("configmaps")).toBe(4);
   });
 });
