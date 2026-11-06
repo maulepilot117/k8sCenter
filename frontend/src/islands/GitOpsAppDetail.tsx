@@ -245,7 +245,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   if (error.value || !detail.value) {
     return (
       <div class="p-6">
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted mb-4">
             {error.value ?? "Application not found"}
           </p>

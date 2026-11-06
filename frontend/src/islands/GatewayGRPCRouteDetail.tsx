@@ -89,7 +89,7 @@ export default function GatewayGRPCRouteDetailIsland({
           {detail.rules.map((rule, ri) => (
             <div
               key={ri}
-              class="rounded-lg border border-border-primary bg-bg-elevated p-5 space-y-4"
+              class="rounded-lg border border-border-primary bg-elevated p-5 space-y-4"
             >
               <h3 class="text-sm font-medium text-text-primary">
                 Rule {ri + 1}

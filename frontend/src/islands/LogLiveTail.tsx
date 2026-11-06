@@ -298,15 +298,15 @@ export default function LogLiveTail(props: LogLiveTailProps) {
   return (
     <div class="flex flex-col rounded-lg border border-border-primary">
       {/* Status bar */}
-      <div class="flex items-center justify-between border-b border-border-primary bg-bg-surface px-4 py-2">
+      <div class="flex items-center justify-between border-b border-border-primary bg-surface px-4 py-2">
         <div class="flex items-center gap-2 text-xs">
           <span
             class={`h-2 w-2 rounded-full ${
               status.value === "connected"
-                ? "bg-status-success"
+                ? "bg-success"
                 : status.value === "disconnected"
-                  ? "bg-status-error"
-                  : "bg-status-warning animate-pulse"
+                  ? "bg-danger"
+                  : "bg-warning animate-pulse"
             }`}
           />
           <span class="text-text-muted capitalize">
@@ -317,7 +317,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
             &middot; {props.lines.value.length} lines
           </span>
           {error.value && (
-            <span class="text-status-error">&middot; {error.value}</span>
+            <span class="text-danger">&middot; {error.value}</span>
           )}
           {error.value && status.value === "disconnected" && (
             <Button variant="ghost" size="sm" onClick={reconnect}>
@@ -328,7 +328,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
         {!autoScroll.value && (
           <button
             type="button"
-            class="rounded bg-accent-primary px-2 py-0.5 text-xs text-bg-base font-semibold"
+            class="rounded bg-accent px-2 py-0.5 text-xs text-(--bg-base) font-semibold"
             onClick={resumeScroll}
           >
             Resume scroll
@@ -354,7 +354,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
           return (
             <div
               key={i}
-              class={`flex px-4 py-0.5 ${isError ? "bg-status-error/5" : ""}`}
+              class={`flex px-4 py-0.5 ${isError ? "bg-danger/5" : ""}`}
             >
               <span class="min-w-[140px] shrink-0 text-text-muted">
                 {(() => {
@@ -367,7 +367,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
                 })()}
               </span>
               {entry.labels?.pod && (
-                <span class="min-w-[120px] shrink-0 text-status-info">
+                <span class="min-w-[120px] shrink-0 text-info">
                   {entry.labels.pod.slice(0, 18)}
                 </span>
               )}

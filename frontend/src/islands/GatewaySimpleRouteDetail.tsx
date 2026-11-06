@@ -82,7 +82,7 @@ export default function GatewaySimpleRouteDetailIsland({
       {/* Header */}
       <div class="flex flex-wrap items-center gap-3">
         <h1 class="text-2xl font-bold text-text-primary">{detail.name}</h1>
-        <span class="inline-block rounded-full px-3 py-1 text-xs font-medium bg-bg-elevated border border-border-primary text-text-secondary">
+        <span class="inline-block rounded-full px-3 py-1 text-xs font-medium bg-elevated border border-border-primary text-text-secondary">
           {kindLabel}
         </span>
       </div>
@@ -98,7 +98,7 @@ export default function GatewaySimpleRouteDetailIsland({
             {detail.hostnames.map((h) => (
               <span
                 key={h}
-                class="inline-block rounded-full px-3 py-1 text-xs font-medium bg-bg-elevated border border-border-primary text-text-secondary"
+                class="inline-block rounded-full px-3 py-1 text-xs font-medium bg-elevated border border-border-primary text-text-secondary"
               >
                 {h}
               </span>

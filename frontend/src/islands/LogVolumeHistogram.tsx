@@ -30,7 +30,7 @@ export default function LogVolumeHistogram(props: LogVolumeHistogramProps) {
   const total = buckets.reduce((sum, b) => sum + b.count, 0);
 
   return (
-    <div class="flex items-center gap-2 rounded-lg border border-border-primary bg-bg-surface px-4 py-2">
+    <div class="flex items-center gap-2 rounded-lg border border-border-primary bg-surface px-4 py-2">
       <span class="text-xs text-text-muted">Volume</span>
       <div class="flex flex-1 items-end gap-px" style={{ height: "24px" }}>
         {buckets.map((bucket, i) => {
@@ -38,7 +38,7 @@ export default function LogVolumeHistogram(props: LogVolumeHistogramProps) {
           return (
             <div
               key={i}
-              class="flex-1 rounded-t bg-accent-dim hover:bg-accent-primary/50 transition-colors"
+              class="flex-1 rounded-t bg-accent-dim hover:bg-accent/50 transition-colors"
               style={{ height: `${height}%` }}
               title={`${bucket.count} entries`}
             />

@@ -209,7 +209,7 @@ export default function GitOpsApplications() {
 
       {/* Tool status banner */}
       {status.value && !noEngine && (
-        <div class="mb-6 rounded-lg border border-border-primary p-4 flex items-center gap-4 bg-bg-elevated">
+        <div class="mb-6 rounded-lg border border-border-primary p-4 flex items-center gap-4 bg-elevated">
           <div class="flex items-center gap-2">
             <span class="text-sm font-medium text-text-primary">
               Tools detected:
@@ -227,7 +227,7 @@ export default function GitOpsApplications() {
 
       {/* No engine state */}
       {noEngine && !loading.value && (
-        <div class="mb-6 rounded-lg border border-border-primary p-6 text-center bg-bg-elevated">
+        <div class="mb-6 rounded-lg border border-border-primary p-6 text-center bg-elevated">
           <p class="text-lg font-medium text-text-primary mb-2">
             No GitOps tool detected
           </p>
@@ -268,7 +268,7 @@ export default function GitOpsApplications() {
           />
         </div>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-base text-text-primary"
           value={filterTool.value}
           onChange={(e) => {
             filterTool.value = (e.target as HTMLSelectElement).value;
@@ -280,7 +280,7 @@ export default function GitOpsApplications() {
           <option value="fluxcd">Flux</option>
         </select>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-base text-text-primary"
           value={filterSync.value}
           onChange={(e) => {
             filterSync.value = (e.target as HTMLSelectElement).value;
@@ -295,7 +295,7 @@ export default function GitOpsApplications() {
           <option value="failed">Failed</option>
         </select>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-base text-text-primary"
           value={filterHealth.value}
           onChange={(e) => {
             filterHealth.value = (e.target as HTMLSelectElement).value;
@@ -412,7 +412,7 @@ export default function GitOpsApplications() {
       )}
 
       {!loading.value && !error.value && filtered.length === 0 && !noEngine && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">
             {applications.value.length === 0
               ? "No applications found. Applications will appear here once deployed via GitOps."

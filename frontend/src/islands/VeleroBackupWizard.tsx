@@ -313,7 +313,7 @@ export default function VeleroBackupWizard({ onClose }: Props) {
                   (e.target as HTMLInputElement).checked,
                 )
               }
-              class="rounded border-border"
+              class="rounded border-border-primary"
             />
             <label
               for="snapshotVolumes"

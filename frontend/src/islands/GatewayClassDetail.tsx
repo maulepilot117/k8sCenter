@@ -63,7 +63,7 @@ export default function GatewayClassDetailIsland({ name }: Props) {
 
       <h2 class="text-2xl font-bold text-text-primary">{gc.name}</h2>
 
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+      <div class="rounded-lg border border-border-primary bg-elevated p-5">
         <h3 class="text-sm font-semibold text-text-primary mb-4">Details</h3>
         <dl class="grid grid-cols-2 gap-4 text-sm">
           <div>

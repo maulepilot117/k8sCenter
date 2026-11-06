@@ -203,7 +203,7 @@ export default function CertificateDetailIsland({ namespace, name }: Props) {
       )}
 
       {/* Details */}
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+      <div class="rounded-lg border border-border-primary bg-elevated p-5">
         <h2 class="text-sm font-semibold text-text-primary mb-4">Details</h2>
         <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
           <div>

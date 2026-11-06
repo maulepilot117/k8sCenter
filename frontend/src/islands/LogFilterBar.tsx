@@ -132,9 +132,9 @@ export default function LogFilterBar(props: LogFilterBarProps) {
   if (!IS_BROWSER) return null;
 
   return (
-    <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border-primary bg-bg-surface p-3">
+    <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border-primary bg-surface p-3">
       <select
-        class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={namespace.value}
         onChange={(e) => {
           namespace.value = (e.target as HTMLSelectElement).value;
@@ -151,7 +151,7 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       </select>
 
       <select
-        class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={pod.value}
         onChange={(e) => {
           pod.value = (e.target as HTMLSelectElement).value;
@@ -167,7 +167,7 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       </select>
 
       <select
-        class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={container.value}
         onChange={(e) => {
           container.value = (e.target as HTMLSelectElement).value;
@@ -182,7 +182,7 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       </select>
 
       <select
-        class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={severity.value}
         onChange={(e) => {
           severity.value = (e.target as HTMLSelectElement).value;
@@ -198,7 +198,7 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       <div class="flex flex-1 items-center gap-1">
         <input
           type="text"
-          class="flex-1 rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-primary placeholder-text-muted"
+          class="flex-1 rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-primary placeholder-text-muted"
           placeholder={
             mode.value === "logql" ? "LogQL query..." : "Search text..."
           }
@@ -212,7 +212,7 @@ export default function LogFilterBar(props: LogFilterBarProps) {
         />
         <button
           type="button"
-          class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-xs text-text-muted hover:text-text-secondary"
+          class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-xs text-text-muted hover:text-text-secondary"
           onClick={() => {
             mode.value = mode.value === "search" ? "logql" : "search";
           }}
@@ -227,7 +227,7 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       </div>
 
       <select
-        class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
+        class="rounded border border-border-primary bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={timePreset.value}
         onChange={(e) => {
           timePreset.value = (e.target as HTMLSelectElement).value;
@@ -247,8 +247,8 @@ export default function LogFilterBar(props: LogFilterBarProps) {
         type="button"
         class={`rounded px-3 py-1.5 text-sm font-semibold ${
           props.isTailing.value
-            ? "bg-status-error"
-            : "border border-accent-primary bg-bg-elevated text-accent-primary"
+            ? "bg-danger"
+            : "border border-accent bg-elevated text-accent"
         }`}
         style={props.isTailing.value ? { color: "var(--bg-base)" } : undefined}
         onClick={handleLiveTail}

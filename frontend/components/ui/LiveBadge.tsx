@@ -19,7 +19,7 @@ export function RemoteRefreshHint({
   if (selectedCluster.value === LOCAL_CLUSTER_ID) return null;
   return (
     <span
-      class="inline-flex items-center self-center rounded-full px-2 py-0.5 text-xs font-medium text-text-muted bg-bg-elevated"
+      class="inline-flex items-center self-center rounded-full px-2 py-0.5 text-xs font-medium text-text-muted bg-elevated"
       title={`Live updates are off for a remote cluster. Use ${control} to see changes.`}
     >
       {control} to update

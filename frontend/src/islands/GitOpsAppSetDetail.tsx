@@ -170,7 +170,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
   if (error.value || !detail.value) {
     return (
       <div class="p-6">
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted mb-4">
             {error.value ?? "ApplicationSet not found"}
           </p>
@@ -260,7 +260,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
                 return (
                   <div
                     key={idx}
-                    class="rounded-lg border border-border-primary bg-bg-elevated"
+                    class="rounded-lg border border-border-primary bg-elevated"
                   >
                     <button
                       type="button"
@@ -290,7 +290,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
                 );
               })
             ) : (
-              <div class="text-center py-6 rounded-lg border border-border-primary bg-bg-elevated">
+              <div class="text-center py-6 rounded-lg border border-border-primary bg-elevated">
                 <p class="text-text-muted">No generators defined.</p>
               </div>
             )}
@@ -431,7 +431,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
                 </table>
               </div>
             ) : (
-              <div class="text-center py-8 rounded-lg border border-border-primary bg-bg-elevated">
+              <div class="text-center py-8 rounded-lg border border-border-primary bg-elevated">
                 <p class="text-text-muted">No generated applications found.</p>
               </div>
             )}

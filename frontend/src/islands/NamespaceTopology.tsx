@@ -524,7 +524,7 @@ export default function NamespaceTopology({
 
   if ((namespace ?? selectedNamespace.value) === "all") {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
+      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
         <p class="text-text-secondary">
           Select a namespace to view its resource topology.
         </p>
@@ -536,7 +536,7 @@ export default function NamespaceTopology({
 
   if (loading.value) {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
+      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
         <Spinner class="text-accent" />
         <span class="ml-3 text-text-secondary">Loading topology...</span>
       </div>
@@ -579,7 +579,7 @@ export default function NamespaceTopology({
 
   if (!graph.value || graph.value.nodes.length === 0) {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
+      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
         <p class="text-text-secondary">No resources found in this namespace.</p>
       </div>
     );
@@ -597,7 +597,7 @@ export default function NamespaceTopology({
     <div class="relative flex gap-0">
       {/* Graph area */}
       <div
-        class="flex-1 overflow-hidden rounded-lg border border-border-primary bg-bg-surface"
+        class="flex-1 overflow-hidden rounded-lg border border-border-primary bg-surface"
         style={{ minHeight: `${panelMinHeight}px` }}
       >
         {/* Toolbar */}
@@ -605,14 +605,14 @@ export default function NamespaceTopology({
           <div class="flex items-center gap-2">
             <button
               type="button"
-              class="rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
+              class="rounded border border-border-primary bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
               onClick={fitToView}
             >
               Fit to view
             </button>
             <button
               type="button"
-              class="rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
+              class="rounded border border-border-primary bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
               onClick={() => fetchGraph()}
             >
               Refresh
@@ -648,7 +648,7 @@ export default function NamespaceTopology({
                     class={`px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       active
                         ? "bg-accent"
-                        : "bg-bg-surface text-text-secondary hover:text-text-primary"
+                        : "bg-surface text-text-secondary hover:text-text-primary"
                     }`}
                     style={active ? { color: "var(--bg-base)" } : undefined}
                     onClick={() => {
@@ -928,7 +928,7 @@ export default function NamespaceTopology({
       {/* Slide-out detail panel */}
       {selected && (
         <div
-          class="shrink-0 overflow-y-auto border-l border-border-primary bg-bg-surface"
+          class="shrink-0 overflow-y-auto border-l border-border-primary bg-surface"
           style={{
             width: `${PANEL_WIDTH}px`,
             minHeight: `${panelMinHeight}px`,
@@ -1015,7 +1015,7 @@ export default function NamespaceTopology({
                   selected.namespace,
                   selected.name,
                 )}
-                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated"
+                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
               >
                 View Detail
               </a>
@@ -1024,7 +1024,7 @@ export default function NamespaceTopology({
                   href={`/observability/logs?namespace=${encodeURIComponent(
                     selected.namespace,
                   )}&pod=${encodeURIComponent(selected.name)}`}
-                  class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated"
+                  class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
                 >
                   View Logs
                 </a>
@@ -1033,7 +1033,7 @@ export default function NamespaceTopology({
                 href={`/observability/logs?namespace=${encodeURIComponent(
                   selected.namespace,
                 )}`}
-                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated"
+                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
               >
                 Investigate
               </a>

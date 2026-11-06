@@ -265,7 +265,7 @@ export default function LogExplorer() {
     const copy = lokiUnavailableCopy(status.reason, label, local);
     return (
       <div
-        class="rounded-lg border border-border-primary bg-bg-surface p-8 text-center"
+        class="rounded-lg border border-border-primary bg-surface p-8 text-center"
         data-testid="loki-unavailable"
       >
         <h3 class="text-lg font-semibold text-text-primary">{copy.title}</h3>
