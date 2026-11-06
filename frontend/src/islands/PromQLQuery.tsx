@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 import { apiGet } from "@/lib/api.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
@@ -11,6 +12,58 @@ interface QueryResult {
     values?: Array<[number, string]>;
   }>;
   warnings?: string[];
+}
+
+/** A range series reduced to what its table cell shows. Prometheus encodes
+ * sample values as strings, and "NaN" / "+Inf" are legal; those are dropped
+ * from the numbers but still counted as samples. */
+export interface SeriesSummary {
+  samples: number;
+  numbers: number[];
+  latest: number | null;
+  min: number | null;
+  max: number | null;
+}
+
+export function summarizeSeries(
+  values: Array<[number, string]>,
+): SeriesSummary {
+  const numbers = values
+    .map(([, v]) => Number.parseFloat(v))
+    .filter((v) => Number.isFinite(v));
+  return {
+    samples: values.length,
+    numbers,
+    latest: numbers.length > 0 ? (numbers.at(-1) as number) : null,
+    min: numbers.length > 0 ? Math.min(...numbers) : null,
+    max: numbers.length > 0 ? Math.max(...numbers) : null,
+  };
+}
+
+function formatSample(v: number | null): string {
+  if (v === null) return "N/A";
+  return Number.isInteger(v) ? String(v) : v.toPrecision(4);
+}
+
+/** A range series as a trend line with its latest value and range. */
+function RangeCell({ values }: { values: Array<[number, string]> }) {
+  const s = summarizeSeries(values);
+  return (
+    <div class="flex items-center gap-3">
+      <div class="w-48 shrink-0">
+        <SparklineChart data={s.numbers} color="var(--accent)" height={28} />
+      </div>
+      <div>
+        <div class="text-text-primary">{formatSample(s.latest)}</div>
+        <div class="text-text-muted">
+          {s.min !== null
+            ? `${formatSample(s.min)} – ${formatSample(s.max)} · `
+            : ""}
+          {s.samples} samples
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const TIME_RANGES = [
@@ -224,11 +277,13 @@ export default function PromQLQuery() {
                     const metricLabel = Object.entries(r.metric)
                       .map(([k, v]) => `${k}="${v}"`)
                       .join(",");
-                    const value = r.value
-                      ? r.value[1]
-                      : r.values
-                        ? `${r.values.length} samples`
-                        : "N/A";
+                    const value = r.value ? (
+                      r.value[1]
+                    ) : r.values ? (
+                      <RangeCell values={r.values} />
+                    ) : (
+                      "N/A"
+                    );
                     return (
                       <tr key={i} class="border-b border-border-subtle">
                         <td class="px-3 py-2 font-mono text-xs text-text-secondary">
