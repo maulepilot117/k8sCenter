@@ -89,6 +89,7 @@ export const RESOURCE_DETAIL_PATHS: Record<string, string> = {
   networkpolicies: "/networking/networkpolicies",
   persistentvolumes: "/cluster/pvs",
   pvs: "/cluster/pvs",
+  persistentvolumeclaims: "/storage/pvcs",
   pvcs: "/storage/pvcs",
   storageclasses: "/cluster/storageclasses",
   configmaps: "/config/configmaps",
@@ -110,6 +111,10 @@ export const RESOURCE_DETAIL_PATHS: Record<string, string> = {
   ciliumnetworkpolicies: "/networking/cilium-policies",
   nodes: "/cluster/nodes",
   namespaces: "/cluster/namespaces",
+  // Not a generic ResourceDetail kind, but its detail page has the same
+  // /{namespace}/{name} shape, so a reference to one (an Argo CD app's
+  // resources, an owner reference) can link to it.
+  externalsecrets: "/external-secrets/external-secrets",
 };
 
 /**

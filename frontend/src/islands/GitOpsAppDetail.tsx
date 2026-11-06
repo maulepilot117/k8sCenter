@@ -423,106 +423,128 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   );
 
   /* ── Resources tab ────────────────────────────────────────────── */
+  // Per-resource health is only shown when the source reports it. Argo CD 3
+  // no longer persists it in the Application (controller.resource.health.persist
+  // defaults to false) and Flux inventories never carry it, so a column of
+  // dashes would only look like missing data.
+  const anyHealth = (resources ?? []).some((r) => r.health);
   const resourcesPanel =
     resources && resources.length > 0 ? (
-      <div
-        class="overflow-x-auto rounded-lg border"
-        style={{ borderColor: "var(--border-primary)" }}
-      >
-        <table class="w-full text-sm">
-          <thead>
-            <tr
-              class="border-b"
-              style={{
-                borderColor: "var(--border-primary)",
-                background: "var(--bg-surface)",
-              }}
-            >
-              <th
-                class="px-3 py-2 text-left text-xs font-medium"
-                style={{ color: "var(--text-muted)" }}
+      <div class="space-y-2">
+        <div
+          class="overflow-x-auto rounded-lg border"
+          style={{ borderColor: "var(--border-primary)" }}
+        >
+          <table class="w-full text-sm">
+            <thead>
+              <tr
+                class="border-b"
+                style={{
+                  borderColor: "var(--border-primary)",
+                  background: "var(--bg-surface)",
+                }}
               >
-                Kind
-              </th>
-              <th
-                class="px-3 py-2 text-left text-xs font-medium"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Name
-              </th>
-              <th
-                class="px-3 py-2 text-left text-xs font-medium"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Namespace
-              </th>
-              <th
-                class="px-3 py-2 text-left text-xs font-medium"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Status
-              </th>
-              <th
-                class="px-3 py-2 text-left text-xs font-medium"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Health
-              </th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-border-subtle">
-            {resources.map((r: ManagedResource, i: number) => {
-              const href = resourceHref(r.kind, r.namespace, r.name);
-              const syncColor =
-                SYNC_COLORS[r.status.toLowerCase()] ?? "var(--text-secondary)";
-              const healthColor = r.health
-                ? (HEALTH_COLORS[r.health.toLowerCase()] ??
-                  "var(--text-secondary)")
-                : undefined;
-              return (
-                <tr
-                  key={`${r.kind}-${r.namespace}-${r.name}-${i}`}
-                  class="hover:bg-hover/30"
+                <th
+                  class="px-3 py-2 text-left text-xs font-medium"
+                  style={{ color: "var(--text-muted)" }}
                 >
-                  <td
-                    class="px-3 py-2"
-                    style={{ color: "var(--text-secondary)" }}
+                  Kind
+                </th>
+                <th
+                  class="px-3 py-2 text-left text-xs font-medium"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Name
+                </th>
+                <th
+                  class="px-3 py-2 text-left text-xs font-medium"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Namespace
+                </th>
+                <th
+                  class="px-3 py-2 text-left text-xs font-medium"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Status
+                </th>
+                {anyHealth && (
+                  <th
+                    class="px-3 py-2 text-left text-xs font-medium"
+                    style={{ color: "var(--text-muted)" }}
                   >
-                    {r.kind}
-                  </td>
-                  <td class="px-3 py-2">
-                    {href ? (
-                      <a
-                        href={href}
-                        class="hover:underline"
-                        style={{ color: "var(--accent)" }}
-                      >
-                        {r.name}
-                      </a>
-                    ) : (
-                      <span style={{ color: "var(--text-primary)" }}>
-                        {r.name}
-                      </span>
+                    Health
+                  </th>
+                )}
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-border-subtle">
+              {resources.map((r: ManagedResource, i: number) => {
+                const href = resourceHref(r.kind, r.namespace, r.name);
+                const syncColor =
+                  SYNC_COLORS[r.status.toLowerCase()] ??
+                  "var(--text-secondary)";
+                const healthColor = r.health
+                  ? (HEALTH_COLORS[r.health.toLowerCase()] ??
+                    "var(--text-secondary)")
+                  : undefined;
+                return (
+                  <tr
+                    key={`${r.kind}-${r.namespace}-${r.name}-${i}`}
+                    class="hover:bg-hover/30"
+                  >
+                    <td
+                      class="px-3 py-2"
+                      style={{ color: "var(--text-secondary)" }}
+                    >
+                      {r.kind}
+                    </td>
+                    <td class="px-3 py-2">
+                      {href ? (
+                        <a
+                          href={href}
+                          class="hover:underline"
+                          style={{ color: "var(--accent)" }}
+                        >
+                          {r.name}
+                        </a>
+                      ) : (
+                        <span style={{ color: "var(--text-primary)" }}>
+                          {r.name}
+                        </span>
+                      )}
+                    </td>
+                    <td
+                      class="px-3 py-2"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      {r.namespace ?? "-"}
+                    </td>
+                    <td class="px-3 py-2">
+                      <span style={{ color: syncColor }}>{r.status}</span>
+                    </td>
+                    {anyHealth && (
+                      <td class="px-3 py-2">
+                        {r.health ? (
+                          <span style={{ color: healthColor }}>{r.health}</span>
+                        ) : (
+                          <span style={{ color: "var(--text-muted)" }}>-</span>
+                        )}
+                      </td>
                     )}
-                  </td>
-                  <td class="px-3 py-2" style={{ color: "var(--text-muted)" }}>
-                    {r.namespace ?? "-"}
-                  </td>
-                  <td class="px-3 py-2">
-                    <span style={{ color: syncColor }}>{r.status}</span>
-                  </td>
-                  <td class="px-3 py-2">
-                    {r.health ? (
-                      <span style={{ color: healthColor }}>{r.health}</span>
-                    ) : (
-                      <span style={{ color: "var(--text-muted)" }}>-</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {!anyHealth && isArgo && (
+          <p class="text-xs" style={{ color: "var(--text-muted)" }}>
+            Argo CD isn't reporting per-resource health in this Application.
+            Argo CD 3 leaves it out unless controller.resource.health.persist is
+            enabled; the application's overall health is shown above.
+          </p>
+        )}
       </div>
     ) : (
       <div
