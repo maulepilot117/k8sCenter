@@ -412,6 +412,9 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/config/configmaps"
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>

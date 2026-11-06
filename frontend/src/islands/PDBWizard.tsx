@@ -388,6 +388,9 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/scaling/pdbs"
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>

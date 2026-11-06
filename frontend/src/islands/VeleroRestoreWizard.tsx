@@ -301,6 +301,9 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/backup/restores"
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>

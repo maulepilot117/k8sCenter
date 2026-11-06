@@ -427,6 +427,9 @@ export default function JobWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/workloads/jobs"
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>
