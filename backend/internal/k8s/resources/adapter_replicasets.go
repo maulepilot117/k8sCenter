@@ -58,4 +58,13 @@ func (replicaSetAdapter) GetDirect(ctx context.Context, cs kubernetes.Interface,
 	return cs.AppsV1().ReplicaSets(ns).Get(ctx, name, metav1.GetOptions{})
 }
 
+// Delete implements ResourceAdapter. ReplicaSets are otherwise read-only
+// here (they are created and scaled through their Deployment), but deleting
+// an old, scaled-down ReplicaSet is routine cleanup. A ReplicaSet a
+// Deployment still owns is recreated by its controller, which the UI says
+// in the confirmation.
+func (replicaSetAdapter) Delete(ctx context.Context, cs kubernetes.Interface, ns, name string) error {
+	return cs.AppsV1().ReplicaSets(ns).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
 func init() { Register(replicaSetAdapter{}) }
