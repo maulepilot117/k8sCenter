@@ -62,7 +62,12 @@ function stubApply(failed: number) {
     )) as unknown as typeof globalThis.fetch;
 }
 
-function mount(opts: { onApplied: () => void; onNext: () => void }) {
+function mount(opts: {
+  onApplied: () => void;
+  onNext: () => void;
+  yaml?: string;
+  maskValues?: (yaml: string) => string;
+}) {
   setAccessToken("t");
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -79,12 +84,13 @@ function mount(opts: { onApplied: () => void; onNext: () => void }) {
         nextLabel="Close"
       >
         <WizardReviewStep
-          yaml={"kind: ConfigMap\nmetadata:\n  name: cm\n"}
+          yaml={opts.yaml ?? "kind: ConfigMap\nmetadata:\n  name: cm\n"}
           onYamlChange={() => {}}
           loading={false}
           error={null}
           detailBasePath="/config/configmaps"
           onApplied={opts.onApplied}
+          maskValues={opts.maskValues}
         />
       </WizardShell>,
       host as HTMLElement,
@@ -140,4 +146,40 @@ test("an apply with failures keeps the guard and offers Done", async () => {
   expect(done).toHaveLength(1);
   act(() => done[0].click());
   expect(next).toBe(1);
+});
+
+// A masked review (the Secret wizard) still applies the real manifest: the
+// mask is for display only. "Show values" switches it off.
+test("a masked review applies the real YAML and can show the values", async () => {
+  stubApply(0);
+  const sent: string[] = [];
+  const stubbed = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    sent.push(String(init?.body ?? ""));
+    return stubbed(input, init);
+  }) as typeof globalThis.fetch;
+  const yaml = "kind: Secret\nstringData:\n  password: hunter2\n";
+  const root = mount({
+    onApplied: () => {},
+    onNext: () => {},
+    yaml,
+    maskValues: (y) => y.replace("hunter2", "***"),
+  });
+
+  expect(root.textContent).toContain("Values are hidden");
+  const show = buttons(root, "Show values");
+  expect(show).toHaveLength(1);
+  act(() => show[0].click());
+  expect(buttons(root, "Hide values")).toHaveLength(1);
+  expect(root.textContent).not.toContain("Values are hidden");
+  act(() => buttons(root, "Hide values")[0].click());
+
+  await act(async () => buttons(root, "Apply")[0].click());
+  await flush();
+  expect(sent).toEqual([yaml]);
+});
+
+test("a review with no mask has no values toggle", () => {
+  const root = mount({ onApplied: () => {}, onNext: () => {} });
+  expect(buttons(root, "Show values")).toHaveLength(0);
 });

@@ -1,5 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { ApiError, api, apiBlob, setAccessToken } from "./api.ts";
+import {
+  ApiError,
+  api,
+  apiBlob,
+  refreshSession,
+  setAccessToken,
+} from "./api.ts";
 
 // apiBlob shares api()'s transport: the bearer token, X-Cluster-ID, the
 // single 401 refresh-and-retry and ApiError parsing. It differs only in what
@@ -158,4 +164,44 @@ test("api() errors carry the response headers too", async () => {
   const err = (await api("/v1/things").catch((e) => e)) as ApiError;
   expect(err.reason).toBe("incident_busy");
   expect(err.headers?.get("Retry-After")).toBe("2");
+});
+
+// F: after a page load the token is gone and the chrome starts a refresh
+// (session-boot.ts). A request made meanwhile waits for it rather than going
+// out bare, taking a 401, and waiting anyway.
+const ok = () =>
+  new Response(JSON.stringify({ data: [] }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+
+test("with no token, a request waits on the refresh in flight and is sent once, with the token", async () => {
+  stubFetch([refreshed, ok, ok]);
+  const boot = refreshSession();
+  await Promise.all([api("/v1/resources/pods"), api("/v1/namespaces")]);
+  expect(await boot).toBe(true);
+  expect(calls.map((c) => c.url)).toEqual([
+    "/api/v1/auth/refresh",
+    "/api/v1/resources/pods",
+    "/api/v1/namespaces",
+  ]);
+  expect(calls[1].headers.get("Authorization")).toBe("Bearer fresh");
+  expect(calls[2].headers.get("Authorization")).toBe("Bearer fresh");
+});
+
+test("with no refresh in flight, a request is sent as before", async () => {
+  stubFetch([ok]);
+  await api("/v1/resources/pods");
+  expect(calls.map((c) => c.url)).toEqual(["/api/v1/resources/pods"]);
+});
+
+test("a joined refresh that failed is not tried again on the 401", async () => {
+  stubFetch([unauthorized, unauthorized]);
+  const boot = refreshSession();
+  await expect(api("/v1/resources/pods")).rejects.toBeInstanceOf(ApiError);
+  expect(await boot).toBe(false);
+  expect(calls.map((c) => c.url)).toEqual([
+    "/api/v1/auth/refresh",
+    "/api/v1/resources/pods",
+  ]);
 });

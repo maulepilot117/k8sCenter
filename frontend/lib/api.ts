@@ -289,13 +289,23 @@ async function send(
     });
   };
 
+  // With no token and a refresh already in flight (the one the page chrome
+  // starts on load, see src/lib/session-boot.ts), wait for it rather than
+  // send a request that can only 401 and then wait for it anyway. This
+  // joins a refresh; it never starts one.
+  let joined: boolean | undefined;
+  if (!accessToken && refreshPromise) {
+    joined = await refreshPromise;
+  }
+
   let res = await doFetch();
 
   // On 401, attempt a single token refresh and retry.
   // Check even when accessToken is null — after a full page reload the
   // in-memory token is gone but the httpOnly refresh cookie may still exist.
+  // A refresh this request already waited on and saw fail is not retried.
   if (res.status === 401) {
-    const refreshed = await refreshSession();
+    const refreshed = joined === false ? false : await refreshSession();
     if (refreshed) {
       res = await doFetch();
     } else {

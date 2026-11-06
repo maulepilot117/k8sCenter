@@ -51,6 +51,9 @@ export default function StepRail({
                   type="button"
                   onClick={() => isClickable && onStep(index)}
                   disabled={!isClickable}
+                  // Below sm only the number or a check shows; name the step.
+                  aria-label={`Step ${index + 1}: ${step.label}${isCompleted ? " (done)" : ""}`}
+                  aria-current={isCurrent ? "step" : undefined}
                   class={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                     isCurrent
                       ? "bg-brand/10 text-brand border border-brand/30"
@@ -122,6 +125,7 @@ export default function StepRail({
             key={s.label}
             type="button"
             onClick={() => onStep?.(i)}
+            aria-current={status === "active" ? "step" : undefined}
             style={{
               display: "flex",
               alignItems: "center",

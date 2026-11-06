@@ -232,6 +232,7 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
               (query.value = (e.target as HTMLInputElement).value)
             }
             placeholder="Filter in this section"
+            aria-label="Filter in this section"
             style={{
               background: "transparent",
               border: "none",
@@ -269,6 +270,7 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
                 <a
                   key={it.href}
                   href={it.href}
+                  aria-current={active ? "page" : undefined}
                   style={{
                     display: "flex",
                     alignItems: "center",
