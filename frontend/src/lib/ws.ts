@@ -80,24 +80,35 @@ export function connectWS(): void {
   wsStatus.value = "connecting";
   authenticated = false;
 
+  let sock: WebSocket;
   try {
-    ws = new WebSocket(getWsUrl());
+    sock = new WebSocket(getWsUrl());
   } catch {
     scheduleReconnect();
     return;
   }
+  ws = sock;
 
-  ws.onopen = () => {
+  // Every handler acts on its own socket and ignores events once that socket
+  // is no longer the module's current one (disconnected or replaced). A late
+  // event from a dropped socket would otherwise send on, or forget, the
+  // socket that replaced it.
+  sock.onopen = () => {
+    if (ws !== sock) {
+      sock.close();
+      return;
+    }
     const token = getAccessToken();
     if (token) {
-      ws!.send(JSON.stringify({ type: MSG_AUTH, token }));
+      sock.send(JSON.stringify({ type: MSG_AUTH, token }));
     } else {
-      ws!.close();
+      sock.close();
       wsStatus.value = "disconnected";
     }
   };
 
-  ws.onmessage = (event) => {
+  sock.onmessage = (event) => {
+    if (ws !== sock) return;
     try {
       const msg = JSON.parse(event.data);
       handleMessage(msg);
@@ -106,7 +117,8 @@ export function connectWS(): void {
     }
   };
 
-  ws.onclose = (event) => {
+  sock.onclose = (event) => {
+    if (ws !== sock) return;
     ws = null;
     authenticated = false;
     wsStatus.value = "disconnected";
@@ -124,7 +136,7 @@ export function connectWS(): void {
     scheduleReconnect();
   };
 
-  ws.onerror = () => {
+  sock.onerror = () => {
     // onclose will fire after onerror
   };
 }

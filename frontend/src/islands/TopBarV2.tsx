@@ -65,7 +65,11 @@ export default function TopBarV2() {
         padding: "0 16px",
         gap: "12px",
         minWidth: 0,
-        overflow: "hidden",
+        // Clip horizontally only. `overflow: hidden` made the bar a scroll
+        // container: its dropdowns were cut to the bar's height, and focusing
+        // an opened list scrolled every control out of view. `clip` on one
+        // axis leaves the other visible and is never scrollable.
+        overflowX: "clip",
       }}
     >
       {/* Left section: NavToggle + Cluster + Namespace + Search */}

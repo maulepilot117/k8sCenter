@@ -200,9 +200,10 @@ export default function ClusterSwitcher() {
 
   // Move focus to the listbox once it has actually rendered, so arrow keys
   // drive aria-activedescendant. Scheduling this from the click handler would
-  // race Preact's own render flush.
+  // race Preact's own render flush. preventScroll keeps the browser from
+  // scrolling an ancestor to reveal the list.
   useEffect(() => {
-    if (open.value) listRef.current?.focus();
+    if (open.value) listRef.current?.focus({ preventScroll: true });
   }, [open.value]);
 
   const current =
