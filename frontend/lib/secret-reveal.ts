@@ -5,10 +5,13 @@
  * audited server-side) returns the key's bytes base64-encoded. Text values
  * are shown decoded; anything that is not valid UTF-8 (a keystore, a binary
  * certificate) is shown as the base64 it arrived as, labelled as binary.
+ * Every path, including that fallback and a response that is not valid
+ * base64 at all, goes through `sanitizeSecretValue`: the fallback shows what
+ * the server sent, which is not guaranteed to be plain base64 ASCII.
  */
 
 export interface RevealedValue {
-  /** What to display: decoded text, or base64 for binary data. */
+  /** What to display: decoded text, or base64 for binary data; sanitized either way. */
   text: string;
   /** True when the bytes are not UTF-8 text and `text` is base64. */
   binary: boolean;
@@ -19,13 +22,13 @@ export function decodeSecretValue(base64: string): RevealedValue {
   try {
     bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
   } catch {
-    return { text: base64, binary: true };
+    return { text: sanitizeSecretValue(base64), binary: true };
   }
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return { text: sanitizeSecretValue(text), binary: false };
   } catch {
-    return { text: base64, binary: true };
+    return { text: sanitizeSecretValue(base64), binary: true };
   }
 }
 
