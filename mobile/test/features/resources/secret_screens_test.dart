@@ -7,6 +7,8 @@
 // clears it, and a still-revealed sibling key keeps the flag armed when
 // any one key is hidden.
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -71,6 +73,60 @@ void main() {
     });
   });
 
+  group('decodeSecretValue', () {
+    test('decodes UTF-8 text', () {
+      final v = decodeSecretValue('aHVudGVyMg=='); // "hunter2"
+      expect(v.text, 'hunter2');
+      expect(v.binary, isFalse);
+    });
+
+    test('decodes multi-byte UTF-8', () {
+      const plain = 'pwd-🔒-ü';
+      final v = decodeSecretValue(base64.encode(utf8.encode(plain)));
+      expect(v.text, plain);
+      expect(v.binary, isFalse);
+    });
+
+    test('sanitizes the decoded text', () {
+      final plain = 'password${String.fromCharCode(0x202E)}suffix';
+      final v = decodeSecretValue(base64.encode(utf8.encode(plain)));
+      expect(v.text, 'password\\u202esuffix');
+      expect(v.binary, isFalse);
+    });
+
+    test('empty value decodes to empty text', () {
+      final v = decodeSecretValue('');
+      expect(v.text, '');
+      expect(v.binary, isFalse);
+    });
+
+    test('non-UTF-8 bytes stay base64 and are flagged binary', () {
+      // A JPEG/DER-style prefix: 0xFF is never valid in UTF-8.
+      final encoded = base64.encode([0xFF, 0xD8, 0xFF, 0x00, 0x10]);
+      final v = decodeSecretValue(encoded);
+      expect(v.text, encoded);
+      expect(v.binary, isTrue);
+    });
+
+    test('malformed base64 is shown as received and flagged binary', () {
+      for (final bad in const ['not base64!', 'abcde', 'YWRt*W4=']) {
+        final v = decodeSecretValue(bad);
+        expect(v.text, bad, reason: bad);
+        expect(v.binary, isTrue, reason: bad);
+      }
+    });
+
+    test('sanitizes the malformed fallback', () {
+      // Not valid base64, so it takes the as-received path; the BiDi,
+      // zero-width and ESC characters must still come out escaped.
+      final bad = 'pw${String.fromCharCode(0x202E)}x'
+          '${String.fromCharCode(0x200B)}${String.fromCharCode(0x1B)}';
+      final v = decodeSecretValue(bad);
+      expect(v.text, 'pw\\u202ex\\u200b\\u001b');
+      expect(v.binary, isTrue);
+    });
+  });
+
   group('SecretDetailScreen FLAG_SECURE wiring (PR-5d)', () {
     const namespace = 'default';
     const name = 'app-credentials';
@@ -102,19 +158,28 @@ void main() {
       );
     }
 
-    void mockReveal(
+    /// Serves [encoded] verbatim as the reveal endpoint's `value`.
+    void mockRevealEncoded(
       MockDioAdapter mock,
       String key,
-      String value,
+      String encoded,
     ) {
       mock.onJson(
         'GET',
         '/api/v1/resources/secrets/$namespace/$name/reveal/$key',
         body: {
-          'data': {'value': value},
+          'data': {'key': key, 'value': encoded},
         },
       );
     }
+
+    /// Serves [plaintext] the way the backend does: base64 of its UTF-8.
+    void mockReveal(
+      MockDioAdapter mock,
+      String key,
+      String plaintext,
+    ) =>
+        mockRevealEncoded(mock, key, base64.encode(utf8.encode(plaintext)));
 
     ({ProviderContainer container, MockDioAdapter mock}) makeContainer() {
       final mock = MockDioAdapter();
@@ -521,6 +586,127 @@ void main() {
 
           expect(clipboardCalls, hasLength(2));
           expect((clipboardCalls.last.arguments as Map)['text'], '');
+        });
+      });
+
+      /// Pumps the screen with [encoded] served for `password`, reveals it
+      /// and confirms the copy dialog. Returns the copied text.
+      Future<String?> revealAndCopy(WidgetTester tester, String encoded) async {
+        final clipboardCalls = mockClipboard();
+        final (:container, :mock) = makeContainer();
+        addTearDown(container.dispose);
+        mockSecret(mock);
+        mockRevealEncoded(mock, 'password', encoded);
+
+        await tester.pumpWidget(harness(container));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('secret-toggle-password')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('secret-copy-password')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Copy'));
+        await tester.pumpAndSettle();
+        // Let the 30s best-effort wipe fire so no timer outlives the test.
+        await tester.pump(const Duration(seconds: 31));
+        await tester.pumpAndSettle();
+
+        expect(clipboardCalls, isNotEmpty);
+        return (clipboardCalls.first.arguments as Map)['text'] as String?;
+      }
+
+      testWidgets('copies the sanitized text that is shown', (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          final plain = 'pw${String.fromCharCode(0x202E)}x';
+          final copied = await revealAndCopy(
+            tester,
+            base64.encode(utf8.encode(plain)),
+          );
+          expect(copied, 'pw\\u202ex');
+        });
+      });
+
+      testWidgets('copies the base64 for binary data', (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          final encoded = base64.encode([0xFF, 0xD8, 0xFF, 0x00]);
+          final copied = await revealAndCopy(tester, encoded);
+          expect(copied, encoded);
+        });
+      });
+
+      testWidgets('copies a malformed value sanitized', (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          final bad = 'pw${String.fromCharCode(0x202E)}x';
+          final copied = await revealAndCopy(tester, bad);
+          expect(copied, 'pw\\u202ex');
+        });
+      });
+    });
+
+    group('reveal decoding', () {
+      Future<void> reveal(WidgetTester tester, String encoded) async {
+        final (:container, :mock) = makeContainer();
+        addTearDown(container.dispose);
+        mockSecret(mock);
+        mockRevealEncoded(mock, 'password', encoded);
+
+        await tester.pumpWidget(harness(container));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('secret-toggle-password')));
+        await tester.pumpAndSettle();
+      }
+
+      String shown(WidgetTester tester) => tester
+          .widget<Text>(find.byKey(const ValueKey('secret-value-password')))
+          .data!;
+
+      testWidgets('shows the decoded text, not the base64', (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          await reveal(tester, 'aHVudGVyMg==');
+
+          expect(shown(tester), 'hunter2');
+          expect(find.text('aHVudGVyMg=='), findsNothing);
+          expect(
+            find.byKey(const ValueKey('secret-binary-password')),
+            findsNothing,
+          );
+        });
+      });
+
+      testWidgets('labels non-UTF-8 data and shows it as base64',
+          (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          final encoded = base64.encode([0xFF, 0xD8, 0xFF, 0x00]);
+          await reveal(tester, encoded);
+
+          expect(shown(tester), encoded);
+          expect(find.text('Binary data, shown as base64'), findsOneWidget);
+        });
+      });
+
+      testWidgets('labels malformed base64 and shows it as received',
+          (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          await reveal(tester, 'not base64!');
+
+          expect(shown(tester), 'not base64!');
+          expect(find.text('Binary data, shown as base64'), findsOneWidget);
+        });
+      });
+
+      testWidgets('shows a malformed value sanitized', (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          await reveal(tester, 'pw${String.fromCharCode(0x202E)}x');
+
+          expect(shown(tester), 'pw\\u202ex');
+          expect(shown(tester).codeUnits, isNot(contains(0x202E)));
+          expect(find.text('Binary data, shown as base64'), findsOneWidget);
         });
       });
     });
