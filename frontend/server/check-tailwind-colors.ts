@@ -50,6 +50,21 @@ const CSS_WORDS = new Set([
 ]);
 
 /**
+ * Removes every match of `comment`, repeating until nothing changes. One pass
+ * is not enough: removing a comment nested inside another's opener
+ * (`<!<!-- x -->-- y -->`) leaves a new opener behind.
+ */
+function stripUntilStable(text: string, comment: RegExp): string {
+  let previous: string;
+  let current = text;
+  do {
+    previous = current;
+    current = current.replace(comment, " ");
+  } while (current !== previous);
+  return current;
+}
+
+/**
  * The colour-style class candidates in `source`. Comments are dropped first
  * (block comments, and whole-line `//` ones: a trailing `//` may be part of a
  * URL). Template literals are read with their `${…}` parts removed, and
@@ -59,10 +74,10 @@ const CSS_WORDS = new Set([
  * skipped; a ternary branch is not.
  */
 export function extractCandidates(raw: string): string[] {
-  const source = raw
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
+  const source = stripUntilStable(
+    stripUntilStable(raw, /\/\*[\s\S]*?\*\//g),
+    /<!--[\s\S]*?-->/g,
+  ).replace(/^\s*\/\/.*$/gm, "");
   const found = new Set<string>();
   const addWords = (text: string) => {
     for (const word of text.split(/\s+/)) {
