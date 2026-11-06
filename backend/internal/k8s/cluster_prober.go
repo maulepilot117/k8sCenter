@@ -79,10 +79,19 @@ const (
 // Parameters: ctx, clusterID, oldStatus, newStatus.
 type StatusChangeFunc func(ctx context.Context, clusterID, oldStatus, newStatus string)
 
+// ClusterStatusStore is the slice of *store.ClusterStore the prober needs.
+// It exists so the probe logic can be tested without PostgreSQL.
+type ClusterStatusStore interface {
+	List(ctx context.Context) ([]store.ClusterRecord, error)
+	Get(ctx context.Context, id string) (*store.ClusterRecord, error)
+	UpdateStatus(ctx context.Context, id, status, message, k8sVersion string, nodeCount int) error
+}
+
 // ClusterProber periodically checks the health of registered remote clusters.
 // It also exposes ProbeOne for on-demand testing from the API.
 type ClusterProber struct {
-	clusterStore   *store.ClusterStore
+	clusterStore   ClusterStatusStore
+	localClient    kubernetes.Interface
 	encKey         string
 	onStatusChange StatusChangeFunc
 	logger         *slog.Logger
@@ -94,8 +103,16 @@ func (p *ClusterProber) SetStatusChangeFunc(fn StatusChangeFunc) {
 	p.onStatusChange = fn
 }
 
+// SetLocalClient supplies the client used to probe the local cluster record.
+// It is the service account's own clientset: a status probe is a background
+// operation, not a user request, so it does not impersonate (same footing as
+// the CRD discovery loops that use BaseClientset()).
+func (p *ClusterProber) SetLocalClient(cs kubernetes.Interface) {
+	p.localClient = cs
+}
+
 // NewClusterProber creates a cluster health prober.
-func NewClusterProber(cs *store.ClusterStore, encKey string, onStatusChange StatusChangeFunc, logger *slog.Logger) *ClusterProber {
+func NewClusterProber(cs ClusterStatusStore, encKey string, onStatusChange StatusChangeFunc, logger *slog.Logger) *ClusterProber {
 	return &ClusterProber{
 		clusterStore:   cs,
 		encKey:         encKey,
@@ -128,9 +145,6 @@ func (p *ClusterProber) probeAll(ctx context.Context) {
 	}
 
 	for _, c := range clusters {
-		if c.IsLocal {
-			continue
-		}
 		if _, err := p.ProbeOne(ctx, c.ID); err != nil {
 			p.logger.Debug("probe failed", "clusterID", c.ID, "error", err)
 		}
@@ -147,6 +161,12 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 	}
 
 	oldStatus := cluster.Status
+
+	// The local record carries placeholder credentials ("in-cluster", "{}"),
+	// so it can never go through the remote path below.
+	if cluster.IsLocal {
+		return p.probeLocal(ctx, cluster)
+	}
 
 	// SSRF check — re-resolve DNS at probe time (DNS rebinding defense)
 	if err := ValidateRemoteURL(cluster.APIServerURL); err != nil {
@@ -231,6 +251,36 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 	p.logger.Debug("cluster probe succeeded", "clusterID", clusterID, "version", version.GitVersion, "nodes", nodeCount)
 
 	updated, _ := p.clusterStore.Get(ctx, clusterID)
+	return updated, nil
+}
+
+// probeLocal refreshes the local cluster record's status, version and node
+// count using the service account's own client. When no local client is
+// configured the record is left untouched.
+func (p *ClusterProber) probeLocal(ctx context.Context, cluster *store.ClusterRecord) (*store.ClusterRecord, error) {
+	if p.localClient == nil {
+		return nil, fmt.Errorf("local cluster probing is not configured")
+	}
+	id, oldStatus := cluster.ID, cluster.Status
+
+	version, err := p.localClient.Discovery().ServerVersion()
+	if err != nil {
+		_ = p.clusterStore.UpdateStatus(ctx, id, StatusDisconnected.String(), sanitizeProbeError(err), "", 0)
+		p.emitStatusChange(ctx, id, oldStatus, StatusDisconnected.String())
+		return nil, err
+	}
+
+	nodeCount := 0
+	nodes, err := p.localClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 500})
+	if err == nil {
+		nodeCount = len(nodes.Items)
+	}
+
+	_ = p.clusterStore.UpdateStatus(ctx, id, StatusConnected.String(), "", version.GitVersion, nodeCount)
+	p.emitStatusChange(ctx, id, oldStatus, StatusConnected.String())
+	p.logger.Debug("local cluster probe succeeded", "clusterID", id, "version", version.GitVersion, "nodes", nodeCount)
+
+	updated, _ := p.clusterStore.Get(ctx, id)
 	return updated, nil
 }
 
