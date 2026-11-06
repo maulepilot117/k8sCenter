@@ -6,7 +6,9 @@ import type { DriftStatus, DriftUnknownReason } from "@/lib/eso-types.ts";
  * Unknown without a reason. */
 const REASON_HINTS: Record<DriftUnknownReason, string> = {
   no_synced_rv:
-    "Provider does not expose syncedResourceVersion — drift cannot be determined.",
+    "ESO has not synced this ExternalSecret yet — there is nothing to compare against.",
+  no_data_hash:
+    "The synced Secret has no ESO data hash, so its data cannot be checked against what ESO wrote.",
   no_target_name:
     "ExternalSecret has no target Secret name — nothing to compare against.",
   secret_deleted:

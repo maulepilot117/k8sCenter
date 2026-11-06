@@ -274,7 +274,7 @@ func TestRemote_DetailReadsRemoteObjectStoresAndSecret(t *testing.T) {
 	store := makeStore("apps", "vault", "uid-rs")
 	store.SetAnnotations(map[string]string{AnnotationStaleAfterMinutes: "90"})
 	remote := newRemoteFake("v1", []runtime.Object{es, store},
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "remote-es-secret", Namespace: "apps", ResourceVersion: "42"}})
+		esoSyncedSecret("apps", "remote-es-secret", "42", map[string][]byte{"token": []byte("t")}))
 	rh := newRemoteHarness(remote)
 
 	rr := doRemote(t, rh.h.HandleGetExternalSecret, map[string]string{"namespace": "apps", "name": "remote-es"}, "")

@@ -167,8 +167,8 @@ type ExternalSecret struct {
 	// DriftUnknownReason disambiguates a DriftStatus=Unknown response. Empty
 	// when DriftStatus is not Unknown. Allowed values match the
 	// DriftReason* constants in handler.go: `no_synced_rv`,
-	// `no_target_name`, `secret_deleted`, `rbac_denied`, `transient_error`,
-	// `client_error`. Frontend renders this as a hover-tooltip under
+	// `no_data_hash`, `no_target_name`, `secret_deleted`, `rbac_denied`,
+	// `transient_error`, `client_error`. Frontend renders this as a hover-tooltip under
 	// the drift indicator so an operator can see WHY drift wasn't
 	// resolvable rather than guessing.
 	DriftUnknownReason string `json:"driftUnknownReason,omitempty"`

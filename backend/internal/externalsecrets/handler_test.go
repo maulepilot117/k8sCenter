@@ -567,24 +567,61 @@ func TestInvalidateCache(t *testing.T) {
 
 // --- Drift status helper -------------------------------------------------
 
+// esoSyncedSecret is a Secret as ESO leaves it after a sync: its data plus
+// the data-hash annotation ESO computes over that data.
+func esoSyncedSecret(ns, name, resourceVersion string, data map[string][]byte) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: ns, ResourceVersion: resourceVersion,
+			Annotations: map[string]string{esoDataHashAnnotation: esoDataHash(data)},
+		},
+		Data: data,
+	}
+}
+
+// TestESODataHash_MatchesESO pins the hash to ESO's ObjectHash: SHA3-224 of
+// fmt's %+v rendering of the Secret data. The expected values were computed
+// outside Go (Python hashlib.sha3_224 over the same text), so a change to the
+// formatting or the digest fails here rather than reading every Secret as
+// drifted.
+func TestESODataHash_MatchesESO(t *testing.T) {
+	data := map[string][]byte{"username": []byte("admin"), "password": []byte("hunter2")}
+	// %+v of the map: "map[password:[104 117 110 116 101 114 50] username:[97 100 109 105 110]]"
+	if got, want := esoDataHash(data), "c95146863c01c0fde76c9a84cbdc3cc51cd4a45848b2f970a09fffb7"; got != want {
+		t.Errorf("esoDataHash = %s; want %s", got, want)
+	}
+	if got, want := esoDataHash(nil), "74a974446e359fb3e6baff9bd0058950e6edd0f040888d9989b0a11b"; got != want {
+		t.Errorf("esoDataHash(nil) = %s; want %s", got, want)
+	}
+}
+
 func TestComputeDriftStatus(t *testing.T) {
+	data := map[string][]byte{"username": []byte("admin"), "password": []byte("hunter2")}
+
+	edited := esoSyncedSecret("apps", "db", "200", data)
+	edited.Data = map[string][]byte{"username": []byte("admin"), "password": []byte("changed")}
+
+	unannotated := esoSyncedSecret("apps", "db", "200", data)
+	unannotated.Annotations = nil
+
 	cases := []struct {
-		name     string
-		syncedRV string
-		liveRV   string
-		want     DriftStatus
+		name       string
+		secret     *corev1.Secret
+		want       DriftStatus
+		wantReason string
 	}{
-		{"empty-synced-RV-unknown", "", "12345", DriftUnknown},
-		{"matching-RVs-in-sync", "12345", "12345", DriftInSync},
-		{"differing-RVs-drifted", "12345", "12346", DriftDrifted},
-		{"empty-live-RV-drifted", "12345", "", DriftDrifted},
+		// The regression: ESO's syncedResourceVersion ("1-<hash>") never
+		// equals a Secret resourceVersion, and the Secret's own version moves
+		// on every write. Neither is part of the comparison.
+		{"untouched-secret-in-sync", esoSyncedSecret("apps", "db", "35498635", data), DriftInSync, ""},
+		{"edited-data-drifted", edited, DriftDrifted, ""},
+		{"no-annotation-unknown", unannotated, DriftUnknown, DriftReasonNoDataHash},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeDriftStatus(tc.syncedRV, tc.liveRV)
-			if got != tc.want {
-				t.Errorf("computeDriftStatus(%q, %q) = %q; want %q",
-					tc.syncedRV, tc.liveRV, got, tc.want)
+			got, reason := computeDriftStatus(tc.secret)
+			if got != tc.want || reason != tc.wantReason {
+				t.Errorf("computeDriftStatus = (%q, %q); want (%q, %q)", got, reason, tc.want, tc.wantReason)
 			}
 		})
 	}
@@ -626,11 +663,12 @@ func TestHandleGetExternalSecret_DriftInSync(t *testing.T) {
 	es := makeES(ns, name, "uid-1")
 	// Set syncedResourceVersion on the ES status
 	status, _ := es.Object["status"].(map[string]any)
-	status["syncedResourceVersion"] = "100"
+	// ESO's own format: "<generation>-<hash of the ES metadata>". It never
+	// equals the Secret's resourceVersion, which used to read as Drifted.
+	status["syncedResourceVersion"] = "1-84972dd6c7d34d65ef85cbcfb7181325d746f004082e0892600419c7"
 
-	syncedSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: targetSecret, Namespace: ns, ResourceVersion: "100"},
-	}
+	syncedSecret := esoSyncedSecret(ns, targetSecret, "35498635",
+		map[string][]byte{"password": []byte("hunter2")})
 
 	h := detailHandler([]runtime.Object{es}, syncedSecret, resources.NewAlwaysAllowAccessChecker())
 
@@ -661,12 +699,13 @@ func TestHandleGetExternalSecret_DriftDetected(t *testing.T) {
 	targetSecret := name + "-secret"
 	es := makeES(ns, name, "uid-1")
 	status, _ := es.Object["status"].(map[string]any)
-	status["syncedResourceVersion"] = "100"
+	status["syncedResourceVersion"] = "1-84972dd6c7d34d65ef85cbcfb7181325d746f004082e0892600419c7"
 
-	// Live Secret has a different RV — drift detected
-	syncedSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: targetSecret, Namespace: ns, ResourceVersion: "101"},
-	}
+	// Someone edited the Secret after ESO wrote it: the data no longer
+	// matches the hash ESO recorded.
+	syncedSecret := esoSyncedSecret(ns, targetSecret, "35498635",
+		map[string][]byte{"password": []byte("hunter2")})
+	syncedSecret.Data["password"] = []byte("edited-by-hand")
 
 	h := detailHandler([]runtime.Object{es}, syncedSecret, resources.NewAlwaysAllowAccessChecker())
 
