@@ -72,6 +72,23 @@ export const RESOURCE_API_KINDS: Record<string, string> = {
 };
 
 /**
+ * The Kubernetes API resource name for a kind slug. Some backend adapters use
+ * a short slug (`pvcs`), while RBAC summaries and resource counts key on the
+ * API name (`persistentvolumeclaims`). Mirrors `adapterKindForCount` in
+ * backend/internal/k8s/resources/counts.go, in the other direction.
+ */
+export function apiResourceForKind(kind: string): string {
+  return API_RESOURCE_FOR_SLUG[kind] ?? kind;
+}
+
+const API_RESOURCE_FOR_SLUG: Record<string, string> = {
+  pvs: "persistentvolumes",
+  pvcs: "persistentvolumeclaims",
+  hpas: "horizontalpodautoscalers",
+  pdbs: "poddisruptionbudgets",
+};
+
+/**
  * Maps API kind to the URL path prefix for detail pages.
  * Must match the filesystem route structure under routes/.
  */

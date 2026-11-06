@@ -14,19 +14,19 @@ import YamlPreview from "@/src/islands/YamlPreview.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 
-// ── Types ───────────────────────────────────────────────────────────────
-
-/** A field that identifies an existing object: shown, but visibly not
- * editable. A disabled control with the live style reads as editable, and
- * changing name or namespace on apply would create a copy, not a rename. */
 /** The root every return shares. Preact hydration keeps the server-rendered
- * root's own props, so per-branch roots kept the placeholder's style and the
- * form never got its max width. Each branch styles an inner box instead. */
+ * root's own props, so each branch styles an inner box instead. */
 const FORM_ROOT_STYLE = { maxWidth: "800px" };
 
+/** A field that identifies an existing object: shown, but visibly not
+ * editable. Changing name or namespace on apply would create a copy, not a
+ * rename. */
 function lockedStyle(base: Record<string, string>): Record<string, string> {
   return { ...base, opacity: "0.6", cursor: "not-allowed" };
 }
+
+// ── Types ───────────────────────────────────────────────────────────────
+
 interface SchemaFormProps {
   group: string;
   resource: string;

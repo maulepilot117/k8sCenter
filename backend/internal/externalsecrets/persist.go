@@ -369,9 +369,6 @@ func (p *Poller) resolveDiffKeys(ctx context.Context, es ExternalSecret, outcome
 		return nil, nil, nil
 	}
 
-	// Drift hint: compare the live Secret's data with the hash ESO recorded
-	// on it. This is the same computation the detail endpoint runs via the
-	// impersonated client. Stash for the list endpoint to surface.
 	if p.handler != nil {
 		drift, _ := computeDriftStatus(sec)
 		p.handler.RecordDrift(es.UID, drift)

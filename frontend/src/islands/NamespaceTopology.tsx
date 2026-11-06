@@ -425,7 +425,6 @@ export default function NamespaceTopology({
 
     layoutNodes.value = positioned;
     layoutNodeMap.value = new Map(positioned.map((n) => [n.id, n]));
-    // Each new graph opens framed, as "Fit to view" would show it.
     applyView(fitViewBox(positioned));
   }, [graph.value]);
 

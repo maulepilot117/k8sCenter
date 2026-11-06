@@ -345,8 +345,6 @@ export default function ResourceDetail({
     return () => clearInterval(id);
   }, []);
 
-  // Read initial tab from URL hash. Any tab this page renders can be linked
-  // to, including the pod-only Logs and Terminal tabs (#logs, #terminal).
   useEffect(() => {
     if (!IS_BROWSER) return;
     const hash = globalThis.location.hash.replace("#", "");

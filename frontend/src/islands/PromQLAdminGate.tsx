@@ -6,8 +6,7 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  * The root every return shares. Preact hydration keeps the server-rendered
  * root's own props and only reconciles its children, so a root that differed
  * between the SSR placeholder and a later return would keep the placeholder's
- * classes: the non-admin notice rendered without its warning styling. The
- * root is layout-neutral (`display: contents`); each state styles its own
+ * classes. The root is layout-neutral (`display: contents`); each state styles its own
  * inner box.
  */
 const GATE_ROOT_CLASS = "contents";

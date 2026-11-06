@@ -11,6 +11,7 @@
  */
 import { computed, effect, signal } from "@preact/signals";
 import { api } from "@/lib/api.ts";
+import { apiResourceForKind } from "@/lib/constants.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
@@ -41,18 +42,6 @@ export const resourceCountsTotal = computed(() => {
 });
 
 /**
- * The counts map is keyed by API resource name, but some list pages name their
- * kind by the backend adapter's short kind. Mirrors `adapterKindForCount` in
- * backend/internal/k8s/resources/counts.go, in the other direction.
- */
-const COUNT_KEY_FOR_KIND: Record<string, string> = {
-  pvs: "persistentvolumes",
-  pvcs: "persistentvolumeclaims",
-  hpas: "horizontalpodautoscalers",
-  pdbs: "poddisruptionbudgets",
-};
-
-/**
  * Returns the count for `kind` (an API resource name such as "deployments",
  * or an adapter's short kind such as "pvcs"), or null when it is unknown: the
  * store hasn't loaded, or the backend didn't count the kind. Secrets are never
@@ -62,7 +51,7 @@ const COUNT_KEY_FOR_KIND: Record<string, string> = {
 export function getCount(kind: string): number | null {
   const c = resourceCounts.value;
   if (!c) return null;
-  return c[COUNT_KEY_FOR_KIND[kind] ?? kind] ?? null;
+  return c[apiResourceForKind(kind)] ?? null;
 }
 
 /** The cluster `resourceCounts` was last read from, or null before any read. */

@@ -6,8 +6,7 @@
  * `@theme` block of assets/styles.css. A class naming a token that does not
  * exist (`bg-bg-elevated`, `text-status-error`, `border-border-emphasis`)
  * compiles to nothing: no error, no warning, just a transparent background or
- * the default text colour. The 2026-11-05 UI walkthrough found about fifty
- * components like that, left over from the Liquid Glass token rename.
+ * the default text colour.
  *
  * Which classes produce CSS is decided by Tailwind itself, not by a list kept
  * here: the guard loads the app's own stylesheet into Tailwind's design system
@@ -22,15 +21,11 @@
  * interpolation are skipped, and so are object keys ("stroke-width": …).
  */
 
-import { type Dirent, readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { __unstable__loadDesignSystem } from "tailwindcss";
-
-const FRONTEND_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const SOURCE_DIRS = ["src", "components", "lib"];
-const SKIP_DIRS = new Set(["node_modules", "dist", ".astro"]);
+import { FRONTEND_ROOT, sourceFiles } from "./source-files.ts";
 
 /** Utility prefixes that take a colour. */
 const COLOUR_PREFIX =
@@ -129,40 +124,16 @@ export interface ColourOffender {
   files: string[];
 }
 
-function walk(dir: string, out: string[]): void {
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (SKIP_DIRS.has(entry.name)) continue;
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, out);
-    else if (
-      /\.(tsx|ts|astro)$/.test(entry.name) &&
-      !/_test\./.test(entry.name)
-    ) {
-      out.push(full);
-    }
-  }
-}
-
 export function findUnknownColourClasses(
   resolver: ClassResolver,
   root: string = FRONTEND_ROOT,
 ): { candidates: number; offenders: ColourOffender[] } {
   const usedIn = new Map<string, Set<string>>();
-  for (const dir of SOURCE_DIRS) {
-    const files: string[] = [];
-    walk(join(root, dir), files);
-    for (const file of files) {
-      const rel = relative(root, file).split(sep).join("/");
-      for (const c of extractCandidates(readFileSync(file, "utf8"))) {
-        if (!usedIn.has(c)) usedIn.set(c, new Set());
-        usedIn.get(c)?.add(rel);
-      }
+  for (const file of sourceFiles(root)) {
+    const rel = relative(root, file).split(sep).join("/");
+    for (const c of extractCandidates(readFileSync(file, "utf8"))) {
+      if (!usedIn.has(c)) usedIn.set(c, new Set());
+      usedIn.get(c)?.add(rel);
     }
   }
   const classes = [...usedIn.keys()].sort();

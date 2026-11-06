@@ -3,10 +3,7 @@
  * to a page under src/pages.
  *
  * A link to a page that does not exist is not an error anywhere: the build
- * passes, the type checker is happy, and the user gets a 404. The 2026-11-05
- * UI walkthrough found five (a Certificate's Secret link under /workloads
- * instead of /config, Velero rows linking to detail pages that were never
- * built, the PromQL gate linking to a /cluster/dashboard that was renamed).
+ * passes, the type checker is happy, and the user gets a 404.
  *
  * What it reads: `href="…"`, `href={`…`}`, `href: "…"` and
  * `location.href = "…"` (string or template literal) values starting with "/" in src/, components/ and
@@ -16,13 +13,9 @@
  * segment). The query string and fragment are ignored.
  */
 
-import { type Dirent, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const FRONTEND_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const SOURCE_DIRS = ["src", "components", "lib"];
-const SKIP_DIRS = new Set(["node_modules", "dist", ".astro"]);
+import { readFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+import { FRONTEND_ROOT, findFiles, sourceFiles } from "./source-files.ts";
 
 /** A route under src/pages: one entry per path segment. */
 type Route = string[];
@@ -105,26 +98,9 @@ export function extractLinks(source: string): { line: number; href: string }[] {
   return found.sort((a, b) => a.line - b.line);
 }
 
-function walk(dir: string, out: string[], match: RegExp): void {
-  let entries: Dirent[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (SKIP_DIRS.has(entry.name)) continue;
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, out, match);
-    else if (match.test(entry.name)) out.push(full);
-  }
-}
-
 export function loadRoutes(root: string = FRONTEND_ROOT): Route[] {
   const pagesDir = join(root, "src", "pages");
-  const pages: string[] = [];
-  walk(pagesDir, pages, /\.astro$/);
-  return pages.map((p) =>
+  return findFiles(pagesDir, /\.astro$/).map((p) =>
     routeFromPagePath(relative(pagesDir, p).split(sep).join("/")),
   );
 }
@@ -135,13 +111,9 @@ export function checkInternalLinks(root: string = FRONTEND_ROOT): {
   offenders: LinkOffender[];
 } {
   const routes = loadRoutes(root);
-  const files: string[] = [];
-  for (const dir of SOURCE_DIRS) {
-    walk(join(root, dir), files, /^(?!.*_test\.)[^.]+.*\.(tsx|ts|astro)$/);
-  }
   const offenders: LinkOffender[] = [];
   let links = 0;
-  for (const file of files) {
+  for (const file of sourceFiles(root)) {
     const source = readFileSync(file, "utf8");
     for (const { line, href } of extractLinks(source)) {
       const segments = linkSegments(href);

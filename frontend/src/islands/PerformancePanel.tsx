@@ -212,8 +212,6 @@ const QUERIES: Record<string, { title: string; slug: string }[]> = {
   ],
 };
 
-/** Whether this kind has metric queries, i.e. whether a Metrics tab has
- * anything to show. */
 export function hasPerformanceMetrics(kind: string): boolean {
   return Object.hasOwn(QUERIES, kind);
 }

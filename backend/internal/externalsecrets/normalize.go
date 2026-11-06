@@ -64,7 +64,6 @@ func DeriveStatus(es ExternalSecret) Status {
 		}
 	}
 
-	// Drift overlay: only when base is Synced and the live drift check ran.
 	if es.Status == StatusSynced && es.DriftStatus == DriftDrifted {
 		return StatusDrifted
 	}

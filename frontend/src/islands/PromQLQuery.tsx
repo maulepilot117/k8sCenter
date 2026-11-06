@@ -28,15 +28,22 @@ export interface SeriesSummary {
 export function summarizeSeries(
   values: Array<[number, string]>,
 ): SeriesSummary {
-  const numbers = values
-    .map(([, v]) => Number.parseFloat(v))
-    .filter((v) => Number.isFinite(v));
+  const numbers: number[] = [];
+  let min: number | null = null;
+  let max: number | null = null;
+  for (const [, raw] of values) {
+    const v = Number.parseFloat(raw);
+    if (!Number.isFinite(v)) continue;
+    numbers.push(v);
+    if (min === null || v < min) min = v;
+    if (max === null || v > max) max = v;
+  }
   return {
     samples: values.length,
     numbers,
     latest: numbers.length > 0 ? (numbers.at(-1) as number) : null,
-    min: numbers.length > 0 ? Math.min(...numbers) : null,
-    max: numbers.length > 0 ? Math.max(...numbers) : null,
+    min,
+    max,
   };
 }
 

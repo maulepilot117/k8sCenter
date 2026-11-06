@@ -19,6 +19,7 @@
  * `executeAction` contract.
  */
 import { apiDelete, apiPost } from "@/lib/api.ts";
+import { apiResourceForKind } from "@/lib/constants.ts";
 import type { K8sResource, RBACSummary } from "@/lib/k8s-types.ts";
 import { canPerform } from "@/lib/permissions.ts";
 
@@ -27,7 +28,7 @@ export type ActionId = "scale" | "restart" | "delete" | "suspend" | "trigger";
 
 /**
  * Actions available per resource kind, keyed by the web's adapter slug
- * (`pvcs`, not mobile's `persistentvolumeclaims`; see RBAC_RESOURCE_FOR_KIND).
+ * (`pvcs`, not mobile's `persistentvolumeclaims`; see apiResourceForKind).
  *
  * Differences from the mobile map, on purpose: mobile has `rollback` on
  * deployments and defers rolebinding / clusterrolebinding delete. Endpoints
@@ -53,15 +54,6 @@ export const ACTIONS_BY_KIND: Record<string, ActionId[]> = {
   clusterrolebindings: ["delete"],
 };
 
-/**
- * The RBAC summary keys on Kubernetes resource names. Where the web's slug
- * differs, permission checks use this name; without it a PVC's actions never
- * pass the check.
- */
-const RBAC_RESOURCE_FOR_KIND: Record<string, string> = {
-  pvcs: "persistentvolumeclaims",
-};
-
 /** Maps action IDs to the k8s verb needed to perform them. */
 const ACTION_VERB_MAP: Record<ActionId, string> = {
   scale: "update",
@@ -79,7 +71,8 @@ export function getVisibleActions(
 ): ActionId[] {
   const all = ACTIONS_BY_KIND[kind] ?? [];
   if (!rbac) return all; // Permissions not loaded — show all (optimistic)
-  const resource = RBAC_RESOURCE_FOR_KIND[kind] ?? kind;
+  // The RBAC summary keys on API resource names, not adapter slugs.
+  const resource = apiResourceForKind(kind);
   return all.filter((actionId) =>
     canPerform(rbac, resource, ACTION_VERB_MAP[actionId], namespace),
   );

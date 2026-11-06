@@ -10,12 +10,10 @@ const NAMESPACE_LIST = "/cluster/namespaces";
 
 /** One root class for the SSR placeholder and the form: Preact hydration
  * keeps the server-rendered root's props, so a root that differed would keep
- * the placeholder's classes (the form lost its max-w-lg that way). */
+ * the placeholder's classes. */
 const ROOT_CLASS = "p-6 max-w-lg";
 
-/** Where a successful create goes: the new namespace's detail page. Going
- * back in history instead landed wherever the operator came from, often the
- * Overview dashboard. */
+/** Where a successful create goes: the new namespace's detail page. */
 export function createdNamespaceHref(name: string): string {
   return `${NAMESPACE_LIST}/${encodeURIComponent(name)}`;
 }
