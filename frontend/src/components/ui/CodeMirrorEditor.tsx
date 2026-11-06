@@ -12,7 +12,7 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import { EditorState } from "@codemirror/state";
+import { Annotation, EditorState } from "@codemirror/state";
 import { oneDark, oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import {
   EditorView,
@@ -29,9 +29,18 @@ export interface CodeMirrorEditorProps {
   readOnly?: boolean;
 }
 
+/** Marks a document replace that came in through `value`, not from typing. */
+const fromValueProp = Annotation.define<boolean>();
+
 /**
  * CodeMirror 6 YAML editor — uses native DOM rendering (no virtual viewport),
  * so it works correctly inside any container without scroll issues.
+ *
+ * Controlled: edits go out through `onChange` and come back as `value`. The
+ * parent's re-render can trail the editor by a keystroke or more, so a
+ * `value` that is text this editor already emitted is the parent catching up,
+ * not a change to apply. Only any other `value` replaces the document, and
+ * that replace is not reported back through `onChange`.
  */
 export function CodeMirrorEditor({
   value,
@@ -42,6 +51,9 @@ export function CodeMirrorEditor({
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // Texts sent through onChange that no `value` has caught up with yet,
+  // oldest first.
+  const inFlight = useRef<string[]>([]);
 
   useEffect(() => {
     if (!IS_BROWSER || !containerRef.current) return;
@@ -63,9 +75,13 @@ export function CodeMirrorEditor({
       EditorState.readOnly.of(readOnly),
       EditorView.editable.of(!readOnly),
       EditorView.updateListener.of((update) => {
-        if (update.docChanged && onChangeRef.current) {
-          onChangeRef.current(update.state.doc.toString());
+        if (!update.docChanged || !onChangeRef.current) return;
+        if (update.transactions.some((tr) => tr.annotation(fromValueProp))) {
+          return;
         }
+        const text = update.state.doc.toString();
+        inFlight.current.push(text);
+        onChangeRef.current(text);
       }),
       // Match the dark bg/font styling
       EditorView.theme({
@@ -80,6 +96,7 @@ export function CodeMirrorEditor({
       }),
     ];
 
+    inFlight.current = [];
     const state = EditorState.create({ doc: value, extensions });
     const view = new EditorView({ state, parent: containerRef.current });
     viewRef.current = view;
@@ -94,10 +111,18 @@ export function CodeMirrorEditor({
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
+    const caughtUp = inFlight.current.indexOf(value);
+    if (caughtUp !== -1) {
+      // The parent has now seen this emission and every earlier one.
+      inFlight.current.splice(0, caughtUp + 1);
+      return;
+    }
+    inFlight.current = [];
     const current = view.state.doc.toString();
     if (current !== value) {
       view.dispatch({
         changes: { from: 0, to: current.length, insert: value },
+        annotations: fromValueProp.of(true),
       });
     }
   }, [value]);
