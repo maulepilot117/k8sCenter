@@ -127,8 +127,8 @@ export default function IssuersList() {
       {!loading.value && !error.value && issuers.value.length === 0 && (
         <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">
-            No issuers found. Issuers will appear here once cert-manager is
-            installed and configured.
+            No cert-manager Issuers or ClusterIssuers found. External issuers
+            (such as step-issuer's StepClusterIssuer) are not listed here.
           </p>
         </div>
       )}

@@ -25,9 +25,9 @@ interface ESODriftIndicatorProps {
 }
 
 /** Tri-state drift indicator for the ExternalSecret detail page. Renders the
- * coloured badge inline with explanatory text. When status=Drifted, also
- * renders a disabled "Revert" stub — Phase E (Unit 14) will replace the stub
- * with a real force-sync handler. */
+ * coloured badge inline with explanatory text. When status=Drifted it points
+ * at the page's Force sync button, which re-reconciles the Secret from the
+ * provider and so reverts the edit. */
 export function ESODriftIndicator({ status, reason }: ESODriftIndicatorProps) {
   return (
     <div class="flex flex-col gap-1.5">
@@ -36,6 +36,7 @@ export function ESODriftIndicator({ status, reason }: ESODriftIndicatorProps) {
         {status === "Drifted" && (
           <span class="text-xs text-text-muted">
             The synced Secret has been edited since ESO last reconciled it.
+            Force sync rewrites it from the provider.
           </span>
         )}
         {status === "Unknown" && reason && (
@@ -49,22 +50,6 @@ export function ESODriftIndicator({ status, reason }: ESODriftIndicatorProps) {
           </span>
         )}
       </div>
-      {status === "Drifted" && (
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            class="text-xs px-2 py-1 rounded border border-border-primary text-text-muted hover:text-text-primary hover:bg-base transition-colors"
-            disabled
-            aria-disabled="true"
-            title="Force-sync ships in Phase E"
-          >
-            Revert drift
-          </button>
-          <span class="text-[11px] text-text-muted">
-            Force-sync action available in Phase&nbsp;E.
-          </span>
-        </div>
-      )}
     </div>
   );
 }

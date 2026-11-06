@@ -8,7 +8,11 @@ import { notifApi } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { notifActionUrl } from "@/lib/notif-action.ts";
 import type { AppNotification } from "@/lib/notif-center-types.ts";
-import { NOTIF_SEVERITIES, NOTIF_SOURCES } from "@/lib/notif-center-types.ts";
+import {
+  NOTIF_SEVERITIES,
+  NOTIF_SOURCES,
+  SOURCE_LABELS,
+} from "@/lib/notif-center-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -150,7 +154,7 @@ export default function NotificationFeed() {
             <option value="all">All</option>
             {NOTIF_SOURCES.map((s) => (
               <option key={s} value={s}>
-                {s.charAt(0).toUpperCase() + s.slice(1)}
+                {SOURCE_LABELS[s]}
               </option>
             ))}
           </select>
