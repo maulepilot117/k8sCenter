@@ -510,8 +510,12 @@ func main() {
 	if clusterStore != nil {
 		clusterProber = k8s.NewClusterProber(clusterStore, dbEncKey, nil, logger)
 		// Background status probe of the local record; not a user request, so
-		// the service account's own clientset is used (no impersonation).
-		clusterProber.SetLocalClient(k8sClient.BaseClientset())
+		// the service account's own credentials are used (no impersonation).
+		if localProbe, err := k8s.NewLocalProbeClient(k8sClient.BaseConfig()); err != nil {
+			logger.Warn("local cluster status probe disabled", "error", err)
+		} else {
+			clusterProber.SetLocalClient(localProbe)
+		}
 		go clusterProber.Run(ctx)
 	}
 

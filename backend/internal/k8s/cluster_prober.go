@@ -10,6 +10,7 @@ import (
 	authzv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -103,12 +104,29 @@ func (p *ClusterProber) SetStatusChangeFunc(fn StatusChangeFunc) {
 	p.onStatusChange = fn
 }
 
+// probeTimeout bounds every probe request at the transport. client-go's
+// ServerVersion takes no context, so only a transport timeout can stop a
+// hung API server from stalling the sequential probe loop.
+const probeTimeout = 10 * time.Second
+
 // SetLocalClient supplies the client used to probe the local cluster record.
 // It is the service account's own clientset: a status probe is a background
 // operation, not a user request, so it does not impersonate (same footing as
-// the CRD discovery loops that use BaseClientset()).
+// the CRD discovery loops that use BaseClientset()). Build it with
+// NewLocalProbeClient so its requests carry probeTimeout.
 func (p *ClusterProber) SetLocalClient(cs kubernetes.Interface) {
 	p.localClient = cs
+}
+
+// NewLocalProbeClient builds the local probe's clientset from the service
+// account's base config, with the same timeout and rate limits as a remote
+// probe. The shared base clientset sets no timeout.
+func NewLocalProbeClient(base *rest.Config) (kubernetes.Interface, error) {
+	cfg := rest.CopyConfig(base)
+	cfg.Timeout = probeTimeout
+	cfg.QPS = 10
+	cfg.Burst = 20
+	return kubernetes.NewForConfig(cfg)
 }
 
 // NewClusterProber creates a cluster health prober.
@@ -205,7 +223,7 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 	// the resolved address on every dial instead of trusting the
 	// ValidateRemoteURL result above (R-4).
 	cfg := NewRemoteRESTConfig(cluster.APIServerURL, string(token), caData)
-	cfg.Timeout = 10 * time.Second
+	cfg.Timeout = probeTimeout
 	cfg.QPS = 10
 	cfg.Burst = 20
 	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, p.logger); err != nil {

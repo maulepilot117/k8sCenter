@@ -261,6 +261,15 @@ void main() {
       },
     );
 
+    test('every drift reason the backend sends has its own value', () {
+      expect(driftUnknownReasonFromJson('no_synced_rv'),
+          DriftUnknownReason.noSyncedRv);
+      expect(driftUnknownReasonFromJson('no_data_hash'),
+          DriftUnknownReason.noDataHash);
+      expect(driftUnknownReasonFromJson('something_new'),
+          DriftUnknownReason.unspecified);
+    });
+
     test('404 surfaces as ApiError', () async {
       final (:container, :mock) = _make();
       addTearDown(container.dispose);

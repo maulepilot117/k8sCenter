@@ -109,3 +109,30 @@ test("a live update of the Secret drops revealed values", async () => {
   await flush();
   expect(host?.textContent).not.toContain("hunter2");
 });
+
+test("a reveal still in flight when the Secret changes is discarded", async () => {
+  setAccessToken("t");
+  let answer: (r: Response) => void = () => {};
+  globalThis.fetch = ((_input: string | URL | Request) =>
+    new Promise<Response>((resolve) => {
+      answer = resolve;
+    })) as typeof globalThis.fetch;
+  mount(SECRET);
+  act(() => button("Reveal password").click());
+
+  const updated = {
+    ...SECRET,
+    metadata: { ...SECRET.metadata, resourceVersion: "2" },
+  } as K8sResource;
+  act(() => render(<SecretOverview resource={updated} />, host as HTMLElement));
+  answer(
+    new Response(
+      JSON.stringify({ data: { key: "password", value: btoa("old-value") } }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ),
+  );
+  await flush();
+
+  expect(host?.textContent).not.toContain("old-value");
+  expect(() => button("Reveal password")).not.toThrow();
+});

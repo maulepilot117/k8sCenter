@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { apiGet } from "@/lib/api.ts";
 import type { K8sResource, Secret } from "@/lib/k8s-types.ts";
@@ -35,7 +35,11 @@ export function SecretOverview({ resource }: { resource: K8sResource }) {
 
   // The page updates the Secret live; a value revealed before an edit would
   // otherwise keep showing the old data.
+  // A reveal that was in flight across an edit is dropped too: it read the
+  // old data.
   const version = s.metadata.resourceVersion;
+  const currentVersion = useRef(version);
+  currentVersion.current = version;
   useEffect(() => {
     revealed.value = {};
     errors.value = {};
@@ -46,15 +50,18 @@ export function SecretOverview({ resource }: { resource: K8sResource }) {
     revealing.value = new Set(revealing.value).add(key);
     const { [key]: _, ...restErrors } = errors.value;
     errors.value = restErrors;
+    const requestedFor = currentVersion.current;
     try {
       const res = await apiGet<RevealResponse>(
         revealPath(namespace, name, key),
       );
+      if (currentVersion.current !== requestedFor) return;
       revealed.value = {
         ...revealed.value,
         [key]: decodeSecretValue(res.data.value),
       };
     } catch (err) {
+      if (currentVersion.current !== requestedFor) return;
       errors.value = {
         ...errors.value,
         [key]: err instanceof Error ? err.message : "Reveal failed",
