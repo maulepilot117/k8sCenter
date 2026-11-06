@@ -169,10 +169,11 @@ export function resourcePath(
   namespace: string,
   name: string,
 ): string {
-  const segs = ["/v1/resources", encodeURIComponent(kind)];
-  if (namespace) segs.push(encodeURIComponent(namespace));
-  segs.push(encodeURIComponent(name));
-  return segs.join("/");
+  const base = `/v1/resources/${encodeURIComponent(kind)}`;
+  const item = encodeURIComponent(name);
+  return namespace
+    ? `${base}/${encodeURIComponent(namespace)}/${item}`
+    : `${base}/${item}`;
 }
 
 /** Execute a resource action. Returns a result message on success, throws on error. */
