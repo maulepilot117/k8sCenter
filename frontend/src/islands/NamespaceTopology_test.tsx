@@ -23,7 +23,9 @@ import "@/src/lib/namespace.ts";
 GlobalRegistrator.register({ url: "http://localhost/" });
 mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
 
-const { default: NamespaceTopology } = await import("./NamespaceTopology.tsx");
+const { default: NamespaceTopology, fitViewBox } = await import(
+  "./NamespaceTopology.tsx"
+);
 
 afterAll(() => {
   mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
@@ -118,4 +120,36 @@ test("a local graph renders without the remote notice", async () => {
   });
   expect(root.textContent).not.toContain(NOTICE);
   expect(root.textContent).toContain("svc-a");
+});
+
+// The layout centres each column on y = 0, so half of a tall graph sits at
+// negative y. A viewBox fixed at (0, 0) showed the graph's lower half, or
+// nothing at all, and "Fit to view" reset to that same box.
+test("fit to view frames every node, including those above y = 0", () => {
+  const nodes = [
+    { x: 130, y: -1048 },
+    { x: 350, y: -900 },
+    { x: 570, y: 400 },
+  ];
+  const v = fitViewBox(nodes);
+  const w = 1200 / v.zoom;
+  const h = 800 / v.zoom;
+  for (const n of nodes) {
+    expect(n.x - 90).toBeGreaterThanOrEqual(v.panX);
+    expect(n.x + 90).toBeLessThanOrEqual(v.panX + w);
+    expect(n.y - 28).toBeGreaterThanOrEqual(v.panY);
+    expect(n.y + 28).toBeLessThanOrEqual(v.panY + h);
+  }
+});
+
+test("fit to view does not zoom a small graph past 1x", () => {
+  const v = fitViewBox([{ x: 130, y: 0 }]);
+  expect(v.zoom).toBe(1);
+  // The single node is centred.
+  expect(v.panX + 1200 / 2).toBeCloseTo(130);
+  expect(v.panY + 800 / 2).toBeCloseTo(0);
+});
+
+test("fit to view of an empty graph is the default view", () => {
+  expect(fitViewBox([])).toEqual({ zoom: 1, panX: 0, panY: 0 });
 });
