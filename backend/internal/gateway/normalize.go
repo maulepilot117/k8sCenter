@@ -63,35 +63,93 @@ func extractConditions(obj map[string]any, path ...string) []Condition {
 }
 
 // extractParentRefs reads spec.parentRefs from an unstructured object.
-// Handles defaults: Group defaults to "gateway.networking.k8s.io", Kind defaults to "Gateway".
+// Handles defaults: Group defaults to "gateway.networking.k8s.io", Kind defaults
+// to "Gateway", and an omitted Namespace defaults to the route's own namespace,
+// as the Gateway API specifies. Each ref's Status is derived from the matching
+// status.parents[] entry (see parentRefStatus).
 func extractParentRefs(u *unstructured.Unstructured) []ParentRef {
 	refs, found, err := unstructured.NestedSlice(u.Object, "spec", "parentRefs")
 	if err != nil || !found {
 		return nil
 	}
+	statusParents, _, _ := unstructured.NestedSlice(u.Object, "status", "parents")
+	routeNs := u.GetNamespace()
 	var out []ParentRef
 	for _, item := range refs {
 		rm, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		group := stringFrom(rm, "group")
-		if group == "" {
-			group = APIGroup
-		}
-		kind := stringFrom(rm, "kind")
-		if kind == "" {
-			kind = "Gateway"
-		}
-		out = append(out, ParentRef{
-			Group:       group,
-			Kind:        kind,
-			Name:        stringFrom(rm, "name"),
-			Namespace:   stringFrom(rm, "namespace"),
-			SectionName: stringFrom(rm, "sectionName"),
-		})
+		ref := normalizeParentRef(rm, routeNs)
+		ref.Status = parentRefStatus(statusParents, ref, routeNs)
+		out = append(out, ref)
 	}
 	return out
+}
+
+// normalizeParentRef applies the Gateway API parentRef defaults to a raw
+// parentRef map: group, kind, and namespace (the route's own when omitted).
+func normalizeParentRef(rm map[string]any, routeNs string) ParentRef {
+	group := stringFrom(rm, "group")
+	if group == "" {
+		group = APIGroup
+	}
+	kind := stringFrom(rm, "kind")
+	if kind == "" {
+		kind = "Gateway"
+	}
+	ns := stringFrom(rm, "namespace")
+	if ns == "" {
+		ns = routeNs
+	}
+	return ParentRef{
+		Group:       group,
+		Kind:        kind,
+		Name:        stringFrom(rm, "name"),
+		Namespace:   ns,
+		SectionName: stringFrom(rm, "sectionName"),
+	}
+}
+
+// parentRefStatus summarizes how a parent accepted the route, from the
+// status.parents[] entry whose parentRef matches ref (group, kind, name,
+// namespace and sectionName, with the same defaults as spec.parentRefs). It
+// returns "Accepted" when the Accepted condition is True, the condition's
+// reason (or "NotAccepted" if it has none) when it is False, and "" when no
+// entry or Accepted condition is reported.
+func parentRefStatus(statusParents []any, ref ParentRef, routeNs string) string {
+	for _, p := range statusParents {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		prm, ok := pm["parentRef"].(map[string]any)
+		if !ok {
+			continue
+		}
+		cand := normalizeParentRef(prm, routeNs)
+		if cand.Group != ref.Group || cand.Kind != ref.Kind || cand.Name != ref.Name ||
+			cand.Namespace != ref.Namespace || cand.SectionName != ref.SectionName {
+			continue
+		}
+		conds, _, _ := unstructured.NestedSlice(pm, "conditions")
+		for _, c := range conds {
+			cm, ok := c.(map[string]any)
+			if !ok || stringFrom(cm, "type") != "Accepted" {
+				continue
+			}
+			switch stringFrom(cm, "status") {
+			case "True":
+				return "Accepted"
+			case "False":
+				if reason := stringFrom(cm, "reason"); reason != "" {
+					return reason
+				}
+				return "NotAccepted"
+			}
+		}
+	}
+	return ""
 }
 
 // extractBackendRefs reads backendRefs from a slice of unstructured items.
