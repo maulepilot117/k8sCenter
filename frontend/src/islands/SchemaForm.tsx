@@ -16,6 +16,17 @@ import { initialNamespace } from "@/src/lib/namespace.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
+/** A field that identifies an existing object: shown, but visibly not
+ * editable. A disabled control with the live style reads as editable, and
+ * changing name or namespace on apply would create a copy, not a rename. */
+/** The root every return shares. Preact hydration keeps the server-rendered
+ * root's own props, so per-branch roots kept the placeholder's style and the
+ * form never got its max width. Each branch styles an inner box instead. */
+const FORM_ROOT_STYLE = { maxWidth: "800px" };
+
+function lockedStyle(base: Record<string, string>): Record<string, string> {
+  return { ...base, opacity: "0.6", cursor: "not-allowed" };
+}
 interface SchemaFormProps {
   group: string;
   resource: string;
@@ -524,18 +535,24 @@ export default function SchemaForm({
   // ── SSR placeholder ──────────────────────────────────────────────────
 
   if (!IS_BROWSER) {
-    return <div style={{ minHeight: "400px" }} />;
+    return (
+      <div style={FORM_ROOT_STYLE}>
+        <div style={{ minHeight: "400px" }} />
+      </div>
+    );
   }
 
   // ── Loading state ────────────────────────────────────────────────────
 
   if (loading.value) {
     return (
-      <div>
-        <Skeleton class="h-5 w-48 mb-2" />
-        <Skeleton class="h-4 w-72 mb-6" />
-        <Skeleton class="h-10 w-full mb-4" />
-        <Skeleton class="h-64 w-full rounded-lg" />
+      <div style={FORM_ROOT_STYLE}>
+        <div>
+          <Skeleton class="h-5 w-48 mb-2" />
+          <Skeleton class="h-4 w-72 mb-6" />
+          <Skeleton class="h-10 w-full mb-4" />
+          <Skeleton class="h-64 w-full rounded-lg" />
+        </div>
       </div>
     );
   }
@@ -544,29 +561,31 @@ export default function SchemaForm({
 
   if (error.value) {
     return (
-      <div
-        style={{
-          padding: "32px",
-          textAlign: "center",
-          color: "var(--text-muted)",
-        }}
-      >
-        <p
+      <div style={FORM_ROOT_STYLE}>
+        <div
           style={{
-            fontSize: "14px",
-            color: "var(--error)",
-            marginBottom: "12px",
+            padding: "32px",
+            textAlign: "center",
+            color: "var(--text-muted)",
           }}
         >
-          {error.value}
-        </p>
-        <button
-          type="button"
-          onClick={() => globalThis.location.reload()}
-          style={btnSecondaryStyle}
-        >
-          Retry
-        </button>
+          <p
+            style={{
+              fontSize: "14px",
+              color: "var(--error)",
+              marginBottom: "12px",
+            }}
+          >
+            {error.value}
+          </p>
+          <button
+            type="button"
+            onClick={() => globalThis.location.reload()}
+            style={btnSecondaryStyle}
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
@@ -581,7 +600,7 @@ export default function SchemaForm({
   // ── Render ───────────────────────────────────────────────────────────
 
   return (
-    <div style={{ maxWidth: "800px" }}>
+    <div style={FORM_ROOT_STYLE}>
       {/* Breadcrumbs */}
       <nav
         style={{
@@ -720,7 +739,7 @@ export default function SchemaForm({
             <input
               id="field-metadata-name"
               type="text"
-              style={inputStyle}
+              style={mode === "edit" ? lockedStyle(inputStyle) : inputStyle}
               value={formName.value}
               disabled={mode === "edit"}
               onInput={(e) =>
@@ -746,7 +765,7 @@ export default function SchemaForm({
               </label>
               <select
                 id="field-metadata-namespace"
-                style={selectStyle}
+                style={mode === "edit" ? lockedStyle(selectStyle) : selectStyle}
                 value={formNamespace.value}
                 disabled={mode === "edit"}
                 onChange={(e) =>
@@ -760,6 +779,19 @@ export default function SchemaForm({
                 ))}
               </select>
             </div>
+          )}
+
+          {mode === "edit" && (
+            <p
+              style={{
+                fontSize: "12px",
+                color: "var(--text-muted)",
+                margin: "0 0 12px",
+              }}
+            >
+              Name and namespace identify this object and can't be changed. To
+              move or rename it, create a new one.
+            </p>
           )}
 
           {/* ── Labels Section ───────────────────────────────────────── */}
