@@ -152,9 +152,11 @@ export function ServicePortsStep({
                 error={errors[`ports[${i}].targetPort`]}
               />
             </div>
-            <div class="w-20">
+            {/* Wide enough for "SCTP" next to the select's own arrow; at
+                w-20 it clipped to "TC". */}
+            <div class="w-28 shrink-0">
               <Select
-                label={i === 0 ? "Proto" : undefined}
+                label={i === 0 ? "Protocol" : undefined}
                 value={port.protocol}
                 onChange={(e) =>
                   updatePort(

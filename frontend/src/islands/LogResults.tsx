@@ -89,7 +89,7 @@ export default function LogResults(props: LogResultsProps) {
             return (
               <div
                 key={i}
-                class={`flex border-b border-border-subtle px-4 py-0.5 ${
+                class={`flex gap-3 border-b border-border-subtle px-4 py-0.5 ${
                   isError ? "bg-danger/5" : ""
                 }`}
               >
@@ -108,6 +108,7 @@ export default function LogResults(props: LogResultsProps) {
                     href={`/workloads/pods/${
                       entry.labels.namespace ?? "default"
                     }/${entry.labels.pod}`}
+                    title={entry.labels.pod}
                     class="min-w-[140px] shrink-0 text-info hover:underline"
                   >
                     {entry.labels.pod.slice(0, 20)}
