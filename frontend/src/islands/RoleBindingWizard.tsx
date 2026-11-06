@@ -558,6 +558,9 @@ export default function RoleBindingWizard({
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath={basePath}
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>

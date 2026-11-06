@@ -212,6 +212,10 @@ const QUERIES: Record<string, { title: string; slug: string }[]> = {
   ],
 };
 
+export function hasPerformanceMetrics(kind: string): boolean {
+  return Object.hasOwn(QUERIES, kind);
+}
+
 interface ChartData {
   title: string;
   values: { time: Date; value: number }[];

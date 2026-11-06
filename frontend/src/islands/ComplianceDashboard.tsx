@@ -46,7 +46,7 @@ function SeverityBar({
       <span class="text-xs font-medium w-16 text-right" style={{ color }}>
         {label}
       </span>
-      <div class="flex-1 h-3 rounded-full overflow-hidden bg-bg-elevated">
+      <div class="flex-1 h-3 rounded-full overflow-hidden bg-elevated">
         <div
           class="h-full rounded-full"
           style={{

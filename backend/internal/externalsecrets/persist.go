@@ -369,12 +369,9 @@ func (p *Poller) resolveDiffKeys(ctx context.Context, es ExternalSecret, outcome
 		return nil, nil, nil
 	}
 
-	// Drift hint: compare ES's controller-reported syncedResourceVersion
-	// against the live Secret's resourceVersion. This is the same
-	// computation the detail endpoint runs via the impersonated client.
-	// Stash for the list endpoint to surface.
 	if p.handler != nil {
-		p.handler.RecordDrift(es.UID, computeDriftStatus(es.SyncedResourceVersion, sec.ResourceVersion))
+		drift, _ := computeDriftStatus(sec)
+		p.handler.RecordDrift(es.UID, drift)
 	}
 
 	current := hashSecretData(sec.Data)

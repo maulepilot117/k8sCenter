@@ -282,7 +282,7 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
                   (e.target as HTMLInputElement).checked,
                 )
               }
-              class="rounded border-border"
+              class="rounded border-border-primary"
             />
             <label
               for="restorePVs"
@@ -301,6 +301,9 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/backup/restores"
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>

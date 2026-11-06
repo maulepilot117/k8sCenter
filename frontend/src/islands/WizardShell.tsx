@@ -1,7 +1,12 @@
+import { useSignal } from "@preact/signals";
 import type { ComponentChildren } from "preact";
 import YamlView from "@/components/ui/YamlView.tsx";
 import StepRail from "@/components/wizard/StepRail.tsx";
 import { wizardBusy } from "@/lib/wizard-busy.ts";
+import {
+  type WizardPrimaryAction,
+  WizardPrimaryActionContext,
+} from "@/lib/wizard-primary-action.ts";
 
 export interface WizardStep {
   label: string;
@@ -31,6 +36,10 @@ interface WizardShellProps {
  * sheet, left step rail with checkmarks, a form column, an optional live-YAML
  * pane, and the footer. Each wizard owns its form state and renders the active
  * step's fields as children; pass the assembled manifest as `yaml`.
+ *
+ * The footer's primary button is `nextLabel` / `onNext` unless the active step
+ * registers its own action through `WizardPrimaryActionContext` (the review
+ * step does, for Apply).
  */
 export default function WizardShell({
   title,
@@ -52,6 +61,52 @@ export default function WizardShell({
   const guardedCancel = () => {
     if (!busy) onCancel();
   };
+  const registered = useSignal<WizardPrimaryAction | null>(null);
+  const action = registered.value;
+  const primaryLabel = action?.label ?? nextLabel;
+  const primaryDisabled = action?.disabled ?? false;
+  const primaryStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "9px 20px",
+    borderRadius: "9px",
+    border: "none",
+    cursor: primaryDisabled ? "not-allowed" : "pointer",
+    opacity: primaryDisabled ? 0.5 : 1,
+    color: "var(--text-on-accent)",
+    fontSize: "13px",
+    fontWeight: 650,
+    fontFamily: "inherit",
+    textDecoration: "none",
+    background:
+      "linear-gradient(135deg, var(--accent), var(--accent-secondary))",
+    boxShadow:
+      "0 8px 20px -8px color-mix(in srgb, var(--accent) 60%, transparent)",
+  };
+  const primaryContent = (
+    <>
+      {primaryLabel}
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 20 20"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+        class={action?.loading ? "animate-spin" : undefined}
+      >
+        {action?.loading ? (
+          <path d="M10 3a7 7 0 1 0 7 7" />
+        ) : (
+          <path d="M7 5l5 5-5 5" />
+        )}
+      </svg>
+    </>
+  );
   return (
     <div
       onClick={guardedCancel}
@@ -74,7 +129,10 @@ export default function WizardShell({
         style={{
           width: "980px",
           maxWidth: "96vw",
-          maxHeight: "90vh",
+          // A fixed height, not a max: the sheet keeps its size from step to
+          // step so the footer stays put, and the review step's editor can
+          // fill the space left instead of a hard-coded height.
+          height: "min(860px, 90vh)",
           display: "flex",
           flexDirection: "column",
           borderRadius: "20px",
@@ -179,9 +237,13 @@ export default function WizardShell({
                 minWidth: 0,
                 padding: "24px 26px",
                 overflowY: "auto",
+                display: "flex",
+                flexDirection: "column",
               }}
             >
-              {children}
+              <WizardPrimaryActionContext.Provider value={registered}>
+                {children}
+              </WizardPrimaryActionContext.Provider>
             </div>
 
             {yaml !== undefined && (
@@ -282,41 +344,21 @@ export default function WizardShell({
                 Back
               </button>
             )}
-            <button
-              type="button"
-              onClick={onNext}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                padding: "9px 20px",
-                borderRadius: "9px",
-                border: "none",
-                cursor: "pointer",
-                color: "var(--text-on-accent)",
-                fontSize: "13px",
-                fontWeight: 650,
-                fontFamily: "inherit",
-                background:
-                  "linear-gradient(135deg, var(--accent), var(--accent-secondary))",
-                boxShadow:
-                  "0 8px 20px -8px color-mix(in srgb, var(--accent) 60%, transparent)",
-              }}
-            >
-              {nextLabel}
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 20 20"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+            {action?.href ? (
+              <a href={action.href} style={primaryStyle}>
+                {primaryContent}
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={action?.onClick ?? onNext}
+                disabled={primaryDisabled}
+                aria-busy={action?.loading || undefined}
+                style={primaryStyle}
               >
-                <path d="M7 5l5 5-5 5" />
-              </svg>
-            </button>
+                {primaryContent}
+              </button>
+            )}
           </div>
         </div>
       </div>

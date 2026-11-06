@@ -76,7 +76,7 @@ export function NotificationUnavailableBanner({
   if (!visible) return null;
   return (
     <div
-      class="mb-6 rounded-lg border p-4 bg-bg-elevated"
+      class="mb-6 rounded-lg border p-4 bg-elevated"
       style={{ borderColor: "var(--warning)" }}
     >
       <p class="text-sm font-medium" style={{ color: "var(--warning)" }}>
@@ -228,7 +228,7 @@ export function NotificationEmptyState({
 }: EmptyStateProps) {
   if (loading || error || filteredCount > 0 || notAvailable) return null;
   return (
-    <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+    <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
       <p class="text-text-muted mb-4">
         {totalCount === 0
           ? `No notification ${kind.toLowerCase()}s configured.`

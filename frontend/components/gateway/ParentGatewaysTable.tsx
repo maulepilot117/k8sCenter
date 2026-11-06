@@ -36,12 +36,18 @@ export default function ParentGatewaysTable({
             {parentRefs.map((ref, i) => (
               <tr key={i}>
                 <td class="px-4 py-2 text-sm">
-                  <a
-                    href={`/networking/gateway-api/gateways/${ref.namespace}/${ref.name}`}
-                    class="text-brand hover:underline"
-                  >
-                    {ref.name}
-                  </a>
+                  {/* Only a Gateway parent has a Gateway detail page; a
+                      parentRef can also name another kind (a Service). */}
+                  {ref.kind === "Gateway" && ref.namespace ? (
+                    <a
+                      href={`/networking/gateway-api/gateways/${ref.namespace}/${ref.name}`}
+                      class="text-brand hover:underline"
+                    >
+                      {ref.name}
+                    </a>
+                  ) : (
+                    <span class="text-text-primary">{ref.name}</span>
+                  )}
                 </td>
                 <td class="px-4 py-2 text-sm text-text-secondary">
                   {ref.namespace || "-"}

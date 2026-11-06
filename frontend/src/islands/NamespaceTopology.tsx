@@ -234,6 +234,44 @@ function focusedSubgraph(graph: TopoGraph, focusedNodeId?: string): TopoGraph {
 
 // ── Component ──
 
+/** Space kept around the graph when it is fitted to the view. */
+const FIT_PADDING = 40;
+
+/**
+ * The zoom and pan that frame every node. The layout centres each column on
+ * y = 0, so a tall graph extends well above it: a view fixed at (0, 0) showed
+ * only its lower part, or none of it. A graph smaller than the view stays at
+ * 1x and is centred; one too large even at MIN_ZOOM is centred at MIN_ZOOM.
+ */
+export function fitViewBox(nodes: readonly { x: number; y: number }[]): {
+  zoom: number;
+  panX: number;
+  panY: number;
+} {
+  if (nodes.length === 0) return { zoom: 1, panX: 0, panY: 0 };
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x - NODE_WIDTH / 2);
+    maxX = Math.max(maxX, n.x + NODE_WIDTH / 2);
+    minY = Math.min(minY, n.y - NODE_HEIGHT / 2);
+    maxY = Math.max(maxY, n.y + NODE_HEIGHT / 2);
+  }
+  const width = maxX - minX + 2 * FIT_PADDING;
+  const height = maxY - minY + 2 * FIT_PADDING;
+  const zoom = Math.max(
+    MIN_ZOOM,
+    Math.min(1, BASE_WIDTH / width, BASE_HEIGHT / height),
+  );
+  return {
+    zoom,
+    panX: (minX + maxX) / 2 - BASE_WIDTH / zoom / 2,
+    panY: (minY + maxY) / 2 - BASE_HEIGHT / zoom / 2,
+  };
+}
+
 export default function NamespaceTopology({
   namespace,
   defaultOverlay = "none",
@@ -387,6 +425,7 @@ export default function NamespaceTopology({
 
     layoutNodes.value = positioned;
     layoutNodeMap.value = new Map(positioned.map((n) => [n.id, n]));
+    applyView(fitViewBox(positioned));
   }, [graph.value]);
 
   // ── Connectivity sets for hover highlight ──
@@ -453,11 +492,13 @@ export default function NamespaceTopology({
     dragging.value = false;
   };
 
-  const fitToView = () => {
-    zoom.value = 1;
-    panX.value = 0;
-    panY.value = 0;
-  };
+  function applyView(v: { zoom: number; panX: number; panY: number }) {
+    zoom.value = v.zoom;
+    panX.value = v.panX;
+    panY.value = v.panY;
+  }
+
+  const fitToView = () => applyView(fitViewBox(layoutNodes.value));
 
   // ── Render helpers ──
 
@@ -482,7 +523,7 @@ export default function NamespaceTopology({
 
   if ((namespace ?? selectedNamespace.value) === "all") {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
+      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
         <p class="text-text-secondary">
           Select a namespace to view its resource topology.
         </p>
@@ -494,7 +535,7 @@ export default function NamespaceTopology({
 
   if (loading.value) {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
+      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
         <Spinner class="text-accent" />
         <span class="ml-3 text-text-secondary">Loading topology...</span>
       </div>
@@ -523,7 +564,7 @@ export default function NamespaceTopology({
         <ErrorBanner message={error.value} />
         <button
           type="button"
-          class="rounded bg-accent-primary px-3 py-1.5 text-sm font-medium hover:opacity-90"
+          class="rounded bg-accent px-3 py-1.5 text-sm font-medium hover:opacity-90"
           style={{ color: "var(--bg-base)" }}
           onClick={() => fetchGraph()}
         >
@@ -537,7 +578,7 @@ export default function NamespaceTopology({
 
   if (!graph.value || graph.value.nodes.length === 0) {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
+      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
         <p class="text-text-secondary">No resources found in this namespace.</p>
       </div>
     );
@@ -555,7 +596,7 @@ export default function NamespaceTopology({
     <div class="relative flex gap-0">
       {/* Graph area */}
       <div
-        class="flex-1 overflow-hidden rounded-lg border border-border-primary bg-bg-surface"
+        class="flex-1 overflow-hidden rounded-lg border border-border-primary bg-surface"
         style={{ minHeight: `${panelMinHeight}px` }}
       >
         {/* Toolbar */}
@@ -563,14 +604,14 @@ export default function NamespaceTopology({
           <div class="flex items-center gap-2">
             <button
               type="button"
-              class="rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
+              class="rounded border border-border-primary bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
               onClick={fitToView}
             >
               Fit to view
             </button>
             <button
               type="button"
-              class="rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
+              class="rounded border border-border-primary bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
               onClick={() => fetchGraph()}
             >
               Refresh
@@ -605,8 +646,8 @@ export default function NamespaceTopology({
                     }
                     class={`px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       active
-                        ? "bg-accent-primary"
-                        : "bg-bg-surface text-text-secondary hover:text-text-primary"
+                        ? "bg-accent"
+                        : "bg-surface text-text-secondary hover:text-text-primary"
                     }`}
                     style={active ? { color: "var(--bg-base)" } : undefined}
                     onClick={() => {
@@ -886,7 +927,7 @@ export default function NamespaceTopology({
       {/* Slide-out detail panel */}
       {selected && (
         <div
-          class="shrink-0 overflow-y-auto border-l border-border-primary bg-bg-surface"
+          class="shrink-0 overflow-y-auto border-l border-border-primary bg-surface"
           style={{
             width: `${PANEL_WIDTH}px`,
             minHeight: `${panelMinHeight}px`,
@@ -973,7 +1014,7 @@ export default function NamespaceTopology({
                   selected.namespace,
                   selected.name,
                 )}
-                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated"
+                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
               >
                 View Detail
               </a>
@@ -982,7 +1023,7 @@ export default function NamespaceTopology({
                   href={`/observability/logs?namespace=${encodeURIComponent(
                     selected.namespace,
                   )}&pod=${encodeURIComponent(selected.name)}`}
-                  class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated"
+                  class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
                 >
                   View Logs
                 </a>
@@ -991,7 +1032,7 @@ export default function NamespaceTopology({
                 href={`/observability/logs?namespace=${encodeURIComponent(
                   selected.namespace,
                 )}`}
-                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated"
+                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
               >
                 Investigate
               </a>

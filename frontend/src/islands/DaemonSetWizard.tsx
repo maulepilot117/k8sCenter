@@ -374,6 +374,9 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/workloads/daemonsets"
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>

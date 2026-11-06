@@ -11,6 +11,7 @@
  */
 import { computed, effect, signal } from "@preact/signals";
 import { api } from "@/lib/api.ts";
+import { apiResourceForKind } from "@/lib/constants.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
@@ -41,13 +42,16 @@ export const resourceCountsTotal = computed(() => {
 });
 
 /**
- * Returns the count for `kind` (plural lowercase, e.g. "deployments"),
- * or null if the store hasn't loaded yet.
+ * Returns the count for `kind` (an API resource name such as "deployments",
+ * or an adapter's short kind such as "pvcs"), or null when it is unknown: the
+ * store hasn't loaded, or the backend didn't count the kind. Secrets are never
+ * counted and a kind the user may not list is left out, so a missing key is
+ * unknown, not zero.
  */
 export function getCount(kind: string): number | null {
   const c = resourceCounts.value;
   if (!c) return null;
-  return c[kind] ?? 0;
+  return c[apiResourceForKind(kind)] ?? null;
 }
 
 /** The cluster `resourceCounts` was last read from, or null before any read. */
@@ -55,7 +59,7 @@ let countsCluster: string | null = null;
 
 /**
  * The count for `kind` as display text: a capped count under a truncated read
- * gets a trailing `+`. Null before the store has loaded.
+ * gets a trailing `+`. Null when the count is unknown (see getCount).
  */
 export function formatCount(kind: string): string | null {
   const n = getCount(kind);

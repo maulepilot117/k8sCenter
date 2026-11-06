@@ -42,9 +42,18 @@ const (
 // no informers, so its list is read directly from that cluster's API server,
 // as the user, through ClusterRouter; a failure there is reported and never
 // answered from the local cluster.
+//
+// The router binds /resources/{kind}/{namespace} here, which is also the
+// detail URL of a cluster-scoped kind (/resources/{kind}/{name}). For such a
+// kind the second segment is a name, so the request is a get, not a list.
 func (h *Handler) HandleListResource(w http.ResponseWriter, r *http.Request) {
 	adapter, ok := resolveAdapter(w, r)
 	if !ok {
+		return
+	}
+
+	if adapter.ClusterScoped() && chi.URLParam(r, "namespace") != "" {
+		h.HandleGetResource(w, r)
 		return
 	}
 
@@ -55,9 +64,6 @@ func (h *Handler) HandleListResource(w http.ResponseWriter, r *http.Request) {
 
 	params := parseListParams(r)
 	ns := params.Namespace
-	if adapter.ClusterScoped() {
-		ns = ""
-	}
 
 	if !h.checkAccess(w, r, user, "list", adapter.APIResource(), ns) {
 		return

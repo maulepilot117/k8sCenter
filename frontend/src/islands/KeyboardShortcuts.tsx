@@ -24,9 +24,12 @@ export default function KeyboardShortcuts() {
       // the dashboard grid, for one, takes Escape to leave edit mode and then
       // puts focus on its own toggle, which the blur below would undo.
       if (e.defaultPrevented) return;
-      // Ignore when typing in inputs
-      const tag = (e.target as HTMLElement)?.tagName;
+      // Ignore when typing in inputs, including contenteditable editors
+      // (the YAML editor), whose keys are text, not shortcuts.
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (target?.isContentEditable) return;
 
       switch (e.key) {
         case "?":

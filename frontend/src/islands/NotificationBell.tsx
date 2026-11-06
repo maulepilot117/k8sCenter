@@ -26,7 +26,7 @@ export default function NotificationBell() {
     notifApi
       .unreadCount()
       .then((res) => {
-        unreadCount.value = res.data.data.count;
+        unreadCount.value = res.data?.count ?? 0;
       })
       .catch(() => {});
   };
@@ -94,7 +94,7 @@ export default function NotificationBell() {
       loading.value = true;
       try {
         const res = await notifApi.list({ limit: 20 });
-        recent.value = res.data.data ?? [];
+        recent.value = res.data ?? [];
       } catch {
         // Silently fail — panel shows empty state
       }

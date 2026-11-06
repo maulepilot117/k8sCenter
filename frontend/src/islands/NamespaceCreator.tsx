@@ -6,12 +6,19 @@ import { apiPost } from "@/lib/api.ts";
 import { NS_NAME_REGEX } from "@/lib/wizard-constants.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
-interface NamespaceCreatorProps {
-  onClose?: () => void;
+const NAMESPACE_LIST = "/cluster/namespaces";
+
+/** One root class for the SSR placeholder and the form: Preact hydration
+ * keeps the server-rendered root's props, so a root that differed would keep
+ * the placeholder's classes. */
+const ROOT_CLASS = "p-6 max-w-lg";
+
+/** Where a successful create goes: the new namespace's detail page. */
+export function createdNamespaceHref(name: string): string {
+  return `${NAMESPACE_LIST}/${encodeURIComponent(name)}`;
 }
 
-export default function NamespaceCreator({ onClose }: NamespaceCreatorProps) {
-  const close = onClose ?? (() => globalThis.history.back());
+export default function NamespaceCreator() {
   const name = useSignal("");
   const labels = useSignal<Array<{ key: string; value: string }>>([
     { key: "", value: "" },
@@ -21,7 +28,7 @@ export default function NamespaceCreator({ onClose }: NamespaceCreatorProps) {
 
   if (!IS_BROWSER) {
     return (
-      <div class="p-6">
+      <div class={ROOT_CLASS}>
         <h1 class="text-2xl font-semibold text-text-primary">
           Create Namespace
         </h1>
@@ -35,7 +42,7 @@ export default function NamespaceCreator({ onClose }: NamespaceCreatorProps) {
       return "Must be lowercase alphanumeric with dashes, max 63 chars";
     }
     if (name.value.startsWith("kube-")) {
-      return 'Names starting with"kube-" are reserved for Kubernetes system namespaces';
+      return 'Names starting with "kube-" are reserved for Kubernetes system namespaces';
     }
     return null;
   };
@@ -62,7 +69,7 @@ export default function NamespaceCreator({ onClose }: NamespaceCreatorProps) {
           labels: Object.keys(nsLabels).length > 0 ? nsLabels : undefined,
         },
       });
-      close();
+      globalThis.location.href = createdNamespaceHref(name.value);
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : "Failed to create namespace";
@@ -87,18 +94,17 @@ export default function NamespaceCreator({ onClose }: NamespaceCreatorProps) {
   };
 
   return (
-    <div class="p-6 max-w-lg">
+    <div class={ROOT_CLASS}>
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-semibold text-text-primary">
           Create Namespace
         </h1>
-        <button
-          type="button"
-          onClick={close}
+        <a
+          href={NAMESPACE_LIST}
           class="text-sm text-text-muted hover:text-text-secondary"
         >
           Back to list
-        </button>
+        </a>
       </div>
 
       {error.value && (
@@ -131,7 +137,7 @@ export default function NamespaceCreator({ onClose }: NamespaceCreatorProps) {
           </Button>
           <button
             type="button"
-            onClick={close}
+            onClick={() => globalThis.history.back()}
             class="text-sm text-text-muted hover:text-text-secondary"
           >
             Cancel

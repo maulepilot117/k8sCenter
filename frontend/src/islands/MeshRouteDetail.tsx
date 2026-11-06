@@ -69,7 +69,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
         >
           &larr; Back to Routing
         </a>
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">Resource not found.</p>
         </div>
       </div>
@@ -85,7 +85,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
         >
           &larr; Back to Routing
         </a>
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted mb-4">
             {error.value ?? "Failed to load route detail"}
           </p>
@@ -134,7 +134,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
       </div>
 
       {/* Metadata panel */}
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-4 mb-6">
+      <div class="rounded-lg border border-border-primary bg-elevated p-4 mb-6">
         <h2 class="text-sm font-medium text-text-muted mb-3">Details</h2>
         <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
           <div>
@@ -161,7 +161,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
       </div>
 
       {/* Routing panel */}
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-4 mb-6">
+      <div class="rounded-lg border border-border-primary bg-elevated p-4 mb-6">
         <h2 class="text-sm font-medium text-text-muted mb-3">Routing</h2>
         <dl class="grid grid-cols-1 gap-y-4 text-sm">
           <div>
@@ -220,7 +220,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
 
       {/* Destinations panel */}
       {destinations.length > 0 && (
-        <div class="rounded-lg border border-border-primary bg-bg-elevated p-4 mb-6">
+        <div class="rounded-lg border border-border-primary bg-elevated p-4 mb-6">
           <h2 class="text-sm font-medium text-text-muted mb-3">
             Destinations ({destinations.length})
           </h2>
@@ -271,7 +271,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
 
       {/* Matchers panel */}
       {matchers.length > 0 && (
-        <div class="rounded-lg border border-border-primary bg-bg-elevated p-4 mb-6">
+        <div class="rounded-lg border border-border-primary bg-elevated p-4 mb-6">
           <h2 class="text-sm font-medium text-text-muted mb-3">
             Matchers ({matchers.length})
           </h2>
@@ -318,7 +318,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
 
       {/* Raw YAML — collapsible */}
       {rawYaml && (
-        <div class="rounded-lg border border-border-primary bg-bg-elevated mb-6">
+        <div class="rounded-lg border border-border-primary bg-elevated mb-6">
           <button
             type="button"
             class="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-text-primary hover:bg-hover/20"

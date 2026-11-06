@@ -348,7 +348,7 @@ export default function GitOpsAppSets() {
       )}
 
       {!loading.value && !error.value && filtered.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">
             {appSets.value.length === 0
               ? "No ApplicationSets found. ApplicationSets will appear here once created in Argo CD."

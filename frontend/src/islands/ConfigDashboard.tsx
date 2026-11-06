@@ -76,12 +76,17 @@ export default function ConfigDashboard({
     }
   }, []);
 
-  // Subtitle derived from live counts — no invented data.
+  // Subtitle derived from live counts — no invented data. Secrets are never
+  // counted (they stay out of the informer cache), so their count is unknown
+  // and the subtitle is left out rather than reading "0 secrets".
   const countsReady = resourceCounts.value !== null;
+  const count = formatCount(kind);
 
-  const subtitle = countsReady
-    ? `${formatCount(kind) ?? 0} ${title.toLowerCase()}`
-    : `Loading ${title.toLowerCase()}…`;
+  const subtitle = !countsReady
+    ? `Loading ${title.toLowerCase()}…`
+    : count !== null
+      ? `${count} ${title.toLowerCase()}`
+      : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -113,15 +118,17 @@ export default function ConfigDashboard({
           >
             {title}
           </h1>
-          <p
-            style={{
-              margin: "4px 0 0",
-              fontSize: "13px",
-              color: "var(--text-muted)",
-            }}
-          >
-            {subtitle}
-          </p>
+          {subtitle && (
+            <p
+              style={{
+                margin: "4px 0 0",
+                fontSize: "13px",
+                color: "var(--text-muted)",
+              }}
+            >
+              {subtitle}
+            </p>
+          )}
         </div>
         {WizardComponent && (
           <button

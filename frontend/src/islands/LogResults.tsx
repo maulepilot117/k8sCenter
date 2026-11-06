@@ -37,13 +37,13 @@ function parseSeverity(line: string): string {
 function severityColor(severity: string): string {
   switch (severity) {
     case "error":
-      return "text-status-error font-semibold";
+      return "text-danger font-semibold";
     case "warn":
-      return "text-status-warning";
+      return "text-warning";
     case "debug":
       return "text-text-muted";
     default:
-      return "text-accent-primary";
+      return "text-accent";
   }
 }
 
@@ -63,7 +63,7 @@ export default function LogResults(props: LogResultsProps) {
 
   if (loading.value) {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
+      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
         <div class="text-sm text-text-muted">Searching logs...</div>
       </div>
     );
@@ -71,7 +71,7 @@ export default function LogResults(props: LogResultsProps) {
 
   if (lines.value.length === 0) {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
+      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
         <div class="text-sm text-text-muted">
           No log entries found. Try adjusting your filters or time range.
         </div>
@@ -89,8 +89,8 @@ export default function LogResults(props: LogResultsProps) {
             return (
               <div
                 key={i}
-                class={`flex border-b border-border-subtle px-4 py-0.5 ${
-                  isError ? "bg-status-error/5" : ""
+                class={`flex gap-3 border-b border-border-subtle px-4 py-0.5 ${
+                  isError ? "bg-danger/5" : ""
                 }`}
               >
                 <span class="min-w-[160px] shrink-0 text-text-muted">
@@ -108,7 +108,8 @@ export default function LogResults(props: LogResultsProps) {
                     href={`/workloads/pods/${
                       entry.labels.namespace ?? "default"
                     }/${entry.labels.pod}`}
-                    class="min-w-[140px] shrink-0 text-status-info hover:underline"
+                    title={entry.labels.pod}
+                    class="min-w-[140px] shrink-0 text-info hover:underline"
                   >
                     {entry.labels.pod.slice(0, 20)}
                   </a>
@@ -119,7 +120,7 @@ export default function LogResults(props: LogResultsProps) {
           })}
         </div>
       </div>
-      <div class="border-t border-border-primary bg-bg-surface px-4 py-2 text-xs text-text-muted">
+      <div class="border-t border-border-primary bg-surface px-4 py-2 text-xs text-text-muted">
         {lines.value.length.toLocaleString()} entries
       </div>
     </div>

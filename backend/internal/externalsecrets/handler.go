@@ -842,6 +842,7 @@ func (h *Handler) HandleGetPushSecret(w http.ResponseWriter, r *http.Request) {
 // "drift not resolvable" copy.
 const (
 	DriftReasonNoSyncedRV    = "no_synced_rv"
+	DriftReasonNoDataHash    = "no_data_hash"
 	DriftReasonNoTargetName  = "no_target_name"
 	DriftReasonSecretDeleted = "secret_deleted"
 	DriftReasonRBACDenied    = "rbac_denied"
@@ -850,15 +851,16 @@ const (
 )
 
 // resolveDriftStatus resolves the live drift state of an ExternalSecret by
-// looking up the synced Secret's current resourceVersion. Returns
+// reading its synced Secret as the user and comparing the Secret's data with
+// the hash ESO recorded when it wrote it (computeDriftStatus). Returns
 // (DriftStatus, reason) where reason is non-empty only when DriftStatus
 // is Unknown.
 //
-//   - DriftUnknown when the provider doesn't populate syncedResourceVersion,
-//     when the synced Secret has been deleted, or when the requesting user
-//     lacks `get secret` perm on the target namespace
-//   - DriftInSync when syncedResourceVersion matches the live Secret's RV
-//   - DriftDrifted when the RVs differ (operator likely edited the Secret)
+//   - DriftUnknown when the ExternalSecret has never synced, when the synced
+//     Secret has been deleted or carries no ESO data hash, or when the
+//     requesting user lacks `get secret` perm on the target namespace
+//   - DriftInSync when the Secret's data still hashes to ESO's value
+//   - DriftDrifted when it doesn't (someone edited the Secret)
 //
 // The caller is responsible for re-applying DeriveStatus afterwards so
 // Drifted overlays the base Synced status.
@@ -894,22 +896,7 @@ func (h *Handler) resolveDriftStatus(ctx context.Context, user *auth.User, es *E
 			return DriftUnknown, DriftReasonTransient
 		}
 	}
-	return computeDriftStatus(es.SyncedResourceVersion, secret.ResourceVersion), ""
-}
-
-// computeDriftStatus is the pure comparison used by resolveDriftStatus.
-// Extracted as a separate function so the comparison can be unit-tested
-// without the impersonating-client setup. Empty syncedRV (provider doesn't
-// populate the field) maps to Unknown rather than guessing InSync, which
-// matches the requirements doc's tri-state contract (R20).
-func computeDriftStatus(syncedRV, liveRV string) DriftStatus {
-	if syncedRV == "" {
-		return DriftUnknown
-	}
-	if syncedRV == liveRV {
-		return DriftInSync
-	}
-	return DriftDrifted
+	return computeDriftStatus(secret)
 }
 
 // HandleListClusterStores returns ClusterSecretStores. Permissive-read like

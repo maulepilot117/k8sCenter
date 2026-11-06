@@ -786,3 +786,97 @@ func TestAggregateRouteConditions(t *testing.T) {
 
 // intPtr is a helper that returns a pointer to an int value.
 func intPtr(v int) *int { return &v }
+
+func routeWithParents(specRefs []any, statusParents []any) *unstructured.Unstructured {
+	u := makeUnstructured(map[string]any{
+		"spec":   map[string]any{"parentRefs": specRefs},
+		"status": map[string]any{"parents": statusParents},
+	})
+	u.SetNamespace("argocd")
+	return u
+}
+
+func TestExtractParentRefs_DefaultsNamespaceToRoute(t *testing.T) {
+	u := routeWithParents([]any{
+		map[string]any{"name": "argocd"},
+		map[string]any{"name": "shared", "namespace": "infra"},
+	}, nil)
+
+	got := extractParentRefs(u)
+	if len(got) != 2 {
+		t.Fatalf("len = %d; want 2", len(got))
+	}
+	if got[0].Namespace != "argocd" {
+		t.Errorf("omitted namespace = %q; want route namespace %q", got[0].Namespace, "argocd")
+	}
+	if got[1].Namespace != "infra" {
+		t.Errorf("explicit namespace = %q; want %q", got[1].Namespace, "infra")
+	}
+}
+
+func TestExtractParentRefs_StatusFromStatusParents(t *testing.T) {
+	cond := func(typ, status, reason string) map[string]any {
+		return map[string]any{"type": typ, "status": status, "reason": reason}
+	}
+	parent := func(name, ns, section string, conds ...any) map[string]any {
+		ref := map[string]any{
+			"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": name,
+		}
+		if ns != "" {
+			ref["namespace"] = ns
+		}
+		if section != "" {
+			ref["sectionName"] = section
+		}
+		return map[string]any{"parentRef": ref, "controllerName": "example.io/gw", "conditions": conds}
+	}
+
+	specRefs := []any{
+		map[string]any{"name": "accepted-gw"},
+		map[string]any{"name": "rejected-gw", "namespace": "infra"},
+		map[string]any{"name": "norsn-gw"},
+		map[string]any{"name": "unreported-gw"},
+		map[string]any{"name": "sectioned-gw", "sectionName": "https"},
+		map[string]any{"name": "other-ctrl-gw", "sectionName": "http"},
+	}
+	statusParents := []any{
+		parent("accepted-gw", "argocd", "", cond("Accepted", "True", "Accepted"), cond("ResolvedRefs", "True", "ResolvedRefs")),
+		parent("rejected-gw", "infra", "", cond("Accepted", "False", "NotAllowedByListeners")),
+		parent("norsn-gw", "", "", cond("Accepted", "False", "")),
+		parent("sectioned-gw", "argocd", "https", cond("Accepted", "True", "Accepted")),
+		// Same gateway but a different section: must not match the "http" ref.
+		parent("other-ctrl-gw", "argocd", "https", cond("Accepted", "True", "Accepted")),
+	}
+
+	got := extractParentRefs(routeWithParents(specRefs, statusParents))
+	want := map[string]string{
+		"accepted-gw":   "Accepted",
+		"rejected-gw":   "NotAllowedByListeners",
+		"norsn-gw":      "NotAccepted",
+		"unreported-gw": "",
+		"sectioned-gw":  "Accepted",
+		"other-ctrl-gw": "",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d; want %d", len(got), len(want))
+	}
+	for _, ref := range got {
+		if ref.Status != want[ref.Name] {
+			t.Errorf("%s: Status = %q; want %q", ref.Name, ref.Status, want[ref.Name])
+		}
+	}
+}
+
+func TestExtractParentRefs_StatusMissingAcceptedCondition(t *testing.T) {
+	u := routeWithParents(
+		[]any{map[string]any{"name": "gw"}},
+		[]any{map[string]any{
+			"parentRef":  map[string]any{"name": "gw"},
+			"conditions": []any{map[string]any{"type": "ResolvedRefs", "status": "True"}},
+		}},
+	)
+	got := extractParentRefs(u)
+	if len(got) != 1 || got[0].Status != "" {
+		t.Fatalf("got %+v; want one ref with empty Status", got)
+	}
+}

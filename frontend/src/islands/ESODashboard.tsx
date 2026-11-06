@@ -421,7 +421,7 @@ export default function ESODashboard() {
               label="Stale"
               count={counts.Stale}
               color="var(--warning)"
-              subText="Phase D resolves stale thresholds — count is 0 until that ships."
+              subText="Synced, but not refreshed within the threshold set by kubecenter.io/eso-stale-after-minutes."
             />
             <StatCard
               label="Drifted"

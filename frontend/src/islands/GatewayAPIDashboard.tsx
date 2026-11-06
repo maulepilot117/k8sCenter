@@ -455,13 +455,15 @@ export default function GatewayAPIDashboard() {
                       {kindSummary.degraded} degraded
                     </span>
                   )}
-                  {kindSummary.healthy === 0 &&
-                    kindSummary.degraded === 0 &&
-                    kindSummary.total > 0 && (
-                      <span style={{ color: "var(--text-muted)" }}>
-                        {kindSummary.total} total
-                      </span>
-                    )}
+                  {/* Every card keeps a status line, so a kind with nothing
+                      to report ("None") lines up with its neighbours. */}
+                  {kindSummary.healthy === 0 && kindSummary.degraded === 0 && (
+                    <span style={{ color: "var(--text-muted)" }}>
+                      {kindSummary.total > 0
+                        ? `${kindSummary.total} total`
+                        : "None"}
+                    </span>
+                  )}
                 </div>
               </WidgetShell>
             </button>

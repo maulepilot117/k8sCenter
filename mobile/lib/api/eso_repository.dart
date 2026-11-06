@@ -119,7 +119,11 @@ DriftStatus _driftStatusFromJson(Object? v) {
 /// tooltip under the drift pill so operators see WHY drift wasn't
 /// resolvable rather than guessing.
 enum DriftUnknownReason {
+  /// The ExternalSecret has not synced yet.
   noSyncedRv,
+
+  /// The synced Secret carries no ESO data-hash annotation to compare with.
+  noDataHash,
   noTargetName,
   secretDeleted,
   rbacDenied,
@@ -136,6 +140,8 @@ DriftUnknownReason driftUnknownReasonFromJson(Object? v) {
   switch (v) {
     case 'no_synced_rv':
       return DriftUnknownReason.noSyncedRv;
+    case 'no_data_hash':
+      return DriftUnknownReason.noDataHash;
     case 'no_target_name':
       return DriftUnknownReason.noTargetName;
     case 'secret_deleted':

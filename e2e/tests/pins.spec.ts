@@ -486,16 +486,17 @@ test.describe.serial("Resource pins", () => {
   });
 
   test("the pin toggle is visible on a resource with no available actions", async ({ page }) => {
-    const name = e2eName("cm");
-    await createConfigMap(page, name);
-    await page.goto(detailPath(name));
-    await expect(page.getByRole("heading", { name })).toBeVisible();
-
-    // ConfigMaps have no entry in ACTIONS_BY_KIND, so this page is the same
-    // code path an RBAC-restricted user hits on any kind: zero visible
+    // Every namespace has a "default" ServiceAccount, and ServiceAccounts are
+    // pinnable but have no entry in ACTIONS_BY_KIND, so this page is the
+    // same code path an RBAC-restricted user hits on any kind: zero visible
     // actions. The old condition hid the entire action area in that case,
     // which would have taken the pin control with it. Deterministic where a
     // second user is not -- user creation depends on the auth rate limiter.
+    await page.goto(`/config/serviceaccounts/${NS}/default`);
+    await expect(
+      page.getByRole("heading", { name: "default", exact: true }),
+    ).toBeVisible();
+
     await expect(page.getByTestId("pin-toggle")).toBeVisible();
     await expect(page.getByRole("button", { name: /^Delete$/ })).toHaveCount(0);
   });

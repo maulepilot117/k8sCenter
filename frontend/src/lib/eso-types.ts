@@ -23,10 +23,11 @@ export type DriftStatus = "InSync" | "Drifted" | "Unknown";
 
 /** Reason codes accompanying DriftStatus="Unknown" on detail responses.
  * Operationally distinct states the drift resolver collapses into Unknown:
- * the synced Secret has no resourceVersion (provider didn't populate it),
+ * the ExternalSecret has never synced, the Secret carries no ESO data hash,
  * the Secret was deleted, the user lacks `get secret` perm, etc. */
 export type DriftUnknownReason =
   | "no_synced_rv"
+  | "no_data_hash"
   | "no_target_name"
   | "secret_deleted"
   | "rbac_denied"

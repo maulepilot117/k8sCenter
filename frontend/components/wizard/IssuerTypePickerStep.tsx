@@ -40,7 +40,7 @@ export function IssuerTypePickerStep({
             class={`text-left rounded-lg border p-4 transition-colors ${
               active
                 ? "border-brand bg-brand/5"
-                : "border-border-primary bg-surface hover:border-border-emphasis"
+                : "border-border-primary bg-surface hover:border-brand/50"
             }`}
           >
             <div class="flex items-center justify-between">

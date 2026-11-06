@@ -921,6 +921,9 @@ export default function NetworkPolicyWizard({
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/networking/networkpolicies"
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>

@@ -11,7 +11,7 @@ export function SessionClusterBadge({ clusterId }: { clusterId: string }) {
   const label = clusterLabel(clusterId, names.value);
   return (
     <span
-      class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-text-secondary bg-bg-elevated"
+      class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-text-secondary bg-elevated"
       title={`Connected to ${label}`}
       data-testid="session-cluster-badge"
     >

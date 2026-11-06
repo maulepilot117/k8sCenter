@@ -251,7 +251,7 @@ export function VaultForm({ spec, errors, onUpdateSpec }: VaultFormProps) {
                 class={`text-left rounded-lg border p-3 transition-colors ${
                   active
                     ? "border-brand bg-brand/5"
-                    : "border-border-primary bg-surface hover:border-border-emphasis"
+                    : "border-border-primary bg-surface hover:border-brand/50"
                 }`}
                 aria-pressed={active}
               >

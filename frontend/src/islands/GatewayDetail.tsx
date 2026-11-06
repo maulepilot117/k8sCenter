@@ -5,6 +5,7 @@ import { ProtocolBadge } from "@/components/ui/GatewayBadges.tsx";
 import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
+import { age } from "@/lib/format.ts";
 import {
   GATEWAY_KIND_LABELS,
   type GatewayDetail,
@@ -75,7 +76,7 @@ export default function GatewayDetailIsland({ namespace, name }: Props) {
       </div>
 
       {/* Details */}
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+      <div class="rounded-lg border border-border-primary bg-elevated p-5">
         <h3 class="text-sm font-semibold text-text-primary mb-4">Details</h3>
         <dl class="grid grid-cols-2 gap-4 text-sm">
           <div>
@@ -97,7 +98,9 @@ export default function GatewayDetailIsland({ namespace, name }: Props) {
           </div>
           <div>
             <dt class="text-text-muted">Age</dt>
-            <dd class="text-text-primary">{gw.age}</dd>
+            <dd class="text-text-primary" title={gw.age}>
+              {gw.age ? age(gw.age) : "-"}
+            </dd>
           </div>
         </dl>
       </div>

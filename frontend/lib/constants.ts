@@ -72,6 +72,23 @@ export const RESOURCE_API_KINDS: Record<string, string> = {
 };
 
 /**
+ * The Kubernetes API resource name for a kind slug. Some backend adapters use
+ * a short slug (`pvcs`), while RBAC summaries and resource counts key on the
+ * API name (`persistentvolumeclaims`). Mirrors `adapterKindForCount` in
+ * backend/internal/k8s/resources/counts.go, in the other direction.
+ */
+export function apiResourceForKind(kind: string): string {
+  return API_RESOURCE_FOR_SLUG[kind] ?? kind;
+}
+
+const API_RESOURCE_FOR_SLUG: Record<string, string> = {
+  pvs: "persistentvolumes",
+  pvcs: "persistentvolumeclaims",
+  hpas: "horizontalpodautoscalers",
+  pdbs: "poddisruptionbudgets",
+};
+
+/**
  * Maps API kind to the URL path prefix for detail pages.
  * Must match the filesystem route structure under routes/.
  */
@@ -89,6 +106,7 @@ export const RESOURCE_DETAIL_PATHS: Record<string, string> = {
   networkpolicies: "/networking/networkpolicies",
   persistentvolumes: "/cluster/pvs",
   pvs: "/cluster/pvs",
+  persistentvolumeclaims: "/storage/pvcs",
   pvcs: "/storage/pvcs",
   storageclasses: "/cluster/storageclasses",
   configmaps: "/config/configmaps",
@@ -110,6 +128,10 @@ export const RESOURCE_DETAIL_PATHS: Record<string, string> = {
   ciliumnetworkpolicies: "/networking/cilium-policies",
   nodes: "/cluster/nodes",
   namespaces: "/cluster/namespaces",
+  // Not a generic ResourceDetail kind, but its detail page has the same
+  // /{namespace}/{name} shape, so a reference to one (an Argo CD app's
+  // resources, an owner reference) can link to it.
+  externalsecrets: "/external-secrets/external-secrets",
 };
 
 /**

@@ -8,7 +8,11 @@ import { notifApi } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { notifActionUrl } from "@/lib/notif-action.ts";
 import type { AppNotification } from "@/lib/notif-center-types.ts";
-import { NOTIF_SEVERITIES, NOTIF_SOURCES } from "@/lib/notif-center-types.ts";
+import {
+  NOTIF_SEVERITIES,
+  NOTIF_SOURCES,
+  SOURCE_LABELS,
+} from "@/lib/notif-center-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -50,8 +54,8 @@ export default function NotificationFeed() {
         params as unknown as Parameters<typeof notifApi.list>[0],
       );
       if (seq !== fetchSeq.current || !mounted.current) return; // stale response
-      notifications.value = res.data?.data ?? [];
-      total.value = res.data?.metadata?.total ?? 0;
+      notifications.value = res.data ?? [];
+      total.value = res.metadata?.total ?? 0;
     } catch {
       if (seq !== fetchSeq.current || !mounted.current) return;
       notifications.value = [];
@@ -150,7 +154,7 @@ export default function NotificationFeed() {
             <option value="all">All</option>
             {NOTIF_SOURCES.map((s) => (
               <option key={s} value={s}>
-                {s.charAt(0).toUpperCase() + s.slice(1)}
+                {SOURCE_LABELS[s]}
               </option>
             ))}
           </select>

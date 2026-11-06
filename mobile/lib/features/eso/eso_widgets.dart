@@ -239,8 +239,11 @@ _PillTheme? _driftPillTheme(DriftStatus s, KubeColors colors) {
 
 String _driftUnknownTooltip(DriftUnknownReason r) => switch (r) {
       DriftUnknownReason.noSyncedRv =>
-        'Provider does not populate syncedResourceVersion — drift '
-            'cannot be determined.',
+        'ESO has not synced this ExternalSecret yet — there is nothing '
+            'to compare against.',
+      DriftUnknownReason.noDataHash =>
+        'The synced Secret has no ESO data hash, so its data cannot be '
+            'checked against what ESO wrote.',
       DriftUnknownReason.noTargetName =>
         'ExternalSecret has no target Secret name set yet.',
       DriftUnknownReason.secretDeleted =>

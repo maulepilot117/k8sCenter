@@ -31,7 +31,6 @@ export default function ViolationBrowser() {
   const search = useSignal(
     getUrlParam("policy") !== "all" ? getUrlParam("policy") : "",
   );
-  const filterNamespace = useSignal<string>(getUrlParam("namespace"));
   const filterSeverity = useSignal<string>("all");
   const filterEngine = useSignal<string>("all");
   const page = useSignal(1);
@@ -48,6 +47,15 @@ export default function ViolationBrowser() {
       error.value = "Failed to load violations";
     }
   }
+
+  // The namespace filter is the global picker, so it reads the same here as
+  // in the top bar. A link such as the compliance page's ?namespace= selects
+  // that namespace on arrival.
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const linked = getUrlParam("namespace");
+    if (linked !== "all") selectedNamespace.value = linked;
+  }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -73,28 +81,25 @@ export default function ViolationBrowser() {
 
   if (!IS_BROWSER) return null;
 
-  const namespaces = [
-    ...new Set(
-      violations.value
-        .map((v) => v.namespace)
-        .filter((ns): ns is string => !!ns),
-    ),
-  ].sort();
-
   // Read the global namespace picker in the synchronous render path so the
   // signal subscription triggers a re-render when the picker changes.
   const globalNs = selectedNamespace.value;
+
+  // The selected namespace stays an option even with no violations in it, so
+  // the select never renders blank.
+  const namespaces = [
+    ...new Set([
+      ...violations.value
+        .map((v) => v.namespace)
+        .filter((ns): ns is string => !!ns),
+      ...(globalNs !== "all" ? [globalNs] : []),
+    ]),
+  ].sort();
 
   const filtered = violations.value.filter((v) => {
     // Global namespace picker — cluster-scoped violations (no namespace) pass
     // through regardless so they remain visible for any namespace selection.
     if (globalNs !== "all" && v.namespace && v.namespace !== globalNs) {
-      return false;
-    }
-    if (
-      filterNamespace.value !== "all" &&
-      v.namespace !== filterNamespace.value
-    ) {
       return false;
     }
     if (filterSeverity.value !== "all" && v.severity !== filterSeverity.value) {
@@ -210,9 +215,9 @@ export default function ViolationBrowser() {
         </div>
         <select
           style={selectStyle}
-          value={filterNamespace.value}
+          value={globalNs}
           onChange={(e) => {
-            filterNamespace.value = (e.target as HTMLSelectElement).value;
+            selectedNamespace.value = (e.target as HTMLSelectElement).value;
             page.value = 1;
           }}
         >

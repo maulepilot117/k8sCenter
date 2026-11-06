@@ -35,9 +35,6 @@ export function RestoresResourceTable({ restores }: { restores: Restore[] }) {
 
   const rows: Row[] = restores.map((r) => ({
     id: `${r.namespace}/${r.name}`,
-    onClick: () => {
-      globalThis.location.href = `/backup/restores/${r.namespace}/${r.name}`;
-    },
     cells: {
       name: (
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>

@@ -442,7 +442,7 @@ export default function PodTerminal({
               fullscreen.value ? "h-full" : "h-96"
             }`}
           >
-            Select a container and click"Open Terminal" to start
+            Select a container and click "Open Terminal" to start
           </div>
         ) : (
           sessions.value.map((s) => (

@@ -797,7 +797,9 @@ export default function LogViewer({
             const pre = preRefs.current[activeTab.value];
             if (pre) pre.scrollTop = pre.scrollHeight;
           }}
-          class="fixed bottom-6 right-6 z-30 rounded-full bg-brand px-4 py-2 text-sm font-medium shadow-lg hover:bg-brand/90"
+          // right-20 clears the 48px quick-actions button that sits at the
+          // same corner (QuickActionsFab: bottom/right 24px, above z-30).
+          class="fixed bottom-6 right-20 z-30 rounded-full bg-brand px-4 py-2 text-sm font-medium shadow-lg hover:bg-brand/90"
           style={{ color: "var(--bg-base)" }}
         >
           Resume auto-scroll

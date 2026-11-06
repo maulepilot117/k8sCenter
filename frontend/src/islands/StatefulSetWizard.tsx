@@ -607,6 +607,9 @@ export default function StatefulSetWizard({
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/workloads/statefulsets"
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>

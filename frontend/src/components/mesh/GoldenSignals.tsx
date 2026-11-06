@@ -147,7 +147,7 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
         <h3 class="mb-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
           Service Mesh — Golden Signals
         </h3>
-        <div class="rounded-md border border-border-primary bg-bg-surface p-4 text-sm text-text-secondary">
+        <div class="rounded-md border border-border-primary bg-surface p-4 text-sm text-text-secondary">
           {offlineCopy(offlineReason.value)}
         </div>
       </section>
@@ -162,7 +162,7 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
     <section>
       <h3 class="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
         Service Mesh — Golden Signals
-        <span class="rounded bg-bg-elevated px-1.5 py-0.5 text-xs font-normal text-text-muted">
+        <span class="rounded bg-elevated px-1.5 py-0.5 text-xs font-normal text-text-muted">
           {s.mesh}
         </span>
         {missing.length > 0 && (
@@ -237,7 +237,7 @@ function Metric({
   if (missing) {
     return (
       <div
-        class="rounded-md border border-border-primary bg-bg-surface p-3"
+        class="rounded-md border border-border-primary bg-surface p-3"
         title={`${label}: query did not return; value below is unavailable`}
       >
         <div class="text-xs text-text-muted">{label}</div>
@@ -254,7 +254,7 @@ function Metric({
         ? "var(--status-warning)"
         : "var(--text-primary)";
   return (
-    <div class="rounded-md border border-border-primary bg-bg-surface p-3">
+    <div class="rounded-md border border-border-primary bg-surface p-3">
       <div class="text-xs text-text-muted">{label}</div>
       <div
         class="mt-1 font-mono text-lg font-semibold"

@@ -244,7 +244,7 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
                   class={`px-2 py-1 text-xs rounded border ${
                     form.value.schedule === preset.value
                       ? "border-accent bg-accent/10 text-accent"
-                      : "border-border text-text-muted hover:border-text-muted"
+                      : "border-border-primary text-text-muted hover:border-text-muted"
                   }`}
                 >
                   {preset.label}
@@ -369,7 +369,7 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
                     (e.target as HTMLInputElement).checked,
                   )
                 }
-                class="rounded border-border"
+                class="rounded border-border-primary"
               />
               <label
                 for="snapshotVolumes"
@@ -386,7 +386,7 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
                 onChange={(e) =>
                   updateField("paused", (e.target as HTMLInputElement).checked)
                 }
-                class="rounded border-border"
+                class="rounded border-border-primary"
               />
               <label for="paused" class="text-sm font-medium text-text-primary">
                 Create paused (won't run until unpaused)
@@ -403,6 +403,9 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/backup/schedules"
+          onApplied={() => {
+            dirty.value = false;
+          }}
         />
       )}
     </WizardShell>

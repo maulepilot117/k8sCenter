@@ -64,7 +64,6 @@ func DeriveStatus(es ExternalSecret) Status {
 		}
 	}
 
-	// Drift overlay: only when base is Synced and the live RV check ran.
 	if es.Status == StatusSynced && es.DriftStatus == DriftDrifted {
 		return StatusDrifted
 	}
@@ -74,7 +73,7 @@ func DeriveStatus(es ExternalSecret) Status {
 
 // normalizeExternalSecret converts an unstructured ESO ExternalSecret into our
 // typed shape. The DriftStatus field is left as DriftUnknown — the live
-// resourceVersion lookup happens only on the detail endpoint (see Unit 3 of
+// Secret read and data-hash check happen only on the detail endpoint (see Unit 3 of
 // the plan; list view explicitly avoids the N+1 impersonated Get).
 func normalizeExternalSecret(u *unstructured.Unstructured) ExternalSecret {
 	obj := u.Object

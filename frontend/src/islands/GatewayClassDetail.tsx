@@ -3,6 +3,7 @@ import { useEffect } from "preact/hooks";
 import ConditionsTable from "@/components/gateway/ConditionsTable.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
+import { age } from "@/lib/format.ts";
 import type { GatewayClassSummary } from "@/lib/gateway-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
@@ -63,7 +64,7 @@ export default function GatewayClassDetailIsland({ name }: Props) {
 
       <h2 class="text-2xl font-bold text-text-primary">{gc.name}</h2>
 
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+      <div class="rounded-lg border border-border-primary bg-elevated p-5">
         <h3 class="text-sm font-semibold text-text-primary mb-4">Details</h3>
         <dl class="grid grid-cols-2 gap-4 text-sm">
           <div>
@@ -76,7 +77,9 @@ export default function GatewayClassDetailIsland({ name }: Props) {
           </div>
           <div>
             <dt class="text-text-muted">Age</dt>
-            <dd class="text-text-primary">{gc.age}</dd>
+            <dd class="text-text-primary" title={gc.age}>
+              {gc.age ? age(gc.age) : "-"}
+            </dd>
           </div>
         </dl>
       </div>

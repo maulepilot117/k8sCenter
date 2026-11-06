@@ -3,6 +3,10 @@ package resources
 import (
 	"context"
 	"testing"
+
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func TestPilotAdaptersRegistered(t *testing.T) {
@@ -59,6 +63,25 @@ func TestReadOnlyAdaptersRejectWrites(t *testing.T) {
 		if err := a.Delete(ctx, nil, "default", "test"); err == nil {
 			t.Errorf("%s: Delete should return error for read-only adapter", kind)
 		}
+	}
+}
+
+// ReplicaSets stay read-only for create and update but can be deleted, so old
+// scaled-down ReplicaSets can be cleaned up from the UI.
+func TestReplicaSetAdapterDeletes(t *testing.T) {
+	ctx := context.Background()
+	cs := fake.NewClientset(&appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-1", Namespace: "default"},
+	})
+	a := GetAdapter("replicasets")
+	if _, err := a.Create(ctx, cs, "default", []byte(`{}`)); err == nil {
+		t.Error("Create should stay unsupported for replicasets")
+	}
+	if err := a.Delete(ctx, cs, "default", "web-1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := cs.AppsV1().ReplicaSets("default").Get(ctx, "web-1", metav1.GetOptions{}); err == nil {
+		t.Error("ReplicaSet still exists after Delete")
 	}
 }
 

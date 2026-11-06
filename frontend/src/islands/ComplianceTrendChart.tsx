@@ -498,7 +498,7 @@ export default function ComplianceTrendChart() {
   const ranges: TimeRange[] = [7, 30, 90];
 
   return (
-    <div class="rounded-lg border border-border-primary p-6 bg-bg-elevated mb-8">
+    <div class="rounded-lg border border-border-primary p-6 bg-elevated mb-8">
       <div class="flex items-center justify-between mb-4">
         <h3 class="text-lg font-semibold text-text-primary">
           Compliance Trend

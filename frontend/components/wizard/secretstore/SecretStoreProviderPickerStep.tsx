@@ -166,7 +166,7 @@ export function SecretStoreProviderPickerStep({
                 active
                   ? "border-brand bg-brand/5"
                   : clickable
-                    ? "border-border-primary bg-surface hover:border-border-emphasis"
+                    ? "border-border-primary bg-surface hover:border-brand/50"
                     : "border-border-primary bg-surface opacity-60 cursor-not-allowed"
               }`}
             >
