@@ -3,5 +3,11 @@ import GatewayAPIDashboard from "../../islands/GatewayAPIDashboard.tsx";
 import ChromeLayout from "../../layouts/ChromeLayout.astro";
 ---
 <ChromeLayout>
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-text-primary">Gateway API</h1>
+    <p class="mt-1 text-sm text-text-secondary">
+      Gateways, gateway classes and the routes attached to them
+    </p>
+  </div>
   <GatewayAPIDashboard client:load />
 </ChromeLayout>

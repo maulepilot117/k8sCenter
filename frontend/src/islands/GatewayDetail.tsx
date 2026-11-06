@@ -5,6 +5,7 @@ import { ProtocolBadge } from "@/components/ui/GatewayBadges.tsx";
 import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
+import { age } from "@/lib/format.ts";
 import {
   GATEWAY_KIND_LABELS,
   type GatewayDetail,
@@ -97,7 +98,9 @@ export default function GatewayDetailIsland({ namespace, name }: Props) {
           </div>
           <div>
             <dt class="text-text-muted">Age</dt>
-            <dd class="text-text-primary">{gw.age}</dd>
+            <dd class="text-text-primary" title={gw.age}>
+              {gw.age ? age(gw.age) : "-"}
+            </dd>
           </div>
         </dl>
       </div>
