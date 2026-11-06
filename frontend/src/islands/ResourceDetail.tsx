@@ -32,6 +32,7 @@ import type {
   Pod,
   StatefulSet,
 } from "@/lib/k8s-types.ts";
+import type { ApplyResponse } from "@/lib/yaml-apply.ts";
 import { getOverviewComponent } from "@/src/components/k8s/detail/index.tsx";
 import { PinToggle } from "@/src/components/k8s/PinToggle.tsx";
 import { CodeMirrorEditor } from "@/src/components/ui/CodeMirrorEditor.tsx";
@@ -195,6 +196,18 @@ function deriveSubtitle(
   }
 
   return parts.join(" · ");
+}
+
+/**
+ * The error to show for an apply whose documents the server rejected, or
+ * null when every document applied.
+ */
+function applyFailureMessage(res: ApplyResponse | undefined): string | null {
+  if (!res?.summary || res.summary.failed === 0) return null;
+  const errors = (res.results ?? [])
+    .filter((r) => r.action === "failed")
+    .map((r) => r.error ?? `${r.kind} ${r.name} was not applied`);
+  return errors.length > 0 ? errors.join("; ") : "Apply failed";
 }
 
 /** Renders a resource as the YAML the detail page shows and edits. */
@@ -781,10 +794,19 @@ export default function ResourceDetail({
                           yamlApplyError.value = null;
                           yamlApplySuccess.value = false;
                           try {
-                            await apiPostRaw(
+                            const res = await apiPostRaw<ApplyResponse>(
                               "/v1/yaml/apply",
                               yamlEditContent.value,
                             );
+                            // /yaml/apply answers 200 even when the
+                            // server-side apply rejects the document (a field
+                            // ownership conflict, a stale resourceVersion, an
+                            // invalid field). Keep the edit and show why.
+                            const failure = applyFailureMessage(res.data);
+                            if (failure) {
+                              yamlApplyError.value = failure;
+                              return;
+                            }
                             yamlApplySuccess.value = true;
                             yamlEditing.value = false;
                             await fetchResource();
