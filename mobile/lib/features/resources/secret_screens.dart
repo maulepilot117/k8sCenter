@@ -1,14 +1,16 @@
 // Secret list + detail. Values masked by default. Tapping Reveal calls
 // the per-key audited reveal endpoint (`/v1/resources/secrets/:ns/:name/
 // reveal/:key`) so each disclosure is logged server-side, matching the
-// web frontend's audit model. Plaintext is sanitized for BiDi/control
-// characters before render. Copy-to-clipboard requires explicit confirm
-// and the clipboard is wiped after 30 seconds.
+// web frontend's audit model. The endpoint returns base64: text values are
+// decoded and sanitized for BiDi/control characters before render, and
+// binary values stay base64 under a label. Copy-to-clipboard requires
+// explicit confirm and the clipboard is wiped after 30 seconds.
 //
 // The detail GET still returns the masked Secret (the YAML tab redacts
 // `data`/`stringData` for kind == 'Secret' — see resource_detail_scaffold.dart).
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -110,13 +112,13 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen>
   /// Per-key revealed value cache. State is widget-scoped — back-button
   /// out of the screen disposes State, so re-entering the detail starts
   /// fresh with everything masked again.
-  final Map<String, String> _revealed = {};
+  final Map<String, RevealedSecretValue> _revealed = {};
   final Set<String> _revealing = {};
 
   Future<void> _revealKey(String key) async {
     setState(() => _revealing.add(key));
     try {
-      final value =
+      final encoded =
           await ref.read(resourceRepositoryProvider).revealSecretKey(
                 namespace: widget.namespace,
                 name: widget.name,
@@ -124,7 +126,7 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen>
               );
       if (!mounted) return;
       setState(() {
-        _revealed[key] = value;
+        _revealed[key] = decodeSecretValue(encoded);
         _revealing.remove(key);
       });
       _syncSensitivity();
@@ -246,7 +248,7 @@ class _SecretKeyTile extends StatelessWidget {
   });
 
   final String keyName;
-  final String? revealed;
+  final RevealedSecretValue? revealed;
   final bool loading;
   final VoidCallback onReveal;
   final VoidCallback onHide;
@@ -254,7 +256,8 @@ class _SecretKeyTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final isRevealed = revealed != null;
+    final value = revealed;
+    final isRevealed = value != null;
     return ListTile(
       contentPadding: EdgeInsets.zero,
       title: Text(
@@ -263,14 +266,33 @@ class _SecretKeyTile extends StatelessWidget {
       ),
       subtitle: Padding(
         padding: const EdgeInsets.only(top: 4),
-        child: isRevealed
-            ? Text(
-                sanitizeSecretValue(revealed!),
-                style: TextStyle(
-                  color: colors.textSecondary,
-                  fontSize: 12,
-                  fontFamily: 'monospace',
-                ),
+        child: value != null
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (value.binary)
+                    Padding(
+                      key: ValueKey('secret-binary-$keyName'),
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Text(
+                        'Binary data, shown as base64',
+                        style: TextStyle(
+                          color: colors.textMuted,
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ),
+                  Text(
+                    value.text,
+                    key: ValueKey('secret-value-$keyName'),
+                    style: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
               )
             : Semantics(
                 label: 'masked value',
@@ -289,12 +311,14 @@ class _SecretKeyTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (isRevealed)
+          if (value != null)
             IconButton(
               key: ValueKey('secret-copy-$keyName'),
               icon: const Icon(Icons.copy, size: 18),
               tooltip: 'Copy value',
-              onPressed: () => _confirmCopy(context, keyName, revealed!),
+              // Copies exactly what is shown: the sanitized decoded text,
+              // or the base64 for binary data.
+              onPressed: () => _confirmCopy(context, keyName, value.text),
             ),
           if (loading)
             const SizedBox(
@@ -407,6 +431,36 @@ class _SecretKeyTile extends StatelessWidget {
         await Clipboard.setData(const ClipboardData(text: ''));
       }
     });
+  }
+}
+
+/// A revealed Secret value, ready to display and copy.
+///
+/// `text` is what to display and copy: the sanitized decoded text, or the
+/// base64 as received when `binary` is true (the bytes are not valid UTF-8,
+/// or the base64 is malformed).
+typedef RevealedSecretValue = ({String text, bool binary});
+
+/// Turns the reveal endpoint's value into something safe to show.
+///
+/// The endpoint (`GET /api/v1/resources/secrets/{ns}/{name}/reveal/{key}`)
+/// returns the key's bytes base64-encoded. Text values are decoded and
+/// passed through [sanitizeSecretValue]; anything that is not valid UTF-8
+/// (a keystore, a DER certificate) is shown as the base64 it arrived as and
+/// flagged binary. Mirrors `decodeSecretValue` in
+/// `frontend/lib/secret-reveal.ts`.
+@visibleForTesting
+RevealedSecretValue decodeSecretValue(String encoded) {
+  final List<int> bytes;
+  try {
+    bytes = base64.decode(encoded);
+  } on FormatException {
+    return (text: encoded, binary: true);
+  }
+  try {
+    return (text: sanitizeSecretValue(utf8.decode(bytes)), binary: false);
+  } on FormatException {
+    return (text: encoded, binary: true);
   }
 }
 
