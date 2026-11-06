@@ -54,9 +54,6 @@ export function SchedulesResourceTable({
 
   const rows: Row[] = schedules.map((s) => ({
     id: `${s.namespace}/${s.name}`,
-    onClick: () => {
-      globalThis.location.href = `/backup/schedules/${s.namespace}/${s.name}`;
-    },
     cells: {
       name: (
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>

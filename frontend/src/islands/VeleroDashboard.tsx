@@ -731,10 +731,10 @@ function VeleroOverview({
           }
         >
           <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+            {/* Not links: there is no per-backup detail page. */}
             {backups.slice(0, 5).map((b) => (
-              <a
+              <div
                 key={`${b.namespace}/${b.name}`}
-                href={`/backup/backups/${b.namespace}/${b.name}`}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -742,9 +742,7 @@ function VeleroOverview({
                   padding: "8px 0",
                   borderBottom:
                     "1px solid color-mix(in srgb, var(--border-primary) 50%, transparent)",
-                  textDecoration: "none",
                 }}
-                class="hover:opacity-80"
               >
                 <StatusDot status={phaseTone(b.phase)} />
                 <span
@@ -772,7 +770,7 @@ function VeleroOverview({
                 >
                   {b.startTime ? age(b.startTime) : "—"}
                 </span>
-              </a>
+              </div>
             ))}
           </div>
         </WidgetShell>

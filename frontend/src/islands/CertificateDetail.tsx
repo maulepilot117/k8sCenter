@@ -220,7 +220,7 @@ export default function CertificateDetailIsland({ namespace, name }: Props) {
             <dt class="text-text-muted">Secret</dt>
             <dd>
               <a
-                href={`/workloads/secrets/${cert.namespace}/${cert.secretName}`}
+                href={`/config/secrets/${cert.namespace}/${cert.secretName}`}
                 class="text-brand hover:underline"
               >
                 {cert.secretName}

@@ -45,9 +45,6 @@ export function BackupsResourceTable({
 
   const rows: Row[] = backups.map((b) => ({
     id: `${b.namespace}/${b.name}`,
-    onClick: () => {
-      globalThis.location.href = `/backup/backups/${b.namespace}/${b.name}`;
-    },
     cells: {
       name: (
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>

@@ -65,7 +65,7 @@ export default function PromQLAdminGate(props: {
         </p>
         <div class="pt-2">
           <a
-            href="/cluster/dashboard"
+            href="/"
             class="inline-flex items-center gap-2 rounded border border-border bg-surface px-3 py-1.5 text-sm text-text-primary hover:bg-surface-hover"
           >
             Back to dashboard
