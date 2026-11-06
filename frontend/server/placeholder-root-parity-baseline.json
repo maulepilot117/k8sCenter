@@ -174,28 +174,6 @@
     "note": "Inherited verbatim from the pre-migration Fresh tree (islands/NamespaceCreator.tsx:23 -> 90, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
   },
   {
-    "file": "src/islands/PromQLAdminGate.tsx",
-    "tag": "div",
-    "at": {
-      "component": 0,
-      "placeholder": 0,
-      "placeholderRoot": 0,
-      "hydrated": 1,
-      "hydratedRoot": 0
-    },
-    "placeholder": {
-      "attrs": {
-        "class": "\"rounded-lg border border-border bg-surface p-6 text-sm text-text-secondary\""
-      }
-    },
-    "hydrated": {
-      "attrs": {
-        "class": "\"rounded-lg border border-warning/40 bg-warning/5 p-6 space-y-3\""
-      }
-    },
-    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/PromQLAdminGate.tsx:28 -> 50, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
-  },
-  {
     "file": "src/islands/SchemaForm.tsx",
     "tag": "div",
     "at": {

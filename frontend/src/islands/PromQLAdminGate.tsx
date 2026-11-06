@@ -3,6 +3,19 @@ import { useAuth } from "@/lib/auth.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 /**
+ * The root every return shares. Preact hydration keeps the server-rendered
+ * root's own props and only reconciles its children, so a root that differed
+ * between the SSR placeholder and a later return would keep the placeholder's
+ * classes: the non-admin notice rendered without its warning styling. The
+ * root is layout-neutral (`display: contents`); each state styles its own
+ * inner box.
+ */
+const GATE_ROOT_CLASS = "contents";
+
+const LOADING_CLASS =
+  "rounded-lg border border-border-primary bg-surface p-6 text-sm text-text-secondary";
+
+/**
  * Client-side admin gate around `/monitoring/prometheus`.
  *
  * F#4 (security audit 2026-05-22): the raw PromQL surface is admin-only.
@@ -26,8 +39,8 @@ export default function PromQLAdminGate(props: {
 
   if (!IS_BROWSER) {
     return (
-      <div class="rounded-lg border border-border bg-surface p-6 text-sm text-text-secondary">
-        Loading…
+      <div class={GATE_ROOT_CLASS}>
+        <div class={LOADING_CLASS}>Loading…</div>
       </div>
     );
   }
@@ -39,8 +52,8 @@ export default function PromQLAdminGate(props: {
     // shells use the same approach. fetchCurrentUser in lib/auth fires
     // automatically; once it lands the signal updates and this re-renders.
     return (
-      <div class="rounded-lg border border-border bg-surface p-6 text-sm text-text-secondary">
-        Loading…
+      <div class={GATE_ROOT_CLASS}>
+        <div class={LOADING_CLASS}>Loading…</div>
       </div>
     );
   }
@@ -48,32 +61,34 @@ export default function PromQLAdminGate(props: {
   const isAdmin = (u.roles ?? []).includes("admin");
   if (!isAdmin) {
     return (
-      <div class="rounded-lg border border-warning/40 bg-warning/5 p-6 space-y-3">
-        <h2 class="text-base font-semibold text-text-primary">
-          Admin access required
-        </h2>
-        <p class="text-sm text-text-secondary">
-          Raw PromQL access is reserved for cluster administrators. The backend
-          rejects non-admin queries against this endpoint, and the UI matches
-          that boundary.
-        </p>
-        <p class="text-sm text-text-secondary">
-          For per-resource metrics, open the resource's detail page (Pods,
-          Deployments, Nodes, etc.) and switch to the Metrics tab — those panels
-          use curated, server-owned queries that respect your Kubernetes RBAC
-          scope.
-        </p>
-        <div class="pt-2">
-          <a
-            href="/"
-            class="inline-flex items-center gap-2 rounded border border-border bg-surface px-3 py-1.5 text-sm text-text-primary hover:bg-surface-hover"
-          >
-            Back to dashboard
-          </a>
+      <div class={GATE_ROOT_CLASS}>
+        <div class="rounded-lg border border-warning/40 bg-warning/5 p-6 space-y-3">
+          <h2 class="text-base font-semibold text-text-primary">
+            Admin access required
+          </h2>
+          <p class="text-sm text-text-secondary">
+            Raw PromQL access is reserved for cluster administrators. The
+            backend rejects non-admin queries against this endpoint, and the UI
+            matches that boundary.
+          </p>
+          <p class="text-sm text-text-secondary">
+            For per-resource metrics, open the resource's detail page (Pods,
+            Deployments, Nodes, etc.) and switch to the Metrics tab — those
+            panels use curated, server-owned queries that respect your
+            Kubernetes RBAC scope.
+          </p>
+          <div class="pt-2">
+            <a
+              href="/"
+              class="inline-flex items-center gap-2 rounded border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary hover:bg-hover"
+            >
+              Back to dashboard
+            </a>
+          </div>
         </div>
       </div>
     );
   }
 
-  return <>{props.children}</>;
+  return <div class={GATE_ROOT_CLASS}>{props.children}</div>;
 }
