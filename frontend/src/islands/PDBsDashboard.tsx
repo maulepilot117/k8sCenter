@@ -104,7 +104,7 @@ export default function PDBsDashboard() {
 
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         <ResourceTable
-          kind="poddisruptionbudgets"
+          kind="pdbs"
           title="PodDisruptionBudgets"
           createHref="/scaling/pdbs/new"
           hideHeader
