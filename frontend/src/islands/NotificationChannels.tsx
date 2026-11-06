@@ -66,7 +66,7 @@ export default function NotificationChannels() {
     error.value = null;
     try {
       const res = await notifApi.listChannels();
-      channels.value = res.data.data ?? [];
+      channels.value = res.data ?? [];
     } catch (err) {
       error.value =
         err instanceof Error ? err.message : "Failed to load channels";

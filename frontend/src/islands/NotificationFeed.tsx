@@ -50,8 +50,8 @@ export default function NotificationFeed() {
         params as unknown as Parameters<typeof notifApi.list>[0],
       );
       if (seq !== fetchSeq.current || !mounted.current) return; // stale response
-      notifications.value = res.data?.data ?? [];
-      total.value = res.data?.metadata?.total ?? 0;
+      notifications.value = res.data ?? [];
+      total.value = res.metadata?.total ?? 0;
     } catch {
       if (seq !== fetchSeq.current || !mounted.current) return;
       notifications.value = [];

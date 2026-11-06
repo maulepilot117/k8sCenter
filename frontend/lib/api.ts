@@ -417,14 +417,17 @@ function notifQueryString(params: NotifListParams): string {
   return qs ? `?${qs}` : "";
 }
 
+// Every notification endpoint answers with a single `{ data }` envelope
+// (the feed adds `metadata.total`), which `apiGet`/`apiPost` return as-is, so
+// each type parameter is the payload itself, read as `res.data`.
 export const notifApi = {
   // Feed
   list: (params: NotifListParams = {}) =>
-    apiGet<{ data: AppNotification[]; metadata: { total: number } }>(
+    apiGet<AppNotification[] | null>(
       `/v1/notifications${notifQueryString(params)}`,
     ),
   unreadCount: () =>
-    apiGet<{ data: { count: number } }>("/v1/notifications/unread-count"),
+    apiGet<{ count: number }>("/v1/notifications/unread-count"),
   markRead: (id: string) => apiPost<void>(`/v1/notifications/${id}/read`),
   /** Fire-and-forget markRead that survives page navigation. */
   markReadQuiet: (id: string) =>
@@ -436,21 +439,19 @@ export const notifApi = {
 
   // Channels (admin)
   listChannels: () =>
-    apiGet<{ data: NotifChannel[] }>("/v1/notifications/channels"),
+    apiGet<NotifChannel[] | null>("/v1/notifications/channels"),
   createChannel: (ch: NotifChannelInput) =>
-    apiPost<{ data: { id: string } }>("/v1/notifications/channels", ch),
+    apiPost<{ id: string }>("/v1/notifications/channels", ch),
   updateChannel: (id: string, ch: NotifChannelInput) =>
     apiPut<void>(`/v1/notifications/channels/${id}`, ch),
   deleteChannel: (id: string) => apiDelete(`/v1/notifications/channels/${id}`),
   testChannel: (id: string) =>
-    apiPost<{ data: { status: string } }>(
-      `/v1/notifications/channels/${id}/test`,
-    ),
+    apiPost<{ status: string }>(`/v1/notifications/channels/${id}/test`),
 
   // Rules (admin)
-  listRules: () => apiGet<{ data: NotifRule[] }>("/v1/notifications/rules"),
+  listRules: () => apiGet<NotifRule[] | null>("/v1/notifications/rules"),
   createRule: (rule: NotifRuleInput) =>
-    apiPost<{ data: { id: string } }>("/v1/notifications/rules", rule),
+    apiPost<{ id: string }>("/v1/notifications/rules", rule),
   updateRule: (id: string, rule: NotifRuleInput) =>
     apiPut<void>(`/v1/notifications/rules/${id}`, rule),
   deleteRule: (id: string) => apiDelete(`/v1/notifications/rules/${id}`),
