@@ -436,9 +436,9 @@ class _SecretKeyTile extends StatelessWidget {
 
 /// A revealed Secret value, ready to display and copy.
 ///
-/// `text` is what to display and copy: the sanitized decoded text, or the
-/// base64 as received when `binary` is true (the bytes are not valid UTF-8,
-/// or the base64 is malformed).
+/// `text` is what to display and copy, always sanitized: the decoded text,
+/// or, when `binary` is true (the bytes are not valid UTF-8, or the base64
+/// is malformed), the value as received.
 typedef RevealedSecretValue = ({String text, bool binary});
 
 /// Turns the reveal endpoint's value into something safe to show.
@@ -449,18 +449,25 @@ typedef RevealedSecretValue = ({String text, bool binary});
 /// (a keystore, a DER certificate) is shown as the base64 it arrived as and
 /// flagged binary. Mirrors `decodeSecretValue` in
 /// `frontend/lib/secret-reveal.ts`.
+///
+/// The fallback is sanitized too. Valid base64 is plain ASCII, so that is a
+/// no-op for it, but a malformed response can carry anything, and it must
+/// not reach the screen or the clipboard with BiDi or control characters
+/// intact.
 @visibleForTesting
 RevealedSecretValue decodeSecretValue(String encoded) {
+  RevealedSecretValue asReceived() =>
+      (text: sanitizeSecretValue(encoded), binary: true);
   final List<int> bytes;
   try {
     bytes = base64.decode(encoded);
   } on FormatException {
-    return (text: encoded, binary: true);
+    return asReceived();
   }
   try {
     return (text: sanitizeSecretValue(utf8.decode(bytes)), binary: false);
   } on FormatException {
-    return (text: encoded, binary: true);
+    return asReceived();
   }
 }
 

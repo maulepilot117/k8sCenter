@@ -115,6 +115,16 @@ void main() {
         expect(v.binary, isTrue, reason: bad);
       }
     });
+
+    test('sanitizes the malformed fallback', () {
+      // Not valid base64, so it takes the as-received path; the BiDi,
+      // zero-width and ESC characters must still come out escaped.
+      final bad = 'pw${String.fromCharCode(0x202E)}x'
+          '${String.fromCharCode(0x200B)}${String.fromCharCode(0x1B)}';
+      final v = decodeSecretValue(bad);
+      expect(v.text, 'pw\\u202ex\\u200b\\u001b');
+      expect(v.binary, isTrue);
+    });
   });
 
   group('SecretDetailScreen FLAG_SECURE wiring (PR-5d)', () {
@@ -624,6 +634,15 @@ void main() {
           expect(copied, encoded);
         });
       });
+
+      testWidgets('copies a malformed value sanitized', (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          final bad = 'pw${String.fromCharCode(0x202E)}x';
+          final copied = await revealAndCopy(tester, bad);
+          expect(copied, 'pw\\u202ex');
+        });
+      });
     });
 
     group('reveal decoding', () {
@@ -676,6 +695,17 @@ void main() {
           await reveal(tester, 'not base64!');
 
           expect(shown(tester), 'not base64!');
+          expect(find.text('Binary data, shown as base64'), findsOneWidget);
+        });
+      });
+
+      testWidgets('shows a malformed value sanitized', (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          await reveal(tester, 'pw${String.fromCharCode(0x202E)}x');
+
+          expect(shown(tester), 'pw\\u202ex');
+          expect(shown(tester).codeUnits, isNot(contains(0x202E)));
           expect(find.text('Binary data, shown as base64'), findsOneWidget);
         });
       });
