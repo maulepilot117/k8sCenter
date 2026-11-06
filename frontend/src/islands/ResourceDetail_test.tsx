@@ -60,6 +60,14 @@ mock.module("../components/ui/CodeMirrorEditor.tsx", () => ({
   ),
 }));
 
+// The pod tabs open sockets; a marker is enough to see which tab is active.
+mock.module("./LogViewer.tsx", () => ({
+  default: () => <div data-testid="log-viewer" />,
+}));
+mock.module("./PodTerminal.tsx", () => ({
+  default: () => <div data-testid="pod-terminal" />,
+}));
+
 const { default: ResourceDetail } = await import("./ResourceDetail.tsx");
 
 const PROPS = {
@@ -262,4 +270,55 @@ test("a successful apply shows the success banner and leaves edit mode", async (
 
   expect(root.textContent).toContain("Changes applied successfully");
   expect(() => button(root, "Edit")).not.toThrow();
+});
+
+function tabLabels(root: HTMLElement): string[] {
+  return [...root.querySelectorAll("[role=tab]")].map(
+    (t) => t.textContent?.trim() ?? "",
+  );
+}
+
+async function renderDetail(props: typeof PROPS, hash = "") {
+  enterBrowser();
+  setAccessToken("test-token");
+  location.hash = hash;
+  stubFetch((url) =>
+    url.includes(`/v1/resources/${props.kind}/`)
+      ? {
+          apiVersion: "v1",
+          kind: props.title,
+          metadata: { name: props.name, namespace: props.namespace, uid: "u" },
+          spec: { containers: [{ name: "app" }] },
+        }
+      : [],
+  );
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  act(() => render(<ResourceDetail {...props} />, host as HTMLElement));
+  await flush();
+  return host;
+}
+
+test("a kind with metric queries has a Metrics tab; one without does not", async () => {
+  const deployment = await renderDetail(PROPS);
+  expect(tabLabels(deployment)).toContain("Metrics");
+  act(() => render(null, deployment));
+
+  const configMap = await renderDetail({
+    kind: "configmaps",
+    title: "ConfigMap",
+    namespace: "default",
+    name: "settings",
+  });
+  expect(tabLabels(configMap)).not.toContain("Metrics");
+});
+
+test("a #logs link opens a pod on its Logs tab", async () => {
+  const root = await renderDetail(
+    { kind: "pods", title: "Pod", namespace: "default", name: "web-0" },
+    "#logs",
+  );
+  const active = root.querySelector("[role=tab][aria-selected=true]");
+  expect(active?.textContent?.trim()).toBe("Logs");
+  expect(root.querySelector("[data-testid=log-viewer]")).not.toBeNull();
 });

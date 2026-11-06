@@ -38,7 +38,9 @@ import { PinToggle } from "@/src/components/k8s/PinToggle.tsx";
 import { CodeMirrorEditor } from "@/src/components/ui/CodeMirrorEditor.tsx";
 import LogViewer from "@/src/islands/LogViewer.tsx";
 import MetricsRail from "@/src/islands/MetricsRail.tsx";
-import PerformancePanel from "@/src/islands/PerformancePanel.tsx";
+import PerformancePanel, {
+  hasPerformanceMetrics,
+} from "@/src/islands/PerformancePanel.tsx";
 import PodTerminal from "@/src/islands/PodTerminal.tsx";
 import RelatedPods from "@/src/islands/RelatedPods.tsx";
 import RoleBindingsList from "@/src/islands/RoleBindingsList.tsx";
@@ -59,8 +61,6 @@ interface ResourceDetailProps {
   clusterScoped?: boolean;
   title: string;
 }
-
-const VALID_TABS = new Set(["overview", "yaml", "events", "metrics"]);
 
 function pluralize(s: string): string {
   if (s.endsWith("y") && !s.endsWith("ey")) return `${s.slice(0, -1)}ies`;
@@ -345,11 +345,12 @@ export default function ResourceDetail({
     return () => clearInterval(id);
   }, []);
 
-  // Read initial tab from URL hash
+  // Read initial tab from URL hash. Any tab this page renders can be linked
+  // to, including the pod-only Logs and Terminal tabs (#logs, #terminal).
   useEffect(() => {
     if (!IS_BROWSER) return;
     const hash = globalThis.location.hash.replace("#", "");
-    if (hash && VALID_TABS.has(hash)) {
+    if (hash && tabDefs.some((t) => t.id === hash)) {
       activeTab.value = hash;
     }
   }, []);
@@ -910,14 +911,19 @@ export default function ResourceDetail({
           );
         },
       },
-      {
-        id: "metrics",
-        label: "Metrics",
-        content: () => (
-          <PerformancePanel kind={kind} name={name} namespace={namespace} />
-        ),
-      },
     ];
+
+  // Only kinds with metric queries get a Metrics tab; for the rest
+  // (ConfigMap, Secret, Endpoints, …) it could only say "No Metrics Available".
+  if (hasPerformanceMetrics(kind)) {
+    tabDefs.push({
+      id: "metrics",
+      label: "Metrics",
+      content: () => (
+        <PerformancePanel kind={kind} name={name} namespace={namespace} />
+      ),
+    });
+  }
 
   // Add Logs and Terminal tabs for pods
   if (kind === "pods" && namespace && IS_BROWSER) {
