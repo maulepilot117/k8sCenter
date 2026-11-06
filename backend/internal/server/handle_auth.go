@@ -251,11 +251,15 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	successEntry := s.newAuditEntry(r, user.Username, audit.ActionRefresh, audit.ResultSuccess)
+	// A routine refresh is not audited: the client refreshes on every page
+	// load and every 15 minutes, which buried the audit log in "refresh"
+	// rows. Failed refreshes, and a success that is not routine (an LDAP
+	// session allowed through on its grace window), are still recorded.
 	if auditDetail != "" {
+		successEntry := s.newAuditEntry(r, user.Username, audit.ActionRefresh, audit.ResultSuccess)
 		successEntry.Detail = auditDetail
+		s.AuditLogger.Log(r.Context(), successEntry)
 	}
-	s.AuditLogger.Log(r.Context(), successEntry)
 
 	respData := map[string]any{
 		"accessToken": accessToken,

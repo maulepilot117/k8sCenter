@@ -308,6 +308,51 @@ func TestHandleRefresh(t *testing.T) {
 	}
 }
 
+// A routine refresh writes no audit row (the client refreshes on every page
+// load); a refused one still does.
+func TestHandleRefresh_RoutineSuccessIsNotAudited(t *testing.T) {
+	srv := testServer(t)
+	_, cookies := loginAdmin(t, srv)
+	rec := &recordingAuditLogger{}
+	srv.AuditLogger = rec
+
+	refresh := func(cookies []*http.Cookie) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		w := httptest.NewRecorder()
+		srv.Router.ServeHTTP(w, req)
+		return w.Code
+	}
+	refreshEntries := func() []audit.Entry {
+		var out []audit.Entry
+		for _, e := range rec.snapshot() {
+			if e.Action == audit.ActionRefresh {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+
+	if code := refresh(cookies); code != http.StatusOK {
+		t.Fatalf("refresh = %d, want 200", code)
+	}
+	if got := refreshEntries(); len(got) != 0 {
+		t.Fatalf("routine refresh audited: %+v", got)
+	}
+
+	// The cookie was rotated by the first refresh, so replaying it fails.
+	if code := refresh(cookies); code == http.StatusOK {
+		t.Fatalf("replayed refresh = 200, want a refusal")
+	}
+	got := refreshEntries()
+	if len(got) != 1 || got[0].Result != audit.ResultFailure {
+		t.Fatalf("refused refresh entries = %+v, want one failure", got)
+	}
+}
+
 func TestHandleRefresh_RotationInvalidatesOldToken(t *testing.T) {
 	srv := testServer(t)
 	_, cookies := loginAdmin(t, srv)
@@ -448,9 +493,9 @@ func TestHandleRefresh_BodyMode_NoSetCookie(t *testing.T) {
 // from cookie Max-Age (which is absent in body-mode).
 func TestIssueTokenPair_OIDCRefreshLifetime(t *testing.T) {
 	cases := []struct {
-		name     string
-		user     *auth.User
-		wantTTL  time.Duration
+		name      string
+		user      *auth.User
+		wantTTL   time.Duration
 		tolerance time.Duration
 	}{
 		{
