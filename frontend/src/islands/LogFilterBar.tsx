@@ -31,11 +31,13 @@ export default function LogFilterBar(props: LogFilterBarProps) {
   const pods = useSignal<string[]>([]);
   const containers = useSignal<string[]>([]);
 
-  // Sync with global namespace selection
+  // Start from the global namespace selection. Its "all namespaces" value is
+  // the sentinel "all", which this bar spells as "" (the All Namespaces option).
   useEffect(() => {
     if (!IS_BROWSER) return;
-    if (selectedNamespace.value) {
-      namespace.value = selectedNamespace.value;
+    const ns = selectedNamespace.value;
+    if (ns && ns !== "all") {
+      namespace.value = ns;
     }
   }, []);
 
@@ -86,6 +88,9 @@ export default function LogFilterBar(props: LogFilterBarProps) {
     if (namespace.value) matchers.push(`namespace="${namespace.value}"`);
     if (pod.value) matchers.push(`pod=~"${pod.value}.*"`);
     if (container.value) matchers.push(`container="${container.value}"`);
+    // Loki rejects an empty selector, so "everything" needs a matcher that
+    // matches every stream with a namespace label.
+    if (matchers.length === 0) matchers.push(`namespace=~".+"`);
 
     let q = `{${matchers.join(",")}}`;
     if (severity.value) q += ` | level=~"(?i)${severity.value}"`;
