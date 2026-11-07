@@ -66,6 +66,33 @@ test("masks a data map too, and a quoted key keeps its quotes", () => {
   expect(maskSecretYaml(yaml)).toBe(`data:\n  "a:b": ${M}\nkind: Secret`);
 });
 
+test("fails closed on an explicit key, a comment and anything unforeseen", () => {
+  const longKey = "k".repeat(130);
+  const yaml = [
+    "stringData:",
+    `  ? ${longKey}`,
+    "  : hunter2",
+    "  # note: s3cret-in-comment",
+    "# top-level note",
+    "  password: s3cret",
+    "  - leaked-list-item",
+    "type: Opaque",
+  ].join("\n");
+  const masked = maskSecretYaml(yaml);
+  expect(masked).toBe(
+    [
+      "stringData:",
+      `  ? ${longKey}`,
+      `  : ${M}`,
+      `  password: ${M}`,
+      "type: Opaque",
+    ].join("\n"),
+  );
+  for (const secret of ["hunter2", "s3cret", "leaked-list-item"]) {
+    expect(masked).not.toContain(secret);
+  }
+});
+
 test("leaves a manifest without a value map unchanged", () => {
   const yaml = "kind: Secret\nmetadata:\n  name: x\ntype: Opaque\n";
   expect(maskSecretYaml(yaml)).toBe(yaml);
