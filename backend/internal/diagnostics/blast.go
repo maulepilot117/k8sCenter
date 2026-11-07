@@ -63,8 +63,12 @@ func ComputeBlastRadius(graph *topology.Graph, targetID string) *BlastResult {
 				continue
 			}
 			visited[edge.nodeID] = true
+			node, ok := nodeMap[edge.nodeID]
+			if ok && node.Idle {
+				continue
+			}
 			queue = append(queue, edge.nodeID)
-			if node, ok := nodeMap[edge.nodeID]; ok {
+			if ok {
 				result.DirectlyAffected = append(result.DirectlyAffected, AffectedResource{
 					Kind:   node.Kind,
 					Name:   node.Name,

@@ -308,6 +308,90 @@ func TestHandleRefresh(t *testing.T) {
 	}
 }
 
+// An LDAP session let through on its grace window (the directory is down,
+// the last revalidation is recent) is not routine, so it stays audited.
+func TestHandleRefresh_LDAPGraceSuccessIsAudited(t *testing.T) {
+	srv := testServer(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	// Nothing listens on port 1, so revalidation fails to connect: a
+	// transient LDAP failure.
+	srv.AuthRegistry.RegisterCredential("ldap-corp", "Corp LDAP",
+		auth.NewLDAPProvider(auth.LDAPProviderConfig{ID: "ldap-corp", URL: "ldaps://127.0.0.1:1"}, logger))
+	rec := &recordingAuditLogger{}
+	srv.AuditLogger = rec
+
+	userID := "ldap:ldap-corp:CN=alice,OU=Users"
+	srv.Sessions.Store(auth.RefreshSession{
+		Token:           "ldap-grace-token",
+		UserID:          userID,
+		Provider:        "ldap",
+		ExpiresAt:       time.Now().Add(time.Hour),
+		LastRevalidated: time.Now().Add(-time.Minute),
+		CachedUser:      &auth.User{ID: userID, Username: "alice", Provider: "ldap", KubernetesUsername: "alice"},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: "ldap-grace-token"})
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh = %d, want 200 on the grace window: %s", w.Code, w.Body.String())
+	}
+
+	var got []audit.Entry
+	for _, e := range rec.snapshot() {
+		if e.Action == audit.ActionRefresh {
+			got = append(got, e)
+		}
+	}
+	if len(got) != 1 || got[0].Result != audit.ResultSuccess || got[0].Detail == "" || got[0].User != "alice" {
+		t.Fatalf("refresh audit entries = %+v, want one success for alice with a detail", got)
+	}
+}
+
+func TestHandleRefresh_RoutineSuccessIsNotAudited(t *testing.T) {
+	srv := testServer(t)
+	_, cookies := loginAdmin(t, srv)
+	rec := &recordingAuditLogger{}
+	srv.AuditLogger = rec
+
+	refresh := func(cookies []*http.Cookie) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		w := httptest.NewRecorder()
+		srv.Router.ServeHTTP(w, req)
+		return w.Code
+	}
+	refreshEntries := func() []audit.Entry {
+		var out []audit.Entry
+		for _, e := range rec.snapshot() {
+			if e.Action == audit.ActionRefresh {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+
+	if code := refresh(cookies); code != http.StatusOK {
+		t.Fatalf("refresh = %d, want 200", code)
+	}
+	if got := refreshEntries(); len(got) != 0 {
+		t.Fatalf("routine refresh audited: %+v", got)
+	}
+
+	if code := refresh(cookies); code == http.StatusOK {
+		t.Fatalf("replayed refresh = 200, want a refusal")
+	}
+	got := refreshEntries()
+	if len(got) != 1 || got[0].Result != audit.ResultFailure {
+		t.Fatalf("refused refresh entries = %+v, want one failure", got)
+	}
+}
+
 func TestHandleRefresh_RotationInvalidatesOldToken(t *testing.T) {
 	srv := testServer(t)
 	_, cookies := loginAdmin(t, srv)
@@ -448,9 +532,9 @@ func TestHandleRefresh_BodyMode_NoSetCookie(t *testing.T) {
 // from cookie Max-Age (which is absent in body-mode).
 func TestIssueTokenPair_OIDCRefreshLifetime(t *testing.T) {
 	cases := []struct {
-		name     string
-		user     *auth.User
-		wantTTL  time.Duration
+		name      string
+		user      *auth.User
+		wantTTL   time.Duration
 		tolerance time.Duration
 	}{
 		{

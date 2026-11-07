@@ -107,11 +107,20 @@ type fakeLogAPI struct {
 	endAfter int  // lines to write before EOF; 0 writes until the request ends
 	stall    bool // hold the response, unsent, until the request ends
 	longLine bool // write one line longer than logMaxLineBuffer, then EOF
+	// noPrevious answers previous=true as the API server does for a
+	// container that never restarted.
+	noPrevious bool
 }
 
 func (f fakeLogAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/api/v1/namespaces/default/pods/web-1/log" || r.URL.Query().Get("follow") != "true" {
 		http.NotFound(w, r)
+		return
+	}
+	if f.noPrevious && r.URL.Query().Get("previous") == "true" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","message":"previous terminated container \"app\" in pod \"web-1\" not found","reason":"BadRequest","code":400}`))
 		return
 	}
 	if f.stall {
@@ -373,6 +382,23 @@ func TestHandleWSLogs_NoCluster_Refused(t *testing.T) {
 // A local tail, named in-band (web) or by header (mobile), streams through
 // the local client factory, never builds a remote client, never registers
 // for cluster eviction, and is audited against the configured cluster id.
+func TestHandleWSLogs_PreviousOfNeverRestartedContainer(t *testing.T) {
+	env := newLogsEnv(t, fakeLogAPI{noPrevious: true}, true)
+	conn := wsDialAndAuth(t, env.url+"web-1/app", "local", "", issueWSToken(t, env.srv, false))
+	t.Cleanup(func() { conn.Close() })
+	if err := conn.WriteJSON(map[string]any{"tailLines": 10, "previous": true}); err != nil {
+		t.Fatalf("WriteJSON filter: %v", err)
+	}
+	if msg := readFrame(t, conn); msg["type"] != "subscribed" {
+		t.Fatalf("first frame = %v, want subscribed", msg)
+	}
+	if msg := readFrame(t, conn); msg["type"] != "error" || msg["message"] != resources.NoPreviousContainerMessage {
+		t.Fatalf("frame = %v, want the no-previous-instance error", msg)
+	}
+	conn.Close()
+	waitLogStreamsDone(t)
+}
+
 func TestHandleWSLogs_LocalStreams(t *testing.T) {
 	for name, tc := range map[string]struct{ header, inBand string }{
 		"in-band": {inBand: "local"},

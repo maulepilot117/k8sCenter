@@ -40,6 +40,12 @@ const bypass = shouldBypassChrome(pathname);
   {bypass ? (
     <slot />
   ) : (
+    <>
+    <script>
+      import { shouldBypassChrome } from "../lib/chrome-bypass.ts";
+      import { bootSession } from "../lib/session-boot.ts";
+      if (!shouldBypassChrome(globalThis.location.pathname)) bootSession();
+    </script>
     <div
       style="display:grid;grid-template-columns:var(--rail-width, 64px) var(--panel-width, 250px) minmax(0, 1fr);grid-template-rows:var(--topbar-height, 56px) 1fr;height:100dvh;background:transparent;color:var(--text-primary)"
     >
@@ -72,5 +78,6 @@ const bypass = shouldBypassChrome(pathname);
       <CommandPalette client:load />
       <QuickActionsFab client:load />
     </div>
+    </>
   )}
 </BaseLayout>

@@ -3,6 +3,7 @@ import { useCallback, useRef } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { maskSecretYaml } from "@/lib/secret-yaml-mask.ts";
 import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
@@ -889,6 +890,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
           onApplied={() => {
             dirty.value = false;
           }}
+          maskValues={maskSecretYaml}
         />
       )}
     </WizardShell>

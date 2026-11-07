@@ -55,6 +55,10 @@ type Node struct {
 	Namespace string `json:"namespace"`
 	Health    Health `json:"health"`
 	Summary   string `json:"summary"`
+	// Idle marks a resource that runs nothing: a ReplicaSet scaled to zero
+	// with no pods left, the old revision a Deployment keeps for rollback.
+	// A failure upstream of it affects nothing.
+	Idle bool `json:"idle,omitempty"`
 }
 
 // Edge represents a relationship between two resources.

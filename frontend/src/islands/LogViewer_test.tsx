@@ -434,3 +434,66 @@ test("the badge names a remote cluster by its registered name", async () => {
     host?.querySelector('[data-testid="session-cluster-badge"]')?.textContent,
   ).toBe("On prod-east");
 });
+
+test("toggling Previous drops the old stream's unflushed and late lines", async () => {
+  jest.useFakeTimers();
+  try {
+    const first = mountViewer();
+    deliver(first, { type: "subscribed" });
+    deliver(first, { type: "log", data: "buffered current line" });
+
+    const box = host?.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    box.checked = true;
+    // Outside act(): a browser runs the effect cleanup (which also closes
+    // sockets) only after the next frame, so the handler itself must stop
+    // the old stream.
+    box.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(first.closed).toBe(true);
+    first.onmessage?.({
+      data: JSON.stringify({ type: "log", data: "late current line" }),
+    });
+    jest.advanceTimersByTime(50);
+    await settle();
+
+    expect(host?.textContent).not.toContain("current line");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("Previous on a container that never restarted shows the refusal alone", async () => {
+  jest.useFakeTimers();
+  try {
+    const first = mountViewer();
+    deliver(first, { type: "subscribed" });
+    await deliverLines(first, ["current line 1", "current line 2"]);
+    expect(shownLines()).toEqual(["current line 1", "current line 2"]);
+
+    const box = host?.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    box.checked = true;
+    act(() => {
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+
+    const second = latestSocket();
+    expect(second).not.toBe(first);
+    act(() => second.onopen?.());
+    expect(second.sent.at(-1)).toMatchObject({ previous: true });
+    deliver(second, { type: "subscribed" });
+    deliver(second, {
+      type: "error",
+      message: "this container has no previous instance: it has not restarted",
+    });
+    await settle();
+
+    expect(host?.textContent).toContain("no previous instance");
+    expect(host?.textContent).not.toContain("current line");
+  } finally {
+    jest.useRealTimers();
+  }
+});

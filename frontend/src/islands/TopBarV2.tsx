@@ -179,6 +179,7 @@ export default function TopBarV2() {
         <div style={{ position: "relative" }} ref={menuRef}>
           <button
             type="button"
+            aria-label="Account menu"
             aria-expanded={showUserMenu.value}
             aria-haspopup="true"
             onClick={() => {

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
-import { apiGet, getAccessToken, refreshSession } from "@/lib/api.ts";
+import { ApiError, apiGet, getAccessToken, refreshSession } from "@/lib/api.ts";
 import {
   isReplayedLine,
   logLineTimestamp,
@@ -106,6 +106,9 @@ export default function LogViewer({
   const pendingLines = useRef<Map<number, (string | LogLine)[]>>(new Map());
   const pendingDrops = useRef<Map<number, number>>(new Map());
   const flushRafId = useRef(0);
+  // Bumped by each snapshot fetch and by the Previous toggle; a snapshot
+  // answer from an older generation is dropped.
+  const snapshotGen = useRef(0);
   const scrollRafId = useRef(0);
 
   const allContainers = [
@@ -421,6 +424,7 @@ export default function LogViewer({
     async (tabIdx: number) => {
       const container = allContainers[tabIdx]?.name;
       if (!container) return;
+      const gen = ++snapshotGen.current;
       loading.value = true;
       updateTabState(tabIdx, { error: "" });
       try {
@@ -433,6 +437,7 @@ export default function LogViewer({
         const res = await apiGet<LogResponse>(
           `/v1/resources/pods/${namespace}/${pod}/logs?${params}`,
         );
+        if (gen !== snapshotGen.current) return;
         updateTabState(tabIdx, {
           lines: (res.data.lines ?? []).map(toLogLine),
         });
@@ -443,9 +448,14 @@ export default function LogViewer({
           if (pre) pre.scrollTop = pre.scrollHeight;
         });
       } catch (err) {
-        updateTabState(tabIdx, {
-          error: err instanceof Error ? err.message : "Failed to fetch logs",
-        });
+        if (gen !== snapshotGen.current) return;
+        const message =
+          err instanceof ApiError && err.body?.error?.message
+            ? err.body.error.message
+            : err instanceof Error
+              ? err.message
+              : "Failed to fetch logs";
+        updateTabState(tabIdx, { lines: [], error: message });
         loading.value = false;
       }
     },
@@ -653,6 +663,23 @@ export default function LogViewer({
             type="checkbox"
             checked={previous.value}
             onChange={(e) => {
+              // Stop the other instance's stream now, not at the effect's
+              // cleanup a frame later: its socket, its buffered lines and a
+              // snapshot still in flight would land in the cleared tabs.
+              for (const i of [...wsRefs.current.keys()]) closeTabWS(i);
+              pendingLines.current.clear();
+              pendingDrops.current.clear();
+              if (flushRafId.current) cancelAnimationFrame(flushRafId.current);
+              flushRafId.current = 0;
+              snapshotGen.current++;
+              lastTimestamp.current.clear();
+              resumeAfter.current.clear();
+              tabStates.value = tabStates.value.map((s) => ({
+                ...s,
+                lines: [],
+                droppedCount: 0,
+                error: "",
+              }));
               previous.value = (e.target as HTMLInputElement).checked;
             }}
           />

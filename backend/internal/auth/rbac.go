@@ -60,6 +60,15 @@ var trackedResources = map[string]bool{
 	"endpointslices": true,
 }
 
+// clusterRulesNamespace is where the cluster-wide rules are asked for. A
+// SelfSubjectRulesReview needs a namespace (an empty one is refused with "no
+// namespace on request"), and its answer is the namespace's RoleBindings plus
+// every ClusterRoleBinding. Asked of a namespace that holds no RoleBindings,
+// it returns the ClusterRoleBinding rules alone: the grants that apply in
+// every namespace and to cluster-scoped resources. The API server does not
+// require the namespace to exist, and this one is not expected to.
+const clusterRulesNamespace = "kubecenter-cluster-wide-rules"
+
 // RBACChecker queries Kubernetes RBAC permissions for users.
 type RBACChecker struct {
 	clientFactory interface {
@@ -107,8 +116,7 @@ func (rc *RBACChecker) GetSummary(ctx context.Context, user *User, namespaces []
 		Namespaces:    make(map[string]map[string][]string),
 	}
 
-	// Check cluster-scoped permissions via empty-namespace rules review
-	clusterRules, err := rc.getRulesForNamespace(ctx, cs, "")
+	clusterRules, err := rc.getRulesForNamespace(ctx, cs, clusterRulesNamespace)
 	if err != nil {
 		rc.logger.Warn("failed to get cluster-scoped rules", "error", err, "user", user.Username)
 	} else {
@@ -271,8 +279,7 @@ func (rc *RBACChecker) GetNamespacePermissions(ctx context.Context, user *User, 
 		Namespaces:    make(map[string]map[string][]string),
 	}
 
-	// Cluster-scoped permissions
-	clusterRules, err := rc.getRulesForNamespace(ctx, cs, "")
+	clusterRules, err := rc.getRulesForNamespace(ctx, cs, clusterRulesNamespace)
 	if err != nil {
 		rc.logger.Warn("failed to get cluster-scoped rules", "error", err, "user", user.Username)
 	} else {

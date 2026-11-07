@@ -659,7 +659,10 @@ export default function ResourceTableIsland({
     const shown = displayed.value.length;
     const total = totalCount.value;
     if (total !== null && total > items.value.length) {
-      return `${shown} shown (${items.value.length} of ${total} loaded)`;
+      const loaded = items.value.length;
+      return shown === loaded
+        ? `${shown} of ${total} shown`
+        : `${shown} shown (${loaded} of ${total} loaded)`;
     }
     return `${shown} items`;
   });

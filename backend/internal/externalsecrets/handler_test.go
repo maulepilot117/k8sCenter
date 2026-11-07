@@ -171,7 +171,7 @@ func makeCES(name, uid string) *unstructured.Unstructured {
 func makePushSecret(ns, name, uid string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
 		Object: map[string]any{
-			"apiVersion": "external-secrets.io/v1",
+			"apiVersion": "external-secrets.io/v1alpha1",
 			"kind":       "PushSecret",
 			"metadata":   map[string]any{"name": name, "namespace": ns, "uid": uid},
 			"spec": map[string]any{
@@ -983,6 +983,33 @@ func TestFetchAll_PerCRDFailureIsolated(t *testing.T) {
 	}
 	if len(data.externalSecrets) != 0 {
 		t.Errorf("externalSecrets len = %d; want 0 on cold-cache failure", len(data.externalSecrets))
+	}
+}
+
+func TestFetchAll_UnservedKindIsEmptyNotFailed(t *testing.T) {
+	fakeClient := newEsoFakeDynClient(makeES("apps", "es1", "uid-1"))
+	fakeClient.PrependReactor("list", "pushsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(PushSecretGVR.GroupResource(), "")
+	})
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynOverride:   fakeClient,
+	}
+
+	data, err := h.getCached(context.Background())
+	if err != nil {
+		t.Fatalf("getCached: %v", err)
+	}
+	if _, ok := data.errors["pushsecrets"]; ok {
+		t.Errorf("errors = %v; an unserved kind is not a failure", data.errors)
+	}
+	if data.pushSecrets == nil || len(data.pushSecrets) != 0 {
+		t.Errorf("pushSecrets = %v; want empty slice", data.pushSecrets)
+	}
+	if len(data.externalSecrets) != 1 {
+		t.Errorf("externalSecrets len = %d; want 1", len(data.externalSecrets))
 	}
 }
 

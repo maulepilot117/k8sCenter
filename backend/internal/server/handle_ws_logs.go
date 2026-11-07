@@ -252,8 +252,12 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		if stream != nil {
 			stream.Close()
 		}
+		message := "failed to open log stream"
+		if filter.Previous && resources.IsNoPreviousContainer(err) {
+			message = resources.NoPreviousContainerMessage
+		}
 		var status apierrors.APIStatus
-		failOpen(err, "failed to open log stream", !errors.As(err, &status))
+		failOpen(err, message, !errors.As(err, &status))
 		return
 	}
 	defer stream.Close()

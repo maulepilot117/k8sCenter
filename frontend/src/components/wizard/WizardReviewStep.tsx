@@ -36,6 +36,13 @@ interface WizardReviewStepProps {
    * its unsaved-changes guard before the user navigates to the new resource.
    */
   onApplied?: () => void;
+  /**
+   * Masks values for display (the Secret wizard's `maskSecretYaml`). While
+   * masked the preview is read-only, so an edit can never write the mask
+   * into the manifest; "Show values" turns the editable preview back on.
+   * The YAML applied is always `yaml`, never the masked text.
+   */
+  maskValues?: (yaml: string) => string;
 }
 
 /**
@@ -50,7 +57,9 @@ export function WizardReviewStep({
   error,
   detailBasePath,
   onApplied,
+  maskValues,
 }: WizardReviewStepProps) {
+  const revealed = useSignal(false);
   const applying = useSignal(false);
   const applyError = useSignal<string | null>(null);
   const applyResult = useSignal<ApplyResponse | null>(null);
@@ -231,17 +240,34 @@ export function WizardReviewStep({
 
   // The editor takes whatever height the step pane has left, so the whole
   // manifest is reachable without an Apply button scrolled out of view.
+  const masked = maskValues !== undefined && !revealed.value;
   return (
     <div class="flex flex-col flex-1 min-h-0 gap-4">
-      <p class="text-sm text-text-muted">
-        Review the generated YAML below. You can edit it before applying.
-      </p>
+      <div class="flex items-center justify-between gap-3">
+        <p class="text-sm text-text-muted">
+          {masked
+            ? "Review the generated YAML below. Values are hidden; show them to check or edit them."
+            : "Review the generated YAML below. You can edit it before applying."}
+        </p>
+        {maskValues && (
+          <button
+            type="button"
+            class="shrink-0 text-sm text-brand hover:underline"
+            aria-pressed={revealed.value}
+            onClick={() => {
+              revealed.value = !revealed.value;
+            }}
+          >
+            {revealed.value ? "Hide values" : "Show values"}
+          </button>
+        )}
+      </div>
 
       <div class="flex-1 min-h-60">
         <MonacoEditor
-          value={yaml}
+          value={masked ? maskValues(yaml) : yaml}
           onChange={onYamlChange}
-          readOnly={false}
+          readOnly={masked}
           height="100%"
         />
       </div>

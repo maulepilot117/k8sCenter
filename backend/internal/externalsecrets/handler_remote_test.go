@@ -99,15 +99,26 @@ var esoKinds = map[schema.GroupVersionResource]string{
 }
 
 // esoDiscovery is discovery for a cluster serving ESO's kinds at version, or
-// not serving ESO at all when version is empty.
+// not serving ESO at all when version is empty. "v1" is today's ESO: each
+// kind at the version this package reads it (PushSecret at v1alpha1).
 func esoDiscovery(version string) []*metav1.APIResourceList {
 	lists := []*metav1.APIResourceList{{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "secrets", Kind: "Secret", Namespaced: true}}}}
-	if version != "" {
-		l := &metav1.APIResourceList{GroupVersion: GroupName + "/" + version}
-		for gvr, kind := range esoKinds {
-			l.APIResources = append(l.APIResources, metav1.APIResource{Name: gvr.Resource, Kind: kind})
+	if version == "" {
+		return lists
+	}
+	byVersion := map[string]*metav1.APIResourceList{}
+	for gvr, kind := range esoKinds {
+		v := version
+		if version == "v1" {
+			v = gvr.Version
 		}
-		lists = append(lists, l)
+		l := byVersion[v]
+		if l == nil {
+			l = &metav1.APIResourceList{GroupVersion: GroupName + "/" + v}
+			byVersion[v] = l
+			lists = append(lists, l)
+		}
+		l.APIResources = append(l.APIResources, metav1.APIResource{Name: gvr.Resource, Kind: kind})
 	}
 	return lists
 }
@@ -413,6 +424,16 @@ func TestRemote_EveryListFailingIsAnError(t *testing.T) {
 
 // A kind whose CRD went away after discovery was cached reads as empty, not
 // as a failure, and the other kinds still serve.
+func TestRemote_ListsPushSecretsServedAtV1alpha1(t *testing.T) {
+	remote := newRemoteFake("v1", []runtime.Object{makeES("apps", "es1", "uid-es"), makePushSecret("apps", "ps1", "uid-ps")})
+	rh := newRemoteHarness(remote)
+
+	rr := doRemote(t, rh.h.HandleListPushSecrets, nil, "")
+	if rr.Code != http.StatusOK || len(decodeData[[]PushSecret](t, rr)) != 1 {
+		t.Errorf("push secret list = %d %s, want 200 with the remote push secret", rr.Code, rr.Body.String())
+	}
+}
+
 func TestRemote_GoneKindIsEmptyNotFailed(t *testing.T) {
 	remote := newRemoteFake("v1", remoteInventory())
 	remote.dyn.PrependReactor("list", "pushsecrets", func(clienttesting.Action) (bool, runtime.Object, error) {

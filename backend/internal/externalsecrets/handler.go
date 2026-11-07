@@ -375,6 +375,10 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		if err == nil {
 			continue
 		}
+		if apierrors.IsNotFound(err) {
+			h.Logger.Debug("eso kind not served", "resource", src.gvr.Resource, "version", src.gvr.Version)
+			continue
+		}
 		h.Logger.Warn("list "+src.gvr.Resource+" failed", "error", err)
 		if data.errors == nil {
 			data.errors = map[string]string{}

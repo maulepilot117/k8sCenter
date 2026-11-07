@@ -175,8 +175,14 @@ func (h *Handler) storesForResolver(ctx context.Context, user *auth.User) (store
 	return snap.data.stores, snap.data.clusterStores
 }
 
-// remoteServed reads which ESO resources a remote cluster serves at v1, as
-// the user sees it, keyed by resource name. ESO counts as installed only
+// servedKey names one resource at one version in remoteServed's map: the
+// kinds are read at different versions (PushSecret at v1alpha1).
+func servedKey(gvr schema.GroupVersionResource) string {
+	return gvr.GroupVersion().String() + "/" + gvr.Resource
+}
+
+// remoteServed reads which ESO resources a remote cluster serves, at which
+// versions, as the user sees it, keyed by servedKey. ESO counts as installed only
 // when ExternalSecret is served at v1, the version this package reads,
 // matching the local Discoverer; a cluster serving only an older version is
 // not installed. A nil map means not installed. When that cannot be told,
@@ -200,13 +206,15 @@ func (h *Handler) remoteServed(ctx context.Context, clusterID string, user *auth
 	}
 	served := map[string]bool{}
 	for _, l := range lists {
-		if l.GroupVersion == ExternalSecretGVR.GroupVersion().String() {
-			for _, res := range l.APIResources {
-				served[res.Name] = true
-			}
+		gv, err := schema.ParseGroupVersion(l.GroupVersion)
+		if err != nil || gv.Group != GroupName {
+			continue
+		}
+		for _, res := range l.APIResources {
+			served[servedKey(gv.WithResource(res.Name))] = true
 		}
 	}
-	if !served[ExternalSecretGVR.Resource] {
+	if !served[servedKey(ExternalSecretGVR)] {
 		// The group is served at another version. Presence does not track
 		// versions, so drop the cached schema here: an upgrade to v1 is then
 		// seen by the next fetch rather than when the schema expires.
@@ -237,7 +245,7 @@ func (h *Handler) fetchRemote(ctx context.Context, clusterID string, user *auth.
 	data := &cachedData{}
 	var sources []source
 	for _, src := range data.sources() {
-		if served[src.gvr.Resource] {
+		if served[servedKey(src.gvr)] {
 			sources = append(sources, src)
 		}
 	}

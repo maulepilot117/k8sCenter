@@ -2,6 +2,7 @@ package resources
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -9,6 +10,19 @@ import (
 
 // timeNow is a function variable to allow testing with fixed times.
 var timeNow = time.Now
+
+// NoPreviousContainerMessage is what a log request for `previous=true` answers
+// when the container has never restarted.
+const NoPreviousContainerMessage = "this container has no previous instance: it has not restarted"
+
+// IsNoPreviousContainer reports whether err is the API server refusing a
+// `previous=true` log request because the container has no terminated
+// instance. The API server answers that with a bare 400 whose only marker is
+// its message ("previous terminated container \"x\" in pod \"y\" not found").
+func IsNoPreviousContainer(err error) bool {
+	return apierrors.IsBadRequest(err) &&
+		strings.Contains(err.Error(), "previous terminated container")
+}
 
 // mapK8sError maps a Kubernetes API error to an HTTP status code and user-friendly message.
 func mapK8sError(w http.ResponseWriter, err error, verb, kind, namespace, name string) {

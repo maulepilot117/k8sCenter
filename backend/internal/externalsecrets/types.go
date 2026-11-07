@@ -33,8 +33,11 @@ var (
 	ClusterSecretStoreGVR = schema.GroupVersionResource{
 		Group: GroupName, Version: "v1", Resource: "clustersecretstores",
 	}
+	// PushSecret was never promoted: ESO serves it at v1alpha1 only (checked
+	// against v2.4.1, the homelab's release), so a v1 list or get is a
+	// NotFound and push secrets never showed.
 	PushSecretGVR = schema.GroupVersionResource{
-		Group: GroupName, Version: "v1", Resource: "pushsecrets",
+		Group: GroupName, Version: "v1alpha1", Resource: "pushsecrets",
 	}
 )
 

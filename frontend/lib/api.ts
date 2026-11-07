@@ -289,13 +289,18 @@ async function send(
     });
   };
 
+  let joined: boolean | undefined;
+  if (!accessToken && refreshPromise) {
+    joined = await refreshPromise;
+  }
+
   let res = await doFetch();
 
   // On 401, attempt a single token refresh and retry.
   // Check even when accessToken is null — after a full page reload the
   // in-memory token is gone but the httpOnly refresh cookie may still exist.
   if (res.status === 401) {
-    const refreshed = await refreshSession();
+    const refreshed = joined === false ? false : await refreshSession();
     if (refreshed) {
       res = await doFetch();
     } else {
