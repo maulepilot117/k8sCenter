@@ -488,9 +488,7 @@ export default function SecretStoreWizard({
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath={detailBasePath}
-          onApplied={() => {
-            dirty.value = false;
-          }}
+          dirty={dirty}
         />
       )}
     </WizardShell>

@@ -319,9 +319,7 @@ export default function DeploymentWizard({
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/workloads/deployments"
-          onApplied={() => {
-            dirty.value = false;
-          }}
+          dirty={dirty}
         />
       )}
     </WizardShell>

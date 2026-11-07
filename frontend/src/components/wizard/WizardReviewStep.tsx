@@ -1,4 +1,4 @@
-import { useSignal } from "@preact/signals";
+import { type Signal, useSignal } from "@preact/signals";
 import { useContext, useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiPostRaw } from "@/lib/api.ts";
@@ -32,9 +32,12 @@ interface WizardReviewStepProps {
   /** Base path for building the detail link (e.g."/workloads/deployments") */
   detailBasePath: string;
   /**
-   * Called once an apply finishes with nothing failed, so the wizard can drop
-   * its unsaved-changes guard before the user navigates to the new resource.
+   * The wizard's unsaved-changes flag (the one its `useDirtyGuard` watches).
+   * Cleared once an apply finishes with nothing failed, so leaving for the
+   * new resource does not prompt.
    */
+  dirty?: Signal<boolean>;
+  /** Called once an apply finishes with nothing failed. */
   onApplied?: () => void;
   /**
    * Masks values for display (the Secret wizard's `maskSecretYaml`). While
@@ -56,6 +59,7 @@ export function WizardReviewStep({
   loading,
   error,
   detailBasePath,
+  dirty,
   onApplied,
   maskValues,
 }: WizardReviewStepProps) {
@@ -90,7 +94,10 @@ export function WizardReviewStep({
         "text/yaml",
       );
       applyResult.value = resp.data;
-      if (resp.data.summary.failed === 0) onApplied?.();
+      if (resp.data.summary.failed === 0) {
+        if (dirty) dirty.value = false;
+        onApplied?.();
+      }
     } catch (err) {
       applyError.value =
         err instanceof Error ? err.message : "Failed to apply resource";

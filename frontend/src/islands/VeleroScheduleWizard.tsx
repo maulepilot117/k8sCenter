@@ -403,9 +403,7 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/backup/schedules"
-          onApplied={() => {
-            dirty.value = false;
-          }}
+          dirty={dirty}
         />
       )}
     </WizardShell>

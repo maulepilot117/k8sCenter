@@ -1,6 +1,7 @@
 /** @jsxImportSource preact */
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { type Signal, signal } from "@preact/signals";
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import { setAccessToken } from "@/lib/api.ts";
@@ -67,6 +68,7 @@ function mount(opts: {
   onNext: () => void;
   yaml?: string;
   maskValues?: (yaml: string) => string;
+  dirty?: Signal<boolean>;
 }) {
   setAccessToken("t");
   host = document.createElement("div");
@@ -91,6 +93,7 @@ function mount(opts: {
           detailBasePath="/config/configmaps"
           onApplied={opts.onApplied}
           maskValues={opts.maskValues}
+          dirty={opts.dirty}
         />
       </WizardShell>,
       host as HTMLElement,
@@ -180,4 +183,20 @@ test("a masked review applies the real YAML and can show the values", async () =
 test("a review with no mask has no values toggle", () => {
   const root = mount({ onApplied: () => {}, onNext: () => {} });
   expect(buttons(root, "Show values")).toHaveLength(0);
+});
+
+test("a clean apply clears the wizard's unsaved-changes flag; a failed one keeps it", async () => {
+  for (const failed of [0, 1]) {
+    stubApply(failed);
+    const dirty = signal(true);
+    const root = mount({ onApplied: () => {}, onNext: () => {}, dirty });
+    await act(async () => buttons(root, "Apply")[0].click());
+    await flush();
+    expect(dirty.value).toBe(failed > 0);
+    act(() => render(null, root));
+    root.remove();
+    host = null;
+    if (originalFetch) globalThis.fetch = originalFetch;
+    originalFetch = undefined;
+  }
 });

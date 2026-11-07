@@ -296,9 +296,7 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/networking/services"
-          onApplied={() => {
-            dirty.value = false;
-          }}
+          dirty={dirty}
         />
       )}
     </WizardShell>
