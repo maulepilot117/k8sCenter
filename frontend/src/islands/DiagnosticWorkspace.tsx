@@ -70,6 +70,15 @@ export default function DiagnosticWorkspace() {
   const truncated = useSignal(false);
   const truncationErrors = useSignal<Record<string, string>>({});
   const hasData = useSignal(false);
+  // The resource the displayed results are for. The picker fields can change
+  // after a run (the user typing, or the namespace following the top bar), so
+  // the results' heading, Re-scan and Capture to incident read this, never
+  // the live fields.
+  const shown = useSignal<{ namespace: string; kind: string; name: string }>({
+    namespace: "",
+    kind: "",
+    name: "",
+  });
 
   const fetchDiagnostics = async (ns: string, k: string, n: string) => {
     loading.value = true;
@@ -87,6 +96,7 @@ export default function DiagnosticWorkspace() {
       potentiallyAffected.value = data.blastRadius.potentiallyAffected;
       truncated.value = data.blastRadius.truncated === true;
       truncationErrors.value = data.blastRadius.errors ?? {};
+      shown.value = { namespace: ns, kind: k, name: n };
       hasData.value = true;
     } catch (err) {
       hasData.value = false;
@@ -279,21 +289,25 @@ export default function DiagnosticWorkspace() {
                     : "All checks passed"}
               </span>
               <span class="text-sm text-text-secondary">
-                {kind.value}/{name.value} in {namespace.value}
+                {shown.value.kind}/{shown.value.name} in {shown.value.namespace}
               </span>
             </div>
             <CaptureToIncidentButton
               class="ml-auto mr-2"
               clusterId={selectedCluster.value}
-              namespace={namespace.value}
-              kind={kind.value}
-              name={name.value}
+              namespace={shown.value.namespace}
+              kind={shown.value.kind}
+              name={shown.value.name}
               windowStart={earliestObservedAt(results.value)}
             />
             <button
               type="button"
               onClick={() =>
-                fetchDiagnostics(namespace.value, kind.value, name.value)
+                fetchDiagnostics(
+                  shown.value.namespace,
+                  shown.value.kind,
+                  shown.value.name,
+                )
               }
               class="cursor-pointer rounded-md border border-border-primary bg-surface px-3 py-1 text-xs font-medium text-text-secondary"
             >
@@ -305,7 +319,7 @@ export default function DiagnosticWorkspace() {
           <div class="grid grid-cols-[3fr_2fr] items-start gap-4">
             <DiagnosticChecklist
               results={results}
-              namespace={namespace.value}
+              namespace={shown.value.namespace}
             />
             <div class="flex flex-col gap-3">
               {truncated.value && (
@@ -326,7 +340,7 @@ export default function DiagnosticWorkspace() {
               <BlastRadiusPanel
                 directlyAffected={directlyAffected}
                 potentiallyAffected={potentiallyAffected}
-                namespace={namespace.value}
+                namespace={shown.value.namespace}
               />
             </div>
           </div>

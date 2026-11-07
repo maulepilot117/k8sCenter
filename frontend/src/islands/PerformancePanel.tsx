@@ -265,6 +265,8 @@ export default function PerformancePanel({
 
   useEffect(() => {
     if (!IS_BROWSER) return;
+    // Another resource: none of the charts on screen are its data.
+    charts.value = [];
 
     // Check monitoring availability, then start auto-refresh
     apiGet<{ prometheus: { available: boolean } }>("/v1/monitoring/status")
@@ -299,7 +301,10 @@ export default function PerformancePanel({
       loading: true,
       error: null,
     }));
-    charts.value = initial;
+    // Spinners only on the first load. A refresh keeps the last results on
+    // screen until the new ones arrive, so the charts (or the "No Metric
+    // Data" message) don't blink every refresh interval.
+    if (charts.value.length === 0) charts.value = initial;
 
     // For nodes, resolve the internal IP so the backend slug can match
     // node-exporter metrics (which use instance=IP:9100, not node name).

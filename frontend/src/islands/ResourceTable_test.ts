@@ -7,7 +7,52 @@ import {
   podPhasesForChip,
   statusFilterFromQuery,
   syncStatusParam,
+  toolbarCountText,
 } from "@/src/islands/ResourceTable.tsx";
+
+describe("toolbarCountText", () => {
+  const base = { hideHeader: true, title: "Secrets" };
+
+  test("says nothing when the page header already has the count", () => {
+    expect(
+      toolbarCountText({
+        ...base,
+        shown: 16,
+        loaded: 16,
+        headerHasCount: true,
+      }),
+    ).toBeNull();
+  });
+
+  test("gives the count when the page header has none (Secrets)", () => {
+    expect(
+      toolbarCountText({
+        ...base,
+        shown: 100,
+        loaded: 100,
+        headerHasCount: false,
+      }),
+    ).toBe("100 secrets");
+  });
+
+  test("a filter that narrows the list always shows what matched", () => {
+    expect(
+      toolbarCountText({ ...base, shown: 3, loaded: 16, headerHasCount: true }),
+    ).toBe("3 of 16 match");
+  });
+
+  test("a table with its own header never repeats the count", () => {
+    expect(
+      toolbarCountText({
+        ...base,
+        hideHeader: false,
+        shown: 9,
+        loaded: 9,
+        headerHasCount: false,
+      }),
+    ).toBeNull();
+  });
+});
 
 const POD_CHIPS = ["All", "Running", "Pending", "Failed"];
 const PAGE_URL = "http://localhost/workloads/pods";
