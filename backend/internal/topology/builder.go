@@ -702,8 +702,6 @@ func deploymentHealth(dep *appsv1.Deployment) (Health, string) {
 	return HealthFailing, summary
 }
 
-// markIdleReplicaSets sets Idle on each ReplicaSet node scaled to zero with no
-// pods left. An unset spec.replicas defaults to 1, so it is never idle.
 func markIdleReplicaSets(graph *Graph, replicaSets []*appsv1.ReplicaSet) {
 	idle := make(map[string]bool)
 	for _, rs := range replicaSets {

@@ -435,8 +435,6 @@ test("the badge names a remote cluster by its registered name", async () => {
   ).toBe("On prod-east");
 });
 
-// B6: the current container's lines must not stay under a "no previous
-// instance" refusal, and the refusal is the server's own sentence.
 test("Previous on a container that never restarted shows the refusal alone", async () => {
   jest.useFakeTimers();
   try {

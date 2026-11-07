@@ -64,8 +64,6 @@ func ComputeBlastRadius(graph *topology.Graph, targetID string) *BlastResult {
 			}
 			visited[edge.nodeID] = true
 			node, ok := nodeMap[edge.nodeID]
-			// An idle node (an old ReplicaSet revision scaled to zero) runs
-			// nothing, so neither it nor anything below it is affected.
 			if ok && node.Idle {
 				continue
 			}

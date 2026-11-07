@@ -166,9 +166,6 @@ test("api() errors carry the response headers too", async () => {
   expect(err.headers?.get("Retry-After")).toBe("2");
 });
 
-// F: after a page load the token is gone and the chrome starts a refresh
-// (session-boot.ts). A request made meanwhile waits for it rather than going
-// out bare, taking a 401, and waiting anyway.
 const ok = () =>
   new Response(JSON.stringify({ data: [] }), {
     status: 200,

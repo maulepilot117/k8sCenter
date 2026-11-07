@@ -148,8 +148,6 @@ test("an apply with failures keeps the guard and offers Done", async () => {
   expect(next).toBe(1);
 });
 
-// A masked review (the Secret wizard) still applies the real manifest: the
-// mask is for display only. "Show values" switches it off.
 test("a masked review applies the real YAML and can show the values", async () => {
   stubApply(0);
   const sent: string[] = [];

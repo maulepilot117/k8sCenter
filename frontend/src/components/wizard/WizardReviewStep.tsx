@@ -266,10 +266,6 @@ export function WizardReviewStep({
       <div class="flex-1 min-h-60">
         <MonacoEditor
           value={masked ? maskValues(yaml) : yaml}
-          // Always the real handler: MonacoEditor keeps the onChange of its
-          // first render, so withholding it while masked would drop every
-          // edit made after "Show values". Masked, the editor is read-only
-          // and its own setValue never calls onChange.
           onChange={onYamlChange}
           readOnly={masked}
           height="100%"

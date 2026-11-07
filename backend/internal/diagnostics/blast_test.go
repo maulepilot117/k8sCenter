@@ -6,8 +6,6 @@ import (
 	"github.com/kubecenter/kubecenter/internal/topology"
 )
 
-// A Deployment owns its current ReplicaSet and an old, scaled-to-zero one.
-// Only the current revision and its pod are directly affected.
 func TestComputeBlastRadius_SkipsIdleReplicaSets(t *testing.T) {
 	graph := &topology.Graph{
 		Nodes: []topology.Node{
@@ -21,7 +19,6 @@ func TestComputeBlastRadius_SkipsIdleReplicaSets(t *testing.T) {
 			{Source: "deploy", Target: "rs-new", Type: topology.EdgeOwner},
 			{Source: "deploy", Target: "rs-old", Type: topology.EdgeOwner},
 			{Source: "rs-new", Target: "pod", Type: topology.EdgeOwner},
-			// Never expected for an idle set, but nothing below one counts.
 			{Source: "rs-old", Target: "stale-pod", Type: topology.EdgeOwner},
 		},
 	}

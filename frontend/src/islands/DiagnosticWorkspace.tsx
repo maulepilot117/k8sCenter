@@ -105,8 +105,6 @@ export default function DiagnosticWorkspace() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     const params = new URLSearchParams(globalThis.location.search);
-    // A namespace in the URL wins; otherwise start from the top-bar
-    // selection, unless that is "all", which names no namespace.
     const global = selectedNamespace.value;
     const ns =
       params.get("namespace") ?? (global && global !== "all" ? global : "");

@@ -375,8 +375,6 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		if err == nil {
 			continue
 		}
-		// A kind this cluster does not serve (an ESO release without it)
-		// is empty, not a failure, as on a remote cluster.
 		if apierrors.IsNotFound(err) {
 			h.Logger.Debug("eso kind not served", "resource", src.gvr.Resource, "version", src.gvr.Version)
 			continue

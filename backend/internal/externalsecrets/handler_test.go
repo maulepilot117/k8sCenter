@@ -986,8 +986,6 @@ func TestFetchAll_PerCRDFailureIsolated(t *testing.T) {
 	}
 }
 
-// A kind the cluster does not serve lists as NotFound: it reads as empty,
-// with no error recorded, as on a remote cluster.
 func TestFetchAll_UnservedKindIsEmptyNotFailed(t *testing.T) {
 	fakeClient := newEsoFakeDynClient(makeES("apps", "es1", "uid-1"))
 	fakeClient.PrependReactor("list", "pushsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {

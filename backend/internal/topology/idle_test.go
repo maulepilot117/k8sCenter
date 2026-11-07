@@ -28,7 +28,6 @@ func TestMarkIdleReplicaSets(t *testing.T) {
 	for _, rs := range sets {
 		graph.Nodes = append(graph.Nodes, Node{ID: string(rs.UID), Kind: "ReplicaSet", Name: rs.Name})
 	}
-	// A non-ReplicaSet node sharing an idle uid must not be marked.
 	graph.Nodes = append(graph.Nodes, Node{ID: "old", Kind: "Deployment"})
 
 	markIdleReplicaSets(graph, sets)

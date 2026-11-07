@@ -308,8 +308,6 @@ func TestHandleRefresh(t *testing.T) {
 	}
 }
 
-// A routine refresh writes no audit row (the client refreshes on every page
-// load); a refused one still does.
 func TestHandleRefresh_RoutineSuccessIsNotAudited(t *testing.T) {
 	srv := testServer(t)
 	_, cookies := loginAdmin(t, srv)
@@ -343,7 +341,6 @@ func TestHandleRefresh_RoutineSuccessIsNotAudited(t *testing.T) {
 		t.Fatalf("routine refresh audited: %+v", got)
 	}
 
-	// The cookie was rotated by the first refresh, so replaying it fails.
 	if code := refresh(cookies); code == http.StatusOK {
 		t.Fatalf("replayed refresh = 200, want a refusal")
 	}

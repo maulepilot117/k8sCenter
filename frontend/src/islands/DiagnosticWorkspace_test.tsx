@@ -300,8 +300,6 @@ test("a complete blast radius renders no truncation notice", async () => {
   expect(root.textContent).not.toContain("Blast radius is incomplete");
 });
 
-// B7: with no namespace in the URL, the form starts from the top-bar
-// selection; "all" names no namespace, and a URL namespace still wins.
 test("the namespace field starts from the top-bar selection", async () => {
   const { selectedNamespace } = await import("@/src/lib/namespace.ts");
   const before = selectedNamespace.value;

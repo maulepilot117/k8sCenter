@@ -44,8 +44,6 @@ const bypass = shouldBypassChrome(pathname);
     <script>
       import { shouldBypassChrome } from "../lib/chrome-bypass.ts";
       import { bootSession } from "../lib/session-boot.ts";
-      // Astro may hoist this script; the path check keeps it off the
-      // session-less pages either way.
       if (!shouldBypassChrome(globalThis.location.pathname)) bootSession();
     </script>
     <div

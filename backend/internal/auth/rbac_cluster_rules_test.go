@@ -15,8 +15,6 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-// rulesFactory answers each SelfSubjectRulesReview from rules keyed by the
-// namespace asked for, refusing an empty one as the API server does.
 type rulesFactory struct {
 	rules map[string][]authorizationv1.ResourceRule
 	mu    sync.Mutex
@@ -49,7 +47,6 @@ var errNoNamespace = noNamespaceError{}
 
 func TestRBACChecker_ClusterScopedComesFromClusterWideRules(t *testing.T) {
 	factory := &rulesFactory{rules: map[string][]authorizationv1.ResourceRule{
-		// What a ClusterRoleBinding grants: present in every namespace.
 		clusterRulesNamespace: {{Verbs: []string{"get", "delete"}, Resources: []string{"namespaces"}}},
 		"team-a": {
 			{Verbs: []string{"get", "delete"}, Resources: []string{"namespaces"}},

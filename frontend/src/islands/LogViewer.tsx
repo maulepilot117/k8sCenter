@@ -443,8 +443,6 @@ export default function LogViewer({
           if (pre) pre.scrollTop = pre.scrollHeight;
         });
       } catch (err) {
-        // The server's own message ("this container has no previous
-        // instance…") reads better than "API error 404: …".
         const message =
           err instanceof ApiError && err.body?.error?.message
             ? err.body.error.message
@@ -659,8 +657,6 @@ export default function LogViewer({
             type="checkbox"
             checked={previous.value}
             onChange={(e) => {
-              // The lines shown belong to the other instance; keeping them
-              // would put a "no previous instance" error above current logs.
               lastTimestamp.current.clear();
               resumeAfter.current.clear();
               tabStates.value = tabStates.value.map((s) => ({

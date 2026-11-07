@@ -660,7 +660,6 @@ export default function ResourceTableIsland({
     const total = totalCount.value;
     if (total !== null && total > items.value.length) {
       const loaded = items.value.length;
-      // Unfiltered, every loaded item is shown: one count says it all.
       return shown === loaded
         ? `${shown} of ${total} shown`
         : `${shown} shown (${loaded} of ${total} loaded)`;
