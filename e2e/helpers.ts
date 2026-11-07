@@ -855,15 +855,9 @@ export function focusedElementName(page: Page): Promise<string> {
   });
 }
 
-// --- Page errors -------------------------------------------------------------
-//
-// Every spec fails on an uncaught page error, or on a console message that
-// says an island failed to hydrate or hydrated against different markup. The
-// fixture in fixtures/base.ts watches each page of the test's browser context
-// and throws at teardown. Pages a spec opens in a context of its own
-// (browser.newContext) are not watched.
+// Pages a spec opens in a browser context of its own (browser.newContext) are
+// not watched for page errors.
 
-/** One page error or reported console message. */
 export interface PageErrorEntry {
   kind: "pageerror" | "console";
   text: string;
@@ -894,7 +888,7 @@ const REPORTED_CONSOLE = [
  * island it belongs to.
  *
  * This list may only shrink. Fix the island and delete its entry; never add
- * one to make a spec pass. The React migration empties it.
+ * one to make a spec pass.
  */
 export const KNOWN_PAGE_ERRORS: readonly { island: string; pattern: RegExp }[] =
   [
@@ -918,7 +912,6 @@ export const KNOWN_PAGE_ERRORS: readonly { island: string; pattern: RegExp }[] =
     },
   ];
 
-/** Whether a console message is one the page-error check reports. */
 export function isReportedConsoleMessage(text: string): boolean {
   return REPORTED_CONSOLE.some((pattern) => pattern.test(text));
 }
@@ -958,7 +951,6 @@ export class PageErrorWatcher {
     });
   }
 
-  /** Entries neither on KNOWN_PAGE_ERRORS nor allowed by this spec. */
   unexpected(): PageErrorEntry[] {
     return this.entries.filter(
       ({ text }) =>
@@ -967,12 +959,10 @@ export class PageErrorWatcher {
     );
   }
 
-  /** Forget what was collected, for a spec that provokes errors on purpose. */
   clear(): void {
     this.entries.length = 0;
   }
 
-  /** The teardown failure message for `entries`. */
   static describe(entries: readonly PageErrorEntry[]): string {
     const lines = entries.map(
       ({ kind, text, url }) => `- [${kind}] ${url}\n  ${text.replace(/\n/g, "\n  ")}`,

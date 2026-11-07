@@ -19,20 +19,16 @@ type AccessChecker interface {
 	CanAccessGroupResource(ctx context.Context, clusterID, username string, groups []string, verb, apiGroup, resource, namespace string) (bool, error)
 }
 
-// subChange is one subscribe (add) or unsubscribe (!add) from a client. Both
-// travel on one channel so the hub applies a client's changes in the order
-// the client sent them. An unsubscribe carries only the id.
 type subChange struct {
 	client *Client
 	key    subKey
 	add    bool
-	id     string // subscription ID, unique per client
+	id     string
 }
 
 // MaxClients is the maximum number of concurrent WebSocket connections.
 const MaxClients = 1000
 
-// maxSubscriptions caps how many subscriptions one client may hold at once.
 const maxSubscriptions = 25
 
 // Hub maintains active clients and fans out informer events
@@ -48,15 +44,10 @@ const maxSubscriptions = 25
 // a worker pool for serialization + send, but the current design is
 // sufficient for typical cluster sizes.
 type Hub struct {
-	clients map[*Client]bool
-	// subscriptions indexes live subscriptions for fan-out: subKey → client →
-	// subscription ID. It holds one ID per client and key; clientSubs is the
-	// full record.
+	clients       map[*Client]bool
 	subscriptions map[subKey]map[*Client]string
-	// clientSubs is every live subscription, per client: ID → subKey. Its
-	// size is what maxSubscriptions caps.
-	clientSubs  map[*Client]map[string]subKey
-	clientCount atomic.Int32
+	clientSubs    map[*Client]map[string]subKey
+	clientCount   atomic.Int32
 
 	register   chan *Client
 	unregister chan *Client
@@ -173,12 +164,7 @@ func (h *Hub) Run(ctx context.Context) {
 	}
 }
 
-// applySubChange applies one subscribe or unsubscribe and answers a subscribe
-// with "subscribed" or a 429. A remount's subscribe, unsubscribe, subscribe
-// for one ID therefore ends with that ID subscribed.
 func (h *Hub) applySubChange(change subChange) {
-	// A change can still be queued when its client disconnects. The client's
-	// send channel is closed by then, so acting on it would panic the hub.
 	if !h.clients[change.client] {
 		return
 	}
@@ -208,7 +194,6 @@ func (h *Hub) applySubChange(change subChange) {
 	h.sendTo(change.client, OutgoingMessage{Type: MsgTypeSubscribed, ID: change.id})
 }
 
-// removeSub drops one of a client's subscriptions. An unknown ID is ignored.
 func (h *Hub) removeSub(client *Client, id string) {
 	key, ok := h.clientSubs[client][id]
 	if !ok {
@@ -218,10 +203,8 @@ func (h *Hub) removeSub(client *Client, id string) {
 
 	subs := h.subscriptions[key]
 	if subs[client] != id {
-		return // the index holds another of the client's IDs on this key
+		return
 	}
-	// The index holds one ID per client and key: hand it to another of the
-	// client's IDs on the same key, if any, so that one keeps its events.
 	for otherID, otherKey := range h.clientSubs[client] {
 		if otherKey == key {
 			subs[client] = otherID
@@ -380,7 +363,6 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 		}
 	}
 
-	// Access is per key, so revoke every one of the client's IDs on it.
 	for _, r := range removals {
 		for subID, key := range h.clientSubs[r.client] {
 			if key != r.key {

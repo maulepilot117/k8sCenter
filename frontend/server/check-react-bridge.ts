@@ -22,13 +22,6 @@
  * `@testing-library/preact` is not one either: converted tests use it until
  * the runtime switches, and its query API matches the React one.
  *
- * There is no baseline. A file is either still on Preact APIs (allowed, and
- * counted as progress) or on React APIs (held to both rules). Unconverted
- * files are not inspected for attributes, because `class` is correct there.
- *
- * Scans every .ts and .tsx file under src, components and lib, tests
- * included, since tests convert along with the code they cover.
- *
  * React's own lint rules (hooks at top level, effect dependencies) come from
  * Biome's React domain, which biome.json enables per file through the
  * override listing converted files. Add a file there when it converts, so a
@@ -43,7 +36,6 @@ import { FRONTEND_ROOT, findFiles } from "./source-files.ts";
 const SCANNED_DIRS = ["src", "components", "lib"];
 const SCANNED_FILE = /\.(ts|tsx)$/;
 
-/** React attribute to use instead of each Preact-only one. */
 const PREACT_ONLY_ATTRIBUTES: Record<string, string> = {
   class: "className",
   for: "htmlFor",
@@ -58,16 +50,13 @@ export interface BridgeFinding {
 }
 
 export interface SourceReport {
-  /** True when the file imports anything from `react` or `react-dom`. */
   usesReact: boolean;
-  /** True when the file imports anything from Preact's own APIs. */
   usesPreact: boolean;
   findings: BridgeFinding[];
 }
 
 export interface TreeReport {
   findings: BridgeFinding[];
-  /** Files still importing Preact APIs, relative to the root, sorted. */
   preactFiles: string[];
 }
 
@@ -84,7 +73,6 @@ export function isPreactSpecifier(s: string): boolean {
   return s === "preact" || s.startsWith("preact/") || s === "@preact/signals";
 }
 
-/** `stroke-width` becomes `strokeWidth`; `xlink:href` becomes `xlinkHref`. */
 function camelCase(name: string): string {
   return name.replace(/[-:]([a-z])/g, (_, c: string) => c.toUpperCase());
 }
@@ -105,7 +93,6 @@ function walk(node: Node, visit: (n: Node) => void): void {
   }
 }
 
-/** The module specifier a node imports from, or null. */
 function importSource(node: Node): string | null {
   switch (node.type) {
     case "ImportDeclaration":
@@ -125,7 +112,6 @@ function importSource(node: Node): string | null {
   }
 }
 
-/** The tag name of a JSX opening element, as written. */
 function tagName(name: Node): string {
   if (name.type === "JSXIdentifier") return name.name;
   if (name.type === "JSXMemberExpression") {

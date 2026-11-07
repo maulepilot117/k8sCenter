@@ -253,7 +253,6 @@ export function describeRoots(node: any, code: string): RootShape[] {
   return [{ tag, attrs }];
 }
 
-/** Identifiers whose negation gates an SSR placeholder. */
 const GATE_NAMES = new Set(["IS_BROWSER", "isClient"]);
 
 /**

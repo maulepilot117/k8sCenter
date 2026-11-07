@@ -7,7 +7,6 @@ interface PageErrorFixtures {
    * text. Set with `test.use({ allowedPageErrors: [/.../] })`.
    */
   allowedPageErrors: RegExp[];
-  /** Watches every page in the test's context; fails the test at teardown. */
   pageErrors: PageErrorWatcher;
 }
 

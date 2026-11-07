@@ -7,15 +7,9 @@ import { useCallback, useSyncExternalStore } from "react";
  * layout, toasts) keeps its state in @preact/signals-core signals; this is
  * the one way a component on React APIs reads them.
  *
- * - `subscribe` is memoised per signal, so a re-render for another reason
- *   keeps the same subscription instead of tearing it down and opening a new
- *   one.
  * - The snapshot is read with `peek()`, so reading here never also subscribes
  *   the component through @preact/signals' own render tracking. One write
  *   causes one render.
- * - Writes made together in `batch()` (switchCluster writes the cluster, its
- *   generation and the epoch) notify only after the batch ends, so a
- *   component reading all three renders once, with all three new values.
  * - The server snapshot is the signal's current value, not a fixed default.
  *   With a default, the hydration render would run its effects against it:
  *   fetching all namespaces, or the local cluster while a remote one is

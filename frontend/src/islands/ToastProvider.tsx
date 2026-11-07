@@ -1,8 +1,6 @@
 import { dismissToast, type Toast, toasts } from "@/src/lib/toast-store.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
-// Islands still import showToast from here; they move to the store module
-// as they convert to React APIs, and then this re-export goes.
 export { showToast } from "@/src/lib/toast-store.ts";
 
 // Toast chrome is glass (.glass-elevated); type identity comes from the

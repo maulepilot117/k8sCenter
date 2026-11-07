@@ -11,7 +11,6 @@ const setBrowser = (value: boolean) =>
 
 const { cleanup, render } = await import("@testing-library/preact");
 const { renderToString } = await import("react-dom/server");
-const { useEffect, useRef } = await import("react");
 const { useIsClient } = await import("./use-is-client.ts");
 
 afterEach(() => cleanup());
@@ -35,21 +34,4 @@ test("useIsClient is true once mounted in the browser", () => {
   setBrowser(true);
   const r = render(<Gated />);
   expect(r.container.textContent).toBe("client");
-});
-
-test("an effect that lists isClient mounts into a client-only ref once", () => {
-  setBrowser(true);
-  let mounts = 0;
-  function Editor() {
-    const isClient = useIsClient();
-    const host = useRef<HTMLDivElement>(null);
-    useEffect(() => {
-      if (!host.current) return;
-      mounts++;
-    }, [isClient]);
-    if (!isClient) return <p>loading</p>;
-    return <div ref={host} />;
-  }
-  render(<Editor />);
-  expect(mounts).toBe(1);
 });

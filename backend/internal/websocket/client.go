@@ -231,8 +231,6 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 		}
 	}
 
-	// The hub applies the change in order with this client's other changes,
-	// enforces maxSubscriptions, and answers "subscribed" or a 429.
 	key := subKey{Kind: normalizedKind, Namespace: msg.Namespace}
 	c.hub.subChanges <- subChange{client: c, key: key, add: true, id: msg.ID}
 

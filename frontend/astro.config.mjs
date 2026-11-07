@@ -37,8 +37,7 @@ export default defineConfig({
       // carries the same map for `astro check` and `bun test`, so all four
       // tools run one runtime; keep the two lists identical. Anchored
       // patterns stop `react` from also rewriting `react-dom/...` or a
-      // package that merely starts with "react". Removed when the real React
-      // runtime is installed.
+      // package that merely starts with "react".
       alias: [
         { find: /^react$/, replacement: "preact/compat" },
         { find: /^react-dom$/, replacement: "preact/compat" },
