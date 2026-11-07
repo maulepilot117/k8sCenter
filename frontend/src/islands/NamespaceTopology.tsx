@@ -302,7 +302,11 @@ export default function NamespaceTopology({
   const svgRef = useRef<SVGSVGElement>(null);
   const layoutNodes = useSignal<LayoutNode[]>([]);
   const layoutNodeMap = useSignal<Map<string, LayoutNode>>(new Map());
-  const panelMinHeight = minHeight ?? (embedded ? 400 : 500);
+  // A full page sizes the graph to the window (see the SVG's height), so its
+  // floors are low enough not to override that on a short window; they only
+  // stop the graph collapsing on a very short one.
+  const panelMinHeight = minHeight ?? (embedded ? 400 : 320);
+  const svgMinHeight = embedded ? 460 : 280;
 
   // ── Data fetching ──
 
@@ -728,7 +732,12 @@ export default function NamespaceTopology({
           aria-label="Namespace resource topology graph"
           style={{
             cursor: dragging.value ? "grabbing" : "grab",
-            minHeight: "460px",
+            minHeight: `${svgMinHeight}px`,
+            // Without a height the SVG takes its viewBox's aspect ratio and
+            // on a wide page runs past the bottom of the window, so a fitted
+            // graph still needs a page scroll. A full page caps it to the
+            // space below the page header and the graph toolbar.
+            ...(embedded ? {} : { height: "calc(100dvh - 260px)" }),
           }}
           onWheel={handleWheel}
           onMouseDown={handleMouseDown}

@@ -316,6 +316,76 @@ func TestRegistry_PodsAndDeploymentSlugs(t *testing.T) {
 	}
 }
 
+// TestRegistry_EndpointsUseEndpointSlices pins the Endpoints slugs to the
+// EndpointSlice series: kube-state-metrics v2 dropped kube_endpoint_address_*,
+// so the old templates could only ever return "No data".
+func TestRegistry_EndpointsUseEndpointSlices(t *testing.T) {
+	for _, slug := range []string{"endpoints/available", "endpoints/not-ready"} {
+		def, ok := Registry[slug]
+		if !ok {
+			t.Fatalf("missing slug %q", slug)
+		}
+		rendered, err := renderSlugTemplate(def.Template, "adguard", "adguard-tcp")
+		if err != nil {
+			t.Fatalf("%s: %v", slug, err)
+		}
+		if strings.Contains(rendered, "kube_endpoint_address") {
+			t.Errorf("%s still queries kube_endpoint_address_*: %s", slug, rendered)
+		}
+		if !strings.Contains(rendered, `endpointslice=~"adguard-tcp-[a-z0-9]{5}"`) {
+			t.Errorf("%s does not select the Service's slices: %s", slug, rendered)
+		}
+	}
+}
+
+// TestRegistry_HubbleNamespaceMatchesBothContexts checks that namespace-level
+// Hubble queries match a destination label of "<ns>" (destinationContext=
+// namespace) as well as "<ns>/<pod>" (destinationContext=pod).
+func TestRegistry_HubbleNamespaceMatchesBothContexts(t *testing.T) {
+	for _, slug := range []string{
+		"networkpolicies/cilium-forwarded",
+		"networkpolicies/cilium-dropped",
+		"networkpolicies/policy-denied",
+		"networkpolicies/tcp-syn",
+		"ciliumnetworkpolicies/cilium-forwarded",
+		"ciliumnetworkpolicies/policy-verdicts",
+	} {
+		def, ok := Registry[slug]
+		if !ok {
+			t.Fatalf("missing slug %q", slug)
+		}
+		rendered, err := renderSlugTemplate(def.Template, "argocd", "p")
+		if err != nil {
+			t.Fatalf("%s: %v", slug, err)
+		}
+		if !strings.Contains(rendered, `destination=~"argocd(/.*)?"`) {
+			t.Errorf("%s: destination matcher misses the namespace-only form: %s", slug, rendered)
+		}
+	}
+}
+
+// TestEndpointSlicePrefix_LongServiceName checks the generateName limit: a
+// Service name past 57 characters gives slices named from its first 58
+// characters with no dash, and the Endpoints slugs must match those.
+func TestEndpointSlicePrefix_LongServiceName(t *testing.T) {
+	short := "adguard-tcp"
+	if got := endpointSlicePrefix(short); got != "adguard-tcp-" {
+		t.Errorf("endpointSlicePrefix(%q) = %q, want %q", short, got, "adguard-tcp-")
+	}
+	long := strings.Repeat("a", 60) // a valid 60-character Service name
+	want := strings.Repeat("a", 58)
+	if got := endpointSlicePrefix(long); got != want {
+		t.Errorf("endpointSlicePrefix(60 chars) = %q, want %q", got, want)
+	}
+	rendered, err := renderSlugTemplate(Registry["endpoints/available"].Template, "ns", long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered, `endpointslice=~"`+want+`[a-z0-9]{5}"`) {
+		t.Errorf("long Service name does not select its slices: %s", rendered)
+	}
+}
+
 // TestRegistry_RBACScopes verifies that each slug's RequiredGVR either maps to
 // a known core resource or a "resource.group" pair.
 func TestRegistry_RBACScopes(t *testing.T) {

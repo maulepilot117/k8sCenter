@@ -32,6 +32,7 @@ import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 import {
   EVENT_ADDED,
   EVENT_DELETED,
@@ -141,6 +142,31 @@ export function syncStatusParam(status: string): void {
   else url.searchParams.set("status", status);
   if (url.href === globalThis.location.href) return;
   globalThis.history.replaceState(globalThis.history.state, "", url);
+}
+
+/**
+ * The toolbar's row count, or null when it would only repeat the header.
+ *
+ * A filter that narrows the list always gets "N of M match". Otherwise the
+ * count is shown only when nothing above the table gives one: the page hides
+ * this table's header and its own header has no count, because the counts
+ * API leaves the kind out (Secrets are never counted, and a kind the user may
+ * not list is omitted).
+ */
+export function toolbarCountText(opts: {
+  shown: number;
+  loaded: number;
+  hideHeader: boolean;
+  headerHasCount: boolean;
+  title: string;
+}): string | null {
+  if (opts.shown !== opts.loaded) {
+    return `${opts.shown} of ${opts.loaded} match`;
+  }
+  if (opts.hideHeader && !opts.headerHasCount) {
+    return `${opts.loaded} ${opts.title.toLowerCase()}`;
+  }
+  return null;
 }
 
 /**
@@ -667,6 +693,19 @@ export default function ResourceTableIsland({
     return `${shown} items`;
   });
 
+  // While counts are loading the page header reads "Loading…"; after that it
+  // has a count only when the counts API returned one for this kind.
+  const toolbarCount = loading.value
+    ? null
+    : toolbarCountText({
+        shown: displayed.value.length,
+        loaded: items.value.length,
+        hideHeader,
+        headerHasCount:
+          resourceCounts.value === null || getCount(kind) !== null,
+        title,
+      });
+
   // Filter actions by k8s permissions for the current namespace
   const actions = useComputed(() =>
     getVisibleActions(kind, ns.value, rbac.value),
@@ -989,16 +1028,19 @@ export default function ResourceTableIsland({
             })}
           </div>
         )}
-        <span
-          style={{
-            marginLeft: "auto",
-            fontSize: "12px",
-            color: "var(--text-muted)",
-            fontFamily: "var(--font-mono, monospace)",
-          }}
-        >
-          {displayed.value.length} {kind}
-        </span>
+        {toolbarCount !== null && (
+          <span
+            data-testid="toolbar-count"
+            style={{
+              marginLeft: "auto",
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              fontFamily: "var(--font-mono, monospace)",
+            }}
+          >
+            {toolbarCount}
+          </span>
+        )}
       </div>
 
       {/* ResourceTable — solid surface (bg-surface), glass rule: data = solid */}

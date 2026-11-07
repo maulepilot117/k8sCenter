@@ -25,8 +25,8 @@ export default function PDBsDashboard() {
 
   const countsReady = resourceCounts.value !== null;
   const subtitle = countsReady
-    ? `${formatCount("poddisruptionbudgets") ?? 0} poddisruptionbudgets`
-    : "Loading poddisruptionbudgets…";
+    ? `${formatCount("poddisruptionbudgets") ?? 0} pod disruption budgets`
+    : "Loading pod disruption budgets…";
 
   return (
     <div class="flex flex-col h-full">

@@ -333,3 +333,73 @@ test("the namespace field starts from the top-bar selection", async () => {
     selectedNamespace.value = before;
   }
 });
+
+test("results keep the namespace they ran in when the field follows the top bar", async () => {
+  const { selectedNamespace } = await import("@/src/lib/namespace.ts");
+  const before = selectedNamespace.value;
+  try {
+    selectedNamespace.value = "team-b";
+    stubFetch(200, {
+      data: {
+        target: { kind: "Pod", name: "web", namespace: "team-b" },
+        results: [],
+        blastRadius: { directlyAffected: [], potentiallyAffected: [] },
+      },
+    });
+    setAccessToken("test-token");
+    // No namespace in the URL: it comes from the top bar, and the run starts.
+    globalThis.history.replaceState(null, "", "/?kind=Pod&name=web");
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+    for (let i = 0; i < 20; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      if (host.textContent?.includes("Pod/web in team-b")) break;
+    }
+    expect(host.textContent).toContain("Pod/web in team-b");
+
+    act(() => {
+      selectedNamespace.value = "team-c";
+    });
+    // The results on screen are still team-b's, and say so.
+    expect(host.textContent).toContain("Pod/web in team-b");
+    expect(host.textContent).not.toContain("Pod/web in team-c");
+  } finally {
+    selectedNamespace.value = before;
+  }
+});
+
+test("the namespace field follows a top-bar change until the user types one", async () => {
+  const { selectedNamespace } = await import("@/src/lib/namespace.ts");
+  const before = selectedNamespace.value;
+  const field = () =>
+    (host as HTMLElement).querySelector(
+      'input[id$="-namespace"]',
+    ) as HTMLInputElement;
+  try {
+    selectedNamespace.value = "team-b";
+    globalThis.history.replaceState(null, "", "/");
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+    expect(field().value).toBe("team-b");
+
+    act(() => {
+      selectedNamespace.value = "team-c";
+    });
+    expect(field().value).toBe("team-c");
+
+    act(() => {
+      field().value = "mine";
+      field().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => {
+      selectedNamespace.value = "team-d";
+    });
+    expect(field().value).toBe("mine");
+  } finally {
+    selectedNamespace.value = before;
+  }
+});

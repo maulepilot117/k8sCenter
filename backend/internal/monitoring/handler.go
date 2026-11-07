@@ -642,11 +642,33 @@ func validateRangeCaps(start, end time.Time, step time.Duration) error {
 // `.` is a regex metachar that fits both the strict ([a-z0-9.-]) and the
 // relaxed ([a-zA-Z0-9._:-]) sets and would otherwise widen the match
 // silently.
+//
+// SlicePrefixRegex is the escaped prefix the EndpointSlice controller gives a
+// Service's slices (see endpointSlicePrefix); a slice name is that prefix
+// plus five generated characters.
 type slugTemplateVars struct {
-	Namespace      string
-	Name           string
-	NamespaceRegex string
-	NameRegex      string
+	Namespace        string
+	Name             string
+	NamespaceRegex   string
+	NameRegex        string
+	SlicePrefixRegex string
+}
+
+// maxGeneratedNamePrefix mirrors k8s.io/apiserver's names.SimpleNameGenerator:
+// a generateName base longer than 63-5 characters is cut to that length
+// before the five random characters are added.
+const maxGeneratedNamePrefix = 58
+
+// endpointSlicePrefix is the generateName base the EndpointSlice controller
+// uses for a Service's slices: "<service>-", cut to the generator's limit, so
+// a Service named with more than 57 characters gets slices whose names carry
+// only the first 58 characters of the name and no dash.
+func endpointSlicePrefix(service string) string {
+	prefix := service + "-"
+	if len(prefix) > maxGeneratedNamePrefix {
+		prefix = prefix[:maxGeneratedNamePrefix]
+	}
+	return prefix
 }
 
 // promQLRegexEscaper escapes the regex metacharacters that can appear in our
@@ -687,10 +709,11 @@ func renderSlugTemplate(tmplStr, namespace, name string) (string, error) {
 	}
 	var buf bytes.Buffer
 	vars := slugTemplateVars{
-		Namespace:      namespace,
-		Name:           name,
-		NamespaceRegex: escapePromQLRegex(namespace),
-		NameRegex:      escapePromQLRegex(name),
+		Namespace:        namespace,
+		Name:             name,
+		NamespaceRegex:   escapePromQLRegex(namespace),
+		NameRegex:        escapePromQLRegex(name),
+		SlicePrefixRegex: escapePromQLRegex(endpointSlicePrefix(name)),
 	}
 	if err := t.Execute(&buf, vars); err != nil {
 		return "", fmt.Errorf("executing template: %w", err)

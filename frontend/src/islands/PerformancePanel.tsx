@@ -216,6 +216,18 @@ export function hasPerformanceMetrics(kind: string): boolean {
   return Object.hasOwn(QUERIES, kind);
 }
 
+const HUBBLE_HINT =
+  "These charts read Hubble flow metrics by destination namespace. Prometheus has none for this namespace: Hubble metrics need a destination context (for example flow:destinationContext=namespace) for this view to have data.";
+
+/** Shown in place of the charts when every query came back empty, for kinds
+ * whose metrics depend on something a cluster may not export. */
+const EMPTY_HINTS: Record<string, string> = {
+  networkpolicies: HUBBLE_HINT,
+  ciliumnetworkpolicies: HUBBLE_HINT,
+  endpoints:
+    "These charts count the addresses in the Service's EndpointSlices, from kube-state-metrics. Prometheus has no EndpointSlice data for this object.",
+};
+
 interface ChartData {
   title: string;
   values: { time: Date; value: number }[];
@@ -253,6 +265,8 @@ export default function PerformancePanel({
 
   useEffect(() => {
     if (!IS_BROWSER) return;
+    // Another resource: none of the charts on screen are its data.
+    charts.value = [];
 
     // Check monitoring availability, then start auto-refresh
     apiGet<{ prometheus: { available: boolean } }>("/v1/monitoring/status")
@@ -287,7 +301,10 @@ export default function PerformancePanel({
       loading: true,
       error: null,
     }));
-    charts.value = initial;
+    // Spinners only on the first load. A refresh keeps the last results on
+    // screen until the new ones arrive, so the charts (or the "No Metric
+    // Data" message) don't blink every refresh interval.
+    if (charts.value.length === 0) charts.value = initial;
 
     // For nodes, resolve the internal IP so the backend slug can match
     // node-exporter metrics (which use instance=IP:9100, not node name).
@@ -389,6 +406,11 @@ export default function PerformancePanel({
     );
   }
 
+  // A grid of "No data" cards says nothing the single message below doesn't.
+  const allEmpty =
+    charts.value.length > 0 &&
+    charts.value.every((c) => !c.loading && !c.error && c.values.length === 0);
+
   return (
     <div class="p-4">
       {/* Refresh interval selector */}
@@ -420,33 +442,43 @@ export default function PerformancePanel({
           ))}
         </select>
       </div>
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {charts.value.map((chart, i) => (
-          <div
-            key={i}
-            class="rounded-lg border border-border-primary bg-surface p-4"
-          >
-            <h3 class="mb-3 text-sm font-medium text-text-secondary">
-              {chart.title}
-            </h3>
-            {chart.loading ? (
-              <div class="flex h-32 items-center justify-center">
-                <Spinner size="sm" class="text-brand" />
-              </div>
-            ) : chart.error ? (
-              <div class="flex h-32 items-center justify-center text-sm text-error">
-                {chart.error}
-              </div>
-            ) : chart.values.length === 0 ? (
-              <div class="flex h-32 items-center justify-center text-sm text-text-muted">
-                No data
-              </div>
-            ) : (
-              <MiniChart values={chart.values} chartId={`${kind}-${i}`} />
-            )}
-          </div>
-        ))}
-      </div>
+      {allEmpty ? (
+        <div class="p-12 text-center text-sm text-text-muted">
+          <p class="text-lg font-medium text-text-muted">No Metric Data</p>
+          <p class="mt-1">
+            {EMPTY_HINTS[kind] ??
+              "Prometheus returned no data for this resource in the last hour."}
+          </p>
+        </div>
+      ) : (
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {charts.value.map((chart, i) => (
+            <div
+              key={i}
+              class="rounded-lg border border-border-primary bg-surface p-4"
+            >
+              <h3 class="mb-3 text-sm font-medium text-text-secondary">
+                {chart.title}
+              </h3>
+              {chart.loading ? (
+                <div class="flex h-32 items-center justify-center">
+                  <Spinner size="sm" class="text-brand" />
+                </div>
+              ) : chart.error ? (
+                <div class="flex h-32 items-center justify-center text-sm text-error">
+                  {chart.error}
+                </div>
+              ) : chart.values.length === 0 ? (
+                <div class="flex h-32 items-center justify-center text-sm text-text-muted">
+                  No data
+                </div>
+              ) : (
+                <MiniChart values={chart.values} chartId={`${kind}-${i}`} />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
