@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect, useId } from "preact/hooks";
+import { useEffect, useId, useRef } from "preact/hooks";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import type { AffectedResource } from "@/src/islands/BlastRadiusPanel.tsx";
@@ -101,13 +101,20 @@ export default function DiagnosticWorkspace() {
     }
   };
 
+  // The namespace field follows the top-bar selection until the user types
+  // their own: this holds the value it was last filled with from the top bar
+  // (null once a URL or the user has set it).
+  const prefilled = useRef<string | null>(null);
+  const globalNs = selectedNamespace.value;
+  const fromGlobal = (g: string) => (g && g !== "all" ? g : "");
+
   // Parse URL params on mount and auto-run if all present
   useEffect(() => {
     if (!IS_BROWSER) return;
     const params = new URLSearchParams(globalThis.location.search);
-    const global = selectedNamespace.value;
-    const ns =
-      params.get("namespace") ?? (global && global !== "all" ? global : "");
+    const fromUrl = params.get("namespace");
+    const ns = fromUrl ?? fromGlobal(selectedNamespace.value);
+    prefilled.current = fromUrl === null ? ns : null;
     const k = params.get("kind") ?? "";
     const n = params.get("name") ?? "";
 
@@ -119,6 +126,17 @@ export default function DiagnosticWorkspace() {
       fetchDiagnostics(ns, k, n);
     }
   }, []);
+
+  useEffect(() => {
+    if (!IS_BROWSER || prefilled.current === null) return;
+    if (namespace.value !== prefilled.current) {
+      prefilled.current = null; // the user typed a namespace of their own
+      return;
+    }
+    const next = fromGlobal(globalNs);
+    namespace.value = next;
+    prefilled.current = next;
+  }, [globalNs]);
 
   const handleInvestigate = () => {
     if (!namespace.value || !kind.value || !name.value) return;

@@ -729,6 +729,11 @@ export default function NamespaceTopology({
           style={{
             cursor: dragging.value ? "grabbing" : "grab",
             minHeight: "460px",
+            // Without a height the SVG takes its viewBox's aspect ratio and
+            // on a wide page runs past the bottom of the window, so a fitted
+            // graph still needs a page scroll. A full page caps it to the
+            // space below the page header and the graph toolbar.
+            ...(embedded ? {} : { height: "calc(100dvh - 260px)" }),
           }}
           onWheel={handleWheel}
           onMouseDown={handleMouseDown}

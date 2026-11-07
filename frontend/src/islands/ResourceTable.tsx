@@ -989,16 +989,21 @@ export default function ResourceTableIsland({
             })}
           </div>
         )}
-        <span
-          style={{
-            marginLeft: "auto",
-            fontSize: "12px",
-            color: "var(--text-muted)",
-            fontFamily: "var(--font-mono, monospace)",
-          }}
-        >
-          {displayed.value.length} {kind}
-        </span>
+        {/* The page header already gives the total. Only a search or status
+            filter that narrows the list adds anything here. */}
+        {displayed.value.length !== items.value.length && (
+          <span
+            data-testid="filtered-count"
+            style={{
+              marginLeft: "auto",
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              fontFamily: "var(--font-mono, monospace)",
+            }}
+          >
+            {displayed.value.length} of {items.value.length} match
+          </span>
+        )}
       </div>
 
       {/* ResourceTable — solid surface (bg-surface), glass rule: data = solid */}

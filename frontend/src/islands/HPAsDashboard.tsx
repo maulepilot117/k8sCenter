@@ -25,8 +25,8 @@ export default function HPAsDashboard() {
 
   const countsReady = resourceCounts.value !== null;
   const subtitle = countsReady
-    ? `${formatCount("hpas") ?? 0} horizontalpodautoscalers`
-    : "Loading horizontalpodautoscalers…";
+    ? `${formatCount("hpas") ?? 0} horizontal pod autoscalers`
+    : "Loading horizontal pod autoscalers…";
 
   return (
     <div class="flex flex-col h-full">

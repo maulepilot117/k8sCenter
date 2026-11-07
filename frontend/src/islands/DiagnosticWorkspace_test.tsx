@@ -333,3 +333,36 @@ test("the namespace field starts from the top-bar selection", async () => {
     selectedNamespace.value = before;
   }
 });
+
+test("the namespace field follows a top-bar change until the user types one", async () => {
+  const { selectedNamespace } = await import("@/src/lib/namespace.ts");
+  const before = selectedNamespace.value;
+  const field = () =>
+    (host as HTMLElement).querySelector(
+      'input[id$="-namespace"]',
+    ) as HTMLInputElement;
+  try {
+    selectedNamespace.value = "team-b";
+    globalThis.history.replaceState(null, "", "/");
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+    expect(field().value).toBe("team-b");
+
+    act(() => {
+      selectedNamespace.value = "team-c";
+    });
+    expect(field().value).toBe("team-c");
+
+    act(() => {
+      field().value = "mine";
+      field().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => {
+      selectedNamespace.value = "team-d";
+    });
+    expect(field().value).toBe("mine");
+  } finally {
+    selectedNamespace.value = before;
+  }
+});
