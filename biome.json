@@ -51,6 +51,7 @@
   "overrides": [
     {
       "includes": [
+        "frontend/src/islands/VulnerabilityDetail_test.tsx",
         "frontend/src/lib/use-is-client.ts",
         "frontend/src/lib/use-is-client_test.tsx",
         "frontend/src/lib/use-signal-value.ts",
