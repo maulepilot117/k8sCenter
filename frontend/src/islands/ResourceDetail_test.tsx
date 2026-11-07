@@ -69,8 +69,12 @@ mock.module("./LogViewer.tsx", () => ({
     return <div data-testid="log-viewer" />;
   },
 }));
+const terminalContainers: string[][] = [];
 mock.module("./PodTerminal.tsx", () => ({
-  default: () => <div data-testid="pod-terminal" />,
+  default: (props: { containers: string[] }) => {
+    terminalContainers.push(props.containers);
+    return <div data-testid="pod-terminal" />;
+  },
 }));
 
 const { default: ResourceDetail } = await import("./ResourceDetail.tsx");
@@ -331,4 +335,17 @@ test("a #logs link opens a pod on its Logs tab", async () => {
   // would stream a container named "default" that the pod does not have.
   expect(logViewerContainers.length).toBeGreaterThan(0);
   expect(logViewerContainers.every((c) => c.join() === "app")).toBe(true);
+});
+
+test("a #terminal link waits for the pod's containers before connecting", async () => {
+  terminalContainers.length = 0;
+  const root = await renderDetail(
+    { kind: "pods", title: "Pod", namespace: "default", name: "web-0" },
+    "#terminal",
+  );
+  const active = root.querySelector("[role=tab][aria-selected=true]");
+  expect(active?.textContent?.trim()).toBe("Terminal");
+  expect(root.querySelector("[data-testid=pod-terminal]")).not.toBeNull();
+  expect(terminalContainers.length).toBeGreaterThan(0);
+  expect(terminalContainers.every((c) => c.join() === "app")).toBe(true);
 });
