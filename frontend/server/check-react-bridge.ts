@@ -28,6 +28,11 @@
  *
  * Scans every .ts and .tsx file under src, components and lib, tests
  * included, since tests convert along with the code they cover.
+ *
+ * React's own lint rules (hooks at top level, effect dependencies) come from
+ * Biome's React domain, which biome.json enables per file through the
+ * override listing converted files. Add a file there when it converts, so a
+ * React-only mistake shows up in the change that introduces it.
  */
 
 import { readFileSync } from "node:fs";
