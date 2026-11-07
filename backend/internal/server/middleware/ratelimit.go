@@ -133,10 +133,6 @@ func (rl *RateLimiter) cleanup() {
 	}
 }
 
-// ClientIP is the request's client address as the rate limiter keys it:
-// r.RemoteAddr without its port.
-func ClientIP(r *http.Request) string { return extractIP(r) }
-
 // extractIP parses the IP address from r.RemoteAddr, stripping the port.
 // chi's RealIP middleware overwrites RemoteAddr with the client IP from
 // X-Real-IP or X-Forwarded-For headers.

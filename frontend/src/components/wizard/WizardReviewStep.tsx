@@ -37,8 +37,6 @@ interface WizardReviewStepProps {
    * new resource does not prompt.
    */
   dirty?: Signal<boolean>;
-  /** Called once an apply finishes with nothing failed. */
-  onApplied?: () => void;
   /**
    * Masks values for display (the Secret wizard's `maskSecretYaml`). While
    * masked the preview is read-only, so an edit can never write the mask
@@ -60,7 +58,6 @@ export function WizardReviewStep({
   error,
   detailBasePath,
   dirty,
-  onApplied,
   maskValues,
 }: WizardReviewStepProps) {
   const revealed = useSignal(false);
@@ -94,10 +91,7 @@ export function WizardReviewStep({
         "text/yaml",
       );
       applyResult.value = resp.data;
-      if (resp.data.summary.failed === 0) {
-        if (dirty) dirty.value = false;
-        onApplied?.();
-      }
+      if (resp.data.summary.failed === 0 && dirty) dirty.value = false;
     } catch (err) {
       applyError.value =
         err instanceof Error ? err.message : "Failed to apply resource";

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { setAccessToken } from "@/lib/api.ts";
+import { refreshSession, setAccessToken } from "@/lib/api.ts";
 
 /**
  * A socket the module has already dropped (disconnect, or a reconnect that
@@ -68,7 +68,10 @@ afterAll(() => {
   }
 });
 
+const realFetch = globalThis.fetch;
+
 afterEach(() => {
+  globalThis.fetch = realFetch;
   disconnectWS();
   FakeSocket.instances = [];
   setAccessToken(null);
@@ -112,4 +115,41 @@ test("late events from a replaced socket leave the current one alone", () => {
   second.readyState = FakeSocket.OPEN;
   second.onopen?.();
   expect(second.sent).toEqual([{ type: "auth", token: "t" }]);
+});
+
+/** Answers /auth/refresh once `gate` is released, with a fresh token. */
+function gatedRefresh(): { release: () => void } {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  globalThis.fetch = (async () => {
+    await gate;
+    return new Response(
+      JSON.stringify({ data: { accessToken: "fresh-token" } }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }) as unknown as typeof globalThis.fetch;
+  return { release };
+}
+
+test("a socket opened during the startup refresh authenticates once it lands", async () => {
+  setAccessToken(null);
+  const { release } = gatedRefresh();
+  const boot = refreshSession();
+
+  subscribe("a", "pods", "default", noop);
+  const [sock] = FakeSocket.instances;
+  sock.readyState = FakeSocket.OPEN;
+  sock.onopen?.();
+  await Promise.resolve();
+  expect(sock.sent).toEqual([]);
+
+  release();
+  await boot;
+  await new Promise((r) => setTimeout(r, 0));
+  expect(sock.sent).toEqual([{ type: "auth", token: "fresh-token" }]);
 });

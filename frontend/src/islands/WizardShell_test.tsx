@@ -64,7 +64,6 @@ function stubApply(failed: number) {
 }
 
 function mount(opts: {
-  onApplied: () => void;
   onNext: () => void;
   yaml?: string;
   maskValues?: (yaml: string) => string;
@@ -91,7 +90,6 @@ function mount(opts: {
           loading={false}
           error={null}
           detailBasePath="/config/configmaps"
-          onApplied={opts.onApplied}
           maskValues={opts.maskValues}
           dirty={opts.dirty}
         />
@@ -113,20 +111,20 @@ const flush = () =>
   });
 
 test("the review step's footer button is Apply, not Close", () => {
-  const root = mount({ onApplied: () => {}, onNext: () => {} });
+  const root = mount({ onNext: () => {} });
   expect(buttons(root, "Close")).toHaveLength(0);
   expect(buttons(root, "Apply")).toHaveLength(1);
 });
 
-test("a clean apply reports itself and links to the resource", async () => {
+test("a clean apply clears the unsaved-changes flag and links to the resource", async () => {
   stubApply(0);
-  let applied = 0;
-  const root = mount({ onApplied: () => applied++, onNext: () => {} });
+  const dirty = signal(true);
+  const root = mount({ onNext: () => {}, dirty });
 
   await act(async () => buttons(root, "Apply")[0].click());
   await flush();
 
-  expect(applied).toBe(1);
+  expect(dirty.value).toBe(false);
   expect(root.textContent).toContain("Applied successfully");
   const link = [...root.querySelectorAll("a")].find(
     (a) => a.textContent?.trim() === "View resource",
@@ -136,14 +134,14 @@ test("a clean apply reports itself and links to the resource", async () => {
 
 test("an apply with failures keeps the guard and offers Done", async () => {
   stubApply(1);
-  let applied = 0;
+  const dirty = signal(true);
   let next = 0;
-  const root = mount({ onApplied: () => applied++, onNext: () => next++ });
+  const root = mount({ onNext: () => next++, dirty });
 
   await act(async () => buttons(root, "Apply")[0].click());
   await flush();
 
-  expect(applied).toBe(0);
+  expect(dirty.value).toBe(true);
   expect(root.textContent).toContain("Apply completed with errors");
   const done = buttons(root, "Done");
   expect(done).toHaveLength(1);
@@ -161,7 +159,6 @@ test("a masked review applies the real YAML and can show the values", async () =
   }) as typeof globalThis.fetch;
   const yaml = "kind: Secret\nstringData:\n  password: hunter2\n";
   const root = mount({
-    onApplied: () => {},
     onNext: () => {},
     yaml,
     maskValues: (y) => y.replace("hunter2", "***"),
@@ -181,22 +178,6 @@ test("a masked review applies the real YAML and can show the values", async () =
 });
 
 test("a review with no mask has no values toggle", () => {
-  const root = mount({ onApplied: () => {}, onNext: () => {} });
+  const root = mount({ onNext: () => {} });
   expect(buttons(root, "Show values")).toHaveLength(0);
-});
-
-test("a clean apply clears the wizard's unsaved-changes flag; a failed one keeps it", async () => {
-  for (const failed of [0, 1]) {
-    stubApply(failed);
-    const dirty = signal(true);
-    const root = mount({ onApplied: () => {}, onNext: () => {}, dirty });
-    await act(async () => buttons(root, "Apply")[0].click());
-    await flush();
-    expect(dirty.value).toBe(failed > 0);
-    act(() => render(null, root));
-    root.remove();
-    host = null;
-    if (originalFetch) globalThis.fetch = originalFetch;
-    originalFetch = undefined;
-  }
 });

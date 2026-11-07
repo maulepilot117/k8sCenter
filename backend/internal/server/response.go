@@ -119,8 +119,8 @@ func (s *Server) newAuditEntry(r *http.Request, username string, action audit.Ac
 // The shorter window propagates IdP revocation (account disabled, group
 // removed) within the hour rather than the standard 7-day window — see
 // the constant's doc comment for the rationale.
-func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User, cookieMode bool, clientIP string) (string, string, error) {
-	return s.issueTokenPairAt(w, user, cookieMode, time.Now(), clientIP)
+func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User, cookieMode bool) (string, string, error) {
+	return s.issueTokenPairAt(w, user, cookieMode, time.Now())
 }
 
 // issueTokenPairAt is the lower-level variant of [Server.issueTokenPair]
@@ -134,7 +134,7 @@ func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User, cookieMo
 // Every other caller goes through issueTokenPair, which passes
 // time.Now() — the LastRevalidated field is unused for non-LDAP
 // providers and the timestamp is harmless extra metadata.
-func (s *Server) issueTokenPairAt(w http.ResponseWriter, user *auth.User, cookieMode bool, lastRevalidated time.Time, clientIP string) (string, string, error) {
+func (s *Server) issueTokenPairAt(w http.ResponseWriter, user *auth.User, cookieMode bool, lastRevalidated time.Time) (string, string, error) {
 	accessToken, err := s.TokenManager.IssueAccessToken(user)
 	if err != nil {
 		return "", "", err
@@ -153,7 +153,6 @@ func (s *Server) issueTokenPairAt(w http.ResponseWriter, user *auth.User, cookie
 		Provider:        user.Provider,
 		ExpiresAt:       time.Now().Add(refreshLifetime),
 		LastRevalidated: lastRevalidated,
-		ClientIP:        clientIP,
 	}
 	// Cache user data for non-local providers (OIDC has no local store,
 	// LDAP needs a baseline last-known identity for the grace-window

@@ -557,7 +557,7 @@ func TestIssueTokenPair_OIDCRefreshLifetime(t *testing.T) {
 
 			before := time.Now()
 			w := httptest.NewRecorder()
-			_, refreshToken, err := srv.issueTokenPair(w, tc.user, false /* cookieMode */, "192.0.2.1")
+			_, refreshToken, err := srv.issueTokenPair(w, tc.user, false /* cookieMode */)
 			if err != nil {
 				t.Fatalf("issueTokenPair: %v", err)
 			}
@@ -1180,7 +1180,7 @@ func TestIssueTokenPairAt_LastRevalidatedStamped(t *testing.T) {
 	user := &auth.User{ID: "ldap:corp:CN=alice,OU=Users", Username: "alice", Provider: "ldap"}
 
 	w := httptest.NewRecorder()
-	_, refreshToken, err := srv.issueTokenPairAt(w, user, false /* cookieMode */, fixedTime, "192.0.2.1")
+	_, refreshToken, err := srv.issueTokenPairAt(w, user, false /* cookieMode */, fixedTime)
 	if err != nil {
 		t.Fatalf("issueTokenPairAt: %v", err)
 	}
@@ -1200,50 +1200,5 @@ func TestIssueTokenPairAt_LastRevalidatedStamped(t *testing.T) {
 	}
 	if !got.Equal(fixedTime) {
 		t.Errorf("session.LastRevalidated = %v, want %v", got, fixedTime)
-	}
-}
-
-// A refresh from a different address than the session was last issued to
-// (a replayed cookie) is audited; the next refresh from that same address is
-// routine again.
-func TestHandleRefresh_NewAddressIsAudited(t *testing.T) {
-	srv := testServer(t)
-	_, cookies := loginAdmin(t, srv) // httptest's RemoteAddr is 192.0.2.1
-	rec := &recordingAuditLogger{}
-	srv.AuditLogger = rec
-
-	refreshFrom := func(addr string, cookies []*http.Cookie) []*http.Cookie {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
-		req.RemoteAddr = addr
-		req.Header.Set("X-Requested-With", "XMLHttpRequest")
-		for _, c := range cookies {
-			req.AddCookie(c)
-		}
-		w := httptest.NewRecorder()
-		srv.Router.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("refresh from %s = %d: %s", addr, w.Code, w.Body.String())
-		}
-		return w.Result().Cookies()
-	}
-	refreshEntries := func() []audit.Entry {
-		var out []audit.Entry
-		for _, e := range rec.snapshot() {
-			if e.Action == audit.ActionRefresh {
-				out = append(out, e)
-			}
-		}
-		return out
-	}
-
-	cookies = refreshFrom("198.51.100.7:40000", cookies)
-	got := refreshEntries()
-	if len(got) != 1 || got[0].Result != audit.ResultSuccess || !strings.Contains(got[0].Detail, "192.0.2.1") {
-		t.Fatalf("refresh from a new address: entries = %+v, want one success naming the previous address", got)
-	}
-
-	refreshFrom("198.51.100.7:40001", cookies)
-	if got := refreshEntries(); len(got) != 1 {
-		t.Fatalf("refresh from the same address audited again: %+v", got)
 	}
 }

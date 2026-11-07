@@ -225,14 +225,18 @@ export default function PodTerminal({
     // Taken once, before any await: the session stays on the cluster
     // selected when it was opened.
     const target = currentTarget();
-    const token = getAccessToken() ?? (await readyAccessToken());
-    if (!token) return;
-
     const id = ++sessionIdCounter;
 
-    // Register cancellation token before async work
+    // Register cancellation token before any async work, the token wait
+    // included, so an unmount meanwhile cancels this open.
     const cancelToken = { canceled: false };
     pendingOpens.current.set(id, cancelToken);
+
+    const token = getAccessToken() ?? (await readyAccessToken());
+    if (!token || cancelToken.canceled) {
+      pendingOpens.current.delete(id);
+      return;
+    }
 
     // Dynamic import to avoid SSR failures (xterm accesses DOM at import time)
     const { Terminal } = await import("@xterm/xterm");

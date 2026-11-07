@@ -40,7 +40,7 @@ func TestMarkIdleReplicaSets(t *testing.T) {
 	}
 	graph.Nodes = append(graph.Nodes, Node{ID: "old", Kind: "Deployment"})
 
-	markIdleReplicaSets(graph, sets, pods)
+	markIdleReplicaSets(graph, sets, pods, true)
 
 	want := map[string]bool{"old": true, "draining": false, "current": false, "defaulted": false, "terminating": false}
 	for _, n := range graph.Nodes {
@@ -53,5 +53,19 @@ func TestMarkIdleReplicaSets(t *testing.T) {
 		if n.Idle != want[n.ID] {
 			t.Errorf("ReplicaSet %s: Idle = %v, want %v", n.ID, n.Idle, want[n.ID])
 		}
+	}
+}
+
+// Without the pod list nothing shows a ReplicaSet runs no pods, so none is
+// marked idle (and none drops out of blast radius).
+func TestMarkIdleReplicaSets_PodsNotListed(t *testing.T) {
+	zero := int32(0)
+	sets := []*appsv1.ReplicaSet{rsWith("old", &zero, 0)}
+	graph := &Graph{Nodes: []Node{{ID: "old", Kind: "ReplicaSet", Name: "old"}}}
+
+	markIdleReplicaSets(graph, sets, nil, false)
+
+	if graph.Nodes[0].Idle {
+		t.Fatal("ReplicaSet marked idle without a pod list")
 	}
 }
