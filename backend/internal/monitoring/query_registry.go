@@ -394,7 +394,7 @@ var Registry = map[string]QueryDef{
 	},
 	"namespaces/cilium-drops": {
 		Slug:          "namespaces/cilium-drops",
-		Template:      `sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{{.NameRegex}}/.*"}[5m]))`,
+		Template:      `sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{{.NameRegex}}(/.*)?"}[5m]))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "pods",
 		Description:   "Namespace Cilium policy denied drops",
@@ -516,30 +516,32 @@ var Registry = map[string]QueryDef{
 	},
 
 	// ── networkpolicies ───────────────────────────────────────────────────────
+	// Hubble's destination label is "<ns>/<pod>" with destinationContext=pod
+	// and "<ns>" with destinationContext=namespace; "(/.*)?" matches both.
 	"networkpolicies/cilium-forwarded": {
 		Slug:          "networkpolicies/cilium-forwarded",
-		Template:      `sum(rate(hubble_flows_processed_total{verdict="FORWARDED",destination=~"{{.NamespaceRegex}}/.*"}[5m]))`,
+		Template:      `sum(rate(hubble_flows_processed_total{verdict="FORWARDED",destination=~"{{.NamespaceRegex}}(/.*)?"}[5m]))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "networkpolicies.networking.k8s.io",
 		Description:   "NetworkPolicy namespace Cilium forwarded flows",
 	},
 	"networkpolicies/cilium-dropped": {
 		Slug:          "networkpolicies/cilium-dropped",
-		Template:      `sum(rate(hubble_flows_processed_total{verdict="DROPPED",destination=~"{{.NamespaceRegex}}/.*"}[5m]))`,
+		Template:      `sum(rate(hubble_flows_processed_total{verdict="DROPPED",destination=~"{{.NamespaceRegex}}(/.*)?"}[5m]))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "networkpolicies.networking.k8s.io",
 		Description:   "NetworkPolicy namespace Cilium dropped flows",
 	},
 	"networkpolicies/policy-denied": {
 		Slug:          "networkpolicies/policy-denied",
-		Template:      `sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{{.NamespaceRegex}}/.*"}[5m]))`,
+		Template:      `sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{{.NamespaceRegex}}(/.*)?"}[5m]))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "networkpolicies.networking.k8s.io",
 		Description:   "NetworkPolicy namespace policy denied drops",
 	},
 	"networkpolicies/tcp-syn": {
 		Slug:          "networkpolicies/tcp-syn",
-		Template:      `sum(rate(hubble_tcp_flags_total{flag="SYN",destination=~"{{.NamespaceRegex}}/.*"}[5m]))`,
+		Template:      `sum(rate(hubble_tcp_flags_total{flag="SYN",destination=~"{{.NamespaceRegex}}(/.*)?"}[5m]))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "networkpolicies.networking.k8s.io",
 		Description:   "NetworkPolicy namespace TCP SYN rate",
@@ -548,28 +550,28 @@ var Registry = map[string]QueryDef{
 	// ── ciliumnetworkpolicies ─────────────────────────────────────────────────
 	"ciliumnetworkpolicies/cilium-forwarded": {
 		Slug:          "ciliumnetworkpolicies/cilium-forwarded",
-		Template:      `sum(rate(hubble_flows_processed_total{verdict="FORWARDED",destination=~"{{.NamespaceRegex}}/.*"}[5m]))`,
+		Template:      `sum(rate(hubble_flows_processed_total{verdict="FORWARDED",destination=~"{{.NamespaceRegex}}(/.*)?"}[5m]))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "ciliumnetworkpolicies.cilium.io",
 		Description:   "CiliumNetworkPolicy namespace forwarded flows",
 	},
 	"ciliumnetworkpolicies/cilium-dropped": {
 		Slug:          "ciliumnetworkpolicies/cilium-dropped",
-		Template:      `sum(rate(hubble_flows_processed_total{verdict="DROPPED",destination=~"{{.NamespaceRegex}}/.*"}[5m]))`,
+		Template:      `sum(rate(hubble_flows_processed_total{verdict="DROPPED",destination=~"{{.NamespaceRegex}}(/.*)?"}[5m]))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "ciliumnetworkpolicies.cilium.io",
 		Description:   "CiliumNetworkPolicy namespace dropped flows",
 	},
 	"ciliumnetworkpolicies/policy-denied": {
 		Slug:          "ciliumnetworkpolicies/policy-denied",
-		Template:      `sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{{.NamespaceRegex}}/.*"}[5m]))`,
+		Template:      `sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{{.NamespaceRegex}}(/.*)?"}[5m]))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "ciliumnetworkpolicies.cilium.io",
 		Description:   "CiliumNetworkPolicy namespace policy denied drops",
 	},
 	"ciliumnetworkpolicies/policy-verdicts": {
 		Slug:          "ciliumnetworkpolicies/policy-verdicts",
-		Template:      `sum(rate(hubble_policy_verdict_total{destination=~"{{.NamespaceRegex}}/.*"}[5m])) by (action)`,
+		Template:      `sum(rate(hubble_policy_verdict_total{destination=~"{{.NamespaceRegex}}(/.*)?"}[5m])) by (action)`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "ciliumnetworkpolicies.cilium.io",
 		Description:   "CiliumNetworkPolicy namespace policy verdicts by action",
@@ -694,16 +696,21 @@ var Registry = map[string]QueryDef{
 	},
 
 	// ── endpoints ─────────────────────────────────────────────────────────────
+	// kube-state-metrics v2 no longer exports kube_endpoint_address_*, so
+	// these count the addresses of the Service's EndpointSlices instead. The
+	// EndpointSlice controller names a Service's slices "<service>-<5 chars>".
+	// The trailing "or 0 * sum(...)" turns "no addresses in this state" into
+	// 0 while the slices exist, and leaves the result empty when they don't.
 	"endpoints/available": {
 		Slug:          "endpoints/available",
-		Template:      `kube_endpoint_address_available{namespace="{{.Namespace}}",endpoint="{{.Name}}"}`,
+		Template:      `sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.NameRegex}}-[a-z0-9]{5}",ready="true"}) or (0 * sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.NameRegex}}-[a-z0-9]{5}"}))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "endpoints",
 		Description:   "Endpoint available address count",
 	},
 	"endpoints/not-ready": {
 		Slug:          "endpoints/not-ready",
-		Template:      `kube_endpoint_address_not_ready{namespace="{{.Namespace}}",endpoint="{{.Name}}"}`,
+		Template:      `sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.NameRegex}}-[a-z0-9]{5}",ready="false"}) or (0 * sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.NameRegex}}-[a-z0-9]{5}"}))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "endpoints",
 		Description:   "Endpoint not-ready address count",

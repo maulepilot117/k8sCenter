@@ -46,7 +46,8 @@ export function ESODriftIndicator({ status, reason }: ESODriftIndicatorProps) {
         )}
         {status === "InSync" && (
           <span class="text-xs text-text-muted">
-            Synced Secret matches the resource version ESO recorded.
+            The synced Secret's data matches the hash ESO recorded when it last
+            wrote it.
           </span>
         )}
       </div>
