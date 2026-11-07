@@ -3,7 +3,12 @@ import type { CSSProperties } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
-import { apiGet, getAccessToken, refreshSession } from "@/lib/api.ts";
+import {
+  apiGet,
+  getAccessToken,
+  readyAccessToken,
+  refreshSession,
+} from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { type PanelState, streamState } from "@/lib/networking-state.ts";
 import { currentTarget, UNKNOWN_GENERATION } from "@/src/lib/cluster.ts";
@@ -228,7 +233,14 @@ export default function FlowViewer() {
 
     const token = getAccessToken();
     if (!token) {
-      fetchFlows();
+      // The page's startup refresh may still be running: wait for it and
+      // stream, rather than fall back to polling for the life of the view.
+      const gen = wsIdRef.current;
+      void readyAccessToken().then((ready) => {
+        if (wsIdRef.current !== gen) return;
+        if (ready) connectWS();
+        else fetchFlows();
+      });
       return;
     }
 

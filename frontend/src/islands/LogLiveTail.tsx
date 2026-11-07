@@ -1,7 +1,7 @@
 import { type Signal, useSignal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
-import { getAccessToken, refreshSession } from "@/lib/api.ts";
+import { getAccessToken, readyAccessToken, refreshSession } from "@/lib/api.ts";
 import {
   lokiLaterThan,
   RECONNECT_DELAYS_MS,
@@ -186,9 +186,21 @@ export default function LogLiveTail(props: LogLiveTailProps) {
     // it at once must still run out of tries.
     let streamed = false;
 
+    // Authenticates now when a token is in hand, else once the page's
+    // startup refresh lands, unless the socket was replaced meanwhile.
     ws.onopen = () => {
       if (wsRef.current !== ws) return;
       const token = getAccessToken();
+      if (token) {
+        authenticate(token);
+        return;
+      }
+      void readyAccessToken().then((ready) => {
+        if (wsRef.current === ws) authenticate(ready);
+      });
+    };
+
+    const authenticate = (token: string | null) => {
       if (!token) {
         ended = true;
         wsRef.current = null;

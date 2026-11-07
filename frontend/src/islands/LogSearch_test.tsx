@@ -642,6 +642,8 @@ test("a resume with no session left shows it and does not retry", async () => {
     });
     setAccessToken(null);
     const second = await reconnectAfter(2_000);
+    // With no token the socket first waits on any refresh in flight.
+    await flush();
     expect(second.sent).toEqual([]);
     expect(text()).toContain("Not authenticated");
     const before = FakeWebSocket.instances.length;

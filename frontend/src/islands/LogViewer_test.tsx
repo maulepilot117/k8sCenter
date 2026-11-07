@@ -11,7 +11,7 @@ import {
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { render } from "preact";
 import { act } from "preact/test-utils";
-import { setAccessToken } from "@/lib/api.ts";
+import { refreshSession, setAccessToken } from "@/lib/api.ts";
 import {
   selectedCluster,
   selectedClusterGeneration,
@@ -496,4 +496,23 @@ test("Previous on a container that never restarted shows the refusal alone", asy
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("a tail opened during the startup refresh authenticates once it lands", async () => {
+  setAccessToken(null);
+  let release = () => {};
+  refreshGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const boot = refreshSession();
+
+  const ws = mountViewer();
+  await settle();
+  expect(ws.sent).toEqual([]);
+
+  release();
+  await boot;
+  await settle();
+  expect(ws.sent[0]).toMatchObject({ type: "auth", token: "fresh-token" });
+  expect(host?.textContent).not.toContain("Not authenticated");
 });

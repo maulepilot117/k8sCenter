@@ -67,6 +67,11 @@ export function MonacoEditor({
   const latestValueRef = useRef(value);
   latestValueRef.current = value;
 
+  // The editor's change listener is registered once, at init; it reads the
+  // current handler from here so a parent's later onChange is the one called.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
   // Guard to suppress onChange during programmatic setValue calls
   const isSettingExternally = useRef(false);
 
@@ -119,9 +124,7 @@ export function MonacoEditor({
         editor.onDidChangeModelContent(() => {
           if (isSettingExternally.current) return;
           const newValue = editor.getValue();
-          if (onChange) {
-            onChange(newValue);
-          }
+          onChangeRef.current?.(newValue);
         });
 
         editorRef.current = editor;

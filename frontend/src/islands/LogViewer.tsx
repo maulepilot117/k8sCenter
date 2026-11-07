@@ -3,7 +3,13 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
-import { ApiError, apiGet, getAccessToken, refreshSession } from "@/lib/api.ts";
+import {
+  ApiError,
+  apiGet,
+  getAccessToken,
+  readyAccessToken,
+  refreshSession,
+} from "@/lib/api.ts";
 import {
   isReplayedLine,
   logLineTimestamp,
@@ -305,8 +311,20 @@ export default function LogViewer({
       let subscribed = false;
       let ended = false;
 
+      // Authenticates now when a token is in hand, else once the page's
+      // startup refresh lands, unless the socket was replaced meanwhile.
       ws.onopen = () => {
         const token = getAccessToken();
+        if (token) {
+          authenticate(token);
+          return;
+        }
+        void readyAccessToken().then((ready) => {
+          if (wsRefs.current.get(tabIdx) === ws) authenticate(ready);
+        });
+      };
+
+      const authenticate = (token: string | null) => {
         if (!token) {
           ws.close();
           wsRefs.current.delete(tabIdx);

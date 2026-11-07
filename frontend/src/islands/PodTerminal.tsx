@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
-import { getAccessToken } from "@/lib/api.ts";
+import { getAccessToken, readyAccessToken } from "@/lib/api.ts";
 import { streamAuthFrame, streamErrorMessage } from "@/lib/stream-state.ts";
 import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -222,13 +222,13 @@ export default function PodTerminal({
   const openSession = async (container: string) => {
     if (!IS_BROWSER) return;
 
-    const token = getAccessToken();
+    // Taken once, before any await: the session stays on the cluster
+    // selected when it was opened.
+    const target = currentTarget();
+    const token = getAccessToken() ?? (await readyAccessToken());
     if (!token) return;
 
     const id = ++sessionIdCounter;
-    // Taken once, before the async imports: the session stays on the
-    // cluster selected when it was opened.
-    const target = currentTarget();
 
     // Register cancellation token before async work
     const cancelToken = { canceled: false };

@@ -290,7 +290,7 @@ export default function NotificationBell() {
                   }}
                 >
                   <div style={{ paddingTop: "4px" }}>
-                    <SeverityDot severity={n.severity} />
+                    <SeverityDot severity={n.severity} read={n.read} />
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
