@@ -79,13 +79,19 @@ const settle = () =>
     for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
   });
 
-function dots(root: HTMLElement): (string | null)[] {
-  return [...root.querySelectorAll('span[title*="warning"]')].map((d) =>
-    d.getAttribute("data-read"),
-  );
+/** The dots a reader can see: a read row's dot has no fill and no outline. */
+function visibleDots(root: HTMLElement): number {
+  return [...root.querySelectorAll("span")].filter((s) => {
+    const style = (s as HTMLElement).style;
+    return (
+      style.borderRadius === "50%" &&
+      style.width === "8px" &&
+      (style.backgroundColor !== "transparent" || !!style.border)
+    );
+  }).length;
 }
 
-test("read rows show a ring, and Mark all read turns every dot into one", async () => {
+test("only unread rows show a dot, and Mark all read clears them all", async () => {
   stubApi([notification("a", false), notification("b", true)]);
   setAccessToken("t");
   host = document.createElement("div");
@@ -98,12 +104,12 @@ test("read rows show a ring, and Mark all read turns every dot into one", async 
   ) as HTMLButtonElement;
   await act(async () => bell.click());
   await settle();
-  expect(dots(host)).toEqual([null, "true"]);
+  expect(visibleDots(host)).toBe(1);
 
   const markAll = [...host.querySelectorAll("button")].find(
     (b) => b.textContent?.trim() === "Mark all read",
   ) as HTMLButtonElement;
   await act(async () => markAll.click());
   await settle();
-  expect(dots(host)).toEqual(["true", "true"]);
+  expect(visibleDots(host)).toBe(0);
 });
