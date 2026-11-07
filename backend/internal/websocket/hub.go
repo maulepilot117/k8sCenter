@@ -19,22 +19,21 @@ type AccessChecker interface {
 	CanAccessGroupResource(ctx context.Context, clusterID, username string, groups []string, verb, apiGroup, resource, namespace string) (bool, error)
 }
 
-// subChange represents a subscription addition.
+// subChange is one subscribe (add) or unsubscribe (!add) from a client. Both
+// travel on one channel so the hub applies a client's changes in the order
+// the client sent them. An unsubscribe carries only the id.
 type subChange struct {
 	client *Client
 	key    subKey
-	add    bool   // true = subscribe, false = unsubscribe (legacy, kept for removeClient)
-	id     string // subscription ID
-}
-
-// unsubRequest represents a request to remove a subscription by ID.
-type unsubRequest struct {
-	client *Client
-	id     string
+	add    bool
+	id     string // subscription ID, unique per client
 }
 
 // MaxClients is the maximum number of concurrent WebSocket connections.
 const MaxClients = 1000
+
+// maxSubscriptions caps how many subscriptions one client may hold at once.
+const maxSubscriptions = 25
 
 // Hub maintains active clients and fans out informer events
 // to clients based on their subscriptions. All map mutations
@@ -49,15 +48,20 @@ const MaxClients = 1000
 // a worker pool for serialization + send, but the current design is
 // sufficient for typical cluster sizes.
 type Hub struct {
-	clients       map[*Client]bool
-	subscriptions map[subKey]map[*Client]string // subKey → client → subscription ID
-	clientCount   atomic.Int32
+	clients map[*Client]bool
+	// subscriptions indexes live subscriptions for fan-out: subKey → client →
+	// subscription ID. It holds one ID per client and key; clientSubs is the
+	// full record.
+	subscriptions map[subKey]map[*Client]string
+	// clientSubs is every live subscription, per client: ID → subKey. Its
+	// size is what maxSubscriptions caps.
+	clientSubs  map[*Client]map[string]subKey
+	clientCount atomic.Int32
 
 	register   chan *Client
 	unregister chan *Client
 	events     chan ResourceEvent
-	addSub     chan subChange
-	unsubByID  chan unsubRequest
+	subChanges chan subChange
 
 	accessChecker AccessChecker
 	logger        *slog.Logger
@@ -73,11 +77,11 @@ func NewHub(logger *slog.Logger, accessChecker AccessChecker) *Hub {
 	return &Hub{
 		clients:       make(map[*Client]bool),
 		subscriptions: make(map[subKey]map[*Client]string),
+		clientSubs:    make(map[*Client]map[string]subKey),
 		register:      make(chan *Client),
 		unregister:    make(chan *Client),
 		events:        make(chan ResourceEvent, 1024),
-		addSub:        make(chan subChange, 256),
-		unsubByID:     make(chan unsubRequest, 256),
+		subChanges:    make(chan subChange, 256),
 		accessChecker: accessChecker,
 		logger:        logger,
 	}
@@ -160,26 +164,88 @@ func (h *Hub) Run(ctx context.Context) {
 				)
 			}
 
-		case change := <-h.addSub:
-			if h.subscriptions[change.key] == nil {
-				h.subscriptions[change.key] = make(map[*Client]string)
-			}
-			h.subscriptions[change.key][change.client] = change.id
-
-		case req := <-h.unsubByID:
-			for key, subs := range h.subscriptions {
-				if subID, ok := subs[req.client]; ok && subID == req.id {
-					delete(subs, req.client)
-					if len(subs) == 0 {
-						delete(h.subscriptions, key)
-					}
-					break
-				}
-			}
+		case change := <-h.subChanges:
+			h.applySubChange(change)
 
 		case event := <-h.events:
 			h.broadcastEvent(event)
 		}
+	}
+}
+
+// applySubChange applies one subscribe or unsubscribe and answers a subscribe
+// with "subscribed" or a 429. A remount's subscribe, unsubscribe, subscribe
+// for one ID therefore ends with that ID subscribed.
+func (h *Hub) applySubChange(change subChange) {
+	// A change can still be queued when its client disconnects. The client's
+	// send channel is closed by then, so acting on it would panic the hub.
+	if !h.clients[change.client] {
+		return
+	}
+	if !change.add {
+		h.removeSub(change.client, change.id)
+		return
+	}
+
+	subs := h.clientSubs[change.client]
+	if _, resubscribe := subs[change.id]; resubscribe {
+		h.removeSub(change.client, change.id)
+	} else if len(subs) >= maxSubscriptions {
+		h.sendTo(change.client, OutgoingMessage{
+			Type: MsgTypeError, ID: change.id, Code: 429, Message: "too many subscriptions",
+		})
+		return
+	}
+	if subs == nil {
+		subs = make(map[string]subKey)
+		h.clientSubs[change.client] = subs
+	}
+	subs[change.id] = change.key
+	if h.subscriptions[change.key] == nil {
+		h.subscriptions[change.key] = make(map[*Client]string)
+	}
+	h.subscriptions[change.key][change.client] = change.id
+	h.sendTo(change.client, OutgoingMessage{Type: MsgTypeSubscribed, ID: change.id})
+}
+
+// removeSub drops one of a client's subscriptions. An unknown ID is ignored.
+func (h *Hub) removeSub(client *Client, id string) {
+	key, ok := h.clientSubs[client][id]
+	if !ok {
+		return
+	}
+	delete(h.clientSubs[client], id)
+
+	subs := h.subscriptions[key]
+	if subs[client] != id {
+		return // the index holds another of the client's IDs on this key
+	}
+	// The index holds one ID per client and key: hand it to another of the
+	// client's IDs on the same key, if any, so that one keeps its events.
+	for otherID, otherKey := range h.clientSubs[client] {
+		if otherKey == key {
+			subs[client] = otherID
+			return
+		}
+	}
+	delete(subs, client)
+	if len(subs) == 0 {
+		delete(h.subscriptions, key)
+	}
+}
+
+// sendTo queues msg for a connected client without blocking the hub loop. A
+// full buffer drops it. Run has no recover, so this checks the marshal error
+// rather than using mustJSON.
+func (h *Hub) sendTo(client *Client, msg OutgoingMessage) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		h.logger.Error("marshal message", "error", err, "type", msg.Type)
+		return
+	}
+	select {
+	case client.send <- data:
+	default:
 	}
 }
 
@@ -260,7 +326,6 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 	type removal struct {
 		key    subKey
 		client *Client
-		subID  string
 	}
 	var removals []removal
 
@@ -269,7 +334,7 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 		if alwaysAllowKinds[key.Kind] {
 			continue
 		}
-		for client, subID := range subs {
+		for client := range subs {
 			if client.user == nil {
 				continue
 			}
@@ -310,38 +375,28 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 				continue
 			}
 			if !allowed {
-				removals = append(removals, removal{key: key, client: client, subID: subID})
+				removals = append(removals, removal{key: key, client: client})
 			}
 		}
 	}
 
+	// Access is per key, so revoke every one of the client's IDs on it.
 	for _, r := range removals {
-		if subs, ok := h.subscriptions[r.key]; ok {
-			delete(subs, r.client)
-			if len(subs) == 0 {
-				delete(h.subscriptions, r.key)
+		for subID, key := range h.clientSubs[r.client] {
+			if key != r.key {
+				continue
 			}
+			h.removeSub(r.client, subID)
+			h.sendTo(r.client, OutgoingMessage{
+				Type:    MsgTypeError,
+				ID:      subID,
+				Code:    403,
+				Message: "subscription revoked: access denied",
+			})
+			h.logger.Info("subscription revoked by RBAC revalidation",
+				"user", r.client.username(), "kind", r.key.Kind,
+				"namespace", r.key.Namespace, "subID", subID)
 		}
-		// Notify client their subscription was revoked
-		msg := OutgoingMessage{
-			Type:    MsgTypeError,
-			ID:      r.subID,
-			Code:    403,
-			Message: "subscription revoked: access denied",
-		}
-		// Hub.Run() has no recover — use explicit error check instead of mustJSON
-		data, err := json.Marshal(msg)
-		if err != nil {
-			h.logger.Error("marshal revocation message", "error", err)
-			continue
-		}
-		select {
-		case r.client.send <- data:
-		default:
-		}
-		h.logger.Info("subscription revoked by RBAC revalidation",
-			"user", r.client.username(), "kind", r.key.Kind,
-			"namespace", r.key.Namespace, "subID", r.subID)
 	}
 }
 
@@ -375,6 +430,7 @@ func (h *Hub) removeClient(client *Client) {
 			delete(h.subscriptions, key)
 		}
 	}
+	delete(h.clientSubs, client)
 	delete(h.clients, client)
 	h.clientCount.Add(-1)
 	close(client.send)
