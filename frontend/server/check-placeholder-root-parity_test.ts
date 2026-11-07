@@ -111,6 +111,42 @@ test("a compound `!IS_BROWSER && x` guard is a placeholder", () => {
   ).toHaveLength(1);
 });
 
+/**
+ * Converted islands gate on `const isClient = useIsClient()` instead of
+ * IS_BROWSER. While the app still runs on Preact the hydrated root keeps the
+ * placeholder's attributes either way, so the new gate needs the same check.
+ * The fixture never mentions IS_BROWSER, so a file-level shortcut keyed on
+ * that name alone would skip it.
+ */
+function clientIsland(body: string): string {
+  return `import { useIsClient } from "@/src/lib/use-is-client.ts";
+     export default function Thing() {
+       const isClient = useIsClient();
+${body}
+     }`;
+}
+
+test("a `!isClient` placeholder whose root differs is a finding", () => {
+  const found = findDivergencesInSource(
+    clientIsland(`       if (!isClient) return <div className="p-6" />;
+       return <div className="flex flex-col h-full">body</div>;`),
+    "Thing.tsx",
+  );
+  expect(found).toHaveLength(1);
+  expect(found[0].placeholder.attrs.class).toBe('"p-6"');
+  expect(found[0].hydrated.attrs.class).toBe('"flex flex-col h-full"');
+});
+
+test("a `!isClient` placeholder with a matching root is not a finding", () => {
+  expect(
+    findDivergencesInSource(
+      clientIsland(`       if (!isClient) return <div className="p-6" />;
+       return <div className="p-6">body</div>;`),
+      "Thing.tsx",
+    ),
+  ).toEqual([]);
+});
+
 test("isNotBrowser accepts the bare and compound forms and nothing else", () => {
   const not = (name: string) => ({
     type: "UnaryExpression",
@@ -118,6 +154,7 @@ test("isNotBrowser accepts the bare and compound forms and nothing else", () => 
     argument: { type: "Identifier", name },
   });
   expect(isNotBrowser(not("IS_BROWSER"))).toBe(true);
+  expect(isNotBrowser(not("isClient"))).toBe(true);
   expect(isNotBrowser(not("SOMETHING_ELSE"))).toBe(false);
   expect(
     isNotBrowser({

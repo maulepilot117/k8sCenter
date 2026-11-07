@@ -14,6 +14,11 @@ GlobalRegistrator.register({ url: "http://localhost/" });
 mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
 
 const toasts: Array<{ message: string; type: string }> = [];
+// bun shares modules across test files, so the real module is kept and put
+// back in afterAll; ToastProvider_test.tsx renders the real one.
+const realToastProvider = {
+  ...(await import("@/src/islands/ToastProvider.tsx")),
+};
 mock.module("@/src/islands/ToastProvider.tsx", () => ({
   showToast: (message: string, type = "info") => {
     toasts.push({ message, type });
@@ -24,6 +29,7 @@ const { default: ClusterManager } = await import("./ClusterManager.tsx");
 
 afterAll(() => {
   mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
+  mock.module("@/src/islands/ToastProvider.tsx", () => realToastProvider);
   GlobalRegistrator.unregister();
 });
 

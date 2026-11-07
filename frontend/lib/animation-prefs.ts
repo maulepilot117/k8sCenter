@@ -1,7 +1,7 @@
 // CLIENT-ONLY MODULE — Do NOT import in server-rendered components.
 // This module uses browser APIs (document, localStorage) and Preact signals.
 
-import { signal } from "@preact/signals";
+import { signal } from "@preact/signals-core";
 
 const STORAGE_KEY = "k8scenter-animations";
 

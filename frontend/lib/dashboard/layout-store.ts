@@ -25,7 +25,7 @@
  * does; that is what covers the ordering rules below, which no pure function
  * can express.
  */
-import { signal } from "@preact/signals";
+import { signal } from "@preact/signals-core";
 import { selectedCluster } from "@/lib/cluster.ts";
 import {
   type LayoutResponse,

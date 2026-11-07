@@ -1,29 +1,9 @@
-import { signal } from "@preact/signals";
+import { dismissToast, type Toast, toasts } from "@/src/lib/toast-store.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
-interface Toast {
-  id: number;
-  message: string;
-  type: "success" | "error" | "info";
-}
-
-let nextId = 0;
-const toasts = signal<Toast[]>([]);
-
-/** Show a toast notification. Auto-dismisses after 5 seconds. */
-export function showToast(
-  message: string,
-  type: "success" | "error" | "info" = "info",
-) {
-  const id = nextId++;
-  toasts.value = [...toasts.value, { id, message, type }];
-  setTimeout(() => {
-    toasts.value = toasts.value.filter((t) => t.id !== id);
-  }, 5000);
-}
-
-function dismiss(id: number) {
-  toasts.value = toasts.value.filter((t) => t.id !== id);
-}
+// Islands still import showToast from here; they move to the store module
+// as they convert to React APIs, and then this re-export goes.
+export { showToast } from "@/src/lib/toast-store.ts";
 
 // Toast chrome is glass (.glass-elevated); type identity comes from the
 // text color and a solid left accent edge instead of a tinted fill.
@@ -54,13 +34,18 @@ export default function ToastProvider() {
   // a no-op. Rendering the empty container on both sides costs one hidden div
   // and is what makes hydration possible at all. `toasts` is empty during SSR
   // by construction, so the two renders agree.
+  //
+  // Read through useSignalValue rather than `toasts.value`: the bare read
+  // only re-renders if @preact/signals has patched Preact on this page,
+  // which nothing guarantees once this island stops importing it.
+  const active = useSignalValue(toasts);
   return (
     <div
       role="status"
       aria-live="polite"
       class="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2"
     >
-      {toasts.value.map((toast) => (
+      {active.map((toast) => (
         <div
           key={toast.id}
           class="glass-elevated pointer-events-auto flex items-center gap-3 rounded-xl px-4 py-3 text-sm"
@@ -69,7 +54,7 @@ export default function ToastProvider() {
           <span class="flex-1">{toast.message}</span>
           <button
             type="button"
-            onClick={() => dismiss(toast.id)}
+            onClick={() => dismissToast(toast.id)}
             class="ml-2 opacity-60 hover:opacity-100"
           >
             <svg class="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">

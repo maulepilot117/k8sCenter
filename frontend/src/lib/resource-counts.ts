@@ -9,7 +9,7 @@
  * Module-level signals are process-global singletons in Deno; importing
  * server-side would leak state across SSR requests.
  */
-import { computed, effect, signal } from "@preact/signals";
+import { computed, effect, signal } from "@preact/signals-core";
 import { api } from "@/lib/api.ts";
 import { apiResourceForKind } from "@/lib/constants.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";

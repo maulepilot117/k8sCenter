@@ -14,7 +14,7 @@
  * Shared so SecondaryNav and the resource detail page read one list instead of
  * fetching their own copies and disagreeing about what is pinned.
  */
-import { signal } from "@preact/signals";
+import { signal } from "@preact/signals-core";
 import type { PinConfig } from "@/lib/preference-types.ts";
 import {
   type PinRecord,
