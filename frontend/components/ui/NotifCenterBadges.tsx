@@ -22,8 +22,8 @@ const SOURCE_COLORS: Record<NotifSource, string> = {
 
 /**
  * Colored dot indicating notification severity. Lists that track read state
- * pass `read`: a read notification's dot is a hollow ring, so a filled dot
- * means unread.
+ * pass `read`: a read notification shows no dot at all (the space is kept so
+ * rows stay aligned), so a dot always means unread.
  */
 export function SeverityDot({
   severity,
@@ -36,17 +36,16 @@ export function SeverityDot({
   return (
     <span
       data-read={read ? "true" : undefined}
+      aria-hidden={read ? "true" : undefined}
       style={{
         display: "inline-block",
         width: "8px",
         height: "8px",
         borderRadius: "50%",
-        boxSizing: "border-box",
         backgroundColor: read ? "transparent" : color,
-        border: `1.5px solid ${color}`,
         flexShrink: 0,
       }}
-      title={read ? `${severity} (read)` : `${severity} (unread)`}
+      title={read ? undefined : `${severity} (unread)`}
     />
   );
 }

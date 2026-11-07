@@ -934,11 +934,15 @@ export default function ResourceDetail({
           res?.spec?.containers?.map((c) => c.name) ?? [];
         const initContainers: string[] =
           res?.spec?.initContainers?.map((c) => c.name) ?? [];
+        // A #logs deep link opens this tab before the pod has loaded. The
+        // viewer streams the containers it mounts with, so wait for the real
+        // names rather than open a stream for a container that is not there.
+        if (containers.length === 0) return <LoadingSpinner />;
         return (
           <LogViewer
             namespace={namespace}
             pod={name}
-            containers={containers.length > 0 ? containers : ["default"]}
+            containers={containers}
             initContainers={initContainers}
           />
         );
@@ -951,11 +955,12 @@ export default function ResourceDetail({
         const res = resource.value as Pod;
         const containers: string[] =
           res?.spec?.containers?.map((c) => c.name) ?? [];
+        if (containers.length === 0) return <LoadingSpinner />;
         return (
           <PodTerminal
             namespace={namespace}
             name={name}
-            containers={containers.length > 0 ? containers : ["default"]}
+            containers={containers}
           />
         );
       },

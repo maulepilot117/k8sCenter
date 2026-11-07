@@ -61,8 +61,13 @@ mock.module("../components/ui/CodeMirrorEditor.tsx", () => ({
 }));
 
 // The pod tabs open sockets; a marker is enough to see which tab is active.
+// The viewer streams the containers it mounts with, so record them.
+const logViewerContainers: string[][] = [];
 mock.module("./LogViewer.tsx", () => ({
-  default: () => <div data-testid="log-viewer" />,
+  default: (props: { containers: string[] }) => {
+    logViewerContainers.push(props.containers);
+    return <div data-testid="log-viewer" />;
+  },
 }));
 mock.module("./PodTerminal.tsx", () => ({
   default: () => <div data-testid="pod-terminal" />,
@@ -314,6 +319,7 @@ test("a kind with metric queries has a Metrics tab; one without does not", async
 });
 
 test("a #logs link opens a pod on its Logs tab", async () => {
+  logViewerContainers.length = 0;
   const root = await renderDetail(
     { kind: "pods", title: "Pod", namespace: "default", name: "web-0" },
     "#logs",
@@ -321,4 +327,8 @@ test("a #logs link opens a pod on its Logs tab", async () => {
   const active = root.querySelector("[role=tab][aria-selected=true]");
   expect(active?.textContent?.trim()).toBe("Logs");
   expect(root.querySelector("[data-testid=log-viewer]")).not.toBeNull();
+  // Never mounted with a placeholder before the pod loaded: the viewer
+  // would stream a container named "default" that the pod does not have.
+  expect(logViewerContainers.length).toBeGreaterThan(0);
+  expect(logViewerContainers.every((c) => c.join() === "app")).toBe(true);
 });
