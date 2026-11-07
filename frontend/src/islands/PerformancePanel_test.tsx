@@ -91,6 +91,34 @@ test("a kind without a specific hint falls back to a generic message", async () 
   expect(root.textContent).toContain("no data for this resource");
 });
 
+test("a refresh in flight keeps the last results on screen", async () => {
+  // Capture the refresh timer so the test can fire it.
+  const realSetInterval = globalThis.setInterval;
+  let refresh: (() => void) | null = null;
+  globalThis.setInterval = ((fn: () => void) => {
+    refresh = fn;
+    return 0;
+  }) as unknown as typeof globalThis.setInterval;
+  try {
+    stubPrometheus(() => null);
+    const root = await mount("networkpolicies");
+    expect(root.textContent).toContain("No Metric Data");
+    expect(refresh).not.toBeNull();
+
+    // The refresh's queries never answer, so it stays in flight.
+    globalThis.fetch = (() =>
+      new Promise(() => {})) as unknown as typeof globalThis.fetch;
+    await act(async () => {
+      (refresh as unknown as () => void)();
+    });
+    await settle();
+    expect(root.textContent).toContain("No Metric Data");
+    expect(root.textContent).not.toContain("Cilium Forwarded Flows");
+  } finally {
+    globalThis.setInterval = realSetInterval;
+  }
+});
+
 test("one query with data keeps the chart grid", async () => {
   stubPrometheus((slug) =>
     slug === "networkpolicies/cilium-forwarded"

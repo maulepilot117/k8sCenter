@@ -698,19 +698,23 @@ var Registry = map[string]QueryDef{
 	// ── endpoints ─────────────────────────────────────────────────────────────
 	// kube-state-metrics v2 no longer exports kube_endpoint_address_*, so
 	// these count the addresses of the Service's EndpointSlices instead. The
-	// EndpointSlice controller names a Service's slices "<service>-<5 chars>".
+	// EndpointSlice controller names a Service's slices "<service>-<5 chars>",
+	// with the prefix cut to 58 characters for long names (SlicePrefixRegex).
+	// Slices created by hand for a Service, under other names, are not
+	// counted: kube-state-metrics exports their kubernetes.io/service-name
+	// label only when its label allowlist includes it.
 	// The trailing "or 0 * sum(...)" turns "no addresses in this state" into
 	// 0 while the slices exist, and leaves the result empty when they don't.
 	"endpoints/available": {
 		Slug:          "endpoints/available",
-		Template:      `sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.NameRegex}}-[a-z0-9]{5}",ready="true"}) or (0 * sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.NameRegex}}-[a-z0-9]{5}"}))`,
+		Template:      `sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.SlicePrefixRegex}}[a-z0-9]{5}",ready="true"}) or (0 * sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.SlicePrefixRegex}}[a-z0-9]{5}"}))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "endpoints",
 		Description:   "Endpoint available address count",
 	},
 	"endpoints/not-ready": {
 		Slug:          "endpoints/not-ready",
-		Template:      `sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.NameRegex}}-[a-z0-9]{5}",ready="false"}) or (0 * sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.NameRegex}}-[a-z0-9]{5}"}))`,
+		Template:      `sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.SlicePrefixRegex}}[a-z0-9]{5}",ready="false"}) or (0 * sum(kube_endpointslice_endpoints{namespace="{{.Namespace}}",endpointslice=~"{{.SlicePrefixRegex}}[a-z0-9]{5}"}))`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "endpoints",
 		Description:   "Endpoint not-ready address count",
