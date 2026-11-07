@@ -12,7 +12,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { signal } from "@preact/signals";
 import { render } from "preact";
 import { act } from "preact/test-utils";
-import { setAccessToken } from "@/lib/api.ts";
+import { refreshSession, setAccessToken } from "@/lib/api.ts";
 import type { LogLine } from "@/lib/types/logs.ts";
 import {
   selectedCluster,
@@ -642,6 +642,8 @@ test("a resume with no session left shows it and does not retry", async () => {
     });
     setAccessToken(null);
     const second = await reconnectAfter(2_000);
+    // With no token the socket first waits on any refresh in flight.
+    await flush();
     expect(second.sent).toEqual([]);
     expect(text()).toContain("Not authenticated");
     const before = FakeWebSocket.instances.length;
@@ -670,4 +672,24 @@ test("a new query starts a fresh tail with no start", async () => {
     namespace: "default",
     limit: 30,
   });
+});
+
+test("a tail opened during the startup refresh authenticates once it lands", async () => {
+  setAccessToken(null);
+  let release = () => {};
+  refreshGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const boot = refreshSession();
+
+  mount(<LogLiveTail {...tailProps()} />);
+  const ws = openLatest();
+  await settle();
+  expect(ws.sent).toEqual([]);
+
+  release();
+  await boot;
+  await settle();
+  expect(ws.sent[0]).toMatchObject({ type: "auth", token: "fresh-token" });
+  expect(ws.sent[1]).toMatchObject({ type: "subscribe" });
 });

@@ -519,9 +519,7 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/scaling/hpas"
-          onApplied={() => {
-            dirty.value = false;
-          }}
+          dirty={dirty}
         />
       )}
     </WizardShell>

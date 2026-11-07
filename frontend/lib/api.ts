@@ -42,6 +42,16 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
+/**
+ * The access token once a refresh already in flight (the one the page starts
+ * on load, src/lib/session-boot.ts) has settled, so a stream opened during it
+ * authenticates instead of reading null. Like `send`, it starts no refresh.
+ */
+export async function readyAccessToken(): Promise<string | null> {
+  if (!accessToken && refreshPromise) await refreshPromise;
+  return accessToken;
+}
+
 /** Typed API error class. */
 export class ApiError extends Error {
   /**

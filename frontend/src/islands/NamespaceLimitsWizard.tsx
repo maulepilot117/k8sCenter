@@ -355,9 +355,7 @@ export default function NamespaceLimitsWizard({
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/config/namespace-limits"
-          onApplied={() => {
-            dirty.value = false;
-          }}
+          dirty={dirty}
         />
       )}
     </WizardShell>

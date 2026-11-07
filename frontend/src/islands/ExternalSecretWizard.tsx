@@ -334,9 +334,7 @@ export default function ExternalSecretWizard({
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/external-secrets/external-secrets"
-          onApplied={() => {
-            dirty.value = false;
-          }}
+          dirty={dirty}
         />
       )}
     </WizardShell>

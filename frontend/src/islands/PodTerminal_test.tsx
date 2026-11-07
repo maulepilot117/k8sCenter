@@ -11,7 +11,7 @@ import {
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { render } from "preact";
 import { act } from "preact/test-utils";
-import { setAccessToken } from "@/lib/api.ts";
+import { refreshSession, setAccessToken } from "@/lib/api.ts";
 import {
   selectedCluster,
   selectedClusterGeneration,
@@ -77,6 +77,7 @@ class FakeWebSocket {
 const realWebSocket = globalThis.WebSocket;
 const realResizeObserver = globalThis.ResizeObserver;
 let host: HTMLElement | null = null;
+const realFetch = globalThis.fetch;
 
 // The island opens a terminal only into a visible element, and happy-dom
 // lays nothing out.
@@ -106,6 +107,7 @@ afterEach(() => {
     host.remove();
     host = null;
   }
+  globalThis.fetch = realFetch;
   globalThis.WebSocket = realWebSocket;
   globalThis.ResizeObserver = realResizeObserver;
   setAccessToken(null);
@@ -210,4 +212,42 @@ test("a remote cluster's refusal shows the unsupported copy, not the server's wo
   const pane = FakeTerminal.lines.join("\n");
   expect(pane).toContain("Terminal is not available for this cluster yet.");
   expect(pane).not.toContain("pod exec is not available on remote clusters");
+});
+
+/** Answers /auth/refresh once `gate` is released, with a fresh token. */
+function gatedRefresh(): { release: () => void } {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  globalThis.fetch = (async () => {
+    await gate;
+    return new Response(
+      JSON.stringify({ data: { accessToken: "fresh-token" } }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }) as unknown as typeof globalThis.fetch;
+  return { release };
+}
+
+test("a session opened during the startup refresh authenticates once it lands", async () => {
+  setAccessToken(null);
+  const { release } = gatedRefresh();
+  const boot = refreshSession();
+
+  mount();
+  clickOpen();
+  await act(async () => {
+    await new Promise((res) => setTimeout(res, 20));
+  });
+  expect(FakeWebSocket.instances).toHaveLength(0);
+
+  release();
+  await boot;
+  const ws = await nextSocket();
+  act(() => ws.onopen?.());
+  expect(ws.sent[0]).toMatchObject({ type: "auth", token: "fresh-token" });
 });

@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
-import { getAccessToken } from "@/lib/api.ts";
+import { getAccessToken, readyAccessToken } from "@/lib/api.ts";
 import { streamAuthFrame, streamErrorMessage } from "@/lib/stream-state.ts";
 import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
@@ -222,17 +222,21 @@ export default function PodTerminal({
   const openSession = async (container: string) => {
     if (!IS_BROWSER) return;
 
-    const token = getAccessToken();
-    if (!token) return;
-
-    const id = ++sessionIdCounter;
-    // Taken once, before the async imports: the session stays on the
-    // cluster selected when it was opened.
+    // Taken once, before any await: the session stays on the cluster
+    // selected when it was opened.
     const target = currentTarget();
+    const id = ++sessionIdCounter;
 
-    // Register cancellation token before async work
+    // Register cancellation token before any async work, the token wait
+    // included, so an unmount meanwhile cancels this open.
     const cancelToken = { canceled: false };
     pendingOpens.current.set(id, cancelToken);
+
+    const token = getAccessToken() ?? (await readyAccessToken());
+    if (!token || cancelToken.canceled) {
+      pendingOpens.current.delete(id);
+      return;
+    }
 
     // Dynamic import to avoid SSR failures (xterm accesses DOM at import time)
     const { Terminal } = await import("@xterm/xterm");

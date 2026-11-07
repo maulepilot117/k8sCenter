@@ -310,7 +310,7 @@ export default function NotificationFeed() {
                       }}
                     >
                       <td style={{ padding: "10px 12px", textAlign: "center" }}>
-                        <SeverityDot severity={n.severity} />
+                        <SeverityDot severity={n.severity} read={n.read} />
                       </td>
                       <td style={{ padding: "10px 12px" }}>
                         <SourceBadge source={n.source} />

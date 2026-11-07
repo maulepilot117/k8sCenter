@@ -176,12 +176,14 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 
 	// Pods
 	var pods []*corev1.Pod
+	podsListed := false
 	if allowed[KindPods] {
 		r, err := b.lister.ListPods(ctx, namespace)
 		if err != nil {
 			failures.add(KindPods, err)
 		} else {
 			pods = r
+			podsListed = true
 			addResourceNodes(graph, "Pod", nameIndex, toMetas(pods, func(p *corev1.Pod) resourceMeta {
 				return resourceMeta{uid: string(p.UID), name: p.Name, namespace: p.Namespace, ownerRefs: p.OwnerReferences, obj: p}
 			}), func(m resourceMeta) (Health, string) {
@@ -236,7 +238,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 			}), func(m resourceMeta) (Health, string) {
 				return replicaSetHealth(m.obj.(*appsv1.ReplicaSet))
 			})
-			markIdleReplicaSets(graph, replicaSets)
+			markIdleReplicaSets(graph, replicaSets, pods, podsListed)
 		}
 	}
 
@@ -702,11 +704,25 @@ func deploymentHealth(dep *appsv1.Deployment) (Health, string) {
 	return HealthFailing, summary
 }
 
-func markIdleReplicaSets(graph *Graph, replicaSets []*appsv1.ReplicaSet) {
+func markIdleReplicaSets(graph *Graph, replicaSets []*appsv1.ReplicaSet, pods []*corev1.Pod, podsListed bool) {
+	// Without the pod list (no access, or the list failed) nothing shows a
+	// ReplicaSet runs no pods, so none is marked idle.
+	if !podsListed {
+		return
+	}
 	idle := make(map[string]bool)
 	for _, rs := range replicaSets {
 		if rs.Spec.Replicas != nil && *rs.Spec.Replicas == 0 && rs.Status.Replicas == 0 {
 			idle[string(rs.UID)] = true
+		}
+	}
+	// status.replicas leaves out terminating pods; a ReplicaSet that still
+	// owns one is not idle until that pod is gone.
+	for _, pod := range pods {
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == "ReplicaSet" {
+				delete(idle, string(ref.UID))
+			}
 		}
 	}
 	if len(idle) == 0 {

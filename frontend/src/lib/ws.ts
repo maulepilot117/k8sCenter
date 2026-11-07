@@ -3,7 +3,7 @@
  * WebSocket client with auth, subscribe/unsubscribe, and reconnect with backoff.
  */
 import { signal } from "@preact/signals";
-import { getAccessToken, setAccessToken } from "@/lib/api.ts";
+import { getAccessToken, readyAccessToken, setAccessToken } from "@/lib/api.ts";
 
 export type WSStatus = "connecting" | "connected" | "disconnected";
 export const wsStatus = signal<WSStatus>("disconnected");
@@ -93,18 +93,24 @@ export function connectWS(): void {
   // is no longer the module's current one (disconnected or replaced). A late
   // event from a dropped socket would otherwise send on, or forget, the
   // socket that replaced it.
-  sock.onopen = () => {
+  const authenticate = (token: string | null) => {
     if (ws !== sock) {
       sock.close();
       return;
     }
-    const token = getAccessToken();
     if (token) {
       sock.send(JSON.stringify({ type: MSG_AUTH, token }));
     } else {
       sock.close();
       wsStatus.value = "disconnected";
     }
+  };
+  // Authenticates now when a token is in hand, else once the page's startup
+  // refresh lands.
+  sock.onopen = () => {
+    const token = getAccessToken();
+    if (token) authenticate(token);
+    else void readyAccessToken().then(authenticate);
   };
 
   sock.onmessage = (event) => {

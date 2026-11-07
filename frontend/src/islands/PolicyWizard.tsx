@@ -311,9 +311,7 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
               loading={previewLoading.value}
               error={previewError.value}
               detailBasePath="/security/policies"
-              onApplied={() => {
-                dirty.value = false;
-              }}
+              dirty={dirty}
             />
           )}
         </>

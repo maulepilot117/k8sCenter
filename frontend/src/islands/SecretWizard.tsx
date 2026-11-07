@@ -887,9 +887,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
           loading={previewLoading.value}
           error={previewError.value}
           detailBasePath="/config/secrets"
-          onApplied={() => {
-            dirty.value = false;
-          }}
+          dirty={dirty}
           maskValues={maskSecretYaml}
         />
       )}

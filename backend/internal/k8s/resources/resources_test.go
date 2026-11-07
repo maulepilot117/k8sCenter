@@ -562,6 +562,38 @@ func TestGetClusterScoped_TwoSegmentRoute(t *testing.T) {
 	}
 }
 
+// The two-segment detail route of a cluster-scoped kind is a get: it asks
+// for `get` on the resource (not `list`) and refuses a user without it.
+func TestGetClusterScoped_TwoSegmentRouteChecksGet(t *testing.T) {
+	h, _ := testHandler(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "adguard"}})
+	get := func() *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		req := requestWithUser("GET", "/api/v1/resources/namespaces/adguard", "")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("kind", "namespaces")
+		rctx.URLParams.Add("namespace", "adguard")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		h.HandleListResource(rr, req)
+		return rr
+	}
+
+	var verbs []string
+	h.AccessChecker = NewRecordingAccessChecker(func(_, _ string, _ []string, verb, resource, _ string) {
+		verbs = append(verbs, verb+" "+resource)
+	})
+	if rr := get(); rr.Code != http.StatusOK {
+		t.Fatalf("allowed get: %d %s", rr.Code, rr.Body.String())
+	}
+	if len(verbs) == 0 || verbs[0] != "get namespaces" {
+		t.Fatalf("access checks = %v, want get namespaces first", verbs)
+	}
+
+	h.AccessChecker = NewAlwaysDenyAccessChecker()
+	if rr := get(); rr.Code != http.StatusForbidden {
+		t.Fatalf("denied get: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestListServices(t *testing.T) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-svc", Namespace: "default"},

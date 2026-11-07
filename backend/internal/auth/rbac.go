@@ -65,9 +65,11 @@ var trackedResources = map[string]bool{
 // namespace on request"), and its answer is the namespace's RoleBindings plus
 // every ClusterRoleBinding. Asked of a namespace that holds no RoleBindings,
 // it returns the ClusterRoleBinding rules alone: the grants that apply in
-// every namespace and to cluster-scoped resources. The API server does not
-// require the namespace to exist, and this one is not expected to.
-const clusterRulesNamespace = "kubecenter-cluster-wide-rules"
+// every namespace and to cluster-scoped resources. The name holds a colon, so
+// it is not a valid namespace name and no namespace (or RoleBinding in one)
+// can ever exist under it; the API server does not validate the review's
+// namespace (checked against v1.35), only that it is not empty.
+const clusterRulesNamespace = "kubecenter:cluster-wide"
 
 // RBACChecker queries Kubernetes RBAC permissions for users.
 type RBACChecker struct {

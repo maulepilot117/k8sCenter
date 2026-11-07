@@ -20,20 +20,33 @@ const SOURCE_COLORS: Record<NotifSource, string> = {
   external_secrets: "var(--accent-secondary)",
 };
 
-/** Colored dot indicating notification severity. */
-export function SeverityDot({ severity }: { severity: NotifSeverity }) {
+/**
+ * Colored dot indicating notification severity. Lists that track read state
+ * pass `read`: a read notification's dot is a hollow ring, so a filled dot
+ * means unread.
+ */
+export function SeverityDot({
+  severity,
+  read,
+}: {
+  severity: NotifSeverity;
+  read?: boolean;
+}) {
   const color = NOTIF_SEVERITY_COLORS[severity] ?? "var(--text-muted)";
   return (
     <span
+      data-read={read ? "true" : undefined}
       style={{
         display: "inline-block",
         width: "8px",
         height: "8px",
         borderRadius: "50%",
-        backgroundColor: color,
+        boxSizing: "border-box",
+        backgroundColor: read ? "transparent" : color,
+        border: `1.5px solid ${color}`,
         flexShrink: 0,
       }}
-      title={severity}
+      title={read ? `${severity} (read)` : `${severity} (unread)`}
     />
   );
 }
