@@ -38,6 +38,10 @@ type RefreshSession struct {
 	// access for a user whose identity was revoked while LDAP was down.
 	// Unused for local and OIDC providers (audit finding P2-3, 2026-05-22).
 	LastRevalidated time.Time
+	// ClientIP is the address the session was last issued to (login or the
+	// refresh that minted it). A refresh from a different address is
+	// audited, so a refresh cookie replayed from elsewhere leaves a trail.
+	ClientIP string
 }
 
 // SessionStore manages server-side refresh token storage.
@@ -146,4 +150,3 @@ func (s *SessionStore) StartCleanup(ctx context.Context, interval time.Duration)
 		}
 	}()
 }
-

@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
 
@@ -116,7 +117,7 @@ func (s *Server) handleOIDCMobileExchange(w http.ResponseWriter, r *http.Request
 	// echoed in the JSON below for the mobile client to persist into
 	// flutter_secure_storage. OIDC sessions get the 1h refresh TTL cap
 	// per auth.OIDCRefreshTokenLifetime.
-	accessToken, refreshToken, err := s.issueTokenPair(w, user, false /* cookieMode */)
+	accessToken, refreshToken, err := s.issueTokenPair(w, user, false /* cookieMode */, middleware.ClientIP(r))
 	if err != nil {
 		s.Logger.Error("failed to issue tokens", "error", err)
 		// Audit the post-exchange failure so operators can correlate a

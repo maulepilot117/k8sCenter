@@ -10,6 +10,7 @@ import (
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -78,5 +79,13 @@ func TestRBACChecker_ClusterScopedComesFromClusterWideRules(t *testing.T) {
 
 	if slices.Contains(factory.asked, "") {
 		t.Errorf("a rules review was sent with no namespace: %q", factory.asked)
+	}
+}
+
+// The probe name must never be a namespace someone could create and fill
+// with RoleBindings, which would then read as cluster-wide grants.
+func TestClusterRulesNamespaceCannotExist(t *testing.T) {
+	if errs := validation.IsDNS1123Label(clusterRulesNamespace); len(errs) == 0 {
+		t.Fatalf("%q is a valid namespace name; pick one that cannot exist", clusterRulesNamespace)
 	}
 }

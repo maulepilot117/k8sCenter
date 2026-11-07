@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -116,7 +117,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessToken, _, err := s.issueTokenPair(w, user, true /* cookieMode */)
+	accessToken, _, err := s.issueTokenPair(w, user, true /* cookieMode */, middleware.ClientIP(r))
 	if err != nil {
 		s.Logger.Error("failed to issue tokens", "error", err)
 		writeJSON(w, http.StatusInternalServerError, api.Response{
@@ -235,7 +236,8 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// path preserves the original LastRevalidated timestamp so a
 	// sustained outage cannot extend revoked-user access beyond the
 	// 5-minute grace window.
-	accessToken, newRefreshToken, err := s.issueTokenPairAt(w, user, !bodyMode, lastRevalidated)
+	clientIP := middleware.ClientIP(r)
+	accessToken, newRefreshToken, err := s.issueTokenPairAt(w, user, !bodyMode, lastRevalidated, clientIP)
 	if err != nil {
 		// Token mint failed — Restore the original session so the
 		// client can retry. The new sentinel uses the original
@@ -254,10 +256,19 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// A routine refresh is not audited: the client refreshes on every page
 	// load and every 15 minutes, which buried the audit log in "refresh"
 	// rows. Failed refreshes, and a success that is not routine (an LDAP
-	// session allowed through on its grace window), are still recorded.
+	// session allowed through on its grace window, or a refresh from a
+	// different address than the session was last issued to, as a replayed
+	// cookie would be), are still recorded.
+	details := []string{}
 	if auditDetail != "" {
+		details = append(details, auditDetail)
+	}
+	if session.ClientIP != "" && session.ClientIP != clientIP {
+		details = append(details, "refreshed from a new address (last issued to "+session.ClientIP+")")
+	}
+	if len(details) > 0 {
 		successEntry := s.newAuditEntry(r, user.Username, audit.ActionRefresh, audit.ResultSuccess)
-		successEntry.Detail = auditDetail
+		successEntry.Detail = strings.Join(details, "; ")
 		s.AuditLogger.Log(r.Context(), successEntry)
 	}
 
@@ -520,7 +531,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Issue k8sCenter JWT + refresh cookie (web redirect flow → cookie-mode)
-	accessToken, _, err := s.issueTokenPair(w, user, true /* cookieMode */)
+	accessToken, _, err := s.issueTokenPair(w, user, true /* cookieMode */, middleware.ClientIP(r))
 	if err != nil {
 		s.Logger.Error("failed to issue tokens after OIDC callback", "error", err)
 		http.Redirect(w, r, "/login?error=token_failed", http.StatusFound)

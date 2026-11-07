@@ -236,7 +236,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 			}), func(m resourceMeta) (Health, string) {
 				return replicaSetHealth(m.obj.(*appsv1.ReplicaSet))
 			})
-			markIdleReplicaSets(graph, replicaSets)
+			markIdleReplicaSets(graph, replicaSets, pods)
 		}
 	}
 
@@ -702,11 +702,20 @@ func deploymentHealth(dep *appsv1.Deployment) (Health, string) {
 	return HealthFailing, summary
 }
 
-func markIdleReplicaSets(graph *Graph, replicaSets []*appsv1.ReplicaSet) {
+func markIdleReplicaSets(graph *Graph, replicaSets []*appsv1.ReplicaSet, pods []*corev1.Pod) {
 	idle := make(map[string]bool)
 	for _, rs := range replicaSets {
 		if rs.Spec.Replicas != nil && *rs.Spec.Replicas == 0 && rs.Status.Replicas == 0 {
 			idle[string(rs.UID)] = true
+		}
+	}
+	// status.replicas leaves out terminating pods; a ReplicaSet that still
+	// owns one is not idle until that pod is gone.
+	for _, pod := range pods {
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == "ReplicaSet" {
+				delete(idle, string(ref.UID))
+			}
 		}
 	}
 	if len(idle) == 0 {
