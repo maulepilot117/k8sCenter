@@ -95,7 +95,12 @@ RUN set -eux; \
 #      dpkg --compare-versions, which understands epochs and ~-suffixes that a
 #      string comparison would get wrong.
 #   4. Ahead -> copy the shared objects into /patch and rewrite the status
-#      entry. Level or behind -> pass the base's entry through untouched and
+#      entry: the Version, and the Source line from what dpkg installed.
+#      Trivy compares a Debian package by its source version, and a binNMU in
+#      the base (zlib1g 1:1.3...-1+b1, source 1:1.3...-1) keeps a source
+#      version that rewriting Version alone would leave behind, so the patched
+#      image would still be flagged. Level or behind -> pass the base's entry
+#      through untouched and
 #      log a NOTE, so an operator reading the build log can see the stage is
 #      currently doing nothing for that package.
 #
@@ -153,7 +158,9 @@ RUN set -e && \
         for f in $(dpkg -L "$pkg" | grep '/usr/lib'); do \
           if [ -f "$f" ]; then mkdir -p "/patch$(dirname "$f")" && cp -a "$f" "/patch$f"; fi; \
         done; \
-        sed "s|${BASE_VER}|${INSTALLED_VER}|g" "/tmp/$pkg-orig" > "/patch/$pkg-status"; \
+        SRC_LINE="Source: $(dpkg-query -W -f='${source:Package} (${source:Version})' "$pkg")" && \
+        sed -e "s|${BASE_VER}|${INSTALLED_VER}|g" -e '/^Source:/d' -e "/^Package:/a ${SRC_LINE}" \
+            "/tmp/$pkg-orig" > "/patch/$pkg-status"; \
       else \
         echo "NOTE: distroless base ships $pkg $BASE_VER, Debian offers $INSTALLED_VER — overlay is a no-op for $pkg"; \
         cp "/tmp/$pkg-orig" "/patch/$pkg-status"; \
