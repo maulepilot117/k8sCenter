@@ -117,8 +117,7 @@ export function WizardReviewStep({
   // The footer calls the latest handleApply (it closes over the current yaml)
   // through this ref, so the registered action only changes with its label
   // and state, not on every render.
-  const applyRef = useRef(handleApply);
-  applyRef.current = handleApply;
+  const applyRef = useLatest(handleApply);
 
   const result = applyResult;
   const firstResult = result?.results[0];
