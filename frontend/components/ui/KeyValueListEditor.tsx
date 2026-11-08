@@ -1,6 +1,7 @@
 /** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 export interface KeyValueEntry {
   key: string;
@@ -32,16 +33,14 @@ export function KeyValueListEditor({
   keyPlaceholder = "key",
   valuePlaceholder = "value",
 }: KeyValueListEditorProps) {
-  // Entries carry no id; a row is identified by its position, which is also
-  // what onUpdate and onRemove address.
-  const rows = entries.map((entry, i) => ({ entry, i }));
+  const rowKeys = useRowKeys(entries.length);
   return (
     <div className="space-y-2">
       <label className="block text-sm font-medium text-text-secondary">
         {label}
       </label>
-      {rows.map(({ entry, i }) => (
-        <div key={i} className="flex items-center gap-2">
+      {entries.map((entry, i) => (
+        <div key={rowKeys.keyAt(i)} className="flex items-center gap-2">
           <Input
             value={entry.key}
             onChange={(e) => onUpdate(i, "key", e.currentTarget.value)}
@@ -56,7 +55,10 @@ export function KeyValueListEditor({
             className="flex-1"
           />
           <RemoveButton
-            onClick={() => onRemove(i)}
+            onClick={() => {
+              rowKeys.removeAt(i);
+              onRemove(i);
+            }}
             title={`Remove ${label.toLowerCase()}`}
           />
         </div>

@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
@@ -44,11 +45,11 @@ export function DeploymentBasicsStep({
   };
 
   return (
-    <div class="space-y-6 max-w-lg">
+    <div className="space-y-6 max-w-lg">
       <Input
         label="Name"
         value={name}
-        onInput={(e) => onChange("name", (e.target as HTMLInputElement).value)}
+        onChange={(e) => onChange("name", e.currentTarget.value)}
         placeholder="my-deployment"
         error={errors.name}
         required
@@ -65,7 +66,7 @@ export function DeploymentBasicsStep({
       <Input
         label="Container Image"
         value={image}
-        onInput={(e) => onChange("image", (e.target as HTMLInputElement).value)}
+        onChange={(e) => onChange("image", e.currentTarget.value)}
         placeholder="nginx:1.25"
         error={errors.image}
         required
@@ -75,11 +76,8 @@ export function DeploymentBasicsStep({
         label="Replicas"
         type="number"
         value={String(replicas)}
-        onInput={(e) =>
-          onChange(
-            "replicas",
-            parseInt((e.target as HTMLInputElement).value, 10) || 0,
-          )
+        onChange={(e) =>
+          onChange("replicas", parseInt(e.currentTarget.value, 10) || 0)
         }
         min={0}
         max={1000}

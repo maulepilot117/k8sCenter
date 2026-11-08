@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 
 /**
@@ -100,7 +101,9 @@ function getAuthBlock(
 export function DopplerForm({ spec, errors, onUpdateSpec }: DopplerFormProps) {
   // Track which auth method's fields are currently shown. Persisted in the
   // spec itself (via detectMethod) so the form survives Back/Next navigation.
-  const method = useSignal<DopplerAuthMethod | "">(detectMethod(spec));
+  const [method, setMethodState] = useState<DopplerAuthMethod | "">(
+    detectMethod(spec),
+  );
 
   function patchTop(field: string, value: string) {
     const next = { ...spec };
@@ -110,8 +113,8 @@ export function DopplerForm({ spec, errors, onUpdateSpec }: DopplerFormProps) {
   }
 
   function setMethod(m: DopplerAuthMethod) {
-    if (method.value === m) return;
-    method.value = m;
+    if (method === m) return;
+    setMethodState(m);
     // Clear the auth slate; preserve top-level fields (project, config).
     onUpdateSpec({
       ...spec,
@@ -142,8 +145,8 @@ export function DopplerForm({ spec, errors, onUpdateSpec }: DopplerFormProps) {
   }
 
   return (
-    <div class="space-y-5">
-      <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+    <div className="space-y-5">
+      <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         Configure the Doppler provider connection. Doppler credentials must
         already exist as Kubernetes Secrets in this namespace (for service
         token) or be available via Workload Identity (for OIDC) — this wizard
@@ -151,15 +154,13 @@ export function DopplerForm({ spec, errors, onUpdateSpec }: DopplerFormProps) {
       </div>
 
       {/* Top-level Doppler fields */}
-      <div class="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="doppler-project"
           label="Project"
           required
           value={getStr(spec, "project")}
-          onInput={(e) =>
-            patchTop("project", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("project", e.currentTarget.value)}
           placeholder="my-project"
           description="The Doppler project name."
           error={errors.project}
@@ -169,9 +170,7 @@ export function DopplerForm({ spec, errors, onUpdateSpec }: DopplerFormProps) {
           label="Config"
           required
           value={getStr(spec, "config")}
-          onInput={(e) =>
-            patchTop("config", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("config", e.currentTarget.value)}
           placeholder="prd"
           description="The Doppler config (environment) within the project."
           error={errors.config}
@@ -179,39 +178,39 @@ export function DopplerForm({ spec, errors, onUpdateSpec }: DopplerFormProps) {
       </div>
 
       {/* Auth method picker */}
-      <div class="space-y-3">
-        <h3 class="text-sm font-semibold text-text-primary">
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">
+          <span aria-hidden="true" className="text-danger ml-0.5">
             *
           </span>
         </h3>
-        <div class="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2 sm:grid-cols-2">
           {AUTH_METHODS.map((m) => {
-            const active = method.value === m.id;
+            const active = method === m.id;
             return (
               <button
                 key={m.id}
                 type="button"
                 onClick={() => setMethod(m.id)}
-                class={`text-left rounded-lg border p-3 transition-colors ${
+                className={`text-left rounded-lg border p-3 transition-colors ${
                   active
                     ? "border-brand bg-brand/5"
                     : "border-border-primary bg-surface hover:border-brand/50"
                 }`}
                 aria-pressed={active}
               >
-                <div class="font-medium text-text-primary">{m.label}</div>
-                <p class="mt-1 text-xs text-text-muted">{m.description}</p>
+                <div className="font-medium text-text-primary">{m.label}</div>
+                <p className="mt-1 text-xs text-text-muted">{m.description}</p>
               </button>
             );
           })}
         </div>
-        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
+        {errors.auth && <p className="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
-      {method.value === "secretRef" && (
+      {method === "secretRef" && (
         <ServiceTokenFields
           block={getAuthBlock(spec, "secretRef")}
           errors={errors}
@@ -220,7 +219,7 @@ export function DopplerForm({ spec, errors, onUpdateSpec }: DopplerFormProps) {
           }
         />
       )}
-      {method.value === "oidcConfig" && (
+      {method === "oidcConfig" && (
         <OIDCAuthFields
           block={getAuthBlock(spec, "oidcConfig")}
           errors={errors}
@@ -257,24 +256,22 @@ function ServiceTokenFields({
 }: ServiceTokenFieldsProps) {
   const ref = (block.dopplerToken as SecretRef) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">
         Service token Secret reference
       </h4>
-      <p class="text-xs text-text-muted">
-        The key defaults to <code class="font-mono">dopplerToken</code> in ESO
-        when omitted, but an explicit value is required here to produce
+      <p className="text-xs text-text-muted">
+        The key defaults to <code className="font-mono">dopplerToken</code> in
+        ESO when omitted, but an explicit value is required here to produce
         unambiguous YAML.
       </p>
-      <div class="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="doppler-token-ref-name"
           label="Secret name"
           required
           value={ref.name ?? ""}
-          onInput={(e) =>
-            onPatchRef({ name: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchRef({ name: e.currentTarget.value })}
           placeholder="doppler-token"
           error={errors["auth.secretRef.dopplerToken.name"]}
         />
@@ -283,9 +280,7 @@ function ServiceTokenFields({
           label="Key"
           required
           value={ref.key ?? ""}
-          onInput={(e) =>
-            onPatchRef({ key: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchRef({ key: e.currentTarget.value })}
           placeholder="serviceToken"
           error={errors["auth.secretRef.dopplerToken.key"]}
         />
@@ -310,8 +305,8 @@ function OIDCAuthFields({ block, errors, onPatch }: OIDCAuthFieldsProps) {
   }
 
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">
         OIDC / Workload Identity auth
       </h4>
       <Input
@@ -319,9 +314,7 @@ function OIDCAuthFields({ block, errors, onPatch }: OIDCAuthFieldsProps) {
         label="Doppler Identity ID"
         required
         value={identity}
-        onInput={(e) =>
-          onPatch({ identity: (e.target as HTMLInputElement).value })
-        }
+        onChange={(e) => onPatch({ identity: e.currentTarget.value })}
         placeholder="abc123..."
         description="The Doppler Service Account Identity ID configured for OIDC."
         error={errors["auth.oidcConfig.identity"]}
@@ -331,15 +324,13 @@ function OIDCAuthFields({ block, errors, onPatch }: OIDCAuthFieldsProps) {
         label="ServiceAccount name"
         required
         value={saName}
-        onInput={(e) =>
-          patchSARef({ name: (e.target as HTMLInputElement).value })
-        }
+        onChange={(e) => patchSARef({ name: e.currentTarget.value })}
         placeholder="my-app"
         description="Kubernetes ServiceAccount whose token is exchanged for a Doppler credential."
         error={errors["auth.oidcConfig.serviceAccountRef.name"]}
       />
       {errors["auth.oidcConfig.serviceAccountRef"] && (
-        <p class="text-sm text-danger">
+        <p className="text-sm text-danger">
           {errors["auth.oidcConfig.serviceAccountRef"]}
         </p>
       )}

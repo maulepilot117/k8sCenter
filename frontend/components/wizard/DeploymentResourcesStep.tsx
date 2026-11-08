@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { MAX_PROBE_PATH_LENGTH } from "@/lib/wizard-constants.ts";
@@ -43,33 +44,29 @@ function ProbeSection({
   onUpdate: (field: keyof ProbeState, value: string | number) => void;
 }) {
   return (
-    <div class="space-y-3">
-      <div class="flex items-center gap-2">
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
         <input
           type="checkbox"
           checked={probe !== null}
           onChange={onToggle}
-          class="rounded border-border-primary"
+          className="rounded border-border-primary"
         />
-        <span class="text-sm font-medium text-text-secondary">{label}</span>
+        <span className="text-sm font-medium text-text-secondary">{label}</span>
       </div>
       {probe && (
-        <div class="ml-6 space-y-3 border-l-2 border-border-primary pl-4">
+        <div className="ml-6 space-y-3 border-l-2 border-border-primary pl-4">
           <Select
             label="Type"
             value={probe.type}
-            onChange={(e) =>
-              onUpdate("type", (e.target as HTMLSelectElement).value)
-            }
+            onChange={(e) => onUpdate("type", e.currentTarget.value)}
             options={PROBE_TYPE_OPTIONS}
           />
           {probe.type === "http" && (
             <Input
               label="Path"
               value={probe.path}
-              onInput={(e) =>
-                onUpdate("path", (e.target as HTMLInputElement).value)
-              }
+              onChange={(e) => onUpdate("path", e.currentTarget.value)}
               placeholder="/healthz"
               maxLength={MAX_PROBE_PATH_LENGTH}
             />
@@ -78,17 +75,14 @@ function ProbeSection({
             label="Port"
             type="number"
             value={probe.port ? String(probe.port) : ""}
-            onInput={(e) =>
-              onUpdate(
-                "port",
-                parseInt((e.target as HTMLInputElement).value, 10) || 0,
-              )
+            onChange={(e) =>
+              onUpdate("port", parseInt(e.currentTarget.value, 10) || 0)
             }
             placeholder="8080"
             min={1}
             max={65535}
           />
-          <div class="flex gap-4">
+          <div className="flex gap-4">
             <Input
               label="Initial Delay (s)"
               type="number"
@@ -97,10 +91,10 @@ function ProbeSection({
                   ? String(probe.initialDelaySeconds)
                   : ""
               }
-              onInput={(e) =>
+              onChange={(e) =>
                 onUpdate(
                   "initialDelaySeconds",
-                  parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                  parseInt(e.currentTarget.value, 10) || 0,
                 )
               }
               placeholder="0"
@@ -110,10 +104,10 @@ function ProbeSection({
               label="Period (s)"
               type="number"
               value={probe.periodSeconds ? String(probe.periodSeconds) : ""}
-              onInput={(e) =>
+              onChange={(e) =>
                 onUpdate(
                   "periodSeconds",
-                  parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                  parseInt(e.currentTarget.value, 10) || 0,
                 )
               }
               placeholder="10"
@@ -146,49 +140,41 @@ export function DeploymentResourcesStep({
   };
 
   return (
-    <div class="space-y-8 max-w-lg">
+    <div className="space-y-8 max-w-lg">
       {/* Resource Requests & Limits */}
-      <div class="space-y-3">
-        <h3 class="text-sm font-medium text-text-secondary">
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium text-text-secondary">
           Resource Requests & Limits
         </h3>
-        <p class="text-xs text-text-muted">
+        <p className="text-xs text-text-muted">
           Optional. Set CPU and memory requests/limits for the container.
         </p>
-        <div class="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-4">
           <Input
             label="CPU Request"
             value={cpuRequest}
-            onInput={(e) =>
-              onChange("cpuRequest", (e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onChange("cpuRequest", e.currentTarget.value)}
             placeholder="100m"
             error={errors["resources.requestCpu"]}
           />
           <Input
             label="CPU Limit"
             value={cpuLimit}
-            onInput={(e) =>
-              onChange("cpuLimit", (e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onChange("cpuLimit", e.currentTarget.value)}
             placeholder="500m"
             error={errors["resources.limitCpu"]}
           />
           <Input
             label="Memory Request"
             value={memoryRequest}
-            onInput={(e) =>
-              onChange("memoryRequest", (e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onChange("memoryRequest", e.currentTarget.value)}
             placeholder="128Mi"
             error={errors["resources.requestMemory"]}
           />
           <Input
             label="Memory Limit"
             value={memoryLimit}
-            onInput={(e) =>
-              onChange("memoryLimit", (e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onChange("memoryLimit", e.currentTarget.value)}
             placeholder="512Mi"
             error={errors["resources.limitMemory"]}
           />
@@ -196,8 +182,10 @@ export function DeploymentResourcesStep({
       </div>
 
       {/* Health Probes */}
-      <div class="space-y-4">
-        <h3 class="text-sm font-medium text-text-secondary">Health Probes</h3>
+      <div className="space-y-4">
+        <h3 className="text-sm font-medium text-text-secondary">
+          Health Probes
+        </h3>
         <ProbeSection
           label="Liveness Probe"
           probe={livenessProbe}
@@ -231,27 +219,29 @@ export function DeploymentResourcesStep({
       </div>
 
       {/* Update Strategy */}
-      <div class="space-y-3">
-        <h3 class="text-sm font-medium text-text-secondary">Update Strategy</h3>
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium text-text-secondary">
+          Update Strategy
+        </h3>
         <Select
           value={strategy.type}
           onChange={(e) =>
             onChange("strategy", {
               ...strategy,
-              type: (e.target as HTMLSelectElement).value,
+              type: e.currentTarget.value,
             })
           }
           options={STRATEGY_OPTIONS}
         />
         {strategy.type === "RollingUpdate" && (
-          <div class="flex gap-4">
+          <div className="flex gap-4">
             <Input
               label="Max Surge"
               value={strategy.maxSurge}
-              onInput={(e) =>
+              onChange={(e) =>
                 onChange("strategy", {
                   ...strategy,
-                  maxSurge: (e.target as HTMLInputElement).value,
+                  maxSurge: e.currentTarget.value,
                 })
               }
               placeholder="25%"
@@ -259,10 +249,10 @@ export function DeploymentResourcesStep({
             <Input
               label="Max Unavailable"
               value={strategy.maxUnavailable}
-              onInput={(e) =>
+              onChange={(e) =>
                 onChange("strategy", {
                   ...strategy,
-                  maxUnavailable: (e.target as HTMLInputElement).value,
+                  maxUnavailable: e.currentTarget.value,
                 })
               }
               placeholder="25%"

@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 
 /**
@@ -99,7 +100,9 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
 
   // Track which auth method's fields are currently shown. Persisted in the
   // spec itself (via detectMethod) so the form survives Back/Next navigation.
-  const method = useSignal<AWSAuthMethod | "">(detectMethod(spec));
+  const [method, setMethodState] = useState<AWSAuthMethod | "">(
+    detectMethod(spec),
+  );
 
   function patchTop(field: string, value: string) {
     const next = { ...spec };
@@ -109,8 +112,8 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
   }
 
   function setMethod(m: AWSAuthMethod) {
-    if (method.value === m) return;
-    method.value = m;
+    if (method === m) return;
+    setMethodState(m);
     // Clear the auth slate; preserve top-level fields (region, role).
     onUpdateSpec({
       ...spec,
@@ -141,8 +144,8 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
   }
 
   return (
-    <div class="space-y-5">
-      <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+    <div className="space-y-5">
+      <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         Configure the AWS Secrets Manager connection and authentication method.
         Credentials must already exist as Kubernetes Secrets in this namespace;
         this wizard only references them — it never holds AWS credentials
@@ -150,15 +153,13 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
       </div>
 
       {/* Top-level AWS fields */}
-      <div class="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="aws-region"
           label="AWS Region"
           required
           value={getStr(spec, "region")}
-          onInput={(e) =>
-            patchTop("region", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("region", e.currentTarget.value)}
           placeholder="us-east-1"
           description="The AWS region where your secrets are stored."
           error={errors.region}
@@ -167,9 +168,7 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
           id="aws-role"
           label="Assume-role ARN (optional)"
           value={getStr(spec, "role")}
-          onInput={(e) =>
-            patchTop("role", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("role", e.currentTarget.value)}
           placeholder="arn:aws:iam::123456789012:role/my-role"
           description="IAM role to assume before fetching secrets. Leave blank to use the pod's own identity."
           error={errors.role}
@@ -177,46 +176,46 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
       </div>
 
       {/* Auth method picker */}
-      <div class="space-y-3">
-        <h3 class="text-sm font-semibold text-text-primary">
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">
+          <span aria-hidden="true" className="text-danger ml-0.5">
             *
           </span>
         </h3>
-        <div class="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2 sm:grid-cols-2">
           {AUTH_METHODS.map((m) => {
-            const active = method.value === m.id;
+            const active = method === m.id;
             return (
               <button
                 key={m.id}
                 type="button"
                 onClick={() => setMethod(m.id)}
-                class={`text-left rounded-lg border p-3 transition-colors ${
+                className={`text-left rounded-lg border p-3 transition-colors ${
                   active
                     ? "border-brand bg-brand/5"
                     : "border-border-primary bg-surface hover:border-brand/50"
                 }`}
                 aria-pressed={active}
               >
-                <div class="font-medium text-text-primary">{m.label}</div>
-                <p class="mt-1 text-xs text-text-muted">{m.description}</p>
+                <div className="font-medium text-text-primary">{m.label}</div>
+                <p className="mt-1 text-xs text-text-muted">{m.description}</p>
               </button>
             );
           })}
         </div>
-        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
+        {errors.auth && <p className="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
-      {method.value === "jwt" && (
+      {method === "jwt" && (
         <JWTAuthFields
           block={getAuthBlock(spec, "jwt")}
           errors={errors}
           onPatch={(patch) => patchAuth("jwt", patch)}
         />
       )}
-      {method.value === "secretRef" && (
+      {method === "secretRef" && (
         <StaticCredAuthFields
           block={getAuthBlock(spec, "secretRef")}
           errors={errors}
@@ -254,11 +253,11 @@ interface JWTAuthFieldsProps {
 function JWTAuthFields({ block, errors, onPatch }: JWTAuthFieldsProps) {
   const saRef = (block.serviceAccountRef as { name?: string }) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">
         IAM / IRSA — service account reference
       </h4>
-      <p class="text-xs text-text-muted">
+      <p className="text-xs text-text-muted">
         The service account must have an IAM role ARN annotation
         (eks.amazonaws.com/role-arn) or be bound via EKS Pod Identity. The
         assume-role ARN above takes precedence if set.
@@ -268,11 +267,11 @@ function JWTAuthFields({ block, errors, onPatch }: JWTAuthFieldsProps) {
         label="Service account name"
         required
         value={saRef.name ?? ""}
-        onInput={(e) =>
+        onChange={(e) =>
           onPatch({
             serviceAccountRef: {
               ...saRef,
-              name: (e.target as HTMLInputElement).value,
+              name: e.currentTarget.value,
             },
           })
         }
@@ -300,20 +299,20 @@ function StaticCredAuthFields({
   const akRef = (block.accessKeyIDSecretRef as SecretKeyRef) ?? {};
   const sakRef = (block.secretAccessKeySecretRef as SecretKeyRef) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-4">
+    <div className="rounded-md border border-border-primary p-4 space-y-4">
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
           Access Key ID Secret reference
         </h4>
-        <div class="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="aws-akid-name"
             label="Secret name"
             required
             value={akRef.name ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchAccessKeyRef({
-                name: (e.target as HTMLInputElement).value,
+                name: e.currentTarget.value,
               })
             }
             placeholder="aws-credentials"
@@ -324,9 +323,9 @@ function StaticCredAuthFields({
             label="Key"
             required
             value={akRef.key ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchAccessKeyRef({
-                key: (e.target as HTMLInputElement).value,
+                key: e.currentTarget.value,
               })
             }
             placeholder="access-key-id"
@@ -335,18 +334,18 @@ function StaticCredAuthFields({
         </div>
       </div>
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
           Secret Access Key Secret reference
         </h4>
-        <div class="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="aws-sak-name"
             label="Secret name"
             required
             value={sakRef.name ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchSecretKeyRef({
-                name: (e.target as HTMLInputElement).value,
+                name: e.currentTarget.value,
               })
             }
             placeholder="aws-credentials"
@@ -357,9 +356,9 @@ function StaticCredAuthFields({
             label="Key"
             required
             value={sakRef.key ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchSecretKeyRef({
-                key: (e.target as HTMLInputElement).value,
+                key: e.currentTarget.value,
               })
             }
             placeholder="secret-access-key"

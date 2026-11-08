@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 import type { ProviderFormProps } from "@/lib/eso-types.ts";
 
@@ -110,7 +111,9 @@ export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
 
   // Track which auth method's fields are currently shown. Persisted in the
   // spec itself (via detectMethod) so the form survives Back/Next navigation.
-  const method = useSignal<VaultAuthMethod | "">(detectMethod(spec));
+  const [method, setMethodState] = useState<VaultAuthMethod | "">(
+    detectMethod(spec),
+  );
 
   function patchTop(field: string, value: string) {
     const next = { ...spec };
@@ -120,8 +123,8 @@ export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
   }
 
   function setMethod(m: VaultAuthMethod) {
-    if (method.value === m) return;
-    method.value = m;
+    if (method === m) return;
+    setMethodState(m);
     // Clear the auth slate; preserve top-level (server/path/version/namespace).
     onUpdateSpec({
       ...spec,
@@ -152,8 +155,8 @@ export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
   }
 
   return (
-    <div class="space-y-5">
-      <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+    <div className="space-y-5">
+      <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         Configure the Vault server connection and authentication method.
         Credentials must already exist as Kubernetes Secrets in this namespace;
         this wizard only references them — it never holds Vault credentials
@@ -161,15 +164,13 @@ export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
       </div>
 
       {/* Top-level Vault fields */}
-      <div class="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="vault-server"
           label="Server URL"
           required
           value={getStr(spec, "server")}
-          onInput={(e) =>
-            patchTop("server", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("server", e.currentTarget.value)}
           placeholder="https://vault.example.com:8200"
           description="Must use https. Private and in-cluster addresses are accepted."
           error={errors.server}
@@ -178,45 +179,39 @@ export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
           id="vault-path"
           label="Mount path (optional)"
           value={getStr(spec, "path")}
-          onInput={(e) =>
-            patchTop("path", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("path", e.currentTarget.value)}
           placeholder="secret"
           description="KV mount name. Leave blank for ESO default."
           error={errors.path}
         />
       </div>
 
-      <div class="grid grid-cols-2 gap-4">
-        <div class="space-y-1">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-1">
           <label
-            for="vault-version"
-            class="block text-sm font-medium text-text-secondary"
+            htmlFor="vault-version"
+            className="block text-sm font-medium text-text-secondary"
           >
             KV version
           </label>
           <select
             id="vault-version"
-            class="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+            className="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
             value={getStr(spec, "version") || "v2"}
-            onChange={(e) =>
-              patchTop("version", (e.target as HTMLSelectElement).value)
-            }
+            onChange={(e) => patchTop("version", e.currentTarget.value)}
           >
             <option value="v2">v2 (recommended)</option>
             <option value="v1">v1</option>
           </select>
           {errors.version && (
-            <p class="text-sm text-danger">{errors.version}</p>
+            <p className="text-sm text-danger">{errors.version}</p>
           )}
         </div>
         <Input
           id="vault-namespace"
           label="Vault namespace (Enterprise)"
           value={getStr(spec, "namespace")}
-          onInput={(e) =>
-            patchTop("namespace", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("namespace", e.currentTarget.value)}
           placeholder="admin/dev"
           description="Vault Enterprise namespaces only. Leave blank for OSS."
           error={errors.namespace}
@@ -224,39 +219,39 @@ export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
       </div>
 
       {/* Auth method picker */}
-      <div class="space-y-3">
-        <h3 class="text-sm font-semibold text-text-primary">
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">
+          <span aria-hidden="true" className="text-danger ml-0.5">
             *
           </span>
         </h3>
-        <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           {AUTH_METHODS.map((m) => {
-            const active = method.value === m.id;
+            const active = method === m.id;
             return (
               <button
                 key={m.id}
                 type="button"
                 onClick={() => setMethod(m.id)}
-                class={`text-left rounded-lg border p-3 transition-colors ${
+                className={`text-left rounded-lg border p-3 transition-colors ${
                   active
                     ? "border-brand bg-brand/5"
                     : "border-border-primary bg-surface hover:border-brand/50"
                 }`}
                 aria-pressed={active}
               >
-                <div class="font-medium text-text-primary">{m.label}</div>
-                <p class="mt-1 text-xs text-text-muted">{m.description}</p>
+                <div className="font-medium text-text-primary">{m.label}</div>
+                <p className="mt-1 text-xs text-text-muted">{m.description}</p>
               </button>
             );
           })}
         </div>
-        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
+        {errors.auth && <p className="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
-      {method.value === "token" && (
+      {method === "token" && (
         <TokenAuthFields
           block={getAuthBlock(spec, "token")}
           errors={errors}
@@ -265,14 +260,14 @@ export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
           }
         />
       )}
-      {method.value === "kubernetes" && (
+      {method === "kubernetes" && (
         <KubernetesAuthFields
           block={getAuthBlock(spec, "kubernetes")}
           errors={errors}
           onPatch={(patch) => patchAuth("kubernetes", patch)}
         />
       )}
-      {method.value === "appRole" && (
+      {method === "appRole" && (
         <AppRoleAuthFields
           block={getAuthBlock(spec, "appRole")}
           errors={errors}
@@ -282,7 +277,7 @@ export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
           }
         />
       )}
-      {method.value === "jwt" && (
+      {method === "jwt" && (
         <JWTAuthFields
           block={getAuthBlock(spec, "jwt")}
           errors={errors}
@@ -292,7 +287,7 @@ export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
           }
         />
       )}
-      {method.value === "cert" && (
+      {method === "cert" && (
         <CertAuthFields
           block={getAuthBlock(spec, "cert")}
           errors={errors}
@@ -336,19 +331,17 @@ interface TokenAuthFieldsProps {
 function TokenAuthFields({ block, errors, onPatchRef }: TokenAuthFieldsProps) {
   const ref = (block.tokenSecretRef as SecretRef) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">
         Token Secret reference
       </h4>
-      <div class="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="vault-token-ref-name"
           label="Secret name"
           required
           value={ref.name ?? ""}
-          onInput={(e) =>
-            onPatchRef({ name: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchRef({ name: e.currentTarget.value })}
           placeholder="vault-token"
           error={errors["auth.token.tokenSecretRef.name"]}
         />
@@ -357,9 +350,7 @@ function TokenAuthFields({ block, errors, onPatchRef }: TokenAuthFieldsProps) {
           label="Key"
           required
           value={ref.key ?? ""}
-          onInput={(e) =>
-            onPatchRef({ key: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchRef({ key: e.currentTarget.value })}
           placeholder="token"
           error={errors["auth.token.tokenSecretRef.key"]}
         />
@@ -382,17 +373,15 @@ function KubernetesAuthFields({
   const mountPath = (block.mountPath as string) ?? "";
   const role = (block.role as string) ?? "";
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">Kubernetes auth</h4>
-      <div class="grid grid-cols-2 gap-3">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">Kubernetes auth</h4>
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="vault-k8s-mount"
           label="Mount path"
           required
           value={mountPath}
-          onInput={(e) =>
-            onPatch({ mountPath: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatch({ mountPath: e.currentTarget.value })}
           placeholder="kubernetes"
           description="The Vault auth path where Kubernetes auth is enabled."
           error={errors["auth.kubernetes.mountPath"]}
@@ -402,9 +391,7 @@ function KubernetesAuthFields({
           label="Role"
           required
           value={role}
-          onInput={(e) =>
-            onPatch({ role: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatch({ role: e.currentTarget.value })}
           placeholder="my-app"
           description="Vault role bound to this service account."
           error={errors["auth.kubernetes.role"]}
@@ -431,17 +418,15 @@ function AppRoleAuthFields({
   const roleId = (block.roleId as string) ?? "";
   const secretRef = (block.secretRef as SecretRef) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">AppRole auth</h4>
-      <div class="grid grid-cols-2 gap-3">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">AppRole auth</h4>
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="vault-approle-path"
           label="Auth path"
           required
           value={path}
-          onInput={(e) =>
-            onPatch({ path: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatch({ path: e.currentTarget.value })}
           placeholder="approle"
           error={errors["auth.appRole.path"]}
         />
@@ -450,26 +435,22 @@ function AppRoleAuthFields({
           label="Role ID"
           required
           value={roleId}
-          onInput={(e) =>
-            onPatch({ roleId: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatch({ roleId: e.currentTarget.value })}
           placeholder="abc-123-…"
           description="The literal RoleID from `vault read auth/approle/role/<name>/role-id`."
           error={errors["auth.appRole.roleId"]}
         />
       </div>
-      <h4 class="text-sm font-medium text-text-primary">
+      <h4 className="text-sm font-medium text-text-primary">
         SecretID Secret reference
       </h4>
-      <div class="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="vault-approle-ref-name"
           label="Secret name"
           required
           value={secretRef.name ?? ""}
-          onInput={(e) =>
-            onPatchSecretRef({ name: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchSecretRef({ name: e.currentTarget.value })}
           placeholder="approle-secret"
           error={errors["auth.appRole.secretRef.name"]}
         />
@@ -478,9 +459,7 @@ function AppRoleAuthFields({
           label="Key"
           required
           value={secretRef.key ?? ""}
-          onInput={(e) =>
-            onPatchSecretRef({ key: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchSecretRef({ key: e.currentTarget.value })}
           placeholder="secret-id"
           error={errors["auth.appRole.secretRef.key"]}
         />
@@ -506,17 +485,15 @@ function JWTAuthFields({
   const role = (block.role as string) ?? "";
   const secretRef = (block.secretRef as SecretRef) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">JWT / OIDC auth</h4>
-      <div class="grid grid-cols-2 gap-3">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">JWT / OIDC auth</h4>
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="vault-jwt-path"
           label="Auth path"
           required
           value={path}
-          onInput={(e) =>
-            onPatch({ path: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatch({ path: e.currentTarget.value })}
           placeholder="jwt"
           error={errors["auth.jwt.path"]}
         />
@@ -524,24 +501,20 @@ function JWTAuthFields({
           id="vault-jwt-role"
           label="Role (optional)"
           value={role}
-          onInput={(e) =>
-            onPatch({ role: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatch({ role: e.currentTarget.value })}
           placeholder="my-role"
         />
       </div>
-      <h4 class="text-sm font-medium text-text-primary">
+      <h4 className="text-sm font-medium text-text-primary">
         JWT Secret reference
       </h4>
-      <div class="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="vault-jwt-ref-name"
           label="Secret name"
           required
           value={secretRef.name ?? ""}
-          onInput={(e) =>
-            onPatchSecretRef({ name: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchSecretRef({ name: e.currentTarget.value })}
           placeholder="jwt-token"
           error={errors["auth.jwt.secretRef.name"]}
         />
@@ -550,9 +523,7 @@ function JWTAuthFields({
           label="Key"
           required
           value={secretRef.key ?? ""}
-          onInput={(e) =>
-            onPatchSecretRef({ key: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchSecretRef({ key: e.currentTarget.value })}
           placeholder="jwt"
           error={errors["auth.jwt.secretRef.key"]}
         />
@@ -577,20 +548,20 @@ function CertAuthFields({
   const clientCert = (block.clientCert as SecretRef) ?? {};
   const secretRef = (block.secretRef as SecretRef) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-4">
+    <div className="rounded-md border border-border-primary p-4 space-y-4">
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
           Client certificate
         </h4>
-        <div class="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="vault-cert-cert-name"
             label="Secret name"
             required
             value={clientCert.name ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchClientCert({
-                name: (e.target as HTMLInputElement).value,
+                name: e.currentTarget.value,
               })
             }
             placeholder="vault-client-cert"
@@ -601,25 +572,23 @@ function CertAuthFields({
             label="Key"
             required
             value={clientCert.key ?? ""}
-            onInput={(e) =>
-              onPatchClientCert({ key: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchClientCert({ key: e.currentTarget.value })}
             placeholder="tls.crt"
             error={errors["auth.cert.clientCert.key"]}
           />
         </div>
       </div>
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">Client key</h4>
-        <div class="grid grid-cols-2 gap-3">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
+          Client key
+        </h4>
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="vault-cert-key-name"
             label="Secret name"
             required
             value={secretRef.name ?? ""}
-            onInput={(e) =>
-              onPatchSecretRef({ name: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchSecretRef({ name: e.currentTarget.value })}
             placeholder="vault-client-key"
             error={errors["auth.cert.secretRef.name"]}
           />
@@ -628,9 +597,7 @@ function CertAuthFields({
             label="Key"
             required
             value={secretRef.key ?? ""}
-            onInput={(e) =>
-              onPatchSecretRef({ key: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchSecretRef({ key: e.currentTarget.value })}
             placeholder="tls.key"
             error={errors["auth.cert.secretRef.key"]}
           />

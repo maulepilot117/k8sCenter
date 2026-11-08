@@ -1,7 +1,9 @@
-import type { Signal } from "@preact/signals";
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import type { Signal } from "@preact/signals-core";
+import { useState } from "react";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { QuotaConfig } from "@/src/islands/NamespaceLimitsWizard.tsx";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface QuotaValuesStepProps {
   quota: QuotaConfig;
@@ -17,7 +19,8 @@ export function QuotaValuesStep({
   errors,
   onUpdateQuota,
 }: QuotaValuesStepProps) {
-  const showAdvanced = useSignal(false);
+  const errorMap = useSignalValue(errors);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   return (
     <div
@@ -50,13 +53,11 @@ export function QuotaValuesStep({
           <input
             type="text"
             value={quota.cpuHard}
-            onInput={(e) =>
-              onUpdateQuota("cpuHard", (e.target as HTMLInputElement).value)
-            }
-            class={WIZARD_INPUT_CLASS}
+            onChange={(e) => onUpdateQuota("cpuHard", e.currentTarget.value)}
+            className={WIZARD_INPUT_CLASS}
             placeholder="e.g. 8 or 8000m"
           />
-          {errors.value.cpuHard && (
+          {errorMap.cpuHard && (
             <p
               style={{
                 marginTop: "4px",
@@ -64,7 +65,7 @@ export function QuotaValuesStep({
                 color: "var(--error)",
               }}
             >
-              {errors.value.cpuHard}
+              {errorMap.cpuHard}
             </p>
           )}
         </div>
@@ -83,13 +84,11 @@ export function QuotaValuesStep({
           <input
             type="text"
             value={quota.memoryHard}
-            onInput={(e) =>
-              onUpdateQuota("memoryHard", (e.target as HTMLInputElement).value)
-            }
-            class={WIZARD_INPUT_CLASS}
+            onChange={(e) => onUpdateQuota("memoryHard", e.currentTarget.value)}
+            className={WIZARD_INPUT_CLASS}
             placeholder="e.g. 16Gi"
           />
-          {errors.value.memoryHard && (
+          {errorMap.memoryHard && (
             <p
               style={{
                 marginTop: "4px",
@@ -97,7 +96,7 @@ export function QuotaValuesStep({
                 color: "var(--error)",
               }}
             >
-              {errors.value.memoryHard}
+              {errorMap.memoryHard}
             </p>
           )}
         </div>
@@ -120,15 +119,12 @@ export function QuotaValuesStep({
           min={1}
           max={1000}
           value={quota.podsHard}
-          onInput={(e) =>
-            onUpdateQuota(
-              "podsHard",
-              parseInt((e.target as HTMLInputElement).value, 10) || 1,
-            )
+          onChange={(e) =>
+            onUpdateQuota("podsHard", parseInt(e.currentTarget.value, 10) || 1)
           }
-          class={WIZARD_INPUT_CLASS}
+          className={WIZARD_INPUT_CLASS}
         />
-        {errors.value.podsHard && (
+        {errorMap.podsHard && (
           <p
             style={{
               marginTop: "4px",
@@ -136,7 +132,7 @@ export function QuotaValuesStep({
               color: "var(--error)",
             }}
           >
-            {errors.value.podsHard}
+            {errorMap.podsHard}
           </p>
         )}
       </div>
@@ -145,7 +141,7 @@ export function QuotaValuesStep({
       <button
         type="button"
         onClick={() => {
-          showAdvanced.value = !showAdvanced.value;
+          setShowAdvanced((prev) => !prev);
         }}
         style={{
           alignSelf: "flex-start",
@@ -167,20 +163,20 @@ export function QuotaValuesStep({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
           style={{
-            transform: showAdvanced.value ? "rotate(90deg)" : "rotate(0deg)",
+            transform: showAdvanced ? "rotate(90deg)" : "rotate(0deg)",
             transition: "transform 0.15s",
           }}
         >
           <path d="M7 5l5 5-5 5" />
         </svg>
-        {showAdvanced.value ? "Hide" : "Show"} advanced options
+        {showAdvanced ? "Hide" : "Show"} advanced options
       </button>
 
-      {showAdvanced.value && (
+      {showAdvanced && (
         <div
           style={{
             display: "flex",
@@ -231,14 +227,11 @@ export function QuotaValuesStep({
                   type="number"
                   min={0}
                   value={quota[field] ?? ""}
-                  onInput={(e) => {
-                    const v = parseInt(
-                      (e.target as HTMLInputElement).value,
-                      10,
-                    );
+                  onChange={(e) => {
+                    const v = parseInt(e.currentTarget.value, 10);
                     onUpdateQuota(field, Number.isNaN(v) ? undefined : v);
                   }}
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="No limit"
                 />
               </div>
@@ -260,13 +253,10 @@ export function QuotaValuesStep({
             <input
               type="text"
               value={quota.gpuHard ?? ""}
-              onInput={(e) =>
-                onUpdateQuota(
-                  "gpuHard",
-                  (e.target as HTMLInputElement).value || undefined,
-                )
+              onChange={(e) =>
+                onUpdateQuota("gpuHard", e.currentTarget.value || undefined)
               }
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
               placeholder="e.g. 1 (nvidia.com/gpu)"
             />
           </div>
@@ -306,17 +296,14 @@ export function QuotaValuesStep({
                   min={1}
                   max={100}
                   value={quota.warnThreshold ?? ""}
-                  onInput={(e) => {
-                    const v = parseInt(
-                      (e.target as HTMLInputElement).value,
-                      10,
-                    );
+                  onChange={(e) => {
+                    const v = parseInt(e.currentTarget.value, 10);
                     onUpdateQuota(
                       "warnThreshold",
                       Number.isNaN(v) ? undefined : v,
                     );
                   }}
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="80"
                 />
               </div>
@@ -336,17 +323,14 @@ export function QuotaValuesStep({
                   min={1}
                   max={100}
                   value={quota.criticalThreshold ?? ""}
-                  onInput={(e) => {
-                    const v = parseInt(
-                      (e.target as HTMLInputElement).value,
-                      10,
-                    );
+                  onChange={(e) => {
+                    const v = parseInt(e.currentTarget.value, 10);
                     onUpdateQuota(
                       "criticalThreshold",
                       Number.isNaN(v) ? undefined : v,
                     );
                   }}
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="95"
                 />
               </div>

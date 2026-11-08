@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
@@ -8,6 +8,7 @@ import type {
   ExternalSecretWizardForm,
   ExternalSecretWizardStoreOption,
 } from "@/src/islands/ExternalSecretWizard.tsx";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 interface ExternalSecretFormProps {
   form: ExternalSecretWizardForm;
@@ -27,6 +28,12 @@ interface ExternalSecretFormProps {
 }
 
 const PATH_DEBOUNCE_MS = 300;
+
+interface PathTarget {
+  namespace: string;
+  name: string;
+  provider: string;
+}
 
 interface PathDiscoveryState {
   supported: boolean;
@@ -54,9 +61,8 @@ export function ExternalSecretForm({
 }: ExternalSecretFormProps) {
   // Path-discovery state. The Kubernetes provider typeahead populates `paths`;
   // other providers leave `supported` false so the row renders a free-text
-  // input with helper text. Signal avoids re-rendering the whole form on every
-  // loading-state tick.
-  const discovery = useSignal<PathDiscoveryState>({
+  // input with helper text.
+  const [discovery, setDiscovery] = useState<PathDiscoveryState>({
     supported: false,
     provider: "",
     paths: [],
@@ -69,6 +75,20 @@ export function ExternalSecretForm({
   const selectedStore = stores.find(
     (s) => s.name === form.storeRefName && s.kind === form.storeRefKind,
   );
+  // The debounced fetch fires after the render that scheduled it, so it reads
+  // the store and discovery state current when it runs.
+  const storeKind = selectedStore?.kind;
+  const storeName = selectedStore?.name;
+  const storeNamespace = selectedStore?.namespace;
+  const storeProvider = selectedStore?.provider;
+  const selectedStoreRef = useRef(selectedStore);
+  selectedStoreRef.current = selectedStore;
+
+  const dataRows = useRowKeys(form.data.length);
+  function removeRow(index: number) {
+    dataRows.removeAt(index);
+    onRemoveDataItem(index);
+  }
 
   // Track the latest fetch sequence so a stale response cannot overwrite a
   // newer one. AbortController cancels in-flight fetches when the user keeps
@@ -80,69 +100,66 @@ export function ExternalSecretForm({
   // Shared fetch helper used by both the store-change probe and the debounced
   // typeahead. Cancels any in-flight request via abortRef, increments fetchSeq
   // for stale-response guards, and always drives the same discovery state.
-  function fetchPaths(prefix?: string) {
-    if (selectedStore?.kind !== "SecretStore") return;
-
+  const fetchPaths = useCallback((target: PathTarget, prefix?: string) => {
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
     const seq = ++fetchSeq.current;
     const signal = abortRef.current.signal;
 
-    discovery.value = { ...discovery.value, loading: true, error: null };
+    setDiscovery((prev) => ({ ...prev, loading: true, error: null }));
     esoApi
-      .listStorePaths(
-        selectedStore.namespace ?? "",
-        selectedStore.name,
-        prefix,
-        signal,
-      )
+      .listStorePaths(target.namespace, target.name, prefix, signal)
       .then((resp) => {
         if (seq !== fetchSeq.current) return;
-        discovery.value = {
+        setDiscovery({
           supported: !!resp.data.supported,
           provider: resp.data.provider ?? "",
           paths: resp.data.paths ?? [],
           loading: false,
           error: null,
-        };
+        });
       })
       .catch((err) => {
         if (seq !== fetchSeq.current) return;
         // Ignore abort errors — they're caused by our own cancellation.
         if (err instanceof DOMException && err.name === "AbortError") return;
-        discovery.value = {
+        setDiscovery({
           supported: false,
-          provider: selectedStore.provider,
+          provider: target.provider,
           paths: [],
           loading: false,
           error: "Couldn't load paths — enter manually",
-        };
+        });
       });
-  }
+  }, []);
 
   // Probe path-discovery support whenever the selected store changes. A
   // kubernetes-provider store flips `supported=true` and seeds an initial
   // (prefix-empty) listing; other providers report `supported=false`.
   useEffect(() => {
-    if (selectedStore?.kind !== "SecretStore") {
+    if (storeKind !== "SecretStore" || storeName === undefined) {
       // ClusterSecretStore + missing store: typeahead off until the user picks
       // a namespaced store. ClusterSecretStores can't be probed by this
       // endpoint (it requires a namespace).
-      discovery.value = {
+      setDiscovery({
         supported: false,
-        provider: selectedStore?.provider ?? "",
+        provider: storeProvider ?? "",
         paths: [],
         loading: false,
         error: null,
-      };
+      });
       return;
     }
-    fetchPaths();
+    fetchPaths({
+      namespace: storeNamespace ?? "",
+      name: storeName,
+      provider: storeProvider ?? "",
+    });
     return () => {
       // Cancel in-flight store probe on cleanup (store change or unmount).
       if (abortRef.current) abortRef.current.abort();
     };
-  }, [selectedStore?.name, selectedStore?.namespace, selectedStore?.kind]);
+  }, [fetchPaths, storeKind, storeName, storeNamespace, storeProvider]);
 
   // Re-fetch with a debounced prefix when the user types in any data-item
   // path field on a Kubernetes-provider store.
@@ -151,7 +168,7 @@ export function ExternalSecretForm({
     onPathFieldTouched(index);
 
     if (
-      !discovery.value.supported ||
+      !discovery.supported ||
       !selectedStore ||
       selectedStore.kind !== "SecretStore"
     ) {
@@ -163,7 +180,16 @@ export function ExternalSecretForm({
     }
     debounceHandle.current = setTimeout(() => {
       debounceHandle.current = null;
-      fetchPaths(value);
+      const current = selectedStoreRef.current;
+      if (current?.kind !== "SecretStore") return;
+      fetchPaths(
+        {
+          namespace: current.namespace ?? "",
+          name: current.name,
+          provider: current.provider,
+        },
+        value,
+      );
     }, PATH_DEBOUNCE_MS);
   }
 
@@ -184,16 +210,14 @@ export function ExternalSecretForm({
   }
 
   return (
-    <div class="space-y-5">
-      <div class="grid grid-cols-2 gap-4">
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="es-name"
           label="Name"
           required
           value={form.name}
-          onInput={(e) =>
-            handleNameChange((e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => handleNameChange(e.currentTarget.value)}
           placeholder="my-app-config"
           error={errors.name}
         />
@@ -205,24 +229,22 @@ export function ExternalSecretForm({
         />
       </div>
 
-      <div class="grid grid-cols-2 gap-4">
-        <div class="space-y-1">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-1">
           <label
-            for="es-store-kind"
-            class="block text-sm font-medium text-text-secondary"
+            htmlFor="es-store-kind"
+            className="block text-sm font-medium text-text-secondary"
           >
             Store kind
           </label>
           <select
             id="es-store-kind"
-            class="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+            className="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
             value={form.storeRefKind}
             onChange={(e) =>
               onUpdate(
                 "storeRefKind",
-                (e.target as HTMLSelectElement).value as
-                  | "SecretStore"
-                  | "ClusterSecretStore",
+                e.currentTarget.value as "SecretStore" | "ClusterSecretStore",
               )
             }
           >
@@ -231,23 +253,21 @@ export function ExternalSecretForm({
           </select>
         </div>
 
-        <div class="space-y-1">
+        <div className="space-y-1">
           <label
-            for="es-store-name"
-            class="block text-sm font-medium text-text-secondary"
+            htmlFor="es-store-name"
+            className="block text-sm font-medium text-text-secondary"
           >
             Store
-            <span aria-hidden="true" class="text-danger ml-0.5">
+            <span aria-hidden="true" className="text-danger ml-0.5">
               *
             </span>
           </label>
           <select
             id="es-store-name"
-            class="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+            className="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
             value={form.storeRefName}
-            onChange={(e) =>
-              onUpdate("storeRefName", (e.target as HTMLSelectElement).value)
-            }
+            onChange={(e) => onUpdate("storeRefName", e.currentTarget.value)}
             aria-invalid={errors["storeRef.name"] ? "true" : undefined}
             aria-describedby={
               errors["storeRef.name"] ? "es-store-name-error" : undefined
@@ -271,21 +291,21 @@ export function ExternalSecretForm({
               ))}
           </select>
           {errors["storeRef.name"] && (
-            <p id="es-store-name-error" class="text-sm text-danger">
+            <p id="es-store-name-error" className="text-sm text-danger">
               {errors["storeRef.name"]}
             </p>
           )}
         </div>
       </div>
 
-      <div class="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="es-target"
           label="Target Secret name"
           required
           value={form.targetSecretName}
-          onInput={(e) => {
-            onUpdate("targetSecretName", (e.target as HTMLInputElement).value);
+          onChange={(e) => {
+            onUpdate("targetSecretName", e.currentTarget.value);
             onUpdate("targetSecretNameTouched", true);
           }}
           placeholder={form.name || "my-app-config"}
@@ -296,55 +316,51 @@ export function ExternalSecretForm({
           id="es-refresh"
           label="Refresh interval"
           value={form.refreshInterval}
-          onInput={(e) =>
-            onUpdate("refreshInterval", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => onUpdate("refreshInterval", e.currentTarget.value)}
           placeholder="1h"
           description="Go duration. Leave blank to use ESO's default. Use `0` to disable polling."
           error={errors.refreshInterval}
         />
       </div>
 
-      <div class="space-y-3">
-        <div class="flex items-center justify-between">
-          <h3 class="text-sm font-semibold text-text-primary">Data items</h3>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-text-primary">
+            Data items
+          </h3>
           <Button variant="ghost" onClick={onAddDataItem}>
             + Add data item
           </Button>
         </div>
-        {errors.data && <p class="text-sm text-danger">{errors.data}</p>}
+        {errors.data && <p className="text-sm text-danger">{errors.data}</p>}
 
         {form.data.map((item, idx) => (
           <div
-            key={idx}
-            class="rounded-md border border-border-primary p-4 space-y-3"
+            key={dataRows.keyAt(idx)}
+            className="rounded-md border border-border-primary p-4 space-y-3"
           >
-            <div class="flex items-center justify-between">
-              <span class="text-xs uppercase tracking-wide text-text-muted">
+            <div className="flex items-center justify-between">
+              <span className="text-xs uppercase tracking-wide text-text-muted">
                 Data item {idx + 1}
               </span>
               {form.data.length > 1 && (
                 <button
                   type="button"
-                  class="text-xs text-text-muted hover:text-danger"
-                  onClick={() => onRemoveDataItem(idx)}
+                  className="text-xs text-text-muted hover:text-danger"
+                  onClick={() => removeRow(idx)}
                 >
                   Remove
                 </button>
               )}
             </div>
-            <div class="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <Input
                 id={`es-data-${idx}-secretkey`}
                 label="Secret key"
                 required
                 value={item.secretKey}
-                onInput={(e) =>
-                  onUpdateData(
-                    idx,
-                    "secretKey",
-                    (e.target as HTMLInputElement).value,
-                  )
+                onChange={(e) =>
+                  onUpdateData(idx, "secretKey", e.currentTarget.value)
                 }
                 placeholder="DB_PASSWORD"
                 error={errors[`data[${idx}].secretKey`]}
@@ -353,70 +369,62 @@ export function ExternalSecretForm({
                 id={`es-data-${idx}-property`}
                 label="Property (optional)"
                 value={item.property}
-                onInput={(e) =>
-                  onUpdateData(
-                    idx,
-                    "property",
-                    (e.target as HTMLInputElement).value,
-                  )
+                onChange={(e) =>
+                  onUpdateData(idx, "property", e.currentTarget.value)
                 }
                 placeholder="db_password"
                 description="Sub-key inside the remote object. Leave blank to use the whole value."
               />
             </div>
-            <div class="space-y-1">
+            <div className="space-y-1">
               <label
-                for={`es-data-${idx}-key`}
-                class="block text-sm font-medium text-text-secondary"
+                htmlFor={`es-data-${idx}-key`}
+                className="block text-sm font-medium text-text-secondary"
               >
                 Remote key
-                <span aria-hidden="true" class="text-danger ml-0.5">
+                <span aria-hidden="true" className="text-danger ml-0.5">
                   *
                 </span>
               </label>
               <input
                 id={`es-data-${idx}-key`}
                 type="text"
-                list={
-                  discovery.value.supported ? `es-data-${idx}-paths` : undefined
-                }
+                list={discovery.supported ? `es-data-${idx}-paths` : undefined}
                 value={item.key}
-                onInput={(e) =>
-                  handlePathInput(idx, (e.target as HTMLInputElement).value)
-                }
+                onChange={(e) => handlePathInput(idx, e.currentTarget.value)}
                 placeholder={
-                  discovery.value.supported
+                  discovery.supported
                     ? "Start typing to search…"
                     : "secret/data/myapp"
                 }
-                class="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-brand/50"
+                className="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-brand/50"
                 aria-invalid={
                   errors[`data[${idx}].remoteRef.key`] ? "true" : undefined
                 }
                 aria-describedby={`es-data-${idx}-hint`}
               />
-              {discovery.value.supported && (
+              {discovery.supported && (
                 <datalist id={`es-data-${idx}-paths`}>
-                  {discovery.value.paths.map((p) => (
+                  {discovery.paths.map((p) => (
                     <option key={p} value={p} />
                   ))}
                 </datalist>
               )}
-              <p id={`es-data-${idx}-hint`} class="text-xs text-text-muted">
-                {discovery.value.loading
+              <p id={`es-data-${idx}-hint`} className="text-xs text-text-muted">
+                {discovery.loading
                   ? "Loading paths…"
-                  : discovery.value.error
-                    ? discovery.value.error
-                    : discovery.value.supported
-                      ? discovery.value.paths.length === 0
+                  : discovery.error
+                    ? discovery.error
+                    : discovery.supported
+                      ? discovery.paths.length === 0
                         ? "No paths found in this namespace"
-                        : `${discovery.value.paths.length} path${
-                            discovery.value.paths.length === 1 ? "" : "s"
+                        : `${discovery.paths.length} path${
+                            discovery.paths.length === 1 ? "" : "s"
                           } available`
                       : FREE_TEXT_HELPER}
               </p>
               {errors[`data[${idx}].remoteRef.key`] && (
-                <p class="text-sm text-danger">
+                <p className="text-sm text-danger">
                   {errors[`data[${idx}].remoteRef.key`]}
                 </p>
               )}

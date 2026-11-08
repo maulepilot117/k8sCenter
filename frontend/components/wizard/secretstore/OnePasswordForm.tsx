@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useRef, useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 
 /**
@@ -32,6 +33,8 @@ export interface OnePasswordFormProps {
 
 /** A single entry in the vaults editor. */
 interface VaultEntry {
+  /** Stable row identity for React keys; never sent to the spec. */
+  id: number;
   name: string;
   priority: string; // kept as string for the input; parsed to int on emit
 }
@@ -55,10 +58,14 @@ function getTokenRef(spec: Record<string, unknown>): Record<string, string> {
 }
 
 /** Read the vaults map from the spec and convert to editor rows. */
-function vaultsToRows(spec: Record<string, unknown>): VaultEntry[] {
+function vaultsToRows(
+  spec: Record<string, unknown>,
+  nextId: () => number,
+): VaultEntry[] {
   const raw = spec.vaults as Record<string, unknown> | undefined;
   if (!raw || typeof raw !== "object") return [];
   return Object.entries(raw).map(([name, priority]) => ({
+    id: nextId(),
     name,
     priority: String(priority ?? ""),
   }));
@@ -87,10 +94,17 @@ export function OnePasswordForm({
   // Vault rows managed locally as strings to preserve the in-progress input
   // before it's converted to a number. Initialised once from spec; subsequent
   // spec changes come back through onUpdateSpec.
-  const initialRows = vaultsToRows(spec);
-  const rows = useSignal<VaultEntry[]>(
-    initialRows.length > 0 ? initialRows : [{ name: "", priority: "1" }],
-  );
+  const idCounter = useRef(0);
+  const nextId = () => idCounter.current++;
+  const [rows, setRows] = useState<VaultEntry[]>(() => {
+    const initialRows = vaultsToRows(spec, nextId);
+    return initialRows.length > 0
+      ? initialRows
+      : [{ id: nextId(), name: "", priority: "1" }];
+  });
+  // Edits compute from the latest rows, so two events before a re-render
+  // build on each other instead of the last one overwriting the first.
+  const rowsRef = useRef(rows);
 
   function patchTop(field: string, value: string) {
     const next = { ...spec };
@@ -117,32 +131,37 @@ export function OnePasswordForm({
   }
 
   function commitRows(updated: VaultEntry[]) {
-    rows.value = updated;
+    rowsRef.current = updated;
+    setRows(updated);
     const vaultsMap = rowsToVaultsMap(updated);
     onUpdateSpec({ ...spec, vaults: vaultsMap });
   }
 
   function updateRow(idx: number, patch: Partial<VaultEntry>) {
-    const updated = rows.value.map((r, i) =>
+    const updated = rowsRef.current.map((r, i) =>
       i === idx ? { ...r, ...patch } : r,
     );
     commitRows(updated);
   }
 
   function addRow() {
-    commitRows([...rows.value, { name: "", priority: "1" }]);
+    commitRows([...rowsRef.current, { id: nextId(), name: "", priority: "1" }]);
   }
 
   function removeRow(idx: number) {
-    const updated = rows.value.filter((_, i) => i !== idx);
-    commitRows(updated.length > 0 ? updated : [{ name: "", priority: "1" }]);
+    const updated = rowsRef.current.filter((_, i) => i !== idx);
+    commitRows(
+      updated.length > 0
+        ? updated
+        : [{ id: nextId(), name: "", priority: "1" }],
+    );
   }
 
   const tokenRef = getTokenRef(spec);
 
   return (
-    <div class="space-y-5">
-      <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+    <div className="space-y-5">
+      <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         Configure the 1Password Connect server connection and credentials. The
         Connect token must already exist as a Kubernetes Secret — this wizard
         only references it and never holds credentials directly.
@@ -154,45 +173,44 @@ export function OnePasswordForm({
         label="Connect server URL"
         required
         value={getStr(spec, "connectHost")}
-        onInput={(e) =>
-          patchTop("connectHost", (e.target as HTMLInputElement).value)
-        }
+        onChange={(e) => patchTop("connectHost", e.currentTarget.value)}
         placeholder="https://connect.example.com:8080"
         description="Must use https. Private and in-cluster addresses are accepted."
         error={errors.connectHost}
       />
 
       {/* Connect token secret reference */}
-      <div class="rounded-md border border-border-primary p-4 space-y-3">
-        <h3 class="text-sm font-semibold text-text-primary">
+      <div className="rounded-md border border-border-primary p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-text-primary">
           Connect token Secret reference
-          <span aria-hidden="true" class="text-danger ml-0.5">
+          <span aria-hidden="true" className="text-danger ml-0.5">
             *
           </span>
         </h3>
-        <p class="text-xs text-text-muted">
+        <p className="text-xs text-text-muted">
           Reference to the Kubernetes Secret that holds the 1Password Connect
           API token (
-          <code class="font-mono">auth.secretRef.connectTokenSecretRef</code>).
+          <code className="font-mono">
+            auth.secretRef.connectTokenSecretRef
+          </code>
+          ).
         </p>
-        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
+        {errors.auth && <p className="text-sm text-danger">{errors.auth}</p>}
         {errors["auth.secretRef"] && (
-          <p class="text-sm text-danger">{errors["auth.secretRef"]}</p>
+          <p className="text-sm text-danger">{errors["auth.secretRef"]}</p>
         )}
         {errors["auth.secretRef.connectTokenSecretRef"] && (
-          <p class="text-sm text-danger">
+          <p className="text-sm text-danger">
             {errors["auth.secretRef.connectTokenSecretRef"]}
           </p>
         )}
-        <div class="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="op-token-ref-name"
             label="Secret name"
             required
             value={tokenRef.name ?? ""}
-            onInput={(e) =>
-              patchTokenRef({ name: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => patchTokenRef({ name: e.currentTarget.value })}
             placeholder="op-connect-token"
             error={errors["auth.secretRef.connectTokenSecretRef.name"]}
           />
@@ -201,9 +219,7 @@ export function OnePasswordForm({
             label="Key"
             required
             value={tokenRef.key ?? ""}
-            onInput={(e) =>
-              patchTokenRef({ key: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => patchTokenRef({ key: e.currentTarget.value })}
             placeholder="token"
             description="The key within the Secret that contains the token value."
             error={errors["auth.secretRef.connectTokenSecretRef.key"]}
@@ -212,44 +228,46 @@ export function OnePasswordForm({
       </div>
 
       {/* Vaults map */}
-      <div class="rounded-md border border-border-primary p-4 space-y-3">
-        <h3 class="text-sm font-semibold text-text-primary">
+      <div className="rounded-md border border-border-primary p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-text-primary">
           Vaults
-          <span aria-hidden="true" class="text-danger ml-0.5">
+          <span aria-hidden="true" className="text-danger ml-0.5">
             *
           </span>
         </h3>
-        <p class="text-xs text-text-muted">
+        <p className="text-xs text-text-muted">
           Map each 1Password vault name to a search priority. ESO searches
           vaults in ascending priority order (lower number = searched first). At
           least one entry is required.
         </p>
-        {errors.vaults && <p class="text-sm text-danger">{errors.vaults}</p>}
+        {errors.vaults && (
+          <p className="text-sm text-danger">{errors.vaults}</p>
+        )}
 
-        <div class="space-y-2">
+        <div className="space-y-2">
           {/* Header row */}
-          <div class="grid grid-cols-[1fr_7rem_2.5rem] gap-2 px-1">
-            <span class="text-xs font-medium text-text-muted uppercase tracking-wide">
+          <div className="grid grid-cols-[1fr_7rem_2.5rem] gap-2 px-1">
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wide">
               Vault name
             </span>
-            <span class="text-xs font-medium text-text-muted uppercase tracking-wide">
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wide">
               Priority
             </span>
             <span />
           </div>
 
-          {rows.value.map((row, idx) => (
+          {rows.map((row, idx) => (
             <div
-              key={idx}
-              class="grid grid-cols-[1fr_7rem_2.5rem] gap-2 items-start"
+              key={row.id}
+              className="grid grid-cols-[1fr_7rem_2.5rem] gap-2 items-start"
             >
               <Input
                 id={`op-vault-name-${idx}`}
                 label=""
                 value={row.name}
-                onInput={(e) =>
+                onChange={(e) =>
                   updateRow(idx, {
-                    name: (e.target as HTMLInputElement).value,
+                    name: e.currentTarget.value,
                   })
                 }
                 placeholder="production"
@@ -258,9 +276,9 @@ export function OnePasswordForm({
                 id={`op-vault-priority-${idx}`}
                 label=""
                 value={row.priority}
-                onInput={(e) =>
+                onChange={(e) =>
                   updateRow(idx, {
-                    priority: (e.target as HTMLInputElement).value,
+                    priority: e.currentTarget.value,
                   })
                 }
                 placeholder="1"
@@ -269,8 +287,8 @@ export function OnePasswordForm({
                 type="button"
                 aria-label={`Remove vault row ${idx + 1}`}
                 onClick={() => removeRow(idx)}
-                disabled={rows.value.length === 1}
-                class="mt-1 flex h-8 w-8 items-center justify-center rounded-md border border-border-primary text-text-muted hover:border-danger hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                disabled={rows.length === 1}
+                className="mt-1 flex h-8 w-8 items-center justify-center rounded-md border border-border-primary text-text-muted hover:border-danger hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 ×
               </button>
@@ -281,7 +299,7 @@ export function OnePasswordForm({
         <button
           type="button"
           onClick={addRow}
-          class="text-sm text-brand hover:text-brand/80 transition-colors"
+          className="text-sm text-brand hover:text-brand/80 transition-colors"
         >
           + Add vault
         </button>

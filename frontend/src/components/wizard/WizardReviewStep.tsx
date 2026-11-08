@@ -1,7 +1,15 @@
-import { type Signal, useSignal } from "@preact/signals";
-import { useContext, useEffect, useLayoutEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import type { Signal } from "@preact/signals-core";
+import {
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiPostRaw } from "@/lib/api.ts";
+import { withUniqueKeys } from "@/lib/unique-keys.ts";
 import { wizardBusy } from "@/lib/wizard-busy.ts";
 import { WizardPrimaryActionContext } from "@/lib/wizard-primary-action.ts";
 import { MonacoEditor } from "@/src/components/ui/MonacoEditor.tsx";
@@ -60,12 +68,16 @@ export function WizardReviewStep({
   dirty,
   maskValues,
 }: WizardReviewStepProps) {
-  const revealed = useSignal(false);
-  const applying = useSignal(false);
-  const applyError = useSignal<string | null>(null);
-  const applyResult = useSignal<ApplyResponse | null>(null);
+  const [revealed, setRevealed] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [applyResult, setApplyResult] = useState<ApplyResponse | null>(null);
+  // Stops a second click before the next render shows `applying`.
   const applyGuard = useRef(false);
   const primary = useContext(WizardPrimaryActionContext);
+  // The apply finishes after an await, so it reads the current flag here.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
 
   // Reset the shared wizard-busy flag if this step unmounts mid-apply, so a
   // stale `true` can never wedge the next wizard's close controls.
@@ -79,10 +91,10 @@ export function WizardReviewStep({
   const handleApply = async () => {
     if (!yaml.trim() || applyGuard.current) return;
     applyGuard.current = true;
-    applying.value = true;
+    setApplying(true);
     wizardBusy.value = true;
-    applyError.value = null;
-    applyResult.value = null;
+    setApplyError(null);
+    setApplyResult(null);
 
     try {
       const resp = await apiPostRaw<ApplyResponse>(
@@ -90,13 +102,15 @@ export function WizardReviewStep({
         yaml,
         "text/yaml",
       );
-      applyResult.value = resp.data;
-      if (resp.data.summary.failed === 0 && dirty) dirty.value = false;
+      setApplyResult(resp.data);
+      if (resp.data.summary.failed === 0 && dirtyRef.current)
+        dirtyRef.current.value = false;
     } catch (err) {
-      applyError.value =
-        err instanceof Error ? err.message : "Failed to apply resource";
+      setApplyError(
+        err instanceof Error ? err.message : "Failed to apply resource",
+      );
     } finally {
-      applying.value = false;
+      setApplying(false);
       wizardBusy.value = false;
       applyGuard.current = false;
     }
@@ -108,7 +122,7 @@ export function WizardReviewStep({
   const applyRef = useRef(handleApply);
   applyRef.current = handleApply;
 
-  const result = applyResult.value;
+  const result = applyResult;
   const firstResult = result?.results[0];
   // A cluster-scoped object has no namespace segment in its detail URL.
   const detailPath =
@@ -120,9 +134,8 @@ export function WizardReviewStep({
       : null;
   const label = result ? (detailPath ? "View resource" : "Done") : "Apply";
   const href = result ? (detailPath ?? undefined) : undefined;
-  const disabled =
-    !result && (loading || !!error || !yaml.trim() || applying.value);
-  const busy = applying.value;
+  const disabled = !result && (loading || !!error || !yaml.trim() || applying);
+  const busy = applying;
   const hasResult = result !== null;
 
   useLayoutEffect(() => {
@@ -147,8 +160,8 @@ export function WizardReviewStep({
 
   if (loading) {
     return (
-      <div class="flex items-center justify-center py-16">
-        <div class="flex items-center gap-3 text-text-muted">
+      <div className="flex items-center justify-center py-16">
+        <div className="flex items-center gap-3 text-text-muted">
           <Spinner size="md" />
           Generating YAML preview...
         </div>
@@ -158,9 +171,9 @@ export function WizardReviewStep({
 
   if (error) {
     return (
-      <div class="rounded-md bg-danger/10 border border-danger/30 p-4 text-danger text-sm">
-        <p class="font-medium">Failed to generate preview</p>
-        <p class="mt-1">{error}</p>
+      <div className="rounded-md bg-danger/10 border border-danger/30 p-4 text-danger text-sm">
+        <p className="font-medium">Failed to generate preview</p>
+        <p className="mt-1">{error}</p>
       </div>
     );
   }
@@ -170,16 +183,16 @@ export function WizardReviewStep({
     const hasFailures = result.summary.failed > 0;
 
     return (
-      <div class="space-y-4">
+      <div className="space-y-4">
         <div
-          class={`rounded-md p-4 text-sm ${
+          className={`rounded-md p-4 text-sm ${
             hasFailures
               ? "bg-danger/10 border border-danger/30"
               : "bg-success/10 border border-success/30"
           }`}
         >
           <p
-            class={`font-medium ${
+            className={`font-medium ${
               hasFailures ? "text-danger" : "text-success"
             }`}
           >
@@ -187,39 +200,42 @@ export function WizardReviewStep({
               ? "Apply completed with errors"
               : "Applied successfully"}
           </p>
-          <div class="mt-2 space-y-1">
-            {result.results.map((r, i) => (
+          <div className="mt-2 space-y-1">
+            {withUniqueKeys(
+              result.results,
+              (r) => `${r.kind}/${r.namespace ?? ""}/${r.name}/${r.action}`,
+            ).map(({ item: r, key }) => (
               <div
-                key={i}
-                class={`flex items-center gap-2 ${
+                key={key}
+                className={`flex items-center gap-2 ${
                   r.error ? "text-danger" : "text-text-secondary"
                 }`}
               >
                 {r.error ? (
                   <svg
-                    class="w-4 h-4 text-danger"
+                    className="w-4 h-4 text-danger"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
                   >
                     <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
                       d="M6 18L18 6M6 6l12 12"
                     />
                   </svg>
                 ) : (
                   <svg
-                    class="w-4 h-4 text-success"
+                    className="w-4 h-4 text-success"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
                   >
                     <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
                       d="M5 13l4 4L19 7"
                     />
                   </svg>
@@ -229,7 +245,7 @@ export function WizardReviewStep({
                   {r.namespace ? ` in ${r.namespace}` : ""}: {r.action}
                 </span>
                 {r.error && (
-                  <span class="text-xs text-danger ml-2">({r.error})</span>
+                  <span className="text-xs text-danger ml-2">({r.error})</span>
                 )}
               </div>
             ))}
@@ -241,11 +257,11 @@ export function WizardReviewStep({
 
   // The editor takes whatever height the step pane has left, so the whole
   // manifest is reachable without an Apply button scrolled out of view.
-  const masked = maskValues !== undefined && !revealed.value;
+  const masked = maskValues !== undefined && !revealed;
   return (
-    <div class="flex flex-col flex-1 min-h-0 gap-4">
-      <div class="flex items-center justify-between gap-3">
-        <p class="text-sm text-text-muted">
+    <div className="flex flex-col flex-1 min-h-0 gap-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-text-muted">
           {masked
             ? "Review the generated YAML below. Values are hidden; show them to check or edit them."
             : "Review the generated YAML below. You can edit it before applying."}
@@ -253,18 +269,18 @@ export function WizardReviewStep({
         {maskValues && (
           <button
             type="button"
-            class="shrink-0 text-sm text-brand hover:underline"
-            aria-pressed={revealed.value}
+            className="shrink-0 text-sm text-brand hover:underline"
+            aria-pressed={revealed}
             onClick={() => {
-              revealed.value = !revealed.value;
+              setRevealed((prev) => !prev);
             }}
           >
-            {revealed.value ? "Hide values" : "Show values"}
+            {revealed ? "Hide values" : "Show values"}
           </button>
         )}
       </div>
 
-      <div class="flex-1 min-h-60">
+      <div className="flex-1 min-h-60">
         <MonacoEditor
           value={masked ? maskValues(yaml) : yaml}
           onChange={onYamlChange}
@@ -273,9 +289,9 @@ export function WizardReviewStep({
         />
       </div>
 
-      {applyError.value && (
-        <div class="rounded-md bg-danger/10 border border-danger/30 p-3 text-danger text-sm">
-          {applyError.value}
+      {applyError && (
+        <div className="rounded-md bg-danger/10 border border-danger/30 p-3 text-danger text-sm">
+          {applyError}
         </div>
       )}
     </div>

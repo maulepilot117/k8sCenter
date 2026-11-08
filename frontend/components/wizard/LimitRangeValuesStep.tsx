@@ -1,10 +1,12 @@
-import type { Signal } from "@preact/signals";
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import type { Signal } from "@preact/signals-core";
+import { useState } from "react";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type {
   LimitConfig,
   ResourcePair,
 } from "@/src/islands/NamespaceLimitsWizard.tsx";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface LimitRangeValuesStepProps {
   limits: LimitConfig;
@@ -26,7 +28,8 @@ export function LimitRangeValuesStep({
   onUpdateLimits,
   onUpdateResourcePair,
 }: LimitRangeValuesStepProps) {
-  const showAdvanced = useSignal(false);
+  const errorMap = useSignalValue(errors);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   return (
     <div
@@ -116,28 +119,23 @@ export function LimitRangeValuesStep({
                 <input
                   type="text"
                   value={(limits[key] as ResourcePair | undefined)?.cpu ?? ""}
-                  onInput={(e) =>
-                    onUpdateResourcePair(
-                      key,
-                      "cpu",
-                      (e.target as HTMLInputElement).value,
-                    )
+                  onChange={(e) =>
+                    onUpdateResourcePair(key, "cpu", e.currentTarget.value)
                   }
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="e.g. 250m"
                 />
-                {key === "containerDefault" &&
-                  errors.value.containerDefaultCpu && (
-                    <p
-                      style={{
-                        marginTop: "3px",
-                        fontSize: "10px",
-                        color: "var(--error)",
-                      }}
-                    >
-                      {errors.value.containerDefaultCpu}
-                    </p>
-                  )}
+                {key === "containerDefault" && errorMap.containerDefaultCpu && (
+                  <p
+                    style={{
+                      marginTop: "3px",
+                      fontSize: "10px",
+                      color: "var(--error)",
+                    }}
+                  >
+                    {errorMap.containerDefaultCpu}
+                  </p>
+                )}
               </div>
               <div>
                 <label
@@ -155,18 +153,14 @@ export function LimitRangeValuesStep({
                   value={
                     (limits[key] as ResourcePair | undefined)?.memory ?? ""
                   }
-                  onInput={(e) =>
-                    onUpdateResourcePair(
-                      key,
-                      "memory",
-                      (e.target as HTMLInputElement).value,
-                    )
+                  onChange={(e) =>
+                    onUpdateResourcePair(key, "memory", e.currentTarget.value)
                   }
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="e.g. 256Mi"
                 />
                 {key === "containerDefault" &&
-                  errors.value.containerDefaultMemory && (
+                  errorMap.containerDefaultMemory && (
                     <p
                       style={{
                         marginTop: "3px",
@@ -174,7 +168,7 @@ export function LimitRangeValuesStep({
                         color: "var(--error)",
                       }}
                     >
-                      {errors.value.containerDefaultMemory}
+                      {errorMap.containerDefaultMemory}
                     </p>
                   )}
               </div>
@@ -187,7 +181,7 @@ export function LimitRangeValuesStep({
       <button
         type="button"
         onClick={() => {
-          showAdvanced.value = !showAdvanced.value;
+          setShowAdvanced((prev) => !prev);
         }}
         style={{
           alignSelf: "flex-start",
@@ -209,20 +203,20 @@ export function LimitRangeValuesStep({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
           style={{
-            transform: showAdvanced.value ? "rotate(90deg)" : "rotate(0deg)",
+            transform: showAdvanced ? "rotate(90deg)" : "rotate(0deg)",
             transition: "transform 0.15s",
           }}
         >
           <path d="M7 5l5 5-5 5" />
         </svg>
-        {showAdvanced.value ? "Hide" : "Show"} advanced options
+        {showAdvanced ? "Hide" : "Show"} advanced options
       </button>
 
-      {showAdvanced.value && (
+      {showAdvanced && (
         <div
           style={{
             display: "flex",
@@ -265,15 +259,15 @@ export function LimitRangeValuesStep({
                 <input
                   type="text"
                   value={limits.podMax?.cpu ?? ""}
-                  onInput={(e) => {
-                    const cpu = (e.target as HTMLInputElement).value;
+                  onChange={(e) => {
+                    const cpu = e.currentTarget.value;
                     const current = limits.podMax ?? { cpu: "", memory: "" };
                     onUpdateLimits(
                       "podMax",
                       cpu || current.memory ? { ...current, cpu } : undefined,
                     );
                   }}
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="No limit"
                 />
               </div>
@@ -291,8 +285,8 @@ export function LimitRangeValuesStep({
                 <input
                   type="text"
                   value={limits.podMax?.memory ?? ""}
-                  onInput={(e) => {
-                    const memory = (e.target as HTMLInputElement).value;
+                  onChange={(e) => {
+                    const memory = e.currentTarget.value;
                     const current = limits.podMax ?? { cpu: "", memory: "" };
                     onUpdateLimits(
                       "podMax",
@@ -301,7 +295,7 @@ export function LimitRangeValuesStep({
                         : undefined,
                     );
                   }}
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="No limit"
                 />
               </div>
@@ -340,13 +334,13 @@ export function LimitRangeValuesStep({
                 <input
                   type="text"
                   value={limits.pvcMinStorage ?? ""}
-                  onInput={(e) =>
+                  onChange={(e) =>
                     onUpdateLimits(
                       "pvcMinStorage",
-                      (e.target as HTMLInputElement).value || undefined,
+                      e.currentTarget.value || undefined,
                     )
                   }
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="e.g. 1Gi"
                 />
               </div>
@@ -364,13 +358,13 @@ export function LimitRangeValuesStep({
                 <input
                   type="text"
                   value={limits.pvcMaxStorage ?? ""}
-                  onInput={(e) =>
+                  onChange={(e) =>
                     onUpdateLimits(
                       "pvcMaxStorage",
-                      (e.target as HTMLInputElement).value || undefined,
+                      e.currentTarget.value || undefined,
                     )
                   }
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="e.g. 100Gi"
                 />
               </div>

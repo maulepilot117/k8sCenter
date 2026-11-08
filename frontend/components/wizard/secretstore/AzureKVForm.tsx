@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 
 /**
@@ -108,7 +109,9 @@ const AUTH_TYPE_OWNED_FIELDS: ReadonlyArray<keyof AzureKVSpec> = [
 ];
 
 export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
-  const authType = useSignal<AzureKVAuthType | "">(detectAuthType(spec));
+  const [authType, setAuthTypeState] = useState<AzureKVAuthType | "">(
+    detectAuthType(spec),
+  );
 
   function patchTop(field: string, value: string) {
     const next = { ...spec };
@@ -118,8 +121,8 @@ export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
   }
 
   function setAuthType(t: AzureKVAuthType) {
-    if (authType.value === t) return;
-    authType.value = t;
+    if (authType === t) return;
+    setAuthTypeState(t);
     // Clear all auth-type-owned fields so old credentials don't bleed through.
     const next = { ...spec };
     for (const f of AUTH_TYPE_OWNED_FIELDS) {
@@ -156,8 +159,8 @@ export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
   const saRef = (spec.serviceAccountRef as { name?: string }) ?? {};
 
   return (
-    <div class="space-y-5">
-      <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+    <div className="space-y-5">
+      <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         Configure the Azure Key Vault connection and authentication method.
         Credentials must already exist as Kubernetes Secrets in this namespace;
         this wizard only references them — it never holds Azure credentials
@@ -170,57 +173,55 @@ export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
         label="Vault URL"
         required
         value={getStr(spec, "vaultUrl")}
-        onInput={(e) =>
-          patchTop("vaultUrl", (e.target as HTMLInputElement).value)
-        }
+        onChange={(e) => patchTop("vaultUrl", e.currentTarget.value)}
         placeholder="https://my-vault.vault.azure.net"
         description="Must use https. Typically ends in .vault.azure.net."
         error={errors.vaultUrl}
       />
 
       {/* Auth type picker */}
-      <div class="space-y-3">
-        <h3 class="text-sm font-semibold text-text-primary">
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-text-primary">
           Authentication type
-          <span aria-hidden="true" class="text-danger ml-0.5">
+          <span aria-hidden="true" className="text-danger ml-0.5">
             *
           </span>
         </h3>
-        <div class="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-3">
           {AUTH_TYPES.map((t) => {
-            const active = authType.value === t.id;
+            const active = authType === t.id;
             return (
               <button
                 key={t.id}
                 type="button"
                 onClick={() => setAuthType(t.id)}
-                class={`text-left rounded-lg border p-3 transition-colors ${
+                className={`text-left rounded-lg border p-3 transition-colors ${
                   active
                     ? "border-brand bg-brand/5"
                     : "border-border-primary bg-surface hover:border-brand/50"
                 }`}
                 aria-pressed={active}
               >
-                <div class="font-medium text-text-primary">{t.label}</div>
-                <p class="mt-1 text-xs text-text-muted">{t.description}</p>
+                <div className="font-medium text-text-primary">{t.label}</div>
+                <p className="mt-1 text-xs text-text-muted">{t.description}</p>
               </button>
             );
           })}
         </div>
         {errors.authType && (
-          <p class="text-sm text-danger">{errors.authType}</p>
+          <p className="text-sm text-danger">{errors.authType}</p>
         )}
       </div>
 
       {/* Auth-type-specific fields */}
-      {authType.value === "ManagedIdentity" && (
+      {authType === "ManagedIdentity" && (
         <ManagedIdentityFields
           identityId={getStr(spec, "identityId")}
           errors={errors}
           onPatchIdentityId={(v) => patchTop("identityId", v)}
         />
       )}
-      {authType.value === "ServicePrincipal" && (
+      {authType === "ServicePrincipal" && (
         <ServicePrincipalFields
           tenantId={getStr(spec, "tenantId")}
           authSecretRef={authSecretRef}
@@ -232,7 +233,7 @@ export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
           }
         />
       )}
-      {authType.value === "WorkloadIdentity" && (
+      {authType === "WorkloadIdentity" && (
         <WorkloadIdentityFields
           tenantId={getStr(spec, "tenantId")}
           saName={saRef.name ?? ""}
@@ -259,9 +260,11 @@ function ManagedIdentityFields({
   onPatchIdentityId,
 }: ManagedIdentityFieldsProps) {
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">Managed Identity</h4>
-      <p class="text-xs text-text-muted">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">
+        Managed Identity
+      </h4>
+      <p className="text-xs text-text-muted">
         No credentials required. ESO uses the managed identity bound to the
         controller pod by AKS. If multiple managed identities are assigned,
         specify the client ID below.
@@ -270,7 +273,7 @@ function ManagedIdentityFields({
         id="azurekv-mi-identity-id"
         label="Identity client ID (optional)"
         value={identityId}
-        onInput={(e) => onPatchIdentityId((e.target as HTMLInputElement).value)}
+        onChange={(e) => onPatchIdentityId(e.currentTarget.value)}
         placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
         description="Leave blank to use the AKS-default managed identity."
         error={errors.identityId}
@@ -299,33 +302,33 @@ function ServicePrincipalFields({
   const clientId = (authSecretRef.clientId as SecretRef) ?? {};
   const clientSecret = (authSecretRef.clientSecret as SecretRef) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-4">
-      <h4 class="text-sm font-medium text-text-primary">Service Principal</h4>
+    <div className="rounded-md border border-border-primary p-4 space-y-4">
+      <h4 className="text-sm font-medium text-text-primary">
+        Service Principal
+      </h4>
 
       <Input
         id="azurekv-sp-tenant-id"
         label="Tenant ID"
         required
         value={tenantId}
-        onInput={(e) => onPatchTenantId((e.target as HTMLInputElement).value)}
+        onChange={(e) => onPatchTenantId(e.currentTarget.value)}
         placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
         description="Azure AD tenant ID (Directory ID)."
         error={errors.tenantId}
       />
 
       <div>
-        <h5 class="text-sm font-medium text-text-primary mb-2">
+        <h5 className="text-sm font-medium text-text-primary mb-2">
           Client ID Secret reference
         </h5>
-        <div class="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="azurekv-sp-clientid-name"
             label="Secret name"
             required
             value={clientId.name ?? ""}
-            onInput={(e) =>
-              onPatchClientId({ name: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchClientId({ name: e.currentTarget.value })}
             placeholder="azure-sp-secret"
             error={errors["authSecretRef.clientId.name"]}
           />
@@ -334,9 +337,7 @@ function ServicePrincipalFields({
             label="Key"
             required
             value={clientId.key ?? ""}
-            onInput={(e) =>
-              onPatchClientId({ key: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchClientId({ key: e.currentTarget.value })}
             placeholder="client-id"
             error={errors["authSecretRef.clientId.key"]}
           />
@@ -344,18 +345,18 @@ function ServicePrincipalFields({
       </div>
 
       <div>
-        <h5 class="text-sm font-medium text-text-primary mb-2">
+        <h5 className="text-sm font-medium text-text-primary mb-2">
           Client Secret reference
         </h5>
-        <div class="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="azurekv-sp-secret-name"
             label="Secret name"
             required
             value={clientSecret.name ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchClientSecret({
-                name: (e.target as HTMLInputElement).value,
+                name: e.currentTarget.value,
               })
             }
             placeholder="azure-sp-secret"
@@ -366,9 +367,9 @@ function ServicePrincipalFields({
             label="Key"
             required
             value={clientSecret.key ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchClientSecret({
-                key: (e.target as HTMLInputElement).value,
+                key: e.currentTarget.value,
               })
             }
             placeholder="client-secret"
@@ -396,15 +397,17 @@ function WorkloadIdentityFields({
   onPatchSaName,
 }: WorkloadIdentityFieldsProps) {
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">Workload Identity</h4>
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">
+        Workload Identity
+      </h4>
 
       <Input
         id="azurekv-wi-tenant-id"
         label="Tenant ID"
         required
         value={tenantId}
-        onInput={(e) => onPatchTenantId((e.target as HTMLInputElement).value)}
+        onChange={(e) => onPatchTenantId(e.currentTarget.value)}
         placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
         description="Azure AD tenant ID (Directory ID)."
         error={errors.tenantId}
@@ -414,7 +417,7 @@ function WorkloadIdentityFields({
         label="Service account name"
         required
         value={saName}
-        onInput={(e) => onPatchSaName((e.target as HTMLInputElement).value)}
+        onChange={(e) => onPatchSaName(e.currentTarget.value)}
         placeholder="eso-workload-sa"
         description="The K8s ServiceAccount annotated with the Azure federated identity."
         error={errors["serviceAccountRef.name"]}

@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import type { IssuerType } from "@/src/islands/IssuerWizard.tsx";
 
 interface IssuerTypePickerStepProps {
@@ -29,7 +30,7 @@ export function IssuerTypePickerStep({
   onSelect,
 }: IssuerTypePickerStepProps) {
   return (
-    <div class="grid gap-3 sm:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-2">
       {TYPES.map((t) => {
         const active = selected === t.id;
         return (
@@ -37,19 +38,19 @@ export function IssuerTypePickerStep({
             key={t.id}
             type="button"
             onClick={() => onSelect(t.id)}
-            class={`text-left rounded-lg border p-4 transition-colors ${
+            className={`text-left rounded-lg border p-4 transition-colors ${
               active
                 ? "border-brand bg-brand/5"
                 : "border-border-primary bg-surface hover:border-brand/50"
             }`}
           >
-            <div class="flex items-center justify-between">
-              <span class="font-medium text-text-primary">{t.title}</span>
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-text-primary">{t.title}</span>
               {active && (
-                <span class="text-xs font-medium text-brand">Selected</span>
+                <span className="text-xs font-medium text-brand">Selected</span>
               )}
             </div>
-            <p class="mt-2 text-sm text-text-muted">{t.description}</p>
+            <p className="mt-2 text-sm text-text-muted">{t.description}</p>
           </button>
         );
       })}

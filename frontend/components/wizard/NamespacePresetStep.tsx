@@ -1,8 +1,10 @@
-import type { Signal } from "@preact/signals";
+/** @jsxImportSource react */
+import type { Signal } from "@preact/signals-core";
 import type { PresetKey } from "@/lib/namespace-presets.ts";
 import { PRESETS } from "@/lib/namespace-presets.ts";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { FormState } from "@/src/islands/NamespaceLimitsWizard.tsx";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface NamespacePresetStepProps {
   form: FormState;
@@ -22,6 +24,8 @@ export function NamespacePresetStep({
   onUpdateField,
   onApplyPreset,
 }: NamespacePresetStepProps) {
+  const errorMap = useSignalValue(errors);
+  const namespaceList = useSignalValue(namespaces);
   return (
     <div
       style={{
@@ -33,7 +37,7 @@ export function NamespacePresetStep({
     >
       <div>
         <label
-          for="ns-limits-namespace"
+          htmlFor="ns-limits-namespace"
           style={{
             display: "block",
             fontSize: "12.5px",
@@ -47,18 +51,16 @@ export function NamespacePresetStep({
         <select
           id="ns-limits-namespace"
           value={form.namespace}
-          onChange={(e) =>
-            onUpdateField("namespace", (e.target as HTMLSelectElement).value)
-          }
-          class={WIZARD_INPUT_CLASS}
+          onChange={(e) => onUpdateField("namespace", e.currentTarget.value)}
+          className={WIZARD_INPUT_CLASS}
         >
-          {namespaces.value.map((ns) => (
+          {namespaceList.map((ns) => (
             <option key={ns} value={ns}>
               {ns}
             </option>
           ))}
         </select>
-        {errors.value.namespace && (
+        {errorMap.namespace && (
           <p
             style={{
               marginTop: "4px",
@@ -66,7 +68,7 @@ export function NamespacePresetStep({
               color: "var(--error)",
             }}
           >
-            {errors.value.namespace}
+            {errorMap.namespace}
           </p>
         )}
       </div>
@@ -138,7 +140,7 @@ export function NamespacePresetStep({
 
       <div>
         <label
-          for="ns-limits-quota-name"
+          htmlFor="ns-limits-quota-name"
           style={{
             display: "block",
             fontSize: "12.5px",
@@ -153,13 +155,11 @@ export function NamespacePresetStep({
           id="ns-limits-quota-name"
           type="text"
           value={form.quotaName}
-          onInput={(e) =>
-            onUpdateField("quotaName", (e.target as HTMLInputElement).value)
-          }
-          class={WIZARD_INPUT_CLASS}
+          onChange={(e) => onUpdateField("quotaName", e.currentTarget.value)}
+          className={WIZARD_INPUT_CLASS}
           placeholder="e.g. default-quota"
         />
-        {errors.value.quotaName && (
+        {errorMap.quotaName && (
           <p
             style={{
               marginTop: "4px",
@@ -167,14 +167,14 @@ export function NamespacePresetStep({
               color: "var(--error)",
             }}
           >
-            {errors.value.quotaName}
+            {errorMap.quotaName}
           </p>
         )}
       </div>
 
       <div>
         <label
-          for="ns-limits-limitrange-name"
+          htmlFor="ns-limits-limitrange-name"
           style={{
             display: "block",
             fontSize: "12.5px",
@@ -189,16 +189,13 @@ export function NamespacePresetStep({
           id="ns-limits-limitrange-name"
           type="text"
           value={form.limitRangeName}
-          onInput={(e) =>
-            onUpdateField(
-              "limitRangeName",
-              (e.target as HTMLInputElement).value,
-            )
+          onChange={(e) =>
+            onUpdateField("limitRangeName", e.currentTarget.value)
           }
-          class={WIZARD_INPUT_CLASS}
+          className={WIZARD_INPUT_CLASS}
           placeholder="e.g. default-limits"
         />
-        {errors.value.limitRangeName && (
+        {errorMap.limitRangeName && (
           <p
             style={{
               marginTop: "4px",
@@ -206,7 +203,7 @@ export function NamespacePresetStep({
               color: "var(--error)",
             }}
           >
-            {errors.value.limitRangeName}
+            {errorMap.limitRangeName}
           </p>
         )}
       </div>

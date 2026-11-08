@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { EngineBadge, SeverityBadge } from "@/components/ui/PolicyBadges.tsx";
 import type { PolicyTemplateInfo } from "@/lib/policy-templates.ts";
 import {
@@ -17,8 +18,8 @@ export function PolicyTemplateStep({
   const grouped = getTemplatesByCategory();
 
   return (
-    <div class="space-y-4">
-      <p class="text-sm text-text-muted">
+    <div className="space-y-4">
+      <p className="text-sm text-text-muted">
         Choose a policy template to get started.
       </p>
 
@@ -28,30 +29,32 @@ export function PolicyTemplateStep({
 
         return (
           <div key={cat}>
-            <h3 class="text-sm font-semibold text-text-primary mb-3">{cat}</h3>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <h3 className="text-sm font-semibold text-text-primary mb-3">
+              {cat}
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {templates.map((tmpl: PolicyTemplateInfo) => {
                 const isSelected = tmpl.id === selectedId;
                 return (
                   <div
                     key={tmpl.id}
-                    class={`p-4 rounded-lg border cursor-pointer transition-colors ${
+                    className={`p-4 rounded-lg border cursor-pointer transition-colors ${
                       isSelected
                         ? "border-brand bg-brand/5"
                         : "border-border-primary hover:border-brand/50 bg-surface"
                     }`}
                     onClick={() => onSelect(tmpl.id)}
                   >
-                    <div class="flex items-start justify-between gap-2 mb-2">
-                      <span class="text-sm font-medium text-text-primary">
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <span className="text-sm font-medium text-text-primary">
                         {tmpl.name}
                       </span>
                       <SeverityBadge severity={tmpl.severity} />
                     </div>
-                    <p class="text-xs text-text-muted mb-3">
+                    <p className="text-xs text-text-muted mb-3">
                       {tmpl.description}
                     </p>
-                    <div class="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5">
                       {tmpl.engines.map((eng) => (
                         <EngineBadge key={eng} engine={eng} />
                       ))}

@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 
 /**
@@ -103,7 +104,9 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
 
   // Track which auth method's fields are currently shown. Persisted in the
   // spec itself (via detectMethod) so the form survives Back/Next navigation.
-  const method = useSignal<AWSPSAuthMethod | "">(detectMethod(spec));
+  const [method, setMethodState] = useState<AWSPSAuthMethod | "">(
+    detectMethod(spec),
+  );
 
   function patchTop(field: string, value: string) {
     const next = { ...spec };
@@ -113,8 +116,8 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
   }
 
   function setMethod(m: AWSPSAuthMethod) {
-    if (method.value === m) return;
-    method.value = m;
+    if (method === m) return;
+    setMethodState(m);
     // Clear the auth slate; preserve top-level fields (region, role).
     onUpdateSpec({
       ...spec,
@@ -149,25 +152,23 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
   }
 
   return (
-    <div class="space-y-5">
-      <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+    <div className="space-y-5">
+      <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         Configure the AWS Parameter Store connection and authentication method.
         The Parameter Store path is set in the ExternalSecret{" "}
-        <code class="font-mono">remoteRef.key</code>, not here. Credentials must
-        already exist as Kubernetes Secrets in this namespace; this wizard only
-        references them — it never holds AWS credentials directly.
+        <code className="font-mono">remoteRef.key</code>, not here. Credentials
+        must already exist as Kubernetes Secrets in this namespace; this wizard
+        only references them — it never holds AWS credentials directly.
       </div>
 
       {/* Top-level fields */}
-      <div class="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="awsps-region"
           label="AWS Region"
           required
           value={getStr(spec, "region")}
-          onInput={(e) =>
-            patchTop("region", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("region", e.currentTarget.value)}
           placeholder="us-east-1"
           description="AWS region where Parameter Store is accessed."
           error={errors.region}
@@ -175,18 +176,14 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
         <Input
           id="awsps-role"
           label={
-            method.value === "jwt"
-              ? "IAM role ARN"
-              : "Assume-role ARN (optional)"
+            method === "jwt" ? "IAM role ARN" : "Assume-role ARN (optional)"
           }
-          required={method.value === "jwt"}
+          required={method === "jwt"}
           value={getStr(spec, "role")}
-          onInput={(e) =>
-            patchTop("role", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("role", e.currentTarget.value)}
           placeholder="arn:aws:iam::123456789012:role/my-role"
           description={
-            method.value === "jwt"
+            method === "jwt"
               ? "Role ARN bound to the service account via IRSA annotation."
               : "IAM role to assume before reading parameters. Leave blank to use the pod's identity directly."
           }
@@ -195,46 +192,46 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
       </div>
 
       {/* Auth method picker */}
-      <div class="space-y-3">
-        <h3 class="text-sm font-semibold text-text-primary">
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">
+          <span aria-hidden="true" className="text-danger ml-0.5">
             *
           </span>
         </h3>
-        <div class="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2 sm:grid-cols-2">
           {AUTH_METHODS.map((m) => {
-            const active = method.value === m.id;
+            const active = method === m.id;
             return (
               <button
                 key={m.id}
                 type="button"
                 onClick={() => setMethod(m.id)}
-                class={`text-left rounded-lg border p-3 transition-colors ${
+                className={`text-left rounded-lg border p-3 transition-colors ${
                   active
                     ? "border-brand bg-brand/5"
                     : "border-border-primary bg-surface hover:border-brand/50"
                 }`}
                 aria-pressed={active}
               >
-                <div class="font-medium text-text-primary">{m.label}</div>
-                <p class="mt-1 text-xs text-text-muted">{m.description}</p>
+                <div className="font-medium text-text-primary">{m.label}</div>
+                <p className="mt-1 text-xs text-text-muted">{m.description}</p>
               </button>
             );
           })}
         </div>
-        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
+        {errors.auth && <p className="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
-      {method.value === "jwt" && (
+      {method === "jwt" && (
         <JWTAuthFields
           block={getAuthBlock(spec, "jwt")}
           errors={errors}
           onPatch={(patch) => patchAuth("jwt", patch)}
         />
       )}
-      {method.value === "secretRef" && (
+      {method === "secretRef" && (
         <StaticCredsAuthFields
           block={getAuthBlock(spec, "secretRef")}
           errors={errors}
@@ -285,8 +282,8 @@ function JWTAuthFields({ block, errors, onPatch }: JWTAuthFieldsProps) {
   }
 
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">
         IAM workload identity (IRSA)
       </h4>
       <Input
@@ -294,7 +291,7 @@ function JWTAuthFields({ block, errors, onPatch }: JWTAuthFieldsProps) {
         label="Service account name"
         required
         value={saName}
-        onInput={(e) => patchSARef((e.target as HTMLInputElement).value)}
+        onChange={(e) => patchSARef(e.currentTarget.value)}
         placeholder="my-app"
         description="Kubernetes ServiceAccount annotated with the IAM role ARN (set above)."
         error={errors["auth.jwt.serviceAccountRef.name"]}
@@ -325,20 +322,20 @@ function StaticCredsAuthFields({
   const sakRef = srBlock.secretAccessKeySecretRef ?? {};
 
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-4">
+    <div className="rounded-md border border-border-primary p-4 space-y-4">
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
           Access Key ID Secret reference
         </h4>
-        <div class="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="awsps-ak-name"
             label="Secret name"
             required
             value={akRef.name ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchAccessKey({
-                name: (e.target as HTMLInputElement).value,
+                name: e.currentTarget.value,
               })
             }
             placeholder="aws-creds"
@@ -349,27 +346,25 @@ function StaticCredsAuthFields({
             label="Key"
             required
             value={akRef.key ?? ""}
-            onInput={(e) =>
-              onPatchAccessKey({ key: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchAccessKey({ key: e.currentTarget.value })}
             placeholder="access-key-id"
             error={errors["auth.secretRef.accessKeyIDSecretRef.key"]}
           />
         </div>
       </div>
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
           Secret Access Key Secret reference
         </h4>
-        <div class="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="awsps-sak-name"
             label="Secret name"
             required
             value={sakRef.name ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchSecretKey({
-                name: (e.target as HTMLInputElement).value,
+                name: e.currentTarget.value,
               })
             }
             placeholder="aws-creds"
@@ -380,9 +375,7 @@ function StaticCredsAuthFields({
             label="Key"
             required
             value={sakRef.key ?? ""}
-            onInput={(e) =>
-              onPatchSecretKey({ key: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchSecretKey({ key: e.currentTarget.value })}
             placeholder="secret-access-key"
             error={errors["auth.secretRef.secretAccessKeySecretRef.key"]}
           />
