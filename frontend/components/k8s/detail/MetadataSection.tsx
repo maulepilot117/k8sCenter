@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import {
   CLUSTER_SCOPED_KINDS,
@@ -15,9 +16,9 @@ export function MetadataSection({ resource }: MetadataSectionProps) {
   const meta = resource.metadata;
 
   return (
-    <div class="space-y-4">
-      <h3 class="text-sm font-semibold text-text-primary">Metadata</h3>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="space-y-4">
+      <h3 className="text-sm font-semibold text-text-primary">Metadata</h3>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Name" value={meta.name} />
         {meta.namespace && <Field label="Namespace" value={meta.namespace} />}
         <Field label="UID" value={meta.uid} mono />
@@ -36,7 +37,7 @@ export function MetadataSection({ resource }: MetadataSectionProps) {
       {meta.ownerReferences && meta.ownerReferences.length > 0 && (
         <div>
           <SectionHeader>Owner References</SectionHeader>
-          <div class="space-y-1">
+          <div className="space-y-1">
             {meta.ownerReferences.map((ref) => {
               // Build a link to the owner's detail page if we know its route
               const kindKey = `${ref.kind.toLowerCase()}s`;
@@ -48,9 +49,9 @@ export function MetadataSection({ resource }: MetadataSectionProps) {
                 : null;
 
               return (
-                <div key={ref.uid} class="text-sm text-text-secondary">
+                <div key={ref.uid} className="text-sm text-text-secondary">
                   {href ? (
-                    <a href={href} class="text-brand hover:underline">
+                    <a href={href} className="text-brand hover:underline">
                       {ref.kind}/{ref.name}
                     </a>
                   ) : (
@@ -59,7 +60,7 @@ export function MetadataSection({ resource }: MetadataSectionProps) {
                     </span>
                   )}
                   {ref.controller && (
-                    <span class="ml-2 text-xs text-text-muted">
+                    <span className="ml-2 text-xs text-text-muted">
                       (controller)
                     </span>
                   )}
@@ -73,9 +74,9 @@ export function MetadataSection({ resource }: MetadataSectionProps) {
       {meta.finalizers && meta.finalizers.length > 0 && (
         <div>
           <SectionHeader>Finalizers</SectionHeader>
-          <div class="space-y-1">
+          <div className="space-y-1">
             {meta.finalizers.map((f) => (
-              <div key={f} class="text-sm font-mono text-text-secondary">
+              <div key={f} className="text-sm font-mono text-text-secondary">
                 {f}
               </div>
             ))}

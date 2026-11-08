@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { age } from "@/lib/format.ts";
 import type { Deployment, K8sResource } from "@/lib/k8s-types.ts";
 import { ConditionsGrid, SectionTitle } from "./ConditionsGrid.tsx";
@@ -113,10 +114,11 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
         <div style={{ marginBottom: "20px" }}>
           <SectionTitle title="Containers" />
           {containers.map((c) => {
-            const container = c as any;
-            const ports = container.ports as
-              | { containerPort?: number; protocol?: string }[]
-              | undefined;
+            const ports = (
+              c as {
+                ports?: { containerPort?: number; protocol?: string }[];
+              }
+            ).ports;
             const portsStr =
               ports && ports.length > 0
                 ? ports

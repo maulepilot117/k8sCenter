@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type { K8sResource, StatefulSet } from "@/lib/k8s-types.ts";
 import { ContainerResourcesTable } from "./ContainerResourcesTable.tsx";
@@ -11,11 +12,11 @@ export function StatefulSetOverview({ resource }: { resource: K8sResource }) {
   const containers = spec.template?.spec?.containers ?? [];
 
   return (
-    <div class="space-y-4">
+    <div className="space-y-4">
       {/* Replicas */}
       <div>
         <SectionHeader>Replicas</SectionHeader>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Field label="Desired" value={String(spec.replicas ?? 1)} />
           <Field label="Ready" value={String(status?.readyReplicas ?? 0)} />
           <Field label="Current" value={String(status?.currentReplicas ?? 0)} />
@@ -26,7 +27,7 @@ export function StatefulSetOverview({ resource }: { resource: K8sResource }) {
       {/* Configuration */}
       <div>
         <SectionHeader>Configuration</SectionHeader>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Service Name" value={spec.serviceName} />
           {updateStrategy && (
             <>
@@ -49,25 +50,25 @@ export function StatefulSetOverview({ resource }: { resource: K8sResource }) {
       {containers.length > 0 && (
         <div>
           <SectionHeader>Containers</SectionHeader>
-          <div class="overflow-x-auto rounded-md border border-border-primary">
-            <table class="w-full text-sm">
+          <div className="overflow-x-auto rounded-md border border-border-primary">
+            <table className="w-full text-sm">
               <thead>
-                <tr class="border-b border-border-primary">
-                  <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+                <tr className="border-b border-border-primary">
+                  <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                     Name
                   </th>
-                  <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+                  <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                     Image
                   </th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-border-subtle">
+              <tbody className="divide-y divide-border-subtle">
                 {containers.map((c) => (
                   <tr key={c.name}>
-                    <td class="px-3 py-1.5 font-medium text-text-secondary">
+                    <td className="px-3 py-1.5 font-medium text-text-secondary">
                       {c.name}
                     </td>
-                    <td class="px-3 py-1.5 font-mono text-xs text-text-secondary break-all">
+                    <td className="px-3 py-1.5 font-mono text-xs text-text-secondary break-all">
                       {c.image}
                     </td>
                   </tr>

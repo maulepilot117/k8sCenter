@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { ApiError } from "@/lib/api.ts";
@@ -20,14 +20,16 @@ import { BUTTON_SECONDARY, FOCUS_RING, HEADING, PANEL } from "./ui.tsx";
  * and is reported as such.
  */
 export function GrantsPanel({ incidentId }: { incidentId: string }) {
-  const grants = useSignal<GrantView[] | null>(null);
-  const loadError = useSignal<string | null>(null);
-  const granteeId = useSignal("");
-  const canAnnotate = useSignal(false);
-  const working = useSignal(false);
-  const message = useSignal<string | null>(null);
-  const error = useSignal<string | null>(null);
-  const reloadSeq = useSignal(0);
+  const [grants, setGrants] = useState<GrantView[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [granteeId, setGranteeId] = useState("");
+  const [canAnnotate, setCanAnnotate] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadSeq, setReloadSeq] = useState(0);
+  // A second action can land before the render that shows `working`.
+  const inFlight = useRef(false);
   /**
    * Counts grant changes made here. A list read that was issued before a
    * change may not include it, so its answer is discarded and the list is
@@ -35,71 +37,77 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
    */
   const changes = useRef(0);
 
-  const seq = reloadSeq.value;
   useEffect(() => {
+    // A bump of reloadSeq re-reads the list; the value itself is not used.
+    void reloadSeq;
     const controller = new AbortController();
     const issuedAt = changes.current;
-    loadError.value = null;
+    setLoadError(null);
     listGrants(incidentId, controller.signal)
       .then((g) => {
         if (controller.signal.aborted) return;
         if (issuedAt !== changes.current) {
-          reloadSeq.value = reloadSeq.peek() + 1;
+          setReloadSeq((n) => n + 1);
           return;
         }
-        grants.value = g;
+        setGrants(g);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
-        loadError.value = simpleErrorText(
-          err,
-          "Could not load who this incident is shared with.",
+        setLoadError(
+          simpleErrorText(
+            err,
+            "Could not load who this incident is shared with.",
+          ),
         );
       });
     return () => controller.abort();
-  }, [incidentId, seq]);
+  }, [incidentId, reloadSeq]);
 
   const run = async (action: () => Promise<string | null>) => {
-    if (working.value) return;
-    working.value = true;
-    error.value = null;
-    message.value = null;
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setWorking(true);
+    setError(null);
+    setMessage(null);
     try {
-      message.value = await action();
+      setMessage(await action());
       changes.current++;
     } catch (err) {
-      error.value =
+      setError(
         err instanceof UnsafeGranteeIdError
           ? "This collaborator id cannot be removed from the UI."
-          : simpleErrorText(err, "The change could not be saved.");
+          : simpleErrorText(err, "The change could not be saved."),
+      );
       if (err instanceof ApiError && err.status === 404) {
-        reloadSeq.value = reloadSeq.peek() + 1;
+        setReloadSeq((n) => n + 1);
       }
     } finally {
-      working.value = false;
+      inFlight.current = false;
+      setWorking(false);
     }
   };
 
   const upsert = (g: GrantView) => {
-    const rest = (grants.value ?? []).filter(
-      (x) => x.granteeId !== g.granteeId,
-    );
-    grants.value = [...rest, g];
+    setGrants((prev) => [
+      ...(prev ?? []).filter((x) => x.granteeId !== g.granteeId),
+      g,
+    ]);
   };
 
-  const share = (e: Event) => {
+  const share = (e: FormEvent) => {
     e.preventDefault();
-    const who = granteeId.value.trim();
+    const who = granteeId.trim();
     if (!who) {
-      error.value = "Enter the user id to share with.";
+      setError("Enter the user id to share with.");
       return;
     }
     void run(async () => {
       const g = await addGrant(incidentId, {
         granteeId: who,
-        canAnnotate: canAnnotate.value,
+        canAnnotate,
       });
-      granteeId.value = "";
+      setGranteeId("");
       if (!g) {
         return "That is you. As the owner you already hold every right, so nothing changed.";
       }
@@ -108,56 +116,58 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
     });
   };
 
-  const list = grants.value;
+  const list = grants;
   return (
-    <section aria-labelledby="incident-grants-heading" class={PANEL}>
-      <h2 id="incident-grants-heading" class={HEADING}>
+    <section aria-labelledby="incident-grants-heading" className={PANEL}>
+      <h2 id="incident-grants-heading" className={HEADING}>
         Sharing
       </h2>
-      <p class="m-0 text-xs text-text-muted">
+      <p className="m-0 text-xs text-text-muted">
         People you share with see the evidence their own access allows; the rest
         appears to them as withheld.
       </p>
-      {loadError.value && (
+      {loadError && (
         <div role="alert">
-          <Alert variant="error">{loadError.value}</Alert>
+          <Alert variant="error">{loadError}</Alert>
         </div>
       )}
       {list && list.length === 0 && (
-        <p class="m-0 text-sm text-text-secondary">Not shared with anyone.</p>
+        <p className="m-0 text-sm text-text-secondary">
+          Not shared with anyone.
+        </p>
       )}
       {list && list.length > 0 && (
-        <div class="overflow-x-auto">
-          <table class="w-full border-collapse text-left text-sm">
-            <caption class="sr-only">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-left text-sm">
+            <caption className="sr-only">
               People this incident is shared with
             </caption>
             <thead>
-              <tr class="text-xs uppercase tracking-wide text-text-muted">
-                <th scope="col" class="px-2 py-1 font-semibold">
+              <tr className="text-xs uppercase tracking-wide text-text-muted">
+                <th scope="col" className="px-2 py-1 font-semibold">
                   User
                 </th>
-                <th scope="col" class="px-2 py-1 font-semibold">
+                <th scope="col" className="px-2 py-1 font-semibold">
                   Can add notes
                 </th>
-                <th scope="col" class="px-2 py-1 font-semibold">
+                <th scope="col" className="px-2 py-1 font-semibold">
                   Since
                 </th>
-                <th scope="col" class="px-2 py-1 font-semibold">
-                  <span class="sr-only">Actions</span>
+                <th scope="col" className="px-2 py-1 font-semibold">
+                  <span className="sr-only">Actions</span>
                 </th>
               </tr>
             </thead>
             <tbody>
               {list.map((g) => (
-                <tr key={g.granteeId} class="border-t border-border-subtle">
-                  <td class="px-2 py-1 text-text-primary">{g.granteeId}</td>
-                  <td class="px-2 py-1">
+                <tr key={g.granteeId} className="border-t border-border-subtle">
+                  <td className="px-2 py-1 text-text-primary">{g.granteeId}</td>
+                  <td className="px-2 py-1">
                     <input
                       type="checkbox"
                       aria-label={`${g.granteeId} can add notes`}
                       checked={g.canAnnotate}
-                      aria-disabled={working.value}
+                      aria-disabled={working}
                       onChange={(ev) => {
                         const want = ev.currentTarget.checked;
                         ev.currentTarget.checked = g.canAnnotate;
@@ -170,26 +180,28 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
                           return null;
                         });
                       }}
-                      class={FOCUS_RING}
+                      className={FOCUS_RING}
                     />
                   </td>
-                  <td class="px-2 py-1 text-text-secondary">
+                  <td className="px-2 py-1 text-text-secondary">
                     {timeAgo(g.createdAt)}
                   </td>
-                  <td class="px-2 py-1 text-right">
+                  <td className="px-2 py-1 text-right">
                     <button
                       type="button"
-                      aria-disabled={working.value}
+                      aria-disabled={working}
                       onClick={() =>
                         void run(async () => {
                           await removeGrant(incidentId, g.granteeId);
-                          grants.value = (grants.value ?? []).filter(
-                            (x) => x.granteeId !== g.granteeId,
+                          setGrants((prev) =>
+                            (prev ?? []).filter(
+                              (x) => x.granteeId !== g.granteeId,
+                            ),
                           );
                           return `Stopped sharing with ${g.granteeId}.`;
                         })
                       }
-                      class={BUTTON_SECONDARY}
+                      className={BUTTON_SECONDARY}
                     >
                       Remove
                     </button>
@@ -200,39 +212,35 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
           </table>
         </div>
       )}
-      <form onSubmit={share} class="flex flex-wrap items-end gap-3">
+      <form onSubmit={share} className="flex flex-wrap items-end gap-3">
         <Input
           id="grant-grantee"
           label="User id"
-          value={granteeId.value}
-          onInput={(ev) => {
-            granteeId.value = ev.currentTarget.value;
-          }}
+          value={granteeId}
+          onChange={(ev) => setGranteeId(ev.currentTarget.value)}
         />
-        <label class="inline-flex items-center gap-2 pb-2 text-sm text-text-primary">
+        <label className="inline-flex items-center gap-2 pb-2 text-sm text-text-primary">
           <input
             type="checkbox"
-            checked={canAnnotate.value}
-            onChange={(ev) => {
-              canAnnotate.value = ev.currentTarget.checked;
-            }}
-            class={FOCUS_RING}
+            checked={canAnnotate}
+            onChange={(ev) => setCanAnnotate(ev.currentTarget.checked)}
+            className={FOCUS_RING}
           />
           Can add notes
         </label>
         <button
           type="submit"
-          aria-disabled={working.value}
-          class={BUTTON_SECONDARY}
+          aria-disabled={working}
+          className={BUTTON_SECONDARY}
         >
           Share
         </button>
       </form>
       <div role="status" aria-live="polite">
-        {message.value && (
-          <p class="m-0 text-sm text-text-secondary">{message.value}</p>
+        {message && (
+          <p className="m-0 text-sm text-text-secondary">{message}</p>
         )}
-        {error.value && <Alert variant="error">{error.value}</Alert>}
+        {error && <Alert variant="error">{error}</Alert>}
       </div>
     </section>
   );

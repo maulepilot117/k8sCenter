@@ -1,8 +1,9 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 
 export interface InfoGridItem {
   label: string;
-  value: ComponentChildren;
+  value: ReactNode;
 }
 
 export interface InfoGridProps {

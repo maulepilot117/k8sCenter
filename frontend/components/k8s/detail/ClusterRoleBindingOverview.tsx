@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import type { K8sResource } from "@/lib/k8s-types.ts";
 import { BindingDetail } from "./RoleBindingOverview.tsx";
 

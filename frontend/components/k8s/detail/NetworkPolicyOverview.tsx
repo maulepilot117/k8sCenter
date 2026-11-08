@@ -1,3 +1,5 @@
+/** @jsxImportSource react */
+
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type {
   K8sResource,
@@ -6,6 +8,7 @@ import type {
   NetworkPolicyPort,
   NetworkPolicyRule,
 } from "@/lib/k8s-types.ts";
+import { withUniqueKeys } from "@/lib/unique-keys.ts";
 import { KeyValueTable } from "./KeyValueTable.tsx";
 
 function formatPort(p: NetworkPolicyPort): string {
@@ -23,10 +26,10 @@ function formatPorts(ports?: NetworkPolicyPort[]): string {
 function PeerBadge({ peer }: { peer: NetworkPolicyPeer }) {
   if (peer.ipBlock) {
     return (
-      <span class="inline-flex items-center gap-1 rounded bg-accent-dim px-2 py-0.5 text-xs font-mono text-accent-secondary">
+      <span className="inline-flex items-center gap-1 rounded bg-accent-dim px-2 py-0.5 text-xs font-mono text-accent-secondary">
         CIDR: {peer.ipBlock.cidr}
         {peer.ipBlock.except && peer.ipBlock.except.length > 0 && (
-          <span class="text-accent-secondary">
+          <span className="text-accent-secondary">
             {` (except ${peer.ipBlock.except.join(",")})`}
           </span>
         )}
@@ -63,10 +66,11 @@ function PeerBadge({ peer }: { peer: NetworkPolicyPeer }) {
     }
   }
 
-  if (parts.length === 0) return <span class="text-xs text-text-muted">-</span>;
+  if (parts.length === 0)
+    return <span className="text-xs text-text-muted">-</span>;
 
   return (
-    <span class="inline-flex items-center rounded bg-accent-dim px-2 py-0.5 text-xs text-accent">
+    <span className="inline-flex items-center rounded bg-accent-dim px-2 py-0.5 text-xs text-accent">
       {parts.join(" /")}
     </span>
   );
@@ -83,21 +87,23 @@ function RuleRow({
   const hasNoPeers = !peers || peers.length === 0;
 
   return (
-    <tr class="border-b border-border-primary last:border-0">
-      <td class="py-2 px-3 text-xs text-text-secondary align-top">
+    <tr className="border-b border-border-primary last:border-0">
+      <td className="py-2 px-3 text-xs text-text-secondary align-top">
         {hasNoPeers ? (
-          <span class="inline-flex items-center rounded bg-warning-dim px-2 py-0.5 text-xs text-warning">
+          <span className="inline-flex items-center rounded bg-warning-dim px-2 py-0.5 text-xs text-warning">
             {direction === "ingress" ? "Any source" : "Any destination"}
           </span>
         ) : (
-          <div class="flex flex-wrap gap-1">
-            {peers.map((peer, i) => (
-              <PeerBadge key={i} peer={peer} />
-            ))}
+          <div className="flex flex-wrap gap-1">
+            {withUniqueKeys(peers, (peer) => JSON.stringify(peer)).map(
+              ({ item: peer, key }) => (
+                <PeerBadge key={key} peer={peer} />
+              ),
+            )}
           </div>
         )}
       </td>
-      <td class="py-2 px-3 text-xs font-mono text-text-secondary align-top">
+      <td className="py-2 px-3 text-xs font-mono text-text-secondary align-top">
         {formatPorts(rule.ports)}
       </td>
     </tr>
@@ -118,29 +124,31 @@ function RulesSection({
   return (
     <div>
       <SectionHeader>
-        <span class={color}>{icon}</span> {label} Rules ({rules.length})
+        <span className={color}>{icon}</span> {label} Rules ({rules.length})
       </SectionHeader>
       {rules.length === 0 ? (
-        <p class="text-xs text-text-muted italic">
+        <p className="text-xs text-text-muted italic">
           No {direction} rules — all {direction} traffic is blocked
         </p>
       ) : (
-        <div class="overflow-x-auto rounded-md border border-border-primary">
-          <table class="w-full text-left">
+        <div className="overflow-x-auto rounded-md border border-border-primary">
+          <table className="w-full text-left">
             <thead>
-              <tr class="bg-surface/50">
-                <th class="py-1.5 px-3 text-xs font-medium text-text-muted">
+              <tr className="bg-surface/50">
+                <th className="py-1.5 px-3 text-xs font-medium text-text-muted">
                   {direction === "ingress" ? "From" : "To"}
                 </th>
-                <th class="py-1.5 px-3 text-xs font-medium text-text-muted">
+                <th className="py-1.5 px-3 text-xs font-medium text-text-muted">
                   Ports
                 </th>
               </tr>
             </thead>
             <tbody>
-              {rules.map((rule, i) => (
-                <RuleRow key={i} rule={rule} direction={direction} />
-              ))}
+              {withUniqueKeys(rules, (rule) => JSON.stringify(rule)).map(
+                ({ item: rule, key }) => (
+                  <RuleRow key={key} rule={rule} direction={direction} />
+                ),
+              )}
             </tbody>
           </table>
         </div>
@@ -157,11 +165,11 @@ export function NetworkPolicyOverview({ resource }: { resource: K8sResource }) {
   const hasEgress = policyTypes.includes("Egress");
 
   return (
-    <div class="space-y-5">
+    <div className="space-y-5">
       {/* Summary */}
       <div>
         <SectionHeader>Summary</SectionHeader>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Policy Types" value={policyTypes.join(",")} />
           <Field
             label="Ingress Rules"
@@ -184,7 +192,7 @@ export function NetworkPolicyOverview({ resource }: { resource: K8sResource }) {
             data={spec.podSelector.matchLabels}
           />
         ) : (
-          <p class="text-xs text-text-muted italic">
+          <p className="text-xs text-text-muted italic">
             All pods in namespace (empty selector)
           </p>
         )}

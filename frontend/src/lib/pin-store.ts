@@ -14,7 +14,7 @@
  * Shared so SecondaryNav and the resource detail page read one list instead of
  * fetching their own copies and disagreeing about what is pinned.
  */
-import { signal } from "@preact/signals-core";
+import { computed, signal } from "@preact/signals-core";
 import type { PinConfig } from "@/lib/preference-types.ts";
 import {
   type PinRecord,
@@ -105,6 +105,11 @@ export async function removePin(id: string): Promise<void> {
  * different cluster could in principle satisfy. Other clusters' pins are
  * therefore filtered out rather than shown disabled.
  */
+export const activeClusterPins = computed(() =>
+  pins.value.filter((p) => p.clusterId === selectedCluster.value),
+);
+
+/** The current value of `activeClusterPins`. */
 export function pinsForActiveCluster(): PinRecord[] {
-  return pins.value.filter((p) => p.clusterId === selectedCluster.value);
+  return activeClusterPins.value;
 }

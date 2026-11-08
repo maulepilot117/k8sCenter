@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import type { ClusterRole, K8sResource } from "@/lib/k8s-types.ts";
 import { RulesTable } from "./RulesTable.tsx";
 

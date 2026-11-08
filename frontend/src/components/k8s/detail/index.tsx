@@ -1,3 +1,5 @@
+/** @jsxImportSource react */
+import type { ReactElement } from "react";
 import { ClusterRoleBindingOverview } from "@/components/k8s/detail/ClusterRoleBindingOverview.tsx";
 import { ClusterRoleOverview } from "@/components/k8s/detail/ClusterRoleOverview.tsx";
 import { ConfigMapOverview } from "@/components/k8s/detail/ConfigMapOverview.tsx";
@@ -20,20 +22,18 @@ import { ServiceOverview } from "@/src/components/k8s/detail/ServiceOverview.tsx
 
 function GenericOverview({ resource }: { resource: K8sResource }) {
   return (
-    <div class="space-y-4">
-      <p class="text-sm text-text-muted">
+    <div className="space-y-4">
+      <p className="text-sm text-text-muted">
         No specialized overview available for this resource type.
       </p>
-      <pre class="overflow-x-auto rounded-md border border-border-primary bg-surface p-3 text-xs font-mono text-text-secondary">
+      <pre className="overflow-x-auto rounded-md border border-border-primary bg-surface p-3 text-xs font-mono text-text-secondary">
         {JSON.stringify(resource, null, 2)}
       </pre>
     </div>
   );
 }
 
-type OverviewComponent = (props: {
-  resource: K8sResource;
-}) => preact.JSX.Element;
+type OverviewComponent = (props: { resource: K8sResource }) => ReactElement;
 
 const OVERVIEW_COMPONENTS: Record<string, OverviewComponent> = {
   deployments: DeploymentOverview,

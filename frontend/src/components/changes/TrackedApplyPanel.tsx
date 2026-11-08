@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import {
   executionExplanation,
   receiptHref,
@@ -36,7 +37,7 @@ export function TrackedApplyPanel({
     if (!requested) return null;
     return (
       <div role="status">
-        <p class="m-0 rounded-lg border border-border-subtle bg-surface px-4 py-3 text-sm text-warning">
+        <p className="m-0 rounded-lg border border-border-subtle bg-surface px-4 py-3 text-sm text-warning">
           This apply was not recorded: the server returned no change record.
         </p>
       </div>
@@ -79,11 +80,13 @@ export function TrackedApplyPanel({
   return (
     <section
       aria-label="Change record"
-      class="flex flex-col gap-2 rounded-lg border border-border-subtle bg-surface p-4 text-sm"
+      className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-surface p-4 text-sm"
     >
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="font-semibold text-text-primary">Change recorded</span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold text-text-primary">
+            Change recorded
+          </span>
           <ChangeStateBadges
             state={tracking.state}
             verification={tracking.verification.state}
@@ -91,19 +94,19 @@ export function TrackedApplyPanel({
         </div>
         <a
           href={receiptHref(tracking.operationId)}
-          class="font-medium text-accent"
+          className="font-medium text-accent"
         >
           View change receipt {shortId(tracking.operationId)}
         </a>
       </div>
-      {explanation && <p class="m-0 text-text-secondary">{explanation}</p>}
+      {explanation && <p className="m-0 text-text-secondary">{explanation}</p>}
       {notes.map((n) => (
-        <p key={n} class="m-0 text-text-secondary">
+        <p key={n} className="m-0 text-text-secondary">
           {n}
         </p>
       ))}
       {tracking.warnings.length > 0 && (
-        <ul aria-label="Recording warnings" class="m-0 pl-5 text-warning">
+        <ul aria-label="Recording warnings" className="m-0 pl-5 text-warning">
           {tracking.warnings.map((w) => (
             <li key={w}>{w}</li>
           ))}

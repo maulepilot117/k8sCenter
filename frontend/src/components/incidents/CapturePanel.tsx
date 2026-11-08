@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { type FormEvent, useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { ApiError, errorExtra } from "@/lib/api.ts";
@@ -83,101 +84,110 @@ export function CapturePanel({
   /** Called after any capture that may have written evidence. */
   onCaptured: () => void;
 }) {
-  const namespace = useSignal("");
-  const kind = useSignal<CaptureKind>("Deployment");
-  const name = useSignal("");
-  const sources = useSignal<CaptureSourceId[]>(
+  const [namespace, setNamespace] = useState("");
+  const [kind, setKind] = useState<CaptureKind>("Deployment");
+  const [name, setName] = useState("");
+  const [sources, setSources] = useState<CaptureSourceId[]>(
     CAPTURE_SOURCES.map((s) => s.id),
   );
-  const running = useSignal(false);
-  const result = useSignal<CaptureResponse | null>(null);
-  const error = useSignal<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<CaptureResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // A second submit can land before the render that shows `running`.
+  const inFlight = useRef(false);
+  // The capture outlives the render that started it.
+  const onCapturedRef = useRef(onCaptured);
+  onCapturedRef.current = onCaptured;
 
-  const submit = async (e: Event) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (running.value) return;
-    if (!namespace.value.trim() || !name.value.trim()) {
-      error.value = "Enter the namespace and name of the object to capture.";
-      result.value = null;
+    if (inFlight.current) return;
+    if (!namespace.trim() || !name.trim()) {
+      setError("Enter the namespace and name of the object to capture.");
+      setResult(null);
       return;
     }
-    if (sources.value.length === 0) {
-      error.value = "Choose at least one source.";
-      result.value = null;
+    if (sources.length === 0) {
+      setError("Choose at least one source.");
+      setResult(null);
       return;
     }
-    running.value = true;
-    error.value = null;
-    result.value = null;
+    inFlight.current = true;
+    setRunning(true);
+    setError(null);
+    setResult(null);
     try {
-      result.value = await captureEvidence(incidentId, LOCAL_CLUSTER_ID, {
-        namespace: namespace.value.trim(),
-        kind: kind.value,
-        name: name.value.trim(),
-        sources: sources.value,
-      });
-      onCaptured();
+      setResult(
+        await captureEvidence(incidentId, LOCAL_CLUSTER_ID, {
+          namespace: namespace.trim(),
+          kind,
+          name: name.trim(),
+          sources,
+        }),
+      );
+      onCapturedRef.current();
     } catch (err) {
-      error.value = captureErrorText(err);
+      setError(captureErrorText(err));
       if (
         err instanceof ApiError &&
         (err.reason === "incident_capture_outcome_unknown" ||
           err.reason === "incident_closed")
       ) {
-        onCaptured();
+        onCapturedRef.current();
       }
     } finally {
-      running.value = false;
+      inFlight.current = false;
+      setRunning(false);
     }
   };
 
   const toggle = (id: CaptureSourceId, on: boolean) => {
-    sources.value = on
-      ? CAPTURE_SOURCES.map((s) => s.id).filter(
-          (s) => s === id || sources.value.includes(s),
-        )
-      : sources.value.filter((s) => s !== id);
+    setSources((current) =>
+      on
+        ? CAPTURE_SOURCES.map((s) => s.id).filter(
+            (s) => s === id || current.includes(s),
+          )
+        : current.filter((s) => s !== id),
+    );
   };
 
-  const r = result.value;
+  const r = result;
   return (
-    <section aria-labelledby="incident-capture-heading" class={PANEL}>
-      <h2 id="incident-capture-heading" class={HEADING}>
+    <section aria-labelledby="incident-capture-heading" className={PANEL}>
+      <h2 id="incident-capture-heading" className={HEADING}>
         Capture evidence
       </h2>
       {closed ? (
-        <p class="m-0 text-sm text-text-secondary">
+        <p className="m-0 text-sm text-text-secondary">
           This incident is closed. Reopen it to capture more evidence.
         </p>
       ) : (
-        <form onSubmit={submit} class="flex flex-col gap-3">
-          <p class="m-0 text-xs text-text-muted">
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <p className="m-0 text-xs text-text-muted">
             Captures from the local cluster, under your own access.
           </p>
-          <div class="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-3">
             <Input
               id="capture-namespace"
               label="Namespace"
               required
-              value={namespace.value}
-              onInput={(ev) => {
-                namespace.value = ev.currentTarget.value;
-              }}
+              value={namespace}
+              onChange={(ev) => setNamespace(ev.currentTarget.value)}
             />
-            <div class="space-y-1">
+            <div className="space-y-1">
               <label
-                for="capture-kind"
-                class="block text-sm font-medium text-text-secondary"
+                htmlFor="capture-kind"
+                className="block text-sm font-medium text-text-secondary"
               >
                 Kind
               </label>
               <select
                 id="capture-kind"
-                value={kind.value}
-                onChange={(ev) => {
-                  kind.value = ev.currentTarget.value as CaptureKind;
-                }}
-                class={FIELD}
+                value={kind}
+                onChange={(ev) =>
+                  setKind(ev.currentTarget.value as CaptureKind)
+                }
+                className={FIELD}
               >
                 {CAPTURE_KINDS.map((k) => (
                   <option key={k} value={k}>
@@ -190,26 +200,24 @@ export function CapturePanel({
               id="capture-name"
               label="Name"
               required
-              value={name.value}
-              onInput={(ev) => {
-                name.value = ev.currentTarget.value;
-              }}
+              value={name}
+              onChange={(ev) => setName(ev.currentTarget.value)}
             />
           </div>
-          <fieldset class="m-0 flex flex-wrap gap-4 border-0 p-0">
-            <legend class="mb-1 p-0 text-sm font-medium text-text-secondary">
+          <fieldset className="m-0 flex flex-wrap gap-4 border-0 p-0">
+            <legend className="mb-1 p-0 text-sm font-medium text-text-secondary">
               Sources
             </legend>
             {CAPTURE_SOURCES.map((s) => (
               <label
                 key={s.id}
-                class="inline-flex items-center gap-2 text-sm text-text-primary"
+                className="inline-flex items-center gap-2 text-sm text-text-primary"
               >
                 <input
                   type="checkbox"
-                  checked={sources.value.includes(s.id)}
+                  checked={sources.includes(s.id)}
                   onChange={(ev) => toggle(s.id, ev.currentTarget.checked)}
-                  class={FOCUS_RING}
+                  className={FOCUS_RING}
                 />
                 {s.label}
               </label>
@@ -218,41 +226,43 @@ export function CapturePanel({
           <div>
             <button
               type="submit"
-              aria-disabled={running.value}
-              class={BUTTON_PRIMARY}
+              aria-disabled={running}
+              className={BUTTON_PRIMARY}
             >
-              {running.value ? "Capturing…" : "Capture"}
+              {running ? "Capturing…" : "Capture"}
             </button>
           </div>
         </form>
       )}
-      <div role="status" aria-live="polite" class="flex flex-col gap-2">
-        {running.value && (
-          <p class="m-0 text-sm text-text-muted">Capturing evidence…</p>
+      <div role="status" aria-live="polite" className="flex flex-col gap-2">
+        {running && (
+          <p className="m-0 text-sm text-text-muted">Capturing evidence…</p>
         )}
-        {error.value && <Alert variant="error">{error.value}</Alert>}
+        {error && <Alert variant="error">{error}</Alert>}
         {r && (
-          <div class="flex flex-col gap-2" data-capture-result="true">
-            <p class="m-0 text-sm text-text-primary">
+          <div className="flex flex-col gap-2" data-capture-result="true">
+            <p className="m-0 text-sm text-text-primary">
               Capture {completenessLabel(r.completeness).toLowerCase()}:{" "}
               {r.inserted} new item{r.inserted === 1 ? "" : "s"} recorded
               {r.deduplicated > 0 ? `, ${r.deduplicated} already recorded` : ""}
               {r.dropped > 0 ? `, ${r.dropped} dropped as invalid` : ""}.
             </p>
-            <ul class="m-0 flex list-none flex-col gap-1 p-0">
+            <ul className="m-0 flex list-none flex-col gap-1 p-0">
               {r.sources.map((s) => (
                 <li
                   key={s.id}
-                  class="flex flex-wrap items-center gap-2 text-sm text-text-secondary"
+                  className="flex flex-wrap items-center gap-2 text-sm text-text-secondary"
                 >
-                  <span class="font-medium text-text-primary">
+                  <span className="font-medium text-text-primary">
                     {captureSourceLabel(s.id)}
                   </span>
                   <CompletenessBadge value={s.completeness} />
                   <span>
                     {s.items} item{s.items === 1 ? "" : "s"}
                   </span>
-                  {s.detail && <span class="text-text-muted">{s.detail}</span>}
+                  {s.detail && (
+                    <span className="text-text-muted">{s.detail}</span>
+                  )}
                 </li>
               ))}
             </ul>

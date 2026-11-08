@@ -1,6 +1,9 @@
+/** @jsxImportSource react */
+
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ownershipCopy } from "@/lib/change-copy.ts";
 import type { ObjectRef, OwnershipView } from "@/lib/change-types.ts";
+import { withUniqueKeys } from "@/lib/unique-keys.ts";
 
 function objectLabel(o: Partial<ObjectRef>): string {
   const where = o.namespace ? `${o.namespace}/` : "";
@@ -23,22 +26,22 @@ export function OwnershipList({
   return (
     <ul
       aria-label={label}
-      class="m-0 list-none divide-y divide-border-subtle overflow-hidden rounded-lg border border-border-subtle bg-surface p-0"
+      className="m-0 list-none divide-y divide-border-subtle overflow-hidden rounded-lg border border-border-subtle bg-surface p-0"
     >
-      {results.map((r, i) => {
+      {withUniqueKeys(
+        results,
+        (r) => `${r.object.kind}-${r.object.namespace ?? ""}-${r.object.name}`,
+      ).map(({ item: r, key }) => {
         const copy = ownershipCopy(r);
         return (
-          <li
-            key={`${i}-${r.object.kind}-${r.object.namespace ?? ""}-${r.object.name}`}
-            class="flex flex-col gap-1 px-3.5 py-2.5 text-sm"
-          >
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="font-mono text-text-primary">
+          <li key={key} className="flex flex-col gap-1 px-3.5 py-2.5 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-text-primary">
                 {objectLabel(r.object)}
               </span>
               <StatusBadge label={copy.label} tone={copy.tone} />
             </div>
-            <p class="m-0 text-text-secondary">{copy.text}</p>
+            <p className="m-0 text-text-secondary">{copy.text}</p>
           </li>
         );
       })}

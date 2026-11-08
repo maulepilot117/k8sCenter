@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Alert } from "@/components/ui/Alert.tsx";
 import { receiptHref, sameCluster, shortId } from "@/lib/change-copy.ts";
 import type { RepairState } from "@/lib/change-tracking.ts";
@@ -38,7 +39,7 @@ export function RepairBanner({
     repair.clusterId !== undefined &&
     !sameCluster(repair.clusterId, selectedClusterId);
   return (
-    <div role="status" class="flex flex-col gap-2">
+    <div role="status" className="flex flex-col gap-2">
       {elsewhere && repair.clusterId && (
         <Alert variant="warning">
           The original change was applied to{" "}
@@ -61,17 +62,17 @@ export function RepairBanner({
             record of this change” is on.
           </span>
         )}
-        <span class="flex flex-wrap items-center gap-4">
+        <span className="flex flex-wrap items-center gap-4">
           <a
             href={receiptHref(repair.id)}
-            class="font-medium text-inherit underline"
+            className="font-medium text-inherit underline"
           >
             Open the original receipt
           </a>
           <button
             type="button"
             onClick={onStop}
-            class="cursor-pointer border-0 bg-transparent p-0 font-medium text-inherit underline"
+            className="cursor-pointer border-0 bg-transparent p-0 font-medium text-inherit underline"
           >
             Stop repairing
           </button>

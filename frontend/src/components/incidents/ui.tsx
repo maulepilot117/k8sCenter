@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import {
   type Completeness,
   completenessDescription,
@@ -57,12 +58,18 @@ const COMPLETENESS_CLASS: Record<Completeness, string> = {
 export function StatusBadge({ status }: { status: IncidentStatus }) {
   switch (status) {
     case "open":
-      return <span class={`${BADGE} bg-warning-dim text-warning`}>Open</span>;
+      return (
+        <span className={`${BADGE} bg-warning-dim text-warning`}>Open</span>
+      );
     case "closed":
-      return <span class={`${BADGE} bg-success-dim text-success`}>Closed</span>;
+      return (
+        <span className={`${BADGE} bg-success-dim text-success`}>Closed</span>
+      );
     default:
       return (
-        <span class={`${BADGE} border border-border-subtle text-text-muted`}>
+        <span
+          className={`${BADGE} border border-border-subtle text-text-muted`}
+        >
           {String(status)}
         </span>
       );
@@ -73,7 +80,7 @@ export function StatusBadge({ status }: { status: IncidentStatus }) {
 export function CompletenessBadge({ value }: { value: Completeness }) {
   return (
     <span
-      class={`${BADGE} ${COMPLETENESS_CLASS[value] ?? "border border-border-subtle text-text-muted"}`}
+      className={`${BADGE} ${COMPLETENESS_CLASS[value] ?? "border border-border-subtle text-text-muted"}`}
       title={completenessDescription(value)}
     >
       {completenessLabel(value)}

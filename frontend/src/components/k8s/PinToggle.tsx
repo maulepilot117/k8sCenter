@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import type { ApiError } from "@/lib/api.ts";
 import {
   classifyPin,
@@ -9,15 +10,16 @@ import {
   pinDedupKey,
 } from "@/lib/preference-types.ts";
 import { preferenceReason } from "@/lib/preferences.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import {
+  activeClusterPins,
   addPin,
   loadPins,
-  pinsForActiveCluster,
   pinsLoaded,
   pinsUnavailable,
   removePin,
 } from "@/src/lib/pin-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface PinToggleProps {
   /** Adapter slug, e.g. "deployments". */
@@ -77,8 +79,12 @@ export function PinToggle({
   uid,
   deleted,
 }: PinToggleProps) {
-  const busy = useSignal(false);
-  const failure = useSignal<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const isClient = useIsClient();
+  const clusterPins = useSignalValue(activeClusterPins);
+  const storeUnavailable = useSignalValue(pinsUnavailable);
+  const storeLoaded = useSignalValue(pinsLoaded);
 
   const config: PinConfig = {
     schemaVersion: PIN_SCHEMA_VERSION,
@@ -92,15 +98,15 @@ export function PinToggle({
   };
 
   const key = pinDedupKey(config);
-  // Every read of the shared pin-store is gated on IS_BROWSER together, not
+  // Every read of the shared pin-store is gated on isClient together, not
   // one of three: those signals are a process-global singleton on the Deno
   // server, so a partial guard would let one request's state colour another
   // request's server-rendered output.
-  const record = IS_BROWSER
-    ? pinsForActiveCluster().find((p) => pinDedupKey(p.config) === key)
+  const record = isClient
+    ? clusterPins.find((p) => pinDedupKey(p.config) === key)
     : undefined;
-  const unavailable = IS_BROWSER ? pinsUnavailable.value : undefined;
-  const loaded = IS_BROWSER ? pinsLoaded.value : false;
+  const unavailable = isClient ? storeUnavailable : undefined;
+  const loaded = isClient ? storeLoaded : false;
 
   const loading = uid === undefined || (!loaded && !unavailable);
   // A deleted target is a "notFound" lookup even though the page still holds
@@ -140,8 +146,8 @@ export function PinToggle({
   };
 
   const pin = async () => {
-    busy.value = true;
-    failure.value = null;
+    setBusy(true);
+    setFailure(null);
     try {
       await addPin(recordName, config);
     } catch (err) {
@@ -150,17 +156,17 @@ export function PinToggle({
         // for, so reconcile with the server instead of reporting an error.
         await loadPins();
       } else {
-        failure.value = describe(err);
+        setFailure(describe(err));
       }
     } finally {
-      busy.value = false;
+      setBusy(false);
     }
   };
 
   const unpin = async () => {
     if (!record) return;
-    busy.value = true;
-    failure.value = null;
+    setBusy(true);
+    setFailure(null);
     try {
       await removePin(record.id);
     } catch (err) {
@@ -169,9 +175,9 @@ export function PinToggle({
       // because the pin they just tried to remove is still there.
       const status = (err as ApiError | undefined)?.status;
       await loadPins();
-      if (status !== 404) failure.value = describe(err);
+      if (status !== 404) setFailure(describe(err));
     } finally {
-      busy.value = false;
+      setBusy(false);
     }
   };
 
@@ -185,8 +191,8 @@ export function PinToggle({
   // this operation at all.
   const repin = async () => {
     if (!record) return;
-    busy.value = true;
-    failure.value = null;
+    setBusy(true);
+    setFailure(null);
     try {
       try {
         await removePin(record.id);
@@ -203,13 +209,13 @@ export function PinToggle({
         // next to a control that correctly reads "Pinned".
         await loadPins();
       } else {
-        failure.value = `Could not re-pin, and the old pin may already be gone. ${describe(
-          err,
-        )}`;
+        setFailure(
+          `Could not re-pin, and the old pin may already be gone. ${describe(err)}`,
+        );
         await loadPins();
       }
     } finally {
-      busy.value = false;
+      setBusy(false);
     }
   };
 
@@ -286,7 +292,7 @@ export function PinToggle({
     ariaLabel = `Unpin ${displayKind} ${name}`;
   }
 
-  const disabled = busy.value || action === undefined;
+  const disabled = busy || action === undefined;
 
   return (
     <span
@@ -298,7 +304,7 @@ export function PinToggle({
         type="button"
         data-testid="pin-button"
         aria-label={ariaLabel}
-        aria-busy={busy.value ? "true" : undefined}
+        aria-busy={busy ? "true" : undefined}
         title={hint}
         disabled={disabled}
         onClick={() => action?.()}
@@ -316,24 +322,24 @@ export function PinToggle({
           type="button"
           data-testid="pin-repin"
           aria-label={`Re-pin the current ${displayKind} ${name}`}
-          disabled={busy.value}
+          disabled={busy}
           onClick={repin}
           style={{
             ...buttonStyle(true),
-            cursor: busy.value ? "not-allowed" : "pointer",
-            opacity: busy.value ? 0.5 : 1,
+            cursor: busy ? "not-allowed" : "pointer",
+            opacity: busy ? 0.5 : 1,
           }}
         >
           Re-pin this one
         </button>
       )}
 
-      {failure.value && (
+      {failure && (
         <span
           data-testid="pin-error"
           style={{ fontSize: "12px", color: "var(--error)" }}
         >
-          {failure.value}
+          {failure}
         </span>
       )}
     </span>

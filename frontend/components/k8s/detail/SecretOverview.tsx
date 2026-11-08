@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { apiGet } from "@/lib/api.ts";
 import type { K8sResource, Secret } from "@/lib/k8s-types.ts";
@@ -26,9 +26,12 @@ export function SecretOverview({ resource }: { resource: K8sResource }) {
   const entries = Object.entries(s.data ?? {}).sort(([a], [b]) =>
     a.localeCompare(b),
   );
-  const revealed = useSignal<Record<string, RevealedValue>>({});
-  const revealing = useSignal<Set<string>>(new Set());
-  const errors = useSignal<Record<string, string>>({});
+  const [revealed, setRevealed] = useState<Record<string, RevealedValue>>({});
+  const [revealing, setRevealing] = useState<ReadonlySet<string>>(new Set());
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  // The in-flight guard has to hold between two clicks in the same tick, so it
+  // cannot wait for a render; `revealing` is its rendered copy.
+  const inFlight = useRef(new Set<string>());
 
   const namespace = s.metadata.namespace ?? "";
   const name = s.metadata.name;
@@ -40,50 +43,51 @@ export function SecretOverview({ resource }: { resource: K8sResource }) {
   const version = s.metadata.resourceVersion;
   const currentVersion = useRef(version);
   currentVersion.current = version;
+  const resetFor = useRef(version);
   useEffect(() => {
-    revealed.value = {};
-    errors.value = {};
+    if (resetFor.current === version) return;
+    resetFor.current = version;
+    setRevealed({});
+    setErrors({});
   }, [version]);
 
   const reveal = async (key: string) => {
-    if (revealing.value.has(key)) return;
-    revealing.value = new Set(revealing.value).add(key);
-    const { [key]: _, ...restErrors } = errors.value;
-    errors.value = restErrors;
+    if (inFlight.current.has(key)) return;
+    inFlight.current.add(key);
+    setRevealing((prev) => new Set(prev).add(key));
+    setErrors(({ [key]: _, ...rest }) => rest);
     const requestedFor = currentVersion.current;
     try {
       const res = await apiGet<RevealResponse>(
         revealPath(namespace, name, key),
       );
       if (currentVersion.current !== requestedFor) return;
-      revealed.value = {
-        ...revealed.value,
-        [key]: decodeSecretValue(res.data.value),
-      };
+      const decoded = decodeSecretValue(res.data.value);
+      setRevealed((prev) => ({ ...prev, [key]: decoded }));
     } catch (err) {
       if (currentVersion.current !== requestedFor) return;
-      errors.value = {
-        ...errors.value,
-        [key]: err instanceof Error ? err.message : "Reveal failed",
-      };
+      const message = err instanceof Error ? err.message : "Reveal failed";
+      setErrors((prev) => ({ ...prev, [key]: message }));
     } finally {
-      const next = new Set(revealing.value);
-      next.delete(key);
-      revealing.value = next;
+      inFlight.current.delete(key);
+      setRevealing((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     }
   };
 
   const hide = (key: string) => {
-    const { [key]: _, ...rest } = revealed.value;
-    revealed.value = rest;
+    setRevealed(({ [key]: _, ...rest }) => rest);
   };
 
   return (
-    <div class="space-y-4">
+    <div className="space-y-4">
       {/* Type */}
       <div>
         <SectionHeader>Summary</SectionHeader>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Type" value={s.type ?? "Opaque"} mono />
           <Field label="Keys" value={String(entries.length)} />
         </div>
@@ -93,55 +97,55 @@ export function SecretOverview({ resource }: { resource: K8sResource }) {
       {entries.length > 0 && (
         <div>
           <SectionHeader>Data</SectionHeader>
-          <div class="overflow-x-auto rounded-md border border-border-primary">
-            <table class="w-full text-sm">
+          <div className="overflow-x-auto rounded-md border border-border-primary">
+            <table className="w-full text-sm">
               <thead>
-                <tr class="border-b border-border-primary">
-                  <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+                <tr className="border-b border-border-primary">
+                  <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                     Key
                   </th>
-                  <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+                  <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                     Value
                   </th>
-                  <th class="px-3 py-1.5" />
+                  <th className="px-3 py-1.5" />
                 </tr>
               </thead>
-              <tbody class="divide-y divide-border-subtle">
+              <tbody className="divide-y divide-border-subtle">
                 {entries.map(([key]) => {
-                  const value = revealed.value[key];
-                  const busy = revealing.value.has(key);
-                  const error = errors.value[key];
+                  const value = revealed[key];
+                  const busy = revealing.has(key);
+                  const error = errors[key];
                   return (
                     <tr key={key}>
-                      <td class="px-3 py-1.5 align-top font-mono text-xs text-accent whitespace-nowrap">
+                      <td className="px-3 py-1.5 align-top font-mono text-xs text-accent whitespace-nowrap">
                         {key}
                       </td>
-                      <td class="px-3 py-1.5 font-mono text-xs">
+                      <td className="px-3 py-1.5 font-mono text-xs">
                         {value ? (
                           <div>
-                            <pre class="whitespace-pre-wrap break-all text-text-primary">
+                            <pre className="whitespace-pre-wrap break-all text-text-primary">
                               {value.text}
                             </pre>
                             {value.binary && (
-                              <span class="text-text-muted">
+                              <span className="text-text-muted">
                                 Binary data, shown as base64
                               </span>
                             )}
                           </div>
                         ) : (
-                          <span class="text-text-muted">****</span>
+                          <span className="text-text-muted">****</span>
                         )}
                         {error && (
-                          <p class="mt-1 font-sans text-danger">{error}</p>
+                          <p className="mt-1 font-sans text-danger">{error}</p>
                         )}
                       </td>
-                      <td class="px-3 py-1.5 text-right align-top">
+                      <td className="px-3 py-1.5 text-right align-top">
                         <button
                           type="button"
                           onClick={() => (value ? hide(key) : reveal(key))}
                           disabled={busy}
                           aria-label={`${value ? "Hide" : "Reveal"} ${key}`}
-                          class="rounded border border-border-primary px-2 py-0.5 text-xs text-text-secondary hover:bg-hover hover:text-text-primary disabled:opacity-50"
+                          className="rounded border border-border-primary px-2 py-0.5 text-xs text-text-secondary hover:bg-hover hover:text-text-primary disabled:opacity-50"
                         >
                           {busy ? "Revealing…" : value ? "Hide" : "Reveal"}
                         </button>
@@ -152,7 +156,7 @@ export function SecretOverview({ resource }: { resource: K8sResource }) {
               </tbody>
             </table>
           </div>
-          <p class="mt-1 text-xs text-text-muted">
+          <p className="mt-1 text-xs text-text-muted">
             Each reveal is recorded in the audit log.
           </p>
         </div>
