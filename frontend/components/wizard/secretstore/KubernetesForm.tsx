@@ -27,11 +27,7 @@ import type { ProviderFormProps } from "@/lib/eso-types.ts";
  * preview (same pattern as VaultForm).
  */
 
-export type KubernetesAuthMethod = "serviceAccount" | "token" | "cert";
-
-/** KubernetesFormProps is the canonical ProviderFormProps — re-exported for
- *  consumers that imported it directly before the canonical type landed. */
-export type KubernetesFormProps = ProviderFormProps;
+type KubernetesAuthMethod = "serviceAccount" | "token" | "cert";
 
 interface SecretRef {
   name?: string;
@@ -116,7 +112,7 @@ export function KubernetesForm({
   spec,
   errors,
   onUpdateSpec,
-}: KubernetesFormProps) {
+}: ProviderFormProps) {
   const method = useSignal<KubernetesAuthMethod | "">(detectMethod(spec));
 
   function patchTop(field: string, value: string) {

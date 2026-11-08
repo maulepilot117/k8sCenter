@@ -75,7 +75,7 @@ interface Entry extends Searchable {
   disabledReason: string | null;
 }
 
-export interface WidgetPaletteProps {
+interface WidgetPaletteProps {
   /** Which dashboard is being edited; only widgets declaring it are offered. */
   scope: DashboardScope;
   /** The layout as it stands, which decides what is already on it. */

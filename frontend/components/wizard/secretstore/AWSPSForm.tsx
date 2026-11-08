@@ -19,9 +19,9 @@ import { Input } from "@/components/ui/Input.tsx";
  * injects it automatically when provider == "awsps" (U18 ToSecretStore remap).
  */
 
-export type AWSPSAuthMethod = "jwt" | "secretRef";
+type AWSPSAuthMethod = "jwt" | "secretRef";
 
-export interface AWSPSFormProps {
+interface AWSPSFormProps {
   spec: Record<string, unknown>;
   errors: Record<string, string>;
   onUpdateSpec: (spec: Record<string, unknown>) => void;

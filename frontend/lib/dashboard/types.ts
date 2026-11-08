@@ -351,8 +351,8 @@ export type DataSourceKey = (typeof DATA_SOURCE_KEYS)[number];
  * and gives each one an offset inside the refresh interval. Widgets never see
  * it; it is not part of the render contract.
  */
-export const SOURCE_COSTS = ["cheap", "discovery", "expensive"] as const;
-export type SourceCost = (typeof SOURCE_COSTS)[number];
+const SOURCE_COSTS = ["cheap", "discovery", "expensive"] as const;
+type SourceCost = (typeof SOURCE_COSTS)[number];
 
 /**
  * The cost of each declared source.

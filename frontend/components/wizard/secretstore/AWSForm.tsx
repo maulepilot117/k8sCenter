@@ -20,9 +20,9 @@ import { Input } from "@/components/ui/Input.tsx";
  * from the prior method don't leak into the YAML preview.
  */
 
-export type AWSAuthMethod = "jwt" | "secretRef";
+type AWSAuthMethod = "jwt" | "secretRef";
 
-export interface AWSFormProps {
+interface AWSFormProps {
   spec: Record<string, unknown>;
   errors: Record<string, string>;
   onUpdateSpec: (spec: Record<string, unknown>) => void;

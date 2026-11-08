@@ -7,7 +7,7 @@ import {
 } from "@/lib/wizard-constants.ts";
 import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 
-export interface ContainerFormProps {
+interface ContainerFormProps {
   image: string;
   command: string;
   args: string;

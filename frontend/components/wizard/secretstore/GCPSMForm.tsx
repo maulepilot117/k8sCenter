@@ -16,9 +16,9 @@ import { Input } from "@/components/ui/Input.tsx";
  * don't leak into the preview.
  */
 
-export type GCPSMAuthMethod = "workloadIdentity" | "secretRef" | "default";
+type GCPSMAuthMethod = "workloadIdentity" | "secretRef" | "default";
 
-export interface GCPSMFormProps {
+interface GCPSMFormProps {
   spec: Record<string, unknown>;
   errors: Record<string, string>;
   onUpdateSpec: (spec: Record<string, unknown>) => void;

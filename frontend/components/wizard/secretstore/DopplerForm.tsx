@@ -23,9 +23,9 @@ import { Input } from "@/components/ui/Input.tsx";
  * fields don't leak into the YAML preview.
  */
 
-export type DopplerAuthMethod = "secretRef" | "oidcConfig";
+type DopplerAuthMethod = "secretRef" | "oidcConfig";
 
-export interface DopplerFormProps {
+interface DopplerFormProps {
   spec: Record<string, unknown>;
   errors: Record<string, string>;
   onUpdateSpec: (spec: Record<string, unknown>) => void;

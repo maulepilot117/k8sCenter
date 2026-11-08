@@ -199,13 +199,13 @@ export interface UseYamlApplyReturn {
 }
 
 /** The pin parameters an apply echoes back to the server. */
-export interface ApplyQueryPin {
+interface ApplyQueryPin {
   targetCluster: string;
   targetGeneration: string;
 }
 
 /** Everything that shapes the `/yaml/apply` query string. */
-export interface ApplyQueryInput {
+interface ApplyQueryInput {
   force?: boolean;
   /** Release C target pin; both parameters travel together. */
   pin?: ApplyQueryPin | null;
@@ -326,7 +326,7 @@ export function isIndeterminateApplyFailure(err: unknown): boolean {
  * applied. False for every definite refusal (a pin mismatch, 4xx) and for
  * `operation_in_flight`, which carries its own receipt link.
  */
-export function attemptMayHaveApplied(
+function attemptMayHaveApplied(
   err: unknown,
   refusal: TrackedApplyRefusal | null,
 ): boolean {

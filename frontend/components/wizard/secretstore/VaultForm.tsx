@@ -13,16 +13,7 @@ import type { ProviderFormProps } from "@/lib/eso-types.ts";
  * the previously-entered method so stale fields don't leak into the preview.
  */
 
-export type VaultAuthMethod =
-  | "token"
-  | "kubernetes"
-  | "appRole"
-  | "jwt"
-  | "cert";
-
-/** VaultFormProps is the canonical ProviderFormProps — re-exported for
- *  consumers that imported it directly before the canonical type landed. */
-export type VaultFormProps = ProviderFormProps;
+type VaultAuthMethod = "token" | "kubernetes" | "appRole" | "jwt" | "cert";
 
 interface SecretRef {
   name?: string;
@@ -112,7 +103,7 @@ function getAuthBlock(
   return (auth[method] as Record<string, unknown>) ?? {};
 }
 
-export function VaultForm({ spec, errors, onUpdateSpec }: VaultFormProps) {
+export function VaultForm({ spec, errors, onUpdateSpec }: ProviderFormProps) {
   // VaultSpec / VaultAuthSpec interfaces above document the shape; field
   // reads go through getStr() and getAuthBlock() helpers which narrow at
   // each access site rather than via a single top-level cast.

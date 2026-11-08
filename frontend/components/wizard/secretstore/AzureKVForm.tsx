@@ -23,7 +23,7 @@ type AzureKVAuthType =
   | "ServicePrincipal"
   | "WorkloadIdentity";
 
-export interface AzureKVFormProps {
+interface AzureKVFormProps {
   spec: Record<string, unknown>;
   errors: Record<string, string>;
   onUpdateSpec: (spec: Record<string, unknown>) => void;

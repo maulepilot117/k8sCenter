@@ -70,9 +70,9 @@ import { useNamespacedServices } from "@/lib/hooks/use-services.ts";
  */
 
 /** What the caller gets back. A cancel calls `onCancel` instead. */
-export type WidgetParamValues = Record<string, string>;
+type WidgetParamValues = Record<string, string>;
 
-export interface WidgetParamDialogProps {
+interface WidgetParamDialogProps {
   /** The widget whose `params` declaration decides which fields appear. */
   def: WidgetDef;
   /**
