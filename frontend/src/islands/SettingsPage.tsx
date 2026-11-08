@@ -7,8 +7,8 @@ import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { apiGet, apiPut } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 interface Settings {
   monitoringPrometheusUrl?: string | null;

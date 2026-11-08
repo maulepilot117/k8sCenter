@@ -6,9 +6,9 @@ import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { apiDelete, apiGet } from "@/lib/api.ts";
 import type { CRDInfo, PrinterColumn } from "@/lib/crd-types.ts";
 import { age } from "@/lib/format.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 interface Props {
   group: string;

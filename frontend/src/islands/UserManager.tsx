@@ -8,9 +8,9 @@ import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import { apiDelete, apiGet, apiPut } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
 import type { LocalUser } from "@/lib/user-types.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import UserWizard from "@/src/islands/UserWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 type DialogState =
   | { kind: "idle" }

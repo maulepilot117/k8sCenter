@@ -1,9 +1,11 @@
+/** @jsxImportSource react */
 import { navCollapsed, toggleNav } from "@/lib/nav.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 // Drop this into TopBarV2's LEFT cluster, before the breadcrumb.
 // Shows the secondary nav when it's been collapsed; turns accent when active.
 export default function NavToggle() {
-  const collapsed = navCollapsed.value;
+  const collapsed = useSignalValue(navCollapsed);
   return (
     <button
       type="button"
@@ -30,9 +32,9 @@ export default function NavToggle() {
         viewBox="0 0 20 20"
         fill="none"
         stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       >
         <rect x="3" y="4" width="14" height="12" rx="2" />
         <path d="M8 4v12" />

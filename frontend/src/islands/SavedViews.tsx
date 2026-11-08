@@ -14,9 +14,9 @@ import {
   preferencesApi,
   type SavedViewRecord,
 } from "@/lib/preferences.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 interface SavedViewsProps {
   /** Adapter kind slug, e.g. "pods". Matches ResourceTableIslandProps.kind. */

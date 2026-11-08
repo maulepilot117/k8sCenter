@@ -28,11 +28,11 @@ import {
 } from "@/lib/preference-types.ts";
 import { RESOURCE_COLUMNS } from "@/lib/resource-columns.ts";
 import SavedViews from "@/src/islands/SavedViews.tsx";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 import {
   EVENT_ADDED,
   EVENT_DELETED,

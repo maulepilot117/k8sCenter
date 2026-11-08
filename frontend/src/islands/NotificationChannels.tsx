@@ -6,8 +6,8 @@ import type {
   NotifChannelInput,
   NotifChannelType,
 } from "@/lib/notif-center-types.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 const CHANNEL_TYPES: { value: NotifChannelType; label: string }[] = [
   { value: "slack", label: "Slack" },

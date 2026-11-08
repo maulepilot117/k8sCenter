@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { type MouseEvent, type ReactNode, useEffect, useState } from "react";
 import type { DomainSection } from "@/lib/constants.ts";
 
 import {
@@ -7,13 +7,13 @@ import {
   getActiveDomain,
   SETTINGS_SECTION,
 } from "@/lib/constants.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 /**
  * The rail's root <nav> styling, shared by the SSR placeholder and the
  * hydrated tree so the two cannot diverge.
  *
- * Preact hydration does not re-apply the root element's class/style — it
+ * Hydration does not re-apply the root element's class/style — it
  * matches the existing server-rendered node and recurses into children. A
  * property present on one root and not the other therefore sticks for the
  * life of the page, with nothing in the build or the E2E suite to catch it.
@@ -29,30 +29,96 @@ const RAIL_NAV_STYLE = {
   overflow: "hidden",
 } as const;
 
-/** SVG icon path strings keyed by icon name. viewBox is 0 0 20 20. */
-const ICONS: Record<string, string> = {
-  grid: '<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/>',
-  box: '<rect x="3" y="4" width="14" height="12" rx="2"/><path d="M7 4V2M13 4V2"/><circle cx="10" cy="10" r="2"/>',
-  globe:
-    '<circle cx="10" cy="10" r="7"/><path d="M2 10h4M14 10h4M10 2v4M10 14v4"/>',
-  harddrive:
-    '<rect x="3" y="5" width="14" height="4" rx="1"/><rect x="3" y="11" width="14" height="4" rx="1"/><circle cx="6" cy="7" r="1" fill="currentColor"/><circle cx="6" cy="13" r="1" fill="currentColor"/>',
-  sliders:
-    '<circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/><path d="M10 3v2M10 15v2M3 10h2M15 10h2"/>',
-  shield:
-    '<path d="M10 2l1.5 3.5L15 7l-3.5 1.5L10 12 8.5 8.5 5 7l3.5-1.5L10 2Z"/><path d="M4 14l2-1.5M16 14l-2-1.5M10 18v-3"/>',
-  activity:
-    '<polyline points="3,14 7,8 11,11 14,5 17,9"/><line x1="3" y1="17" x2="17" y2="17"/>',
-  wrench: '<path d="M10 4v4l3 2"/><circle cx="10" cy="10" r="7"/>',
-  puzzle:
-    '<path d="M12.5 3.5a2.5 2.5 0 0 0-5 0V5H5a2.5 2.5 0 0 0-2.5 2.5V10H4a2.5 2.5 0 1 1 0 5H2.5V17.5A2.5 2.5 0 0 0 5 20h2.5v-1.5a2.5 2.5 0 1 1 5 0V20H15a2.5 2.5 0 0 0 2.5-2.5V15H16a2.5 2.5 0 1 1 0-5h1.5V7.5A2.5 2.5 0 0 0 15 5h-2.5V3.5z"/>',
-  "git-branch":
-    '<line x1="7" y1="7" x2="7" y2="17"/><circle cx="7" cy="5" r="2"/><circle cx="13" cy="7" r="2"/><path d="M7 7c0 3 6 3 6 0"/>',
-  archive:
-    '<rect x="3" y="7" width="14" height="10" rx="1"/><path d="M3 10h14"/><path d="M5 4h10v3H5z"/><rect x="8" y="12" width="4" height="2" rx="0.5"/>',
-  key: '<circle cx="6" cy="14" r="3"/><path d="M8 12l9-9M13 7l3 3M15 5l3 3"/>',
-  settings:
-    '<circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/><path d="M13 10h4M3 10h4M10 3v4M10 13v4"/>',
+/** SVG icon contents keyed by icon name. viewBox is 0 0 20 20. */
+const ICONS: Record<string, ReactNode> = {
+  grid: (
+    <>
+      <rect x="3" y="3" width="6" height="6" rx="1" />
+      <rect x="11" y="3" width="6" height="6" rx="1" />
+      <rect x="3" y="11" width="6" height="6" rx="1" />
+      <rect x="11" y="11" width="6" height="6" rx="1" />
+    </>
+  ),
+  box: (
+    <>
+      <rect x="3" y="4" width="14" height="12" rx="2" />
+      <path d="M7 4V2M13 4V2" />
+      <circle cx="10" cy="10" r="2" />
+    </>
+  ),
+  globe: (
+    <>
+      <circle cx="10" cy="10" r="7" />
+      <path d="M2 10h4M14 10h4M10 2v4M10 14v4" />
+    </>
+  ),
+  harddrive: (
+    <>
+      <rect x="3" y="5" width="14" height="4" rx="1" />
+      <rect x="3" y="11" width="14" height="4" rx="1" />
+      <circle cx="6" cy="7" r="1" fill="currentColor" />
+      <circle cx="6" cy="13" r="1" fill="currentColor" />
+    </>
+  ),
+  sliders: (
+    <>
+      <circle cx="10" cy="10" r="7" />
+      <circle cx="10" cy="10" r="3" />
+      <path d="M10 3v2M10 15v2M3 10h2M15 10h2" />
+    </>
+  ),
+  shield: (
+    <>
+      <path d="M10 2l1.5 3.5L15 7l-3.5 1.5L10 12 8.5 8.5 5 7l3.5-1.5L10 2Z" />
+      <path d="M4 14l2-1.5M16 14l-2-1.5M10 18v-3" />
+    </>
+  ),
+  activity: (
+    <>
+      <polyline points="3,14 7,8 11,11 14,5 17,9" />
+      <line x1="3" y1="17" x2="17" y2="17" />
+    </>
+  ),
+  wrench: (
+    <>
+      <path d="M10 4v4l3 2" />
+      <circle cx="10" cy="10" r="7" />
+    </>
+  ),
+  puzzle: (
+    <>
+      <path d="M12.5 3.5a2.5 2.5 0 0 0-5 0V5H5a2.5 2.5 0 0 0-2.5 2.5V10H4a2.5 2.5 0 1 1 0 5H2.5V17.5A2.5 2.5 0 0 0 5 20h2.5v-1.5a2.5 2.5 0 1 1 5 0V20H15a2.5 2.5 0 0 0 2.5-2.5V15H16a2.5 2.5 0 1 1 0-5h1.5V7.5A2.5 2.5 0 0 0 15 5h-2.5V3.5z" />
+    </>
+  ),
+  "git-branch": (
+    <>
+      <line x1="7" y1="7" x2="7" y2="17" />
+      <circle cx="7" cy="5" r="2" />
+      <circle cx="13" cy="7" r="2" />
+      <path d="M7 7c0 3 6 3 6 0" />
+    </>
+  ),
+  archive: (
+    <>
+      <rect x="3" y="7" width="14" height="10" rx="1" />
+      <path d="M3 10h14" />
+      <path d="M5 4h10v3H5z" />
+      <rect x="8" y="12" width="4" height="2" rx="0.5" />
+    </>
+  ),
+  key: (
+    <>
+      <circle cx="6" cy="14" r="3" />
+      <path d="M8 12l9-9M13 7l3 3M15 5l3 3" />
+    </>
+  ),
+  settings: (
+    <>
+      <circle cx="10" cy="10" r="7" />
+      <circle cx="10" cy="10" r="3" />
+      <path d="M13 10h4M3 10h4M10 3v4M10 13v4" />
+    </>
+  ),
 };
 
 interface IconRailProps {
@@ -94,15 +160,110 @@ function RailTooltip({
   return null;
 }
 
+function RailIcon({
+  section,
+  isActive,
+  isHovered,
+  tooltipPos,
+  onHover,
+  onLeave,
+}: {
+  section: DomainSection;
+  isActive: boolean;
+  isHovered: boolean;
+  tooltipPos: { top: number; left: number };
+  onHover: (id: string, pos: { top: number; left: number }) => void;
+  onLeave: () => void;
+}) {
+  const icon = ICONS[section.icon] ?? null;
+
+  return (
+    <div
+      onMouseEnter={(e: MouseEvent<HTMLDivElement>) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        onHover(section.id, {
+          top: rect.top + rect.height / 2,
+          left: rect.right + 10,
+        });
+      }}
+      onMouseLeave={onLeave}
+    >
+      <a
+        href={section.href}
+        aria-label={section.label}
+        aria-current={isActive ? "page" : undefined}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: "40px",
+          height: "40px",
+          borderRadius: "8px",
+          color: isActive
+            ? "var(--accent)"
+            : isHovered
+              ? "var(--text-primary)"
+              : "var(--text-muted)",
+          background: isActive
+            ? "var(--accent-dim)"
+            : isHovered
+              ? "var(--bg-hover)"
+              : "transparent",
+          transition: "all 150ms ease",
+          position: "relative",
+          textDecoration: "none",
+        }}
+      >
+        {isActive && (
+          <div
+            style={{
+              position: "absolute",
+              left: "-8px",
+              top: "8px",
+              bottom: "8px",
+              width: "3px",
+              borderRadius: "0 2px 2px 0",
+              background: "var(--accent)",
+            }}
+          />
+        )}
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          {icon}
+        </svg>
+      </a>
+      {isHovered && (
+        <RailTooltip
+          label={section.label}
+          top={tooltipPos.top}
+          left={tooltipPos.left}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function IconRail({ currentPath }: IconRailProps) {
-  const hoveredId = useSignal<string | null>(null);
-  const tooltipPos = useSignal<{ top: number; left: number }>({
-    top: 0,
-    left: 0,
-  });
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [tooltipPos, setTooltipPos] = useState({ top: 0, left: 0 });
+  const isClient = useIsClient();
   const activeDomain = getActiveDomain(currentPath);
 
-  if (!IS_BROWSER) {
+  const onHover = (id: string, pos: { top: number; left: number }) => {
+    setTooltipPos(pos);
+    setHoveredId(id);
+  };
+  const onLeave = () => setHoveredId(null);
+
+  if (!isClient) {
     // SSR placeholder with correct dimensions.
     //
     // It MUST carry the identical style to the hydrated <nav> below. Preact
@@ -113,99 +274,11 @@ export default function IconRail({ currentPath }: IconRailProps) {
     // when this placeholder omitted display/align-items/z-index/overflow, the
     // rail rendered unstyled and the active-item indicator escaped its
     // overflow:hidden clip.
-    return <nav class="glass-bar" style={RAIL_NAV_STYLE} />;
-  }
-
-  function RailIcon({
-    section,
-    isActive,
-    isHovered,
-  }: {
-    section: DomainSection;
-    isActive: boolean;
-    isHovered: boolean;
-  }) {
-    const iconPaths = ICONS[section.icon] ?? "";
-
-    return (
-      <div
-        onMouseEnter={(e: MouseEvent) => {
-          const el = e.currentTarget as HTMLElement;
-          const rect = el.getBoundingClientRect();
-          tooltipPos.value = {
-            top: rect.top + rect.height / 2,
-            left: rect.right + 10,
-          };
-          hoveredId.value = section.id;
-        }}
-        onMouseLeave={() => {
-          hoveredId.value = null;
-        }}
-      >
-        <a
-          href={section.href}
-          aria-label={section.label}
-          aria-current={isActive ? "page" : undefined}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: "40px",
-            height: "40px",
-            borderRadius: "8px",
-            color: isActive
-              ? "var(--accent)"
-              : isHovered
-                ? "var(--text-primary)"
-                : "var(--text-muted)",
-            background: isActive
-              ? "var(--accent-dim)"
-              : isHovered
-                ? "var(--bg-hover)"
-                : "transparent",
-            transition: "all 150ms ease",
-            position: "relative",
-            textDecoration: "none",
-          }}
-        >
-          {isActive && (
-            <div
-              style={{
-                position: "absolute",
-                left: "-8px",
-                top: "8px",
-                bottom: "8px",
-                width: "3px",
-                borderRadius: "0 2px 2px 0",
-                background: "var(--accent)",
-              }}
-            />
-          )}
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 20 20"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            dangerouslySetInnerHTML={{ __html: iconPaths }}
-          />
-        </a>
-        {isHovered && (
-          <RailTooltip
-            label={section.label}
-            top={tooltipPos.value.top}
-            left={tooltipPos.value.left}
-          />
-        )}
-      </div>
-    );
+    return <nav className="glass-bar" style={RAIL_NAV_STYLE} />;
   }
 
   return (
-    <nav class="glass-bar" style={RAIL_NAV_STYLE}>
+    <nav className="glass-bar" style={RAIL_NAV_STYLE}>
       {/* Logo area — height matches topbar */}
       <div
         style={{
@@ -221,7 +294,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
             <path
               d="M14 2L3 8.5V19.5L14 26L25 19.5V8.5L14 2Z"
               stroke="var(--accent)"
-              stroke-width="1.5"
+              strokeWidth="1.5"
             />
             <circle cx="14" cy="14" r="4" fill="var(--accent)" opacity="0.8" />
             <circle cx="14" cy="6" r="1.5" fill="var(--accent)" />
@@ -248,7 +321,10 @@ export default function IconRail({ currentPath }: IconRailProps) {
             key={section.id}
             section={section}
             isActive={activeDomain === section.id}
-            isHovered={hoveredId.value === section.id}
+            isHovered={hoveredId === section.id}
+            tooltipPos={tooltipPos}
+            onHover={onHover}
+            onLeave={onLeave}
           />
         ))}
       </div>
@@ -268,7 +344,10 @@ export default function IconRail({ currentPath }: IconRailProps) {
         <RailIcon
           section={SETTINGS_SECTION}
           isActive={activeDomain === SETTINGS_SECTION.id}
-          isHovered={hoveredId.value === SETTINGS_SECTION.id}
+          isHovered={hoveredId === SETTINGS_SECTION.id}
+          tooltipPos={tooltipPos}
+          onHover={onHover}
+          onLeave={onLeave}
         />
       </div>
     </nav>

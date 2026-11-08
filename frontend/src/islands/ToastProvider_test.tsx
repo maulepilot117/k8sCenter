@@ -3,16 +3,14 @@ import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
 
-const { toasts } = await import("@/src/lib/toast-store.ts");
-const { default: ToastProvider, showToast } = await import(
-  "./ToastProvider.tsx"
-);
+const { toasts, showToast } = await import("@/src/lib/toast-store.ts");
+const { default: ToastProvider } = await import("./ToastProvider.tsx");
 
 afterEach(() => {
   toasts.value = [];
 });
 
-test("showToast from the old import path shows the toast, and dismiss removes it", async () => {
+test("showToast from the store shows the toast, and dismiss removes it", async () => {
   const r = render(<ToastProvider />);
   expect(r.getByRole("status").textContent).toBe("");
 

@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ApiError, apiDelete, apiGet, apiPut } from "@/lib/api.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 /**
  * GET and PUT /v1/clusters/{id}/compliance-identity: the identity the daily

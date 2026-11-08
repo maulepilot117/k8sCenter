@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const shortcuts = [
@@ -13,7 +13,7 @@ const shortcuts = [
  * Mount once in _layout.tsx.
  */
 export default function KeyboardShortcuts() {
-  const showHelp = useSignal(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -34,7 +34,7 @@ export default function KeyboardShortcuts() {
       switch (e.key) {
         case "?":
           e.preventDefault();
-          showHelp.value = !showHelp.value;
+          setShowHelp((v) => !v);
           break;
         case "/":
           e.preventDefault();
@@ -46,7 +46,7 @@ export default function KeyboardShortcuts() {
           }
           break;
         case "Escape":
-          showHelp.value = false;
+          setShowHelp(false);
           (document.activeElement as HTMLElement)?.blur?.();
           break;
       }
@@ -56,34 +56,37 @@ export default function KeyboardShortcuts() {
     return () => globalThis.removeEventListener("keydown", handler);
   }, []);
 
-  if (!showHelp.value) return null;
+  if (!showHelp) return null;
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
+      className="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
       onClick={() => {
-        showHelp.value = false;
+        setShowHelp(false);
       }}
     >
       <div
-        class="w-full max-w-sm glass-elevated rounded-2xl p-6"
+        className="w-full max-w-sm glass-elevated rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 class="mb-4 text-lg font-semibold text-text-primary">
+        <h2 className="mb-4 text-lg font-semibold text-text-primary">
           Keyboard Shortcuts
         </h2>
-        <div class="space-y-2">
+        <div className="space-y-2">
           {shortcuts.map((s) => (
-            <div key={s.key} class="flex items-center justify-between text-sm">
-              <span class="text-text-secondary">{s.description}</span>
-              <kbd class="rounded bg-elevated px-2 py-0.5 font-mono text-xs text-text-secondary">
+            <div
+              key={s.key}
+              className="flex items-center justify-between text-sm"
+            >
+              <span className="text-text-secondary">{s.description}</span>
+              <kbd className="rounded bg-elevated px-2 py-0.5 font-mono text-xs text-text-secondary">
                 {s.key}
               </kbd>
             </div>
           ))}
         </div>
-        <p class="mt-4 text-xs text-text-muted">
-          Press <kbd class="font-mono">Escape</kbd> to close
+        <p className="mt-4 text-xs text-text-muted">
+          Press <kbd className="font-mono">Escape</kbd> to close
         </p>
       </div>
     </div>

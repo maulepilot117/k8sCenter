@@ -18,8 +18,8 @@ import type {
   NormalizedApp,
 } from "@/lib/gitops-types.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 const GENERATOR_TYPES = [
   "list",

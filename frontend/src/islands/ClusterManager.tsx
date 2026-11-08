@@ -20,7 +20,6 @@ import LokiBindingForm, {
 import MetricsBindingForm, {
   type MetricsState,
 } from "@/src/islands/MetricsBindingForm.tsx";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import {
   LOCAL_CLUSTER_ID,
   LOCAL_GENERATION,
@@ -28,6 +27,7 @@ import {
   switchCluster,
 } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 interface ClusterInfo {
   id: string;

@@ -24,8 +24,8 @@ import type {
 } from "@/lib/gitops-types.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 /** Map syncStatus string → DetailShell tone */
 const SYNC_TONE: Record<string, Tone> = {

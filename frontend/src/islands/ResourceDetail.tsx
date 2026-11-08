@@ -44,9 +44,9 @@ import PerformancePanel, {
 import PodTerminal from "@/src/islands/PodTerminal.tsx";
 import RelatedPods from "@/src/islands/RelatedPods.tsx";
 import RoleBindingsList from "@/src/islands/RoleBindingsList.tsx";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 import {
   EVENT_DELETED,
   EVENT_MODIFIED,
