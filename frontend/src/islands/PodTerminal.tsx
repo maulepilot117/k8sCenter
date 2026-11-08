@@ -1,10 +1,10 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { getAccessToken, readyAccessToken } from "@/lib/api.ts";
 import { streamAuthFrame, streamErrorMessage } from "@/lib/stream-state.ts";
 import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface PodTerminalProps {
   namespace: string;
@@ -32,11 +32,37 @@ export default function PodTerminal({
   name,
   containers,
 }: PodTerminalProps) {
-  const sessions = useSignal<Session[]>([]);
-  const activeSessionId = useSignal<number | null>(null);
-  const selectedContainer = useSignal(containers[0] || "");
-  const fullscreen = useSignal(false);
+  const isClient = useIsClient();
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
+  const [selectedContainer, setSelectedContainer] = useState(
+    containers[0] || "",
+  );
+  const [fullscreen, setFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Socket callbacks, ref callbacks and rAF callbacks outlive the render that
+  // created them, so they read the live lists through refs written together
+  // with the state.
+  const sessionsRef = useRef<Session[]>([]);
+  const activeSessionIdRef = useRef<number | null>(null);
+
+  const commitSessions = useCallback((next: Session[]) => {
+    sessionsRef.current = next;
+    setSessions(next);
+  }, []);
+  const commitActiveSessionId = useCallback((next: number | null) => {
+    activeSessionIdRef.current = next;
+    setActiveSessionId(next);
+  }, []);
+  const updateSession = useCallback(
+    (id: number, update: Partial<Session>) => {
+      commitSessions(
+        sessionsRef.current.map((s) => (s.id === id ? { ...s, ...update } : s)),
+      );
+    },
+    [commitSessions],
+  );
 
   // Ref callback registry: maps session id -> DOM element
   const terminalRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -50,7 +76,7 @@ export default function PodTerminal({
   // Cleanup all sessions on unmount
   useEffect(() => {
     return () => {
-      for (const session of sessions.value) {
+      for (const session of sessionsRef.current) {
         session.ws?.close();
         session.terminal?.dispose();
       }
@@ -71,29 +97,32 @@ export default function PodTerminal({
 
   // Handle Escape for fullscreen exit
   useEffect(() => {
-    if (!IS_BROWSER || !fullscreen.value) return;
+    if (!fullscreen) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") fullscreen.value = false;
+      if (e.key === "Escape") setFullscreen(false);
     };
     globalThis.addEventListener("keydown", handler);
     return () => globalThis.removeEventListener("keydown", handler);
-  }, [fullscreen.value]);
+  }, [fullscreen]);
 
   // Refit terminal when fullscreen toggles
   useEffect(() => {
-    if (!IS_BROWSER) return;
-    const active = sessions.value.find((s) => s.id === activeSessionId.value);
+    // Runs on mount and whenever fullscreen toggles.
+    void fullscreen;
+    const active = sessionsRef.current.find(
+      (s) => s.id === activeSessionIdRef.current,
+    );
     if (active?.fitAddon) {
       requestAnimationFrame(() => active.fitAddon.fit());
     }
-  }, [fullscreen.value]);
+  }, [fullscreen]);
 
   // Initialize terminal when ref callback fires for an active, uninitialized session
   const initTerminalInDom = useCallback(
     (id: number, el: HTMLDivElement) => {
       if (initializedSessions.current.has(id)) return;
 
-      const session = sessions.value.find((s) => s.id === id);
+      const session = sessionsRef.current.find((s) => s.id === id);
       if (!session?.terminal || !session?.fitAddon) return;
 
       // Only init if the element is visible (active tab)
@@ -181,7 +210,7 @@ export default function PodTerminal({
 
       updateSession(id, { ws });
     },
-    [namespace, name],
+    [namespace, name, updateSession],
   );
 
   // Ref callback for terminal container divs
@@ -201,11 +230,11 @@ export default function PodTerminal({
   // When active session changes, try to init any session that was deferred
   // because it was hidden (0x0) when its ref first mounted
   useEffect(() => {
-    if (!IS_BROWSER || activeSessionId.value === null) return;
-    const id = activeSessionId.value;
+    if (activeSessionId === null) return;
+    const id = activeSessionId;
     if (initializedSessions.current.has(id)) {
       // Already initialized — just refit
-      const session = sessions.value.find((s) => s.id === id);
+      const session = sessionsRef.current.find((s) => s.id === id);
       if (session?.fitAddon) {
         requestAnimationFrame(() => session.fitAddon.fit());
       }
@@ -217,11 +246,9 @@ export default function PodTerminal({
       // allow the browser to apply display:block first.
       requestAnimationFrame(() => initTerminalInDom(id, el));
     }
-  }, [activeSessionId.value, initTerminalInDom]);
+  }, [activeSessionId, initTerminalInDom]);
 
   const openSession = async (container: string) => {
-    if (!IS_BROWSER) return;
-
     // Taken once, before any await: the session stays on the cluster
     // selected when it was opened.
     const target = currentTarget();
@@ -276,14 +303,8 @@ export default function PodTerminal({
     };
 
     // Add session and activate it — ref callback will handle DOM init
-    sessions.value = [...sessions.value, session];
-    activeSessionId.value = id;
-  };
-
-  const updateSession = (id: number, update: Partial<Session>) => {
-    sessions.value = sessions.value.map((s) =>
-      s.id === id ? { ...s, ...update } : s,
-    );
+    commitSessions([...sessionsRef.current, session]);
+    commitActiveSessionId(id);
   };
 
   const closeSession = (id: number) => {
@@ -294,7 +315,7 @@ export default function PodTerminal({
       pendingOpens.current.delete(id);
     }
 
-    const session = sessions.value.find((s) => s.id === id);
+    const session = sessionsRef.current.find((s) => s.id === id);
     if (session) {
       session.ws?.close();
       session.terminal?.dispose();
@@ -311,45 +332,46 @@ export default function PodTerminal({
     terminalRefs.current.delete(id);
     initializedSessions.current.delete(id);
 
-    const remaining = sessions.value.filter((s) => s.id !== id);
-    sessions.value = remaining;
-    if (activeSessionId.value === id) {
-      activeSessionId.value =
-        remaining.length > 0 ? remaining[remaining.length - 1].id : null;
+    const remaining = sessionsRef.current.filter((s) => s.id !== id);
+    commitSessions(remaining);
+    if (activeSessionIdRef.current === id) {
+      commitActiveSessionId(
+        remaining.length > 0 ? remaining[remaining.length - 1].id : null,
+      );
     }
   };
 
   const reconnectSession = (id: number) => {
-    const session = sessions.value.find((s) => s.id === id);
+    const session = sessionsRef.current.find((s) => s.id === id);
     if (!session) return;
     closeSession(id);
     openSession(session.container);
   };
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   return (
     <div
       ref={containerRef}
-      class={
-        fullscreen.value
+      className={
+        fullscreen
           ? "fixed inset-0 z-50 flex flex-col bg-base"
           : "flex flex-col gap-3"
       }
     >
       {/* Controls */}
       <div
-        class={`flex items-center gap-3 ${
-          fullscreen.value ? "bg-surface px-4 py-2" : ""
+        className={`flex items-center gap-3 ${
+          fullscreen ? "bg-surface px-4 py-2" : ""
         }`}
       >
         {/* Container picker + Open Terminal */}
         <select
-          value={selectedContainer.value}
+          value={selectedContainer}
           onChange={(e) => {
-            selectedContainer.value = (e.target as HTMLSelectElement).value;
+            setSelectedContainer(e.currentTarget.value);
           }}
-          class="rounded-md border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+          className="rounded-md border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
         >
           {containers.map((c) => (
             <option key={c} value={c}>
@@ -361,7 +383,7 @@ export default function PodTerminal({
         <Button
           variant="primary"
           size="sm"
-          onClick={() => openSession(selectedContainer.value)}
+          onClick={() => openSession(selectedContainer)}
         >
           Open Terminal
         </Button>
@@ -370,13 +392,13 @@ export default function PodTerminal({
         <button
           type="button"
           onClick={() => {
-            fullscreen.value = !fullscreen.value;
+            setFullscreen((prev) => !prev);
           }}
-          class="ml-auto rounded p-1 text-text-muted hover:bg-elevated hover:text-text-secondary"
-          title={fullscreen.value ? "Exit fullscreen (Esc)" : "Fullscreen"}
+          className="ml-auto rounded p-1 text-text-muted hover:bg-elevated hover:text-text-secondary"
+          title={fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"}
         >
-          <svg class="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
-            {fullscreen.value ? (
+          <svg className="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
+            {fullscreen ? (
               <>
                 <path d="M5 1v4H1v1h5V1H5z" />
                 <path d="M10 1v5h5V5h-4V1h-1z" />
@@ -396,21 +418,21 @@ export default function PodTerminal({
       </div>
 
       {/* Session tabs */}
-      {sessions.value.length > 0 && (
+      {sessions.length > 0 && (
         <div
-          class={`flex items-center gap-1 border-b border-border-primary ${
-            fullscreen.value ? "px-4" : ""
+          className={`flex items-center gap-1 border-b border-border-primary ${
+            fullscreen ? "px-4" : ""
           }`}
         >
-          {sessions.value.map((s) => (
-            <div key={s.id} class="flex items-center">
+          {sessions.map((s) => (
+            <div key={s.id} className="flex items-center">
               <button
                 type="button"
                 onClick={() => {
-                  activeSessionId.value = s.id;
+                  commitActiveSessionId(s.id);
                 }}
-                class={`px-3 py-1.5 text-sm font-medium border-b-2 transition-colors ${
-                  activeSessionId.value === s.id
+                className={`px-3 py-1.5 text-sm font-medium border-b-2 transition-colors ${
+                  activeSessionId === s.id
                     ? "border-brand text-brand"
                     : "border-transparent text-text-muted hover:text-text-primary"
                 }`}
@@ -418,7 +440,7 @@ export default function PodTerminal({
                 {s.container}
                 {s.shell ? ` (${s.shell.split("/").pop()})` : ""}
                 <span
-                  class={`ml-1.5 inline-block h-1.5 w-1.5 rounded-full ${
+                  className={`ml-1.5 inline-block h-1.5 w-1.5 rounded-full ${
                     s.connected ? "bg-success" : "bg-text-muted"
                   }`}
                 />
@@ -426,10 +448,14 @@ export default function PodTerminal({
               <button
                 type="button"
                 onClick={() => closeSession(s.id)}
-                class="ml-0.5 rounded p-0.5 text-text-muted hover:bg-hover hover:text-text-secondary"
+                className="ml-0.5 rounded p-0.5 text-text-muted hover:bg-hover hover:text-text-secondary"
                 title="Close session"
               >
-                <svg class="h-3 w-3" viewBox="0 0 12 12" fill="currentColor">
+                <svg
+                  className="h-3 w-3"
+                  viewBox="0 0 12 12"
+                  fill="currentColor"
+                >
                   <path d="M3.172 3.172a.5.5 0 01.707 0L6 5.293l2.121-2.121a.5.5 0 01.707.707L6.707 6l2.121 2.121a.5.5 0 01-.707.707L6 6.707 3.879 8.828a.5.5 0 01-.707-.707L5.293 6 3.172 3.879a.5.5 0 010-.707z" />
                 </svg>
               </button>
@@ -439,30 +465,30 @@ export default function PodTerminal({
       )}
 
       {/* Terminal area */}
-      <div class={`relative ${fullscreen.value ? "flex-1 px-4 pb-4" : ""}`}>
-        {sessions.value.length === 0 ? (
+      <div className={`relative ${fullscreen ? "flex-1 px-4 pb-4" : ""}`}>
+        {sessions.length === 0 ? (
           <div
-            class={`flex items-center justify-center rounded-lg bg-base text-text-muted ${
-              fullscreen.value ? "h-full" : "h-96"
+            className={`flex items-center justify-center rounded-lg bg-base text-text-muted ${
+              fullscreen ? "h-full" : "h-96"
             }`}
           >
             Select a container and click "Open Terminal" to start
           </div>
         ) : (
-          sessions.value.map((s) => (
+          sessions.map((s) => (
             <div
               key={s.id}
-              class={activeSessionId.value === s.id ? "block" : "hidden"}
+              className={activeSessionId === s.id ? "block" : "hidden"}
               style={{
-                height: fullscreen.value ? "100%" : "500px",
+                height: fullscreen ? "100%" : "500px",
               }}
             >
-              <div ref={termRefCallback(s.id)} class="h-full w-full" />
+              <div ref={termRefCallback(s.id)} className="h-full w-full" />
               {/* Reconnect overlay */}
               {!s.connected && s.terminal && (
-                <div class="absolute inset-0 flex items-center justify-center glass-scrim">
-                  <div class="text-center">
-                    <p class="mb-3 text-sm text-text-secondary">
+                <div className="absolute inset-0 flex items-center justify-center glass-scrim">
+                  <div className="text-center">
+                    <p className="mb-3 text-sm text-text-secondary">
                       {s.error || "Session ended"}
                     </p>
                     <Button

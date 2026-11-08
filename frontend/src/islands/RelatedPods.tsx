@@ -1,10 +1,10 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
 import { age } from "@/lib/format.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface RelatedPodsProps {
   namespace: string;
@@ -131,49 +131,54 @@ export default function RelatedPods({
   labelSelector,
   parentName,
 }: RelatedPodsProps) {
-  const pods = useSignal<PodInfo[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal("");
+  const isClient = useIsClient();
+  const [pods, setPods] = useState<PodInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
-    fetchPods();
+    // A response for a previous selector is dropped.
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    apiGet<PodInfo[]>(
+      `/v1/resources/pods/${namespace}?labelSelector=${encodeURIComponent(
+        labelSelector,
+      )}`,
+    )
+      .then((res) => {
+        if (!cancelled) setPods(Array.isArray(res.data) ? res.data : []);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load pods");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [namespace, labelSelector]);
 
-  async function fetchPods() {
-    loading.value = true;
-    error.value = "";
-    try {
-      const res = await apiGet<PodInfo[]>(
-        `/v1/resources/pods/${namespace}?labelSelector=${encodeURIComponent(
-          labelSelector,
-        )}`,
-      );
-      pods.value = Array.isArray(res.data) ? res.data : [];
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : "Failed to load pods";
-    } finally {
-      loading.value = false;
-    }
-  }
+  if (!isClient) return null;
 
-  if (!IS_BROWSER) return null;
-
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="flex justify-center py-8">
+      <div className="flex justify-center py-8">
         <Spinner size="sm" className="text-brand" />
       </div>
     );
   }
 
-  if (error.value) {
-    return <ErrorBanner message={error.value} />;
+  if (error) {
+    return <ErrorBanner message={error} />;
   }
 
-  if (pods.value.length === 0) {
+  if (pods.length === 0) {
     return (
-      <div class="py-8 text-center text-sm text-text-muted">
+      <div className="py-8 text-center text-sm text-text-muted">
         No pods found for {parentName}
       </div>
     );
@@ -201,12 +206,12 @@ export default function RelatedPods({
             borderRadius: "10px",
           }}
         >
-          {pods.value.length} pods
+          {pods.length} pods
         </span>
       </div>
 
       {/* Pod cards */}
-      {pods.value.map((pod) => {
+      {pods.map((pod) => {
         const restarts =
           pod.status?.containerStatuses?.reduce(
             (sum, c) => sum + (c.restartCount || 0),

@@ -1,21 +1,21 @@
+/** @jsxImportSource react */
 /**
  * MetricsRail — 300px glass right-rail showing up to 4 live sparkline KPI
  * tiles for the current resource.  Rendered by ResourceDetail when metrics
  * are available for the kind (deployments, statefulsets, daemonsets, pods).
  *
  * Behaviour:
- * - SSR-safe: renders nothing on the server (IS_BROWSER guard).
+ * - SSR-safe: renders nothing on the server.
  * - Backend 502 / monitoring unavailable → renders a graceful empty state
  *   ("Monitoring unavailable") so the rail never breaks the layout.
  * - Auto-refreshes every 30 s; clears the interval on unmount.
  * - Uses the same RBAC-gated slug API as PerformancePanel — no raw PromQL.
  */
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef, useState } from "react";
 import Sparkline from "@/components/charts/Sparkline.tsx";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 import { apiGet } from "@/lib/api.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -94,9 +94,12 @@ export default function MetricsRail({
   namespace,
 }: MetricsRailProps) {
   // ── all hooks must run unconditionally before any early return ───────────
-  const available = useSignal<boolean | null>(null);
+  const isClient = useIsClient();
+  const [available, setAvailable] = useState<boolean | null>(null);
+  // The 30 s timer reads availability through a ref.
+  const availableRef = useRef<boolean | null>(null);
   // Start with skeleton tiles for known kinds, empty for unknown
-  const kpis = useSignal<KpiState[]>(
+  const [kpis, setKpis] = useState<KpiState[]>(
     (RAIL_KPIS[kind] ?? []).map((k) => ({
       label: k.label,
       value: "–",
@@ -109,6 +112,8 @@ export default function MetricsRail({
   useEffect(() => {
     const kpiDefs = RAIL_KPIS[kind];
     if (!kpiDefs) return;
+    // Set on cleanup: a response for a previous resource is dropped.
+    let cancelled = false;
 
     async function load() {
       const now = new Date();
@@ -127,54 +132,64 @@ export default function MetricsRail({
         }),
       );
 
-      kpis.value = kpiDefs.map((def, i) => {
-        const r = results[i];
-        if (r.status === "rejected") {
+      if (cancelled) return;
+      setKpis(
+        kpiDefs.map((def, i) => {
+          const r = results[i];
+          if (r.status === "rejected") {
+            return {
+              label: def.label,
+              value: "–",
+              series: [],
+              loading: false,
+              error: true,
+            };
+          }
+          const series = (r.value.result?.[0]?.values ?? []).map(
+            ([, v]: [number, string]) => parseFloat(v),
+          );
+          const last = series.length > 0 ? series[series.length - 1] : NaN;
           return {
             label: def.label,
-            value: "–",
-            series: [],
+            value: Number.isFinite(last) ? def.format(last) : "–",
+            series,
             loading: false,
-            error: true,
+            error: false,
           };
-        }
-        const series = (r.value.result?.[0]?.values ?? []).map(
-          ([, v]: [number, string]) => parseFloat(v),
-        );
-        const last = series.length > 0 ? series[series.length - 1] : NaN;
-        return {
-          label: def.label,
-          value: Number.isFinite(last) ? def.format(last) : "–",
-          series,
-          loading: false,
-          error: false,
-        };
-      });
+        }),
+      );
     }
 
     apiGet<{ prometheus: { available: boolean } }>("/v1/monitoring/status")
       .then((res) => {
-        available.value = res.data.prometheus.available;
+        if (cancelled) return;
+        availableRef.current = res.data.prometheus.available;
+        setAvailable(res.data.prometheus.available);
         if (res.data.prometheus.available) load();
       })
       .catch(() => {
-        available.value = false;
+        if (cancelled) return;
+        availableRef.current = false;
+        setAvailable(false);
       });
 
     const id = setInterval(() => {
-      if (available.value) load();
+      if (availableRef.current) load();
     }, 30_000);
-    return () => clearInterval(id);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [kind, name, namespace]);
 
   // ── early returns after all hooks ────────────────────────────────────────
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   const kpiDefs = RAIL_KPIS[kind];
   if (!kpiDefs) return null;
 
   // If monitoring unavailable (502 etc.), render a minimalist empty rail
-  if (available.value === false) {
+  if (available === false) {
     return (
       <GlassCard padding={16} style={{ position: "sticky", top: "20px" }}>
         <div
@@ -238,7 +253,7 @@ export default function MetricsRail({
       </div>
 
       {/* KPI tiles */}
-      {kpis.value.map((kpi) => (
+      {kpis.map((kpi) => (
         <KpiTile key={kpi.label} kpi={kpi} />
       ))}
     </GlassCard>

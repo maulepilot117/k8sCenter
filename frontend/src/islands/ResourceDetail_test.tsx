@@ -25,6 +25,19 @@ import { setAccessToken } from "@/lib/api.ts";
  * error and keep the edit, never as a success.
  */
 
+// mock.module replaces a module for every test file in the run, so keep the
+// real ones and put them back in afterAll; a later file importing the ws
+// store, the viewer or the editor must get the real module, not these stubs.
+const realModules = {
+  "./MetricsRail.tsx": { ...(await import("./MetricsRail.tsx")) },
+  "../lib/ws.ts": { ...(await import("../lib/ws.ts")) },
+  "../components/ui/CodeMirrorEditor.tsx": {
+    ...(await import("../components/ui/CodeMirrorEditor.tsx")),
+  },
+  "./LogViewer.tsx": { ...(await import("./LogViewer.tsx")) },
+  "./PodTerminal.tsx": { ...(await import("./PodTerminal.tsx")) },
+};
+
 const env = { browser: false };
 const mockIsBrowser = () =>
   mock.module("../lib/is-browser.ts", () => ({ IS_BROWSER: env.browser }));
@@ -102,6 +115,9 @@ afterEach(() => {
 
 afterAll(() => {
   mock.module("../lib/is-browser.ts", () => ({ IS_BROWSER: false }));
+  for (const [path, real] of Object.entries(realModules)) {
+    mock.module(path, () => real);
+  }
   if (GlobalRegistrator.isRegistered) GlobalRegistrator.unregister();
 });
 

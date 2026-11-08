@@ -1,5 +1,14 @@
-import { useComputed, useSignal } from "@preact/signals";
-import { useCallback, useEffect, useMemo, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type CSSProperties,
+  type ReactElement,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { stringify } from "yaml";
 import DetailShell, { type DetailTab } from "@/components/k8s/DetailShell.tsx";
 import { MetadataSection } from "@/components/k8s/detail/MetadataSection.tsx";
@@ -44,9 +53,12 @@ import PerformancePanel, {
 import PodTerminal from "@/src/islands/PodTerminal.tsx";
 import RelatedPods from "@/src/islands/RelatedPods.tsx";
 import RoleBindingsList from "@/src/islands/RoleBindingsList.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 import {
   EVENT_DELETED,
   EVENT_MODIFIED,
@@ -241,50 +253,56 @@ export default function ResourceDetail({
   clusterScoped = false,
   title,
 }: ResourceDetailProps) {
-  const resource = useSignal<K8sResource | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const deleted = useSignal(false);
-  const updated = useSignal(false);
-  const activeTab = useSignal("overview");
+  const isClient = useIsClient();
+  const [resource, setResource] = useState<K8sResource | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [deleted, setDeleted] = useState(false);
+  const [updated, setUpdated] = useState(false);
+  const [activeTab, setActiveTab] = useState("overview");
 
   // Events tab state
-  const events = useSignal<K8sEvent[]>([]);
-  const eventsLoading = useSignal(false);
-  const eventsError = useSignal<string | null>(null);
+  const [events, setEvents] = useState<K8sEvent[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState<string | null>(null);
   const eventsFetched = useRef(false);
 
   // YAML options
-  const showManagedFields = useSignal(false);
+  const [showManagedFields, setShowManagedFields] = useState(false);
 
   // YAML edit state
-  const yamlEditing = useSignal(false);
-  const yamlEditContent = useSignal("");
-  const yamlApplying = useSignal(false);
-  const yamlApplyError = useSignal<string | null>(null);
-  const yamlApplySuccess = useSignal(false);
+  const [yamlEditing, setYamlEditing] = useState(false);
+  const [yamlEditContent, setYamlEditContent] = useState("");
+  const [yamlApplying, setYamlApplying] = useState(false);
+  const yamlApplyingRef = useRef(false);
+  const [yamlApplyError, setYamlApplyError] = useState<string | null>(null);
+  const [yamlApplySuccess, setYamlApplySuccess] = useState(false);
   const isSecret = kind === "secrets";
 
   // Action buttons state
-  const { rbac } = useAuth();
-  const actionLoading = useSignal(false);
-  const confirmAction = useSignal<{
+  const { rbac: rbacSignal } = useAuth();
+  const rbac = useSignalValue(rbacSignal);
+  const [actionLoading, setActionLoading] = useState(false);
+  const actionLoadingRef = useRef(false);
+  const [confirmAction, setConfirmAction] = useState<{
     actionId: ActionId;
     params?: Record<string, unknown>;
   } | null>(null);
-  const scaleTarget = useSignal(false);
-  const scaleValue = useSignal(1);
+  const [scaleTarget, setScaleTarget] = useState(false);
+  const [scaleValue, setScaleValue] = useState(1);
 
-  const actions = useComputed(() =>
-    getVisibleActions(kind, namespace ?? "", rbac.value),
+  const actions = useMemo(
+    () => getVisibleActions(kind, namespace ?? "", rbac),
+    [kind, namespace, rbac],
   );
 
   const runAction = async (
     actionId: ActionId,
     params?: Record<string, unknown>,
   ) => {
-    if (actionLoading.value) return;
-    actionLoading.value = true;
+    if (actionLoadingRef.current) return;
+    actionLoadingRef.current = true;
+    setActionLoading(true);
     try {
       const message = await executeAction(
         actionId,
@@ -294,68 +312,98 @@ export default function ResourceDetail({
         params,
       );
       showToast(message, "success");
-      confirmAction.value = null;
-      scaleTarget.value = false;
+      setConfirmAction(null);
+      setScaleTarget(false);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Action failed";
       showToast(msg, "error");
     } finally {
-      actionLoading.value = false;
+      actionLoadingRef.current = false;
+      setActionLoading(false);
     }
   };
 
   const handleAction = (actionId: ActionId) => {
-    if (actionLoading.value || !resource.value) return;
-    const meta = getActionMeta(actionId, resource.value, kind);
+    if (actionLoadingRef.current || !resource) return;
+    const meta = getActionMeta(actionId, resource, kind);
 
     if (actionId === "scale") {
-      const spec = resource.value.spec as { replicas?: number } | undefined;
-      scaleValue.value = spec?.replicas ?? 1;
-      scaleTarget.value = true;
+      const spec = resource.spec as { replicas?: number } | undefined;
+      setScaleValue(spec?.replicas ?? 1);
+      setScaleTarget(true);
       return;
     }
 
     if (meta.confirm) {
       let params: Record<string, unknown> | undefined;
       if (actionId === "suspend") {
-        const spec = resource.value.spec as { suspend?: boolean } | undefined;
+        const spec = resource.spec as { suspend?: boolean } | undefined;
         params = { suspend: !spec?.suspend };
       }
-      confirmAction.value = { actionId, params };
+      setConfirmAction({ actionId, params });
       return;
     }
 
     runAction(actionId);
   };
 
-  // Dirty state navigation guard
-  const yamlContentRef = useRef("");
-  const yamlDirty = useComputed(
-    () => yamlEditing.value && yamlEditContent.value !== yamlContentRef.current,
+  // Generate YAML from resource
+  const yamlContent = useMemo(
+    () => (resource ? resourceToYaml(resource, showManagedFields) : ""),
+    [resource, showManagedFields],
   );
+
+  // Dirty state navigation guard. The guard reads a signal when the page is
+  // left, so it is kept in step with the edit state after each render.
+  const yamlDirty = useSignal(false);
+  useEffect(() => {
+    yamlDirty.value = yamlEditing && yamlEditContent !== yamlContent;
+  }, [yamlDirty, yamlEditing, yamlEditContent, yamlContent]);
   useDirtyGuard(yamlDirty);
 
   // Periodic tick to refresh age displays (every 30s)
-  const tick = useSignal(0);
+  const [, setTick] = useState(0);
   useEffect(() => {
-    if (!IS_BROWSER) return;
     const id = setInterval(() => {
-      tick.value = tick.value + 1;
+      setTick((t) => t + 1);
     }, 30_000);
     return () => clearInterval(id);
   }, []);
 
+  // Which tabs exist for this resource. Logs and Terminal open sockets, so
+  // they join the list below only once the page is on the client.
+  const hasMetricsTab = hasPerformanceMetrics(kind);
+  const hasPodTabs = kind === "pods" && !!namespace;
+  const hasLokiTab =
+    !!namespace &&
+    [
+      "deployments",
+      "statefulsets",
+      "daemonsets",
+      "services",
+      "jobs",
+      "cronjobs",
+    ].includes(kind);
+
+  const tabAvailability = useLatest({ hasMetricsTab, hasPodTabs, hasLokiTab });
   useEffect(() => {
-    if (!IS_BROWSER) return;
     const hash = globalThis.location.hash.replace("#", "");
-    if (hash && tabDefs.some((t) => t.id === hash)) {
-      activeTab.value = hash;
+    const { hasMetricsTab, hasPodTabs, hasLokiTab } = tabAvailability.current;
+    const known = [
+      "overview",
+      "yaml",
+      "events",
+      ...(hasMetricsTab ? ["metrics"] : []),
+      ...(hasPodTabs ? ["logs", "terminal"] : []),
+      ...(hasLokiTab ? ["loki-logs"] : []),
+    ];
+    if (hash && known.includes(hash)) {
+      setActiveTab(hash);
     }
   }, []);
 
   // Set document title
   useEffect(() => {
-    if (!IS_BROWSER) return;
     document.title = `${name} - ${title} - k8sCenter`;
     return () => {
       document.title = "k8sCenter";
@@ -364,7 +412,7 @@ export default function ResourceDetail({
 
   // Navigate to list page when namespace selector changes
   useEffect(() => {
-    if (!IS_BROWSER || clusterScoped) return;
+    if (clusterScoped) return;
     const listPath = RESOURCE_DETAIL_PATHS[kind];
     if (!listPath) return;
 
@@ -379,15 +427,15 @@ export default function ResourceDetail({
 
   // Fetch the resource
   const fetchResource = useCallback(async () => {
-    loading.value = true;
-    error.value = null;
+    setLoading(true);
+    setError(null);
     try {
       const path = namespace
         ? `/v1/resources/${kind}/${namespace}/${name}`
         : `/v1/resources/${kind}/${name}`;
       const res = await apiGet<K8sResource>(path);
-      resource.value = res.data;
-      updated.value = false;
+      setResource(res.data);
+      setUpdated(false);
       eventsFetched.current = false;
     } catch (err) {
       // Branch on the typed status, not the message text. A substring match
@@ -396,22 +444,28 @@ export default function ResourceDetail({
       // user — the pin control's states depend on that distinction too.
       const status = err instanceof ApiError ? err.status : undefined;
       if (status === 404) {
-        error.value = `${title} "${name}" not found`;
+        setError(`${title} "${name}" not found`);
       } else if (status === 403) {
-        error.value = `You don't have permission to view this ${title.toLowerCase()}`;
+        setError(
+          `You don't have permission to view this ${title.toLowerCase()}`,
+        );
       } else {
-        error.value =
-          err instanceof Error ? err.message : "Failed to load resource";
+        setError(
+          err instanceof Error ? err.message : "Failed to load resource",
+        );
       }
     } finally {
-      loading.value = false;
+      setLoading(false);
     }
   }, [kind, name, namespace, title]);
 
+  // The socket callback outlives the render that registered it.
+  const resourceRef = useLatest(resource);
+  const activeTabRef = useLatest(activeTab);
+  const fetchResourceRef = useLatest(fetchResource);
+
   // Subscribe to WS and fetch resource
   useEffect(() => {
-    if (!IS_BROWSER) return;
-
     const enableWS = kind !== "secrets";
     let unsubscribe: (() => void) | undefined;
 
@@ -425,33 +479,31 @@ export default function ResourceDetail({
           if (!object || typeof object !== "object") return;
           const obj = object as K8sResource;
 
-          if (
-            resource.value &&
-            obj.metadata?.uid !== resource.value.metadata.uid
-          ) {
+          const current = resourceRef.current;
+          if (current && obj.metadata?.uid !== current.metadata.uid) {
             return;
           }
 
           switch (eventType) {
             case EVENT_MODIFIED:
-              if (activeTab.value === "yaml") {
-                updated.value = true;
+              if (activeTabRef.current === "yaml") {
+                setUpdated(true);
               } else {
-                resource.value = obj;
+                setResource(obj);
               }
               break;
             case EVENT_DELETED:
-              deleted.value = true;
+              setDeleted(true);
               break;
             case EVENT_RESYNC:
-              fetchResource();
+              fetchResourceRef.current();
               break;
           }
         },
       );
     }
 
-    fetchResource();
+    fetchResourceRef.current();
 
     return () => {
       unsubscribe?.();
@@ -462,8 +514,8 @@ export default function ResourceDetail({
   const fetchEvents = useCallback(async () => {
     if (eventsFetched.current) return;
     eventsFetched.current = true;
-    eventsLoading.value = true;
-    eventsError.value = null;
+    setEventsLoading(true);
+    setEventsError(null);
     try {
       const apiKind = RESOURCE_API_KINDS[kind] ?? title;
       const params = new URLSearchParams({
@@ -474,22 +526,21 @@ export default function ResourceDetail({
         ? `/v1/resources/events/${namespace}?${params}`
         : `/v1/resources/events?${params}`;
       const res = await apiGet<K8sEvent[]>(eventsPath);
-      events.value = Array.isArray(res.data) ? res.data : [];
+      setEvents(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
-      eventsError.value =
-        err instanceof Error ? err.message : "Failed to load events";
+      setEventsError(
+        err instanceof Error ? err.message : "Failed to load events",
+      );
     } finally {
-      eventsLoading.value = false;
+      setEventsLoading(false);
     }
   }, [kind, name, namespace, title]);
 
   // Tab change handler
   const handleTabChange = useCallback(
     (tabId: string) => {
-      activeTab.value = tabId;
-      if (IS_BROWSER) {
-        history.replaceState(null, "", `#${tabId}`);
-      }
+      setActiveTab(tabId);
+      history.replaceState(null, "", `#${tabId}`);
       if (tabId === "events") {
         fetchEvents();
       }
@@ -497,31 +548,16 @@ export default function ResourceDetail({
     [fetchEvents],
   );
 
-  // Generate YAML from resource
-  const yamlContent = useMemo(
-    () =>
-      resource.value
-        ? resourceToYaml(resource.value, showManagedFields.value)
-        : "",
-    [resource.value, showManagedFields.value],
-  );
-
-  // Keep ref in sync for the dirty guard computed signal
-  yamlContentRef.current = yamlContent;
-
   // Build back-to-list URL
   const listUrl = RESOURCE_DETAIL_PATHS[kind] ?? "/";
-
-  // Force age() to use tick for reactivity
-  void tick.value;
 
   // Compute pod selector for workload kinds
   const isWorkload = ["deployments", "statefulsets", "daemonsets"].includes(
     kind,
   );
   const podSelector = (() => {
-    if (!isWorkload || !resource.value || !namespace) return "";
-    const res = resource.value as Deployment | StatefulSet | DaemonSet;
+    if (!isWorkload || !resource || !namespace) return "";
+    const res = resource as Deployment | StatefulSet | DaemonSet;
     const matchLabels = res?.spec?.selector?.matchLabels ?? {};
     return Object.entries(matchLabels)
       .map(([k, v]) => `${k}=${v}`)
@@ -530,390 +566,375 @@ export default function ResourceDetail({
 
   // ── tab definitions ────────────────────────────────────────────────────────
 
-  const tabDefs: (DetailTab & { content: () => preact.JSX.Element | null })[] =
-    [
-      {
-        id: "overview",
-        label: "Overview",
-        content: () => {
-          if (loading.value) {
-            return (
-              <div style={{ padding: "32px" }}>
-                <LoadingSpinner />
-              </div>
-            );
-          }
-          if (!resource.value) return null;
-          const OverviewComponent = getOverviewComponent(kind);
+  const tabDefs: (DetailTab & { content: () => ReactElement | null })[] = [
+    {
+      id: "overview",
+      label: "Overview",
+      content: () => {
+        if (loading) {
           return (
-            <div style={{ padding: "20px" }}>
-              {kind !== "deployments" && (
-                <MetadataSection resource={resource.value} />
-              )}
-              <OverviewComponent resource={resource.value} />
-              {(kind === "roles" || kind === "clusterroles") && (
-                <RoleBindingsList
-                  roleName={name}
-                  roleKind={kind === "clusterroles" ? "ClusterRole" : "Role"}
-                  namespace={namespace}
-                />
-              )}
-              {/* Related pods for workload kinds — moved from SplitPane */}
-              {isWorkload && namespace && podSelector && (
-                <div style={{ marginTop: "20px" }}>
-                  <RelatedPods
-                    namespace={namespace}
-                    labelSelector={podSelector}
-                    parentName={name}
-                  />
-                </div>
-              )}
+            <div style={{ padding: "32px" }}>
+              <LoadingSpinner />
             </div>
           );
-        },
-      },
-      {
-        id: "yaml",
-        label: "YAML",
-        content: () => {
-          if (loading.value || !resource.value) {
-            return (
-              <div style={{ padding: "32px" }}>
-                <LoadingSpinner />
+        }
+        if (!resource) return null;
+        const OverviewComponent = getOverviewComponent(kind);
+        return (
+          <div style={{ padding: "20px" }}>
+            {kind !== "deployments" && <MetadataSection resource={resource} />}
+            <OverviewComponent resource={resource} />
+            {(kind === "roles" || kind === "clusterroles") && (
+              <RoleBindingsList
+                roleName={name}
+                roleKind={kind === "clusterroles" ? "ClusterRole" : "Role"}
+                namespace={namespace}
+              />
+            )}
+            {/* Related pods for workload kinds — moved from SplitPane */}
+            {isWorkload && namespace && podSelector && (
+              <div style={{ marginTop: "20px" }}>
+                <RelatedPods
+                  namespace={namespace}
+                  labelSelector={podSelector}
+                  parentName={name}
+                />
               </div>
-            );
-          }
-
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: "yaml",
+      label: "YAML",
+      content: () => {
+        if (loading || !resource) {
           return (
-            <div style={{ padding: "20px" }}>
-              {/* Updated externally banner */}
-              {updated.value && (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "12px",
-                    borderRadius: "8px",
-                    border:
-                      "1px solid color-mix(in srgb, var(--info) 30%, transparent)",
-                    background:
-                      "color-mix(in srgb, var(--info) 10%, transparent)",
-                    padding: "8px 16px",
-                    fontSize: "13px",
-                    color: "var(--info)",
-                    marginBottom: "12px",
-                  }}
-                >
-                  Resource was updated externally.
-                  <button
-                    type="button"
-                    onClick={() => {
-                      fetchResource();
-                      yamlEditing.value = false;
-                      yamlApplyError.value = null;
-                      yamlApplySuccess.value = false;
-                    }}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      color: "inherit",
-                      fontWeight: 500,
-                      textDecoration: "underline",
-                      fontSize: "13px",
-                    }}
-                  >
-                    Refresh
-                  </button>
-                </div>
-              )}
+            <div style={{ padding: "32px" }}>
+              <LoadingSpinner />
+            </div>
+          );
+        }
 
-              {/* Apply success banner */}
-              {yamlApplySuccess.value && (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "12px",
-                    borderRadius: "8px",
-                    border:
-                      "1px solid color-mix(in srgb, var(--success) 30%, transparent)",
-                    background:
-                      "color-mix(in srgb, var(--success) 10%, transparent)",
-                    padding: "8px 16px",
-                    fontSize: "13px",
-                    color: "var(--success)",
-                    marginBottom: "12px",
-                  }}
-                >
-                  Changes applied successfully.
-                  <button
-                    type="button"
-                    onClick={() => {
-                      yamlApplySuccess.value = false;
-                    }}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      color: "inherit",
-                      fontWeight: 500,
-                      textDecoration: "underline",
-                      fontSize: "13px",
-                    }}
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              )}
-
-              {/* Apply error banner */}
-              {yamlApplyError.value && (
-                <div
-                  style={{
-                    borderRadius: "8px",
-                    border:
-                      "1px solid color-mix(in srgb, var(--error) 30%, transparent)",
-                    background:
-                      "color-mix(in srgb, var(--error) 10%, transparent)",
-                    padding: "12px 16px",
-                    fontSize: "13px",
-                    color: "var(--error)",
-                    marginBottom: "12px",
-                  }}
-                >
-                  <p style={{ fontWeight: 600, margin: "0 0 4px" }}>
-                    Apply failed
-                  </p>
-                  <p style={{ margin: 0 }}>{yamlApplyError.value}</p>
-                </div>
-              )}
-
-              {/* YAML toolbar */}
+        return (
+          <div style={{ padding: "20px" }}>
+            {/* Updated externally banner */}
+            {updated && (
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "space-between",
-                  marginBottom: "10px",
+                  gap: "12px",
+                  borderRadius: "8px",
+                  border:
+                    "1px solid color-mix(in srgb, var(--info) 30%, transparent)",
+                  background:
+                    "color-mix(in srgb, var(--info) 10%, transparent)",
+                  padding: "8px 16px",
+                  fontSize: "13px",
+                  color: "var(--info)",
+                  marginBottom: "12px",
                 }}
               >
-                <label
+                Resource was updated externally.
+                <button
+                  type="button"
+                  onClick={() => {
+                    fetchResource();
+                    setYamlEditing(false);
+                    setYamlApplyError(null);
+                    setYamlApplySuccess(false);
+                  }}
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    fontSize: "13px",
-                    color: "var(--text-muted)",
+                    background: "none",
+                    border: "none",
                     cursor: "pointer",
+                    color: "inherit",
+                    fontWeight: 500,
+                    textDecoration: "underline",
+                    fontSize: "13px",
                   }}
                 >
-                  <input
-                    type="checkbox"
-                    checked={showManagedFields.value}
-                    onChange={(e) => {
-                      showManagedFields.value = (
-                        e.target as HTMLInputElement
-                      ).checked;
-                    }}
-                    disabled={yamlEditing.value}
-                  />
-                  Show managed fields
-                </label>
-                <div style={{ display: "flex", gap: "8px" }}>
-                  {!yamlEditing.value ? (
-                    <>
-                      <GhostButton
-                        onClick={() => {
-                          // An apply that carries managedFields is rejected
-                          // by the API server, so editing always starts from
-                          // the manifest without them.
-                          showManagedFields.value = false;
-                          yamlEditContent.value = resource.value
-                            ? resourceToYaml(resource.value, false)
-                            : "";
-                          yamlEditing.value = true;
-                          yamlApplyError.value = null;
-                          yamlApplySuccess.value = false;
-                        }}
-                        disabled={isSecret}
-                        title={
-                          isSecret
-                            ? "Secrets cannot be edited via YAML"
-                            : "Edit YAML"
-                        }
-                      >
-                        Edit
-                      </GhostButton>
-                      <GhostButton
-                        onClick={async () => {
-                          try {
-                            const exportPath = namespace
-                              ? `/v1/yaml/export/${kind}/${namespace}/${name}`
-                              : `/v1/yaml/export/${kind}/_/${name}`;
-                            const res = await apiGet<string>(exportPath);
-                            const blob = new Blob(
-                              [
-                                typeof res.data === "string"
-                                  ? res.data
-                                  : JSON.stringify(res.data, null, 2),
-                              ],
-                              { type: "text/yaml" },
-                            );
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `${name}.yaml`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                          } catch (err) {
-                            yamlApplyError.value =
-                              err instanceof Error
-                                ? err.message
-                                : "Export failed";
-                          }
-                        }}
-                        disabled={isSecret}
-                        title={
-                          isSecret
-                            ? "Secrets cannot be exported (values are masked)"
-                            : "Export clean YAML"
-                        }
-                      >
-                        Export
-                      </GhostButton>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (yamlApplying.value) return;
-                          yamlApplying.value = true;
-                          yamlApplyError.value = null;
-                          yamlApplySuccess.value = false;
-                          try {
-                            const res = await apiPostRaw<ApplyResponse>(
-                              "/v1/yaml/apply",
-                              yamlEditContent.value,
-                            );
-                            // /yaml/apply answers 200 even when the
-                            // server-side apply rejects the document (a field
-                            // ownership conflict, a stale resourceVersion, an
-                            // invalid field). Keep the edit and show why.
-                            const failure = applyFailureMessage(res.data);
-                            if (failure) {
-                              yamlApplyError.value = failure;
-                              return;
-                            }
-                            yamlApplySuccess.value = true;
-                            yamlEditing.value = false;
-                            await fetchResource();
-                          } catch (err) {
-                            yamlApplyError.value =
-                              err instanceof Error
-                                ? err.message
-                                : "Apply failed";
-                          } finally {
-                            yamlApplying.value = false;
-                          }
-                        }}
-                        disabled={
-                          yamlApplying.value ||
-                          yamlEditContent.value === yamlContent
-                        }
-                        style={primaryButtonStyle(
-                          yamlApplying.value ||
-                            yamlEditContent.value === yamlContent,
-                        )}
-                      >
-                        {yamlApplying.value ? "Applying…" : "Apply"}
-                      </button>
-                      <GhostButton
-                        onClick={() => {
-                          yamlEditing.value = false;
-                          yamlEditContent.value = "";
-                          yamlApplyError.value = null;
-                        }}
-                        disabled={yamlApplying.value}
-                      >
-                        Discard
-                      </GhostButton>
-                    </>
-                  )}
-                </div>
+                  Refresh
+                </button>
               </div>
+            )}
 
-              {/* CodeMirror YAML editor */}
+            {/* Apply success banner */}
+            {yamlApplySuccess && (
               <div
                 style={{
-                  borderRadius: "9px",
-                  border: "1px solid var(--border-primary)",
-                  overflow: "hidden",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "12px",
+                  borderRadius: "8px",
+                  border:
+                    "1px solid color-mix(in srgb, var(--success) 30%, transparent)",
+                  background:
+                    "color-mix(in srgb, var(--success) 10%, transparent)",
+                  padding: "8px 16px",
+                  fontSize: "13px",
+                  color: "var(--success)",
+                  marginBottom: "12px",
                 }}
               >
-                <CodeMirrorEditor
-                  value={
-                    yamlEditing.value ? yamlEditContent.value : yamlContent
-                  }
-                  onChange={
-                    yamlEditing.value
-                      ? (v) => {
-                          yamlEditContent.value = v;
-                        }
-                      : undefined
-                  }
-                  readOnly={!yamlEditing.value}
-                />
+                Changes applied successfully.
+                <button
+                  type="button"
+                  onClick={() => {
+                    setYamlApplySuccess(false);
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "inherit",
+                    fontWeight: 500,
+                    textDecoration: "underline",
+                    fontSize: "13px",
+                  }}
+                >
+                  Dismiss
+                </button>
               </div>
-            </div>
-          );
-        },
-      },
-      {
-        id: "events",
-        label: "Events",
-        content: () => {
-          if (eventsLoading.value) {
-            return (
-              <div style={{ padding: "32px" }}>
-                <LoadingSpinner />
-              </div>
-            );
-          }
-          if (eventsError.value) {
-            return (
-              <div style={{ padding: "20px" }}>
-                <ErrorBanner message={eventsError.value} />
-              </div>
-            );
-          }
-          if (events.value.length === 0) {
-            return (
+            )}
+
+            {/* Apply error banner */}
+            {yamlApplyError && (
               <div
                 style={{
-                  padding: "48px",
-                  textAlign: "center",
+                  borderRadius: "8px",
+                  border:
+                    "1px solid color-mix(in srgb, var(--error) 30%, transparent)",
+                  background:
+                    "color-mix(in srgb, var(--error) 10%, transparent)",
+                  padding: "12px 16px",
+                  fontSize: "13px",
+                  color: "var(--error)",
+                  marginBottom: "12px",
+                }}
+              >
+                <p style={{ fontWeight: 600, margin: "0 0 4px" }}>
+                  Apply failed
+                </p>
+                <p style={{ margin: 0 }}>{yamlApplyError}</p>
+              </div>
+            )}
+
+            {/* YAML toolbar */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: "10px",
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
                   fontSize: "13px",
                   color: "var(--text-muted)",
+                  cursor: "pointer",
                 }}
               >
-                No events found for this resource
+                <input
+                  type="checkbox"
+                  checked={showManagedFields}
+                  onChange={(e) => {
+                    setShowManagedFields(e.currentTarget.checked);
+                  }}
+                  disabled={yamlEditing}
+                />
+                Show managed fields
+              </label>
+              <div style={{ display: "flex", gap: "8px" }}>
+                {!yamlEditing ? (
+                  <>
+                    <GhostButton
+                      onClick={() => {
+                        // An apply that carries managedFields is rejected
+                        // by the API server, so editing always starts from
+                        // the manifest without them.
+                        setShowManagedFields(false);
+                        setYamlEditContent(
+                          resource ? resourceToYaml(resource, false) : "",
+                        );
+                        setYamlEditing(true);
+                        setYamlApplyError(null);
+                        setYamlApplySuccess(false);
+                      }}
+                      disabled={isSecret}
+                      title={
+                        isSecret
+                          ? "Secrets cannot be edited via YAML"
+                          : "Edit YAML"
+                      }
+                    >
+                      Edit
+                    </GhostButton>
+                    <GhostButton
+                      onClick={async () => {
+                        try {
+                          const exportPath = namespace
+                            ? `/v1/yaml/export/${kind}/${namespace}/${name}`
+                            : `/v1/yaml/export/${kind}/_/${name}`;
+                          const res = await apiGet<string>(exportPath);
+                          const blob = new Blob(
+                            [
+                              typeof res.data === "string"
+                                ? res.data
+                                : JSON.stringify(res.data, null, 2),
+                            ],
+                            { type: "text/yaml" },
+                          );
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = `${name}.yaml`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        } catch (err) {
+                          setYamlApplyError(
+                            err instanceof Error
+                              ? err.message
+                              : "Export failed",
+                          );
+                        }
+                      }}
+                      disabled={isSecret}
+                      title={
+                        isSecret
+                          ? "Secrets cannot be exported (values are masked)"
+                          : "Export clean YAML"
+                      }
+                    >
+                      Export
+                    </GhostButton>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (yamlApplyingRef.current) return;
+                        yamlApplyingRef.current = true;
+                        setYamlApplying(true);
+                        setYamlApplyError(null);
+                        setYamlApplySuccess(false);
+                        try {
+                          const res = await apiPostRaw<ApplyResponse>(
+                            "/v1/yaml/apply",
+                            yamlEditContent,
+                          );
+                          // /yaml/apply answers 200 even when the
+                          // server-side apply rejects the document (a field
+                          // ownership conflict, a stale resourceVersion, an
+                          // invalid field). Keep the edit and show why.
+                          const failure = applyFailureMessage(res.data);
+                          if (failure) {
+                            setYamlApplyError(failure);
+                            return;
+                          }
+                          setYamlApplySuccess(true);
+                          setYamlEditing(false);
+                          await fetchResource();
+                        } catch (err) {
+                          setYamlApplyError(
+                            err instanceof Error ? err.message : "Apply failed",
+                          );
+                        } finally {
+                          yamlApplyingRef.current = false;
+                          setYamlApplying(false);
+                        }
+                      }}
+                      disabled={yamlApplying || yamlEditContent === yamlContent}
+                      style={primaryButtonStyle(
+                        yamlApplying || yamlEditContent === yamlContent,
+                      )}
+                    >
+                      {yamlApplying ? "Applying…" : "Apply"}
+                    </button>
+                    <GhostButton
+                      onClick={() => {
+                        setYamlEditing(false);
+                        setYamlEditContent("");
+                        setYamlApplyError(null);
+                      }}
+                      disabled={yamlApplying}
+                    >
+                      Discard
+                    </GhostButton>
+                  </>
+                )}
               </div>
-            );
-          }
+            </div>
+
+            {/* CodeMirror YAML editor */}
+            <div
+              style={{
+                borderRadius: "9px",
+                border: "1px solid var(--border-primary)",
+                overflow: "hidden",
+              }}
+            >
+              <CodeMirrorEditor
+                value={yamlEditing ? yamlEditContent : yamlContent}
+                onChange={yamlEditing ? setYamlEditContent : undefined}
+                readOnly={!yamlEditing}
+              />
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      id: "events",
+      label: "Events",
+      content: () => {
+        if (eventsLoading) {
           return (
-            <div style={{ padding: "20px" }}>
-              <EventsTable events={events.value} />
+            <div style={{ padding: "32px" }}>
+              <LoadingSpinner />
             </div>
           );
-        },
+        }
+        if (eventsError) {
+          return (
+            <div style={{ padding: "20px" }}>
+              <ErrorBanner message={eventsError} />
+            </div>
+          );
+        }
+        if (events.length === 0) {
+          return (
+            <div
+              style={{
+                padding: "48px",
+                textAlign: "center",
+                fontSize: "13px",
+                color: "var(--text-muted)",
+              }}
+            >
+              No events found for this resource
+            </div>
+          );
+        }
+        return (
+          <div style={{ padding: "20px" }}>
+            <EventsTable events={events} />
+          </div>
+        );
       },
-    ];
+    },
+  ];
 
   // Only kinds with metric queries get a Metrics tab; for the rest
   // (ConfigMap, Secret, Endpoints, …) it could only say "No Metrics Available".
-  if (hasPerformanceMetrics(kind)) {
+  if (hasMetricsTab) {
     tabDefs.push({
       id: "metrics",
       label: "Metrics",
@@ -924,12 +945,12 @@ export default function ResourceDetail({
   }
 
   // Add Logs and Terminal tabs for pods
-  if (kind === "pods" && namespace && IS_BROWSER) {
+  if (hasPodTabs && isClient) {
     tabDefs.push({
       id: "logs",
       label: "Logs",
       content: () => {
-        const res = resource.value as Pod;
+        const res = resource as Pod;
         const containers: string[] =
           res?.spec?.containers?.map((c) => c.name) ?? [];
         const initContainers: string[] =
@@ -952,7 +973,7 @@ export default function ResourceDetail({
       id: "terminal",
       label: "Terminal",
       content: () => {
-        const res = resource.value as Pod;
+        const res = resource as Pod;
         const containers: string[] =
           res?.spec?.containers?.map((c) => c.name) ?? [];
         if (containers.length === 0) return <LoadingSpinner />;
@@ -968,17 +989,7 @@ export default function ResourceDetail({
   }
 
   // Add "Loki Logs" tab for workloads and services
-  if (
-    namespace &&
-    [
-      "deployments",
-      "statefulsets",
-      "daemonsets",
-      "services",
-      "jobs",
-      "cronjobs",
-    ].includes(kind)
-  ) {
+  if (hasLokiTab && namespace) {
     tabDefs.push({
       id: "loki-logs",
       label: "Loki Logs",
@@ -1027,12 +1038,10 @@ export default function ResourceDetail({
 
   // ── derived display values ─────────────────────────────────────────────────
 
-  const status = resource.value
-    ? deriveStatus(kind, resource.value)
-    : undefined;
+  const status = resource ? deriveStatus(kind, resource) : undefined;
 
-  const subtitle = resource.value
-    ? deriveSubtitle(title, kind, namespace, resource.value)
+  const subtitle = resource
+    ? deriveSubtitle(title, kind, namespace, resource)
     : namespace
       ? `${title} · namespace ${namespace}`
       : title;
@@ -1045,17 +1054,17 @@ export default function ResourceDetail({
   // read-only users for whom a pin is most of the value. The RBAC gate stays
   // where it belongs, on the action list itself, which renders nothing when
   // empty.
-  const actionButtons = resource.value ? (
+  const actionButtons = resource ? (
     <>
-      {actions.value.map((actionId) => {
-        const meta = getActionMeta(actionId, resource.value!);
+      {actions.map((actionId) => {
+        const meta = getActionMeta(actionId, resource);
         const isDanger = !!meta.danger;
         return (
           <button
             key={actionId}
             type="button"
             onClick={() => handleAction(actionId)}
-            disabled={actionLoading.value}
+            disabled={actionLoading}
             style={{
               padding: "6px 12px",
               borderRadius: "9px",
@@ -1067,15 +1076,15 @@ export default function ResourceDetail({
                 : "1px solid var(--border-primary)",
               background: "transparent",
               color: isDanger ? "var(--error)" : "var(--text-muted)",
-              cursor: actionLoading.value ? "not-allowed" : "pointer",
+              cursor: actionLoading ? "not-allowed" : "pointer",
               display: "flex",
               alignItems: "center",
               gap: "5px",
-              opacity: actionLoading.value ? 0.5 : 1,
+              opacity: actionLoading ? 0.5 : 1,
               transition: "background 0.15s",
             }}
             onMouseOver={(e) => {
-              if (!actionLoading.value) {
+              if (!actionLoading) {
                 (e.currentTarget as HTMLElement).style.background = isDanger
                   ? "color-mix(in srgb, var(--error) 12%, transparent)"
                   : "var(--bg-elevated)";
@@ -1135,8 +1144,8 @@ export default function ResourceDetail({
           displayKind={RESOURCE_API_KINDS[kind] ?? title}
           namespace={namespace ?? ""}
           name={name}
-          uid={resource.value?.metadata.uid}
-          deleted={deleted.value}
+          uid={resource?.metadata.uid}
+          deleted={deleted}
         />
       )}
     </>
@@ -1157,12 +1166,12 @@ export default function ResourceDetail({
     ) : undefined;
 
   // Active tab content
-  const activeTabDef = tabDefs.find((t) => t.id === activeTab.value);
+  const activeTabDef = tabDefs.find((t) => t.id === activeTab);
 
   return (
     <>
       {/* Deleted banner */}
-      {deleted.value && (
+      {deleted && (
         <div
           style={{
             borderRadius: "9px",
@@ -1196,14 +1205,14 @@ export default function ResourceDetail({
         status={status}
         actions={actionButtons}
         tabs={tabDefs}
-        active={activeTab.value}
+        active={activeTab}
         onTab={handleTabChange}
         rail={metricsRail}
       >
         {/* Error state */}
-        {error.value && !resource.value ? (
+        {error && !resource ? (
           <div style={{ padding: "20px" }} data-testid="detail-error">
-            <ErrorBanner message={error.value} />
+            <ErrorBanner message={error} />
           </div>
         ) : (
           <div
@@ -1220,14 +1229,10 @@ export default function ResourceDetail({
       </DetailShell>
 
       {/* Confirm dialog */}
-      {confirmAction.value &&
-        resource.value &&
+      {confirmAction &&
+        resource &&
         (() => {
-          const meta = getActionMeta(
-            confirmAction.value!.actionId,
-            resource.value!,
-            kind,
-          );
+          const meta = getActionMeta(confirmAction.actionId, resource, kind);
           const isDestructive = meta.confirm === "destructive";
           return (
             <ConfirmDialog
@@ -1237,20 +1242,17 @@ export default function ResourceDetail({
               danger={meta.danger}
               typeToConfirm={isDestructive ? name : undefined}
               onConfirm={() =>
-                runAction(
-                  confirmAction.value!.actionId,
-                  confirmAction.value!.params,
-                )
+                runAction(confirmAction.actionId, confirmAction.params)
               }
               onCancel={() => {
-                confirmAction.value = null;
+                setConfirmAction(null);
               }}
             />
           );
         })()}
 
       {/* Scale dialog */}
-      {scaleTarget.value && (
+      {scaleTarget && (
         <ConfirmDialog
           title={`Scale ${name}`}
           message={
@@ -1262,12 +1264,9 @@ export default function ResourceDetail({
                 type="number"
                 min="0"
                 max="100"
-                value={scaleValue.value}
-                onInput={(e) => {
-                  scaleValue.value = parseInt(
-                    (e.target as HTMLInputElement).value,
-                    10,
-                  );
+                value={Number.isNaN(scaleValue) ? "" : scaleValue}
+                onChange={(e) => {
+                  setScaleValue(parseInt(e.currentTarget.value, 10));
                 }}
                 style={{
                   width: "100%",
@@ -1282,9 +1281,9 @@ export default function ResourceDetail({
             </div>
           }
           confirmLabel="Scale"
-          onConfirm={() => runAction("scale", { replicas: scaleValue.value })}
+          onConfirm={() => runAction("scale", { replicas: scaleValue })}
           onCancel={() => {
-            scaleTarget.value = false;
+            setScaleTarget(false);
           }}
         />
       )}
@@ -1294,7 +1293,7 @@ export default function ResourceDetail({
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-function primaryButtonStyle(disabled: boolean): preact.CSSProperties {
+function primaryButtonStyle(disabled: boolean): CSSProperties {
   return {
     padding: "6px 14px",
     borderRadius: "9px",
@@ -1315,7 +1314,7 @@ function GhostButton({
   disabled,
   title,
 }: {
-  children: preact.ComponentChildren;
+  children: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
   title?: string;
@@ -1351,7 +1350,7 @@ function ActionIcon({ actionId }: { actionId: ActionId }) {
     viewBox: "0 0 14 14",
     fill: "none",
     stroke: "currentColor",
-    "stroke-width": "1.5",
+    strokeWidth: "1.5",
   };
   switch (actionId) {
     case "scale":

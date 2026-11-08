@@ -1,8 +1,8 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface PerformancePanelProps {
   kind: string;
@@ -228,6 +228,12 @@ const EMPTY_HINTS: Record<string, string> = {
     "These charts count the addresses in the Service's EndpointSlices, from kube-state-metrics. Prometheus has no EndpointSlice data for this object.",
 };
 
+interface Resource {
+  kind: string;
+  name: string;
+  namespace?: string;
+}
+
 interface ChartData {
   title: string;
   values: { time: Date; value: number }[];
@@ -249,46 +255,78 @@ export default function PerformancePanel({
   name,
   namespace,
 }: PerformancePanelProps) {
-  const charts = useSignal<ChartData[]>([]);
-  const monAvailable = useSignal<boolean | null>(null);
-  const refreshInterval = useSignal(30_000);
-  const intervalRef = useSignal<ReturnType<typeof setInterval> | undefined>(
+  const isClient = useIsClient();
+  const [charts, setChartsState] = useState<ChartData[]>([]);
+  const [monAvailable, setMonAvailable] = useState<boolean | null>(null);
+  const [refreshInterval, setRefreshInterval] = useState(30_000);
+  const chartsRef = useRef<ChartData[]>([]);
+  const refreshIntervalRef = useRef(30_000);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(
     undefined,
   );
+  // Bumped whenever the resource changes or the panel unmounts: a response
+  // that arrives after that belongs to a resource no longer on screen.
+  const generationRef = useRef(0);
+  const activeRef = useRef<{ resource: Resource; generation: number } | null>(
+    null,
+  );
+  const loadMetricsRef = useRef<
+    (resource: Resource, generation: number) => Promise<void>
+  >(async () => {});
 
-  function startInterval() {
-    if (intervalRef.value) clearInterval(intervalRef.value);
-    if (refreshInterval.value > 0) {
-      intervalRef.value = setInterval(loadMetrics, refreshInterval.value);
-    }
+  function setCharts(next: ChartData[]) {
+    chartsRef.current = next;
+    setChartsState(next);
   }
 
+  const startInterval = useCallback(
+    (resource: Resource, generation: number) => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (refreshIntervalRef.current > 0) {
+        intervalRef.current = setInterval(
+          () => loadMetricsRef.current(resource, generation),
+          refreshIntervalRef.current,
+        );
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    const resource = { kind, name, namespace };
     // Another resource: none of the charts on screen are its data.
-    charts.value = [];
+    chartsRef.current = [];
+    setChartsState([]);
+    const generation = ++generationRef.current;
+    activeRef.current = { resource, generation };
 
     // Check monitoring availability, then start auto-refresh
     apiGet<{ prometheus: { available: boolean } }>("/v1/monitoring/status")
       .then((res) => {
-        monAvailable.value = res.data.prometheus.available;
+        if (generation !== generationRef.current) return;
+        setMonAvailable(res.data.prometheus.available);
         if (res.data.prometheus.available) {
-          loadMetrics();
-          startInterval();
+          loadMetricsRef.current(resource, generation);
+          startInterval(resource, generation);
         }
       })
       .catch(() => {
-        monAvailable.value = false;
+        if (generation !== generationRef.current) return;
+        setMonAvailable(false);
       });
 
     return () => {
-      if (intervalRef.value) clearInterval(intervalRef.value);
+      generationRef.current++;
+      if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [kind, name, namespace]);
+  }, [kind, name, namespace, startInterval]);
 
-  async function loadMetrics() {
+  async function loadMetrics(
+    { kind, name, namespace }: Resource,
+    generation: number,
+  ) {
     const slugDefs = QUERIES[kind];
-    if (!slugDefs) return;
+    if (!slugDefs || generation !== generationRef.current) return;
 
     const now = new Date();
     const end = now.toISOString();
@@ -304,7 +342,7 @@ export default function PerformancePanel({
     // Spinners only on the first load. A refresh keeps the last results on
     // screen until the new ones arrive, so the charts (or the "No Metric
     // Data" message) don't blink every refresh interval.
-    if (charts.value.length === 0) charts.value = initial;
+    if (chartsRef.current.length === 0) setCharts(initial);
 
     // For nodes, resolve the internal IP so the backend slug can match
     // node-exporter metrics (which use instance=IP:9100, not node name).
@@ -373,67 +411,75 @@ export default function PerformancePanel({
         };
       }
     }
-    charts.value = updated;
+    // The resource changed while the queries were in flight.
+    if (generation !== generationRef.current) return;
+    setCharts(updated);
   }
+  loadMetricsRef.current = loadMetrics;
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (monAvailable.value === null) {
+  if (monAvailable === null) {
     return (
-      <div class="flex justify-center p-12">
+      <div className="flex justify-center p-12">
         <Spinner className="text-brand" />
       </div>
     );
   }
 
-  if (!monAvailable.value) {
+  if (!monAvailable) {
     return (
-      <div class="p-12 text-center text-sm text-text-muted">
-        <p class="text-lg font-medium text-text-muted">
+      <div className="p-12 text-center text-sm text-text-muted">
+        <p className="text-lg font-medium text-text-muted">
           Monitoring Not Available
         </p>
-        <p class="mt-2">Prometheus was not detected in this cluster.</p>
+        <p className="mt-2">Prometheus was not detected in this cluster.</p>
       </div>
     );
   }
 
   if (!QUERIES[kind]) {
     return (
-      <div class="p-12 text-center text-sm text-text-muted">
-        <p class="text-lg font-medium text-text-muted">No Metrics Available</p>
-        <p class="mt-1">Metrics are not configured for this resource type.</p>
+      <div className="p-12 text-center text-sm text-text-muted">
+        <p className="text-lg font-medium text-text-muted">
+          No Metrics Available
+        </p>
+        <p className="mt-1">
+          Metrics are not configured for this resource type.
+        </p>
       </div>
     );
   }
 
   // A grid of "No data" cards says nothing the single message below doesn't.
   const allEmpty =
-    charts.value.length > 0 &&
-    charts.value.every((c) => !c.loading && !c.error && c.values.length === 0);
+    charts.length > 0 &&
+    charts.every((c) => !c.loading && !c.error && c.values.length === 0);
 
   return (
-    <div class="p-4">
+    <div className="p-4">
       {/* Refresh interval selector */}
-      <div class="mb-4 flex items-center justify-end gap-2">
+      <div className="mb-4 flex items-center justify-end gap-2">
         <svg
-          class="h-4 w-4 text-text-muted"
+          className="h-4 w-4 text-text-muted"
           viewBox="0 0 16 16"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.5"
+          strokeWidth="1.5"
         >
           <circle cx="8" cy="8" r="6" />
           <path d="M8 4v4l2.5 1.5" />
         </svg>
         <select
-          value={refreshInterval.value}
+          value={refreshInterval}
           onChange={(e) => {
-            refreshInterval.value = Number(
-              (e.target as HTMLSelectElement).value,
-            );
-            startInterval();
+            const next = Number(e.currentTarget.value);
+            refreshIntervalRef.current = next;
+            setRefreshInterval(next);
+            const active = activeRef.current;
+            if (active) startInterval(active.resource, active.generation);
           }}
-          class="rounded-md border border-border-primary bg-surface px-2 py-1 text-xs text-text-secondary text-text-secondary"
+          className="rounded-md border border-border-primary bg-surface px-2 py-1 text-xs text-text-secondary text-text-secondary"
         >
           {REFRESH_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
@@ -443,33 +489,33 @@ export default function PerformancePanel({
         </select>
       </div>
       {allEmpty ? (
-        <div class="p-12 text-center text-sm text-text-muted">
-          <p class="text-lg font-medium text-text-muted">No Metric Data</p>
-          <p class="mt-1">
+        <div className="p-12 text-center text-sm text-text-muted">
+          <p className="text-lg font-medium text-text-muted">No Metric Data</p>
+          <p className="mt-1">
             {EMPTY_HINTS[kind] ??
               "Prometheus returned no data for this resource in the last hour."}
           </p>
         </div>
       ) : (
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {charts.value.map((chart, i) => (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {charts.map((chart, i) => (
             <div
-              key={i}
-              class="rounded-lg border border-border-primary bg-surface p-4"
+              key={chart.title}
+              className="rounded-lg border border-border-primary bg-surface p-4"
             >
-              <h3 class="mb-3 text-sm font-medium text-text-secondary">
+              <h3 className="mb-3 text-sm font-medium text-text-secondary">
                 {chart.title}
               </h3>
               {chart.loading ? (
-                <div class="flex h-32 items-center justify-center">
+                <div className="flex h-32 items-center justify-center">
                   <Spinner size="sm" className="text-brand" />
                 </div>
               ) : chart.error ? (
-                <div class="flex h-32 items-center justify-center text-sm text-error">
+                <div className="flex h-32 items-center justify-center text-sm text-error">
                   {chart.error}
                 </div>
               ) : chart.values.length === 0 ? (
-                <div class="flex h-32 items-center justify-center text-sm text-text-muted">
+                <div className="flex h-32 items-center justify-center text-sm text-text-muted">
                   No data
                 </div>
               ) : (
@@ -491,7 +537,8 @@ function MiniChart({
   values: { time: Date; value: number }[];
   chartId?: string;
 }) {
-  if (values.length < 2) return <div class="h-32 text-text-muted">No data</div>;
+  if (values.length < 2)
+    return <div className="h-32 text-text-muted">No data</div>;
 
   const width = 400;
   const height = 120;
@@ -518,12 +565,12 @@ function MiniChart({
 
   return (
     <div>
-      <div class="mb-1 text-right text-lg font-semibold text-text-primary">
+      <div className="mb-1 text-right text-lg font-semibold text-text-primary">
         {displayValue}
       </div>
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        class="h-28 w-full"
+        className="h-28 w-full"
         preserveAspectRatio="none"
       >
         <defs>
@@ -534,8 +581,8 @@ function MiniChart({
             x2="0"
             y2="1"
           >
-            <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.3" />
-            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0" />
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.3" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
           </linearGradient>
         </defs>
         {/* Area fill */}
@@ -550,13 +597,13 @@ function MiniChart({
           points={points.join(" ")}
           fill="none"
           stroke="var(--accent)"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          vector-effect="non-scaling-stroke"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
         />
       </svg>
-      <div class="mt-1 flex justify-between text-xs text-text-muted">
+      <div className="mt-1 flex justify-between text-xs text-text-muted">
         <span>{values[0].time.toLocaleTimeString()}</span>
         <span>{values[values.length - 1].time.toLocaleTimeString()}</span>
       </div>
