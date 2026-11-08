@@ -1,7 +1,7 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 /**
  * The editor root's classes, shared by the SSR placeholder and the hydrated
@@ -57,11 +57,12 @@ export function MonacoEditor({
   height = "500px",
   markers,
 }: MonacoEditorProps) {
+  const isClient = useIsClient();
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MonacoEditorInstance>(null);
   const monacoRef = useRef<MonacoModule>(null);
-  const loading = useSignal(true);
-  const failed = useSignal(false);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
 
   // Track the latest value prop to avoid update loops
   const latestValueRef = useRef(value);
@@ -72,12 +73,18 @@ export function MonacoEditor({
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
+  // The init effect runs when the editor mounts; it reads the readOnly in
+  // force then without re-running when it changes (the effect below applies
+  // later changes).
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+
   // Guard to suppress onChange during programmatic setValue calls
   const isSettingExternally = useRef(false);
 
   // Initialize Monaco
   useEffect(() => {
-    if (!IS_BROWSER || !containerRef.current) return;
+    if (!isClient || !containerRef.current) return;
 
     let disposed = false;
 
@@ -100,7 +107,7 @@ export function MonacoEditor({
           minimap: { enabled: false },
           automaticLayout: true,
           fixedOverflowWidgets: true,
-          readOnly,
+          readOnly: readOnlyRef.current,
           scrollBeyondLastLine: false,
           fontSize: 13,
           tabSize: 2,
@@ -128,12 +135,12 @@ export function MonacoEditor({
         });
 
         editorRef.current = editor;
-        loading.value = false;
+        setLoading(false);
       } catch (err) {
         console.error("Failed to load Monaco editor:", err);
         if (!disposed) {
-          failed.value = true;
-          loading.value = false;
+          setFailed(true);
+          setLoading(false);
         }
       }
     }
@@ -150,7 +157,7 @@ export function MonacoEditor({
       editorRef.current = null;
       monacoRef.current = null;
     };
-  }, []); // Only init once
+  }, [isClient]); // Init once the client branch (and the container) exists
 
   // Update readOnly when prop changes
   useEffect(() => {
@@ -207,19 +214,19 @@ export function MonacoEditor({
   }, [markers]);
 
   // Fallback textarea for when Monaco fails to load
-  if (!IS_BROWSER) {
+  if (!isClient) {
     // Must carry EDITOR_ROOT_CLASS, identical to the hydrated root below.
-    // Preact hydration keeps the server-rendered root's class and only
+    // Hydration keeps the server-rendered root's class and only
     // recurses into children, so a class that differs here sticks for the
     // life of the page. This root previously said `bg-base` where the
     // hydrated root says `relative`; losing `position: relative` left
     // Monaco's absolutely-positioned .view-lines resolving against <body>,
     // which drew the code at x=62 behind the secondary nav instead of
     // inside the editor box.
-    return <div style={{ height }} class={EDITOR_ROOT_CLASS} />;
+    return <div style={{ height }} className={EDITOR_ROOT_CLASS} />;
   }
 
-  if (failed.value) {
+  if (failed) {
     // EDITOR_ROOT_CLASS here too, for the same reason as the placeholder
     // above. This branch renders on a post-mount Monaco load failure, by
     // which point the root is a live node whose props *do* get diffed -- so
@@ -234,12 +241,14 @@ export function MonacoEditor({
     // what this fallback looked like before the migration, and this change is
     // required to render identically to it.
     return (
-      <div style={{ height }} class={EDITOR_ROOT_CLASS}>
+      <div style={{ height }} className={EDITOR_ROOT_CLASS}>
         <textarea
           value={value}
-          onInput={(e) => onChange?.((e.target as HTMLTextAreaElement).value)}
+          onChange={(e) => onChange?.(e.currentTarget.value)}
           readOnly={readOnly}
-          class="w-full h-full bg-transparent text-text-primary font-mono text-sm p-4 resize-none focus:outline-none focus:ring-2 focus:ring-brand"
+          className="w-full h-full bg-transparent text-text-primary font-mono text-sm p-4 resize-none focus:outline-none focus:ring-2 focus:ring-brand"
+          // Preact's JSX types, in force until the runtime switch, only know
+          // the lowercase name; rename to spellCheck when React's arrive.
           spellcheck={false}
         />
       </div>
@@ -247,16 +256,16 @@ export function MonacoEditor({
   }
 
   return (
-    <div class={EDITOR_ROOT_CLASS} style={{ height }}>
-      {loading.value && (
-        <div class="absolute inset-0 z-10 flex items-center justify-center bg-base text-text-muted">
-          <div class="flex items-center gap-2">
+    <div className={EDITOR_ROOT_CLASS} style={{ height }}>
+      {loading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-base text-text-muted">
+          <div className="flex items-center gap-2">
             <Spinner size="sm" />
             Loading editor...
           </div>
         </div>
       )}
-      <div ref={containerRef} class="h-full w-full" />
+      <div ref={containerRef} className="h-full w-full" />
     </div>
   );
 }

@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 interface TextFieldProps {
   value: string;
   onInput: (v: string) => void;
@@ -19,20 +20,17 @@ export default function TextField({
 }: TextFieldProps) {
   return (
     <input
-      // Preact types <input> as a union keyed on a literal `type`, so the
-      // two-way choice is resolved to one branch before it is spread.
+      // While JSX types come from Preact, <input> is a union keyed on a
+      // literal `type`, so the two-way choice is resolved to one branch.
       {...(type === "password"
         ? { type: "password" as const }
         : { type: "text" as const })}
       value={value}
       placeholder={placeholder}
-      onInput={(e) => onInput((e.target as HTMLInputElement).value)}
-      onFocus={(e) =>
-        ((e.currentTarget as HTMLElement).style.borderColor = "var(--accent)")
-      }
+      onChange={(e) => onInput(e.currentTarget.value)}
+      onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
       onBlur={(e) =>
-        ((e.currentTarget as HTMLElement).style.borderColor =
-          "var(--border-subtle)")
+        (e.currentTarget.style.borderColor = "var(--border-subtle)")
       }
       style={{
         width,

@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 
@@ -31,27 +32,26 @@ export function KeyValueListEditor({
   keyPlaceholder = "key",
   valuePlaceholder = "value",
 }: KeyValueListEditorProps) {
+  // Entries carry no id; a row is identified by its position, which is also
+  // what onUpdate and onRemove address.
+  const rows = entries.map((entry, i) => ({ entry, i }));
   return (
-    <div class="space-y-2">
-      <label class="block text-sm font-medium text-text-secondary">
+    <div className="space-y-2">
+      <label className="block text-sm font-medium text-text-secondary">
         {label}
       </label>
-      {entries.map((entry, i) => (
-        <div key={i} class="flex items-center gap-2">
+      {rows.map(({ entry, i }) => (
+        <div key={i} className="flex items-center gap-2">
           <Input
             value={entry.key}
-            onInput={(e) =>
-              onUpdate(i, "key", (e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onUpdate(i, "key", e.currentTarget.value)}
             placeholder={keyPlaceholder}
             className="flex-1"
           />
-          <span class="text-text-muted">=</span>
+          <span className="text-text-muted">=</span>
           <Input
             value={entry.value}
-            onInput={(e) =>
-              onUpdate(i, "value", (e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onUpdate(i, "value", e.currentTarget.value)}
             placeholder={valuePlaceholder}
             className="flex-1"
           />
@@ -64,7 +64,7 @@ export function KeyValueListEditor({
       <button
         type="button"
         onClick={onAdd}
-        class="text-sm text-brand hover:text-brand/80"
+        className="text-sm text-brand hover:text-brand/80"
       >
         {addLabel}
       </button>

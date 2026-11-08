@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import type { ValidateResponse } from "@/lib/yaml-apply.ts";
 
 /**
@@ -16,32 +17,35 @@ export function ValidationResults({
   return (
     <div
       role="status"
-      class={`rounded-lg border p-4 ${
+      className={`rounded-lg border p-4 ${
         ok
           ? "border-success/30 bg-success/10"
           : "border-warning/30 bg-warning/10"
       }`}
     >
       <p
-        class={`m-0 text-sm font-semibold ${ok ? "text-success" : "text-warning"}`}
+        className={`m-0 text-sm font-semibold ${ok ? "text-success" : "text-warning"}`}
       >
         {total} resource{total !== 1 ? "s" : ""} validated
         {failing.length > 0 ? `: ${failing.length} with errors` : ": all valid"}
       </p>
       {failing.map((d) => (
-        <div key={`${d.index}-${d.kind}-${d.name}`} class="mt-2 text-sm">
-          <span class="font-mono text-text-primary">
+        <div key={`${d.index}-${d.kind}-${d.name}`} className="mt-2 text-sm">
+          <span className="font-mono text-text-primary">
             {d.kind}/{d.name}
           </span>
           {d.errors?.length ? (
             d.errors.map((e) => (
-              <div key={`${e.field ?? ""}:${e.message}`} class="text-danger">
+              <div
+                key={`${e.field ?? ""}:${e.message}`}
+                className="text-danger"
+              >
                 {e.field ? `${e.field}: ` : ""}
                 {e.message}
               </div>
             ))
           ) : (
-            <div class="text-danger">invalid</div>
+            <div className="text-danger">invalid</div>
           )}
         </div>
       ))}

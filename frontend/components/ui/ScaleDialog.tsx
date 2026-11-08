@@ -1,3 +1,6 @@
+/** @jsxImportSource react */
+import type { ChangeEvent } from "react";
+
 interface ScaleDialogProps {
   resourceName: string;
   currentReplicas: number | undefined;
@@ -19,43 +22,43 @@ export function ScaleDialog({
 }: ScaleDialogProps) {
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
+      className="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
       role="dialog"
       aria-modal="true"
       aria-label={`Scale ${resourceName}`}
       onClick={onCancel}
     >
       <div
-        class="w-full max-w-sm glass-elevated rounded-2xl p-6"
+        className="w-full max-w-sm glass-elevated rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 class="text-lg font-semibold text-text-primary">
+        <h3 className="text-lg font-semibold text-text-primary">
           Scale {resourceName}
         </h3>
-        <div class="mt-4">
-          <label class="block text-sm text-text-secondary">Replicas</label>
+        <div className="mt-4">
+          <label className="block text-sm text-text-secondary">Replicas</label>
           <input
             type="number"
             min="0"
             max="1000"
             value={value}
-            onInput={(e) => {
-              const raw = parseInt((e.target as HTMLInputElement).value, 10);
+            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+              const raw = parseInt(e.currentTarget.value, 10);
               onValueChange(
                 Number.isNaN(raw) ? 0 : Math.min(Math.max(raw, 0), 1000),
               );
             }}
-            class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+            className="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
           />
-          <p class="mt-1 text-xs text-text-muted">
+          <p className="mt-1 text-xs text-text-muted">
             Current: {currentReplicas ?? "?"}
           </p>
         </div>
-        <div class="mt-6 flex justify-end gap-3">
+        <div className="mt-6 flex justify-end gap-3">
           <button
             type="button"
             onClick={onCancel}
-            class="rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
+            className="rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
           >
             Cancel
           </button>
@@ -63,7 +66,7 @@ export function ScaleDialog({
             type="button"
             disabled={loading}
             onClick={onConfirm}
-            class="rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90 disabled:opacity-50"
+            className="rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90 disabled:opacity-50"
             style={{ color: "var(--bg-base)" }}
           >
             {loading ? "..." : "Scale"}

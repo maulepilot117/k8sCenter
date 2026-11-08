@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 interface SegmentedProps {
   value: string;
   options: string[];

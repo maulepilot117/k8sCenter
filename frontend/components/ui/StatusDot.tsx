@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 export type StatusValue = "success" | "warning" | "error" | "info" | "neutral";
 
 export interface StatusDotProps {
@@ -17,7 +18,7 @@ const STATUS_COLORS: Record<StatusDotProps["status"], string> = {
 export function StatusDot({ status, pulse = false, size = 8 }: StatusDotProps) {
   return (
     <span
-      class={`inline-block rounded-full ${pulse ? "animate-pulse-glow" : ""}`}
+      className={`inline-block rounded-full ${pulse ? "animate-pulse-glow" : ""}`}
       style={{
         width: `${size}px`,
         height: `${size}px`,

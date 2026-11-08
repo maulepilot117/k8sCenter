@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 
 export { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
@@ -21,11 +22,11 @@ export function CVESeverityBadge({ severity }: { severity: string }) {
 /** Indicator shown when a CVE's fixedVersion is non-empty. */
 export function FixAvailableBadge({ fixedVersion }: { fixedVersion: string }) {
   if (!fixedVersion) {
-    return <span class="text-text-muted">&mdash;</span>;
+    return <span className="text-text-muted">&mdash;</span>;
   }
   return (
     <span
-      class="inline-flex items-center gap-1 font-mono text-xs"
+      className="inline-flex items-center gap-1 font-mono text-xs"
       style={{ color: "var(--success)" }}
       title="Upgrade available"
     >
@@ -62,13 +63,13 @@ export function SeverityCount({
   if (count === 0) return null;
   return (
     <span
-      class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium"
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium"
       style={{
         color,
         backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
       }}
     >
-      <span class="font-bold">{count}</span>
+      <span className="font-bold">{count}</span>
       {label}
     </span>
   );

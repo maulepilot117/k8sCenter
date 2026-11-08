@@ -1,4 +1,5 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 
 /** Label + optional hint wrapper used by every wizard/form field. */
 export default function Field({
@@ -8,7 +9,7 @@ export default function Field({
 }: {
   label: string;
   hint?: string;
-  children: ComponentChildren;
+  children: ReactNode;
 }) {
   return (
     <div>

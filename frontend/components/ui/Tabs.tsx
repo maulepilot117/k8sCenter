@@ -1,10 +1,10 @@
-import type { ComponentChildren } from "preact";
-import { useCallback } from "preact/hooks";
+/** @jsxImportSource react */
+import { type KeyboardEvent, type ReactNode, useCallback } from "react";
 
 export interface TabDef {
   id: string;
   label: string;
-  content: () => ComponentChildren;
+  content: () => ReactNode;
 }
 
 interface TabsProps {
@@ -19,7 +19,7 @@ interface TabsProps {
  */
 export function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
   const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
+    (e: KeyboardEvent<HTMLDivElement>) => {
       const currentIndex = tabs.findIndex((t) => t.id === activeTab);
       let nextIndex: number | null = null;
 
@@ -54,7 +54,7 @@ export function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
       <div
         role="tablist"
         aria-orientation="horizontal"
-        class="flex border-b"
+        className="flex border-b"
         style={{ borderColor: "var(--border-primary)" }}
         onKeyDown={handleKeyDown}
       >
@@ -70,7 +70,7 @@ export function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
               tabIndex={isActive ? 0 : -1}
               type="button"
               onClick={() => onTabChange(tab.id)}
-              class={`cursor-pointer px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+              className={`cursor-pointer px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
                 isActive ? "border-b-2" : ""
               }`}
               style={
@@ -97,7 +97,7 @@ export function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
           id={`panel-${activeTabDef.id}`}
           aria-labelledby={`tab-${activeTabDef.id}`}
           tabIndex={0}
-          class="focus:outline-none"
+          className="focus:outline-none"
         >
           {activeTabDef.content()}
         </div>

@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Alert } from "@/components/ui/Alert.tsx";
 import type { SourceCoverage } from "@/lib/k8s-types.ts";
 
@@ -19,7 +20,7 @@ export function SourceCoverageNotice({
 }) {
   if (!coverage || coverage.length === 0) return null;
   return (
-    <div class="mb-4 flex flex-col gap-2">
+    <div className="mb-4 flex flex-col gap-2">
       {coverage.map((c) => {
         const name = labels[c.source] ?? c.source;
         return (

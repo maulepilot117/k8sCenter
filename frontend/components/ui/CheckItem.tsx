@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 export interface CheckItemProps {
   label: string;
   value: string;
@@ -51,7 +52,7 @@ export function CheckItem({ label, value, status, href }: CheckItemProps) {
     return (
       <a
         href={href}
-        class="hover:underline"
+        className="hover:underline"
         style={{ ...ROW_STYLE, color: "inherit" }}
       >
         {content}

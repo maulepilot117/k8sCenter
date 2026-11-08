@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import {
   defaultKeymap,
   history,
@@ -20,8 +21,8 @@ import {
   keymap,
   lineNumbers,
 } from "@codemirror/view";
-import { useEffect, useRef } from "preact/hooks";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useEffect, useRef } from "react";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 export interface CodeMirrorEditorProps {
   value: string;
@@ -47,16 +48,20 @@ export function CodeMirrorEditor({
   onChange,
   readOnly = false,
 }: CodeMirrorEditorProps) {
+  const isClient = useIsClient();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // Remounting for readOnly seeds the new editor with the current value.
+  const valueRef = useRef(value);
+  valueRef.current = value;
   // Texts sent through onChange that no `value` has caught up with yet,
   // oldest first.
   const inFlight = useRef<string[]>([]);
 
   useEffect(() => {
-    if (!IS_BROWSER || !containerRef.current) return;
+    if (!isClient || !containerRef.current) return;
 
     const extensions = [
       lineNumbers(),
@@ -97,7 +102,7 @@ export function CodeMirrorEditor({
     ];
 
     inFlight.current = [];
-    const state = EditorState.create({ doc: value, extensions });
+    const state = EditorState.create({ doc: valueRef.current, extensions });
     const view = new EditorView({ state, parent: containerRef.current });
     viewRef.current = view;
 
@@ -105,7 +110,7 @@ export function CodeMirrorEditor({
       view.destroy();
       viewRef.current = null;
     };
-  }, [readOnly]);
+  }, [isClient, readOnly]);
 
   // Sync external value changes without re-mounting
   useEffect(() => {
@@ -127,11 +132,11 @@ export function CodeMirrorEditor({
     }
   }, [value]);
 
-  if (!IS_BROWSER) {
+  if (!isClient) {
     return (
-      <div class="h-full bg-base rounded-md border border-border-primary" />
+      <div className="h-full bg-base rounded-md border border-border-primary" />
     );
   }
 
-  return <div ref={containerRef} class="h-full w-full" />;
+  return <div ref={containerRef} className="h-full w-full" />;
 }

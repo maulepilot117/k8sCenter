@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 type SelectOption = string | { value: string; label: string };
 
 export default function Select({
@@ -12,7 +13,7 @@ export default function Select({
   return (
     <select
       value={value}
-      onChange={(e) => onChange((e.target as HTMLSelectElement).value)}
+      onChange={(e) => onChange(e.currentTarget.value)}
       style={{
         width: "100%",
         padding: "10px 12px",

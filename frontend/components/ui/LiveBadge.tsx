@@ -1,5 +1,7 @@
+/** @jsxImportSource react */
 import { wsStatus } from "@/lib/ws.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
  * Says, under a remote selection only, that the page does not update by
@@ -16,10 +18,11 @@ export function RemoteRefreshHint({
 }: {
   control?: string;
 }) {
-  if (selectedCluster.value === LOCAL_CLUSTER_ID) return null;
+  const cluster = useSignalValue(selectedCluster);
+  if (cluster === LOCAL_CLUSTER_ID) return null;
   return (
     <span
-      class="inline-flex items-center self-center rounded-full px-2 py-0.5 text-xs font-medium text-text-muted bg-elevated"
+      className="inline-flex items-center self-center rounded-full px-2 py-0.5 text-xs font-medium text-text-muted bg-elevated"
       title={`Live updates are off for a remote cluster. Use ${control} to see changes.`}
     >
       {control} to update
@@ -36,11 +39,13 @@ export function RemoteRefreshHint({
  * socket's state, and shows `RemoteRefreshHint` instead (R-8 U14).
  */
 export function LiveBadge() {
-  if (selectedCluster.value !== LOCAL_CLUSTER_ID) return <RemoteRefreshHint />;
-  if (wsStatus.value !== "connected") return null;
+  const cluster = useSignalValue(selectedCluster);
+  const status = useSignalValue(wsStatus);
+  if (cluster !== LOCAL_CLUSTER_ID) return <RemoteRefreshHint />;
+  if (status !== "connected") return null;
   return (
-    <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
-      <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
+      <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
       Live
     </span>
   );

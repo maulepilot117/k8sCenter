@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 
 export { ColorBadge } from "@/components/ui/ColorBadge.tsx";
@@ -40,7 +41,7 @@ export function BlockingBadge({ blocking }: { blocking: boolean }) {
   const title = blocking ? "Blocks admission" : "Audit only";
   return (
     <span
-      class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium"
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium"
       style={{
         color,
         backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,

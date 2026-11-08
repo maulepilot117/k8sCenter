@@ -1,4 +1,5 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 
 /** Reusable label/value field pair for detail views. */
 export function Field({
@@ -7,14 +8,14 @@ export function Field({
   mono,
 }: {
   label: string;
-  value: ComponentChildren;
+  value: ReactNode;
   mono?: boolean;
 }) {
   return (
     <div>
-      <dt class="text-xs font-medium text-text-muted">{label}</dt>
+      <dt className="text-xs font-medium text-text-muted">{label}</dt>
       <dd
-        class={`mt-0.5 text-sm text-text-primary break-all ${
+        className={`mt-0.5 text-sm text-text-primary break-all ${
           mono ? "font-mono text-xs" : ""
         }`}
       >
@@ -25,9 +26,9 @@ export function Field({
 }
 
 /** Section header used across overview components. */
-export function SectionHeader({ children }: { children: ComponentChildren }) {
+export function SectionHeader({ children }: { children: ReactNode }) {
   return (
-    <h4 class="text-xs font-medium uppercase text-text-muted mb-2">
+    <h4 className="text-xs font-medium uppercase text-text-muted mb-2">
       {children}
     </h4>
   );
