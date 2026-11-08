@@ -1,6 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { useAuth } from "@/lib/auth.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
  * The root every return shares. Preact hydration keeps the server-rendered
@@ -32,9 +33,11 @@ const LOADING_CLASS =
 export default function PromQLAdminGate(props: {
   children: ComponentChildren;
 }) {
-  // Hooks must run unconditionally — call useAuth first, then bail out
-  // for SSR. The signal read is a no-op on the server.
-  const { user } = useAuth();
+  // Hooks must run unconditionally, so read the user before the SSR bail-out.
+  // Read through useSignalValue rather than `user.value`: the bare read only
+  // re-renders if @preact/signals has patched Preact on this page, and
+  // nothing this island imports loads it.
+  const u = useSignalValue(useAuth().user);
 
   if (!IS_BROWSER) {
     return (
@@ -43,8 +46,6 @@ export default function PromQLAdminGate(props: {
       </div>
     );
   }
-
-  const u = user.value;
 
   if (u === null) {
     // Auth still loading or unauthenticated. Show a placeholder; ResourceTable

@@ -11,8 +11,8 @@
  * failure behavior can be unit-tested. lib/api.ts has no injectable fetch, and
  * lib/preferences_test.ts shows what testing around that looks like.
  */
-import type { Signal } from "@preact/signals";
-import { signal } from "@preact/signals";
+import type { Signal } from "@preact/signals-core";
+import { signal } from "@preact/signals-core";
 import { ApiError, api } from "@/lib/api.ts";
 import {
   METRICS_NOT_CONFIGURED_MESSAGE,

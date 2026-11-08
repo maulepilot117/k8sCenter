@@ -13,13 +13,12 @@ import (
 )
 
 const (
-	writeWait        = 10 * time.Second
-	pongWait         = 60 * time.Second
-	pingPeriod       = (pongWait * 9) / 10
-	maxMessageSize   = 64 * 1024
-	authTimeout      = 5 * time.Second
-	maxSubscriptions = 25
-	sendBufferSize   = 256
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10
+	maxMessageSize = 64 * 1024
+	authTimeout    = 5 * time.Second
+	sendBufferSize = 256
 )
 
 // TokenValidator validates JWT tokens and returns user info.
@@ -33,7 +32,6 @@ type Client struct {
 	conn           *websocket.Conn
 	send           chan []byte
 	user           *auth.User
-	subCount       int // tracks number of active subscriptions (written only by readPump)
 	tokenValidator TokenValidator
 	logger         *slog.Logger
 }
@@ -178,11 +176,6 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 		return
 	}
 
-	if c.subCount >= maxSubscriptions {
-		c.sendError(msg.ID, 429, "too many subscriptions")
-		return
-	}
-
 	// Validate kind against allowlist (P1-071: defense-in-depth, block secrets)
 	if !isAllowedKind(msg.Kind) {
 		c.sendError(msg.ID, 400, fmt.Sprintf("subscription to %q is not allowed", msg.Kind))
@@ -239,16 +232,9 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 	}
 
 	key := subKey{Kind: normalizedKind, Namespace: msg.Namespace}
-	c.subCount++
-	c.hub.addSub <- subChange{client: c, key: key, add: true, id: msg.ID}
+	c.hub.subChanges <- subChange{client: c, key: key, add: true, id: msg.ID}
 
-	data := mustJSON(OutgoingMessage{Type: MsgTypeSubscribed, ID: msg.ID})
-	select {
-	case c.send <- data:
-	default:
-	}
-
-	c.logger.Debug("subscription added",
+	c.logger.Debug("subscription requested",
 		"user", c.user.Username, "id", msg.ID,
 		"kind", msg.Kind, "namespace", msg.Namespace)
 }
@@ -259,12 +245,7 @@ func (c *Client) handleUnsubscribe(msg IncomingMessage) {
 		return
 	}
 
-	// Send unsubscribe to hub — hub will find and remove the matching subscription.
-	// We use an empty key here; the hub's removeSubByID handles the lookup.
-	c.hub.unsubByID <- unsubRequest{client: c, id: msg.ID}
-	if c.subCount > 0 {
-		c.subCount--
-	}
+	c.hub.subChanges <- subChange{client: c, id: msg.ID}
 }
 
 func (c *Client) sendError(id string, code int, message string) {

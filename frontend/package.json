@@ -11,7 +11,7 @@
     "lint": "biome lint ../",
     "fmt": "biome format --write ../",
     "fmt:check": "biome format ../",
-    "check": "biome check ../ && astro check && bun run server/check-no-ws-dev-proxy.ts && bun run server/check-no-signal-store-in-ssr.ts && bun run server/check-island-hydration-directives.ts && bun run server/check-lockfile-is-text.ts && bun run server/check-no-duplicate-lib-state.ts && bun run server/check-placeholder-root-parity.ts && bun run server/check-e2e-specs-in-testdir.ts && bun run server/check-internal-links.ts && bun run server/check-tailwind-colors.ts"
+    "check": "biome check ../ && astro check && bun run server/check-no-ws-dev-proxy.ts && bun run server/check-no-signal-store-in-ssr.ts && bun run server/check-island-hydration-directives.ts && bun run server/check-lockfile-is-text.ts && bun run server/check-no-duplicate-lib-state.ts && bun run server/check-placeholder-root-parity.ts && bun run server/check-e2e-specs-in-testdir.ts && bun run server/check-internal-links.ts && bun run server/check-tailwind-colors.ts && bun run server/check-react-bridge.ts"
   },
   "dependencies": {
     "astro": "7.4.1",
@@ -21,6 +21,7 @@
     "@babel/core": "^7.29.6",
     "preact": "^11.0.1",
     "@preact/signals": "^2.11.3",
+    "@preact/signals-core": "1.14.5",
     "@tailwindcss/vite": "^4.1.10",
     "tailwindcss": "^4.1.10",
     "postcss": "^8.5.7",
@@ -36,21 +37,21 @@
     "ansi_up": "^6.0.2",
     "@xterm/xterm": "^6.0.0",
     "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-web-links": "^0.12.0",
-    "fuse.js": "^7.1.0",
-    "d3-force": "^3.0.0"
+    "@xterm/addon-web-links": "^0.12.0"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
     "@babel/parser": "7.29.8",
     "@biomejs/biome": "2.5.12",
     "@happy-dom/global-registrator": "21.0.3",
+    "@testing-library/preact": "3.2.6",
     "@types/bun": "1.4.3",
     "@types/ws": "^8.18.1",
     "preact-render-to-string": "^6.8.1",
     "typescript": "^6.0.3"
   },
   "overrides": {
+    "@preact/signals-core": "1.14.5",
     "picomatch@<2.3.2": "2.3.2",
     "picomatch@>=4 <4.0.4": "4.0.4",
     "source-map-js@<1.2.2": "1.2.2",

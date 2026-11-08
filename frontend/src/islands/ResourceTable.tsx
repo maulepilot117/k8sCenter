@@ -711,7 +711,8 @@ export default function ResourceTableIsland({
     getVisibleActions(kind, ns.value, rbac.value),
   );
 
-  // Map RESOURCE_COLUMNS (DataTable format) → UIColumn[] for ResourceTable
+  // Map RESOURCE_COLUMNS (the Column shape in lib/resource-columns.ts) →
+  // UIColumn[] for ResourceTable
   const uiColumns: UIColumn[] = columns.map((col) => ({
     key: col.key,
     label: col.label,

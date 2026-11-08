@@ -50,6 +50,22 @@
   },
   "overrides": [
     {
+      "includes": [
+        "frontend/src/islands/VulnerabilityDetail_test.tsx",
+        "frontend/src/lib/use-is-client.ts",
+        "frontend/src/lib/use-is-client_test.tsx",
+        "frontend/src/lib/use-signal-value.ts",
+        "frontend/src/lib/use-signal-value_test.tsx",
+        "frontend/src/test-utils/render.tsx",
+        "frontend/src/test-utils/render_test.tsx"
+      ],
+      "linter": {
+        "domains": {
+          "react": "recommended"
+        }
+      }
+    },
+    {
       "includes": ["**/*.astro"],
       "linter": {
         "enabled": false

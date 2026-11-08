@@ -32,6 +32,24 @@ export default defineConfig({
     // rather than a second outer server.
     plugins: [tailwindcss(), bunServerDevPlugin()],
     resolve: {
+      // React-to-Preact bridge: every `react` import runs on preact/compat
+      // in `astro dev`, the build and the browser. tsconfig.json's `paths`
+      // carries the same map for `astro check` and `bun test`, so all four
+      // tools run one runtime; keep the two lists identical. Anchored
+      // patterns stop `react` from also rewriting `react-dom/...` or a
+      // package that merely starts with "react".
+      alias: [
+        { find: /^react$/, replacement: "preact/compat" },
+        { find: /^react-dom$/, replacement: "preact/compat" },
+        { find: /^react-dom\/client$/, replacement: "preact/compat/client" },
+        { find: /^react-dom\/server$/, replacement: "preact/compat/server" },
+        { find: /^react-dom\/test-utils$/, replacement: "preact/test-utils" },
+        { find: /^react\/jsx-runtime$/, replacement: "preact/jsx-runtime" },
+        {
+          find: /^react\/jsx-dev-runtime$/,
+          replacement: "preact/jsx-dev-runtime",
+        },
+      ],
       // KTD5: the failure mode this guards against is not Astro but two
       // resolved copies of these packages -- after which a computed()
       // built from one copy can't see a signal() from the other. Preact

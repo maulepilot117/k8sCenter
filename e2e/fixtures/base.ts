@@ -1,6 +1,30 @@
 import { test as base, expect } from "@playwright/test";
+import { PageErrorWatcher } from "../helpers.ts";
 
-export const test = base.extend({
+interface PageErrorFixtures {
+  /**
+   * Page errors this spec provokes on purpose, matched against the error
+   * text. Set with `test.use({ allowedPageErrors: [/.../] })`.
+   */
+  allowedPageErrors: RegExp[];
+  pageErrors: PageErrorWatcher;
+}
+
+export const test = base.extend<PageErrorFixtures>({
+  allowedPageErrors: [[], { option: true }],
+
+  pageErrors: [
+    async ({ context, allowedPageErrors }, use) => {
+      const watcher = new PageErrorWatcher(context, allowedPageErrors);
+      await use(watcher);
+      const unexpected = watcher.unexpected();
+      if (unexpected.length > 0) {
+        throw new Error(PageErrorWatcher.describe(unexpected));
+      }
+    },
+    { auto: true },
+  ],
+
   page: async ({ page }, use) => {
     // Disable CSS animations/transitions for test stability
     await page.emulateMedia({ reducedMotion: "reduce" });

@@ -40,7 +40,7 @@
  * depth rather than a path the product exercises; do not describe epoch-based
  * staleness rejection as something the product currently enforces.
  */
-import { batch, effect, signal } from "@preact/signals";
+import { batch, effect, signal } from "@preact/signals-core";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 /**

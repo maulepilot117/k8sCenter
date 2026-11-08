@@ -66,6 +66,7 @@ export const FORBIDDEN_MODULES: ReadonlySet<string> = new Set([
   "src/lib/namespace.ts",
   "src/lib/pin-store.ts",
   "src/lib/resource-counts.ts",
+  "src/lib/toast-store.ts",
   "src/lib/ws.ts",
 ]);
 

@@ -854,3 +854,119 @@ export function focusedElementName(page: Page): Promise<string> {
     );
   });
 }
+
+// Pages a spec opens in a browser context of its own (browser.newContext) are
+// not watched for page errors.
+
+export interface PageErrorEntry {
+  kind: "pageerror" | "console";
+  text: string;
+  url: string;
+}
+
+/**
+ * Console messages that mean hydration went wrong. Other console errors
+ * (failed requests, an island's own logging) are not failures here.
+ */
+const REPORTED_CONSOLE = [
+  // Astro: an island's module failed to load or threw while hydrating.
+  /\[astro-island\] Error hydrating/,
+  // Preact's and React's message for an error no boundary caught.
+  /An error occurred in the <[^>]+> component/,
+  // preact/debug (dev only): hydrated against different server markup.
+  /Expected a DOM node of type/,
+  // React, development and production builds.
+  /Hydration failed/,
+  /hydrated but some attributes of the server rendered HTML didn't match/,
+  /There was an error while hydrating/,
+  /Minified React error #(418|419|421|422|423|425)\b/,
+];
+
+/**
+ * Hydration problems the app logs today, in `astro dev` only: preact/debug
+ * reports them, and the built server logs none of them. Each entry names the
+ * island it belongs to.
+ *
+ * This list may only shrink. Fix the island and delete its entry; never add
+ * one to make a spec pass.
+ */
+export const KNOWN_PAGE_ERRORS: readonly { island: string; pattern: RegExp }[] =
+  [
+    {
+      island: "IconRail",
+      pattern: /Expected a DOM node of type "div" .* in IconRail\b/s,
+    },
+    {
+      island: "QuickActionsFab",
+      pattern:
+        /Error hydrating \/src\/islands\/QuickActionsFab\.tsx|An error occurred in the <QuickActionsFab> component/,
+    },
+    {
+      island: "VulnerabilityDashboard",
+      pattern:
+        /Error hydrating \/src\/islands\/VulnerabilityDashboard\.tsx|An error occurred in the <VulnerabilityDashboard> component/,
+    },
+    {
+      island: "DashboardV2",
+      pattern: /Expected a DOM node of type "div" .* in (DashboardV2|DashboardGrid)\b/s,
+    },
+  ];
+
+export function isReportedConsoleMessage(text: string): boolean {
+  return REPORTED_CONSOLE.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Collects page errors and reported console messages from every page in a
+ * browser context, including pages opened after it starts.
+ */
+export class PageErrorWatcher {
+  readonly entries: PageErrorEntry[] = [];
+  private readonly watched = new WeakSet<Page>();
+
+  constructor(
+    context: BrowserContext,
+    private readonly allow: readonly RegExp[] = [],
+  ) {
+    for (const page of context.pages()) this.watch(page);
+    context.on("page", (page) => this.watch(page));
+  }
+
+  private watch(page: Page): void {
+    if (this.watched.has(page)) return;
+    this.watched.add(page);
+    page.on("pageerror", (error) => {
+      this.entries.push({
+        kind: "pageerror",
+        text: error.stack || `${error.name}: ${error.message}`,
+        url: page.url(),
+      });
+    });
+    page.on("console", (message) => {
+      const type = message.type();
+      if (type !== "error" && type !== "warning") return;
+      const text = message.text();
+      if (!isReportedConsoleMessage(text)) return;
+      this.entries.push({ kind: "console", text, url: page.url() });
+    });
+  }
+
+  unexpected(): PageErrorEntry[] {
+    return this.entries.filter(
+      ({ text }) =>
+        !KNOWN_PAGE_ERRORS.some(({ pattern }) => pattern.test(text)) &&
+        !this.allow.some((pattern) => pattern.test(text)),
+    );
+  }
+
+  clear(): void {
+    this.entries.length = 0;
+  }
+
+  static describe(entries: readonly PageErrorEntry[]): string {
+    const lines = entries.map(
+      ({ kind, text, url }) => `- [${kind}] ${url}\n  ${text.replace(/\n/g, "\n  ")}`,
+    );
+    return `${entries.length} page error(s) during the test:\n${lines.join("\n")}`;
+  }
+}

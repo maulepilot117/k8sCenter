@@ -1,10 +1,8 @@
 /**
  * Column definitions for each resource type used by ResourceTable.
- * Each column config maps to a DataTable Column<K8sResource>.
  */
 import type { ComponentChildren } from "preact";
 import { h } from "preact";
-import type { Column } from "@/components/ui/DataTable.tsx";
 import { StatusDot, type StatusValue } from "@/components/ui/StatusDot.tsx";
 import { age } from "@/lib/format.ts";
 import type {
@@ -38,6 +36,14 @@ import type {
   StorageClass,
 } from "@/lib/k8s-types.ts";
 import { statusColor } from "@/lib/status-colors.ts";
+
+interface Column<T> {
+  key: string;
+  label: string;
+  sortable?: boolean;
+  render?: (item: T) => ComponentChildren;
+  class?: string;
+}
 
 // Helper to create a StatusBadge lazily (avoids importing island in server context)
 function badge(text: string): ComponentChildren {

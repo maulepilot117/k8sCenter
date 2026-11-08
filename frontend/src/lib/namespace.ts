@@ -6,7 +6,7 @@
  * Shared namespace state consumed by TopBar (writes) and all resource
  * table islands (reads).
  */
-import { effect, signal } from "@preact/signals";
+import { effect, signal } from "@preact/signals-core";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const STORAGE_KEY = "k8scenter.selectedNamespace";

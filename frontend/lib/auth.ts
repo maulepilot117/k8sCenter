@@ -3,7 +3,7 @@
  * Module-level signals are process-global singletons in Deno; importing
  * this server-side would leak auth state across SSR requests.
  */
-import { computed, signal } from "@preact/signals";
+import { computed, signal } from "@preact/signals-core";
 import { api, getAccessToken, onForbidden, setAccessToken } from "@/lib/api.ts";
 import {
   LOCAL_CLUSTER_ID,

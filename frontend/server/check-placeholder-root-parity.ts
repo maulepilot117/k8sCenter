@@ -253,6 +253,8 @@ export function describeRoots(node: any, code: string): RootShape[] {
   return [{ tag, attrs }];
 }
 
+const GATE_NAMES = new Set(["IS_BROWSER", "isClient"]);
+
 /**
  * True when this `if` test gates an SSR placeholder.
  *
@@ -261,6 +263,10 @@ export function describeRoots(node: any, code: string): RootShape[] {
  * islands ship `if (!IS_BROWSER || loading.value) return <placeholder/>;`, and
  * matching only the bare form meant the walk skipped those components
  * entirely -- reporting no divergence because it never looked.
+ *
+ * `!isClient` counts too. Islands moving to React APIs gate on
+ * `const isClient = useIsClient()`, and while the app still runs on Preact
+ * that gate strands the root's attributes exactly as `!IS_BROWSER` does.
  */
 // biome-ignore lint/suspicious/noExplicitAny: untyped Babel AST
 export function isNotBrowser(test: any): boolean {
@@ -269,7 +275,7 @@ export function isNotBrowser(test: any): boolean {
     test.type === "UnaryExpression" &&
     test.operator === "!" &&
     test.argument?.type === "Identifier" &&
-    test.argument.name === "IS_BROWSER"
+    GATE_NAMES.has(test.argument.name)
   ) {
     return true;
   }
@@ -323,7 +329,7 @@ export function findDivergencesInSource(
   code: string,
   file: string,
 ): Divergence[] {
-  if (!code.includes("IS_BROWSER")) return [];
+  if (![...GATE_NAMES].some((name) => code.includes(name))) return [];
 
   // biome-ignore lint/suspicious/noExplicitAny: untyped Babel AST
   let ast: any;
