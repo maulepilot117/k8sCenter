@@ -49,14 +49,22 @@ export interface DomOptions {
 export function setupDom({ browser = false }: DomOptions = {}): void {
   const registeredHere = !GlobalRegistrator.isRegistered;
   if (registeredHere) GlobalRegistrator.register({ url: "http://localhost/" });
-  mock.module(IS_BROWSER_MODULE, () => ({ IS_BROWSER: browser }));
+  setBrowser(browser);
 
   afterEach(() => cleanup());
   afterAll(() => {
     cleanup();
-    mock.module(IS_BROWSER_MODULE, () => ({ IS_BROWSER: false }));
+    setBrowser(false);
     if (registeredHere) GlobalRegistrator.unregister();
   });
+}
+
+/**
+ * Change what IS_BROWSER reads as mid-file, for a test that renders the
+ * server pass and then the browser pass. afterAll still puts false back.
+ */
+export function setBrowser(value: boolean): void {
+  mock.module(IS_BROWSER_MODULE, () => ({ IS_BROWSER: value }));
 }
 
 /** Testing Library queries bound to the current document's body. */

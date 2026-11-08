@@ -1,11 +1,9 @@
-import { afterAll, afterEach, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { expect, test } from "bun:test";
 import { type Signal, signal } from "@preact/signals-core";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
-GlobalRegistrator.register({ url: "http://localhost/" });
+setupDom();
 
-// Loaded after registration: Testing Library binds to the document it finds.
-const { act, cleanup, render } = await import("@testing-library/preact");
 const { renderToString } = await import("react-dom/server");
 const { useSignalValue } = await import("./use-signal-value.ts");
 const {
@@ -14,9 +12,6 @@ const {
   selectedClusterGeneration,
   switchCluster,
 } = await import("./cluster.ts");
-
-afterEach(() => cleanup());
-afterAll(() => GlobalRegistrator.unregister());
 
 /** Wraps `s.subscribe` to count subscriptions opened, and still open. */
 function countSubscriptions<T>(s: Signal<T>): {
