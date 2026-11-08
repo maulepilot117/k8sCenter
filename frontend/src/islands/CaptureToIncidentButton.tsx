@@ -207,7 +207,7 @@ export function resolveWindowStart(
   );
 }
 
-export interface CaptureToIncidentButtonProps {
+interface CaptureToIncidentButtonProps {
   /** The cluster the diagnosed object was observed on. */
   clusterId: string;
   namespace: string;
