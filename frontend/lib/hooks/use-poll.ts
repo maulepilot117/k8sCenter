@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { failureOf } from "@/lib/networking-state.ts";
 import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 // Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
 // this file is shared by both the Fresh tree and the Astro/Bun port, and the
@@ -65,8 +66,7 @@ export function usePoll<T>(
   const doFetchRef = useRef<(() => Promise<void>) | null>(null);
   // Read by the interval and fetch callbacks, which outlive the render that
   // created them; the interval must not restart when only these change.
-  const shouldContinueRef = useRef(opts.shouldContinuePolling);
-  shouldContinueRef.current = opts.shouldContinuePolling;
+  const shouldContinueRef = useLatest(opts.shouldContinuePolling);
 
   useEffect(() => {
     if (!IS_BROWSER) return;

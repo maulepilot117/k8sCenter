@@ -5,7 +5,8 @@ import {
   type Signal,
   signal,
 } from "@preact/signals-core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { useLatest } from "./use-latest.ts";
 
 /**
  * React versions of @preact/signals' component hooks, for a shared hook or
@@ -28,8 +29,7 @@ export function useSignal<T>(initial: T): Signal<T> {
  * signal it reads changes, using the latest `compute` passed in.
  */
 export function useComputed<T>(compute: () => T): ReadonlySignal<T> {
-  const latest = useRef(compute);
-  latest.current = compute;
+  const latest = useLatest(compute);
   return useState(() => computed(() => latest.current()))[0];
 }
 
@@ -38,7 +38,6 @@ export function useComputed<T>(compute: () => T): ReadonlySignal<T> {
  * cleanup it returns runs before each re-run and on unmount.
  */
 export function useSignalEffect(run: () => void | (() => void)): void {
-  const latest = useRef(run);
-  latest.current = run;
+  const latest = useLatest(run);
   useEffect(() => effect(() => latest.current()), []);
 }

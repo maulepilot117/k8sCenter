@@ -18,6 +18,7 @@
 import { useEffect, useRef } from "react";
 import { subscribe } from "@/lib/ws.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 /**
  * Kinds whose events are not one cluster's data. In-app notifications are
@@ -34,12 +35,9 @@ export function useWsRefetch(
   const refetchTimer = useRef<number | null>(null);
   // The subscription is made once on mount; these keep its callback on the
   // caller's latest values without re-subscribing every render.
-  const fetchRef = useRef(fetchFn);
-  fetchRef.current = fetchFn;
-  const subscriptionsRef = useRef(subscriptions);
-  subscriptionsRef.current = subscriptions;
-  const debounceRef = useRef(debounceMs);
-  debounceRef.current = debounceMs;
+  const fetchRef = useLatest(fetchFn);
+  const subscriptionsRef = useLatest(subscriptions);
+  const debounceRef = useLatest(debounceMs);
 
   useEffect(() => {
     const local = selectedCluster.value === LOCAL_CLUSTER_ID;

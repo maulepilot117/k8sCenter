@@ -8,6 +8,7 @@ import type {
   ExternalSecretWizardForm,
   ExternalSecretWizardStoreOption,
 } from "@/src/islands/ExternalSecretWizard.tsx";
+import { useLatest } from "@/src/lib/use-latest.ts";
 import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 interface ExternalSecretFormProps {
@@ -81,8 +82,7 @@ export function ExternalSecretForm({
   const storeName = selectedStore?.name;
   const storeNamespace = selectedStore?.namespace;
   const storeProvider = selectedStore?.provider;
-  const selectedStoreRef = useRef(selectedStore);
-  selectedStoreRef.current = selectedStore;
+  const selectedStoreRef = useLatest(selectedStore);
 
   const dataRows = useRowKeys(form.data.length);
   function removeRow(index: number) {

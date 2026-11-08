@@ -24,7 +24,7 @@ const ROW_LIMIT = 6;
  * Views from EVERY cluster are listed, unlike the pins beside them. A saved
  * view describes a scope -- a kind, a namespace, a filter -- which another
  * cluster could in principle satisfy, where a pin names one object in one
- * cluster. That distinction is `pinsForActiveCluster`'s in
+ * cluster. That distinction is `activeClusterPins`'s in
  * src/lib/pin-store.ts and it is honoured rather than re-decided.
  *
  * Preferences are not CRD-discovered, so there is no family to declare. What

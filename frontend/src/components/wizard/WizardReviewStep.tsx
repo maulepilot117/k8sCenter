@@ -13,6 +13,7 @@ import { withUniqueKeys } from "@/lib/unique-keys.ts";
 import { wizardBusy } from "@/lib/wizard-busy.ts";
 import { WizardPrimaryActionContext } from "@/lib/wizard-primary-action.ts";
 import { MonacoEditor } from "@/src/components/ui/MonacoEditor.tsx";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 interface ApplyResult {
   action: string;
@@ -72,12 +73,9 @@ export function WizardReviewStep({
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyResult, setApplyResult] = useState<ApplyResponse | null>(null);
-  // Stops a second click before the next render shows `applying`.
   const applyGuard = useRef(false);
   const primary = useContext(WizardPrimaryActionContext);
-  // The apply finishes after an await, so it reads the current flag here.
-  const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty;
+  const dirtyRef = useLatest(dirty);
 
   // Reset the shared wizard-busy flag if this step unmounts mid-apply, so a
   // stale `true` can never wedge the next wizard's close controls.
@@ -135,7 +133,6 @@ export function WizardReviewStep({
   const label = result ? (detailPath ? "View resource" : "Done") : "Apply";
   const href = result ? (detailPath ?? undefined) : undefined;
   const disabled = !result && (loading || !!error || !yaml.trim() || applying);
-  const busy = applying;
   const hasResult = result !== null;
 
   useLayoutEffect(() => {
@@ -144,12 +141,12 @@ export function WizardReviewStep({
       label,
       href,
       disabled,
-      loading: busy,
+      loading: applying,
       // After a result, a click with no href falls through to the wizard's
       // own last-step action, which closes it.
       onClick: hasResult ? undefined : () => applyRef.current(),
     };
-  }, [primary, label, href, disabled, busy, hasResult]);
+  }, [primary, label, href, disabled, applying, hasResult]);
 
   useEffect(
     () => () => {

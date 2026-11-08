@@ -167,7 +167,7 @@ export function defaultEntryPoints(root: string = FRONTEND_ROOT): string[] {
   return entries;
 }
 
-const CLIENT_DIRECTIVE_PATTERN = /\bclient:[a-zA-Z-]+/;
+export const CLIENT_DIRECTIVE_PATTERN = /\bclient:[a-zA-Z-]+/;
 
 export function findMissingHydrationDirectives(
   entryPoints: string[] = defaultEntryPoints(),

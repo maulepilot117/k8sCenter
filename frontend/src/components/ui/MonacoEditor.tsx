@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 /**
  * The editor root's classes, shared by the SSR placeholder and the hydrated
@@ -65,19 +66,16 @@ export function MonacoEditor({
   const [failed, setFailed] = useState(false);
 
   // Track the latest value prop to avoid update loops
-  const latestValueRef = useRef(value);
-  latestValueRef.current = value;
+  const latestValueRef = useLatest(value);
 
   // The editor's change listener is registered once, at init; it reads the
   // current handler from here so a parent's later onChange is the one called.
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
+  const onChangeRef = useLatest(onChange);
 
   // The init effect runs when the editor mounts; it reads the readOnly in
   // force then without re-running when it changes (the effect below applies
   // later changes).
-  const readOnlyRef = useRef(readOnly);
-  readOnlyRef.current = readOnly;
+  const readOnlyRef = useLatest(readOnly);
 
   // Guard to suppress onChange during programmatic setValue calls
   const isSettingExternally = useRef(false);
@@ -157,7 +155,7 @@ export function MonacoEditor({
       editorRef.current = null;
       monacoRef.current = null;
     };
-  }, [isClient]); // Init once the client branch (and the container) exists
+  }, [isClient]);
 
   // Update readOnly when prop changes
   useEffect(() => {

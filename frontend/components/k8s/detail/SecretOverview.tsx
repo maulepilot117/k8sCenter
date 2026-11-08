@@ -29,8 +29,6 @@ export function SecretOverview({ resource }: { resource: K8sResource }) {
   const [revealed, setRevealed] = useState<Record<string, RevealedValue>>({});
   const [revealing, setRevealing] = useState<ReadonlySet<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, string>>({});
-  // The in-flight guard has to hold between two clicks in the same tick, so it
-  // cannot wait for a render; `revealing` is its rendered copy.
   const inFlight = useRef(new Set<string>());
 
   const namespace = s.metadata.namespace ?? "";

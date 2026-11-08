@@ -116,7 +116,6 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
     });
   };
 
-  const list = grants;
   return (
     <section aria-labelledby="incident-grants-heading" className={PANEL}>
       <h2 id="incident-grants-heading" className={HEADING}>
@@ -131,12 +130,12 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
           <Alert variant="error">{loadError}</Alert>
         </div>
       )}
-      {list && list.length === 0 && (
+      {grants && grants.length === 0 && (
         <p className="m-0 text-sm text-text-secondary">
           Not shared with anyone.
         </p>
       )}
-      {list && list.length > 0 && (
+      {grants && grants.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left text-sm">
             <caption className="sr-only">
@@ -159,7 +158,7 @@ export function GrantsPanel({ incidentId }: { incidentId: string }) {
               </tr>
             </thead>
             <tbody>
-              {list.map((g) => (
+              {grants.map((g) => (
                 <tr key={g.granteeId} className="border-t border-border-subtle">
                   <td className="px-2 py-1 text-text-primary">{g.granteeId}</td>
                   <td className="px-2 py-1">

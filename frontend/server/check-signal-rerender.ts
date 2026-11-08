@@ -33,6 +33,7 @@ import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { parse } from "@babel/parser";
 import {
+  CLIENT_DIRECTIVE_PATTERN,
   defaultEntryPoints,
   extractAstroTemplate,
   findIslandImports,
@@ -44,7 +45,6 @@ import { FRONTEND_ROOT } from "./source-files.ts";
 
 const SIGNALS_CORE = "@preact/signals-core";
 const SIGNALS_PATCH = "@preact/signals";
-const CLIENT_DIRECTIVE = /\bclient:[a-zA-Z-]+/;
 
 // biome-ignore lint/suspicious/noExplicitAny: untyped Babel AST
 type Node = any;
@@ -188,7 +188,7 @@ export function checkIslands(root: string = FRONTEND_ROOT): RerenderFinding[] {
     const template = extractAstroTemplate(readFileSync(entry, "utf-8"));
     for (const { local, resolved } of findIslandImports(entry, root)) {
       const hydrated = findTagCallSites(template, local).some((tag) =>
-        CLIENT_DIRECTIVE.test(tag),
+        CLIENT_DIRECTIVE_PATTERN.test(tag),
       );
       if (hydrated) islands.add(resolved);
     }

@@ -18,6 +18,7 @@ import {
   captureSourceLabel,
   completenessLabel,
 } from "@/lib/incident-types.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 import { busyText } from "./errors.ts";
 import {
   BUTTON_PRIMARY,
@@ -93,11 +94,8 @@ export function CapturePanel({
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<CaptureResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // A second submit can land before the render that shows `running`.
   const inFlight = useRef(false);
-  // The capture outlives the render that started it.
-  const onCapturedRef = useRef(onCaptured);
-  onCapturedRef.current = onCaptured;
+  const onCapturedRef = useLatest(onCaptured);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -151,7 +149,6 @@ export function CapturePanel({
     );
   };
 
-  const r = result;
   return (
     <section aria-labelledby="incident-capture-heading" className={PANEL}>
       <h2 id="incident-capture-heading" className={HEADING}>
@@ -239,16 +236,22 @@ export function CapturePanel({
           <p className="m-0 text-sm text-text-muted">Capturing evidence…</p>
         )}
         {error && <Alert variant="error">{error}</Alert>}
-        {r && (
+        {result && (
           <div className="flex flex-col gap-2" data-capture-result="true">
             <p className="m-0 text-sm text-text-primary">
-              Capture {completenessLabel(r.completeness).toLowerCase()}:{" "}
-              {r.inserted} new item{r.inserted === 1 ? "" : "s"} recorded
-              {r.deduplicated > 0 ? `, ${r.deduplicated} already recorded` : ""}
-              {r.dropped > 0 ? `, ${r.dropped} dropped as invalid` : ""}.
+              Capture {completenessLabel(result.completeness).toLowerCase()}:{" "}
+              {result.inserted} new item{result.inserted === 1 ? "" : "s"}{" "}
+              recorded
+              {result.deduplicated > 0
+                ? `, ${result.deduplicated} already recorded`
+                : ""}
+              {result.dropped > 0
+                ? `, ${result.dropped} dropped as invalid`
+                : ""}
+              .
             </p>
             <ul className="m-0 flex list-none flex-col gap-1 p-0">
-              {r.sources.map((s) => (
+              {result.sources.map((s) => (
                 <li
                   key={s.id}
                   className="flex flex-wrap items-center gap-2 text-sm text-text-secondary"

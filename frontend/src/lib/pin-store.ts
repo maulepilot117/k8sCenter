@@ -108,8 +108,3 @@ export async function removePin(id: string): Promise<void> {
 export const activeClusterPins = computed(() =>
   pins.value.filter((p) => p.clusterId === selectedCluster.value),
 );
-
-/** The current value of `activeClusterPins`. */
-export function pinsForActiveCluster(): PinRecord[] {
-  return activeClusterPins.value;
-}

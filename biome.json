@@ -210,6 +210,8 @@
         "frontend/src/lib/signal-hooks_test.tsx",
         "frontend/src/lib/use-is-client.ts",
         "frontend/src/lib/use-is-client_test.tsx",
+        "frontend/src/lib/use-latest.ts",
+        "frontend/src/lib/use-latest_test.tsx",
         "frontend/src/lib/use-row-keys.ts",
         "frontend/src/lib/use-row-keys_test.tsx",
         "frontend/src/lib/use-signal-value.ts",
@@ -220,6 +222,16 @@
       "linter": {
         "domains": {
           "react": "recommended"
+        },
+        "rules": {
+          "correctness": {
+            "useExhaustiveDependencies": {
+              "level": "error",
+              "options": {
+                "hooks": [{ "name": "useLatest", "stableResult": true }]
+              }
+            }
+          }
         }
       }
     },

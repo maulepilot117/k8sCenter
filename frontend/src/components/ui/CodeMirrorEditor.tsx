@@ -23,6 +23,7 @@ import {
 } from "@codemirror/view";
 import { useEffect, useRef } from "react";
 import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 export interface CodeMirrorEditorProps {
   value: string;
@@ -51,11 +52,9 @@ export function CodeMirrorEditor({
   const isClient = useIsClient();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
+  const onChangeRef = useLatest(onChange);
   // Remounting for readOnly seeds the new editor with the current value.
-  const valueRef = useRef(value);
-  valueRef.current = value;
+  const valueRef = useLatest(value);
   // Texts sent through onChange that no `value` has caught up with yet,
   // oldest first.
   const inFlight = useRef<string[]>([]);

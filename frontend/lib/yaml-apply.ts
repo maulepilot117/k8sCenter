@@ -24,6 +24,7 @@ import {
   useSignal,
   useSignalEffect,
 } from "@/src/lib/signal-hooks.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 import { ApiError, apiPostRaw, errorExtra, errorExtraFlag } from "./api.ts";
 import { currentUserId } from "./auth.ts";
 import type {
@@ -386,10 +387,7 @@ export function useYamlApply(
     controller: AbortController;
     issuedEpoch: number;
   } | null>(null);
-  // The callbacks below run across awaits and must see the options of the
-  // latest render, not the first one.
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
+  const optionsRef = useLatest(options);
 
   // A pin taken while the selection was still restored under the unknown
   // sentinel cannot be stale on generation alone: the id is unchanged, and a

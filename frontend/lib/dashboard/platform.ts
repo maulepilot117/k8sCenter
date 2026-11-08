@@ -436,7 +436,7 @@ export interface SavedViewsView {
  * describes a SCOPE -- a kind, a namespace, a filter -- which a different
  * cluster could in principle satisfy, where a pin names one object in one
  * cluster and cannot be opened from anywhere else. That distinction is
- * `pinsForActiveCluster`'s in src/lib/pin-store.ts, and it is honoured here
+ * `activeClusterPins`'s in src/lib/pin-store.ts, and it is honoured here
  * rather than re-decided.
  */
 export function savedViewsView(data: unknown, limit: number): SavedViewsView {
@@ -504,7 +504,7 @@ export interface PinnedResourcesView {
  *
  * A pin names one object in one cluster, so a pin stored against another
  * cluster cannot be opened from here and is filtered out -- the rule
- * `pinsForActiveCluster` states in src/lib/pin-store.ts, applied to the same
+ * `activeClusterPins` states in src/lib/pin-store.ts, applied to the same
  * payload. A record carrying no cluster at all is treated as belonging to
  * another one: it is not evidence of this one.
  *
