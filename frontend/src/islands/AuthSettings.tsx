@@ -87,7 +87,7 @@ export default function AuthSettings() {
       <div
         style={{ display: "flex", justifyContent: "center", padding: "48px 0" }}
       >
-        <Spinner class="text-accent" />
+        <Spinner className="text-accent" />
       </div>
     );
   }

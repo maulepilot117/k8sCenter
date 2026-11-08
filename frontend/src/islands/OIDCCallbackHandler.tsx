@@ -44,7 +44,7 @@ export default function OIDCCallbackHandler() {
 
   return (
     <div class="space-y-4">
-      <Spinner class="mx-auto text-accent" />
+      <Spinner className="mx-auto text-accent" />
       <p class="text-sm text-text-muted">Completing sign in...</p>
     </div>
   );

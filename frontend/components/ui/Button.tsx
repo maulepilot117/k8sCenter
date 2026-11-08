@@ -1,4 +1,5 @@
-import type { ButtonHTMLAttributes } from "preact";
+/** @jsxImportSource react */
+import type { ButtonHTMLAttributes } from "react";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 
 type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
@@ -44,7 +45,7 @@ export function Button({
   size = "md",
   loading = false,
   disabled,
-  class: className,
+  className,
   children,
   style,
   ...props
@@ -59,12 +60,12 @@ export function Button({
     <button
       {...props}
       disabled={disabled || loading}
-      class={`inline-flex cursor-pointer items-center justify-center font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-brand/50 disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`inline-flex cursor-pointer items-center justify-center font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-brand/50 disabled:cursor-not-allowed disabled:opacity-50 ${
         sizeClasses[size]
       } ${className ?? ""}`}
       style={mergedStyle}
     >
-      {loading && <Spinner size="sm" class="-ml-1 mr-2" />}
+      {loading && <Spinner size="sm" className="-ml-1 mr-2" />}
       {children}
     </button>
   );

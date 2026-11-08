@@ -78,7 +78,7 @@ export default function LoginForm() {
         variant="primary"
         size="lg"
         loading={loading.value}
-        class="w-full"
+        className="w-full"
       >
         Sign in
       </Button>

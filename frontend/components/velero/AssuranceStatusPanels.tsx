@@ -41,7 +41,7 @@ export function FreshnessRow({
     >
       <div class="flex flex-wrap items-center gap-3">
         <span class="text-sm font-semibold text-text-primary">Collection</span>
-        <Chip class={STATE_CLASS[state]} testId="assurance-state-word">
+        <Chip className={STATE_CLASS[state]} testId="assurance-state-word">
           {copy.word}
         </Chip>
         {status && (
@@ -106,7 +106,7 @@ export function ConditionCounts({
               </span>
               {unknown ? (
                 <span class="mt-1 inline-block">
-                  <Chip class={STATE_CLASS.unknown}>unknown</Chip>
+                  <Chip className={STATE_CLASS.unknown}>unknown</Chip>
                 </span>
               ) : (
                 <span class="mt-1 block font-mono text-xl font-bold tabular-nums text-text-primary">

@@ -296,7 +296,7 @@ export default function YamlApplyPage() {
         <div role="status">
           <Alert
             variant="warning"
-            class="flex flex-wrap items-center justify-between gap-3"
+            className="flex flex-wrap items-center justify-between gap-3"
           >
             <span>
               You are now viewing{" "}

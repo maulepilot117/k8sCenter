@@ -50,7 +50,7 @@ export default function NodeConnectivity() {
   const resp = data.value;
   if (!resp?.configured) {
     return (
-      <Card title="Node Connectivity" class="opacity-50">
+      <Card title="Node Connectivity" className="opacity-50">
         <p class="text-sm text-text-muted">Connectivity data not available.</p>
       </Card>
     );

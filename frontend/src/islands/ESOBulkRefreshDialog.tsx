@@ -195,7 +195,7 @@ export default function ESOBulkRefreshDialog({
         <div class="px-5 py-4 min-h-[160px]">
           {phase.value === "scope-loading" && (
             <div class="flex items-center gap-3 text-text-muted">
-              <Spinner class="text-brand" />
+              <Spinner className="text-brand" />
               <span>Resolving scope…</span>
             </div>
           )}
@@ -214,7 +214,7 @@ export default function ESOBulkRefreshDialog({
 
           {phase.value === "submitting" && (
             <div class="flex items-center gap-3 text-text-muted">
-              <Spinner class="text-brand" />
+              <Spinner className="text-brand" />
               <span>Starting refresh…</span>
             </div>
           )}
@@ -355,7 +355,7 @@ function ProgressBody({
   if (!job) {
     return (
       <div class="flex items-center gap-3 text-text-muted">
-        <Spinner class="text-brand" />
+        <Spinner className="text-brand" />
         <span>Tracking job {jobId ?? "…"}</span>
       </div>
     );

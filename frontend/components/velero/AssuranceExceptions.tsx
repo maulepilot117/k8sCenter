@@ -59,17 +59,17 @@ function ExceptionCard({ ex }: { ex: AssuranceException }) {
     >
       <div class="flex flex-wrap items-center gap-2">
         <Chip
-          class={CONDITION_CLASS[ex.condition] ?? STATE_CLASS.unknown}
+          className={CONDITION_CLASS[ex.condition] ?? STATE_CLASS.unknown}
           testId="assurance-condition-chip"
         >
           {conditionLabel(ex.condition)}
         </Chip>
-        <Chip class={SEVERITY_CLASS[ex.severity] ?? STATE_CLASS.unknown}>
+        <Chip className={SEVERITY_CLASS[ex.severity] ?? STATE_CLASS.unknown}>
           {ex.severity}
         </Chip>
         {partialAccepted && (
           <Chip
-            class="bg-warning-dim text-warning"
+            className="bg-warning-dim text-warning"
             testId="assurance-partial-success-chip"
           >
             last success was partial

@@ -51,6 +51,19 @@
   "overrides": [
     {
       "includes": [
+        "frontend/components/k8s/ResourceIcon.tsx",
+        "frontend/components/ui/Alert.tsx",
+        "frontend/components/ui/Button.tsx",
+        "frontend/components/ui/Card.tsx",
+        "frontend/components/ui/class-props_test.tsx",
+        "frontend/components/ui/GlassCard.tsx",
+        "frontend/components/ui/Input.tsx",
+        "frontend/components/ui/RemoveButton.tsx",
+        "frontend/components/ui/Select.tsx",
+        "frontend/components/ui/Skeleton.tsx",
+        "frontend/components/ui/Spinner.tsx",
+        "frontend/components/velero/AssuranceBadges.tsx",
+        "frontend/src/components/ui/Logo.tsx",
         "frontend/components/ui/cell-fill.ts",
         "frontend/lib/dashboard/types.ts",
         "frontend/lib/hooks/use-dirty-guard.ts",

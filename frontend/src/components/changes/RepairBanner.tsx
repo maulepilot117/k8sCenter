@@ -48,7 +48,7 @@ export function RepairBanner({
           before validating to retry on {clusterLabel(repair.clusterId)}.
         </Alert>
       )}
-      <Alert variant="info" class="flex flex-col gap-2">
+      <Alert variant="info" className="flex flex-col gap-2">
         <span>
           <strong>Repairing change {shortId(repair.id)}.</strong> Paste or
           upload the current manifests for the objects you want to retry, then

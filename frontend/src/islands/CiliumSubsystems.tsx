@@ -51,7 +51,7 @@ export default function CiliumSubsystems() {
   const resp = data.value;
   if (!resp?.configured) {
     return (
-      <Card title="Cilium Subsystems" class="opacity-50">
+      <Card title="Cilium Subsystems" className="opacity-50">
         <p class="text-sm text-text-muted">Subsystem data not available.</p>
       </Card>
     );

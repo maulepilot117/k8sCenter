@@ -158,7 +158,7 @@ export default function ESOClusterExternalSecretsList() {
 
       {loading.value && (
         <div class="flex justify-center py-12">
-          <Spinner class="text-brand" />
+          <Spinner className="text-brand" />
         </div>
       )}
 

@@ -358,7 +358,7 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
       ) : (
         // Sized to the widget box, which the grid cell gives a height: a bare
         // <Skeleton /> carries no height class and would render zero-height.
-        <Skeleton class="h-full w-full rounded-lg" />
+        <Skeleton className="h-full w-full rounded-lg" />
       )}
     </div>
   );

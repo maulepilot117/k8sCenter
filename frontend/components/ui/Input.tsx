@@ -1,9 +1,10 @@
-import type { AccessibleInputHTMLAttributes } from "preact";
+/** @jsxImportSource react */
+import type { ComponentProps } from "react";
 
-// The accessible variant is what `<input>` itself accepts: a union that pairs
-// each `type` with the `role` and `list` values valid for it. Building on the
-// looser InputHTMLAttributes would leave the spread below unassignable.
-type InputProps = AccessibleInputHTMLAttributes<HTMLInputElement> & {
+// Exactly what `<input>` itself accepts, so the spread below stays assignable.
+// While JSX types come from Preact that is its accessible union, which pairs
+// each `type` with the `role` and `list` values valid for it.
+type InputProps = ComponentProps<"input"> & {
   label?: string;
   error?: string;
   /** Renders a red asterisk after the label. */
@@ -18,7 +19,7 @@ export function Input({
   required,
   description,
   id,
-  class: className,
+  className,
   ...props
 }: InputProps) {
   const inputId = id ?? label?.toLowerCase().replace(/\s+/g, "-");
@@ -27,12 +28,12 @@ export function Input({
   const describedBy = [descId, errorId].filter(Boolean).join(" ") || undefined;
 
   return (
-    <div class="space-y-1">
+    <div className="space-y-1">
       {label && (
-        <div class="flex items-baseline gap-0.5">
+        <div className="flex items-baseline gap-0.5">
           <label
-            for={inputId}
-            class="block text-sm font-medium text-text-secondary"
+            htmlFor={inputId}
+            className="block text-sm font-medium text-text-secondary"
           >
             {label}
           </label>
@@ -41,7 +42,7 @@ export function Input({
               test frameworks match label text including descendants).
               aria-required on the input announces required-ness for AT. */}
           {required && (
-            <span aria-hidden="true" class="text-sm text-danger">
+            <span aria-hidden="true" className="text-sm text-danger">
               *
             </span>
           )}
@@ -52,7 +53,7 @@ export function Input({
         aria-invalid={error ? "true" : undefined}
         aria-describedby={describedBy}
         aria-required={required ? "true" : undefined}
-        class={`block w-full rounded-md border px-3 py-2 text-sm shadow-sm transition-colors focus:outline-none focus:ring-2 ${
+        className={`block w-full rounded-md border px-3 py-2 text-sm shadow-sm transition-colors focus:outline-none focus:ring-2 ${
           error
             ? "border-danger focus:ring-danger/50"
             : "border-border-primary focus:border-brand focus:ring-brand/50 border-border-primary bg-surface text-text-primary"
@@ -60,12 +61,12 @@ export function Input({
         {...props}
       />
       {description && (
-        <p id={descId} class="text-xs text-text-muted">
+        <p id={descId} className="text-xs text-text-muted">
           {description}
         </p>
       )}
       {error && (
-        <p id={errorId} class="text-sm text-danger">
+        <p id={errorId} className="text-sm text-danger">
           {error}
         </p>
       )}

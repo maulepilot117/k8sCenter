@@ -191,7 +191,7 @@ export function ServicePortsStep({
             <RemoveButton
               onClick={() => removePort(i)}
               title="Remove port"
-              class="p-2 mb-1"
+              className="p-2 mb-1"
             />
           </div>
         ))}

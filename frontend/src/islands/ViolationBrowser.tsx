@@ -267,7 +267,7 @@ export default function ViolationBrowser() {
             padding: "48px 0",
           }}
         >
-          <Spinner class="text-brand" />
+          <Spinner className="text-brand" />
         </div>
       )}
 

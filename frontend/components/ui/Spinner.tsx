@@ -1,5 +1,6 @@
+/** @jsxImportSource react */
 interface SpinnerProps {
-  class?: string;
+  className?: string;
   size?: "sm" | "md";
 }
 
@@ -8,23 +9,23 @@ const SIZE_CLASSES = {
   md: "h-5 w-5",
 };
 
-export function Spinner({ class: className, size = "md" }: SpinnerProps) {
+export function Spinner({ className, size = "md" }: SpinnerProps) {
   return (
     <svg
-      class={`animate-spin ${SIZE_CLASSES[size]} ${className ?? ""}`}
+      className={`animate-spin ${SIZE_CLASSES[size]} ${className ?? ""}`}
       viewBox="0 0 24 24"
       fill="none"
     >
       <circle
-        class="opacity-25"
+        className="opacity-25"
         cx="12"
         cy="12"
         r="10"
         stroke="currentColor"
-        stroke-width="4"
+        strokeWidth="4"
       />
       <path
-        class="opacity-75"
+        className="opacity-75"
         fill="currentColor"
         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
       />

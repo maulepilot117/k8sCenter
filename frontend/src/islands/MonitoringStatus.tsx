@@ -74,7 +74,7 @@ export default function MonitoringStatus() {
   if (loading.value) {
     return (
       <div class="flex items-center justify-center p-12">
-        <Spinner class="text-brand" />
+        <Spinner className="text-brand" />
       </div>
     );
   }

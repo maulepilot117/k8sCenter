@@ -174,10 +174,10 @@ export default function CRDResourceList({ group, resource }: Props) {
   if (loading.value) {
     return (
       <div>
-        <Skeleton class="h-5 w-48 mb-2" />
-        <Skeleton class="h-4 w-72 mb-6" />
-        <Skeleton class="h-10 w-full mb-4" />
-        <Skeleton class="h-64 w-full rounded-lg" />
+        <Skeleton className="h-5 w-48 mb-2" />
+        <Skeleton className="h-4 w-72 mb-6" />
+        <Skeleton className="h-10 w-full mb-4" />
+        <Skeleton className="h-64 w-full rounded-lg" />
       </div>
     );
   }

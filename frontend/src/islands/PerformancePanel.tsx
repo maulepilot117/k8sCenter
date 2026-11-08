@@ -381,7 +381,7 @@ export default function PerformancePanel({
   if (monAvailable.value === null) {
     return (
       <div class="flex justify-center p-12">
-        <Spinner class="text-brand" />
+        <Spinner className="text-brand" />
       </div>
     );
   }
@@ -462,7 +462,7 @@ export default function PerformancePanel({
               </h3>
               {chart.loading ? (
                 <div class="flex h-32 items-center justify-center">
-                  <Spinner size="sm" class="text-brand" />
+                  <Spinner size="sm" className="text-brand" />
                 </div>
               ) : chart.error ? (
                 <div class="flex h-32 items-center justify-center text-sm text-error">

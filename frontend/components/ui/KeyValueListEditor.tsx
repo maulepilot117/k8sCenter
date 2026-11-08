@@ -44,7 +44,7 @@ export function KeyValueListEditor({
               onUpdate(i, "key", (e.target as HTMLInputElement).value)
             }
             placeholder={keyPlaceholder}
-            class="flex-1"
+            className="flex-1"
           />
           <span class="text-text-muted">=</span>
           <Input
@@ -53,7 +53,7 @@ export function KeyValueListEditor({
               onUpdate(i, "value", (e.target as HTMLInputElement).value)
             }
             placeholder={valuePlaceholder}
-            class="flex-1"
+            className="flex-1"
           />
           <RemoveButton
             onClick={() => onRemove(i)}

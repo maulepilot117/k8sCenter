@@ -31,7 +31,7 @@ export default function BgpStatus() {
   const resp = data.value;
   if (!resp?.configured) {
     return (
-      <Card title="BGP Peering" class="opacity-50">
+      <Card title="BGP Peering" className="opacity-50">
         <p class="text-sm text-text-muted">BGP is not configured.</p>
       </Card>
     );

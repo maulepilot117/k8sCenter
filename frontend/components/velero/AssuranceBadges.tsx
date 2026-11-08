@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 /** Backup assurance — shared chips and time display (Release F U36).
  *
  * Small presentational primitives the BackupAssurance island and its panels
@@ -51,17 +52,17 @@ export const STATE_CLASS: Record<SurfaceState, string> = {
 };
 
 export function Chip({
-  class: cls,
+  className: cls,
   children,
   testId,
 }: {
-  class: string;
+  className: string;
   children: string;
   testId?: string;
 }) {
   return (
     <span
-      class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}
       data-testid={testId}
     >
       {children}

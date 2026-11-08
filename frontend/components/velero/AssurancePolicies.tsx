@@ -211,7 +211,7 @@ export function PolicyEditor({
                 type="button"
                 variant="secondary"
                 size="sm"
-                class="ml-3"
+                className="ml-3"
                 onClick={onReload}
               >
                 Reload policy
@@ -326,7 +326,7 @@ export function PolicyTable({
                   <Button
                     variant="ghost"
                     size="sm"
-                    class="text-error"
+                    className="text-error"
                     disabled={busy}
                     onClick={() => onDelete(p)}
                   >
