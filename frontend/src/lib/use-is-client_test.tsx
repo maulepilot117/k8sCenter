@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import { useEffect, useRef } from "react";
 import { act, render, setBrowser, setupDom } from "@/src/test-utils/render.tsx";

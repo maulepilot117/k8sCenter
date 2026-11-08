@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { LOCAL_CLUSTER_ID, switchCluster } from "@/src/lib/cluster.ts";
