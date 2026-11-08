@@ -164,3 +164,49 @@ test("a reveal still in flight when the Secret changes is discarded", async () =
   expect(document.body.textContent).not.toContain("old-value");
   await waitFor(() => body().getByRole("button", { name: "Reveal password" }));
 });
+
+test("a failed reveal shows the server message under its key and clears on retry", async () => {
+  holdReveals();
+  render(<SecretOverview resource={secret()} />);
+
+  await click("Reveal password");
+  await click("Reveal username");
+
+  // username succeeds first, then password is refused with the API's error
+  // envelope: the failure must not disturb the already revealed key.
+  await answer("username", "alice");
+  await waitFor(() => expect(document.body.textContent).toContain("alice"));
+  const refuse = pending.get("password");
+  if (!refuse) throw new Error("no pending request for password");
+  await act(async () => {
+    refuse(
+      new Response(
+        JSON.stringify({
+          error: { code: 403, message: "not allowed to reveal this key" },
+        }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  await waitFor(() =>
+    expect(document.body.textContent).toContain(
+      "API error 403: not allowed to reveal this key",
+    ),
+  );
+  // The other key's value stays visible; the failed key is idle again.
+  expect(document.body.textContent).toContain("alice");
+  body().getByRole("button", { name: "Hide username" });
+  const retry = body().getByRole("button", { name: "Reveal password" });
+  expect((retry as HTMLButtonElement).disabled).toBe(false);
+  expect(retry.textContent).toBe("Reveal");
+
+  // Retrying clears the stale error straight away, then shows the value.
+  await click("Reveal password");
+  expect(document.body.textContent).not.toContain("not allowed to reveal");
+  await answer("password", "hunter2");
+  await waitFor(() => expect(document.body.textContent).toContain("hunter2"));
+  expect(document.body.textContent).not.toContain("not allowed to reveal");
+  expect(document.body.textContent).toContain("alice");
+});
