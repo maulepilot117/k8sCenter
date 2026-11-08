@@ -51,7 +51,7 @@ export function NamespaceSelect({
       return;
     }
     if (namespaces.includes(name)) {
-      setCreateError(`Namespace"${name}" already exists`);
+      setCreateError(`Namespace "${name}" already exists`);
       return;
     }
 

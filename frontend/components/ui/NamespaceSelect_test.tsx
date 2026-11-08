@@ -50,5 +50,5 @@ test("a name that already exists is rejected", () => {
     target: { value: "shop" },
   });
   fireEvent.click(body().getByRole("button", { name: "Create" }));
-  body().getByText('Namespace"shop" already exists');
+  body().getByText('Namespace "shop" already exists');
 });
