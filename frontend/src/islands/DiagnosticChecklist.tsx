@@ -1,4 +1,4 @@
-import type { Signal } from "@preact/signals";
+/** @jsxImportSource react */
 import {
   type DiagnosticResult,
   KIND_ROUTE_MAP,
@@ -8,7 +8,7 @@ import {
 export type { DiagnosticResult };
 
 interface DiagnosticChecklistProps {
-  results: Signal<DiagnosticResult[]>;
+  results: DiagnosticResult[];
   namespace: string;
 }
 
@@ -198,10 +198,10 @@ export default function DiagnosticChecklist({
   results,
   namespace,
 }: DiagnosticChecklistProps) {
-  const failed = results.value.filter(
+  const failed = results.filter(
     (r) => r.status === "fail" || r.status === "warn",
   );
-  const passed = results.value.filter((r) => r.status === "pass");
+  const passed = results.filter((r) => r.status === "pass");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>

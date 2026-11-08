@@ -1,13 +1,7 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
-// Static imports evaluate before this file's body, so the signal stores see
-// the real IS_BROWSER (false) and register no browser-only effects that
-// would outlive the stub below.
-import "@/src/lib/namespace.ts";
+import { act, render, setupDom, waitFor } from "@/src/test-utils/render.tsx";
 
 /**
  * The topology API refuses a remote cluster selection with 501
@@ -15,40 +9,22 @@ import "@/src/lib/namespace.ts";
  * informers. The island must say so plainly, not show a generic error with a
  * Retry that can never succeed, and not render an empty graph.
  *
- * The island only fetches when `IS_BROWSER` is true, and that constant is
- * fixed when `is-browser.ts` is first evaluated, which under `bun test` is
- * without a DOM. As in source-coverage-pages_test.tsx, this file stubs it to
- * true for its own island and puts the real value back afterwards.
+ * The island only fetches when `IS_BROWSER` is true, which setupDom sets for
+ * this file and restores afterwards.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+const bunFetch = globalThis.fetch;
+setupDom({ browser: true });
 
 const { default: NamespaceTopology, fitViewBox } = await import(
   "./NamespaceTopology.tsx"
 );
 
-afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
-});
-
-let host: HTMLElement | null = null;
-let originalFetch: typeof globalThis.fetch | undefined;
-
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-  if (originalFetch) globalThis.fetch = originalFetch;
-  originalFetch = undefined;
+  globalThis.fetch = bunFetch;
   setAccessToken(null);
 });
 
 function stubFetch(status: number, body: unknown) {
-  originalFetch = globalThis.fetch;
-
   globalThis.fetch = (() =>
     Promise.resolve(
       new Response(JSON.stringify(body), {
@@ -61,17 +37,15 @@ function stubFetch(status: number, body: unknown) {
 async function mount(status: number, body: unknown) {
   stubFetch(status, body);
   setAccessToken("test-token");
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<NamespaceTopology namespace="foo" />, host as HTMLElement));
+  const { container } = render(<NamespaceTopology namespace="foo" />);
   // The fetch, the body read and the state update each take a turn of the
   // event loop; settle until the loading state is gone (bounded).
-  for (let i = 0; i < 20 && host.textContent?.includes("Loading"); i++) {
+  for (let i = 0; i < 20 && container.textContent?.includes("Loading"); i++) {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
   }
-  return host;
+  return container as HTMLElement;
 }
 
 const NOTICE = "not available for remote clusters";
@@ -152,4 +126,163 @@ test("fit to view does not zoom a small graph past 1x", () => {
 
 test("fit to view of an empty graph is the default view", () => {
   expect(fitViewBox([])).toEqual({ zoom: 1, panX: 0, panY: 0 });
+});
+
+const GRAPH = {
+  nodes: [
+    {
+      id: "uid-a",
+      kind: "Service",
+      name: "svc-a",
+      namespace: "foo",
+      health: "healthy",
+      summary: "",
+    },
+    {
+      id: "uid-b",
+      kind: "Pod",
+      name: "pod-b",
+      namespace: "foo",
+      health: "healthy",
+      summary: "",
+    },
+  ],
+  edges: [{ source: "uid-a", target: "uid-b", type: "selector" }],
+  computedAt: new Date().toISOString(),
+};
+
+function viewBox(svg: Element): number[] {
+  return (svg.getAttribute("viewBox") ?? "").split(" ").map(Number);
+}
+
+async function mountGraph() {
+  const root = await mount(200, { data: GRAPH });
+  const svg = root.querySelector(
+    'svg[aria-label="Namespace resource topology graph"]',
+  ) as SVGSVGElement;
+  expect(svg).not.toBeNull();
+  // happy-dom lays nothing out; the pan and zoom maths needs a size.
+  svg.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, width: 1200, height: 800 }) as DOMRect;
+  return svg;
+}
+
+test("the wheel listener is native and non-passive, so preventDefault stops the page scrolling", async () => {
+  const registered: Array<{
+    target: unknown;
+    type: string;
+    options: unknown;
+  }> = [];
+  // addEventListener lives on whichever prototype owns it for an SVG element.
+  let proto: object | null = Object.getPrototypeOf(
+    document.createElementNS("http://www.w3.org/2000/svg", "svg"),
+  );
+  while (proto && !Object.hasOwn(proto, "addEventListener")) {
+    proto = Object.getPrototypeOf(proto);
+  }
+  if (!proto) throw new Error("addEventListener not found");
+  const target = proto as EventTarget;
+  const original = target.addEventListener;
+  target.addEventListener = function (
+    this: EventTarget,
+    type: string,
+    listener: unknown,
+    options?: unknown,
+  ) {
+    registered.push({ target: this, type, options });
+    return (original as (...a: unknown[]) => void).call(
+      this,
+      type,
+      listener,
+      options,
+    );
+  } as typeof target.addEventListener;
+  let svg: SVGSVGElement;
+  try {
+    svg = await mountGraph();
+  } finally {
+    target.addEventListener = original;
+  }
+  const wheel = registered.filter(
+    (r) => r.target === svg && r.type === "wheel",
+  );
+  expect(wheel.length).toBeGreaterThan(0);
+  expect(
+    wheel.every((r) => (r.options as { passive?: boolean })?.passive === false),
+  ).toBe(true);
+});
+
+test("a wheel event over the graph zooms it and has its default prevented", async () => {
+  const svg = await mountGraph();
+  const before = viewBox(svg);
+  const event = new WheelEvent("wheel", {
+    deltaY: -100,
+    clientX: 600,
+    clientY: 400,
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => {
+    svg.dispatchEvent(event);
+  });
+  expect(event.defaultPrevented).toBe(true);
+  const after = viewBox(svg);
+  // Zoom in: the visible window shrinks.
+  expect(after[2]).toBeLessThan(before[2]);
+  expect(after[3]).toBeLessThan(before[3]);
+});
+
+test("two wheel events before a render compound", async () => {
+  const svg = await mountGraph();
+  const before = viewBox(svg);
+  await act(async () => {
+    for (let i = 0; i < 2; i++) {
+      svg.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: -100,
+          clientX: 600,
+          clientY: 400,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    }
+  });
+  // Zoom 1 -> 1.2: the window is 1200 / 1.2 wide.
+  expect(viewBox(svg)[2]).toBeCloseTo(1200 / 1.2, 5);
+  expect(before[2]).toBeCloseTo(1200, 5);
+});
+
+test("a pan across several moves in one session ends at the final pointer position", async () => {
+  const svg = await mountGraph();
+  const [panX, panY, w] = viewBox(svg);
+  expect(w).toBeCloseTo(1200, 5);
+  const at = (x: number, y: number) => ({ clientX: x, clientY: y, button: 0 });
+  await act(async () => {
+    svg.dispatchEvent(
+      new MouseEvent("mousedown", { ...at(100, 100), bubbles: true }),
+    );
+  });
+  for (const [x, y] of [
+    [150, 130],
+    [220, 160],
+    [300, 180],
+  ]) {
+    await act(async () => {
+      svg.dispatchEvent(
+        new MouseEvent("mousemove", { ...at(x, y), bubbles: true }),
+      );
+    });
+  }
+  // 1200x800 view on a 1200x800 box: one screen pixel is one unit.
+  const end = viewBox(svg);
+  expect(end[0]).toBeCloseTo(panX - 200, 5);
+  expect(end[1]).toBeCloseTo(panY - 80, 5);
+  await act(async () => {
+    svg.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    svg.dispatchEvent(
+      new MouseEvent("mousemove", { ...at(900, 900), bubbles: true }),
+    );
+  });
+  await waitFor(() => expect(viewBox(svg)[0]).toBeCloseTo(panX - 200, 5));
 });

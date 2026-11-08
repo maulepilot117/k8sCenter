@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useId, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import type { AffectedResource } from "@/src/islands/BlastRadiusPanel.tsx";
@@ -12,6 +12,7 @@ import DiagnosticChecklist from "@/src/islands/DiagnosticChecklist.tsx";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface DiagnosticResponse {
   target: { kind: string; name: string; namespace: string };
@@ -50,73 +51,89 @@ const TONES = {
   passed: { banner: "border-success-dim bg-success-dim", text: "text-success" },
 };
 
+const fromGlobal = (g: string) => (g && g !== "all" ? g : "");
+
 export default function DiagnosticWorkspace() {
-  const namespace = useSignal("");
-  const kind = useSignal("");
-  const name = useSignal("");
+  const [namespace, setNamespace] = useState("");
+  const [kind, setKind] = useState("");
+  const [name, setName] = useState("");
   const fieldId = useId();
 
-  const loading = useSignal(false);
-  const error = useSignal<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   // The backend refuses diagnostics under a remote cluster selection with
   // reason unsupported_platform (#532): the target, its pods and the blast
   // radius come from the local cluster's informers. That is a fixed fact
   // about the feature, not a failure, so it is not shown as an error.
-  const remoteUnsupported = useSignal(false);
+  const [remoteUnsupported, setRemoteUnsupported] = useState(false);
 
-  const results = useSignal<DiagnosticResult[]>([]);
-  const directlyAffected = useSignal<AffectedResource[]>([]);
-  const potentiallyAffected = useSignal<AffectedResource[]>([]);
-  const truncated = useSignal(false);
-  const truncationErrors = useSignal<Record<string, string>>({});
-  const hasData = useSignal(false);
+  const [results, setResults] = useState<DiagnosticResult[]>([]);
+  const [directlyAffected, setDirectlyAffected] = useState<AffectedResource[]>(
+    [],
+  );
+  const [potentiallyAffected, setPotentiallyAffected] = useState<
+    AffectedResource[]
+  >([]);
+  const [truncated, setTruncated] = useState(false);
+  const [truncationErrors, setTruncationErrors] = useState<
+    Record<string, string>
+  >({});
+  const [hasData, setHasData] = useState(false);
   // The resource the displayed results are for. The picker fields can change
   // after a run (the user typing, or the namespace following the top bar), so
   // the results' heading, Re-scan and Capture to incident read this, never
   // the live fields.
-  const shown = useSignal<{ namespace: string; kind: string; name: string }>({
-    namespace: "",
-    kind: "",
-    name: "",
-  });
+  const [shown, setShown] = useState<{
+    namespace: string;
+    kind: string;
+    name: string;
+  }>({ namespace: "", kind: "", name: "" });
 
-  const fetchDiagnostics = async (ns: string, k: string, n: string) => {
-    loading.value = true;
-    error.value = null;
-    remoteUnsupported.value = false;
-    truncated.value = false;
-    truncationErrors.value = {};
-    try {
-      const resp = await apiGet<DiagnosticResponse>(
-        `/v1/diagnostics/${ns}/${k}/${n}`,
-      );
-      const data = resp.data;
-      results.value = data.results;
-      directlyAffected.value = data.blastRadius.directlyAffected;
-      potentiallyAffected.value = data.blastRadius.potentiallyAffected;
-      truncated.value = data.blastRadius.truncated === true;
-      truncationErrors.value = data.blastRadius.errors ?? {};
-      shown.value = { namespace: ns, kind: k, name: n };
-      hasData.value = true;
-    } catch (err) {
-      hasData.value = false;
-      if (err instanceof ApiError && err.reason === "unsupported_platform") {
-        remoteUnsupported.value = true;
-        return;
+  const fetchDiagnostics = useCallback(
+    async (ns: string, k: string, n: string) => {
+      setLoading(true);
+      setError(null);
+      setRemoteUnsupported(false);
+      setTruncated(false);
+      setTruncationErrors({});
+      try {
+        const resp = await apiGet<DiagnosticResponse>(
+          `/v1/diagnostics/${ns}/${k}/${n}`,
+        );
+        const data = resp.data;
+        setResults(data.results);
+        setDirectlyAffected(data.blastRadius.directlyAffected);
+        setPotentiallyAffected(data.blastRadius.potentiallyAffected);
+        setTruncated(data.blastRadius.truncated === true);
+        setTruncationErrors(data.blastRadius.errors ?? {});
+        setShown({ namespace: ns, kind: k, name: n });
+        setHasData(true);
+      } catch (err) {
+        setHasData(false);
+        if (err instanceof ApiError && err.reason === "unsupported_platform") {
+          setRemoteUnsupported(true);
+          return;
+        }
+        setError(
+          err instanceof Error ? err.message : "Failed to run diagnostics",
+        );
+      } finally {
+        setLoading(false);
       }
-      error.value =
-        err instanceof Error ? err.message : "Failed to run diagnostics";
-    } finally {
-      loading.value = false;
-    }
-  };
+    },
+    [],
+  );
 
   // The namespace field follows the top-bar selection until the user types
   // their own: this holds the value it was last filled with from the top bar
   // (null once a URL or the user has set it).
   const prefilled = useRef<string | null>(null);
-  const globalNs = selectedNamespace.value;
-  const fromGlobal = (g: string) => (g && g !== "all" ? g : "");
+  // The field's current value for the effect below, which compares it with
+  // what the top bar last filled in. Written when the field is filled from
+  // the URL or the top bar so the comparison does not wait for a render.
+  const namespaceRef = useRef(namespace);
+  namespaceRef.current = namespace;
+  const globalNs = useSignalValue(selectedNamespace);
 
   // Parse URL params on mount and auto-run if all present
   useEffect(() => {
@@ -128,42 +145,41 @@ export default function DiagnosticWorkspace() {
     const k = params.get("kind") ?? "";
     const n = params.get("name") ?? "";
 
-    namespace.value = ns;
-    kind.value = k;
-    name.value = n;
+    namespaceRef.current = ns;
+    setNamespace(ns);
+    setKind(k);
+    setName(n);
 
     if (ns && k && n) {
       fetchDiagnostics(ns, k, n);
     }
-  }, []);
+  }, [fetchDiagnostics]);
 
   useEffect(() => {
     if (!IS_BROWSER || prefilled.current === null) return;
-    if (namespace.value !== prefilled.current) {
+    if (namespaceRef.current !== prefilled.current) {
       prefilled.current = null; // the user typed a namespace of their own
       return;
     }
     const next = fromGlobal(globalNs);
-    namespace.value = next;
+    namespaceRef.current = next;
+    setNamespace(next);
     prefilled.current = next;
   }, [globalNs]);
 
   const handleInvestigate = () => {
-    if (!namespace.value || !kind.value || !name.value) return;
+    if (!namespace || !kind || !name) return;
     // Update URL without reload
-    const params = new URLSearchParams({
-      namespace: namespace.value,
-      kind: kind.value,
-      name: name.value,
-    });
+    const params = new URLSearchParams({ namespace, kind, name });
     globalThis.history.replaceState(null, "", `?${params.toString()}`);
-    fetchDiagnostics(namespace.value, kind.value, name.value);
+    fetchDiagnostics(namespace, kind, name);
   };
 
-  const criticalCount = results.value.filter(
+  const clusterId = useSignalValue(selectedCluster);
+  const criticalCount = results.filter(
     (r) => r.status === "fail" && r.severity === "critical",
   ).length;
-  const warningCount = results.value.filter(
+  const warningCount = results.filter(
     (r) =>
       (r.status === "fail" && r.severity === "warning") || r.status === "warn",
   ).length;
@@ -175,40 +191,36 @@ export default function DiagnosticWorkspace() {
         : TONES.passed;
 
   return (
-    <div class="flex flex-col gap-4">
+    <div className="flex flex-col gap-4">
       {/* Resource Picker */}
-      {!hasData.value && !loading.value && (
-        <div class="rounded-lg border border-border-primary bg-surface p-6">
-          <h3 class="mb-4 text-sm font-semibold text-text-primary">
+      {!hasData && !loading && (
+        <div className="rounded-lg border border-border-primary bg-surface p-6">
+          <h3 className="mb-4 text-sm font-semibold text-text-primary">
             Select a resource to investigate
           </h3>
-          <div class="grid grid-cols-[1fr_1fr_1fr_auto] items-end gap-3">
+          <div className="grid grid-cols-[1fr_1fr_1fr_auto] items-end gap-3">
             <div>
-              <label for={`${fieldId}-namespace`} class={LABEL_CLASS}>
+              <label htmlFor={`${fieldId}-namespace`} className={LABEL_CLASS}>
                 Namespace
               </label>
               <input
                 type="text"
                 id={`${fieldId}-namespace`}
                 placeholder="default"
-                value={namespace.value}
-                onInput={(e) =>
-                  (namespace.value = (e.target as HTMLInputElement).value)
-                }
-                class={FIELD_CLASS}
+                value={namespace}
+                onChange={(e) => setNamespace(e.currentTarget.value)}
+                className={FIELD_CLASS}
               />
             </div>
             <div>
-              <label for={`${fieldId}-kind`} class={LABEL_CLASS}>
+              <label htmlFor={`${fieldId}-kind`} className={LABEL_CLASS}>
                 Kind
               </label>
               <select
                 id={`${fieldId}-kind`}
-                value={kind.value}
-                onChange={(e) =>
-                  (kind.value = (e.target as HTMLSelectElement).value)
-                }
-                class={FIELD_CLASS}
+                value={kind}
+                onChange={(e) => setKind(e.currentTarget.value)}
+                className={FIELD_CLASS}
               >
                 <option value="">Select kind...</option>
                 {KIND_OPTIONS.map((k) => (
@@ -219,25 +231,23 @@ export default function DiagnosticWorkspace() {
               </select>
             </div>
             <div>
-              <label for={`${fieldId}-name`} class={LABEL_CLASS}>
+              <label htmlFor={`${fieldId}-name`} className={LABEL_CLASS}>
                 Name
               </label>
               <input
                 type="text"
                 id={`${fieldId}-name`}
                 placeholder="my-deployment"
-                value={name.value}
-                onInput={(e) =>
-                  (name.value = (e.target as HTMLInputElement).value)
-                }
-                class={FIELD_CLASS}
+                value={name}
+                onChange={(e) => setName(e.currentTarget.value)}
+                className={FIELD_CLASS}
               />
             </div>
             <button
               type="button"
               onClick={handleInvestigate}
-              disabled={!namespace.value || !kind.value || !name.value}
-              class="cursor-pointer rounded-md border border-accent bg-accent px-4 py-1.5 text-sm font-semibold text-(--bg-base) disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!namespace || !kind || !name}
+              className="cursor-pointer rounded-md border border-accent bg-accent px-4 py-1.5 text-sm font-semibold text-(--bg-base) disabled:cursor-not-allowed disabled:opacity-50"
             >
               Investigate
             </button>
@@ -246,14 +256,14 @@ export default function DiagnosticWorkspace() {
       )}
 
       {/* Loading */}
-      {loading.value && (
-        <div class="p-12 text-center text-sm text-text-muted">
+      {loading && (
+        <div className="p-12 text-center text-sm text-text-muted">
           Running diagnostics...
         </div>
       )}
 
       {/* Unsupported on a remote cluster */}
-      {remoteUnsupported.value && (
+      {remoteUnsupported && (
         <div data-diagnostics-state="remote-unsupported">
           <Alert variant="info">
             Resource diagnostics are not available for remote clusters. The
@@ -265,21 +275,21 @@ export default function DiagnosticWorkspace() {
       )}
 
       {/* Error */}
-      {error.value && (
-        <div class="rounded-lg border border-error-dim bg-error-dim px-4 py-3 text-sm text-error">
-          {error.value}
+      {error && (
+        <div className="rounded-lg border border-error-dim bg-error-dim px-4 py-3 text-sm text-error">
+          {error}
         </div>
       )}
 
       {/* Results */}
-      {hasData.value && !loading.value && (
+      {hasData && !loading && (
         <>
           {/* Status Banner */}
           <div
-            class={`flex items-center justify-between rounded-lg border px-4 py-3 ${tone.banner}`}
+            className={`flex items-center justify-between rounded-lg border px-4 py-3 ${tone.banner}`}
           >
-            <div class="flex items-center gap-3">
-              <span class={`text-sm font-semibold ${tone.text}`}>
+            <div className="flex items-center gap-3">
+              <span className={`text-sm font-semibold ${tone.text}`}>
                 {criticalCount > 0
                   ? `${criticalCount} critical issue${
                       criticalCount > 1 ? "s" : ""
@@ -288,51 +298,47 @@ export default function DiagnosticWorkspace() {
                     ? `${warningCount} warning${warningCount > 1 ? "s" : ""}`
                     : "All checks passed"}
               </span>
-              <span class="text-sm text-text-secondary">
-                {shown.value.kind}/{shown.value.name} in {shown.value.namespace}
+              <span className="text-sm text-text-secondary">
+                {shown.kind}/{shown.name} in {shown.namespace}
               </span>
             </div>
             <CaptureToIncidentButton
-              class="ml-auto mr-2"
-              clusterId={selectedCluster.value}
-              namespace={shown.value.namespace}
-              kind={shown.value.kind}
-              name={shown.value.name}
-              windowStart={earliestObservedAt(results.value)}
+              className="ml-auto mr-2"
+              clusterId={clusterId}
+              namespace={shown.namespace}
+              kind={shown.kind}
+              name={shown.name}
+              windowStart={earliestObservedAt(results)}
             />
             <button
               type="button"
               onClick={() =>
-                fetchDiagnostics(
-                  shown.value.namespace,
-                  shown.value.kind,
-                  shown.value.name,
-                )
+                fetchDiagnostics(shown.namespace, shown.kind, shown.name)
               }
-              class="cursor-pointer rounded-md border border-border-primary bg-surface px-3 py-1 text-xs font-medium text-text-secondary"
+              className="cursor-pointer rounded-md border border-border-primary bg-surface px-3 py-1 text-xs font-medium text-text-secondary"
             >
               Re-scan
             </button>
           </div>
 
           {/* Two-column layout */}
-          <div class="grid grid-cols-[3fr_2fr] items-start gap-4">
+          <div className="grid grid-cols-[3fr_2fr] items-start gap-4">
             <DiagnosticChecklist
               results={results}
-              namespace={shown.value.namespace}
+              namespace={shown.namespace}
             />
-            <div class="flex flex-col gap-3">
-              {truncated.value && (
+            <div className="flex flex-col gap-3">
+              {truncated && (
                 <div
                   data-testid="blast-radius-truncated"
-                  class={`rounded-lg border px-3 py-2 text-xs ${TONES.warning.banner} ${TONES.warning.text}`}
+                  className={`rounded-lg border px-3 py-2 text-xs ${TONES.warning.banner} ${TONES.warning.text}`}
                 >
-                  <p class="font-semibold">
-                    {Object.keys(truncationErrors.value).length > 0
+                  <p className="font-semibold">
+                    {Object.keys(truncationErrors).length > 0
                       ? "Blast radius is incomplete: some kinds could not be read from the selected cluster."
                       : "Blast radius is incomplete: the namespace graph was capped, so some resources are left out."}
                   </p>
-                  {Object.entries(truncationErrors.value).map(([k, msg]) => (
+                  {Object.entries(truncationErrors).map(([k, msg]) => (
                     <p key={k}>{msg}</p>
                   ))}
                 </div>
@@ -340,7 +346,7 @@ export default function DiagnosticWorkspace() {
               <BlastRadiusPanel
                 directlyAffected={directlyAffected}
                 potentiallyAffected={potentiallyAffected}
-                namespace={shown.value.namespace}
+                namespace={shown.namespace}
               />
             </div>
           </div>

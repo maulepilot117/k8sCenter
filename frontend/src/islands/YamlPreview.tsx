@@ -1,4 +1,5 @@
-import { useMemo } from "preact/hooks";
+/** @jsxImportSource react */
+import { useMemo } from "react";
 import { escapeHtml } from "@/lib/schema-to-yaml.ts";
 
 interface Props {
@@ -108,7 +109,7 @@ export default function YamlPreview({ yaml }: Props) {
           whiteSpace: "pre",
           overflowX: "auto",
         }}
-        // YAML content is generated from form state, not user input — safe to render
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: every raw line goes through escapeHtml() before any span is built around it
         dangerouslySetInnerHTML={{ __html: highlighted }}
       />
     </div>

@@ -1,14 +1,15 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { apiDelete, apiGet } from "@/lib/api.ts";
 import type { CRDInfo, PrinterColumn } from "@/lib/crd-types.ts";
 import { age } from "@/lib/format.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface Props {
   group: string;
@@ -34,6 +35,15 @@ interface CRDItem extends Record<string, unknown> {
   };
 }
 
+/**
+ * Root attributes shared by the server placeholder, the loading skeleton and
+ * the hydrated list, so the markup swaps in place without a layout jump.
+ */
+const ROOT_PROPS = {
+  className: "flex flex-col h-full",
+  style: { minHeight: "400px" },
+} as const;
+
 /** Extract a value from an object using a simple jsonPath-like string. */
 function extractJsonPath(obj: Record<string, unknown>, path: string): unknown {
   const parts = path
@@ -58,122 +68,134 @@ function getReadyStatus(item: CRDItem): "Ready" | "NotReady" | "Unknown" {
 }
 
 export default function CRDResourceList({ group, resource }: Props) {
-  const loading = useSignal(true);
-  const crdMeta = useSignal<CRDInfo | null>(null);
-  const items = useSignal<CRDItem[]>([]);
-  const continueToken = useSignal<string | undefined>(undefined);
-  const loadingMore = useSignal(false);
-  const search = useSignal("");
-  const statusFilter = useSignal<"all" | "ready" | "notready">("all");
-  const openMenu = useSignal<string | null>(null);
-  const confirmDelete = useSignal<CRDItem | null>(null);
-  const deleting = useSignal(false);
+  const isClient = useIsClient();
+  const namespace = useSignalValue(selectedNamespace);
+  const [loading, setLoading] = useState(true);
+  const [crdMeta, setCrdMeta] = useState<CRDInfo | null>(null);
+  const [items, setItems] = useState<CRDItem[]>([]);
+  const [continueToken, setContinueToken] = useState<string | undefined>(
+    undefined,
+  );
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | "ready" | "notready"
+  >("all");
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<CRDItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  // Guards that must stop a second click before the next render.
+  const loadingMoreRef = useRef(false);
+  const deletingRef = useRef(false);
 
   // Fetch CRD metadata
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    if (!isClient) return;
 
     const fetchMeta = async () => {
       try {
         const res = await apiGet<{ info: CRDInfo; schema: unknown }>(
           `/v1/extensions/crds/${group}/${resource}`,
         );
-        crdMeta.value = res.data?.info ?? null;
+        setCrdMeta(res.data?.info ?? null);
       } catch {
-        crdMeta.value = null;
+        setCrdMeta(null);
       }
     };
     fetchMeta();
-  }, [group, resource]);
+  }, [isClient, group, resource]);
 
   // Fetch instances (re-fetch when namespace changes)
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    if (!isClient) return;
 
     const fetchInstances = async () => {
-      loading.value = true;
+      setLoading(true);
       try {
-        const ns = selectedNamespace.value;
-        const nsPath = ns && ns !== "all" ? `/${ns}` : "";
+        const nsPath = namespace && namespace !== "all" ? `/${namespace}` : "";
         const res = await apiGet<CRDItem[]>(
           `/v1/extensions/resources/${group}/${resource}${nsPath}?limit=100`,
         );
-        items.value = res.data ?? [];
-        continueToken.value = (
-          res as { metadata?: { continue?: string } }
-        ).metadata?.continue;
+        setItems(res.data ?? []);
+        setContinueToken(
+          (res as { metadata?: { continue?: string } }).metadata?.continue,
+        );
       } catch {
-        items.value = [];
-        continueToken.value = undefined;
+        setItems([]);
+        setContinueToken(undefined);
       } finally {
-        loading.value = false;
+        setLoading(false);
       }
     };
     fetchInstances();
-  }, [group, resource, selectedNamespace.value]);
+  }, [isClient, group, resource, namespace]);
 
   // Load more handler
   const loadMore = async () => {
-    if (!continueToken.value || loadingMore.value) return;
-    loadingMore.value = true;
+    if (!continueToken || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
     try {
-      const ns = selectedNamespace.value;
-      const nsPath = ns && ns !== "all" ? `/${ns}` : "";
+      const nsPath = namespace && namespace !== "all" ? `/${namespace}` : "";
       const res = await apiGet<CRDItem[]>(
         `/v1/extensions/resources/${group}/${resource}${nsPath}?limit=100&continue=${encodeURIComponent(
-          continueToken.value,
+          continueToken,
         )}`,
       );
-      items.value = [...items.value, ...(res.data ?? [])];
-      continueToken.value = (
-        res as { metadata?: { continue?: string } }
-      ).metadata?.continue;
+      setItems((prev) => [...prev, ...(res.data ?? [])]);
+      setContinueToken(
+        (res as { metadata?: { continue?: string } }).metadata?.continue,
+      );
     } catch {
       // keep existing items
     } finally {
-      loadingMore.value = false;
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
     }
   };
 
   // Delete handler
   const handleDelete = async (item: CRDItem) => {
-    deleting.value = true;
+    if (deletingRef.current) return;
+    deletingRef.current = true;
+    setDeleting(true);
     try {
       const ns = item.metadata.namespace;
       const nsPath = ns ? `/${ns}` : "";
       await apiDelete(
         `/v1/extensions/resources/${group}/${resource}${nsPath}/${item.metadata.name}`,
       );
-      items.value = items.value.filter(
-        (i) => i.metadata.uid !== item.metadata.uid,
+      setItems((prev) =>
+        prev.filter((i) => i.metadata.uid !== item.metadata.uid),
       );
       showToast(`Deleted ${item.metadata.name}`, "success");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Delete failed";
       showToast(msg, "error");
     } finally {
-      deleting.value = false;
-      confirmDelete.value = null;
+      deletingRef.current = false;
+      setDeleting(false);
+      setConfirmDelete(null);
     }
   };
 
   // Close kebab menu on outside click
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    if (!isClient) return;
     const handler = () => {
-      openMenu.value = null;
+      setOpenMenu(null);
     };
     globalThis.document.addEventListener("click", handler);
     return () => globalThis.document.removeEventListener("click", handler);
-  }, []);
+  }, [isClient]);
 
-  if (!IS_BROWSER) {
-    return <div style={{ minHeight: "400px" }} />;
+  if (!isClient) {
+    return <div {...ROOT_PROPS} />;
   }
 
-  if (loading.value) {
+  if (loading) {
     return (
-      <div>
+      <div {...ROOT_PROPS}>
         <Skeleton className="h-5 w-48 mb-2" />
         <Skeleton className="h-4 w-72 mb-6" />
         <Skeleton className="h-10 w-full mb-4" />
@@ -182,24 +204,24 @@ export default function CRDResourceList({ group, resource }: Props) {
     );
   }
 
-  const meta = crdMeta.value;
+  const meta = crdMeta;
   const isNamespaced = meta?.scope === "Namespaced";
   const kind = meta?.kind ?? resource;
   const version = meta?.version ?? "v1";
   const printerColumns: PrinterColumn[] = meta?.additionalPrinterColumns ?? [];
 
   // Filter items
-  const query = search.value.toLowerCase().trim();
-  const filtered = items.value.filter((item) => {
+  const query = search.toLowerCase().trim();
+  const filtered = items.filter((item) => {
     // Name search
     if (query && !item.metadata.name.toLowerCase().includes(query)) {
       return false;
     }
     // Status filter
-    if (statusFilter.value !== "all") {
+    if (statusFilter !== "all") {
       const status = getReadyStatus(item);
-      if (statusFilter.value === "ready" && status !== "Ready") return false;
-      if (statusFilter.value === "notready" && status !== "NotReady") {
+      if (statusFilter === "ready" && status !== "Ready") return false;
+      if (statusFilter === "notready" && status !== "NotReady") {
         return false;
       }
     }
@@ -209,7 +231,7 @@ export default function CRDResourceList({ group, resource }: Props) {
   const instanceLabel = resource.toLowerCase();
 
   return (
-    <div class="flex flex-col h-full">
+    <div {...ROOT_PROPS}>
       {/* Breadcrumbs */}
       <nav
         style={{
@@ -267,7 +289,7 @@ export default function CRDResourceList({ group, resource }: Props) {
             }}
           >
             {group}/{version} &middot; {meta?.scope ?? "Unknown"} &middot;{" "}
-            {items.value.length} instance{items.value.length !== 1 ? "s" : ""}
+            {items.length} instance{items.length !== 1 ? "s" : ""}
           </p>
         </div>
         <a
@@ -380,8 +402,8 @@ export default function CRDResourceList({ group, resource }: Props) {
         <input
           type="text"
           placeholder={`Search ${instanceLabel}...`}
-          value={search.value}
-          onInput={(e) => (search.value = (e.target as HTMLInputElement).value)}
+          value={search}
+          onChange={(e) => setSearch(e.currentTarget.value)}
           style={{
             flex: "1 1 200px",
             maxWidth: "300px",
@@ -417,7 +439,7 @@ export default function CRDResourceList({ group, resource }: Props) {
             <button
               type="button"
               key={val}
-              onClick={() => (statusFilter.value = val)}
+              onClick={() => setStatusFilter(val)}
               style={{
                 padding: "4px 10px",
                 fontSize: "11px",
@@ -426,11 +448,9 @@ export default function CRDResourceList({ group, resource }: Props) {
                 border: "none",
                 cursor: "pointer",
                 background:
-                  statusFilter.value === val ? "var(--accent)" : "transparent",
+                  statusFilter === val ? "var(--accent)" : "transparent",
                 color:
-                  statusFilter.value === val
-                    ? "var(--bg-base)"
-                    : "var(--text-muted)",
+                  statusFilter === val ? "var(--bg-base)" : "var(--text-muted)",
               }}
             >
               {label}
@@ -502,7 +522,7 @@ export default function CRDResourceList({ group, resource }: Props) {
               color: "var(--text-muted)",
             }}
           >
-            {items.value.length === 0
+            {items.length === 0
               ? `No ${instanceLabel} found`
               : "No matching results"}
           </div>
@@ -647,7 +667,7 @@ export default function CRDResourceList({ group, resource }: Props) {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    openMenu.value = openMenu.value === menuId ? null : menuId;
+                    setOpenMenu((prev) => (prev === menuId ? null : menuId));
                   }}
                   style={{
                     background: "none",
@@ -661,9 +681,9 @@ export default function CRDResourceList({ group, resource }: Props) {
                 >
                   &#8942;
                 </button>
-                {openMenu.value === menuId && (
+                {openMenu === menuId && (
                   <div
-                    class="glass-elevated"
+                    className="glass-elevated"
                     style={{
                       position: "absolute",
                       right: 0,
@@ -677,8 +697,8 @@ export default function CRDResourceList({ group, resource }: Props) {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        openMenu.value = null;
-                        confirmDelete.value = item;
+                        setOpenMenu(null);
+                        setConfirmDelete(item);
                       }}
                       style={{
                         display: "block",
@@ -711,12 +731,12 @@ export default function CRDResourceList({ group, resource }: Props) {
       </div>
 
       {/* Load more */}
-      {continueToken.value && (
+      {continueToken && (
         <div style={{ textAlign: "center", padding: "16px 0" }}>
           <button
             type="button"
             onClick={loadMore}
-            disabled={loadingMore.value}
+            disabled={loadingMore}
             style={{
               padding: "6px 20px",
               fontSize: "12px",
@@ -725,19 +745,19 @@ export default function CRDResourceList({ group, resource }: Props) {
               border: "1px solid var(--border-primary)",
               background: "var(--bg-surface)",
               color: "var(--text-primary)",
-              cursor: loadingMore.value ? "default" : "pointer",
-              opacity: loadingMore.value ? 0.6 : 1,
+              cursor: loadingMore ? "default" : "pointer",
+              opacity: loadingMore ? 0.6 : 1,
             }}
           >
-            {loadingMore.value ? "Loading..." : "Load more"}
+            {loadingMore ? "Loading..." : "Load more"}
           </button>
         </div>
       )}
 
       {/* Delete confirmation dialog */}
-      {confirmDelete.value && (
+      {confirmDelete && (
         <div
-          class="glass-scrim"
+          className="glass-scrim"
           style={{
             position: "fixed",
             inset: 0,
@@ -746,10 +766,10 @@ export default function CRDResourceList({ group, resource }: Props) {
             justifyContent: "center",
             zIndex: 100,
           }}
-          onClick={() => (confirmDelete.value = null)}
+          onClick={() => setConfirmDelete(null)}
         >
           <div
-            class="glass-elevated"
+            className="glass-elevated"
             style={{
               borderRadius: "16px",
               padding: "24px",
@@ -766,7 +786,7 @@ export default function CRDResourceList({ group, resource }: Props) {
               }}
             >
               Are you sure you want to delete{" "}
-              <strong>{confirmDelete.value.metadata.name}</strong>?
+              <strong>{confirmDelete.metadata.name}</strong>?
             </p>
             <div
               style={{
@@ -777,7 +797,7 @@ export default function CRDResourceList({ group, resource }: Props) {
             >
               <button
                 type="button"
-                onClick={() => (confirmDelete.value = null)}
+                onClick={() => setConfirmDelete(null)}
                 style={{
                   padding: "6px 14px",
                   fontSize: "12px",
@@ -792,8 +812,8 @@ export default function CRDResourceList({ group, resource }: Props) {
               </button>
               <button
                 type="button"
-                onClick={() => handleDelete(confirmDelete.value!)}
-                disabled={deleting.value}
+                onClick={() => handleDelete(confirmDelete)}
+                disabled={deleting}
                 style={{
                   padding: "6px 14px",
                   fontSize: "12px",
@@ -801,11 +821,11 @@ export default function CRDResourceList({ group, resource }: Props) {
                   border: "none",
                   background: "var(--error)",
                   color: "var(--bg-base)",
-                  cursor: deleting.value ? "default" : "pointer",
-                  opacity: deleting.value ? 0.6 : 1,
+                  cursor: deleting ? "default" : "pointer",
+                  opacity: deleting ? 0.6 : 1,
                 }}
               >
-                {deleting.value ? "Deleting..." : "Delete"}
+                {deleting ? "Deleting..." : "Delete"}
               </button>
             </div>
           </div>

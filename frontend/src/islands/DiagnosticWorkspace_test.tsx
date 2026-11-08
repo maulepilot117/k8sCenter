@@ -1,9 +1,7 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The diagnostics API refuses a remote cluster selection with 501
@@ -11,14 +9,11 @@ import { setAccessToken } from "@/lib/api.ts";
  * resolved from the local cluster's informers. The workspace must say so
  * plainly rather than show the refusal as an error.
  *
- * The island only runs its mount effect when `IS_BROWSER` is true, and that
- * constant is fixed when `is-browser.ts` is first evaluated, which under
- * `bun test` is without a DOM. As in source-coverage-pages_test.tsx, this
- * file stubs it to true for its own island and puts the real value back
- * afterwards.
+ * The island only runs its mount effect when `IS_BROWSER` is true, which the
+ * harness sets for this file and puts back afterwards.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+const bunFetch = globalThis.fetch;
+setupDom({ browser: true });
 
 const { default: DiagnosticWorkspace } = await import(
   "./DiagnosticWorkspace.tsx"
@@ -56,8 +51,7 @@ async function signIn() {
 }
 
 afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
+  globalThis.fetch = bunFetch;
 });
 
 /** Signs out (logout() with its request answered), resetting the shared user. */
@@ -75,15 +69,23 @@ async function signOut() {
   }
 }
 
-let host: HTMLElement | null = null;
+let host: HTMLElement | undefined;
+let unmount: (() => void) | null = null;
+
+/** Renders the workspace into a fresh container, replacing any earlier one. */
+function mountWorkspace() {
+  if (unmount) act(() => unmount?.());
+  const result = render(<DiagnosticWorkspace />);
+  unmount = result.unmount;
+  const container = result.container as HTMLElement;
+  host = container;
+  return container;
+}
 let originalFetch: typeof globalThis.fetch | undefined;
 
 afterEach(async () => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  unmount = null;
+  host = undefined;
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
   setAccessToken(null);
@@ -113,18 +115,16 @@ async function mount(status: number, body: unknown) {
     "",
     "/?namespace=team-a&kind=Pod&name=web",
   );
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+  const root = mountWorkspace();
   // The fetch, the body read and the state update each take a turn of the
   // event loop; settle until the running state is gone (bounded).
   for (let i = 0; i < 20; i++) {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
-    if (!host.textContent?.includes("Running diagnostics")) break;
+    if (!root.textContent?.includes("Running diagnostics")) break;
   }
-  return host;
+  return root;
 }
 
 const NOTICE = "not available for remote clusters";
@@ -181,9 +181,7 @@ test("a local result offers capture to an incident beside Re-scan", async () => 
 });
 
 test("each picker field is named by its visible label", () => {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+  const host = mountWorkspace();
   const labels = Array.from(host.querySelectorAll("label"));
   expect(labels.map((l) => l.textContent)).toEqual([
     "Namespace",
@@ -308,14 +306,8 @@ test("the namespace field starts from the top-bar selection", async () => {
       'input[id$="-namespace"]',
     ) as HTMLInputElement;
   const mountAt = (url: string) => {
-    if (host) {
-      act(() => render(null, host as HTMLElement));
-      host.remove();
-    }
     globalThis.history.replaceState(null, "", url);
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+    mountWorkspace();
   };
   try {
     selectedNamespace.value = "team-b";
@@ -349,9 +341,7 @@ test("results keep the namespace they ran in when the field follows the top bar"
     setAccessToken("test-token");
     // No namespace in the URL: it comes from the top bar, and the run starts.
     globalThis.history.replaceState(null, "", "/?kind=Pod&name=web");
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+    const host = mountWorkspace();
     for (let i = 0; i < 20; i++) {
       await act(async () => {
         await new Promise((r) => setTimeout(r, 0));
@@ -381,9 +371,7 @@ test("the namespace field follows a top-bar change until the user types one", as
   try {
     selectedNamespace.value = "team-b";
     globalThis.history.replaceState(null, "", "/");
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    act(() => render(<DiagnosticWorkspace />, host as HTMLElement));
+    mountWorkspace();
     expect(field().value).toBe("team-b");
 
     act(() => {

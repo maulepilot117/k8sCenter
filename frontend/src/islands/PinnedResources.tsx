@@ -1,10 +1,9 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import type { ApiError } from "@/lib/api.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
 import type { PinRecord } from "@/lib/preferences.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import {
   activeClusterPins,
   loadPins,
@@ -12,6 +11,8 @@ import {
   pinsUnavailable,
   removePin,
 } from "@/src/lib/pin-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface PinnedResourcesProps {
   /** Active route, used to mark the current pin. Mirrors SecondaryNavProps. */
@@ -38,22 +39,33 @@ const HEADER_STYLE = {
  * stale the user finds out when they open it, which is one click away.
  */
 export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
-  const busyId = useSignal<string | null>(null);
-  const removeError = useSignal<string | null>(null);
-  const cluster = selectedCluster.value;
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  // The pin list and the active cluster are restored in the browser, so the
+  // pin markup renders only once the client has taken over.
+  const isClient = useIsClient();
+  const mine = useSignalValue(activeClusterPins);
+  const unavailable = useSignalValue(pinsUnavailable);
+  const loaded = useSignalValue(pinsLoaded);
 
+  // `subscribe` runs the callback now (the first load) and on every cluster
+  // switch, so the list is always the active cluster's.
   useEffect(() => {
-    if (!IS_BROWSER) return;
-    const ac = new AbortController();
-    loadPins(ac.signal);
-    return () => ac.abort();
-  }, [cluster]);
-
-  const mine = activeClusterPins.value;
+    let ac: AbortController | null = null;
+    const unsubscribe = selectedCluster.subscribe(() => {
+      ac?.abort();
+      ac = new AbortController();
+      loadPins(ac.signal);
+    });
+    return () => {
+      unsubscribe();
+      ac?.abort();
+    };
+  }, []);
 
   const unpin = async (record: PinRecord) => {
-    busyId.value = record.id;
-    removeError.value = null;
+    setBusyId(record.id);
+    setRemoveError(null);
     try {
       await removePin(record.id);
     } catch (err) {
@@ -63,19 +75,35 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
       // unpin broke while the row correctly disappears.
       await loadPins();
       if ((err as ApiError | undefined)?.status !== 404) {
-        removeError.value = `Could not unpin ${record.config.name}.`;
+        setRemoveError(`Could not unpin ${record.config.name}.`);
       }
     } finally {
-      busyId.value = null;
+      setBusyId(null);
     }
   };
 
   // Three different situations, three different renderings. Collapsing any
   // pair of them would tell the user something untrue (R3).
-  const unavailable = pinsUnavailable.value;
-  const loading = !pinsLoaded.value && !unavailable;
+  const loading = !loaded && !unavailable;
 
-  if (!unavailable && pinsLoaded.value && mine.length === 0) {
+  if (!isClient) {
+    return (
+      <div style={{ marginTop: "14px" }} data-testid="pinned-resources">
+        <div style={HEADER_STYLE}>Pinned</div>
+        <div
+          style={{
+            fontSize: "12px",
+            color: "var(--text-muted)",
+            padding: "0 9px 4px",
+          }}
+        >
+          Loading...
+        </div>
+      </div>
+    );
+  }
+
+  if (!unavailable && loaded && mine.length === 0) {
     // The header renders even when empty so the section reads as empty rather
     // than vanishing as if unsupported -- and the hint exists because saying
     // "nothing is pinned" to someone who has never seen a pin control is a
@@ -180,7 +208,7 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
               type="button"
               data-testid="unpin"
               aria-label={`Unpin ${label} ${name}`}
-              disabled={busyId.value === record.id}
+              disabled={busyId === record.id}
               onClick={(e) => {
                 // The whole row is an anchor, so a click here would navigate
                 // before the unpin request is even sent.
@@ -244,7 +272,7 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
         );
       })}
 
-      {removeError.value && (
+      {removeError && (
         <div
           data-testid="pinned-remove-error"
           style={{
@@ -253,7 +281,7 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
             padding: "2px 9px 4px",
           }}
         >
-          {removeError.value}
+          {removeError}
         </div>
       )}
     </div>

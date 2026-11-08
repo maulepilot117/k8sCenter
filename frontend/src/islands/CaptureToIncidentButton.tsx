@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError } from "@/lib/api.ts";
@@ -35,6 +35,8 @@ import {
 } from "@/src/components/incidents/errors.ts";
 import { LOCAL_CLUSTER_ID } from "@/src/lib/cluster.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
  * The diagnosis-to-incident entry point (Release D, U25b): a button that
@@ -216,7 +218,7 @@ interface CaptureToIncidentButtonProps {
   /** The earliest time the diagnosis observed its sources, when it reported one. */
   windowStart?: string;
   /** Extra utilities for the root, for placement in the caller's layout. */
-  class?: string;
+  className?: string;
 }
 
 export default function CaptureToIncidentButton({
@@ -225,42 +227,53 @@ export default function CaptureToIncidentButton({
   kind,
   name,
   windowStart,
-  class: className,
+  className,
 }: CaptureToIncidentButtonProps) {
   const isLocal = clusterId === "" || clusterId === LOCAL_CLUSTER_ID;
   const {
     user,
-    loading: userLoading,
-    loadAttempted: userLoadAttempted,
+    loading: userLoadingSignal,
+    loadAttempted: userLoadAttemptedSignal,
     fetchCurrentUser,
   } = useAuth();
+  const currentUser = useSignalValue(user);
+  const userLoading = useSignalValue(userLoadingSignal);
+  const userLoadAttempted = useSignalValue(userLoadAttemptedSignal);
   /** The signed-in user; the button is inactive until it is known. */
-  const userId = user.value?.id ?? null;
+  const userId = currentUser?.id ?? null;
+  const userIdRef = useLatest(userId);
   /** This island's own retry of the user load ended without a user. */
-  const userLoadFailed = useSignal(false);
+  const [userLoadFailed, setUserLoadFailed] = useState(false);
   /**
    * A create met `client_request_id_conflict` in this mount. Normally the
    * stored conflict record shows the notice; this keeps it showing when that
    * write was refused because a newer flow owns the record.
    */
-  const conflictSeen = useSignal(false);
+  const [conflictSeen, setConflictSeen] = useState(false);
+  const conflictSeenRef = useLatest(conflictSeen);
   const key = pendingKey(userId ?? "", clusterId, namespace, kind, name);
   /** Set when the deployment has no database; fixed for the page's life. */
-  const noDatabase = useSignal(false);
-  const open = useSignal(false);
+  const [noDatabase, setNoDatabase] = useState(false);
+  const [open, setOpen] = useState(false);
   /** A create or capture is in flight; every action is inactive meanwhile. */
-  const busy = useSignal(false);
-  const error = useSignal<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  /**
+   * The guard that stops a second click before the next render: a state
+   * value would still read false for a click in the same tick.
+   */
+  const busyRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
   /**
    * Bumped whenever the pending record is written or cleared, so the label
    * and link, which read it from storage, re-render.
    */
-  const pendingVersion = useSignal(0);
+  const [pendingVersion, setPendingVersion] = useState(0);
 
-  const owned = useSignal<IncidentView[]>([]);
-  const listCursor = useSignal<string | undefined>(undefined);
-  const listLoading = useSignal(false);
-  const listError = useSignal<string | null>(null);
+  const [owned, setOwned] = useState<IncidentView[]>([]);
+  const [listCursor, setListCursor] = useState<string | undefined>(undefined);
+  const [listLoading, setListLoading] = useState(false);
+  const listLoadingRef = useRef(false);
+  const [listError, setListError] = useState<string | null>(null);
 
   const triggerRef = useRef<HTMLButtonElement>(null);
   const newButtonRef = useRef<HTMLButtonElement>(null);
@@ -281,41 +294,42 @@ export default function CaptureToIncidentButton({
   // It has its own controller, so a switch away cancels only the probe.
   useEffect(() => {
     if (!isLocal) {
-      open.value = false;
+      setOpen(false);
       return;
     }
     const controller = new AbortController();
     listIncidents({ limit: 1 }, controller.signal).catch((err) => {
       if (!controller.signal.aborted && isPersistenceUnavailable(err)) {
-        noDatabase.value = true;
+        setNoDatabase(true);
       }
     });
     return () => controller.abort();
   }, [isLocal]);
 
-  const isOpen = open.value && isLocal;
+  const isOpen = open && isLocal;
   useEffect(() => {
     if (isOpen) newButtonRef.current?.focus();
   }, [isOpen]);
 
   const inactiveReason = !isLocal
     ? "Capture is local-cluster only. Switch to the local cluster to capture this resource into an incident."
-    : noDatabase.value
+    : noDatabase
       ? "This deployment has no database, so incidents cannot be recorded."
       : !isCaptureKind(kind)
         ? `${kind || "This kind"} cannot be captured into an incident.`
         : userId
           ? null
-          : userLoading.value || !userLoadAttempted.value
+          : userLoading || !userLoadAttempted
             ? "Your sign-in details are still loading."
-            : userLoadFailed.value
+            : userLoadFailed
               ? "Your sign-in details could not be loaded. Reload the page."
               : "Your sign-in details are not loaded. Select to try again.";
 
   const loadOwned = async (cursor?: string) => {
-    if (listLoading.peek()) return;
-    listLoading.value = true;
-    listError.value = null;
+    if (listLoadingRef.current) return;
+    listLoadingRef.current = true;
+    setListLoading(true);
+    setListError(null);
     const signal = lifetime.current?.signal;
     try {
       const page = await listIncidents(
@@ -326,18 +340,21 @@ export default function CaptureToIncidentButton({
       const mine = page.items.filter(
         (i) => i.role === "owner" && i.status === "open",
       );
-      owned.value = cursor ? [...owned.peek(), ...mine] : mine;
-      listCursor.value = page.continue;
+      setOwned((prev) => (cursor ? [...prev, ...mine] : mine));
+      setListCursor(page.continue);
     } catch (err) {
       if (signal?.aborted) return;
       if (isPersistenceUnavailable(err)) {
-        noDatabase.value = true;
-        open.value = false;
+        setNoDatabase(true);
+        setOpen(false);
         return;
       }
-      listError.value = "Could not load your open incidents.";
+      setListError("Could not load your open incidents.");
     } finally {
-      if (!signal?.aborted) listLoading.value = false;
+      if (!signal?.aborted) {
+        listLoadingRef.current = false;
+        setListLoading(false);
+      }
     }
   };
 
@@ -346,30 +363,30 @@ export default function CaptureToIncidentButton({
    * top bar's load failed or never ran). Failing again says so truthfully.
    */
   const retryUserLoad = async () => {
-    if (userId || userLoading.peek()) return;
-    userLoadFailed.value = false;
+    if (userIdRef.current || userLoadingSignal.value) return;
+    setUserLoadFailed(false);
     // Scoped like the top bar's load, so the RBAC summary it stores keeps
     // matching the selected namespace.
-    const ns = selectedNamespace.peek();
+    const ns = selectedNamespace.value;
     const loaded = await fetchCurrentUser(ns !== "all" ? ns : undefined);
-    if (!lifetime.current?.signal.aborted) userLoadFailed.value = !loaded;
+    if (!lifetime.current?.signal.aborted) setUserLoadFailed(!loaded);
   };
 
   const openDialog = () => {
     // Only the missing user stands in the way: try loading it again.
-    if (isLocal && !noDatabase.peek() && isCaptureKind(kind) && !userId) {
+    if (isLocal && !noDatabase && isCaptureKind(kind) && !userId) {
       void retryUserLoad();
       return;
     }
-    if (inactiveReason || open.peek()) return;
-    error.value = null;
-    open.value = true;
+    if (inactiveReason || open) return;
+    setError(null);
+    setOpen(true);
     void loadOwned();
   };
 
   const closeDialog = () => {
-    if (busy.peek()) return;
-    open.value = false;
+    if (busyRef.current) return;
+    setOpen(false);
     triggerRef.current?.focus();
   };
 
@@ -380,17 +397,19 @@ export default function CaptureToIncidentButton({
   const run = async (
     action: (signal?: AbortSignal) => Promise<string | null>,
   ) => {
-    if (busy.peek()) return;
-    busy.value = true;
-    error.value = null;
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
     const signal = lifetime.current?.signal;
     try {
       const id = await action(signal);
       if (signal?.aborted) return;
       if (!id) {
         // Nothing to open (a conflict stopped the create): stay, re-read.
-        busy.value = false;
-        pendingVersion.value++;
+        busyRef.current = false;
+        setBusy(false);
+        setPendingVersion((v) => v + 1);
         return;
       }
       globalThis.location.assign(incidentHref(id));
@@ -400,15 +419,17 @@ export default function CaptureToIncidentButton({
       // workspace's.
       // A key conflict is shown by the "may already exist" notice, not twice.
       if (err instanceof CreateFailed && isCreateConflict(err.failure)) {
-        conflictSeen.value = true;
+        setConflictSeen(true);
       }
-      error.value =
+      setError(
         err instanceof CreateFailed
           ? isCreateConflict(err.failure)
             ? null
             : keyedCreateErrorText(err.failure)
-          : captureErrorText(err);
-      busy.value = false;
+          : captureErrorText(err),
+      );
+      busyRef.current = false;
+      setBusy(false);
     }
   };
 
@@ -433,7 +454,7 @@ export default function CaptureToIncidentButton({
     if (owns && !owns(readPendingCapture(key))) return;
     if (rec) writePendingCapture(key, rec);
     else clearPendingCapture(key);
-    if (!signal?.aborted) pendingVersion.value++;
+    if (!signal?.aborted) setPendingVersion((v) => v + 1);
   };
 
   // The new incident's title and summary. The summary carries the full,
@@ -529,7 +550,7 @@ export default function CaptureToIncidentButton({
     run(async (signal) => {
       const stored = readPendingCapture(key);
       if (
-        conflictSeen.peek() ||
+        conflictSeenRef.current ||
         isPendingConflict(stored) ||
         isStaleIntent(stored, Date.now())
       ) {
@@ -542,7 +563,8 @@ export default function CaptureToIncidentButton({
   /** After a conflict, the operator's explicit choice to create anyway. */
   const createAnyway = () =>
     run((signal) => {
-      conflictSeen.value = false;
+      setConflictSeen(false);
+      conflictSeenRef.current = false;
       return createAndCapture(freshIntent(), signal);
     });
 
@@ -567,20 +589,20 @@ export default function CaptureToIncidentButton({
       return id;
     });
 
-  const inFlight = busy.value;
+  const inFlight = busy;
   // Read after the version so a write or clear re-renders the label and link.
-  void pendingVersion.value;
+  void pendingVersion;
   const pending = userId ? readPendingCapture(key) : null;
   // A conflict, or an unresolved intent too old to resend silently, both
   // read as "an incident for this capture may already exist".
   const conflict =
-    conflictSeen.value ||
+    conflictSeen ||
     isPendingConflict(pending) ||
     isStaleIntent(pending, Date.now());
   const created = conflict ? null : (pending?.id ?? null);
 
   return (
-    <div class={className ? `${ROOT_CLASS} ${className}` : ROOT_CLASS}>
+    <div className={className ? `${ROOT_CLASS} ${className}` : ROOT_CLASS}>
       <button
         ref={triggerRef}
         type="button"
@@ -590,12 +612,12 @@ export default function CaptureToIncidentButton({
         title={inactiveReason ?? undefined}
         data-testid="capture-to-incident"
         onClick={openDialog}
-        class={BUTTON_TRIGGER}
+        className={BUTTON_TRIGGER}
       >
         Capture to incident
       </button>
       {inactiveReason && (
-        <span id={REASON_ID} class="sr-only">
+        <span id={REASON_ID} className="sr-only">
           {inactiveReason}
         </span>
       )}
@@ -607,40 +629,42 @@ export default function CaptureToIncidentButton({
           closeTestId="capture-to-incident-close"
           onClose={closeDialog}
         >
-          <div class="flex flex-col gap-4 overflow-y-auto p-4">
-            <p class="m-0 text-sm text-text-secondary">
+          <div className="flex flex-col gap-4 overflow-y-auto p-4">
+            <p className="m-0 text-sm text-text-secondary">
               Captures the diagnosis, object and events of{" "}
-              <span class="font-medium text-text-primary">
+              <span className="font-medium text-text-primary">
                 {kind}/{name}
               </span>{" "}
-              in <span class="font-medium text-text-primary">{namespace}</span>.
+              in{" "}
+              <span className="font-medium text-text-primary">{namespace}</span>
+              .
             </p>
             {conflict && (
               <div
                 role="alert"
                 data-testid="capture-create-conflict"
-                class="flex flex-col gap-2"
+                className="flex flex-col gap-2"
               >
                 <Alert variant="warning">
                   {createConflictText("this capture")}
                 </Alert>
-                <a href={INCIDENTS_HREF} class={LINK_CLASS}>
+                <a href={INCIDENTS_HREF} className={LINK_CLASS}>
                   Check your incidents
                 </a>
               </div>
             )}
-            {error.value && (
-              <div role="alert" class="flex flex-col gap-2">
-                <Alert variant="error">{error.value}</Alert>
+            {error && (
+              <div role="alert" className="flex flex-col gap-2">
+                <Alert variant="error">{error}</Alert>
                 {created && !conflict && (
-                  <a href={incidentHref(created)} class={LINK_CLASS}>
+                  <a href={incidentHref(created)} className={LINK_CLASS}>
                     Open the incident that was created
                   </a>
                 )}
               </div>
             )}
             {inFlight && (
-              <p role="status" class="m-0 text-sm text-text-muted">
+              <p role="status" className="m-0 text-sm text-text-muted">
                 Capturing…
               </p>
             )}
@@ -651,7 +675,7 @@ export default function CaptureToIncidentButton({
                 aria-disabled={inFlight}
                 data-testid="capture-create-anyway"
                 onClick={createAnyway}
-                class={BUTTON_PRIMARY}
+                className={BUTTON_PRIMARY}
               >
                 Create a new incident anyway
               </button>
@@ -662,7 +686,7 @@ export default function CaptureToIncidentButton({
                 aria-disabled={inFlight}
                 data-testid="capture-to-new-incident"
                 onClick={captureNew}
-                class={BUTTON_PRIMARY}
+                className={BUTTON_PRIMARY}
               >
                 {created
                   ? "Retry capture into the new incident"
@@ -671,50 +695,50 @@ export default function CaptureToIncidentButton({
             )}
             <section
               aria-labelledby="capture-existing-heading"
-              class="flex flex-col gap-2"
+              className="flex flex-col gap-2"
             >
               <h3
                 id="capture-existing-heading"
-                class="m-0 text-xs font-semibold uppercase tracking-wide text-text-muted"
+                className="m-0 text-xs font-semibold uppercase tracking-wide text-text-muted"
               >
                 Or capture into an open incident you own
               </h3>
-              {listError.value && (
-                <div class="flex items-center gap-3 text-sm">
-                  <span role="alert" class="text-error">
-                    {listError.value}
+              {listError && (
+                <div className="flex items-center gap-3 text-sm">
+                  <span role="alert" className="text-error">
+                    {listError}
                   </span>
                   <button
                     type="button"
-                    aria-disabled={listLoading.value}
+                    aria-disabled={listLoading}
                     onClick={() => void loadOwned()}
-                    class={BUTTON_SECONDARY}
+                    className={BUTTON_SECONDARY}
                   >
                     Retry
                   </button>
                 </div>
               )}
-              {!listError.value &&
-                !listLoading.value &&
-                !listCursor.value &&
-                owned.value.length === 0 && (
-                  <p class="m-0 text-sm text-text-muted">
+              {!listError &&
+                !listLoading &&
+                !listCursor &&
+                owned.length === 0 && (
+                  <p className="m-0 text-sm text-text-muted">
                     You own no open incidents.
                   </p>
                 )}
-              {owned.value.length > 0 && (
-                <ul class="m-0 flex list-none flex-col gap-1 p-0">
-                  {owned.value.map((incident) => (
+              {owned.length > 0 && (
+                <ul className="m-0 flex list-none flex-col gap-1 p-0">
+                  {owned.map((incident) => (
                     <li key={incident.id}>
                       <button
                         type="button"
                         aria-disabled={inFlight}
                         data-testid="capture-to-existing-incident"
                         onClick={() => captureExisting(incident.id)}
-                        class="flex w-full cursor-pointer items-center justify-between gap-3 rounded-md border border-border-subtle bg-transparent px-3 py-2 text-left text-sm text-text-primary hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                        className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-md border border-border-subtle bg-transparent px-3 py-2 text-left text-sm text-text-primary hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                       >
-                        <span class="truncate">{incident.title}</span>
-                        <span class="shrink-0 text-xs text-text-muted">
+                        <span className="truncate">{incident.title}</span>
+                        <span className="shrink-0 text-xs text-text-muted">
                           Capture here
                         </span>
                       </button>
@@ -722,16 +746,16 @@ export default function CaptureToIncidentButton({
                   ))}
                 </ul>
               )}
-              {listLoading.value && (
-                <p role="status" class="m-0 text-sm text-text-muted">
+              {listLoading && (
+                <p role="status" className="m-0 text-sm text-text-muted">
                   Loading your incidents…
                 </p>
               )}
-              {listCursor.value && !listLoading.value && !listError.value && (
+              {listCursor && !listLoading && !listError && (
                 <button
                   type="button"
-                  onClick={() => void loadOwned(listCursor.peek())}
-                  class={BUTTON_SECONDARY}
+                  onClick={() => void loadOwned(listCursor)}
+                  className={BUTTON_SECONDARY}
                 >
                   Load more
                 </button>
