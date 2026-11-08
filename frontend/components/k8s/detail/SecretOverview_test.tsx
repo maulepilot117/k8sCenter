@@ -1,138 +1,212 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
-import { SecretOverview } from "@/components/k8s/detail/SecretOverview.tsx";
-import { setAccessToken } from "@/lib/api.ts";
+/** @jsxImportSource react */
+import { afterEach, expect, test } from "bun:test";
+// Loads preact/compat the way ToastProvider does on every ChromeLayout page.
+import "react";
 import type { K8sResource } from "@/lib/k8s-types.ts";
+import {
+  act,
+  body,
+  fireEvent,
+  render,
+  setupDom,
+  waitFor,
+} from "@/src/test-utils/render.tsx";
 
-const SECRET = {
-  apiVersion: "v1",
-  kind: "Secret",
-  metadata: { name: "db-creds", namespace: "db", resourceVersion: "1" },
-  type: "Opaque",
-  data: { password: "****", username: "****" },
-} as unknown as K8sResource;
+const bunFetch = globalThis.fetch;
+setupDom({ browser: true });
 
-let host: HTMLElement | null = null;
-const originalFetch = globalThis.fetch;
+const { SecretOverview } = await import(
+  "@/components/k8s/detail/SecretOverview.tsx"
+);
+const { setAccessToken } = await import("@/lib/api.ts");
+
+function secret(resourceVersion = "1"): K8sResource {
+  return {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: { name: "db-creds", namespace: "db", resourceVersion },
+    type: "Opaque",
+    data: { password: "****", username: "****" },
+  } as unknown as K8sResource;
+}
+
 const requested: string[] = [];
-
-beforeAll(() => {
-  if (!GlobalRegistrator.isRegistered) {
-    GlobalRegistrator.register({ url: "http://localhost/config/secrets/db" });
-  }
-});
+const pending = new Map<string, (r: Response) => void>();
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-  globalThis.fetch = originalFetch;
+  globalThis.fetch = bunFetch;
   requested.length = 0;
+  pending.clear();
   setAccessToken(null);
 });
 
-afterAll(() => {
-  if (GlobalRegistrator.isRegistered) GlobalRegistrator.unregister();
-});
+function ok(key: string, value: string): Response {
+  return new Response(JSON.stringify({ data: { key, value } }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+const keyOf = (input: string | URL | Request) =>
+  decodeURIComponent(String(input).split("/reveal/")[1] ?? "");
+
+/** Every request is held until the test answers it with `answer(key, ...)`. */
+function holdReveals() {
+  setAccessToken("t");
+  globalThis.fetch = ((input: string | URL | Request) => {
+    requested.push(String(input));
+    return new Promise<Response>((resolve) => {
+      pending.set(keyOf(input), resolve);
+    });
+  }) as typeof globalThis.fetch;
+}
+
+function answer(key: string, plain: string) {
+  const resolve = pending.get(key);
+  if (!resolve) throw new Error(`no pending request for ${key}`);
+  return act(async () => {
+    resolve(ok(key, btoa(plain)));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
 
 function stubReveal(values: Record<string, string>) {
   setAccessToken("t");
   globalThis.fetch = ((input: string | URL | Request) => {
-    const url = String(input);
-    requested.push(url);
-    const key = decodeURIComponent(url.split("/reveal/")[1] ?? "");
-    return Promise.resolve(
-      new Response(JSON.stringify({ data: { key, value: values[key] } }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    requested.push(String(input));
+    const key = keyOf(input);
+    return Promise.resolve(ok(key, btoa(values[key] ?? "")));
   }) as typeof globalThis.fetch;
 }
 
-const flush = () =>
-  act(async () => {
-    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+const click = (label: string) =>
+  act(() => {
+    fireEvent.click(body().getByRole("button", { name: label }));
   });
 
-function button(label: string): HTMLButtonElement {
-  const b = host?.querySelector(`button[aria-label="${label}"]`);
-  if (!b) throw new Error(`no "${label}" button`);
-  return b as HTMLButtonElement;
-}
-
-function mount(resource: K8sResource) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(<SecretOverview resource={resource} />, host as HTMLElement),
-  );
-}
-
 test("values are masked until one key is revealed through the audited endpoint", async () => {
-  stubReveal({ password: btoa("hunter2") });
-  mount(SECRET);
+  stubReveal({ password: "hunter2" });
+  render(<SecretOverview resource={secret()} />);
 
-  expect(host?.textContent).not.toContain("hunter2");
-  act(() => button("Reveal password").click());
-  await flush();
+  expect(document.body.textContent).not.toContain("hunter2");
+  await click("Reveal password");
+  await waitFor(() => expect(document.body.textContent).toContain("hunter2"));
 
   expect(requested).toHaveLength(1);
   expect(requested[0]).toEndWith(
     "/api/v1/resources/secrets/db/db-creds/reveal/password",
   );
-  expect(host?.textContent).toContain("hunter2");
   // The other key stays masked.
-  expect(() => button("Reveal username")).not.toThrow();
+  body().getByRole("button", { name: "Reveal username" });
 
-  act(() => button("Hide password").click());
-  expect(host?.textContent).not.toContain("hunter2");
+  await click("Hide password");
+  expect(document.body.textContent).not.toContain("hunter2");
+  // Hiding is local: no second request.
+  expect(requested).toHaveLength(1);
+});
+
+test("revealing key B before A resolves shows both, one request per key", async () => {
+  holdReveals();
+  render(<SecretOverview resource={secret()} />);
+
+  await click("Reveal password");
+  await click("Reveal username");
+  expect(requested).toHaveLength(2);
+
+  // Answer B first, then A: A's callback runs after B's state landed.
+  await answer("username", "alice");
+  await answer("password", "hunter2");
+
+  await waitFor(() => {
+    expect(document.body.textContent).toContain("alice");
+    expect(document.body.textContent).toContain("hunter2");
+  });
+  expect(requested).toHaveLength(2);
+  body().getByRole("button", { name: "Hide password" });
+  body().getByRole("button", { name: "Hide username" });
+});
+
+test("a second click while a reveal is in flight sends no second request", async () => {
+  holdReveals();
+  render(<SecretOverview resource={secret()} />);
+
+  const btn = body().getByRole("button", { name: "Reveal password" });
+  act(() => {
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+  });
+  expect(requested).toHaveLength(1);
+  await answer("password", "hunter2");
+  await waitFor(() => expect(document.body.textContent).toContain("hunter2"));
+  expect(requested).toHaveLength(1);
 });
 
 test("a live update of the Secret drops revealed values", async () => {
-  stubReveal({ password: btoa("hunter2") });
-  mount(SECRET);
-  act(() => button("Reveal password").click());
-  await flush();
-  expect(host?.textContent).toContain("hunter2");
+  stubReveal({ password: "hunter2" });
+  const { rerender } = render(<SecretOverview resource={secret()} />);
+  await click("Reveal password");
+  await waitFor(() => expect(document.body.textContent).toContain("hunter2"));
 
-  const updated = {
-    ...SECRET,
-    metadata: { ...SECRET.metadata, resourceVersion: "2" },
-  } as K8sResource;
-  act(() => render(<SecretOverview resource={updated} />, host as HTMLElement));
-  await flush();
-  expect(host?.textContent).not.toContain("hunter2");
+  rerender(<SecretOverview resource={secret("2")} />);
+  await waitFor(() =>
+    expect(document.body.textContent).not.toContain("hunter2"),
+  );
 });
 
 test("a reveal still in flight when the Secret changes is discarded", async () => {
-  setAccessToken("t");
-  let answer: (r: Response) => void = () => {};
-  globalThis.fetch = ((_input: string | URL | Request) =>
-    new Promise<Response>((resolve) => {
-      answer = resolve;
-    })) as typeof globalThis.fetch;
-  mount(SECRET);
-  act(() => button("Reveal password").click());
+  holdReveals();
+  const { rerender } = render(<SecretOverview resource={secret()} />);
+  await click("Reveal password");
 
-  const updated = {
-    ...SECRET,
-    metadata: { ...SECRET.metadata, resourceVersion: "2" },
-  } as K8sResource;
-  act(() => render(<SecretOverview resource={updated} />, host as HTMLElement));
-  answer(
-    new Response(
-      JSON.stringify({ data: { key: "password", value: btoa("old-value") } }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
+  rerender(<SecretOverview resource={secret("2")} />);
+  await answer("password", "old-value");
+
+  expect(document.body.textContent).not.toContain("old-value");
+  await waitFor(() => body().getByRole("button", { name: "Reveal password" }));
+});
+
+test("a failed reveal shows the server message under its key and clears on retry", async () => {
+  holdReveals();
+  render(<SecretOverview resource={secret()} />);
+
+  await click("Reveal password");
+  await click("Reveal username");
+
+  // username succeeds first, then password is refused with the API's error
+  // envelope: the failure must not disturb the already revealed key.
+  await answer("username", "alice");
+  await waitFor(() => expect(document.body.textContent).toContain("alice"));
+  const refuse = pending.get("password");
+  if (!refuse) throw new Error("no pending request for password");
+  await act(async () => {
+    refuse(
+      new Response(
+        JSON.stringify({
+          error: { code: 403, message: "not allowed to reveal this key" },
+        }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  await waitFor(() =>
+    expect(document.body.textContent).toContain(
+      "API error 403: not allowed to reveal this key",
     ),
   );
-  await flush();
+  // The other key's value stays visible; the failed key is idle again.
+  expect(document.body.textContent).toContain("alice");
+  body().getByRole("button", { name: "Hide username" });
+  const retry = body().getByRole("button", { name: "Reveal password" });
+  expect((retry as HTMLButtonElement).disabled).toBe(false);
+  expect(retry.textContent).toBe("Reveal");
 
-  expect(host?.textContent).not.toContain("old-value");
-  expect(() => button("Reveal password")).not.toThrow();
+  // Retrying clears the stale error straight away, then shows the value.
+  await click("Reveal password");
+  expect(document.body.textContent).not.toContain("not allowed to reveal");
+  await answer("password", "hunter2");
+  await waitFor(() => expect(document.body.textContent).toContain("hunter2"));
+  expect(document.body.textContent).not.toContain("not allowed to reveal");
+  expect(document.body.textContent).toContain("alice");
 });

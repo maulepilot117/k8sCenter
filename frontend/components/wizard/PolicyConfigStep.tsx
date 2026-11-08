@@ -1,17 +1,24 @@
-import { useCallback } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback } from "react";
 import type { ParamField } from "@/lib/policy-templates.ts";
 import { getTemplate } from "@/lib/policy-templates.ts";
 import type { EngineStatus } from "@/lib/policy-types.ts";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { PolicyWizardForm } from "@/src/islands/PolicyWizard.tsx";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 function CloseIcon() {
   return (
-    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <svg
+      className="w-4 h-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
       <path
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        stroke-width="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
         d="M6 18L18 6M6 6l12 12"
       />
     </svg>
@@ -79,14 +86,17 @@ export function PolicyConfigStep({
     onUpdate("excludedNamespaces", [...form.excludedNamespaces, ""]);
   }, [form.excludedNamespaces, onUpdate]);
 
+  const nsRows = useRowKeys(form.excludedNamespaces.length);
+
   const removeExcludedNamespace = useCallback(
     (index: number) => {
+      nsRows.removeAt(index);
       onUpdate(
         "excludedNamespaces",
         form.excludedNamespaces.filter((_, i) => i !== index),
       );
     },
-    [form.excludedNamespaces, onUpdate],
+    [form.excludedNamespaces, onUpdate, nsRows],
   );
 
   const updateExcludedNamespace = useCallback(
@@ -99,81 +109,83 @@ export function PolicyConfigStep({
   );
 
   return (
-    <div class="space-y-6 max-w-lg">
+    <div className="space-y-6 max-w-lg">
       {/* Engine Selector */}
       <div>
-        <label class="block text-sm font-medium text-text-primary mb-2">
+        <label className="block text-sm font-medium text-text-primary mb-2">
           Policy Engine
         </label>
         {singleEngine ? (
-          <p class="text-sm text-text-secondary">
+          <p className="text-sm text-text-secondary">
             Auto-selected:{" "}
-            <span class="font-medium text-text-primary capitalize">
+            <span className="font-medium text-text-primary capitalize">
               {engineStatus?.detected}
             </span>
           </p>
         ) : (
-          <div class="flex gap-4">
+          <div className="flex gap-4">
             {kyvernoAvailable && (
-              <label class="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="engine"
                   value="kyverno"
                   checked={form.engine === "kyverno"}
                   onChange={() => onUpdate("engine", "kyverno")}
-                  class="accent-brand"
+                  className="accent-brand"
                 />
-                <span class="text-sm text-text-primary">Kyverno</span>
+                <span className="text-sm text-text-primary">Kyverno</span>
               </label>
             )}
             {gatekeeperAvailable && (
-              <label class="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="engine"
                   value="gatekeeper"
                   checked={form.engine === "gatekeeper"}
                   onChange={() => onUpdate("engine", "gatekeeper")}
-                  class="accent-brand"
+                  className="accent-brand"
                 />
-                <span class="text-sm text-text-primary">Gatekeeper</span>
+                <span className="text-sm text-text-primary">Gatekeeper</span>
               </label>
             )}
           </div>
         )}
         {errors.engine && (
-          <p class="text-sm text-danger mt-1">{errors.engine}</p>
+          <p className="text-sm text-danger mt-1">{errors.engine}</p>
         )}
       </div>
 
       {/* Name */}
       <div>
-        <label class="block text-sm font-medium text-text-primary mb-1">
+        <label className="block text-sm font-medium text-text-primary mb-1">
           Policy Name
         </label>
         <input
           type="text"
-          class={WIZARD_INPUT_CLASS}
+          className={WIZARD_INPUT_CLASS}
           value={form.name}
-          onInput={(e) =>
-            onUpdate("name", (e.target as HTMLInputElement).value)
+          onChange={(e) =>
+            onUpdate("name", (e.currentTarget as HTMLInputElement).value)
           }
           placeholder="disallow-privileged"
         />
-        {errors.name && <p class="text-sm text-danger mt-1">{errors.name}</p>}
+        {errors.name && (
+          <p className="text-sm text-danger mt-1">{errors.name}</p>
+        )}
       </div>
 
       {/* Action */}
       <div>
-        <label class="block text-sm font-medium text-text-primary mb-1">
+        <label className="block text-sm font-medium text-text-primary mb-1">
           Action
         </label>
         <select
-          class={WIZARD_INPUT_CLASS}
+          className={WIZARD_INPUT_CLASS}
           value={form.action}
           onChange={(e) =>
-            onUpdate("action", (e.target as HTMLSelectElement).value)
+            onUpdate("action", (e.currentTarget as HTMLSelectElement).value)
           }
         >
           <option value="">Select action...</option>
@@ -184,23 +196,23 @@ export function PolicyConfigStep({
           ))}
         </select>
         {errors.action && (
-          <p class="text-sm text-danger mt-1">{errors.action}</p>
+          <p className="text-sm text-danger mt-1">{errors.action}</p>
         )}
       </div>
 
       {/* Target Kinds */}
       <div>
-        <label class="block text-sm font-medium text-text-primary mb-2">
+        <label className="block text-sm font-medium text-text-primary mb-2">
           Target Kinds
         </label>
-        <div class="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2">
           {TARGET_KIND_OPTIONS.map((kind) => {
             const selected = form.targetKinds.includes(kind);
             return (
               <button
                 key={kind}
                 type="button"
-                class={`px-3 py-1.5 rounded-md text-sm border transition-colors ${
+                className={`px-3 py-1.5 rounded-md text-sm border transition-colors ${
                   selected
                     ? "border-brand bg-brand/10 text-brand"
                     : "border-border-primary bg-surface text-text-secondary hover:border-brand/50"
@@ -213,33 +225,33 @@ export function PolicyConfigStep({
           })}
         </div>
         {errors.targetKinds && (
-          <p class="text-sm text-danger mt-1">{errors.targetKinds}</p>
+          <p className="text-sm text-danger mt-1">{errors.targetKinds}</p>
         )}
       </div>
 
       {/* Excluded Namespaces */}
       <div>
-        <label class="block text-sm font-medium text-text-primary mb-2">
+        <label className="block text-sm font-medium text-text-primary mb-2">
           Excluded Namespaces
         </label>
-        <div class="space-y-2">
+        <div className="space-y-2">
           {form.excludedNamespaces.map((ns, i) => (
-            <div key={i} class="flex items-center gap-2">
+            <div key={nsRows.keyAt(i)} className="flex items-center gap-2">
               <input
                 type="text"
-                class={WIZARD_INPUT_CLASS}
+                className={WIZARD_INPUT_CLASS}
                 value={ns}
-                onInput={(e) =>
+                onChange={(e) =>
                   updateExcludedNamespace(
                     i,
-                    (e.target as HTMLInputElement).value,
+                    (e.currentTarget as HTMLInputElement).value,
                   )
                 }
                 placeholder="namespace"
               />
               <button
                 type="button"
-                class="text-text-muted hover:text-danger shrink-0"
+                className="text-text-muted hover:text-danger shrink-0"
                 onClick={() => removeExcludedNamespace(i)}
               >
                 <CloseIcon />
@@ -249,7 +261,7 @@ export function PolicyConfigStep({
         </div>
         <button
           type="button"
-          class="mt-2 text-sm text-brand hover:text-brand/80"
+          className="mt-2 text-sm text-brand hover:text-brand/80"
           onClick={addExcludedNamespace}
         >
           + Add namespace
@@ -258,15 +270,18 @@ export function PolicyConfigStep({
 
       {/* Description */}
       <div>
-        <label class="block text-sm font-medium text-text-primary mb-1">
+        <label className="block text-sm font-medium text-text-primary mb-1">
           Description
         </label>
         <textarea
-          class={WIZARD_INPUT_CLASS}
+          className={WIZARD_INPUT_CLASS}
           rows={3}
           value={form.description}
-          onInput={(e) =>
-            onUpdate("description", (e.target as HTMLTextAreaElement).value)
+          onChange={(e) =>
+            onUpdate(
+              "description",
+              (e.currentTarget as HTMLTextAreaElement).value,
+            )
           }
           placeholder="Policy description..."
         />
@@ -274,11 +289,11 @@ export function PolicyConfigStep({
 
       {/* Template-specific Parameters */}
       {template && template.paramFields.length > 0 && (
-        <div class="border-t border-border-primary pt-6">
-          <h3 class="text-sm font-semibold text-text-primary mb-4">
+        <div className="border-t border-border-primary pt-6">
+          <h3 className="text-sm font-semibold text-text-primary mb-4">
             Template Parameters
           </h3>
-          <div class="space-y-4">
+          <div className="space-y-4">
             {template.paramFields.map((field: ParamField) => (
               <TemplateParamField
                 key={field.key}
@@ -309,80 +324,107 @@ function TemplateParamField({
   if (field.type === "boolean") {
     return (
       <div>
-        <label class="flex items-center gap-2 cursor-pointer">
+        <label className="flex items-center gap-2 cursor-pointer">
           <input
             type="checkbox"
             checked={!!value}
-            onChange={(e) => onChange((e.target as HTMLInputElement).checked)}
-            class="accent-brand"
+            onChange={(e) =>
+              onChange((e.currentTarget as HTMLInputElement).checked)
+            }
+            className="accent-brand"
           />
-          <span class="text-sm text-text-primary">{field.label}</span>
+          <span className="text-sm text-text-primary">{field.label}</span>
         </label>
-        <p class="text-xs text-text-muted mt-1 ml-6">{field.description}</p>
+        <p className="text-xs text-text-muted mt-1 ml-6">{field.description}</p>
       </div>
     );
   }
 
   if (field.type === "stringList") {
-    const items = Array.isArray(value) ? (value as string[]) : [];
     return (
-      <div>
-        <label class="block text-sm font-medium text-text-primary mb-1">
-          {field.label}
-          {field.required && <span class="text-danger ml-0.5">*</span>}
-        </label>
-        <p class="text-xs text-text-muted mb-2">{field.description}</p>
-        <div class="space-y-2">
-          {items.map((item, i) => (
-            <div key={i} class="flex items-center gap-2">
-              <input
-                type="text"
-                class={WIZARD_INPUT_CLASS}
-                value={item}
-                onInput={(e) => {
-                  const updated = [...items];
-                  updated[i] = (e.target as HTMLInputElement).value;
-                  onChange(updated);
-                }}
-                placeholder={`Value ${i + 1}`}
-              />
-              <button
-                type="button"
-                class="text-text-muted hover:text-danger shrink-0"
-                onClick={() => onChange(items.filter((_, idx) => idx !== i))}
-              >
-                <CloseIcon />
-              </button>
-            </div>
-          ))}
-        </div>
-        <button
-          type="button"
-          class="mt-2 text-sm text-brand hover:text-brand/80"
-          onClick={() => onChange([...items, ""])}
-        >
-          + Add value
-        </button>
-        {error && <p class="text-sm text-danger mt-1">{error}</p>}
-      </div>
+      <StringListParamField
+        field={field}
+        value={value}
+        error={error}
+        onChange={onChange}
+      />
     );
   }
 
   // string type
   return (
     <div>
-      <label class="block text-sm font-medium text-text-primary mb-1">
+      <label className="block text-sm font-medium text-text-primary mb-1">
         {field.label}
-        {field.required && <span class="text-danger ml-0.5">*</span>}
+        {field.required && <span className="text-danger ml-0.5">*</span>}
       </label>
-      <p class="text-xs text-text-muted mb-1">{field.description}</p>
+      <p className="text-xs text-text-muted mb-1">{field.description}</p>
       <input
         type="text"
-        class={WIZARD_INPUT_CLASS}
+        className={WIZARD_INPUT_CLASS}
         value={(value as string) ?? ""}
-        onInput={(e) => onChange((e.target as HTMLInputElement).value)}
+        onChange={(e) => onChange((e.currentTarget as HTMLInputElement).value)}
       />
-      {error && <p class="text-sm text-danger mt-1">{error}</p>}
+      {error && <p className="text-sm text-danger mt-1">{error}</p>}
+    </div>
+  );
+}
+
+function StringListParamField({
+  field,
+  value,
+  error,
+  onChange,
+}: {
+  field: ParamField;
+  value: unknown;
+  error?: string;
+  onChange: (v: unknown) => void;
+}) {
+  const items = Array.isArray(value) ? (value as string[]) : [];
+  const rows = useRowKeys(items.length);
+  return (
+    <div>
+      <label className="block text-sm font-medium text-text-primary mb-1">
+        {field.label}
+        {field.required && <span className="text-danger ml-0.5">*</span>}
+      </label>
+      <p className="text-xs text-text-muted mb-2">{field.description}</p>
+      <div className="space-y-2">
+        {items.map((item, i) => (
+          <div key={rows.keyAt(i)} className="flex items-center gap-2">
+            <input
+              type="text"
+              className={WIZARD_INPUT_CLASS}
+              value={item}
+              onChange={(e) => {
+                const updated = [...items];
+                updated[i] = (e.currentTarget as HTMLInputElement).value;
+                onChange(updated);
+              }}
+              placeholder={`Value ${i + 1}`}
+            />
+            <button
+              type="button"
+              className="text-text-muted hover:text-danger shrink-0"
+              onClick={() => {
+                rows.removeAt(i);
+                onChange(items.filter((_, idx) => idx !== i));
+              }}
+            >
+              <CloseIcon />
+            </button>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="mt-2 text-sm text-brand hover:text-brand/80"
+        onClick={() => onChange([...items, ""])}
+      >
+        + Add value
+      </button>
+      {error && <p className="text-sm text-danger mt-1">{error}</p>}
     </div>
   );
 }

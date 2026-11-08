@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { age } from "@/lib/format.ts";
 import type { CronJob, K8sResource } from "@/lib/k8s-types.ts";
@@ -12,17 +13,17 @@ export function CronJobOverview({ resource }: { resource: K8sResource }) {
   const activeJobs = status?.active?.length ?? 0;
 
   return (
-    <div class="space-y-4">
+    <div className="space-y-4">
       {/* Configuration */}
       <div>
         <SectionHeader>Configuration</SectionHeader>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Schedule" value={spec.schedule} mono />
           <div>
-            <dt class="text-xs font-medium text-text-muted">Suspend</dt>
-            <dd class="mt-0.5">
+            <dt className="text-xs font-medium text-text-muted">Suspend</dt>
+            <dd className="mt-0.5">
               <span
-                class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
+                className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
                   suspended ? statusColor("warning") : statusColor("active")
                 }`}
               >
@@ -40,7 +41,7 @@ export function CronJobOverview({ resource }: { resource: K8sResource }) {
       {/* Status */}
       <div>
         <SectionHeader>Status</SectionHeader>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field
             label="Last Schedule"
             value={
@@ -57,11 +58,11 @@ export function CronJobOverview({ resource }: { resource: K8sResource }) {
       {status?.active && status.active.length > 0 && (
         <div>
           <SectionHeader>Active Job References</SectionHeader>
-          <div class="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
             {status.active.map((ref) => (
               <span
                 key={ref.name}
-                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-mono font-medium ring-1 ring-inset bg-accent-dim text-accent ring-accent"
+                className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-mono font-medium ring-1 ring-inset bg-accent-dim text-accent ring-accent"
               >
                 {ref.name}
               </span>

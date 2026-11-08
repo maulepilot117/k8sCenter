@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 import type { ProviderFormProps } from "@/lib/eso-types.ts";
 
@@ -27,11 +28,7 @@ import type { ProviderFormProps } from "@/lib/eso-types.ts";
  * preview (same pattern as VaultForm).
  */
 
-export type KubernetesAuthMethod = "serviceAccount" | "token" | "cert";
-
-/** KubernetesFormProps is the canonical ProviderFormProps — re-exported for
- *  consumers that imported it directly before the canonical type landed. */
-export type KubernetesFormProps = ProviderFormProps;
+type KubernetesAuthMethod = "serviceAccount" | "token" | "cert";
 
 interface SecretRef {
   name?: string;
@@ -116,8 +113,10 @@ export function KubernetesForm({
   spec,
   errors,
   onUpdateSpec,
-}: KubernetesFormProps) {
-  const method = useSignal<KubernetesAuthMethod | "">(detectMethod(spec));
+}: ProviderFormProps) {
+  const [method, setMethodState] = useState<KubernetesAuthMethod | "">(
+    detectMethod(spec),
+  );
 
   function patchTop(field: string, value: string) {
     const next = { ...spec };
@@ -143,8 +142,8 @@ export function KubernetesForm({
   }
 
   function setMethod(m: KubernetesAuthMethod) {
-    if (method.value === m) return;
-    method.value = m;
+    if (method === m) return;
+    setMethodState(m);
     // Clear auth slate; preserve top-level fields.
     onUpdateSpec({
       ...spec,
@@ -177,26 +176,26 @@ export function KubernetesForm({
   const srv = getServerBlock(spec);
 
   return (
-    <div class="space-y-5">
+    <div className="space-y-5">
       {/* Contextual banner — explains what this provider does */}
-      <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+      <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         The Kubernetes provider reads Secrets from{" "}
-        <span class="font-medium text-text-secondary">another namespace</span>{" "}
+        <span className="font-medium text-text-secondary">
+          another namespace
+        </span>{" "}
         (or cluster) via service-account impersonation. Set{" "}
-        <span class="font-mono text-xs">Remote namespace</span> to the source
-        namespace, then choose how ESO authenticates to that apiserver.
+        <span className="font-mono text-xs">Remote namespace</span> to the
+        source namespace, then choose how ESO authenticates to that apiserver.
       </div>
 
       {/* Remote namespace — most important field, shown prominently */}
-      <div class="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="k8s-remote-namespace"
           label="Remote namespace"
           required
           value={getStr(spec, "remoteNamespace")}
-          onInput={(e) =>
-            patchTop("remoteNamespace", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("remoteNamespace", e.currentTarget.value)}
           placeholder="secrets-ns"
           description="Namespace in the source cluster where Secrets live. Defaults to 'default' in ESO when omitted."
           error={errors.remoteNamespace}
@@ -204,18 +203,16 @@ export function KubernetesForm({
       </div>
 
       {/* Optional server block */}
-      <details class="group">
-        <summary class="cursor-pointer select-none text-sm font-medium text-text-secondary hover:text-text-primary">
+      <details className="group">
+        <summary className="cursor-pointer select-none text-sm font-medium text-text-secondary hover:text-text-primary">
           Advanced: custom apiserver URL
         </summary>
-        <div class="mt-3 grid grid-cols-2 gap-4 rounded-md border border-border-primary p-4">
+        <div className="mt-3 grid grid-cols-2 gap-4 rounded-md border border-border-primary p-4">
           <Input
             id="k8s-server-url"
             label="Apiserver URL (optional)"
             value={(srv.url as string) ?? ""}
-            onInput={(e) =>
-              patchServer({ url: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => patchServer({ url: e.currentTarget.value })}
             placeholder="https://apiserver.example.com:6443"
             description="Leave blank to use the in-cluster apiserver. Must use https."
             error={errors["server.url"]}
@@ -224,9 +221,7 @@ export function KubernetesForm({
             id="k8s-server-ca"
             label="CA bundle (base64, optional)"
             value={(srv.caBundle as string) ?? ""}
-            onInput={(e) =>
-              patchServer({ caBundle: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => patchServer({ caBundle: e.currentTarget.value })}
             placeholder="LS0tLS1CRUdJTi…"
             description="Base64-encoded CA bundle for the target apiserver. Leave blank to use the cluster's default CA."
             error={errors["server.caBundle"]}
@@ -235,53 +230,53 @@ export function KubernetesForm({
       </details>
 
       {/* Auth method picker */}
-      <div class="space-y-3">
-        <h3 class="text-sm font-semibold text-text-primary">
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">
+          <span aria-hidden="true" className="text-danger ml-0.5">
             *
           </span>
         </h3>
-        <div class="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-3">
           {AUTH_METHODS.map((m) => {
-            const active = method.value === m.id;
+            const active = method === m.id;
             return (
               <button
                 key={m.id}
                 type="button"
                 onClick={() => setMethod(m.id)}
-                class={`text-left rounded-lg border p-3 transition-colors ${
+                className={`text-left rounded-lg border p-3 transition-colors ${
                   active
                     ? "border-brand bg-brand/5"
                     : "border-border-primary bg-surface hover:border-brand/50"
                 }`}
                 aria-pressed={active}
               >
-                <div class="font-medium text-text-primary">{m.label}</div>
-                <p class="mt-1 text-xs text-text-muted">{m.description}</p>
+                <div className="font-medium text-text-primary">{m.label}</div>
+                <p className="mt-1 text-xs text-text-muted">{m.description}</p>
               </button>
             );
           })}
         </div>
-        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
+        {errors.auth && <p className="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
-      {method.value === "serviceAccount" && (
+      {method === "serviceAccount" && (
         <ServiceAccountAuthFields
           block={getAuthBlock(spec, "serviceAccount")}
           errors={errors}
           onPatch={(patch) => patchAuth("serviceAccount", patch)}
         />
       )}
-      {method.value === "token" && (
+      {method === "token" && (
         <TokenAuthFields
           block={getAuthBlock(spec, "token")}
           errors={errors}
           onPatchRef={(patch) => patchSecretRef("token", "bearerToken", patch)}
         />
       )}
-      {method.value === "cert" && (
+      {method === "cert" && (
         <CertAuthFields
           block={getAuthBlock(spec, "cert")}
           errors={errors}
@@ -332,17 +327,15 @@ function ServiceAccountAuthFields({
   }
 
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">ServiceAccount</h4>
-      <div class="grid grid-cols-2 gap-3">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">ServiceAccount</h4>
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="k8s-sa-name"
           label="ServiceAccount name"
           required
           value={name}
-          onInput={(e) =>
-            onPatch({ name: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatch({ name: e.currentTarget.value })}
           placeholder="eso-reader"
           description="The SA in the source namespace whose token ESO presents to the apiserver."
           error={errors["auth.serviceAccount.name"]}
@@ -351,9 +344,7 @@ function ServiceAccountAuthFields({
           id="k8s-sa-audiences"
           label="Token audiences (optional)"
           value={audiencesStr}
-          onInput={(e) =>
-            handleAudiencesInput((e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => handleAudiencesInput(e.currentTarget.value)}
           placeholder="https://kubernetes.default.svc"
           description="Comma-separated list. Leave blank for the default cluster audience."
           error={errors["auth.serviceAccount.audiences"]}
@@ -372,19 +363,17 @@ interface TokenAuthFieldsProps {
 function TokenAuthFields({ block, errors, onPatchRef }: TokenAuthFieldsProps) {
   const ref = (block.bearerToken as SecretRef) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">
         Bearer token Secret reference
       </h4>
-      <div class="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="k8s-token-ref-name"
           label="Secret name"
           required
           value={ref.name ?? ""}
-          onInput={(e) =>
-            onPatchRef({ name: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchRef({ name: e.currentTarget.value })}
           placeholder="k8s-token"
           error={errors["auth.token.bearerToken.name"]}
         />
@@ -393,9 +382,7 @@ function TokenAuthFields({ block, errors, onPatchRef }: TokenAuthFieldsProps) {
           label="Key"
           required
           value={ref.key ?? ""}
-          onInput={(e) =>
-            onPatchRef({ key: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchRef({ key: e.currentTarget.value })}
           placeholder="token"
           error={errors["auth.token.bearerToken.key"]}
         />
@@ -420,20 +407,20 @@ function CertAuthFields({
   const clientCert = (block.clientCert as SecretRef) ?? {};
   const clientKey = (block.clientKey as SecretRef) ?? {};
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-4">
+    <div className="rounded-md border border-border-primary p-4 space-y-4">
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
           Client certificate
         </h4>
-        <div class="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="k8s-cert-cert-name"
             label="Secret name"
             required
             value={clientCert.name ?? ""}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatchClientCert({
-                name: (e.target as HTMLInputElement).value,
+                name: e.currentTarget.value,
               })
             }
             placeholder="k8s-client-cert"
@@ -444,25 +431,23 @@ function CertAuthFields({
             label="Key"
             required
             value={clientCert.key ?? ""}
-            onInput={(e) =>
-              onPatchClientCert({ key: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchClientCert({ key: e.currentTarget.value })}
             placeholder="tls.crt"
             error={errors["auth.cert.clientCert.key"]}
           />
         </div>
       </div>
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">Client key</h4>
-        <div class="grid grid-cols-2 gap-3">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
+          Client key
+        </h4>
+        <div className="grid grid-cols-2 gap-3">
           <Input
             id="k8s-cert-key-name"
             label="Secret name"
             required
             value={clientKey.name ?? ""}
-            onInput={(e) =>
-              onPatchClientKey({ name: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchClientKey({ name: e.currentTarget.value })}
             placeholder="k8s-client-key"
             error={errors["auth.cert.clientKey.name"]}
           />
@@ -471,9 +456,7 @@ function CertAuthFields({
             label="Key"
             required
             value={clientKey.key ?? ""}
-            onInput={(e) =>
-              onPatchClientKey({ key: (e.target as HTMLInputElement).value })
-            }
+            onChange={(e) => onPatchClientKey({ key: e.currentTarget.value })}
             placeholder="tls.key"
             error={errors["auth.cert.clientKey.key"]}
           />

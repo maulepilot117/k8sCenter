@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { age } from "@/lib/format.ts";
 import type { Job, K8sResource } from "@/lib/k8s-types.ts";
@@ -9,11 +10,11 @@ export function JobOverview({ resource }: { resource: K8sResource }) {
   const status = j.status;
 
   return (
-    <div class="space-y-4">
+    <div className="space-y-4">
       {/* Configuration */}
       <div>
         <SectionHeader>Configuration</SectionHeader>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Completions" value={String(spec.completions ?? 1)} />
           <Field label="Parallelism" value={String(spec.parallelism ?? 1)} />
           <Field label="Backoff Limit" value={String(spec.backoffLimit ?? 6)} />
@@ -23,7 +24,7 @@ export function JobOverview({ resource }: { resource: K8sResource }) {
       {/* Status */}
       <div>
         <SectionHeader>Status</SectionHeader>
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Active" value={String(status.active ?? 0)} />
           <Field label="Succeeded" value={String(status.succeeded ?? 0)} />
           <Field label="Failed" value={String(status.failed ?? 0)} />

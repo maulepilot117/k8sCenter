@@ -440,7 +440,7 @@ export default function StatefulSetWizard({
                       )
                     }
                     title="Remove volume"
-                    class="p-1"
+                    className="p-1"
                   />
                 </div>
 

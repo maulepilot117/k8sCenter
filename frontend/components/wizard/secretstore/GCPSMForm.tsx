@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 
 /**
@@ -16,9 +17,9 @@ import { Input } from "@/components/ui/Input.tsx";
  * don't leak into the preview.
  */
 
-export type GCPSMAuthMethod = "workloadIdentity" | "secretRef" | "default";
+type GCPSMAuthMethod = "workloadIdentity" | "secretRef" | "default";
 
-export interface GCPSMFormProps {
+interface GCPSMFormProps {
   spec: Record<string, unknown>;
   errors: Record<string, string>;
   onUpdateSpec: (spec: Record<string, unknown>) => void;
@@ -111,7 +112,9 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
 
   // Track which auth method's fields are currently shown. Persisted in the
   // spec itself (via detectMethod) so the form survives Back/Next navigation.
-  const method = useSignal<GCPSMAuthMethod>(detectMethod(spec));
+  const [method, setMethodState] = useState<GCPSMAuthMethod>(
+    detectMethod(spec),
+  );
 
   function patchTop(field: string, value: string) {
     const next = { ...spec };
@@ -121,8 +124,8 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
   }
 
   function setMethod(m: GCPSMAuthMethod) {
-    if (method.value === m) return;
-    method.value = m;
+    if (method === m) return;
+    setMethodState(m);
     // Clear the auth slate; preserve top-level fields (projectID, location).
     if (m === "default") {
       const next = { ...spec };
@@ -163,23 +166,21 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
   }
 
   return (
-    <div class="space-y-5">
-      <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+    <div className="space-y-5">
+      <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         Configure the GCP Secret Manager connection. The project ID is the only
         required field. Credentials are referenced by name from Kubernetes
         Secrets — this wizard never holds GCP credentials directly.
       </div>
 
       {/* Top-level GCP SM fields */}
-      <div class="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="gcpsm-project-id"
           label="Project ID"
           required
           value={getStr(spec, "projectID")}
-          onInput={(e) =>
-            patchTop("projectID", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("projectID", e.currentTarget.value)}
           placeholder="my-gcp-project"
           description="GCP project ID where your secrets are stored."
           error={errors.projectID}
@@ -188,9 +189,7 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
           id="gcpsm-location"
           label="Location (optional)"
           value={getStr(spec, "location")}
-          onInput={(e) =>
-            patchTop("location", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => patchTop("location", e.currentTarget.value)}
           placeholder="us-central1"
           description="Regional endpoint. Leave blank to use the global endpoint."
           error={errors.location}
@@ -198,58 +197,58 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
       </div>
 
       {/* Auth method picker */}
-      <div class="space-y-3">
-        <h3 class="text-sm font-semibold text-text-primary">
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">
+          <span aria-hidden="true" className="text-danger ml-0.5">
             *
           </span>
         </h3>
-        <div class="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-3">
           {AUTH_METHODS.map((m) => {
-            const active = method.value === m.id;
+            const active = method === m.id;
             return (
               <button
                 key={m.id}
                 type="button"
                 onClick={() => setMethod(m.id)}
-                class={`text-left rounded-lg border p-3 transition-colors ${
+                className={`text-left rounded-lg border p-3 transition-colors ${
                   active
                     ? "border-brand bg-brand/5"
                     : "border-border-primary bg-surface hover:border-brand/50"
                 }`}
                 aria-pressed={active}
               >
-                <div class="font-medium text-text-primary">{m.label}</div>
-                <p class="mt-1 text-xs text-text-muted">{m.description}</p>
+                <div className="font-medium text-text-primary">{m.label}</div>
+                <p className="mt-1 text-xs text-text-muted">{m.description}</p>
               </button>
             );
           })}
         </div>
-        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
+        {errors.auth && <p className="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
-      {method.value === "workloadIdentity" && (
+      {method === "workloadIdentity" && (
         <WorkloadIdentityFields
           block={getAuthBlock(spec, "workloadIdentity")}
           errors={errors}
           onPatch={patchWI}
         />
       )}
-      {method.value === "secretRef" && (
+      {method === "secretRef" && (
         <SAKeyFields
           block={getAuthBlock(spec, "secretRef")}
           errors={errors}
           onPatchRef={patchSARef}
         />
       )}
-      {method.value === "default" && (
-        <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+      {method === "default" && (
+        <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
           No additional configuration required. ESO will use Application Default
           Credentials — typically the GKE node service account or a
           metadata-server-provided identity. Ensure the identity has{" "}
-          <code class="font-mono">secretmanager.versions.access</code>{" "}
+          <code className="font-mono">secretmanager.versions.access</code>{" "}
           permission on the target project.
         </div>
       )}
@@ -292,9 +291,9 @@ function WorkloadIdentityFields({
   }
 
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-4">
+    <div className="rounded-md border border-border-primary p-4 space-y-4">
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
           Kubernetes ServiceAccount
         </h4>
         <Input
@@ -302,7 +301,7 @@ function WorkloadIdentityFields({
           label="ServiceAccount name"
           required
           value={saRef.name ?? ""}
-          onInput={(e) => patchSARefName((e.target as HTMLInputElement).value)}
+          onChange={(e) => patchSARefName(e.currentTarget.value)}
           placeholder="eso-gcp-sa"
           description="The Kubernetes ServiceAccount annotated with the GCP service account email via Workload Identity."
           error={
@@ -312,21 +311,20 @@ function WorkloadIdentityFields({
         />
       </div>
       <div>
-        <h4 class="text-sm font-medium text-text-primary mb-2">
+        <h4 className="text-sm font-medium text-text-primary mb-2">
           Cluster details{" "}
-          <span class="text-text-muted font-normal">
+          <span className="text-text-muted font-normal">
             (optional — read from metadata server if omitted)
           </span>
         </h4>
-        <div class="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <Input
             id="gcpsm-wi-cluster-location"
             label="Cluster location"
             value={clusterLocation}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatch({
-                clusterLocation:
-                  (e.target as HTMLInputElement).value || undefined,
+                clusterLocation: e.currentTarget.value || undefined,
               })
             }
             placeholder="us-central1"
@@ -336,9 +334,9 @@ function WorkloadIdentityFields({
             id="gcpsm-wi-cluster-name"
             label="Cluster name"
             value={clusterName}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatch({
-                clusterName: (e.target as HTMLInputElement).value || undefined,
+                clusterName: e.currentTarget.value || undefined,
               })
             }
             placeholder="my-cluster"
@@ -348,10 +346,9 @@ function WorkloadIdentityFields({
             id="gcpsm-wi-cluster-project"
             label="Cluster project ID"
             value={clusterProjectID}
-            onInput={(e) =>
+            onChange={(e) =>
               onPatch({
-                clusterProjectID:
-                  (e.target as HTMLInputElement).value || undefined,
+                clusterProjectID: e.currentTarget.value || undefined,
               })
             }
             placeholder="my-infra-project"
@@ -374,23 +371,21 @@ function SAKeyFields({ block, errors, onPatchRef }: SAKeyFieldsProps) {
     {}) as { name?: string; key?: string };
 
   return (
-    <div class="rounded-md border border-border-primary p-4 space-y-3">
-      <h4 class="text-sm font-medium text-text-primary">
+    <div className="rounded-md border border-border-primary p-4 space-y-3">
+      <h4 className="text-sm font-medium text-text-primary">
         Service Account key Secret reference
       </h4>
-      <p class="text-xs text-text-muted">
+      <p className="text-xs text-text-muted">
         The Kubernetes Secret containing the GCP Service Account JSON key file
         (downloaded from IAM &amp; Admin → Service Accounts → Keys).
       </p>
-      <div class="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <Input
           id="gcpsm-sa-key-name"
           label="Secret name"
           required
           value={sakRef.name ?? ""}
-          onInput={(e) =>
-            onPatchRef({ name: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchRef({ name: e.currentTarget.value })}
           placeholder="gcp-sa-key"
           error={errors["auth.secretRef.secretAccessKeySecretRef.name"]}
         />
@@ -399,9 +394,7 @@ function SAKeyFields({ block, errors, onPatchRef }: SAKeyFieldsProps) {
           label="Key"
           required
           value={sakRef.key ?? ""}
-          onInput={(e) =>
-            onPatchRef({ key: (e.target as HTMLInputElement).value })
-          }
+          onChange={(e) => onPatchRef({ key: e.currentTarget.value })}
           placeholder="key.json"
           description="The key within the Secret holding the SA JSON content."
           error={errors["auth.secretRef.secretAccessKeySecretRef.key"]}

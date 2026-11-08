@@ -324,7 +324,7 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
                     )
                   }
                   title="Remove selector"
-                  class="p-2 mb-1"
+                  className="p-2 mb-1"
                 />
               </div>
             ))}

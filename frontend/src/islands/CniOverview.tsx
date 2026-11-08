@@ -96,7 +96,7 @@ export default function CniOverview() {
               variant="secondary"
               onClick={handleRefresh}
               disabled={refreshing.value}
-              class="mt-4"
+              className="mt-4"
             >
               {refreshing.value ? "Scanning..." : "Re-scan Cluster"}
             </Button>

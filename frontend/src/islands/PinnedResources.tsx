@@ -6,8 +6,8 @@ import type { PinRecord } from "@/lib/preferences.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import {
+  activeClusterPins,
   loadPins,
-  pinsForActiveCluster,
   pinsLoaded,
   pinsUnavailable,
   removePin,
@@ -49,7 +49,7 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
     return () => ac.abort();
   }, [cluster]);
 
-  const mine = pinsForActiveCluster();
+  const mine = activeClusterPins.value;
 
   const unpin = async (record: PinRecord) => {
     busyId.value = record.id;

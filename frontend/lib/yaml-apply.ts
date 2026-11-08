@@ -17,14 +17,14 @@
  * unpinned apply, which is what the template editor relies on.
  */
 
+import type { ReadonlySignal, Signal } from "@preact/signals-core";
+import { useCallback, useEffect, useRef } from "react";
 import {
-  type ReadonlySignal,
-  type Signal,
   useComputed,
   useSignal,
   useSignalEffect,
-} from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+} from "@/src/lib/signal-hooks.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 import { ApiError, apiPostRaw, errorExtra, errorExtraFlag } from "./api.ts";
 import { currentUserId } from "./auth.ts";
 import type {
@@ -199,13 +199,13 @@ export interface UseYamlApplyReturn {
 }
 
 /** The pin parameters an apply echoes back to the server. */
-export interface ApplyQueryPin {
+interface ApplyQueryPin {
   targetCluster: string;
   targetGeneration: string;
 }
 
 /** Everything that shapes the `/yaml/apply` query string. */
-export interface ApplyQueryInput {
+interface ApplyQueryInput {
   force?: boolean;
   /** Release C target pin; both parameters travel together. */
   pin?: ApplyQueryPin | null;
@@ -326,7 +326,7 @@ export function isIndeterminateApplyFailure(err: unknown): boolean {
  * applied. False for every definite refusal (a pin mismatch, 4xx) and for
  * `operation_in_flight`, which carries its own receipt link.
  */
-export function attemptMayHaveApplied(
+function attemptMayHaveApplied(
   err: unknown,
   refusal: TrackedApplyRefusal | null,
 ): boolean {
@@ -387,6 +387,7 @@ export function useYamlApply(
     controller: AbortController;
     issuedEpoch: number;
   } | null>(null);
+  const optionsRef = useLatest(options);
 
   // A pin taken while the selection was still restored under the unknown
   // sentinel cannot be stale on generation alone: the id is unchanged, and a
@@ -418,7 +419,7 @@ export function useYamlApply(
   const clearPin = useCallback(() => {
     pin.value = null;
     preview.value = null;
-  }, []);
+  }, [pin, preview]);
 
   const handleValidate = useCallback(async () => {
     if (applying.value || validating.value) return;
@@ -470,10 +471,22 @@ export function useYamlApply(
       if (validateAbort.current === inFlight) validateAbort.current = null;
       validating.value = false;
     }
-  }, []);
+  }, [
+    applying,
+    validating,
+    error,
+    result,
+    preview,
+    pin,
+    trackedRefusal,
+    lastOperationId,
+    attemptOutcomeUnknown,
+    yamlContent,
+  ]);
 
   const handleApply = useCallback(async () => {
     if (applying.value || validating.value) return;
+    const options = optionsRef.current;
     // A new press starts a new answer: nothing from the previous attempt
     // describes it, even when it is refused before it is sent.
     lastOperationId.value = null;
@@ -605,7 +618,18 @@ export function useYamlApply(
     } finally {
       applying.value = false;
     }
-  }, []);
+  }, [
+    applying,
+    validating,
+    error,
+    result,
+    preview,
+    pin,
+    trackedRefusal,
+    lastOperationId,
+    attemptOutcomeUnknown,
+    yamlContent,
+  ]);
 
   return {
     yamlContent,

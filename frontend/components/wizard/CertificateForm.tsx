@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Select } from "@/components/ui/Select.tsx";
@@ -38,15 +39,15 @@ export function CertificateForm({
   const namespacedIssuers = issuers.filter((i) => i.scope === "Namespaced");
 
   return (
-    <div class="space-y-5">
-      <div class="grid grid-cols-2 gap-4">
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="cert-name"
           label="Name"
           required
           value={form.name}
-          onInput={(e) =>
-            onUpdate("name", (e.target as HTMLInputElement).value)
+          onChange={(e) =>
+            onUpdate("name", (e.currentTarget as HTMLInputElement).value)
           }
           placeholder="example-com-tls"
           error={errors.name}
@@ -65,8 +66,8 @@ export function CertificateForm({
         label="Secret Name"
         required
         value={form.secretName}
-        onInput={(e) =>
-          onUpdate("secretName", (e.target as HTMLInputElement).value)
+        onChange={(e) =>
+          onUpdate("secretName", (e.currentTarget as HTMLInputElement).value)
         }
         placeholder="example-com-tls"
         description="Secret where cert-manager will write the issued TLS certificate and private key."
@@ -79,7 +80,10 @@ export function CertificateForm({
         required
         value={form.issuerRefValue}
         onChange={(e) =>
-          onUpdate("issuerRefValue", (e.target as HTMLSelectElement).value)
+          onUpdate(
+            "issuerRefValue",
+            (e.currentTarget as HTMLSelectElement).value,
+          )
         }
         disabled={issuersLoading}
         error={errors.issuerRef}
@@ -111,8 +115,8 @@ export function CertificateForm({
         id="cert-dns-names"
         label="DNS Names"
         value={form.dnsNamesInput}
-        onInput={(e) =>
-          onUpdate("dnsNamesInput", (e.target as HTMLInputElement).value)
+        onChange={(e) =>
+          onUpdate("dnsNamesInput", (e.currentTarget as HTMLInputElement).value)
         }
         placeholder="example.com, www.example.com"
         description="Comma-separated. At least one of DNS Names or Common Name is required."
@@ -123,25 +127,28 @@ export function CertificateForm({
         id="cert-common-name"
         label="Common Name"
         value={form.commonName}
-        onInput={(e) =>
-          onUpdate("commonName", (e.target as HTMLInputElement).value)
+        onChange={(e) =>
+          onUpdate("commonName", (e.currentTarget as HTMLInputElement).value)
         }
         placeholder="example.com"
       />
 
-      <details class="rounded-md border border-border-primary bg-surface/50 p-4">
-        <summary class="cursor-pointer text-sm font-medium text-text-primary">
+      <details className="rounded-md border border-border-primary bg-surface/50 p-4">
+        <summary className="cursor-pointer text-sm font-medium text-text-primary">
           Advanced options
         </summary>
 
-        <div class="mt-4 space-y-4">
-          <div class="grid grid-cols-2 gap-4">
+        <div className="mt-4 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
             <Input
               id="cert-duration"
               label="Duration"
               value={form.duration}
-              onInput={(e) =>
-                onUpdate("duration", (e.target as HTMLInputElement).value)
+              onChange={(e) =>
+                onUpdate(
+                  "duration",
+                  (e.currentTarget as HTMLInputElement).value,
+                )
               }
               placeholder="2160h"
               description="Default 2160h (90 days)."
@@ -151,8 +158,11 @@ export function CertificateForm({
               id="cert-renew-before"
               label="Renew Before"
               value={form.renewBefore}
-              onInput={(e) =>
-                onUpdate("renewBefore", (e.target as HTMLInputElement).value)
+              onChange={(e) =>
+                onUpdate(
+                  "renewBefore",
+                  (e.currentTarget as HTMLInputElement).value,
+                )
               }
               placeholder="360h"
               description="Default 360h (15 days)."
@@ -160,7 +170,7 @@ export function CertificateForm({
             />
           </div>
 
-          <div class="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <Select
               id="cert-pk-algorithm"
               label="Algorithm"
@@ -168,7 +178,7 @@ export function CertificateForm({
               onChange={(e) =>
                 onUpdatePrivateKey(
                   "algorithm",
-                  (e.target as HTMLSelectElement).value,
+                  (e.currentTarget as HTMLSelectElement).value,
                 )
               }
               options={PRIVATE_KEY_ALGORITHMS.map((a) => ({
@@ -183,7 +193,7 @@ export function CertificateForm({
               onChange={(e) =>
                 onUpdatePrivateKey(
                   "size",
-                  Number((e.target as HTMLSelectElement).value),
+                  Number((e.currentTarget as HTMLSelectElement).value),
                 )
               }
               disabled={form.privateKey.algorithm === "Ed25519"}
@@ -199,7 +209,7 @@ export function CertificateForm({
               onChange={(e) =>
                 onUpdatePrivateKey(
                   "rotationPolicy",
-                  (e.target as HTMLSelectElement).value,
+                  (e.currentTarget as HTMLSelectElement).value,
                 )
               }
               options={ROTATION_POLICIES.map((p) => ({ value: p, label: p }))}
@@ -207,12 +217,15 @@ export function CertificateForm({
           </div>
 
           <div>
-            <label class="inline-flex items-center gap-2 text-sm text-text-primary">
+            <label className="inline-flex items-center gap-2 text-sm text-text-primary">
               <input
                 type="checkbox"
                 checked={form.isCA}
                 onChange={(e) =>
-                  onUpdate("isCA", (e.target as HTMLInputElement).checked)
+                  onUpdate(
+                    "isCA",
+                    (e.currentTarget as HTMLInputElement).checked,
+                  )
                 }
               />
               <span>Issue as CA certificate (isCA: true)</span>

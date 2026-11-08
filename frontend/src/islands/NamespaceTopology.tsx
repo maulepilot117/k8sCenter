@@ -540,7 +540,7 @@ export default function NamespaceTopology({
   if (loading.value) {
     return (
       <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
-        <Spinner class="text-accent" />
+        <Spinner className="text-accent" />
         <span class="ml-3 text-text-secondary">Loading topology...</span>
       </div>
     );

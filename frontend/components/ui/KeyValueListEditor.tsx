@@ -1,5 +1,7 @@
+/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 export interface KeyValueEntry {
   key: string;
@@ -31,32 +33,32 @@ export function KeyValueListEditor({
   keyPlaceholder = "key",
   valuePlaceholder = "value",
 }: KeyValueListEditorProps) {
+  const rowKeys = useRowKeys(entries.length);
   return (
-    <div class="space-y-2">
-      <label class="block text-sm font-medium text-text-secondary">
+    <div className="space-y-2">
+      <label className="block text-sm font-medium text-text-secondary">
         {label}
       </label>
       {entries.map((entry, i) => (
-        <div key={i} class="flex items-center gap-2">
+        <div key={rowKeys.keyAt(i)} className="flex items-center gap-2">
           <Input
             value={entry.key}
-            onInput={(e) =>
-              onUpdate(i, "key", (e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onUpdate(i, "key", e.currentTarget.value)}
             placeholder={keyPlaceholder}
-            class="flex-1"
+            className="flex-1"
           />
-          <span class="text-text-muted">=</span>
+          <span className="text-text-muted">=</span>
           <Input
             value={entry.value}
-            onInput={(e) =>
-              onUpdate(i, "value", (e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onUpdate(i, "value", e.currentTarget.value)}
             placeholder={valuePlaceholder}
-            class="flex-1"
+            className="flex-1"
           />
           <RemoveButton
-            onClick={() => onRemove(i)}
+            onClick={() => {
+              rowKeys.removeAt(i);
+              onRemove(i);
+            }}
             title={`Remove ${label.toLowerCase()}`}
           />
         </div>
@@ -64,7 +66,7 @@ export function KeyValueListEditor({
       <button
         type="button"
         onClick={onAdd}
-        class="text-sm text-brand hover:text-brand/80"
+        className="text-sm text-brand hover:text-brand/80"
       >
         {addLabel}
       </button>

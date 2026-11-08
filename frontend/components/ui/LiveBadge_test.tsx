@@ -1,11 +1,14 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
-import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
-import { wsStatus } from "@/lib/ws.ts";
-import { LOCAL_CLUSTER_ID, switchCluster } from "@/src/lib/cluster.ts";
+/** @jsxImportSource react */
+import { afterEach, expect, test } from "bun:test";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+
+setupDom({ browser: true });
+
+const { LiveBadge } = await import("@/components/ui/LiveBadge.tsx");
+const { wsStatus } = await import("@/lib/ws.ts");
+const { LOCAL_CLUSTER_ID, switchCluster } = await import(
+  "@/src/lib/cluster.ts"
+);
 
 /**
  * The socket behind wsStatus stays connected on every page (the
@@ -14,26 +17,15 @@ import { LOCAL_CLUSTER_ID, switchCluster } from "@/src/lib/cluster.ts";
  * says the operator has to refresh instead (R-8 U14).
  */
 
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
-
-let host: HTMLElement | null = null;
-
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-  wsStatus.value = "disconnected";
-  switchCluster(LOCAL_CLUSTER_ID, "local");
+  act(() => {
+    wsStatus.value = "disconnected";
+    switchCluster(LOCAL_CLUSTER_ID, "local");
+  });
 });
 
-function mount(): HTMLElement {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<LiveBadge />, host as HTMLElement));
-  return host;
+function mount(): Element {
+  return render(<LiveBadge />).container;
 }
 
 test("a connected local cluster reads Live", () => {

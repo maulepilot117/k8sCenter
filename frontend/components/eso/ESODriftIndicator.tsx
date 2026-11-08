@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { DriftBadge } from "@/components/eso/ESOBadges.tsx";
 import type { DriftStatus, DriftUnknownReason } from "@/lib/eso-types.ts";
 
@@ -30,22 +31,22 @@ interface ESODriftIndicatorProps {
  * provider and so reverts the edit. */
 export function ESODriftIndicator({ status, reason }: ESODriftIndicatorProps) {
   return (
-    <div class="flex flex-col gap-1.5">
-      <div class="flex items-center gap-2">
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
         <DriftBadge status={status} />
         {status === "Drifted" && (
-          <span class="text-xs text-text-muted">
+          <span className="text-xs text-text-muted">
             The synced Secret has been edited since ESO last reconciled it.
             Force sync rewrites it from the provider.
           </span>
         )}
         {status === "Unknown" && reason && (
-          <span class="text-xs text-text-muted">
+          <span className="text-xs text-text-muted">
             {REASON_HINTS[reason] ?? "Drift state is currently unknown."}
           </span>
         )}
         {status === "InSync" && (
-          <span class="text-xs text-text-muted">
+          <span className="text-xs text-text-muted">
             The synced Secret's data matches the hash ESO recorded when it last
             wrote it.
           </span>

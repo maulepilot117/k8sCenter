@@ -30,7 +30,7 @@ const ROW_LIMIT = 6;
  *
  * Pins on other clusters are withheld rather than shown: a pin names one
  * object in one cluster and cannot be opened from here
- * (`pinsForActiveCluster`). They are COUNTED, because withholding them
+ * (`activeClusterPins`). They are COUNTED, because withholding them
  * silently would say "you have no pinned resources" to someone holding twenty.
  */
 function PinnedResources() {

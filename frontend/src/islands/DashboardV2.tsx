@@ -1009,7 +1009,7 @@ export default function DashboardV2() {
               )}
             </div>
           ) : (
-            <Skeleton class="h-4 w-80 mt-1" />
+            <Skeleton className="h-4 w-80 mt-1" />
           )}
         </div>
 
@@ -1106,13 +1106,13 @@ export default function DashboardV2() {
       </div>
 
       {unavailableMessage !== null && (
-        <Alert variant="warning" class="mb-4">
+        <Alert variant="warning" className="mb-4">
           {unavailableMessage} Showing the default dashboard.
         </Alert>
       )}
 
       {layoutWarnings.value.length > 0 && (
-        <Alert variant="warning" class="mb-4">
+        <Alert variant="warning" className="mb-4">
           <ul style={{ margin: 0, paddingLeft: "18px" }}>
             {layoutWarnings.value.map((w) => (
               <li key={w}>{w}</li>
@@ -1127,7 +1127,7 @@ export default function DashboardV2() {
           merging them would make a warning about a layout the user took read
           as one about the layout they already had. */}
       {editWarnings.value.length > 0 && (
-        <Alert variant="warning" class="mb-4">
+        <Alert variant="warning" className="mb-4">
           <ul style={{ margin: 0, paddingLeft: "18px" }}>
             {editWarnings.value.map((w) => (
               <li key={w}>{w}</li>
@@ -1144,7 +1144,7 @@ export default function DashboardV2() {
         button that stops working for no stated reason.
       */}
       {withheldCount > 0 && (
-        <Alert variant="warning" class="mb-4">
+        <Alert variant="warning" className="mb-4">
           {withheldCount === 1
             ? "One widget is hidden because you no longer have access to the namespace it reads."
             : `${withheldCount} widgets are hidden because you no longer have access to the namespaces they read.`}{" "}

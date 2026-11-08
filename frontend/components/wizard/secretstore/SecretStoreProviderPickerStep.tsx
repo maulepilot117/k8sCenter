@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import type { SecretStoreProvider } from "@/lib/eso-types.ts";
 import {
   isTemplateOnlyProvider,
@@ -128,12 +129,12 @@ export function SecretStoreProviderPickerStep({
   onSelect,
 }: SecretStoreProviderPickerStepProps) {
   return (
-    <div class="space-y-4">
-      <p class="text-sm text-text-muted">
+    <div className="space-y-4">
+      <p className="text-sm text-text-muted">
         Select the source-store backend. Providers without a guided form open a
         pre-filled YAML template instead — fill the placeholders and apply.
       </p>
-      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {PROVIDERS.map((p) => {
           const active = selected === p.id;
           const ready = READY_SECRET_STORE_PROVIDERS.has(p.id);
@@ -162,7 +163,7 @@ export function SecretStoreProviderPickerStep({
               disabled={!clickable}
               aria-pressed={active}
               aria-disabled={!clickable || undefined}
-              class={`text-left rounded-lg border p-4 transition-colors ${
+              className={`text-left rounded-lg border p-4 transition-colors ${
                 active
                   ? "border-brand bg-brand/5"
                   : clickable
@@ -170,23 +171,23 @@ export function SecretStoreProviderPickerStep({
                     : "border-border-primary bg-surface opacity-60 cursor-not-allowed"
               }`}
             >
-              <div class="flex items-center justify-between gap-2">
-                <span class="font-medium text-text-primary">{p.title}</span>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-text-primary">{p.title}</span>
                 {active ? (
-                  <span class="text-xs font-medium text-brand whitespace-nowrap">
+                  <span className="text-xs font-medium text-brand whitespace-nowrap">
                     Selected
                   </span>
                 ) : templateOnly ? (
-                  <span class="text-xs font-medium text-text-muted whitespace-nowrap">
+                  <span className="text-xs font-medium text-text-muted whitespace-nowrap">
                     template
                   </span>
                 ) : !ready ? (
-                  <span class="text-xs font-medium text-text-muted whitespace-nowrap">
+                  <span className="text-xs font-medium text-text-muted whitespace-nowrap">
                     coming soon
                   </span>
                 ) : null}
               </div>
-              <p class="mt-2 text-sm text-text-muted">{p.description}</p>
+              <p className="mt-2 text-sm text-text-muted">{p.description}</p>
             </button>
           );
         })}

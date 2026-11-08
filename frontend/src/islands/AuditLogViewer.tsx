@@ -267,7 +267,7 @@ export default function AuditLogViewer() {
             padding: "32px 0",
           }}
         >
-          <Spinner class="text-accent" />
+          <Spinner className="text-accent" />
         </div>
       ) : (
         <ResourceTable columns={columns} rows={buildRows()} chevron={false} />

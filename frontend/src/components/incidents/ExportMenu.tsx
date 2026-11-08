@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useRef, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { exportIncident } from "@/lib/incident-api.ts";
@@ -31,49 +32,53 @@ function saveBlob(blob: Blob, filename: string) {
 }
 
 export function ExportMenu({ incidentId }: { incidentId: string }) {
-  const pending = useSignal<ExportFormat | null>(null);
-  const error = useSignal<string | null>(null);
+  const [pending, setPending] = useState<ExportFormat | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // A second click can land before the render that shows `pending`.
+  const inFlight = useRef(false);
 
   const download = async (format: ExportFormat) => {
-    if (pending.value) return;
-    pending.value = format;
-    error.value = null;
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setPending(format);
+    setError(null);
     try {
       const { blob, filename } = await exportIncident(incidentId, format);
       saveBlob(blob, filename);
     } catch (err) {
-      error.value = exportErrorText(err);
+      setError(exportErrorText(err));
     } finally {
-      pending.value = null;
+      inFlight.current = false;
+      setPending(null);
     }
   };
 
   return (
     <div
-      class="flex flex-wrap items-center gap-2"
+      className="flex flex-wrap items-center gap-2"
       role="group"
       aria-label="Export"
     >
-      <span class="text-sm text-text-secondary">Export</span>
+      <span className="text-sm text-text-secondary">Export</span>
       <button
         type="button"
-        aria-disabled={pending.value !== null}
+        aria-disabled={pending !== null}
         onClick={() => download("json")}
-        class={BUTTON_SECONDARY}
+        className={BUTTON_SECONDARY}
       >
-        {pending.value === "json" ? "Exporting…" : "JSON"}
+        {pending === "json" ? "Exporting…" : "JSON"}
       </button>
       <button
         type="button"
-        aria-disabled={pending.value !== null}
+        aria-disabled={pending !== null}
         onClick={() => download("markdown")}
-        class={BUTTON_SECONDARY}
+        className={BUTTON_SECONDARY}
       >
-        {pending.value === "markdown" ? "Exporting…" : "Markdown"}
+        {pending === "markdown" ? "Exporting…" : "Markdown"}
       </button>
-      {error.value && (
-        <div role="alert" class="w-full">
-          <Alert variant="error">{error.value}</Alert>
+      {error && (
+        <div role="alert" className="w-full">
+          <Alert variant="error">{error}</Alert>
         </div>
       )}
     </div>

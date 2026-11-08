@@ -1,5 +1,6 @@
-import type { Signal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import type { Signal } from "@preact/signals-core";
+import { type ReactNode, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
@@ -7,6 +8,7 @@ import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import type { EventSourceRef } from "@/lib/notification-types.ts";
 import { PAGE_SIZE } from "@/lib/notification-types.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 // ---------------------------------------------------------------------------
 // NotificationPageHeader
@@ -33,12 +35,12 @@ export function NotificationPageHeader({
 }: PageHeaderProps) {
   return (
     <>
-      <div class="flex items-center justify-between mb-1">
-        <div class="flex items-center gap-2">
-          <h1 class="text-2xl font-bold text-text-primary">{kind}s</h1>
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-text-primary">{kind}s</h1>
           <LiveBadge />
         </div>
-        <div class="flex items-center gap-2">
+        <div className="flex items-center gap-2">
           {!loading && (
             <>
               <Button
@@ -55,7 +57,7 @@ export function NotificationPageHeader({
           )}
         </div>
       </div>
-      <p class="text-sm text-text-muted mb-6">{description}</p>
+      <p className="text-sm text-text-muted mb-6">{description}</p>
     </>
   );
 }
@@ -76,20 +78,20 @@ export function NotificationUnavailableBanner({
   if (!visible) return null;
   return (
     <div
-      class="mb-6 rounded-lg border p-4 bg-elevated"
+      className="mb-6 rounded-lg border p-4 bg-elevated"
       style={{ borderColor: "var(--warning)" }}
     >
-      <p class="text-sm font-medium" style={{ color: "var(--warning)" }}>
+      <p className="text-sm font-medium" style={{ color: "var(--warning)" }}>
         Flux notification-controller not detected
       </p>
-      <p class="text-xs text-text-muted mt-1">
+      <p className="text-xs text-text-muted mt-1">
         Install the Flux notification-controller to manage notification{" "}
         {resourceLabel}.{" "}
         <a
           href="https://fluxcd.io/docs/components/notification/"
           target="_blank"
           rel="noopener noreferrer"
-          class="text-brand hover:underline"
+          className="text-brand hover:underline"
         >
           Learn more &rarr;
         </a>
@@ -119,11 +121,12 @@ export function NotificationSearchBar({
   resourceLabel,
   placeholder,
 }: SearchBarProps) {
+  const searchValue = useSignalValue(search);
   return (
-    <div class="mb-4 flex flex-wrap items-center gap-4">
-      <div class="flex-1 max-w-xs">
+    <div className="mb-4 flex flex-wrap items-center gap-4">
+      <div className="flex-1 max-w-xs">
         <SearchBar
-          value={search.value}
+          value={searchValue}
           onInput={(v) => {
             search.value = v;
             page.value = 1;
@@ -131,7 +134,7 @@ export function NotificationSearchBar({
           placeholder={placeholder}
         />
       </div>
-      <span class="text-xs text-text-muted">
+      <span className="text-xs text-text-muted">
         {filteredCount} of {totalCount} {resourceLabel}
       </span>
     </div>
@@ -145,8 +148,8 @@ export function NotificationSearchBar({
 export function NotificationLoadingSpinner({ loading }: { loading: boolean }) {
   if (!loading) return null;
   return (
-    <div class="flex justify-center py-12">
-      <Spinner class="text-brand" />
+    <div className="flex justify-center py-12">
+      <Spinner className="text-brand" />
     </div>
   );
 }
@@ -172,20 +175,21 @@ export function NotificationPagination({
   totalPages,
   resourceLabel,
 }: PaginationProps) {
+  const pageValue = useSignalValue(page);
   if (loading || error || filteredCount <= PAGE_SIZE) return null;
   return (
-    <div class="mt-4 flex items-center justify-between">
-      <p class="text-sm text-text-muted">
-        {filteredCount} {resourceLabel} &middot; Page {page.value} of{" "}
+    <div className="mt-4 flex items-center justify-between">
+      <p className="text-sm text-text-muted">
+        {filteredCount} {resourceLabel} &middot; Page {pageValue} of{" "}
         {totalPages}
       </p>
-      <div class="flex gap-2">
+      <div className="flex gap-2">
         <Button
           variant="ghost"
           onClick={() => {
             page.value--;
           }}
-          disabled={page.value <= 1}
+          disabled={pageValue <= 1}
         >
           Previous
         </Button>
@@ -194,7 +198,7 @@ export function NotificationPagination({
           onClick={() => {
             page.value++;
           }}
-          disabled={page.value >= totalPages}
+          disabled={pageValue >= totalPages}
         >
           Next
         </Button>
@@ -228,8 +232,8 @@ export function NotificationEmptyState({
 }: EmptyStateProps) {
   if (loading || error || filteredCount > 0 || notAvailable) return null;
   return (
-    <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-      <p class="text-text-muted mb-4">
+    <div className="text-center py-12 rounded-lg border border-border-primary bg-elevated">
+      <p className="text-text-muted mb-4">
         {totalCount === 0
           ? `No notification ${kind.toLowerCase()}s configured.`
           : `No ${kind.toLowerCase()}s match your filters.`}
@@ -288,7 +292,7 @@ interface FormShellProps {
   onSubmit: () => void;
   onCancel: () => void;
   wide?: boolean;
-  children: preact.ComponentChildren;
+  children: ReactNode;
 }
 
 export function NotificationFormShell({
@@ -320,7 +324,7 @@ export function NotificationFormShell({
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
+      className="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
       onClick={onCancel}
     >
       <div
@@ -328,27 +332,27 @@ export function NotificationFormShell({
         role="dialog"
         aria-modal="true"
         aria-labelledby={`${id}-title`}
-        class={`w-full glass-elevated rounded-2xl p-6 ${
+        className={`w-full glass-elevated rounded-2xl p-6 ${
           wide ? "max-w-lg max-h-[90vh] overflow-y-auto" : "max-w-md"
         }`}
         onClick={(e) => e.stopPropagation()}
       >
         <h3
           id={`${id}-title`}
-          class="text-lg font-semibold text-text-primary mb-4"
+          className="text-lg font-semibold text-text-primary mb-4"
         >
           {title}
         </h3>
 
-        {error && <p class="text-sm text-danger mb-3">{error}</p>}
+        {error && <p className="text-sm text-danger mb-3">{error}</p>}
 
-        <div class="space-y-3">{children}</div>
+        <div className="space-y-3">{children}</div>
 
-        <div class="mt-6 flex justify-end gap-3">
+        <div className="mt-6 flex justify-end gap-3">
           <button
             type="button"
             onClick={onCancel}
-            class="rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
+            className="rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
           >
             Cancel
           </button>
@@ -356,7 +360,7 @@ export function NotificationFormShell({
             type="button"
             disabled={submitting}
             onClick={onSubmit}
-            class="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 bg-brand hover:bg-brand/90"
+            className="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 bg-brand hover:bg-brand/90"
             style={{ color: "var(--bg-base)" }}
           >
             {submitting
@@ -392,11 +396,12 @@ export function ActionsDropdown({
   onSuspendToggle,
   onDelete,
 }: ActionsDropdownProps) {
+  const openKey = useSignalValue(openDropdown);
   return (
-    <div class="relative">
+    <div className="relative">
       <button
         type="button"
-        class="rounded px-2 py-1 text-xs font-medium text-text-secondary hover:bg-hover"
+        className="rounded px-2 py-1 text-xs font-medium text-text-secondary hover:bg-hover"
         onClick={(e) => {
           e.stopPropagation();
           openDropdown.value = openDropdown.value === itemKey ? null : itemKey;
@@ -404,14 +409,14 @@ export function ActionsDropdown({
       >
         &hellip;
       </button>
-      {openDropdown.value === itemKey && (
+      {openKey === itemKey && (
         <div
-          class="absolute right-0 z-40 mt-1 w-40 glass-elevated rounded-2xl"
+          className="absolute right-0 z-40 mt-1 w-40 glass-elevated rounded-2xl"
           onClick={(e) => e.stopPropagation()}
         >
           <button
             type="button"
-            class="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-hover"
+            className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-hover"
             onClick={() => {
               openDropdown.value = null;
               onEdit();
@@ -421,7 +426,7 @@ export function ActionsDropdown({
           </button>
           <button
             type="button"
-            class="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-hover"
+            className="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-hover"
             onClick={() => {
               openDropdown.value = null;
               onSuspendToggle();
@@ -431,7 +436,7 @@ export function ActionsDropdown({
           </button>
           <button
             type="button"
-            class="w-full text-left px-3 py-2 text-sm hover:bg-hover"
+            className="w-full text-left px-3 py-2 text-sm hover:bg-hover"
             style={{ color: "var(--error)" }}
             onClick={() => {
               openDropdown.value = null;
@@ -457,13 +462,13 @@ interface CountBadgeProps {
 
 export function CountBadge({ items, label }: CountBadgeProps) {
   const count = items.length;
-  if (count === 0) return <span class="text-xs text-text-muted">-</span>;
+  if (count === 0) return <span className="text-xs text-text-muted">-</span>;
 
   const tooltip = items.map((i) => `${i.kind}/${i.name}`).join("\n");
 
   return (
     <span
-      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent cursor-default"
+      className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent cursor-default"
       title={tooltip}
     >
       {count} {count === 1 ? label : `${label}s`}

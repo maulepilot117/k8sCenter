@@ -1,12 +1,15 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
-import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
-import { GATEWAY_KIND_LABELS } from "@/lib/gateway-types.ts";
-import { GITOPS_SOURCE_LABELS } from "@/lib/gitops-types.ts";
+/** @jsxImportSource react */
+import { expect, test } from "bun:test";
 import type { SourceCoverage } from "@/lib/k8s-types.ts";
+import { render, setupDom } from "@/src/test-utils/render.tsx";
+
+setupDom({ browser: true });
+
+const { SourceCoverageNotice } = await import(
+  "@/components/ui/SourceCoverageNotice.tsx"
+);
+const { GATEWAY_KIND_LABELS } = await import("@/lib/gateway-types.ts");
+const { GITOPS_SOURCE_LABELS } = await import("@/lib/gitops-types.ts");
 
 /**
  * On a remote cluster a multi-source list (Argo CD plus Flux, every Gateway
@@ -16,32 +19,12 @@ import type { SourceCoverage } from "@/lib/k8s-types.ts";
  * missing Flux list as "no Flux applications" (R8).
  */
 
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
-
-let host: HTMLElement | null = null;
-
-afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-});
-
 function mount(
   coverage: SourceCoverage[] | undefined,
   labels: Readonly<Record<string, string>> = GITOPS_SOURCE_LABELS,
-): HTMLElement {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <SourceCoverageNotice coverage={coverage} labels={labels} />,
-      host as HTMLElement,
-    ),
-  );
-  return host;
+): Element {
+  return render(<SourceCoverageNotice coverage={coverage} labels={labels} />)
+    .container;
 }
 
 test("a failed Flux list is named", () => {

@@ -46,7 +46,7 @@ export default function GatewayGRPCRouteDetailIsland({
   if (loading.value) {
     return (
       <div class="flex justify-center py-12">
-        <Spinner class="text-brand" />
+        <Spinner className="text-brand" />
       </div>
     );
   }

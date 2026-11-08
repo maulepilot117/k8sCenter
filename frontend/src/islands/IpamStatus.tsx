@@ -31,7 +31,7 @@ export default function IpamStatus() {
   const resp = data.value;
   if (!resp?.configured) {
     return (
-      <Card title="IP Address Management" class="opacity-50">
+      <Card title="IP Address Management" className="opacity-50">
         <p class="text-sm text-text-muted">IPAM data not available.</p>
       </Card>
     );

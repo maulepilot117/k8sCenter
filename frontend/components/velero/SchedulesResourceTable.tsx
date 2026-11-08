@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import ResourceTable, {
@@ -106,7 +107,7 @@ export function SchedulesResourceTable({
           {s.lastBackupPhase ? (
             <>
               <StatusDot status={outcomeTone(s.lastBackupOutcome)} size={6} />
-              <span class="sr-only">Newest backup:</span>
+              <span className="sr-only">Newest backup:</span>
               {s.lastBackupPhase}
             </>
           ) : (

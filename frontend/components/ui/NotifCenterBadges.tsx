@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import {
   NOTIF_SEVERITY_COLORS,
   type NotifSeverity,
@@ -56,7 +57,7 @@ export function SourceBadge({ source }: { source: NotifSource }) {
   const color = SOURCE_COLORS[source] ?? "var(--text-muted)";
   return (
     <span
-      class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium"
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium"
       style={{
         color,
         backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)`,

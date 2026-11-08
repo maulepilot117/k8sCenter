@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { ColorBadge } from "@/components/ui/PolicyBadges.tsx";
 
 /** Color map for notification provider/alert/receiver status. */

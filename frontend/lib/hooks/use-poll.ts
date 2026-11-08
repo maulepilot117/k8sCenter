@@ -1,8 +1,9 @@
-import type { Signal } from "@preact/signals";
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+import type { Signal } from "@preact/signals-core";
+import { useEffect, useRef } from "react";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { failureOf } from "@/lib/networking-state.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 // Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
 // this file is shared by both the Fresh tree and the Astro/Bun port, and the
@@ -63,6 +64,9 @@ export function usePoll<T>(
   const failureCount = useRef(0);
   const stoppedRef = useRef(false);
   const doFetchRef = useRef<(() => Promise<void>) | null>(null);
+  // Read by the interval and fetch callbacks, which outlive the render that
+  // created them; the interval must not restart when only these change.
+  const shouldContinueRef = useLatest(opts.shouldContinuePolling);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -92,10 +96,8 @@ export function usePoll<T>(
         lastFetchedAt.value = new Date();
 
         // Check if polling should continue
-        if (
-          opts.shouldContinuePolling &&
-          !opts.shouldContinuePolling(resp.data)
-        ) {
+        const shouldContinue = shouldContinueRef.current;
+        if (shouldContinue && !shouldContinue(resp.data)) {
           stoppedRef.current = true;
           if (intervalRef.current !== null) {
             clearInterval(intervalRef.current);
@@ -164,7 +166,16 @@ export function usePoll<T>(
       }
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [url, opts.interval, opts.enabled]);
+  }, [
+    url,
+    opts.interval,
+    opts.enabled,
+    data,
+    loading,
+    error,
+    failure,
+    lastFetchedAt,
+  ]);
 
   const refetch = async () => {
     if (doFetchRef.current) await doFetchRef.current();

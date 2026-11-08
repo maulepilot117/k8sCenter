@@ -1,6 +1,4 @@
-import type { CSSProperties } from "preact";
-import { createContext } from "preact";
-import { useContext } from "preact/hooks";
+import { type CSSProperties, createContext, useContext } from "react";
 
 /**
  * True inside a layout cell (today, the dashboard grid), where the cell -- not the content -- sets

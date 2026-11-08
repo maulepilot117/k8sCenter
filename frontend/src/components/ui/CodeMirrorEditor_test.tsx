@@ -1,10 +1,8 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, expect, mock, test } from "bun:test";
+/** @jsxImportSource react */
+import { expect, test } from "bun:test";
 import type { EditorView as EditorViewType } from "@codemirror/view";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { useSignal } from "@preact/signals";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+import { useState } from "react";
+import { act, render, setBrowser, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The editor is controlled: every edit goes out through onChange and comes
@@ -14,55 +12,39 @@ import { act } from "preact/test-utils";
  * document with it, which echoed through onChange, which brought back the
  * newer text, and so on forever: the YAML tab froze on typing.
  *
- * As in CiliumConfigEditor_test.tsx, IS_BROWSER is stubbed to true and put
- * back afterwards. ResourceDetail_test.tsx replaces this module with a
- * textarea for the whole test process; the query suffix loads the real one.
+ * ResourceDetail_test.tsx replaces the editor module with a textarea for the
+ * whole test process; the query suffix loads the real one.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+setupDom({ browser: true });
 
 const REAL_EDITOR = "./CodeMirrorEditor.tsx?real";
 const { CodeMirrorEditor } = (await import(
   REAL_EDITOR
 )) as typeof import("./CodeMirrorEditor.tsx");
 const { EditorView } = await import("@codemirror/view");
-
-afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
-});
-
-let host: HTMLElement | null = null;
-afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-});
+const { hydrateRoot } = await import("react-dom/client");
+const { renderToString } = await import("react-dom/server");
 
 const DOC = "kind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  a: b\n";
 
 function mount() {
   const state = { calls: 0, parentValue: DOC };
   function Parent() {
-    const content = useSignal(DOC);
+    const [content, setContent] = useState(DOC);
     return (
       <CodeMirrorEditor
-        value={content.value}
+        value={content}
         onChange={(v) => {
           // A runaway echo would never return; fail it instead of hanging.
           if (++state.calls > 50) throw new Error("onChange echo loop");
-          content.value = v;
+          setContent(v);
           state.parentValue = v;
         }}
       />
     );
   }
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<Parent />, host as HTMLElement));
-  const dom = host.querySelector(".cm-editor") as HTMLElement | null;
+  const { container } = render(<Parent />);
+  const dom = container.querySelector(".cm-editor") as HTMLElement | null;
   if (!dom) throw new Error("editor did not mount");
   const view = EditorView.findFromDOM(dom) as EditorViewType;
   return { view, state };
@@ -101,24 +83,13 @@ test("a keystroke that lands before the parent catches up is kept", async () => 
 test("a value set from outside still replaces the document", async () => {
   let setOutside: (v: string) => void = () => {};
   function Parent() {
-    const content = useSignal(DOC);
-    setOutside = (v) => {
-      content.value = v;
-    };
-    return (
-      <CodeMirrorEditor
-        value={content.value}
-        onChange={(v) => {
-          content.value = v;
-        }}
-      />
-    );
+    const [content, setContent] = useState(DOC);
+    setOutside = setContent;
+    return <CodeMirrorEditor value={content} onChange={setContent} />;
   }
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<Parent />, host as HTMLElement));
+  const { container } = render(<Parent />);
   const view = EditorView.findFromDOM(
-    host.querySelector(".cm-editor") as HTMLElement,
+    container.querySelector(".cm-editor") as HTMLElement,
   ) as EditorViewType;
 
   type(view, "  c: d\n");
@@ -127,4 +98,30 @@ test("a value set from outside still replaces the document", async () => {
   await settle();
 
   expect(view.state.doc.toString()).toBe("kind: Secret\n");
+});
+
+test("the editor mounts after server render and hydration", async () => {
+  setBrowser(false);
+  const html = renderToString(<CodeMirrorEditor value={DOC} />);
+  expect(html).not.toContain("cm-editor");
+
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  document.body.appendChild(container);
+  setBrowser(true);
+  let root: ReturnType<typeof hydrateRoot> | undefined;
+  await act(() => {
+    root = hydrateRoot(container, <CodeMirrorEditor value={DOC} />);
+  });
+  await act(() => {
+    root?.render(<CodeMirrorEditor value={DOC} />);
+  });
+
+  expect(container.querySelectorAll(".cm-editor")).toHaveLength(1);
+  const view = EditorView.findFromDOM(
+    container.querySelector(".cm-editor") as HTMLElement,
+  ) as EditorViewType;
+  expect(view.state.doc.toString()).toBe(DOC);
+  await act(() => root?.unmount());
+  container.remove();
 });

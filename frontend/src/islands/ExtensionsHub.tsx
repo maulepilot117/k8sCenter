@@ -83,11 +83,11 @@ export default function ExtensionsHub() {
       <div style={{ padding: "0" }}>
         {/* Header skeleton */}
         <div style={{ marginBottom: "24px" }}>
-          <Skeleton class="h-7 w-40 mb-2" />
-          <Skeleton class="h-4 w-64" />
+          <Skeleton className="h-7 w-40 mb-2" />
+          <Skeleton className="h-4 w-64" />
         </div>
         {/* Search skeleton */}
-        <Skeleton class="h-10 w-full mb-6" style={{ maxWidth: "400px" }} />
+        <Skeleton className="h-10 w-full mb-6" style={{ maxWidth: "400px" }} />
         {/* Card grid skeleton */}
         <div
           style={{
@@ -97,7 +97,7 @@ export default function ExtensionsHub() {
           }}
         >
           {Array.from({ length: 8 }).map((_, i) => (
-            <Skeleton key={i} class="h-20 w-full rounded-lg" />
+            <Skeleton key={i} className="h-20 w-full rounded-lg" />
           ))}
         </div>
       </div>

@@ -19,8 +19,12 @@
       "react-dom/client": ["./node_modules/preact/compat/client"],
       "react-dom/server": ["./node_modules/preact/compat/server"],
       "react-dom/test-utils": ["./node_modules/preact/test-utils"],
-      "react/jsx-runtime": ["./node_modules/preact/jsx-runtime"],
-      "react/jsx-dev-runtime": ["./node_modules/preact/jsx-runtime"]
+      // The JSX runtime goes through compat so that a file on React APIs
+      // (marked `@jsxImportSource react`) loads compat itself: compat turns
+      // React's prop names (strokeWidth, htmlFor) into DOM attributes, and
+      // only for vnodes created after it has loaded.
+      "react/jsx-runtime": ["./node_modules/preact/compat/jsx-runtime"],
+      "react/jsx-dev-runtime": ["./node_modules/preact/compat/jsx-dev-runtime"]
       // U4's `fresh/runtime` shim entry lived here until U12. Its only
       // consumers were the Fresh tree and the six modules that shipped with
       // it; `lib/cluster.ts` is now a one-line re-export of its src twin and

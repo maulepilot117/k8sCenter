@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 export interface LegendRowProps {
   color: string;
   label: string;

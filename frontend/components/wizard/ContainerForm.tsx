@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import { Select } from "@/components/ui/Select.tsx";
@@ -6,8 +7,9 @@ import {
   WIZARD_INPUT_CLASS,
 } from "@/lib/wizard-constants.ts";
 import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
-export interface ContainerFormProps {
+interface ContainerFormProps {
   image: string;
   command: string;
   args: string;
@@ -43,6 +45,9 @@ export function ContainerForm({
   errors,
   onChange,
 }: ContainerFormProps) {
+  const portKeys = useRowKeys(ports.length);
+  const envKeys = useRowKeys(envVars.length);
+
   // --- Port helpers ---
   const updatePort = (
     index: number,
@@ -60,6 +65,7 @@ export function ContainerForm({
   };
 
   const removePort = (index: number) => {
+    portKeys.removeAt(index);
     onChange(
       "ports",
       ports.filter((_, i) => i !== index),
@@ -105,6 +111,7 @@ export function ContainerForm({
   };
 
   const removeEnvVar = (index: number) => {
+    envKeys.removeAt(index);
     onChange(
       "envVars",
       envVars.filter((_, i) => i !== index),
@@ -118,79 +125,73 @@ export function ContainerForm({
   ];
 
   return (
-    <div class="space-y-8 max-w-2xl">
+    <div className="space-y-8 max-w-2xl">
       {/* Image */}
-      <div class="space-y-1">
-        <label class="block text-sm font-medium text-text-secondary">
-          Container Image <span class="text-danger">*</span>
+      <div className="space-y-1">
+        <label className="block text-sm font-medium text-text-secondary">
+          Container Image <span className="text-danger">*</span>
         </label>
         <input
           type="text"
           value={image}
-          onInput={(e) =>
-            onChange("image", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => onChange("image", e.currentTarget.value)}
           placeholder="nginx:latest"
-          class={WIZARD_INPUT_CLASS}
+          className={WIZARD_INPUT_CLASS}
         />
-        {errors.image && <p class="text-sm text-danger">{errors.image}</p>}
+        {errors.image && <p className="text-sm text-danger">{errors.image}</p>}
       </div>
 
       {/* Command */}
-      <div class="space-y-1">
-        <label class="block text-sm font-medium text-text-secondary">
+      <div className="space-y-1">
+        <label className="block text-sm font-medium text-text-secondary">
           Command
         </label>
         <input
           type="text"
           value={command}
-          onInput={(e) =>
-            onChange("command", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => onChange("command", e.currentTarget.value)}
           placeholder="e.g. /bin/sh -c (space-separated)"
-          class={WIZARD_INPUT_CLASS}
+          className={WIZARD_INPUT_CLASS}
         />
-        <p class="text-xs text-text-muted">
+        <p className="text-xs text-text-muted">
           Override the container entrypoint. Split by spaces.
         </p>
       </div>
 
       {/* Args */}
-      <div class="space-y-1">
-        <label class="block text-sm font-medium text-text-secondary">
+      <div className="space-y-1">
+        <label className="block text-sm font-medium text-text-secondary">
           Arguments
         </label>
         <input
           type="text"
           value={args}
-          onInput={(e) =>
-            onChange("args", (e.target as HTMLInputElement).value)
-          }
+          onChange={(e) => onChange("args", e.currentTarget.value)}
           placeholder='e.g. echo"hello world" (space-separated)'
-          class={WIZARD_INPUT_CLASS}
+          className={WIZARD_INPUT_CLASS}
         />
-        <p class="text-xs text-text-muted">
+        <p className="text-xs text-text-muted">
           Arguments passed to the command. Split by spaces.
         </p>
       </div>
 
       {/* Container Ports */}
-      <div class="space-y-3">
-        <label class="block text-sm font-medium text-text-secondary">
+      <div className="space-y-3">
+        <label className="block text-sm font-medium text-text-secondary">
           Container Ports
         </label>
         {ports.map((port, i) => (
-          <div key={i} class="flex items-end gap-2">
-            <div class="w-28">
+          <div key={portKeys.keyAt(i)} className="flex items-end gap-2">
+            <div className="w-28">
               <Input
                 label={i === 0 ? "Port" : undefined}
                 type="number"
                 value={port.containerPort ? String(port.containerPort) : ""}
-                onInput={(e) =>
+                onChange={(e) =>
                   updatePort(
                     i,
                     "containerPort",
-                    parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                    parseInt(e.currentTarget.value, 10) || 0,
                   )
                 }
                 placeholder="80"
@@ -199,16 +200,12 @@ export function ContainerForm({
                 error={errors[`ports[${i}].containerPort`]}
               />
             </div>
-            <div class="w-24">
+            <div className="w-24">
               <Select
                 label={i === 0 ? "Protocol" : undefined}
                 value={port.protocol}
                 onChange={(e) =>
-                  updatePort(
-                    i,
-                    "protocol",
-                    (e.target as HTMLSelectElement).value,
-                  )
+                  updatePort(i, "protocol", e.currentTarget.value)
                 }
                 options={PROTOCOL_OPTIONS}
               />
@@ -216,7 +213,7 @@ export function ContainerForm({
             <RemoveButton
               onClick={() => removePort(i)}
               title="Remove port"
-              class="p-2 mb-1"
+              className="p-2 mb-1"
             />
           </div>
         ))}
@@ -224,7 +221,7 @@ export function ContainerForm({
           <button
             type="button"
             onClick={addPort}
-            class="text-sm text-brand hover:text-brand/80"
+            className="text-sm text-brand hover:text-brand/80"
           >
             + Add Port
           </button>
@@ -232,57 +229,47 @@ export function ContainerForm({
       </div>
 
       {/* Environment Variables */}
-      <div class="space-y-3">
-        <label class="block text-sm font-medium text-text-secondary">
+      <div className="space-y-3">
+        <label className="block text-sm font-medium text-text-secondary">
           Environment Variables
         </label>
         {envVars.map((env, i) => {
           const source = envSourceType(env);
           return (
-            <div key={i} class="flex items-end gap-2">
-              <div class="w-36">
+            <div key={envKeys.keyAt(i)} className="flex items-end gap-2">
+              <div className="w-36">
                 <Input
                   label={i === 0 ? "Name" : undefined}
                   value={env.name}
-                  onInput={(e) =>
-                    updateEnvVar(
-                      i,
-                      "name",
-                      (e.target as HTMLInputElement).value,
-                    )
+                  onChange={(e) =>
+                    updateEnvVar(i, "name", e.currentTarget.value)
                   }
                   placeholder="MY_VAR"
                   error={errors[`envVars[${i}].name`]}
                 />
               </div>
-              <div class="w-28">
+              <div className="w-28">
                 <Select
                   label={i === 0 ? "Source" : undefined}
                   value={source}
-                  onChange={(e) =>
-                    changeEnvSource(i, (e.target as HTMLSelectElement).value)
-                  }
+                  onChange={(e) => changeEnvSource(i, e.currentTarget.value)}
                   options={ENV_SOURCE_OPTIONS}
                 />
               </div>
               {source === "literal" ? (
-                <div class="flex-1">
+                <div className="flex-1">
                   <Input
                     label={i === 0 ? "Value" : undefined}
                     value={env.value}
-                    onInput={(e) =>
-                      updateEnvVar(
-                        i,
-                        "value",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateEnvVar(i, "value", e.currentTarget.value)
                     }
                     placeholder="value"
                   />
                 </div>
               ) : (
                 <>
-                  <div class="flex-1">
+                  <div className="flex-1">
                     <Input
                       label={
                         i === 0
@@ -296,11 +283,11 @@ export function ContainerForm({
                           ? env.configMapRef
                           : env.secretRef
                       }
-                      onInput={(e) =>
+                      onChange={(e) =>
                         updateEnvVar(
                           i,
                           source === "configmap" ? "configMapRef" : "secretRef",
-                          (e.target as HTMLInputElement).value,
+                          e.currentTarget.value,
                         )
                       }
                       placeholder={
@@ -310,16 +297,12 @@ export function ContainerForm({
                       }
                     />
                   </div>
-                  <div class="w-28">
+                  <div className="w-28">
                     <Input
                       label={i === 0 ? "Key" : undefined}
                       value={env.key}
-                      onInput={(e) =>
-                        updateEnvVar(
-                          i,
-                          "key",
-                          (e.target as HTMLInputElement).value,
-                        )
+                      onChange={(e) =>
+                        updateEnvVar(i, "key", e.currentTarget.value)
                       }
                       placeholder="data-key"
                     />
@@ -329,7 +312,7 @@ export function ContainerForm({
               <RemoveButton
                 onClick={() => removeEnvVar(i)}
                 title="Remove env var"
-                class="p-2 mb-1"
+                className="p-2 mb-1"
               />
             </div>
           );
@@ -338,7 +321,7 @@ export function ContainerForm({
           <button
             type="button"
             onClick={addEnvVar}
-            class="text-sm text-brand hover:text-brand/80"
+            className="text-sm text-brand hover:text-brand/80"
           >
             + Add Environment Variable
           </button>
@@ -346,73 +329,69 @@ export function ContainerForm({
       </div>
 
       {/* Resource Limits */}
-      <div class="space-y-3">
-        <label class="block text-sm font-medium text-text-secondary">
+      <div className="space-y-3">
+        <label className="block text-sm font-medium text-text-secondary">
           Resource Requests & Limits
         </label>
-        <div class="grid grid-cols-2 gap-4">
-          <div class="space-y-1">
-            <label class="block text-xs text-text-muted">CPU Request</label>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <label className="block text-xs text-text-muted">CPU Request</label>
             <input
               type="text"
               value={requestCpu}
-              onInput={(e) =>
-                onChange("requestCpu", (e.target as HTMLInputElement).value)
-              }
+              onChange={(e) => onChange("requestCpu", e.currentTarget.value)}
               placeholder="100m"
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
             {errors.requestCpu && (
-              <p class="text-sm text-danger">{errors.requestCpu}</p>
+              <p className="text-sm text-danger">{errors.requestCpu}</p>
             )}
           </div>
-          <div class="space-y-1">
-            <label class="block text-xs text-text-muted">Memory Request</label>
+          <div className="space-y-1">
+            <label className="block text-xs text-text-muted">
+              Memory Request
+            </label>
             <input
               type="text"
               value={requestMemory}
-              onInput={(e) =>
-                onChange("requestMemory", (e.target as HTMLInputElement).value)
-              }
+              onChange={(e) => onChange("requestMemory", e.currentTarget.value)}
               placeholder="128Mi"
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
             {errors.requestMemory && (
-              <p class="text-sm text-danger">{errors.requestMemory}</p>
+              <p className="text-sm text-danger">{errors.requestMemory}</p>
             )}
           </div>
-          <div class="space-y-1">
-            <label class="block text-xs text-text-muted">CPU Limit</label>
+          <div className="space-y-1">
+            <label className="block text-xs text-text-muted">CPU Limit</label>
             <input
               type="text"
               value={limitCpu}
-              onInput={(e) =>
-                onChange("limitCpu", (e.target as HTMLInputElement).value)
-              }
+              onChange={(e) => onChange("limitCpu", e.currentTarget.value)}
               placeholder="500m"
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
             {errors.limitCpu && (
-              <p class="text-sm text-danger">{errors.limitCpu}</p>
+              <p className="text-sm text-danger">{errors.limitCpu}</p>
             )}
           </div>
-          <div class="space-y-1">
-            <label class="block text-xs text-text-muted">Memory Limit</label>
+          <div className="space-y-1">
+            <label className="block text-xs text-text-muted">
+              Memory Limit
+            </label>
             <input
               type="text"
               value={limitMemory}
-              onInput={(e) =>
-                onChange("limitMemory", (e.target as HTMLInputElement).value)
-              }
+              onChange={(e) => onChange("limitMemory", e.currentTarget.value)}
               placeholder="256Mi"
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
             {errors.limitMemory && (
-              <p class="text-sm text-danger">{errors.limitMemory}</p>
+              <p className="text-sm text-danger">{errors.limitMemory}</p>
             )}
           </div>
         </div>
-        <p class="text-xs text-text-muted">
+        <p className="text-xs text-text-muted">
           Use k8s resource format: CPU (e.g. 100m, 0.5, 1), Memory (e.g. 128Mi,
           1Gi).
         </p>

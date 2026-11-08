@@ -162,7 +162,7 @@ export default function RelatedPods({
   if (loading.value) {
     return (
       <div class="flex justify-center py-8">
-        <Spinner size="sm" class="text-brand" />
+        <Spinner size="sm" className="text-brand" />
       </div>
     );
   }

@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { executionBadge, verificationBadge } from "@/lib/change-copy.ts";
 import type { ReceiptState, VerificationState } from "@/lib/change-types.ts";
@@ -18,9 +19,9 @@ export function ChangeStateBadges({
   const e = executionBadge(state);
   const v = verificationBadge(verification);
   return (
-    <span class="inline-flex flex-wrap items-center gap-1.5">
+    <span className="inline-flex flex-wrap items-center gap-1.5">
       <StatusBadge label={e.label} tone={e.tone} />
-      <span aria-hidden="true" class="text-text-muted">
+      <span aria-hidden="true" className="text-text-muted">
         ·
       </span>
       <StatusBadge label={v.label} tone={v.tone} />

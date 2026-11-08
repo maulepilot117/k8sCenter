@@ -35,12 +35,22 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { join, posix, relative, sep } from "node:path";
 import { parse } from "@babel/parser";
 import { FRONTEND_ROOT, findFiles } from "./source-files.ts";
 
 const SCANNED_DIRS = ["src", "components", "lib"];
 const SCANNED_FILE = /\.(ts|tsx)$/;
+
+const JSX_IMPORT_SOURCE_REACT = /@jsxImportSource\s+react\b/;
+
+/**
+ * The camelCase SVG prop names preact/compat rewrites to hyphenated
+ * attributes (its CAMEL_PROPS pattern). Preact without compat sets them as
+ * written, which SVG ignores.
+ */
+const COMPAT_CAMEL_SVG =
+  /^(?:accent|alignment|arabic|baseline|cap|clip(?!PathU)|color|dominant|fill|flood|font|glyph(?!R)|horiz|image(?!S)|letter|lighting|marker(?!H|W|U)|overline|paint|pointer|shape|stop|strikethrough|stroke|text(?!L)|transform|underline|unicode|units|v|vector|vert|word|writing|x(?!C))[A-Z]/;
 
 const PREACT_ONLY_ATTRIBUTES: Record<string, string> = {
   class: "className",
@@ -143,7 +153,23 @@ function attributeFinding(attr: Node, tag: string): string | null {
   return null;
 }
 
+/** A component element given a `class` attribute, and where it came from. */
+interface ClassPassed {
+  name: string;
+  source: string;
+  line: number;
+}
+
+interface Analysis {
+  report: SourceReport;
+  classPassed: ClassPassed[];
+}
+
 export function checkSource(code: string, file: string): SourceReport {
+  return analyse(code, file).report;
+}
+
+function analyse(code: string, file: string): Analysis {
   let ast: Node;
   try {
     ast = parse(code, { sourceType: "module", plugins: ["typescript", "jsx"] });
@@ -154,6 +180,8 @@ export function checkSource(code: string, file: string): SourceReport {
   const reactImports: { source: string; line: number }[] = [];
   const preactImports: { source: string; line: number }[] = [];
   const openings: Node[] = [];
+  let hasFragment = false;
+  const importedFrom = new Map<string, string>();
   walk(ast.program, (node) => {
     const source = importSource(node);
     if (source !== null) {
@@ -161,22 +189,92 @@ export function checkSource(code: string, file: string): SourceReport {
       if (isReactSpecifier(source)) reactImports.push(at);
       else if (isPreactSpecifier(source)) preactImports.push(at);
     }
+    if (node.type === "ImportDeclaration" && node.importKind !== "type") {
+      for (const spec of node.specifiers) {
+        importedFrom.set(spec.local.name, node.source.value);
+      }
+    }
     if (node.type === "JSXOpeningElement") openings.push(node);
+    if (node.type === "JSXFragment") hasFragment = true;
   });
+  const hasJsx = openings.length > 0 || hasFragment;
+  // The pragma counts only where JSX tools read it: in a comment before the
+  // first statement.
+  const firstStatement = ast.program.body[0]?.start ?? Number.POSITIVE_INFINITY;
+  const marked = (ast.comments ?? []).some(
+    (c: Node) =>
+      c.end <= firstStatement && JSX_IMPORT_SOURCE_REACT.test(c.value),
+  );
 
-  const usesReact = reactImports.length > 0;
+  const classPassed: ClassPassed[] = [];
+  for (const opening of openings) {
+    if (opening.name.type !== "JSXIdentifier") continue;
+    const source = importedFrom.get(opening.name.name);
+    if (!source) continue;
+    for (const attr of opening.attributes) {
+      if (attr.type === "JSXAttribute" && attr.name.name === "class") {
+        const line = attr.loc.start.line;
+        classPassed.push({ name: opening.name.name, source, line });
+      }
+    }
+  }
+
+  // The pragma marks a file as on React APIs even when it imports nothing
+  // from react (a component that is only JSX).
+  const importsReact = reactImports.length > 0;
+  const usesReact = importsReact || marked;
   const usesPreact = preactImports.length > 0;
   const findings: BridgeFinding[] = [];
 
   if (usesReact && usesPreact) {
     const list = (imports: typeof reactImports) =>
       imports.map((i) => `"${i.source}" (line ${i.line})`).join(", ");
+    const reactSide = importsReact
+      ? list(reactImports)
+      : "`@jsxImportSource react`";
     findings.push({
       file,
       line: preactImports[0].line,
       message:
-        `imports from both React (${list(reactImports)}) and Preact ` +
+        `imports from both React (${reactSide}) and Preact ` +
         `(${list(preactImports)}); convert the Preact imports to React`,
+    });
+  }
+
+  if (!marked) {
+    for (const opening of openings) {
+      // Only DOM elements: a component's props are not attributes.
+      const intrinsic =
+        opening.name.type === "JSXIdentifier" &&
+        /^[a-z]/.test(opening.name.name);
+      if (!intrinsic) continue;
+      for (const attr of opening.attributes) {
+        if (
+          attr.type === "JSXAttribute" &&
+          attr.name.type === "JSXIdentifier" &&
+          COMPAT_CAMEL_SVG.test(attr.name.name)
+        ) {
+          findings.push({
+            file,
+            line: attr.loc.start.line,
+            message:
+              `<${tagName(opening.name)}> uses "${attr.name.name}", which only ` +
+              "preact/compat turns into an attribute; mark the file " +
+              "`/** @jsxImportSource react */`",
+          });
+        }
+      }
+    }
+  }
+
+  if (importsReact && hasJsx && !marked) {
+    findings.push({
+      file,
+      line: 1,
+      message:
+        "has JSX on React APIs but no `/** @jsxImportSource react */`; " +
+        "without it the JSX does not load preact/compat, and React prop " +
+        "names such as strokeWidth reach the DOM unconverted",
     });
   }
 
@@ -191,20 +289,101 @@ export function checkSource(code: string, file: string): SourceReport {
     }
   }
 
-  return { usesReact, usesPreact, findings };
+  return { report: { usesReact, usesPreact, findings }, classPassed };
+}
+
+/** The scanned file a local import resolves to, relative to the root. */
+function resolveLocal(
+  from: string,
+  source: string,
+  known: Set<string>,
+): string | null {
+  let base: string;
+  if (source.startsWith("@/")) base = source.slice(2);
+  else if (source.startsWith("."))
+    base = posix.join(posix.dirname(from), source);
+  else return null;
+  base = posix.normalize(base);
+  for (const candidate of [base, `${base}.tsx`, `${base}.ts`]) {
+    if (known.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Component tags in an .astro file that are given `class`, with the module
+ * each tag was imported from in the frontmatter. `class:list` is Astro's own
+ * directive and is not a `class` attribute.
+ */
+export function astroClassPassed(code: string): ClassPassed[] {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(code);
+  if (!front) return [];
+  const importedFrom = new Map<string, string>();
+  for (const m of front[1].matchAll(
+    /import\s+([A-Z]\w*)\s+from\s+["']([^"']+)["']/g,
+  )) {
+    importedFrom.set(m[1], m[2]);
+  }
+  for (const m of front[1].matchAll(
+    /import\s*\{([^}]*)\}\s*from\s+["']([^"']+)["']/g,
+  )) {
+    for (const part of m[1].split(",")) {
+      const local = part
+        .trim()
+        .split(/\s+as\s+/)
+        .pop();
+      if (local) importedFrom.set(local, m[2]);
+    }
+  }
+  const found: ClassPassed[] = [];
+  for (const m of code.matchAll(/<([A-Z]\w*)(\s[^>]*)?>/g)) {
+    const source = importedFrom.get(m[1]);
+    if (!source || !m[2] || !/(^|\s)class\s*=/.test(m[2])) continue;
+    const line = code.slice(0, m.index).split("\n").length;
+    found.push({ name: m[1], source, line });
+  }
+  return found;
 }
 
 export function checkTree(root: string = FRONTEND_ROOT): TreeReport {
   const findings: BridgeFinding[] = [];
   const preactFiles: string[] = [];
+  const reactFiles = new Set<string>();
+  const callers: { file: string; usesReact: boolean; uses: ClassPassed[] }[] =
+    [];
   const files = SCANNED_DIRS.flatMap((dir) =>
     findFiles(join(root, dir), SCANNED_FILE),
   );
+  const toRel = (path: string) => relative(root, path).split(sep).join("/");
+  const known = new Set(files.map(toRel));
   for (const path of files) {
-    const rel = relative(root, path).split(sep).join("/");
-    const report = checkSource(readFileSync(path, "utf8"), rel);
+    const rel = toRel(path);
+    const { report, classPassed } = analyse(readFileSync(path, "utf8"), rel);
     findings.push(...report.findings);
     if (report.usesPreact) preactFiles.push(rel);
+    if (report.usesReact) reactFiles.add(rel);
+    callers.push({ file: rel, usesReact: report.usesReact, uses: classPassed });
+  }
+  for (const path of findFiles(join(root, "src"), /\.astro$/)) {
+    const uses = astroClassPassed(readFileSync(path, "utf8"));
+    callers.push({ file: toRel(path), usesReact: false, uses });
+  }
+
+  // A component on React APIs reads className; `class` passed to it is
+  // dropped once the real React runtime is installed. A caller on React APIs
+  // is already flagged for every `class` it writes, so it is skipped here.
+  for (const caller of callers) {
+    if (caller.usesReact) continue;
+    for (const use of caller.uses) {
+      const target = resolveLocal(caller.file, use.source, known);
+      if (target && reactFiles.has(target)) {
+        findings.push({
+          file: caller.file,
+          line: use.line,
+          message: `<${use.name}> is on React APIs; pass "className", not "class"`,
+        });
+      }
+    }
   }
   findings.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
   return { findings, preactFiles: preactFiles.sort() };

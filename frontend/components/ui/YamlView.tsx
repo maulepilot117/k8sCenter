@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 // Lightweight YAML viewer with key/value coloring + line numbers.
 // Solid (not glass) surface — it's a data/code view. Used by the resource
 // detail YAML tab and the wizard live-manifest pane.

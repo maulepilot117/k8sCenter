@@ -1,4 +1,6 @@
+/** @jsxImportSource react */
 import { SectionHeader } from "@/components/ui/Field.tsx";
+import { withUniqueKeys } from "@/lib/unique-keys.ts";
 
 interface Rule {
   apiGroups?: string[];
@@ -8,37 +10,41 @@ interface Rule {
 
 export function RulesTable({ rules }: { rules?: Rule[] }) {
   if (!rules?.length) {
-    return <p class="text-sm text-text-muted">No rules defined</p>;
+    return <p className="text-sm text-text-muted">No rules defined</p>;
   }
+
+  const keyed = withUniqueKeys(rules, (r) =>
+    [r.apiGroups, r.resources, r.verbs].map((x) => x?.join(",")).join("|"),
+  );
 
   return (
     <div>
       <SectionHeader>Rules</SectionHeader>
-      <div class="overflow-x-auto rounded-md border border-border-primary">
-        <table class="w-full text-sm">
+      <div className="overflow-x-auto rounded-md border border-border-primary">
+        <table className="w-full text-sm">
           <thead>
-            <tr class="border-b border-border-primary">
-              <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+            <tr className="border-b border-border-primary">
+              <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                 API Groups
               </th>
-              <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+              <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                 Resources
               </th>
-              <th class="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
+              <th className="px-3 py-1.5 text-left text-xs font-medium text-text-muted">
                 Verbs
               </th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-border-subtle">
-            {rules.map((rule, i) => (
-              <tr key={i}>
-                <td class="px-3 py-1.5 font-mono text-xs text-text-secondary">
+          <tbody className="divide-y divide-border-subtle">
+            {keyed.map(({ item: rule, key }) => (
+              <tr key={key}>
+                <td className="px-3 py-1.5 font-mono text-xs text-text-secondary">
                   {rule.apiGroups?.join(",") || "*"}
                 </td>
-                <td class="px-3 py-1.5 font-mono text-xs text-text-secondary">
+                <td className="px-3 py-1.5 font-mono text-xs text-text-secondary">
                   {rule.resources?.join(",") || "*"}
                 </td>
-                <td class="px-3 py-1.5 font-mono text-xs text-text-secondary">
+                <td className="px-3 py-1.5 font-mono text-xs text-text-secondary">
                   {rule.verbs?.join(",") || "*"}
                 </td>
               </tr>

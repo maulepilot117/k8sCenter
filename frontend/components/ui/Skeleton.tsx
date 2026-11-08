@@ -1,28 +1,35 @@
-import type { CSSProperties } from "preact";
+/** @jsxImportSource react */
+import type { CSSProperties } from "react";
 
 /**
  * Animated loading skeleton placeholder.
  * Use to show content shape while data is loading.
  *
  * @example
- * <Skeleton class="h-4 w-32" /> // single line
- * <Skeleton class="h-8 w-full" /> // full-width bar
- * <Skeleton class="h-24 w-full rounded-lg" /> // card placeholder
- * <Skeleton class="rounded-lg" style={{ gridColumn: "span 6" }} /> // grid cell
+ * <Skeleton className="h-4 w-32" /> // single line
+ * <Skeleton className="h-8 w-full" /> // full-width bar
+ * <Skeleton className="h-24 w-full rounded-lg" /> // card placeholder
+ * <Skeleton className="rounded-lg" style={{ gridColumn: "span 6" }} /> // grid cell
  */
 export function Skeleton({
-  class: className = "",
+  className = "",
   style,
 }: {
-  class?: string;
+  className?: string;
   style?: CSSProperties;
 }) {
   return (
     <div
-      class={`animate-pulse rounded ${className}`}
+      className={`animate-pulse rounded ${className}`}
       style={{ background: "var(--bg-elevated)", ...style }}
     />
   );
+}
+
+function range(n: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) out.push(i);
+  return out;
 }
 
 /**
@@ -36,20 +43,20 @@ export function TableSkeleton({
   cols?: number;
 }) {
   return (
-    <div class="space-y-2">
+    <div className="space-y-2">
       {/* Header */}
-      <div class="flex gap-4 px-3 py-2">
-        {Array.from({ length: cols }).map((_, i) => (
-          <Skeleton key={`h-${i}`} class="h-4 flex-1" />
+      <div className="flex gap-4 px-3 py-2">
+        {range(cols).map((i) => (
+          <Skeleton key={`h-${i}`} className="h-4 flex-1" />
         ))}
       </div>
       {/* Rows */}
-      {Array.from({ length: rows }).map((_, r) => (
-        <div key={`r-${r}`} class="flex gap-4 px-3 py-3">
-          {Array.from({ length: cols }).map((_, c) => (
+      {range(rows).map((r) => (
+        <div key={`r-${r}`} className="flex gap-4 px-3 py-3">
+          {range(cols).map((c) => (
             <Skeleton
               key={`${r}-${c}`}
-              class={`h-4 ${c === 0 ? "w-40" : "flex-1"}`}
+              className={`h-4 ${c === 0 ? "w-40" : "flex-1"}`}
             />
           ))}
         </div>

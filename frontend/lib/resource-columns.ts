@@ -1,8 +1,7 @@
 /**
  * Column definitions for each resource type used by ResourceTable.
  */
-import type { ComponentChildren } from "preact";
-import { h } from "preact";
+import { createElement, type ReactNode } from "react";
 import { StatusDot, type StatusValue } from "@/components/ui/StatusDot.tsx";
 import { age } from "@/lib/format.ts";
 import type {
@@ -41,16 +40,16 @@ interface Column<T> {
   key: string;
   label: string;
   sortable?: boolean;
-  render?: (item: T) => ComponentChildren;
+  render?: (item: T) => ReactNode;
   class?: string;
 }
 
 // Helper to create a StatusBadge lazily (avoids importing island in server context)
-function badge(text: string): ComponentChildren {
-  return h(
+function badge(text: string): ReactNode {
+  return createElement(
     "span",
     {
-      class: `inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${statusColor(
+      className: `inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${statusColor(
         text,
       )}`,
     },
@@ -74,11 +73,8 @@ const ageCol: Column<K8sResource> = {
 
 // ---- Shared styled column helpers matching the mockup design ----
 
-function styledName(
-  name: string,
-  status: StatusValue = "neutral",
-): ComponentChildren {
-  return h(
+function styledName(name: string, status: StatusValue = "neutral"): ReactNode {
+  return createElement(
     "span",
     {
       style: {
@@ -88,8 +84,8 @@ function styledName(
       },
     },
     [
-      h(StatusDot, { status, size: 6 }),
-      h(
+      createElement(StatusDot, { status, size: 6 }),
+      createElement(
         "span",
         {
           style: {
@@ -112,8 +108,8 @@ const nameCol: Column<K8sResource> = {
   render: (r) => styledName(r.metadata.name, "neutral"),
 };
 
-function styledNamespace(ns: string): ComponentChildren {
-  return h(
+function styledNamespace(ns: string): ReactNode {
+  return createElement(
     "span",
     {
       style: {
@@ -129,8 +125,8 @@ function styledNamespace(ns: string): ComponentChildren {
   );
 }
 
-function styledAge(timestamp: string): ComponentChildren {
-  return h(
+function styledAge(timestamp: string): ReactNode {
+  return createElement(
     "span",
     {
       style: {
@@ -146,7 +142,7 @@ function styledAge(timestamp: string): ComponentChildren {
 function styledBadge(
   text: string,
   status: "success" | "warning" | "error" | "info",
-): ComponentChildren {
+): ReactNode {
   const colors = {
     success: {
       dot: "var(--success)",
@@ -170,7 +166,7 @@ function styledBadge(
     },
   };
   const c = colors[status];
-  return h(
+  return createElement(
     "span",
     {
       style: {
@@ -186,7 +182,7 @@ function styledBadge(
       },
     },
     [
-      h("span", {
+      createElement("span", {
         style: {
           width: "6px",
           height: "6px",
@@ -203,12 +199,12 @@ function styledReplicaDots(
   ready: number,
   desired: number,
   available?: number,
-): ComponentChildren {
+): ReactNode {
   const dots = [];
   for (let i = 0; i < desired; i++) {
     const isReady = i < ready;
     dots.push(
-      h("div", {
+      createElement("div", {
         key: i,
         style: {
           width: "8px",
@@ -223,12 +219,12 @@ function styledReplicaDots(
       }),
     );
   }
-  return h(
+  return createElement(
     "div",
     { style: { display: "flex", alignItems: "center", gap: "6px" } },
     [
-      h("div", { style: { display: "flex", gap: "3px" } }, dots),
-      h(
+      createElement("div", { style: { display: "flex", gap: "3px" } }, dots),
+      createElement(
         "span",
         {
           style: {
@@ -243,8 +239,8 @@ function styledReplicaDots(
   );
 }
 
-function styledImage(image: string): ComponentChildren {
-  return h(
+function styledImage(image: string): ReactNode {
+  return createElement(
     "span",
     {
       style: {
@@ -262,8 +258,8 @@ function styledImage(image: string): ComponentChildren {
   );
 }
 
-function styledMono(text: string): ComponentChildren {
-  return h(
+function styledMono(text: string): ReactNode {
+  return createElement(
     "span",
     {
       style: {
@@ -929,7 +925,7 @@ const networkpolicyColumns: Column<K8sResource>[] = [
       const text = Object.entries(labels)
         .map(([k, v]) => `${k}=${v}`)
         .join(", ");
-      return h(
+      return createElement(
         "span",
         {
           style: {
@@ -952,7 +948,7 @@ const networkpolicyColumns: Column<K8sResource>[] = [
     label: "Policy Types",
     render: (r) => {
       const types = (r as NetworkPolicy).spec?.policyTypes ?? ["Ingress"];
-      return h(
+      return createElement(
         "span",
         { style: { display: "flex", gap: "4px" } },
         types.map((t) => styledBadge(t, t === "Ingress" ? "info" : "warning")),

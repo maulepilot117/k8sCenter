@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import type { StatusValue } from "@/components/ui/StatusDot.tsx";
 
 export type Tone = "ok" | "warn" | "crit" | "info" | "neutral";

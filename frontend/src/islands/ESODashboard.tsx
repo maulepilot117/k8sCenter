@@ -134,7 +134,11 @@ interface StatCardProps {
 
 function StatCard({ label, count, color, subText, href }: StatCardProps) {
   const inner = (
-    <Card glass class="h-full flex flex-col" aria-label={`${label}: ${count}`}>
+    <Card
+      glass
+      className="h-full flex flex-col"
+      aria-label={`${label}: ${count}`}
+    >
       <span
         style={{
           fontSize: "11px",
@@ -372,7 +376,7 @@ export default function ESODashboard() {
 
       {loading.value && (
         <div class="flex justify-center py-12">
-          <Spinner class="text-brand" />
+          <Spinner className="text-brand" />
         </div>
       )}
 
@@ -387,7 +391,7 @@ export default function ESODashboard() {
       {!loading.value && !error.value && detected && (
         <>
           {/* Hero — sync health ring in a glass card */}
-          <Card glass class="mb-6 flex flex-col items-center">
+          <Card glass className="mb-6 flex flex-col items-center">
             <SyncHealthRing synced={counts.Synced} total={total} />
             {total === 0 ? (
               <p

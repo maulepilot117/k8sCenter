@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 interface StepperProps {
   value: number;
   min?: number;

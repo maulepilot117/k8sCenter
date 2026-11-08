@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 export interface StepRailStep {
   label: string;
   /** optional secondary line (vertical rail only) */
@@ -31,18 +32,18 @@ export default function StepRail({
 }: StepRailProps) {
   if (orientation === "horizontal") {
     return (
-      <nav class="flex items-center justify-center mb-8">
-        <ol class="flex items-center gap-2">
+      <nav className="flex items-center justify-center mb-8">
+        <ol className="flex items-center gap-2">
           {steps.map((step, index) => {
             const isCompleted = index < current;
             const isCurrent = index === current;
             const isClickable = isCompleted && !!onStep;
 
             return (
-              <li key={index} class="flex items-center">
+              <li key={step.label} className="flex items-center">
                 {index > 0 && (
                   <div
-                    class={`w-8 h-0.5 mx-1 ${
+                    className={`w-8 h-0.5 mx-1 ${
                       isCompleted ? "bg-brand" : "bg-elevated"
                     }`}
                   />
@@ -53,7 +54,7 @@ export default function StepRail({
                   disabled={!isClickable}
                   aria-label={`Step ${index + 1}: ${step.label}${isCompleted ? " (done)" : ""}`}
                   aria-current={isCurrent ? "step" : undefined}
-                  class={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                     isCurrent
                       ? "bg-brand/10 text-brand border border-brand/30"
                       : isCompleted
@@ -62,7 +63,7 @@ export default function StepRail({
                   }`}
                 >
                   <span
-                    class={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold ${
+                    className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold ${
                       isCurrent
                         ? "bg-brand"
                         : isCompleted
@@ -77,15 +78,15 @@ export default function StepRail({
                   >
                     {isCompleted ? (
                       <svg
-                        class="w-3.5 h-3.5"
+                        className="w-3.5 h-3.5"
                         fill="none"
                         viewBox="0 0 24 24"
                         stroke="currentColor"
-                        stroke-width="3"
+                        strokeWidth="3"
                       >
                         <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
                           d="M5 13l4 4L19 7"
                         />
                       </svg>
@@ -93,7 +94,7 @@ export default function StepRail({
                       index + 1
                     )}
                   </span>
-                  <span class="hidden sm:inline">{step.label}</span>
+                  <span className="hidden sm:inline">{step.label}</span>
                 </button>
               </li>
             );
@@ -172,9 +173,9 @@ export default function StepRail({
                   viewBox="0 0 20 20"
                   fill="none"
                   stroke="currentColor"
-                  stroke-width="2.4"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                 >
                   <path d="M4 10l4 4 8-8" />
                 </svg>

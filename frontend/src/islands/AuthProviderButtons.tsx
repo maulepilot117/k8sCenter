@@ -56,7 +56,12 @@ export default function AuthProviderButtons() {
       <div class="space-y-2">
         {oidcProviders.map((provider) => (
           <a key={provider.id} href={provider.loginURL} class="block">
-            <Button type="button" variant="secondary" size="lg" class="w-full">
+            <Button
+              type="button"
+              variant="secondary"
+              size="lg"
+              className="w-full"
+            >
               Sign in with {provider.displayName}
             </Button>
           </a>

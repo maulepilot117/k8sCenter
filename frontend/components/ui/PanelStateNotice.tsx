@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Alert } from "@/components/ui/Alert.tsx";
 import type { PanelState } from "@/lib/networking-state.ts";
 
@@ -18,14 +19,14 @@ export function PanelStateNotice({
   onReconnect?: () => void;
 }) {
   return (
-    <div role="status" class="flex flex-col gap-2">
+    <div role="status" className="flex flex-col gap-2">
       <Alert variant={state.kind === "forbidden" ? "info" : "warning"}>
         {state.message}
       </Alert>
       {state.action === "retry" && onRetry && (
         <button
           type="button"
-          class="self-start text-sm text-accent hover:underline"
+          className="self-start text-sm text-accent hover:underline"
           onClick={onRetry}
         >
           Try again
@@ -34,7 +35,7 @@ export function PanelStateNotice({
       {state.action === "reconnect" && onReconnect && (
         <button
           type="button"
-          class="self-start text-sm text-accent hover:underline"
+          className="self-start text-sm text-accent hover:underline"
           onClick={onReconnect}
         >
           Reconnect
@@ -43,7 +44,7 @@ export function PanelStateNotice({
       {state.action === "reload" && (
         <button
           type="button"
-          class="self-start text-sm text-accent hover:underline"
+          className="self-start text-sm text-accent hover:underline"
           onClick={() => globalThis.location.reload()}
         >
           Reload

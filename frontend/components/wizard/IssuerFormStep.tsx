@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { LE_PROD_ACME, LE_STAGING_ACME } from "@/lib/wizard-constants.ts";
@@ -21,15 +22,15 @@ export function IssuerFormStep({
   onUpdateAcme,
 }: IssuerFormStepProps) {
   return (
-    <div class="space-y-5">
-      <div class="grid grid-cols-2 gap-4">
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-4">
         <Input
           id="issuer-name"
           label="Name"
           required
           value={form.name}
-          onInput={(e) =>
-            onUpdate("name", (e.target as HTMLInputElement).value)
+          onChange={(e) =>
+            onUpdate("name", (e.currentTarget as HTMLInputElement).value)
           }
           placeholder={scope === "cluster" ? "letsencrypt-prod" : "my-issuer"}
           error={errors.name}
@@ -46,19 +47,19 @@ export function IssuerFormStep({
       </div>
 
       {form.type === "selfSigned" && (
-        <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
+        <div className="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
           Self-signed issuers have no additional configuration. They sign
           certificates using their own temporary key material.
         </div>
       )}
 
       {form.type === "acme" && (
-        <div class="space-y-4">
+        <div className="space-y-4">
           <div>
-            <div class="flex gap-2 mb-1">
+            <div className="flex gap-2 mb-1">
               <button
                 type="button"
-                class={`text-xs rounded border px-2 py-1 ${
+                className={`text-xs rounded border px-2 py-1 ${
                   form.acme.server === LE_STAGING_ACME
                     ? "border-brand text-brand"
                     : "border-border-primary text-text-muted"
@@ -69,7 +70,7 @@ export function IssuerFormStep({
               </button>
               <button
                 type="button"
-                class={`text-xs rounded border px-2 py-1 ${
+                className={`text-xs rounded border px-2 py-1 ${
                   form.acme.server === LE_PROD_ACME
                     ? "border-brand text-brand"
                     : "border-border-primary text-text-muted"
@@ -84,8 +85,11 @@ export function IssuerFormStep({
               label="ACME Server"
               required
               value={form.acme.server}
-              onInput={(e) =>
-                onUpdateAcme("server", (e.target as HTMLInputElement).value)
+              onChange={(e) =>
+                onUpdateAcme(
+                  "server",
+                  (e.currentTarget as HTMLInputElement).value,
+                )
               }
               placeholder="https://acme-v02.api.letsencrypt.org/directory"
               description="Must be an HTTPS URL. Private and loopback addresses are rejected."
@@ -93,15 +97,18 @@ export function IssuerFormStep({
             />
           </div>
 
-          <div class="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <Input
               id="acme-email"
               label="Contact Email"
               required
               type="email"
               value={form.acme.email}
-              onInput={(e) =>
-                onUpdateAcme("email", (e.target as HTMLInputElement).value)
+              onChange={(e) =>
+                onUpdateAcme(
+                  "email",
+                  (e.currentTarget as HTMLInputElement).value,
+                )
               }
               placeholder="admin@example.com"
               error={errors["acme.email"]}
@@ -111,10 +118,10 @@ export function IssuerFormStep({
               label="Account Private Key Secret"
               required
               value={form.acme.privateKeySecretRefName}
-              onInput={(e) =>
+              onChange={(e) =>
                 onUpdateAcme(
                   "privateKeySecretRefName",
-                  (e.target as HTMLInputElement).value,
+                  (e.currentTarget as HTMLInputElement).value,
                 )
               }
               placeholder="letsencrypt-account"
@@ -127,10 +134,10 @@ export function IssuerFormStep({
             id="acme-ingress-class"
             label="HTTP01 Ingress Class"
             value={form.acme.ingressClassName}
-            onInput={(e) =>
+            onChange={(e) =>
               onUpdateAcme(
                 "ingressClassName",
-                (e.target as HTMLInputElement).value,
+                (e.currentTarget as HTMLInputElement).value,
               )
             }
             placeholder="nginx"

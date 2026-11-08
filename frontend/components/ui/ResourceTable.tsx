@@ -1,4 +1,5 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 
 export interface Column {
   key: string;
@@ -12,7 +13,7 @@ export interface Column {
 
 export interface Row {
   id: string;
-  cells: Record<string, ComponentChildren>;
+  cells: Record<string, ReactNode>;
   onClick?: () => void;
 }
 
@@ -160,9 +161,9 @@ export default function ResourceTable({
               viewBox="0 0 20 20"
               fill="none"
               stroke="var(--text-muted)"
-              stroke-width="1.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
             >
               <path d="M7 5l5 5-5 5" />
             </svg>

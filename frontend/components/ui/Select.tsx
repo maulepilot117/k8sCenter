@@ -1,8 +1,9 @@
-import type { AccessibleSelectHTMLAttributes, ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ComponentProps, ReactNode } from "react";
 
-// The accessible variant is what `<select>` itself accepts: it pairs `role`
-// with `multiple`/`size`, so the spread below stays assignable.
-type SelectProps = AccessibleSelectHTMLAttributes<HTMLSelectElement> & {
+// Exactly what `<select>` itself accepts, so the spread below stays
+// assignable (Preact's accessible variant while JSX types come from Preact).
+type SelectProps = ComponentProps<"select"> & {
   label?: string;
   error?: string;
   /** Renders a red asterisk after the label. */
@@ -12,7 +13,7 @@ type SelectProps = AccessibleSelectHTMLAttributes<HTMLSelectElement> & {
   /** Simple option list. Mutually exclusive with children. */
   options?: Array<{ value: string; label: string }>;
   /** Use children for richer markup like <optgroup>. */
-  children?: ComponentChildren;
+  children?: ReactNode;
 };
 
 export function Select({
@@ -23,7 +24,7 @@ export function Select({
   id,
   options,
   children,
-  class: className,
+  className,
   ...props
 }: SelectProps) {
   const selectId = id ?? label?.toLowerCase().replace(/\s+/g, "-");
@@ -32,18 +33,18 @@ export function Select({
   const describedBy = [descId, errorId].filter(Boolean).join(" ") || undefined;
 
   return (
-    <div class="space-y-1">
+    <div className="space-y-1">
       {label && (
-        <div class="flex items-baseline gap-0.5">
+        <div className="flex items-baseline gap-0.5">
           <label
-            for={selectId}
-            class="block text-sm font-medium text-text-secondary"
+            htmlFor={selectId}
+            className="block text-sm font-medium text-text-secondary"
           >
             {label}
           </label>
           {/* Asterisk rendered as a sibling — see Input.tsx for rationale. */}
           {required && (
-            <span aria-hidden="true" class="text-sm text-danger">
+            <span aria-hidden="true" className="text-sm text-danger">
               *
             </span>
           )}
@@ -54,7 +55,7 @@ export function Select({
         aria-invalid={error ? "true" : undefined}
         aria-describedby={describedBy}
         aria-required={required ? "true" : undefined}
-        class={`block w-full rounded-md border px-3 py-2 text-sm shadow-sm transition-colors focus:outline-none focus:ring-2 ${
+        className={`block w-full rounded-md border px-3 py-2 text-sm shadow-sm transition-colors focus:outline-none focus:ring-2 ${
           error
             ? "border-danger focus:ring-danger/50"
             : "border-border-primary focus:border-brand focus:ring-brand/50 bg-surface text-text-primary"
@@ -70,12 +71,12 @@ export function Select({
           : children}
       </select>
       {description && (
-        <p id={descId} class="text-xs text-text-muted">
+        <p id={descId} className="text-xs text-text-muted">
           {description}
         </p>
       )}
       {error && (
-        <p id={errorId} class="text-sm text-danger">
+        <p id={errorId} className="text-sm text-danger">
           {error}
         </p>
       )}

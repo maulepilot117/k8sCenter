@@ -1,29 +1,11 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
-import { SchedulesResourceTable } from "@/components/velero/SchedulesResourceTable.tsx";
+/** @jsxImportSource react */
+import { expect, test } from "bun:test";
 import type { Schedule } from "@/lib/velero-types.ts";
+import { render, setupDom } from "@/src/test-utils/render.tsx";
 
-/**
- * Defect #5: the schedules table shows the outcome of each schedule's newest
- * backup in its own column, apart from "Last Backup" (Velero's
- * status.lastBackup), because the newest backup may be a manual trigger.
- */
+setupDom({ browser: true });
 
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
-
-let host: HTMLElement | null = null;
-
-afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-});
+const { SchedulesResourceTable } = await import("./SchedulesResourceTable.tsx");
 
 function schedule(overrides: Partial<Schedule>): Schedule {
   return {
@@ -36,20 +18,14 @@ function schedule(overrides: Partial<Schedule>): Schedule {
   } as Schedule;
 }
 
-function mount(schedules: Schedule[]): HTMLElement {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <SchedulesResourceTable
-        schedules={schedules}
-        deleting={null}
-        onDelete={() => {}}
-      />,
-      host as HTMLElement,
-    ),
-  );
-  return host;
+function mount(schedules: Schedule[]): Element {
+  return render(
+    <SchedulesResourceTable
+      schedules={schedules}
+      deleting={null}
+      onDelete={() => {}}
+    />,
+  ).container;
 }
 
 test("a schedule with a newest backup names its phase for screen readers", () => {

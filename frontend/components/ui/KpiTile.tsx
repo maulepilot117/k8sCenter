@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
 export interface KpiTileProps {

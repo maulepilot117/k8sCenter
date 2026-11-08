@@ -1,4 +1,5 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 import StatusBadge, { type Tone } from "@/components/ui/glass/StatusBadge.tsx";
 
@@ -8,18 +9,18 @@ export interface DetailTab {
 }
 
 interface DetailShellProps {
-  icon?: ComponentChildren;
+  icon?: ReactNode;
   title: string;
   subtitle?: string;
   status?: { label: string; tone: Tone };
   /** header action buttons (Scale, Restart, Edit, …) */
-  actions?: ComponentChildren;
+  actions?: ReactNode;
   tabs: DetailTab[];
   active: string;
   onTab: (id: string) => void;
   /** optional right-hand live-metrics rail */
-  rail?: ComponentChildren;
-  children: ComponentChildren;
+  rail?: ReactNode;
+  children: ReactNode;
 }
 
 /**

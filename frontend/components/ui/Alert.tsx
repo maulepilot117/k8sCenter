@@ -1,11 +1,12 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 
 type AlertVariant = "error" | "warning" | "info" | "success";
 
 interface AlertProps {
   variant?: AlertVariant;
-  children: ComponentChildren;
-  class?: string;
+  children: ReactNode;
+  className?: string;
 }
 
 const VARIANT_STYLES: Record<AlertVariant, Record<string, string>> = {
@@ -15,14 +16,10 @@ const VARIANT_STYLES: Record<AlertVariant, Record<string, string>> = {
   success: { background: "var(--success-dim)", color: "var(--success)" },
 };
 
-export function Alert({
-  variant = "error",
-  children,
-  class: className,
-}: AlertProps) {
+export function Alert({ variant = "error", children, className }: AlertProps) {
   return (
     <div
-      class={`rounded-md px-4 py-3 text-sm ${className ?? ""}`}
+      className={`rounded-md px-4 py-3 text-sm ${className ?? ""}`}
       style={VARIANT_STYLES[variant]}
     >
       {children}

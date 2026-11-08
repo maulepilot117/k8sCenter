@@ -1,5 +1,5 @@
-import type { ReadonlySignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import type { ReadonlySignal } from "@preact/signals-core";
+import { useEffect } from "react";
 
 // Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
 // this file is shared by both the Fresh tree and the Astro/Bun port, and the
@@ -18,5 +18,5 @@ export function useDirtyGuard(dirty: ReadonlySignal<boolean>) {
     };
     globalThis.addEventListener("beforeunload", handler);
     return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  }, [dirty]);
 }

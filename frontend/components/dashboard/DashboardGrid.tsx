@@ -54,7 +54,7 @@ export const NARROW_GRID_WIDTH = 900;
  * and again. Mid-drag that is worse than cosmetic: a mode flip cancels the
  * drag the user is still holding.
  */
-export const WIDE_GRID_WIDTH = 916;
+const WIDE_GRID_WIDTH = 916;
 
 /** Height of the drag handle: the widget card's title row. */
 const DRAG_HANDLE_HEIGHT = 40;
@@ -180,7 +180,7 @@ interface GridItemProps {
  * It provides CellFillContext, so the widget's card fills the cell and scrolls
  * its body instead of sizing to its content.
  */
-export function GridItem({
+function GridItem({
   item,
   def,
   narrow,

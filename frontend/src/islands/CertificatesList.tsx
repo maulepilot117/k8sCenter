@@ -168,7 +168,7 @@ export default function CertificatesList() {
             padding: "48px 0",
           }}
         >
-          <Spinner class="text-brand" />
+          <Spinner className="text-brand" />
         </div>
       )}
 

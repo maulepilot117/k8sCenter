@@ -1,23 +1,19 @@
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 
 interface CardProps {
   title?: string;
-  children: ComponentChildren;
-  class?: string;
+  children: ReactNode;
+  className?: string;
   /** Liquid glass chrome treatment. Default solid — data-dense content
    * (tables, editors, logs) must stay on an opaque surface. */
   glass?: boolean;
 }
 
-export function Card({
-  title,
-  children,
-  class: className,
-  glass = false,
-}: CardProps) {
+export function Card({ title, children, className, glass = false }: CardProps) {
   return (
     <div
-      class={`${glass ? "glass rounded-2xl" : "rounded-lg border"} p-6 ${
+      className={`${glass ? "glass rounded-2xl" : "rounded-lg border"} p-6 ${
         className ?? ""
       }`}
       style={
@@ -31,7 +27,7 @@ export function Card({
     >
       {title && (
         <h3
-          class="mb-4 text-sm font-semibold uppercase tracking-wider"
+          className="mb-4 text-sm font-semibold uppercase tracking-wider"
           style={{ color: "var(--text-muted)" }}
         >
           {title}

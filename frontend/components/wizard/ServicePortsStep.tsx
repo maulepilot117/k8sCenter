@@ -1,9 +1,11 @@
+/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { PROTOCOL_OPTIONS } from "@/lib/wizard-constants.ts";
 import type { LabelEntry } from "@/lib/wizard-types.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 interface PortEntry {
   name: string;
@@ -28,6 +30,7 @@ export function ServicePortsStep({
   errors,
   onChange,
 }: ServicePortsProps) {
+  const portKeys = useRowKeys(ports.length);
   const showNodePort =
     serviceType === "NodePort" || serviceType === "LoadBalancer";
 
@@ -50,6 +53,7 @@ export function ServicePortsStep({
   };
 
   const removePort = (index: number) => {
+    portKeys.removeAt(index);
     onChange(
       "ports",
       ports.filter((_, i) => i !== index),
@@ -78,15 +82,15 @@ export function ServicePortsStep({
   };
 
   return (
-    <div class="space-y-8 max-w-2xl">
+    <div className="space-y-8 max-w-2xl">
       {/* Selector */}
-      <div class="space-y-3">
-        <p class="text-xs text-text-muted">
+      <div className="space-y-3">
+        <p className="text-xs text-text-muted">
           Labels used to match target pods. Must match at least one pod's
           labels.
         </p>
         {errors.selector && (
-          <p class="text-sm text-danger">{errors.selector}</p>
+          <p className="text-sm text-danger">{errors.selector}</p>
         )}
         <KeyValueListEditor
           label="Pod Selector"
@@ -99,33 +103,31 @@ export function ServicePortsStep({
       </div>
 
       {/* Ports */}
-      <div class="space-y-3">
-        <label class="block text-sm font-medium text-text-secondary">
+      <div className="space-y-3">
+        <label className="block text-sm font-medium text-text-secondary">
           Service Ports
         </label>
-        {errors.ports && <p class="text-sm text-danger">{errors.ports}</p>}
+        {errors.ports && <p className="text-sm text-danger">{errors.ports}</p>}
         {ports.map((port, i) => (
-          <div key={i} class="flex items-end gap-2">
-            <div class="w-24">
+          <div key={portKeys.keyAt(i)} className="flex items-end gap-2">
+            <div className="w-24">
               <Input
                 label={i === 0 ? "Name" : undefined}
                 value={port.name}
-                onInput={(e) =>
-                  updatePort(i, "name", (e.target as HTMLInputElement).value)
-                }
+                onChange={(e) => updatePort(i, "name", e.currentTarget.value)}
                 placeholder="http"
               />
             </div>
-            <div class="w-20">
+            <div className="w-20">
               <Input
                 label={i === 0 ? "Port" : undefined}
                 type="number"
                 value={port.port ? String(port.port) : ""}
-                onInput={(e) =>
+                onChange={(e) =>
                   updatePort(
                     i,
                     "port",
-                    parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                    parseInt(e.currentTarget.value, 10) || 0,
                   )
                 }
                 placeholder="80"
@@ -134,16 +136,16 @@ export function ServicePortsStep({
                 error={errors[`ports[${i}].port`]}
               />
             </div>
-            <div class="w-24">
+            <div className="w-24">
               <Input
                 label={i === 0 ? "Target" : undefined}
                 type="number"
                 value={port.targetPort ? String(port.targetPort) : ""}
-                onInput={(e) =>
+                onChange={(e) =>
                   updatePort(
                     i,
                     "targetPort",
-                    parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                    parseInt(e.currentTarget.value, 10) || 0,
                   )
                 }
                 placeholder="8080"
@@ -154,31 +156,27 @@ export function ServicePortsStep({
             </div>
             {/* Wide enough for "SCTP" next to the select's own arrow; at
                 w-20 it clipped to "TC". */}
-            <div class="w-28 shrink-0">
+            <div className="w-28 shrink-0">
               <Select
                 label={i === 0 ? "Protocol" : undefined}
                 value={port.protocol}
                 onChange={(e) =>
-                  updatePort(
-                    i,
-                    "protocol",
-                    (e.target as HTMLSelectElement).value,
-                  )
+                  updatePort(i, "protocol", e.currentTarget.value)
                 }
                 options={PROTOCOL_OPTIONS}
               />
             </div>
             {showNodePort && (
-              <div class="w-24">
+              <div className="w-24">
                 <Input
                   label={i === 0 ? "NodePort" : undefined}
                   type="number"
                   value={port.nodePort ? String(port.nodePort) : ""}
-                  onInput={(e) =>
+                  onChange={(e) =>
                     updatePort(
                       i,
                       "nodePort",
-                      parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                      parseInt(e.currentTarget.value, 10) || 0,
                     )
                   }
                   placeholder="30080"
@@ -191,7 +189,7 @@ export function ServicePortsStep({
             <RemoveButton
               onClick={() => removePort(i)}
               title="Remove port"
-              class="p-2 mb-1"
+              className="p-2 mb-1"
             />
           </div>
         ))}
@@ -199,7 +197,7 @@ export function ServicePortsStep({
           <button
             type="button"
             onClick={addPort}
-            class="text-sm text-brand hover:text-brand/80"
+            className="text-sm text-brand hover:text-brand/80"
           >
             + Add Port
           </button>

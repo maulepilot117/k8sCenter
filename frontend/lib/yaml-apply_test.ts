@@ -1,8 +1,7 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { signal } from "@preact/signals";
-import { h, render } from "preact";
-import { act } from "preact/test-utils";
+import { afterEach, expect, test } from "bun:test";
+import { signal } from "@preact/signals-core";
+import { createElement } from "react";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 import { ApiError, setAccessToken } from "./api.ts";
 import { fetchCurrentUser, logout } from "./auth.ts";
 import type {
@@ -32,8 +31,7 @@ import {
  * of the suite keeps running without browser globals.
  */
 
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
+setupDom();
 
 interface Call {
   url: string;
@@ -68,7 +66,7 @@ function stubFetch() {
     })) as typeof globalThis.fetch;
 }
 
-let container: HTMLElement | null = null;
+let mounted: ReturnType<typeof render> | null = null;
 
 afterEach(async () => {
   // The signed-in user is a module-wide signal: never leave one behind.
@@ -76,11 +74,7 @@ afterEach(async () => {
   await signOut();
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
-  if (container) {
-    act(() => render(null, container as HTMLElement));
-    container.remove();
-    container = null;
-  }
+  unmount();
   setAccessToken(null);
   // Unknown-outcome ids persist in sessionStorage; never let one leak into the
   // next test.
@@ -131,10 +125,10 @@ async function signOut() {
 
 /** Unmounts the mounted hook, as a navigation or remount would. */
 function unmount() {
-  if (!container) return;
-  act(() => render(null, container as HTMLElement));
-  container.remove();
-  container = null;
+  if (!mounted) return;
+  const rendered = mounted;
+  mounted = null;
+  act(() => rendered.unmount());
 }
 
 /** Mounts the hook and returns what it returned on its first render. */
@@ -144,15 +138,12 @@ function mount(
 ): UseYamlApplyReturn {
   let captured: UseYamlApplyReturn | undefined;
   function Harness() {
-    captured =
-      options === undefined
-        ? useYamlApply(initialYaml)
-        : useYamlApply(initialYaml, options);
+    captured = useYamlApply(initialYaml, options);
     return null;
   }
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  act(() => render(h(Harness, null), container as HTMLElement));
+  act(() => {
+    mounted = render(createElement(Harness, null));
+  });
   if (!captured) throw new Error("hook did not render");
   return captured;
 }

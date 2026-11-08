@@ -44,10 +44,15 @@ export default defineConfig({
         { find: /^react-dom\/client$/, replacement: "preact/compat/client" },
         { find: /^react-dom\/server$/, replacement: "preact/compat/server" },
         { find: /^react-dom\/test-utils$/, replacement: "preact/test-utils" },
-        { find: /^react\/jsx-runtime$/, replacement: "preact/jsx-runtime" },
+        // Through compat, so a file marked `@jsxImportSource react` loads
+        // compat before its first vnode; see tsconfig.json.
+        {
+          find: /^react\/jsx-runtime$/,
+          replacement: "preact/compat/jsx-runtime",
+        },
         {
           find: /^react\/jsx-dev-runtime$/,
-          replacement: "preact/jsx-dev-runtime",
+          replacement: "preact/compat/jsx-dev-runtime",
         },
       ],
       // KTD5: the failure mode this guards against is not Astro but two

@@ -1,13 +1,13 @@
-import type { ComponentChildren, CSSProperties } from "preact";
-import { useContext } from "preact/hooks";
+/** @jsxImportSource react */
+import { type CSSProperties, type ReactNode, useContext } from "react";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 
 interface WidgetShellProps {
   title?: string;
   /** right-aligned header slot: legend, badge, menu, time-range tabs */
-  action?: ComponentChildren;
-  children: ComponentChildren;
+  action?: ReactNode;
+  children: ReactNode;
   padding?: number;
   style?: CSSProperties;
 }

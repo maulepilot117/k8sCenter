@@ -1,13 +1,14 @@
-import type { ComponentChildren, CSSProperties } from "preact";
+/** @jsxImportSource react */
+import type { CSSProperties, ReactNode } from "react";
 
 interface GlassCardProps {
-  children: ComponentChildren;
+  children: ReactNode;
   /** "surface" = standard widget; "elevated" = modal/overlay (stronger blur + shadow) */
   tier?: "surface" | "elevated";
   padding?: number | string;
   radius?: number;
   style?: CSSProperties;
-  class?: string;
+  className?: string;
 }
 
 /**
@@ -24,12 +25,12 @@ export default function GlassCard({
   padding = 20,
   radius = 18,
   style,
-  class: cls,
+  className: cls,
 }: GlassCardProps) {
   const pad = typeof padding === "number" ? `${padding}px` : padding;
   return (
     <div
-      class={`${tier === "elevated" ? "glass-elevated" : "glass"} ${cls ?? ""}`}
+      className={`${tier === "elevated" ? "glass-elevated" : "glass"} ${cls ?? ""}`}
       style={{ borderRadius: `${radius}px`, padding: pad, ...style }}
     >
       {children}

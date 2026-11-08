@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import { Input } from "@/components/ui/Input.tsx";
 import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
@@ -49,11 +50,11 @@ export function ServiceBasicsStep({
   };
 
   return (
-    <div class="space-y-6 max-w-lg">
+    <div className="space-y-6 max-w-lg">
       <Input
         label="Name"
         value={name}
-        onInput={(e) => onChange("name", (e.target as HTMLInputElement).value)}
+        onChange={(e) => onChange("name", e.currentTarget.value)}
         placeholder="my-service"
         error={errors.name}
         required
@@ -70,9 +71,7 @@ export function ServiceBasicsStep({
       <Select
         label="Service Type"
         value={type}
-        onChange={(e) =>
-          onChange("type", (e.target as HTMLSelectElement).value)
-        }
+        onChange={(e) => onChange("type", e.currentTarget.value)}
         options={SERVICE_TYPE_OPTIONS}
         error={errors.type}
       />

@@ -1,10 +1,15 @@
-import { useSignal } from "@preact/signals";
-import type { ComponentChildren } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type ChangeEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 export interface ConfirmDialogProps {
   title: string;
-  message?: ComponentChildren;
+  message?: ReactNode;
   confirmLabel: string;
   danger?: boolean;
   /** If provided, user must type this string to enable the confirm button. */
@@ -26,13 +31,13 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
-  const input = useSignal("");
+  const [input, setInput] = useState("");
   const dialogRef = useRef<HTMLDivElement>(null);
   const idPrefix = useRef(`confirm-dialog-${++dialogIdCounter}`);
   const titleId = `${idPrefix.current}-title`;
   const descId = `${idPrefix.current}-desc`;
 
-  const canConfirm = !typeToConfirm || input.value === typeToConfirm;
+  const canConfirm = !typeToConfirm || input === typeToConfirm;
 
   // Escape key handler
   useEffect(() => {
@@ -57,7 +62,7 @@ export function ConfirmDialog({
 
   return (
     <div
-      class="glass-scrim fixed inset-0 z-50 flex items-center justify-center"
+      className="glass-scrim fixed inset-0 z-50 flex items-center justify-center"
       onClick={onCancel}
     >
       <div
@@ -66,39 +71,39 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={message ? descId : undefined}
-        class="glass-elevated w-full max-w-md rounded-2xl p-6"
+        className="glass-elevated w-full max-w-md rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 id={titleId} class="text-lg font-semibold text-text-primary">
+        <h3 id={titleId} className="text-lg font-semibold text-text-primary">
           {title}
         </h3>
         {message && (
-          <p id={descId} class="mt-2 text-sm text-text-secondary">
+          <p id={descId} className="mt-2 text-sm text-text-secondary">
             {message}
           </p>
         )}
         {typeToConfirm && (
-          <div class="mt-4">
-            <label class="block text-sm text-text-secondary">
+          <div className="mt-4">
+            <label className="block text-sm text-text-secondary">
               Type <strong>{typeToConfirm}</strong> to confirm
             </label>
             <input
               data-autofocus
               type="text"
-              value={input.value}
-              onInput={(e) =>
-                (input.value = (e.target as HTMLInputElement).value)
+              value={input}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setInput(e.currentTarget.value)
               }
-              class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+              className="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
               placeholder={typeToConfirm}
             />
           </div>
         )}
-        <div class="mt-6 flex justify-end gap-3">
+        <div className="mt-6 flex justify-end gap-3">
           <button
             type="button"
             onClick={onCancel}
-            class="rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
+            className="rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
           >
             Cancel
           </button>
@@ -106,7 +111,7 @@ export function ConfirmDialog({
             type="button"
             disabled={!canConfirm || loading}
             onClick={onConfirm}
-            class={`cursor-pointer rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 ${
+            className={`cursor-pointer rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 ${
               danger
                 ? "bg-error hover:bg-error/90"
                 : "bg-brand hover:bg-brand/90"

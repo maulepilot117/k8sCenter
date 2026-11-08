@@ -1,3 +1,7 @@
+// Render reads useYamlApply's signals with a bare `.value`, which re-renders
+// only once @preact/signals has patched Preact; nothing else this island
+// imports loads it any more.
+import "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";

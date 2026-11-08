@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 export function ProtocolBadge({ protocol }: { protocol: string }) {
   const colorClass =
     protocol === "HTTPS" || protocol === "TLS"
@@ -8,7 +9,7 @@ export function ProtocolBadge({ protocol }: { protocol: string }) {
 
   return (
     <span
-      class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${colorClass}`}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${colorClass}`}
     >
       {protocol}
     </span>

@@ -97,7 +97,7 @@ export default function ESOStoreMetricsPanel({
     >
       <div class="flex items-baseline justify-between mb-4">
         <h2 class="text-sm font-semibold text-text-primary">Request rate</h2>
-        {loading.value && <Spinner class="text-brand" />}
+        {loading.value && <Spinner className="text-brand" />}
       </div>
 
       {!loading.value && data.value?.error ? (

@@ -1,15 +1,16 @@
+/** @jsxImportSource react */
 /** SVG icons for Kubernetes resource types. Sized at 20x20 by default. */
-import type * as preact from "preact";
+import type { ReactElement } from "react";
 
 interface ResourceIconProps {
   kind: string;
-  class?: string;
+  className?: string;
   size?: number;
 }
 
 export function ResourceIcon({
   kind,
-  class: className,
+  className,
   size = 20,
 }: ResourceIconProps) {
   const icon = icons[kind] ?? icons.default;
@@ -20,17 +21,17 @@ export function ResourceIcon({
       viewBox="0 0 20 20"
       fill="none"
       stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      class={className}
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
     >
       {icon}
     </svg>
   );
 }
 
-const icons: Record<string, preact.JSX.Element> = {
+const icons: Record<string, ReactElement> = {
   dashboard: (
     <path d="M3 5h14M3 5v10a2 2 0 002 2h10a2 2 0 002-2V5M3 5l7 5 7-5" />
   ),

@@ -1,7 +1,9 @@
-import type { Signal } from "@preact/signals";
+/** @jsxImportSource react */
+import { type Signal, signal } from "@preact/signals-core";
 import Field from "@/components/ui/form/Field.tsx";
 import TextField from "@/components/ui/form/TextField.tsx";
 import Toggle from "@/components/ui/form/Toggle.tsx";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface AlertingFieldsProps {
   alertEnabled: Signal<boolean>;
@@ -15,6 +17,11 @@ interface AlertingFieldsProps {
   onDirty?: () => void;
 }
 
+// Stand-ins so the hooks below run unconditionally when an optional signal is
+// absent; the matching field is not rendered in that case.
+const NO_NUMBER = signal(0);
+const NO_TEXT = signal("");
+
 export function AlertingFields({
   alertEnabled,
   smtpHost,
@@ -26,11 +33,20 @@ export function AlertingFields({
   alertRecipients,
   onDirty,
 }: AlertingFieldsProps) {
+  const enabled = useSignalValue(alertEnabled);
+  const host = useSignalValue(smtpHost);
+  const port = useSignalValue(smtpPort);
+  const user = useSignalValue(smtpUser);
+  const pass = useSignalValue(smtpPass);
+  const from = useSignalValue(smtpFrom);
+  const rate = useSignalValue(alertRate ?? NO_NUMBER);
+  const recipients = useSignalValue(alertRecipients ?? NO_TEXT);
+
   return (
     <>
-      <div class="mb-4 flex items-center gap-3">
+      <div className="mb-4 flex items-center gap-3">
         <Toggle
-          checked={alertEnabled.value}
+          checked={enabled}
           onChange={(v) => {
             alertEnabled.value = v;
             onDirty?.();
@@ -45,10 +61,10 @@ export function AlertingFields({
           Enable email alerting
         </span>
       </div>
-      <div class="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Field label="SMTP Host">
           <TextField
-            value={smtpHost.value}
+            value={host}
             onInput={(v) => {
               smtpHost.value = v;
               onDirty?.();
@@ -58,7 +74,7 @@ export function AlertingFields({
         </Field>
         <Field label="SMTP Port">
           <TextField
-            value={String(smtpPort.value)}
+            value={String(port)}
             onInput={(v) => {
               smtpPort.value = parseInt(v, 10) || 587;
               onDirty?.();
@@ -67,7 +83,7 @@ export function AlertingFields({
         </Field>
         <Field label="SMTP Username">
           <TextField
-            value={smtpUser.value}
+            value={user}
             onInput={(v) => {
               smtpUser.value = v;
               onDirty?.();
@@ -77,17 +93,17 @@ export function AlertingFields({
         <Field label="SMTP Password">
           <TextField
             type="password"
-            value={smtpPass.value}
+            value={pass}
             onInput={(v) => {
               smtpPass.value = v;
               onDirty?.();
             }}
-            placeholder={smtpPass.value === "****" ? "****" : ""}
+            placeholder={pass === "****" ? "****" : ""}
           />
         </Field>
         <Field label="From Address">
           <TextField
-            value={smtpFrom.value}
+            value={from}
             onInput={(v) => {
               smtpFrom.value = v;
               onDirty?.();
@@ -98,7 +114,7 @@ export function AlertingFields({
         {alertRate && (
           <Field label="Rate Limit (per hour)">
             <TextField
-              value={String(alertRate.value)}
+              value={String(rate)}
               onInput={(v) => {
                 alertRate.value = parseInt(v, 10) || 5;
                 onDirty?.();
@@ -107,10 +123,10 @@ export function AlertingFields({
           </Field>
         )}
         {alertRecipients && (
-          <div class="sm:col-span-2">
+          <div className="sm:col-span-2">
             <Field label="Recipients" hint="Comma-separated email addresses">
               <TextField
-                value={alertRecipients.value}
+                value={recipients}
                 onInput={(v) => {
                   alertRecipients.value = v;
                   onDirty?.();
