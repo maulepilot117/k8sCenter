@@ -15,7 +15,7 @@
  * @param subscriptions - Array of [id, kind, namespace] tuples to subscribe to
  * @param debounceMs - Debounce delay in milliseconds before re-fetching
  */
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef } from "react";
 import { subscribe } from "@/lib/ws.ts";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 
@@ -32,10 +32,18 @@ export function useWsRefetch(
   debounceMs: number,
 ): void {
   const refetchTimer = useRef<number | null>(null);
+  // The subscription is made once on mount; these keep its callback on the
+  // caller's latest values without re-subscribing every render.
+  const fetchRef = useRef(fetchFn);
+  fetchRef.current = fetchFn;
+  const subscriptionsRef = useRef(subscriptions);
+  subscriptionsRef.current = subscriptions;
+  const debounceRef = useRef(debounceMs);
+  debounceRef.current = debounceMs;
 
   useEffect(() => {
     const local = selectedCluster.value === LOCAL_CLUSTER_ID;
-    const live = subscriptions.filter(
+    const live = subscriptionsRef.current.filter(
       ([, kind]) => local || CLUSTER_AGNOSTIC_KINDS.has(kind),
     );
     if (live.length === 0) return;
@@ -44,8 +52,8 @@ export function useWsRefetch(
       if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
       refetchTimer.current = globalThis.setTimeout(() => {
         refetchTimer.current = null;
-        fetchFn();
-      }, debounceMs) as unknown as number;
+        fetchRef.current();
+      }, debounceRef.current) as unknown as number;
     };
 
     const unsubs = live.map(([id, kind, ns]) =>

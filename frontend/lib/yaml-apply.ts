@@ -17,14 +17,13 @@
  * unpinned apply, which is what the template editor relies on.
  */
 
+import type { ReadonlySignal, Signal } from "@preact/signals-core";
+import { useCallback, useEffect, useRef } from "react";
 import {
-  type ReadonlySignal,
-  type Signal,
   useComputed,
   useSignal,
   useSignalEffect,
-} from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+} from "@/src/lib/signal-hooks.ts";
 import { ApiError, apiPostRaw, errorExtra, errorExtraFlag } from "./api.ts";
 import { currentUserId } from "./auth.ts";
 import type {
@@ -387,6 +386,10 @@ export function useYamlApply(
     controller: AbortController;
     issuedEpoch: number;
   } | null>(null);
+  // The callbacks below run across awaits and must see the options of the
+  // latest render, not the first one.
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   // A pin taken while the selection was still restored under the unknown
   // sentinel cannot be stale on generation alone: the id is unchanged, and a
@@ -418,7 +421,7 @@ export function useYamlApply(
   const clearPin = useCallback(() => {
     pin.value = null;
     preview.value = null;
-  }, []);
+  }, [pin, preview]);
 
   const handleValidate = useCallback(async () => {
     if (applying.value || validating.value) return;
@@ -470,10 +473,22 @@ export function useYamlApply(
       if (validateAbort.current === inFlight) validateAbort.current = null;
       validating.value = false;
     }
-  }, []);
+  }, [
+    applying,
+    validating,
+    error,
+    result,
+    preview,
+    pin,
+    trackedRefusal,
+    lastOperationId,
+    attemptOutcomeUnknown,
+    yamlContent,
+  ]);
 
   const handleApply = useCallback(async () => {
     if (applying.value || validating.value) return;
+    const options = optionsRef.current;
     // A new press starts a new answer: nothing from the previous attempt
     // describes it, even when it is refused before it is sent.
     lastOperationId.value = null;
@@ -605,7 +620,18 @@ export function useYamlApply(
     } finally {
       applying.value = false;
     }
-  }, []);
+  }, [
+    applying,
+    validating,
+    error,
+    result,
+    preview,
+    pin,
+    trackedRefusal,
+    lastOperationId,
+    attemptOutcomeUnknown,
+    yamlContent,
+  ]);
 
   return {
     yamlContent,

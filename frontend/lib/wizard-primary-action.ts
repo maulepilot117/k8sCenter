@@ -1,5 +1,5 @@
-import type { Signal } from "@preact/signals";
-import { createContext } from "preact";
+import type { Signal } from "@preact/signals-core";
+import { createContext } from "react";
 
 /**
  * The footer's primary button, as registered by the wizard step that owns it.

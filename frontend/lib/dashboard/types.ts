@@ -5,7 +5,7 @@
  * unit test in this feature lives behind it, because the repo has no component
  * test harness (see the design spec, D-10).
  */
-import type { VNode } from "preact";
+import type { ReactElement } from "react";
 
 /** The three sizes a widget can render at. Ordered smallest to largest. */
 export const DISPLAY_MODES = ["compact", "normal", "expanded"] as const;
@@ -930,5 +930,5 @@ export interface WidgetDef {
   params?: Readonly<Record<string, readonly string[]>>;
   /** Which modes this widget actually implements. Must include "normal". */
   modes: DisplayMode[];
-  render(props: WidgetProps): VNode;
+  render(props: WidgetProps): ReactElement;
 }

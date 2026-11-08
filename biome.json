@@ -51,6 +51,20 @@
   "overrides": [
     {
       "includes": [
+        "frontend/components/ui/cell-fill.ts",
+        "frontend/lib/dashboard/types.ts",
+        "frontend/lib/hooks/use-dirty-guard.ts",
+        "frontend/lib/hooks/use-dirty-guard_test.tsx",
+        "frontend/lib/hooks/use-namespaces.ts",
+        "frontend/lib/hooks/use-poll.ts",
+        "frontend/lib/hooks/use-poll_test.tsx",
+        "frontend/lib/resource-columns.ts",
+        "frontend/lib/resource-columns_test.ts",
+        "frontend/lib/useWsRefetch.ts",
+        "frontend/lib/useWsRefetch_test.tsx",
+        "frontend/lib/wizard-primary-action.ts",
+        "frontend/lib/yaml-apply.ts",
+        "frontend/lib/yaml-apply_test.ts",
         "frontend/src/islands/VulnerabilityDetail_test.tsx",
         "frontend/src/lib/use-is-client.ts",
         "frontend/src/lib/use-is-client_test.tsx",

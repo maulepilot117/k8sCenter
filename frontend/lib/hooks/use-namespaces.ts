@@ -1,6 +1,6 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect } from "react";
 import { apiGet } from "@/lib/api.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
 
 // Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
 // this file is shared by both the Fresh tree and the Astro/Bun port, and the
@@ -21,7 +21,7 @@ export function useNamespaces() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [namespaces]);
 
   return namespaces;
 }

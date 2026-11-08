@@ -1,22 +1,15 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * usePoll keeps the status and reason of a failed fetch, and treats a 403 as
  * final: it stops polling and does not resume when the tab becomes visible
  * again (#608 R5). Other failures keep today's pause-and-resume behaviour.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
+setupDom({ browser: true });
 
 const { usePoll } = await import("./use-poll.ts");
 const { setAccessToken } = await import("@/lib/api.ts");
-
-afterAll(() => {
-  GlobalRegistrator.unregister();
-});
 
 const INTERVAL = 20;
 let calls = 0;
@@ -34,7 +27,6 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = realFetch;
-  render(null, document.body);
 });
 
 function errorResponse(status: number, reason: string): Response {
@@ -57,7 +49,7 @@ const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 async function mount() {
   await act(async () => {
-    render(<Probe />, document.body);
+    render(<Probe />);
   });
   await act(() => wait(10));
 }

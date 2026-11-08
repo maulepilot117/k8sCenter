@@ -1,12 +1,15 @@
-/** @jsxImportSource preact */
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
 import { setAccessToken } from "@/lib/api.ts";
-import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { disconnectWS } from "@/lib/ws.ts";
 import { LOCAL_CLUSTER_ID, switchCluster } from "@/src/lib/cluster.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+
+// Bun's own WebSocket, taken before happy-dom replaces it. The afterAll below
+// puts this back, not happy-dom's: setupDom's teardown may already have run,
+// and a browser WebSocket left on globalThis breaks the server tests.
+const bunWebSocket = globalThis.WebSocket;
+setupDom({ browser: true });
+const { useWsRefetch } = await import("@/lib/useWsRefetch.ts");
+const { disconnectWS } = await import("@/lib/ws.ts");
 
 /**
  * The resource WebSocket is fed by the LOCAL cluster's informers whatever
@@ -67,33 +70,22 @@ class FakeSocket {
 const SUB: [string, string, string] = ["gitops-apps", "applications", ""];
 const DEBOUNCE_MS = 5;
 
-let host: HTMLElement | null = null;
-let originalSocket: typeof globalThis.WebSocket;
-
 beforeAll(() => {
-  GlobalRegistrator.register();
-  originalSocket = globalThis.WebSocket;
   globalThis.WebSocket = FakeSocket as unknown as typeof globalThis.WebSocket;
 });
 
 afterAll(() => {
-  globalThis.WebSocket = originalSocket;
-  GlobalRegistrator.unregister();
+  globalThis.WebSocket = bunWebSocket;
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   disconnectWS();
   FakeSocket.instances = [];
   setAccessToken(null);
   switchCluster(LOCAL_CLUSTER_ID, "local");
 });
 
-function mount(): { calls: () => number } {
+function mount(): { calls: () => number; unmount: () => void } {
   let calls = 0;
   const fetchFn = () => {
     calls++;
@@ -104,10 +96,8 @@ function mount(): { calls: () => number } {
     return null;
   }
   setAccessToken("test-token");
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<Probe />, host as HTMLElement));
-  return { calls: () => calls };
+  const view = render(<Probe />);
+  return { calls: () => calls, unmount: () => act(() => view.unmount()) };
 }
 
 const settle = () =>
@@ -158,9 +148,7 @@ test("a remote selection still subscribes to the cluster-agnostic notification f
     return null;
   }
   setAccessToken("test-token");
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<Feed />, host as HTMLElement));
+  render(<Feed />);
 
   expect(FakeSocket.instances).toHaveLength(1);
   const socket = FakeSocket.instances[0];
@@ -171,4 +159,54 @@ test("a remote selection still subscribes to the cluster-agnostic notification f
   socket.deliver("notif-feed");
   await settle();
   expect(calls).toBe(1);
+});
+
+test("an event refetches once however many arrive inside the debounce", async () => {
+  const probe = mount();
+  const socket = FakeSocket.instances[0];
+  socket.accept();
+
+  socket.deliver(SUB[0]);
+  socket.deliver(SUB[0]);
+  socket.deliver(SUB[0]);
+  await settle();
+  expect(probe.calls()).toBe(1);
+});
+
+test("unmounting unsubscribes and cancels a pending refetch", async () => {
+  const probe = mount();
+  const socket = FakeSocket.instances[0];
+  socket.accept();
+
+  socket.deliver(SUB[0]);
+  probe.unmount();
+  await settle();
+  expect(probe.calls()).toBe(0);
+  expect(socket.sent).toContainEqual(
+    expect.objectContaining({ type: "unsubscribe", id: SUB[0] }),
+  );
+});
+
+test("the refetch calls the fetch function from the latest render", async () => {
+  const seen: string[] = [];
+  function Probe({ tag }: { tag: string }) {
+    useWsRefetch(
+      () => {
+        seen.push(tag);
+        return Promise.resolve();
+      },
+      [SUB],
+      DEBOUNCE_MS,
+    );
+    return null;
+  }
+  setAccessToken("test-token");
+  const view = render(<Probe tag="first" />);
+  FakeSocket.instances[0].accept();
+
+  view.rerender(<Probe tag="second" />);
+  FakeSocket.instances[0].deliver(SUB[0]);
+  await settle();
+  expect(seen).toEqual(["second"]);
+  expect(FakeSocket.instances).toHaveLength(1);
 });
