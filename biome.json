@@ -54,6 +54,8 @@
         "frontend/src/islands/VulnerabilityDetail_test.tsx",
         "frontend/src/lib/use-is-client.ts",
         "frontend/src/lib/use-is-client_test.tsx",
+        "frontend/src/lib/signal-hooks.ts",
+        "frontend/src/lib/signal-hooks_test.tsx",
         "frontend/src/lib/use-signal-value.ts",
         "frontend/src/lib/use-signal-value_test.tsx",
         "frontend/src/test-utils/render.tsx",
