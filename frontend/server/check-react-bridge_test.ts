@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { checkSource, checkTree } from "./check-react-bridge.ts";
+import {
+  checkAliasMaps,
+  checkSource,
+  checkTree,
+} from "./check-react-bridge.ts";
+import { FRONTEND_ROOT } from "./source-files.ts";
 
 const messages = (code: string) =>
   checkSource(code, "x.tsx").findings.map((f) => `${f.line}: ${f.message}`);
@@ -148,4 +153,93 @@ test("a file that cannot be parsed fails with its path", () => {
   expect(() => checkSource("const = ;", "broken.ts")).toThrow(
     "broken.ts: could not parse",
   );
+});
+
+/**
+ * A root with a fake package (`fake/a`, `fake/b`) and the two config files.
+ * `tsPaths` is the tsconfig `paths` body; `viteAliases` the alias array body.
+ */
+function aliasRoot(tsPaths: string, viteAliases: string): string {
+  const root = mkdtempSync(join(tmpdir(), "k8sc-react-alias-"));
+  const files: Record<string, string> = {
+    "node_modules/fake/package.json": '{ "name": "fake" }',
+    "node_modules/fake/a.js": "export {};",
+    "node_modules/fake/b.js": "export {};",
+    "tsconfig.json": `{\n  // comments are allowed\n  "compilerOptions": { "paths": {\n    "@/*": ["./*"],\n${tsPaths}\n  } }\n}`,
+    "astro.config.mjs": `export default { vite: { resolve: { alias: [\n${viteAliases}\n] } } };`,
+  };
+  for (const [path, contents] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), contents);
+  }
+  return root;
+}
+
+function aliasFindings(tsPaths: string, viteAliases: string): string[] {
+  const root = aliasRoot(tsPaths, viteAliases);
+  try {
+    return checkAliasMaps(root).map((f) => `${f.file}: ${f.message}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("alias maps agree when a path and a specifier reach the same file", () => {
+  expect(
+    aliasFindings(
+      '"react": ["./node_modules/fake/a"],\n"react-dom/client": ["./node_modules/fake/b"]',
+      '{ find: /^react$/, replacement: "fake/a" },\n{ find: /^react-dom\\/client$/, replacement: "fake/b" }',
+    ),
+  ).toEqual([]);
+});
+
+test("alias targets that resolve to different files fail, naming both", () => {
+  expect(
+    aliasFindings(
+      '"react": ["./node_modules/fake/a"]',
+      '{ find: /^react$/, replacement: "fake/b" }',
+    ),
+  ).toEqual([
+    'tsconfig.json: "react" resolves to node_modules/fake/a.js in ' +
+      "tsconfig.json but node_modules/fake/b.js in astro.config.mjs",
+  ]);
+});
+
+test("a react specifier aliased on one side only fails", () => {
+  expect(
+    aliasFindings(
+      '"react": ["./node_modules/fake/a"],\n"react/jsx-runtime": ["./node_modules/fake/b"]',
+      '{ find: /^react$/, replacement: "fake/a" }',
+    ),
+  ).toEqual([
+    'astro.config.mjs: "react/jsx-runtime" is aliased in tsconfig.json only',
+  ]);
+});
+
+test("a target that resolves to nothing fails", () => {
+  expect(
+    aliasFindings(
+      '"react": ["./node_modules/fake/a"]',
+      '{ find: /^react$/, replacement: "fake/missing" }',
+    ),
+  ).toEqual([
+    'tsconfig.json: "react" resolves to node_modules/fake/a.js in ' +
+      'tsconfig.json but nothing ("fake/missing") in astro.config.mjs',
+  ]);
+});
+
+test("an alias pattern the check cannot read fails instead of being skipped", () => {
+  expect(
+    aliasFindings(
+      '"react": ["./node_modules/fake/a"]',
+      '{ find: /^react$/, replacement: "fake/a" },\n{ find: /^react-dom.*$/, replacement: "fake/b" }',
+    ),
+  ).toEqual([
+    "astro.config.mjs: alias /^react-dom.*$/ is not an anchored literal " +
+      "with a string replacement; the alias check cannot read it",
+  ]);
+});
+
+test("the repository's own alias maps agree", () => {
+  expect(checkAliasMaps(FRONTEND_ROOT)).toEqual([]);
 });

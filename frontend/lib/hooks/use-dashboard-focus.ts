@@ -30,7 +30,7 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  * else.
  *
  * It lives in `frontend/lib/hooks/` because that is this repo's one home for
- * hooks (`use-poll`, `use-dirty-guard`, `use-split-pane`, ...), all of which
+ * hooks (`use-poll`, `use-dirty-guard`, `use-namespaces`, ...), all of which
  * touch the DOM or the network and none of which is unit tested. D-10 sends
  * anything that *needs* a unit test to `frontend/lib/` as a *pure* module, and
  * nothing here is pure or testable without a DOM: what this hook does is move

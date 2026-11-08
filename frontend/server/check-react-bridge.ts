@@ -22,6 +22,12 @@
  * `@testing-library/preact` is not one either: converted tests use it until
  * the runtime switches, and its query API matches the React one.
  *
+ * 3. tsconfig.json's `paths` and astro.config.mjs's alias list drift apart,
+ *    so type-checking and tests resolve a `react` import to a different
+ *    file from the one the browser runs. The two are compared by the file
+ *    each target resolves to, because tsconfig names a path and Vite a
+ *    package specifier.
+ *
  * React's own lint rules (hooks at top level, effect dependencies) come from
  * Biome's React domain, which biome.json enables per file through the
  * override listing converted files. Add a file there when it converts, so a
@@ -204,8 +210,104 @@ export function checkTree(root: string = FRONTEND_ROOT): TreeReport {
   return { findings, preactFiles: preactFiles.sort() };
 }
 
+/** The `react*` entries of tsconfig.json's `paths`: specifier -> target. */
+export function tsconfigAliases(text: string): Map<string, string> {
+  const config = Bun.JSONC.parse(text) as {
+    compilerOptions?: { paths?: Record<string, string[]> };
+  };
+  const paths = config.compilerOptions?.paths ?? {};
+  return new Map(
+    Object.entries(paths)
+      .filter(([specifier]) => isReactSpecifier(specifier))
+      .map(([specifier, targets]) => [specifier, targets[0]]),
+  );
+}
+
+/**
+ * The `react*` entries of astro.config.mjs's alias list, read from its
+ * `{ find: /^…$/, replacement: "…" }` literals: specifier -> target. An
+ * entry whose pattern is not an anchored literal is a finding, because the
+ * check could not tell which specifiers it rewrites.
+ */
+export function viteAliases(
+  code: string,
+  file: string,
+): { aliases: Map<string, string>; findings: BridgeFinding[] } {
+  const ast = parse(code, { sourceType: "module" });
+  const aliases = new Map<string, string>();
+  const findings: BridgeFinding[] = [];
+  walk(ast.program, (node) => {
+    if (node.type !== "ObjectExpression") return;
+    const prop = (key: string) =>
+      node.properties.find(
+        (p: Node) => p.type === "ObjectProperty" && p.key.name === key,
+      )?.value;
+    const find = prop("find");
+    const replacement = prop("replacement");
+    if (find?.type !== "RegExpLiteral" || !replacement) return;
+    const literal = /^\^((?:[\w@.-]|\\\/)+)\$$/.exec(find.pattern);
+    if (!literal || replacement.type !== "StringLiteral") {
+      findings.push({
+        file,
+        line: node.loc.start.line,
+        message: `alias /${find.pattern}/ is not an anchored literal with a string replacement; the alias check cannot read it`,
+      });
+      return;
+    }
+    const specifier = literal[1].replaceAll("\\/", "/");
+    if (isReactSpecifier(specifier)) aliases.set(specifier, replacement.value);
+  });
+  return { aliases, findings };
+}
+
+function resolveFrom(root: string, target: string): string | null {
+  try {
+    return relative(root, Bun.resolveSync(target, root)).split(sep).join("/");
+  } catch {
+    return null;
+  }
+}
+
+/** tsconfig and Vite must send every `react*` specifier to the same file. */
+export function checkAliasMaps(root: string = FRONTEND_ROOT): BridgeFinding[] {
+  const tsconfig = tsconfigAliases(
+    readFileSync(join(root, "tsconfig.json"), "utf8"),
+  );
+  const vite = viteAliases(
+    readFileSync(join(root, "astro.config.mjs"), "utf8"),
+    "astro.config.mjs",
+  );
+  const findings = [...vite.findings];
+  const specifiers = [...new Set([...tsconfig.keys(), ...vite.aliases.keys()])];
+  for (const specifier of specifiers.sort()) {
+    const fromTs = tsconfig.get(specifier);
+    const fromVite = vite.aliases.get(specifier);
+    if (fromTs === undefined || fromVite === undefined) {
+      findings.push({
+        file: fromTs === undefined ? "tsconfig.json" : "astro.config.mjs",
+        line: 1,
+        message: `"${specifier}" is aliased in ${fromTs === undefined ? "astro.config.mjs" : "tsconfig.json"} only`,
+      });
+      continue;
+    }
+    const tsFile = resolveFrom(root, fromTs);
+    const viteFile = resolveFrom(root, fromVite);
+    if (tsFile === null || viteFile === null || tsFile !== viteFile) {
+      findings.push({
+        file: "tsconfig.json",
+        line: 1,
+        message:
+          `"${specifier}" resolves to ${tsFile ?? `nothing ("${fromTs}")`} ` +
+          `in tsconfig.json but ${viteFile ?? `nothing ("${fromVite}")`} in astro.config.mjs`,
+      });
+    }
+  }
+  return findings;
+}
+
 function main(): void {
   const { findings, preactFiles } = checkTree();
+  const aliasFindings = checkAliasMaps();
   if (findings.length > 0) {
     console.error(
       `React bridge guard: ${findings.length} problem(s) in files on React APIs:`,
@@ -218,11 +320,25 @@ function main(): void {
         "JSX vocabulary. Both resolve to preact/compat for now, so this runs " +
         "today and breaks when the real React runtime is installed.",
     );
-    process.exit(1);
   }
+  if (aliasFindings.length > 0) {
+    console.error(
+      `React bridge guard: the react alias maps disagree (${aliasFindings.length}):`,
+    );
+    for (const f of aliasFindings) {
+      console.error(`  ${f.file}:${f.line}  ${f.message}`);
+    }
+    console.error(
+      "tsconfig.json's paths and astro.config.mjs's alias list must send " +
+        "each react specifier to the same file, or tests and the browser run " +
+        "different code.",
+    );
+  }
+  if (findings.length > 0 || aliasFindings.length > 0) process.exit(1);
   console.log(
     `React bridge guard: no file mixes React and Preact APIs ` +
-      `(${preactFiles.length} file(s) still on Preact APIs).`,
+      `(${preactFiles.length} file(s) still on Preact APIs); the react alias ` +
+      "maps agree.",
   );
 }
 
