@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import ResourceTable, {
   type Column,

@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 /** Golden Signals card for the Service detail page (Phase D3).
  *
  *  Lazy-fetches RPS, error rate, and p50/p95/p99 latency from the mesh
@@ -24,14 +25,20 @@
  *  hooks hydrate without needing a separate islands/ entry.
  */
 
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "react";
 import { meshApi } from "@/lib/mesh-api.ts";
 import type { GoldenSignals, MeshType } from "@/lib/mesh-types.ts";
 import { goldenSignalsReasonCopy } from "@/lib/metrics-reasons.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const REFRESH_INTERVAL_MS = 30_000;
+
+interface View {
+  data: GoldenSignals | null;
+  offline: boolean;
+  offlineReason: string;
+}
+
+const HIDDEN: View = { data: null, offline: false, offlineReason: "" };
 
 interface Props {
   namespace: string;
@@ -42,12 +49,9 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
   // null = not yet decided / hidden; populated only when we have something
   // worth rendering. We never set this to a zero-valued meshed signal
   // (see header comment) — those services hide instead.
-  const data = useSignal<GoldenSignals | null>(null);
-  const offline = useSignal(false);
-  const offlineReason = useSignal<string>("");
+  const [view, setView] = useState<View>(HIDDEN);
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
     let cancelled = false;
     // inFlight protects against re-entry: if a load() is still awaiting
     // when the 30s tick fires, we skip rather than stack concurrent
@@ -65,8 +69,7 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
         const detected: MeshType = status.data.status.detected;
         if (!detected) {
           // No mesh installed — hide.
-          data.value = null;
-          offline.value = false;
+          setView(HIDDEN);
           return;
         }
 
@@ -76,8 +79,7 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
         // hide rather than guess. (Future enhancement: pass workload
         // context from ServiceOverview.)
         if (detected === "both") {
-          data.value = null;
-          offline.value = false;
+          setView(HIDDEN);
           return;
         }
 
@@ -90,9 +92,11 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
           // Prometheus offline (or full PromQL fan-out failure).
           // Render the card with the unavailable banner — operators
           // need to see this rather than silent absence.
-          data.value = null;
-          offline.value = true;
-          offlineReason.value = signals.reason || "metrics_unavailable";
+          setView({
+            data: null,
+            offline: true,
+            offlineReason: signals.reason || "metrics_unavailable",
+          });
           return;
         }
 
@@ -113,21 +117,16 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
           signals.p99Ms > 0;
         const partial = (signals.missingQueries?.length ?? 0) > 0;
         if (!hasTraffic && !partial) {
-          data.value = null;
-          offline.value = false;
+          setView(HIDDEN);
           return;
         }
 
-        data.value = signals;
-        offline.value = false;
+        setView({ data: signals, offline: false, offlineReason: "" });
       } catch (_err) {
         // 4xx (no mesh detected, validation, RBAC denial) — hide
         // silently. The Service detail page must not surface a toast
         // for an optional enrichment that didn't apply.
-        if (!cancelled) {
-          data.value = null;
-          offline.value = false;
-        }
+        if (!cancelled) setView(HIDDEN);
       } finally {
         inFlight = false;
       }
@@ -141,33 +140,33 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
     };
   }, [namespace, service]);
 
-  if (offline.value) {
+  if (view.offline) {
     return (
       <section>
-        <h3 class="mb-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
+        <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
           Service Mesh — Golden Signals
         </h3>
-        <div class="rounded-md border border-border-primary bg-surface p-4 text-sm text-text-secondary">
-          {offlineCopy(offlineReason.value)}
+        <div className="rounded-md border border-border-primary bg-surface p-4 text-sm text-text-secondary">
+          {offlineCopy(view.offlineReason)}
         </div>
       </section>
     );
   }
 
-  const s = data.value;
+  const s = view.data;
   if (!s) return null;
 
   const missing = s.missingQueries ?? [];
   return (
     <section>
-      <h3 class="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
+      <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
         Service Mesh — Golden Signals
-        <span class="rounded bg-elevated px-1.5 py-0.5 text-xs font-normal text-text-muted">
+        <span className="rounded bg-elevated px-1.5 py-0.5 text-xs font-normal text-text-muted">
           {s.mesh}
         </span>
         {missing.length > 0 && (
           <span
-            class="rounded px-1.5 py-0.5 text-xs font-normal"
+            className="rounded px-1.5 py-0.5 text-xs font-normal"
             style={{
               backgroundColor:
                 "color-mix(in srgb, var(--status-warning) 15%, transparent)",
@@ -181,7 +180,7 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
           </span>
         )}
       </h3>
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Metric
           label="RPS"
           value={formatRps(s.rps)}
@@ -237,11 +236,11 @@ function Metric({
   if (missing) {
     return (
       <div
-        class="rounded-md border border-border-primary bg-surface p-3"
+        className="rounded-md border border-border-primary bg-surface p-3"
         title={`${label}: query did not return; value below is unavailable`}
       >
-        <div class="text-xs text-text-muted">{label}</div>
-        <div class="mt-1 font-mono text-lg font-semibold text-text-muted">
+        <div className="text-xs text-text-muted">{label}</div>
+        <div className="mt-1 font-mono text-lg font-semibold text-text-muted">
           —
         </div>
       </div>
@@ -254,10 +253,10 @@ function Metric({
         ? "var(--status-warning)"
         : "var(--text-primary)";
   return (
-    <div class="rounded-md border border-border-primary bg-surface p-3">
-      <div class="text-xs text-text-muted">{label}</div>
+    <div className="rounded-md border border-border-primary bg-surface p-3">
+      <div className="text-xs text-text-muted">{label}</div>
       <div
-        class="mt-1 font-mono text-lg font-semibold"
+        className="mt-1 font-mono text-lg font-semibold"
         style={{ color: valueColor }}
       >
         {value}
@@ -273,7 +272,7 @@ function offlineCopy(reason: string) {
   return (
     <>
       Metrics unavailable
-      <span class="ml-2 text-xs text-text-muted">({reason})</span>
+      <span className="ml-2 text-xs text-text-muted">({reason})</span>
     </>
   );
 }

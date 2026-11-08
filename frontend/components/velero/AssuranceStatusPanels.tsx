@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 /** Backup assurance — collection freshness, per-condition counts and the
  * admin-only collector panel (Release F U36).
  *
@@ -34,31 +35,33 @@ export function FreshnessRow({
   const lastRunAt = status?.runtime?.lastRunAt ?? null;
   return (
     <section
-      class="rounded-lg border border-border-subtle bg-surface p-4"
+      className="rounded-lg border border-border-subtle bg-surface p-4"
       aria-label="Collection freshness"
       data-testid="assurance-surface-state"
       data-state={state}
     >
-      <div class="flex flex-wrap items-center gap-3">
-        <span class="text-sm font-semibold text-text-primary">Collection</span>
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-sm font-semibold text-text-primary">
+          Collection
+        </span>
         <Chip className={STATE_CLASS[state]} testId="assurance-state-word">
           {copy.word}
         </Chip>
         {status && (
-          <span class="text-xs text-text-muted">
+          <span className="text-xs text-text-muted">
             {collectionSourceLabel(status.collectionSource)}
           </span>
         )}
         {lastRunAt && (
-          <span class="text-xs text-text-muted">
+          <span className="text-xs text-text-muted">
             Last evaluated <When iso={lastRunAt} />
           </span>
         )}
       </div>
-      <p class="mt-2 text-sm text-text-secondary">{copy.sentence}</p>
+      <p className="mt-2 text-sm text-text-secondary">{copy.sentence}</p>
       {veleroDetected === false && (
         <p
-          class="mt-2 text-sm text-text-secondary"
+          className="mt-2 text-sm text-text-secondary"
           data-testid="assurance-velero-not-detected"
         >
           Velero was not detected on this cluster, so backup state is unknown:
@@ -79,37 +82,37 @@ export function ConditionCounts({
   const current = countsAreCurrent(state);
   return (
     <section aria-label="Open exceptions by condition">
-      <h2 class="mb-2 text-sm font-semibold text-text-primary">
+      <h2 className="mb-2 text-sm font-semibold text-text-primary">
         Open exceptions by condition
       </h2>
       {!current && (
-        <p class="mb-2 text-xs text-text-muted">
+        <p className="mb-2 text-xs text-text-muted">
           Collection is {state}: a zero below cannot be read as "none", so it is
           shown as unknown.
         </p>
       )}
-      <ul class="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
         {ASSURANCE_CONDITIONS.map((c) => {
           const n = status.open.byCondition[c] ?? 0;
           const unknown = !current && n === 0;
           return (
             <li
               key={c}
-              class={`rounded-lg border border-border-subtle bg-surface p-3 ${
+              className={`rounded-lg border border-border-subtle bg-surface p-3 ${
                 current ? "" : "opacity-70"
               }`}
               data-testid={`assurance-count-${c}`}
               data-unknown={unknown ? "true" : "false"}
             >
-              <span class="block text-xs font-medium uppercase tracking-wide text-text-muted">
+              <span className="block text-xs font-medium uppercase tracking-wide text-text-muted">
                 {conditionLabel(c)}
               </span>
               {unknown ? (
-                <span class="mt-1 inline-block">
+                <span className="mt-1 inline-block">
                   <Chip className={STATE_CLASS.unknown}>unknown</Chip>
                 </span>
               ) : (
-                <span class="mt-1 block font-mono text-xl font-bold tabular-nums text-text-primary">
+                <span className="mt-1 block font-mono text-xl font-bold tabular-nums text-text-primary">
                   {n}
                 </span>
               )}
@@ -125,44 +128,44 @@ export function RuntimePanel({ runtime }: { runtime: AssuranceRuntime }) {
   const backlog = runtime.deliveryBacklog;
   return (
     <section
-      class="rounded-lg border border-border-subtle bg-surface p-4"
+      className="rounded-lg border border-border-subtle bg-surface p-4"
       aria-label="Collector (admin)"
       data-testid="assurance-runtime"
     >
-      <h2 class="text-sm font-semibold text-text-primary">Collector</h2>
-      <dl class="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-2 lg:grid-cols-3">
-        <div class="flex gap-2">
-          <dt class="text-text-muted">This replica</dt>
-          <dd class="break-all font-mono text-text-secondary">
+      <h2 className="text-sm font-semibold text-text-primary">Collector</h2>
+      <dl className="mt-2 grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-2 lg:grid-cols-3">
+        <div className="flex gap-2">
+          <dt className="text-text-muted">This replica</dt>
+          <dd className="break-all font-mono text-text-secondary">
             {runtime.holder}
           </dd>
         </div>
-        <div class="flex gap-2">
-          <dt class="text-text-muted">Last run here</dt>
-          <dd class="text-text-secondary">
+        <div className="flex gap-2">
+          <dt className="text-text-muted">Last run here</dt>
+          <dd className="text-text-secondary">
             {runtime.lastRunAt ? <When iso={runtime.lastRunAt} /> : "never"}
             {runtime.lastCollection && ` (${runtime.lastCollection})`}
           </dd>
         </div>
-        <div class="flex gap-2">
-          <dt class="text-text-muted">Lease</dt>
-          <dd class="break-all text-text-secondary">
+        <div className="flex gap-2">
+          <dt className="text-text-muted">Lease</dt>
+          <dd className="break-all text-text-secondary">
             {runtime.lease
               ? `${runtime.lease.holder}${runtime.lease.expired ? " (expired)" : ""}`
               : "never held"}
             {runtime.leaseHeld && " — held by this replica"}
           </dd>
         </div>
-        <div class="flex gap-2">
-          <dt class="text-text-muted">Notification backlog</dt>
-          <dd class="text-text-secondary">
+        <div className="flex gap-2">
+          <dt className="text-text-muted">Notification backlog</dt>
+          <dd className="text-text-secondary">
             {backlog.pending} pending, {backlog.failed} failed
           </dd>
         </div>
         {runtime.lastError && (
-          <div class="flex gap-2">
-            <dt class="text-text-muted">Last error</dt>
-            <dd class="text-error">
+          <div className="flex gap-2">
+            <dt className="text-text-muted">Last error</dt>
+            <dd className="text-error">
               {runtime.lastError}
               {runtime.lastErrorAt && (
                 <>

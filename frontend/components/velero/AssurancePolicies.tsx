@@ -1,3 +1,4 @@
+/** @jsxImportSource react */
 /** Backup assurance — freshness policy form model, editor and table
  * (Release F U36). Admin only; the island decides whether to render them.
  *
@@ -72,11 +73,11 @@ export function PolicyEditor({
   const creating = editing === null;
   const maxAgeSec = minutesToSeconds(form.maxAgeMinutes);
   const graceSec = minutesToSeconds(form.graceMinutes);
-  const value = (e: Event) =>
-    (e.target as HTMLInputElement | HTMLSelectElement).value;
+  const value = (e: { currentTarget: HTMLInputElement | HTMLSelectElement }) =>
+    e.currentTarget.value;
   return (
     <form
-      class="rounded-lg border border-border-subtle bg-surface p-4"
+      className="rounded-lg border border-border-subtle bg-surface p-4"
       data-testid="assurance-policy-form"
       aria-label={creating ? "New freshness policy" : "Edit freshness policy"}
       onSubmit={(e) => {
@@ -84,7 +85,7 @@ export function PolicyEditor({
         onSubmit();
       }}
     >
-      <h3 class="text-sm font-semibold text-text-primary">
+      <h3 className="text-sm font-semibold text-text-primary">
         {creating
           ? "New freshness policy"
           : `Edit policy for ${scopeLabel(
@@ -94,12 +95,12 @@ export function PolicyEditor({
             )}`}
       </h3>
       {!creating && (
-        <p class="mt-1 text-xs text-text-muted">
+        <p className="mt-1 text-xs text-text-muted">
           A policy's scope cannot be changed. To watch a different scope, create
           a new policy.
         </p>
       )}
-      <div class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Select
           id="assurance-policy-scope-kind"
           label="Scope"
@@ -118,7 +119,7 @@ export function PolicyEditor({
             value={form.scopeNamespace}
             disabled={!creating}
             error={fieldErrors.scopeNamespace}
-            onInput={(e) => onChange({ scopeNamespace: value(e) })}
+            onChange={(e) => onChange({ scopeNamespace: value(e) })}
           />
         )}
         {form.scopeKind === "schedule" && (
@@ -128,11 +129,11 @@ export function PolicyEditor({
             value={form.scopeName}
             disabled={!creating}
             error={fieldErrors.scopeName}
-            onInput={(e) => onChange({ scopeName: value(e) })}
+            onChange={(e) => onChange({ scopeName: value(e) })}
           />
         )}
       </div>
-      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Input
           id="assurance-policy-max-age"
           label="Maximum age (minutes)"
@@ -146,7 +147,7 @@ export function PolicyEditor({
               ? `${formatSeconds(maxAgeSec)} without a successful backup opens an exception (after grace).`
               : `At least ${MIN_MAX_AGE_SECONDS / 60} minutes.`
           }
-          onInput={(e) => onChange({ maxAgeMinutes: value(e) })}
+          onChange={(e) => onChange({ maxAgeMinutes: value(e) })}
         />
         <Input
           id="assurance-policy-grace"
@@ -161,7 +162,7 @@ export function PolicyEditor({
               ? `${formatSeconds(graceSec)} of slack for late runs and clock changes.`
               : "Slack for late runs and clock changes."
           }
-          onInput={(e) => onChange({ graceMinutes: value(e) })}
+          onChange={(e) => onChange({ graceMinutes: value(e) })}
         />
         <Select
           id="assurance-policy-partial"
@@ -174,33 +175,31 @@ export function PolicyEditor({
           }
         />
       </div>
-      <div class="mt-4 flex flex-wrap gap-6 text-sm text-text-secondary">
-        <label class="inline-flex items-center gap-2">
+      <div className="mt-4 flex flex-wrap gap-6 text-sm text-text-secondary">
+        <label className="inline-flex items-center gap-2">
           <input
             type="checkbox"
             checked={form.alertOnPaused}
             onChange={(e) =>
               onChange({
-                alertOnPaused: (e.target as HTMLInputElement).checked,
+                alertOnPaused: e.currentTarget.checked,
               })
             }
           />
           Open an exception when the schedule is paused
         </label>
-        <label class="inline-flex items-center gap-2">
+        <label className="inline-flex items-center gap-2">
           <input
             type="checkbox"
             checked={form.enabled}
-            onChange={(e) =>
-              onChange({ enabled: (e.target as HTMLInputElement).checked })
-            }
+            onChange={(e) => onChange({ enabled: e.currentTarget.checked })}
           />
           Enabled
         </label>
       </div>
       {formError && (
         <div
-          class="mt-4"
+          className="mt-4"
           role="alert"
           data-testid="assurance-policy-form-error"
         >
@@ -220,7 +219,7 @@ export function PolicyEditor({
           </Alert>
         </div>
       )}
-      <div class="mt-4 flex justify-end gap-2">
+      <div className="mt-4 flex justify-end gap-2">
         <Button type="button" variant="secondary" onClick={onCancel}>
           Cancel
         </Button>
@@ -255,30 +254,30 @@ export function PolicyTable({
   onDelete: (p: AssurancePolicy) => void;
 }) {
   return (
-    <div class="overflow-x-auto rounded-lg border border-border-subtle bg-surface">
-      <table class="w-full text-left text-sm">
-        <thead class="border-b border-border-subtle text-xs uppercase tracking-wide text-text-muted">
+    <div className="overflow-x-auto rounded-lg border border-border-subtle bg-surface">
+      <table className="w-full text-left text-sm">
+        <thead className="border-b border-border-subtle text-xs uppercase tracking-wide text-text-muted">
           <tr>
-            <th scope="col" class="px-4 py-2 font-medium">
+            <th scope="col" className="px-4 py-2 font-medium">
               Scope
             </th>
-            <th scope="col" class="px-4 py-2 font-medium">
+            <th scope="col" className="px-4 py-2 font-medium">
               Max age
             </th>
-            <th scope="col" class="px-4 py-2 font-medium">
+            <th scope="col" className="px-4 py-2 font-medium">
               Grace
             </th>
-            <th scope="col" class="px-4 py-2 font-medium">
+            <th scope="col" className="px-4 py-2 font-medium">
               PartiallyFailed
             </th>
-            <th scope="col" class="px-4 py-2 font-medium">
+            <th scope="col" className="px-4 py-2 font-medium">
               Paused
             </th>
-            <th scope="col" class="px-4 py-2 font-medium">
+            <th scope="col" className="px-4 py-2 font-medium">
               State
             </th>
-            <th scope="col" class="px-4 py-2 font-medium">
-              <span class="sr-only">Actions</span>
+            <th scope="col" className="px-4 py-2 font-medium">
+              <span className="sr-only">Actions</span>
             </th>
           </tr>
         </thead>
@@ -288,33 +287,33 @@ export function PolicyTable({
             return (
               <tr
                 key={p.id}
-                class="border-b border-border-subtle last:border-b-0"
+                className="border-b border-border-subtle last:border-b-0"
                 data-testid="assurance-policy-row"
               >
-                <td class="px-4 py-2">
-                  <span class="break-all font-mono text-text-primary">
+                <td className="px-4 py-2">
+                  <span className="break-all font-mono text-text-primary">
                     {scopeLabel(p.scopeKind, p.scopeNamespace, p.scopeName)}
                   </span>
                   {note && (
-                    <span class="block text-xs text-warning">{note}</span>
+                    <span className="block text-xs text-warning">{note}</span>
                   )}
                 </td>
-                <td class="px-4 py-2 text-text-secondary">
+                <td className="px-4 py-2 text-text-secondary">
                   {formatSeconds(p.maxAgeSeconds)}
                 </td>
-                <td class="px-4 py-2 text-text-secondary">
+                <td className="px-4 py-2 text-text-secondary">
                   {formatSeconds(p.graceSeconds)}
                 </td>
-                <td class="px-4 py-2 text-text-secondary">
+                <td className="px-4 py-2 text-text-secondary">
                   as {p.treatPartialAs}
                 </td>
-                <td class="px-4 py-2 text-text-secondary">
+                <td className="px-4 py-2 text-text-secondary">
                   {p.alertOnPaused ? "alert" : "ignore"}
                 </td>
-                <td class="px-4 py-2 text-text-secondary">
+                <td className="px-4 py-2 text-text-secondary">
                   {p.enabled ? "enabled" : "disabled"}
                 </td>
-                <td class="whitespace-nowrap px-4 py-2 text-right">
+                <td className="whitespace-nowrap px-4 py-2 text-right">
                   <Button
                     variant="ghost"
                     size="sm"

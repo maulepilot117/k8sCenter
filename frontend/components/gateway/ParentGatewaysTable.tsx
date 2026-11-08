@@ -1,4 +1,7 @@
+/** @jsxImportSource react */
+
 import type { ParentRef } from "@/lib/gateway-types.ts";
+import { withUniqueKeys } from "@/lib/unique-keys.ts";
 
 export default function ParentGatewaysTable({
   parentRefs,
@@ -10,54 +13,56 @@ export default function ParentGatewaysTable({
   }
 
   return (
-    <div class="mt-4">
-      <h3 class="text-sm font-medium text-text-secondary mb-2">
+    <div className="mt-4">
+      <h3 className="text-sm font-medium text-text-secondary mb-2">
         Parent Gateways
       </h3>
-      <div class="rounded-lg border border-border-primary overflow-hidden">
-        <table class="min-w-full divide-y divide-border-subtle">
-          <thead class="bg-surface">
+      <div className="rounded-lg border border-border-primary overflow-hidden">
+        <table className="min-w-full divide-y divide-border-subtle">
+          <thead className="bg-surface">
             <tr>
-              <th class="px-4 py-2 text-left text-xs font-medium text-text-muted">
+              <th className="px-4 py-2 text-left text-xs font-medium text-text-muted">
                 Name
               </th>
-              <th class="px-4 py-2 text-left text-xs font-medium text-text-muted">
+              <th className="px-4 py-2 text-left text-xs font-medium text-text-muted">
                 Namespace
               </th>
-              <th class="px-4 py-2 text-left text-xs font-medium text-text-muted">
+              <th className="px-4 py-2 text-left text-xs font-medium text-text-muted">
                 Section
               </th>
-              <th class="px-4 py-2 text-left text-xs font-medium text-text-muted">
+              <th className="px-4 py-2 text-left text-xs font-medium text-text-muted">
                 Status
               </th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-border-subtle">
-            {parentRefs.map((ref, i) => (
-              <tr key={i}>
-                <td class="px-4 py-2 text-sm">
+          <tbody className="divide-y divide-border-subtle">
+            {withUniqueKeys(parentRefs, (r) =>
+              [r.kind, r.namespace, r.name, r.sectionName].join("/"),
+            ).map(({ item: ref, key }) => (
+              <tr key={key}>
+                <td className="px-4 py-2 text-sm">
                   {/* Only a Gateway parent has a Gateway detail page; a
                       parentRef can also name another kind (a Service). */}
                   {ref.kind === "Gateway" && ref.namespace ? (
                     <a
                       href={`/networking/gateway-api/gateways/${ref.namespace}/${ref.name}`}
-                      class="text-brand hover:underline"
+                      className="text-brand hover:underline"
                     >
                       {ref.name}
                     </a>
                   ) : (
-                    <span class="text-text-primary">{ref.name}</span>
+                    <span className="text-text-primary">{ref.name}</span>
                   )}
                 </td>
-                <td class="px-4 py-2 text-sm text-text-secondary">
+                <td className="px-4 py-2 text-sm text-text-secondary">
                   {ref.namespace || "-"}
                 </td>
-                <td class="px-4 py-2 text-sm text-text-muted">
+                <td className="px-4 py-2 text-sm text-text-muted">
                   {ref.sectionName || "-"}
                 </td>
-                <td class="px-4 py-2 text-sm">
+                <td className="px-4 py-2 text-sm">
                   <span
-                    class={
+                    className={
                       ref.status === "Accepted"
                         ? "text-success"
                         : ref.status
