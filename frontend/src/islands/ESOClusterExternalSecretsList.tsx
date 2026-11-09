@@ -1,12 +1,12 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
 import type { ClusterExternalSecret } from "@/lib/eso-types.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 /** Map ESO status → StatusDot tone. */
 function esoToDot(
@@ -35,44 +35,44 @@ const TH_STYLE = {
 };
 
 export default function ESOClusterExternalSecretsList() {
-  const items = useSignal<ClusterExternalSecret[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const search = useSignal("");
-  const detected = useSignal<boolean | null>(null);
+  const isClient = useIsClient();
+  const [items, setItems] = useState<ClusterExternalSecret[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [detected, setDetected] = useState<boolean | null>(null);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       const res = await esoApi.listClusterExternalSecrets();
-      items.value = Array.isArray(res.data) ? res.data : [];
-      error.value = null;
+      setItems(Array.isArray(res.data) ? res.data : []);
+      setError(null);
     } catch {
-      error.value = "Failed to load ClusterExternalSecrets";
+      setError("Failed to load ClusterExternalSecrets");
     }
-  }
+  }, []);
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
     (async () => {
       try {
         const statusRes = await esoApi.status();
         const present = statusRes.data?.detected !== false;
-        detected.value = present;
+        setDetected(present);
         if (present) await fetchData();
       } catch {
-        detected.value = true;
+        setDetected(true);
         await fetchData();
       } finally {
-        loading.value = false;
+        setLoading(false);
       }
     })();
-  }, []);
+  }, [fetchData]);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (!loading.value && detected.value === false) {
+  if (!loading && detected === false) {
     return (
-      <div class="p-6">
+      <div className="p-6">
         <h1
           style={{
             fontSize: "24px",
@@ -80,7 +80,7 @@ export default function ESOClusterExternalSecretsList() {
             letterSpacing: "-0.02em",
             color: "var(--text-primary)",
           }}
-          class="mb-6"
+          className="mb-6"
         >
           ClusterExternalSecrets
         </h1>
@@ -89,9 +89,9 @@ export default function ESOClusterExternalSecretsList() {
     );
   }
 
-  const filtered = items.value.filter((ces) => {
-    if (!search.value) return true;
-    const q = search.value.toLowerCase();
+  const filtered = items.filter((ces) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
     return (
       ces.name.toLowerCase().includes(q) ||
       ces.storeRef.name.toLowerCase().includes(q) ||
@@ -103,9 +103,9 @@ export default function ESOClusterExternalSecretsList() {
     "rounded-lg px-3 py-1.5 text-sm max-w-xs focus:outline-none focus:ring-1";
 
   return (
-    <div class="p-6">
+    <div className="p-6">
       {/* Page header */}
-      <div class="flex items-start justify-between mb-1">
+      <div className="flex items-start justify-between mb-1">
         <h1
           style={{
             fontSize: "24px",
@@ -117,14 +117,17 @@ export default function ESOClusterExternalSecretsList() {
           ClusterExternalSecrets
         </h1>
       </div>
-      <p class="mb-6" style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+      <p
+        className="mb-6"
+        style={{ fontSize: "13px", color: "var(--text-muted)" }}
+      >
         Cluster-scoped resources that fan out the same Secret to multiple
         namespaces.
       </p>
 
       {/* Filters */}
-      <div class="mb-4 flex flex-wrap items-center gap-4">
-        <div class="flex items-center gap-2">
+      <div className="mb-4 flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2">
           <label
             style={{
               fontSize: "13px",
@@ -138,73 +141,95 @@ export default function ESOClusterExternalSecretsList() {
           <input
             id="eso-ces-search"
             type="text"
-            class={inputStyle}
+            className={inputStyle}
             style={{
               background: "var(--bg-elevated)",
               border: "1px solid var(--border-subtle)",
               color: "var(--text-primary)",
             }}
             placeholder="name, store, target…"
-            value={search.value}
-            onInput={(e) => {
-              search.value = (e.target as HTMLInputElement).value;
-            }}
+            value={search}
+            onChange={(e) => setSearch(e.currentTarget.value)}
           />
         </div>
         <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-          {filtered.length} of {items.value.length} ClusterExternalSecrets
+          {filtered.length} of {items.length} ClusterExternalSecrets
         </span>
       </div>
 
-      {loading.value && (
-        <div class="flex justify-center py-12">
+      {loading && (
+        <div className="flex justify-center py-12">
           <Spinner className="text-brand" />
         </div>
       )}
 
-      {!loading.value && error.value && (
-        <p style={{ fontSize: "13px", color: "var(--error)" }} class="py-4">
-          {error.value}
+      {!loading && error && (
+        <p style={{ fontSize: "13px", color: "var(--error)" }} className="py-4">
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && filtered.length > 0 && (
+      {!loading && !error && filtered.length > 0 && (
         <div
-          class="overflow-x-auto rounded-lg"
+          className="overflow-x-auto rounded-lg"
           style={{
             background: "var(--bg-surface)",
             border: "1px solid var(--border-subtle)",
           }}
         >
-          <table class="w-full">
+          <table className="w-full">
             <thead>
               <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-left"
+                  style={TH_STYLE}
+                >
                   Name
                 </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-left"
+                  style={TH_STYLE}
+                >
                   Status
                 </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-left"
+                  style={TH_STYLE}
+                >
                   Store
                 </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-left"
+                  style={TH_STYLE}
+                >
                   Target
                 </th>
-                <th scope="col" class="px-3 py-2 text-right" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-right"
+                  style={TH_STYLE}
+                >
                   Provisioned
                 </th>
-                <th scope="col" class="px-3 py-2 text-right" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-right"
+                  style={TH_STYLE}
+                >
                   Failed
                 </th>
-                <th scope="col" class="px-3 py-2" style={TH_STYLE} />
+                <th scope="col" className="px-3 py-2" style={TH_STYLE} />
               </tr>
             </thead>
             <tbody>
               {filtered.map((ces) => (
                 <tr
                   key={ces.uid}
-                  class="hover:bg-hover/30 cursor-pointer"
+                  className="hover:bg-hover/30 cursor-pointer"
                   style={{ borderTop: "1px solid var(--border-subtle)" }}
                   onClick={() => {
                     globalThis.location.href = `/external-secrets/cluster-external-secrets/${encodeURIComponent(
@@ -212,14 +237,14 @@ export default function ESOClusterExternalSecretsList() {
                     )}`;
                   }}
                 >
-                  <td class="px-3 py-2">
-                    <span class="inline-flex items-center gap-2">
+                  <td className="px-3 py-2">
+                    <span className="inline-flex items-center gap-2">
                       <StatusDot status={esoToDot(ces.status)} />
                       <a
                         href={`/external-secrets/cluster-external-secrets/${encodeURIComponent(
                           ces.name,
                         )}`}
-                        class="hover:underline"
+                        className="hover:underline"
                         style={{
                           fontSize: "13px",
                           fontWeight: 500,
@@ -232,35 +257,35 @@ export default function ESOClusterExternalSecretsList() {
                       </a>
                     </span>
                   </td>
-                  <td class="px-3 py-2">
+                  <td className="px-3 py-2">
                     <StatusBadge status={ces.status} />
                   </td>
                   <td
-                    class="px-3 py-2"
+                    className="px-3 py-2"
                     style={{ fontSize: "13px", color: "var(--text-muted)" }}
                   >
                     {ces.storeRef.name}
                   </td>
                   <td
-                    class="px-3 py-2"
+                    className="px-3 py-2"
                     style={{ fontSize: "13px", color: "var(--text-muted)" }}
                   >
                     {ces.targetSecretName ?? "—"}
                   </td>
                   <td
-                    class="px-3 py-2 text-right tabular-nums"
+                    className="px-3 py-2 text-right tabular-nums"
                     style={{ fontSize: "13px", color: "var(--text-muted)" }}
                   >
                     {(ces.provisionedNamespaces ?? []).length}
                   </td>
                   <td
-                    class="px-3 py-2 text-right tabular-nums"
+                    className="px-3 py-2 text-right tabular-nums"
                     style={{ fontSize: "13px", color: "var(--text-muted)" }}
                   >
                     {(ces.failedNamespaces ?? []).length}
                   </td>
                   <td
-                    class="px-3 py-2 text-right"
+                    className="px-3 py-2 text-right"
                     style={{ color: "var(--text-muted)" }}
                   >
                     ›
@@ -272,26 +297,23 @@ export default function ESOClusterExternalSecretsList() {
         </div>
       )}
 
-      {!loading.value &&
-        !error.value &&
-        filtered.length === 0 &&
-        items.value.length > 0 && (
-          <div
-            class="text-center py-12 rounded-lg"
-            style={{
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-subtle)",
-            }}
-          >
-            <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-              No ClusterExternalSecrets match your filters.
-            </p>
-          </div>
-        )}
-
-      {!loading.value && !error.value && items.value.length === 0 && (
+      {!loading && !error && filtered.length === 0 && items.length > 0 && (
         <div
-          class="text-center py-12 rounded-lg"
+          className="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+            No ClusterExternalSecrets match your filters.
+          </p>
+        </div>
+      )}
+
+      {!loading && !error && items.length === 0 && (
+        <div
+          className="text-center py-12 rounded-lg"
           style={{
             background: "var(--bg-surface)",
             border: "1px solid var(--border-subtle)",
