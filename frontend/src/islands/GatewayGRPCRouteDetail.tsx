@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import BackendRefsTable from "@/components/gateway/BackendRefsTable.tsx";
 import ConditionsTable from "@/components/gateway/ConditionsTable.tsx";
 import ParentGatewaysTable from "@/components/gateway/ParentGatewaysTable.tsx";
@@ -7,6 +7,7 @@ import { Spinner } from "@/components/ui/Spinner.tsx";
 import { apiGet } from "@/lib/api.ts";
 import type { GRPCRouteDetail } from "@/lib/gateway-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface Props {
   namespace: string;
@@ -17,62 +18,62 @@ export default function GatewayGRPCRouteDetailIsland({
   namespace,
   name,
 }: Props) {
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const data = useSignal<GRPCRouteDetail | null>(null);
-
-  async function fetchDetail() {
-    loading.value = true;
-    error.value = null;
-    try {
-      const res = await apiGet<GRPCRouteDetail>(
-        `/v1/gateway/routes/grpcroutes/${namespace}/${name}`,
-      );
-      data.value = res.data ?? null;
-    } catch {
-      error.value = "Failed to load GRPCRoute details";
-    } finally {
-      loading.value = false;
-    }
-  }
+  const isClient = useIsClient();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<GRPCRouteDetail | null>(null);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
+    async function fetchDetail() {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await apiGet<GRPCRouteDetail>(
+          `/v1/gateway/routes/grpcroutes/${namespace}/${name}`,
+        );
+        setData(res.data ?? null);
+      } catch {
+        setError("Failed to load GRPCRoute details");
+      } finally {
+        setLoading(false);
+      }
+    }
     fetchDetail();
   }, [namespace, name]);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="flex justify-center py-12">
+      <div className="flex justify-center py-12">
         <Spinner className="text-brand" />
       </div>
     );
   }
 
-  if (error.value) {
-    return <p class="text-sm text-danger p-6">{error.value}</p>;
+  if (error) {
+    return <p className="text-sm text-danger p-6">{error}</p>;
   }
 
-  if (!data.value) return null;
+  if (!data) return null;
 
-  const detail = data.value;
+  const detail = data;
 
   return (
-    <div class="p-6 space-y-6">
+    <div className="p-6 space-y-6">
       {/* Back link */}
       <a
         href="/networking/gateway-api?kind=grpcroutes"
-        class="text-sm text-brand hover:underline"
+        className="text-sm text-brand hover:underline"
       >
         &larr; Back to gRPC Routes
       </a>
 
       {/* Header */}
       <div>
-        <h1 class="text-2xl font-bold text-text-primary">{detail.name}</h1>
-        <p class="text-sm text-text-muted mt-1">
+        <h1 className="text-2xl font-bold text-text-primary">{detail.name}</h1>
+        <p className="text-sm text-text-muted mt-1">
           Namespace: {detail.namespace}
         </p>
       </div>
@@ -82,50 +83,52 @@ export default function GatewayGRPCRouteDetailIsland({
 
       {/* Rules */}
       {detail.rules && detail.rules.length > 0 && (
-        <div class="space-y-4">
-          <h2 class="text-sm font-semibold text-text-primary">
+        <div className="space-y-4">
+          <h2 className="text-sm font-semibold text-text-primary">
             Rules ({detail.rules.length})
           </h2>
           {detail.rules.map((rule, ri) => (
             <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: rules are positional entries with no id, and the detail is replaced whole on each fetch
               key={ri}
-              class="rounded-lg border border-border-primary bg-elevated p-5 space-y-4"
+              className="rounded-lg border border-border-primary bg-elevated p-5 space-y-4"
             >
-              <h3 class="text-sm font-medium text-text-primary">
+              <h3 className="text-sm font-medium text-text-primary">
                 Rule {ri + 1}
               </h3>
 
               {/* Matches */}
               {rule.matches && rule.matches.length > 0 && (
                 <div>
-                  <h4 class="text-xs font-medium text-text-muted mb-2">
+                  <h4 className="text-xs font-medium text-text-muted mb-2">
                     Matches
                   </h4>
-                  <div class="rounded border border-border-primary overflow-hidden">
-                    <table class="min-w-full divide-y divide-border-subtle">
-                      <thead class="bg-surface">
+                  <div className="rounded border border-border-primary overflow-hidden">
+                    <table className="min-w-full divide-y divide-border-subtle">
+                      <thead className="bg-surface">
                         <tr>
-                          <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                          <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                             Service
                           </th>
-                          <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                          <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                             Method
                           </th>
-                          <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                          <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                             Headers
                           </th>
                         </tr>
                       </thead>
-                      <tbody class="divide-y divide-border-subtle">
+                      <tbody className="divide-y divide-border-subtle">
                         {rule.matches.map((m, mi) => (
+                          // biome-ignore lint/suspicious/noArrayIndexKey: matches are positional entries with no id, and the detail is replaced whole on each fetch
                           <tr key={mi}>
-                            <td class="px-3 py-2 text-sm text-text-primary font-mono">
+                            <td className="px-3 py-2 text-sm text-text-primary font-mono">
                               {m.service || "\u2014"}
                             </td>
-                            <td class="px-3 py-2 text-sm text-text-primary font-mono">
+                            <td className="px-3 py-2 text-sm text-text-primary font-mono">
                               {m.method || "\u2014"}
                             </td>
-                            <td class="px-3 py-2 text-sm text-text-muted">
+                            <td className="px-3 py-2 text-sm text-text-muted">
                               {m.headers && m.headers.length > 0
                                 ? m.headers.join(", ")
                                 : "\u2014"}

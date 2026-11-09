@@ -1,6 +1,6 @@
-import { useSignal } from "@preact/signals";
-import type { CSSProperties } from "preact";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import type { CSSProperties } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { SourceCoverageNotice } from "@/components/ui/SourceCoverageNotice.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -20,6 +20,8 @@ import {
 } from "@/lib/gateway-types.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const SUMMARY_KEYS: Record<
   GatewayResourceKind,
@@ -91,19 +93,23 @@ function GatewayStatusBadge({
 }
 
 export default function GatewayAPIDashboard() {
-  const status = useSignal<GatewayAPIStatus | null>(null);
-  const summary = useSignal<GatewayAPISummary | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal("");
-  const activeKind = useSignal<GatewayResourceKind | null>(null);
-  const listData = useSignal<GatewayListData | null>(null);
-  const listLoading = useSignal(false);
-  const listError = useSignal("");
-  const search = useSignal("");
+  const isClient = useIsClient();
+  const namespace = useSignalValue(selectedNamespace);
+  const [status, setStatus] = useState<GatewayAPIStatus | null>(null);
+  const [summary, setSummary] = useState<GatewayAPISummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [activeKind, setActiveKind] = useState<GatewayResourceKind | null>(
+    null,
+  );
+  const [listData, setListData] = useState<GatewayListData | null>(null);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState("");
+  const [search, setSearch] = useState("");
 
-  async function fetchList(kind: GatewayResourceKind) {
-    listLoading.value = true;
-    listError.value = "";
+  const fetchList = useCallback(async (kind: GatewayResourceKind) => {
+    setListLoading(true);
+    setListError("");
     try {
       let endpoint: string;
       switch (kind) {
@@ -127,19 +133,19 @@ export default function GatewayAPIDashboard() {
       // under the parity mandate; the suppression below must stay on the
       // line directly above the diagnostic for Biome to honour it.
       // biome-ignore lint/suspicious/noExplicitAny: ported verbatim from Fresh
-      listData.value = { kind, items } as any;
+      setListData({ kind, items } as any);
     } catch {
       // An empty list here would read as "none exist"; a remote cluster
       // that could not list this kind must say so instead (R-8 R8).
-      listData.value = null;
-      listError.value = `Failed to load ${GATEWAY_KIND_LABELS[kind]}`;
+      setListData(null);
+      setListError(`Failed to load ${GATEWAY_KIND_LABELS[kind]}`);
     }
-    listLoading.value = false;
-  }
+    setListLoading(false);
+  }, []);
 
   function handleCardClick(kind: GatewayResourceKind) {
-    activeKind.value = kind;
-    search.value = "";
+    setActiveKind(kind);
+    setSearch("");
     fetchList(kind);
   }
 
@@ -154,44 +160,45 @@ export default function GatewayAPIDashboard() {
       apiGet<GatewayAPISummary>("/v1/gateway/summary"),
     ])
       .then(([statusRes, summaryRes]) => {
-        status.value = statusRes.data ?? null;
-        summary.value = summaryRes.data ?? null;
+        const loadedStatus = statusRes.data ?? null;
+        setStatus(loadedStatus);
+        setSummary(summaryRes.data ?? null);
 
         if (
           kindParam &&
-          status.value?.available &&
+          loadedStatus?.available &&
           Object.keys(GATEWAY_KIND_LABELS).includes(kindParam)
         ) {
-          activeKind.value = kindParam;
+          setActiveKind(kindParam);
           fetchList(kindParam);
         }
-        loading.value = false;
+        setLoading(false);
       })
       .catch(() => {
-        error.value = "Failed to load Gateway API status";
-        loading.value = false;
+        setError("Failed to load Gateway API status");
+        setLoading(false);
       });
-  }, []);
+  }, [fetchList]);
 
   // URL state sync. Declared after the initial load on purpose: effects run
   // in order, and this one clears `?kind=` while no kind is active, so it
   // must run after the initial load has read the deep-linked kind.
   useEffect(() => {
     if (!IS_BROWSER) return;
-    if (activeKind.value) {
+    if (activeKind) {
       const url = new URL(globalThis.location.href);
-      url.searchParams.set("kind", activeKind.value);
+      url.searchParams.set("kind", activeKind);
       globalThis.history.replaceState(null, "", url.toString());
     } else {
       const url = new URL(globalThis.location.href);
       url.searchParams.delete("kind");
       globalThis.history.replaceState(null, "", url.toString());
     }
-  }, [activeKind.value]);
+  }, [activeKind]);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (loading.value) {
+  if (loading) {
     return (
       <div
         style={{ display: "flex", justifyContent: "center", padding: "48px 0" }}
@@ -201,15 +208,15 @@ export default function GatewayAPIDashboard() {
     );
   }
 
-  if (error.value) {
+  if (error) {
     return (
       <p style={{ fontSize: "14px", color: "var(--error)", padding: "16px 0" }}>
-        {error.value}
+        {error}
       </p>
     );
   }
 
-  if (!status.value?.available) {
+  if (!status?.available) {
     return (
       <WidgetShell style={{ textAlign: "center" }}>
         <h3
@@ -231,16 +238,16 @@ export default function GatewayAPIDashboard() {
   }
 
   // List mode
-  if (activeKind.value) {
+  if (activeKind) {
     return (
       <div>
         <button
           type="button"
           onClick={() => {
-            activeKind.value = null;
-            listData.value = null;
-            listError.value = "";
-            search.value = "";
+            setActiveKind(null);
+            setListData(null);
+            setListError("");
+            setSearch("");
           }}
           style={{
             display: "inline-flex",
@@ -270,9 +277,9 @@ export default function GatewayAPIDashboard() {
             fill="currentColor"
           >
             <path
-              fill-rule="evenodd"
+              fillRule="evenodd"
               d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z"
-              clip-rule="evenodd"
+              clipRule="evenodd"
             />
           </svg>
           Back to overview
@@ -286,7 +293,7 @@ export default function GatewayAPIDashboard() {
             margin: "0 0 16px 0",
           }}
         >
-          {GATEWAY_KIND_LABELS[activeKind.value]}
+          {GATEWAY_KIND_LABELS[activeKind]}
         </h2>
 
         <div
@@ -300,22 +307,20 @@ export default function GatewayAPIDashboard() {
         >
           <div style={{ flex: 1, maxWidth: "320px" }}>
             <SearchBar
-              value={search.value}
-              onInput={(v) => {
-                search.value = v;
-              }}
+              value={search}
+              onInput={setSearch}
               placeholder="Filter by name or namespace..."
             />
           </div>
-          {listData.value &&
+          {listData &&
             (() => {
-              const ns = selectedNamespace.value;
-              const totalItems = listData.value.items.length;
+              const ns = namespace;
+              const totalItems = listData.items.length;
               const visibleCount =
-                activeKind.value === "gatewayclasses"
+                activeKind === "gatewayclasses"
                   ? totalItems
                   : filterByNamespace(
-                      listData.value.items as { namespace?: string }[],
+                      listData.items as { namespace?: string }[],
                       ns,
                     ).length;
               return (
@@ -328,7 +333,7 @@ export default function GatewayAPIDashboard() {
             })()}
         </div>
 
-        {listLoading.value && (
+        {listLoading && (
           <div
             style={{
               display: "flex",
@@ -340,7 +345,7 @@ export default function GatewayAPIDashboard() {
           </div>
         )}
 
-        {!listLoading.value && listError.value && (
+        {!listLoading && listError && (
           <p
             style={{
               fontSize: "14px",
@@ -348,24 +353,19 @@ export default function GatewayAPIDashboard() {
               padding: "16px 0",
             }}
           >
-            {listError.value}
+            {listError}
           </p>
         )}
 
-        {!listLoading.value &&
-          listData.value &&
-          renderTable(
-            activeKind.value,
-            listData.value,
-            search.value,
-            selectedNamespace.value,
-          )}
+        {!listLoading &&
+          listData &&
+          renderTable(activeKind, listData, search, namespace)}
       </div>
     );
   }
 
   // Overview mode
-  const installedKinds = (status.value.installedKinds ?? []) as string[];
+  const installedKinds = (status.installedKinds ?? []) as string[];
   const allKinds = Object.keys(GATEWAY_KIND_LABELS) as GatewayResourceKind[];
   const visibleKinds = allKinds.filter((k) => installedKinds.includes(k));
 
@@ -394,7 +394,7 @@ export default function GatewayAPIDashboard() {
       {/* A remote summary that could not list a kind still counts the
           rest; name the missing kind so its count is not read as zero. */}
       <SourceCoverageNotice
-        coverage={summary.value?.coverage}
+        coverage={summary?.coverage}
         labels={GATEWAY_KIND_LABELS}
       />
       <div
@@ -405,8 +405,8 @@ export default function GatewayAPIDashboard() {
         }}
       >
         {visibleKinds.map((kind) => {
-          const kindSummary: KindSummary = summary.value
-            ? summary.value[SUMMARY_KEYS[kind]]
+          const kindSummary: KindSummary = summary
+            ? summary[SUMMARY_KEYS[kind]]
             : { total: 0, healthy: 0, degraded: 0 };
           return (
             <button
