@@ -1,6 +1,5 @@
 /** @jsxImportSource react */
 import { afterEach, expect, mock, test } from "bun:test";
-import { signal } from "@preact/signals-core";
 import type { ReactNode } from "react";
 import { setAccessToken } from "@/lib/api.ts";
 import type { WizardPrimaryAction } from "@/lib/wizard-primary-action.ts";
@@ -92,9 +91,12 @@ function mount(
   } = {},
 ) {
   setAccessToken("t");
-  const primary = signal<WizardPrimaryAction | null>(null);
+  const primary: { value: WizardPrimaryAction | null } = { value: null };
+  const setPrimary = (action: WizardPrimaryAction | null) => {
+    primary.value = action;
+  };
   const ui = (yaml: string): ReactNode => (
-    <WizardPrimaryActionContext.Provider value={primary}>
+    <WizardPrimaryActionContext.Provider value={setPrimary}>
       <WizardReviewStep
         yaml={yaml}
         onYamlChange={opts.onYamlChange ?? (() => {})}

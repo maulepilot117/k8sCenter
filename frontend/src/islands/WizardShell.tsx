@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import YamlView from "@/components/ui/YamlView.tsx";
 import StepRail from "@/components/wizard/StepRail.tsx";
 import { wizardBusy } from "@/lib/wizard-busy.ts";
@@ -7,7 +7,6 @@ import {
   type WizardPrimaryAction,
   WizardPrimaryActionContext,
 } from "@/lib/wizard-primary-action.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export interface WizardStep {
@@ -63,8 +62,7 @@ export default function WizardShell({
   const guardedCancel = () => {
     if (!busy) onCancel();
   };
-  const registered = useSignal<WizardPrimaryAction | null>(null);
-  const action = useSignalValue(registered);
+  const [action, setAction] = useState<WizardPrimaryAction | null>(null);
   const primaryLabel = action?.label ?? nextLabel;
   const primaryDisabled = action?.disabled ?? false;
   const primaryStyle = {
@@ -243,7 +241,7 @@ export default function WizardShell({
                 flexDirection: "column",
               }}
             >
-              <WizardPrimaryActionContext.Provider value={registered}>
+              <WizardPrimaryActionContext.Provider value={setAction}>
                 {children}
               </WizardPrimaryActionContext.Provider>
             </div>

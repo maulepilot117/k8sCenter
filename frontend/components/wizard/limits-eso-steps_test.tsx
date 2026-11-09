@@ -1,6 +1,5 @@
 /** @jsxImportSource react */
 import { expect, mock, test } from "bun:test";
-import { signal } from "@preact/signals-core";
 import type {
   ExternalSecretWizardForm,
   ExternalSecretWizardStoreOption,
@@ -42,18 +41,19 @@ function quota(): QuotaConfig {
   return { cpuHard: "8", memoryHard: "16Gi", podsHard: 20 };
 }
 
-test("LimitRangeValuesStep shows values, reports edits and shows errors pushed after mount", async () => {
-  const errors = signal<Record<string, string>>({});
+test("LimitRangeValuesStep shows values, reports edits and shows errors passed after mount", async () => {
   const onUpdateResourcePair = mock();
   const onUpdateLimits = mock();
-  const view = render(
+  const limitValues = limits();
+  const step = (errors: Record<string, string>) => (
     <LimitRangeValuesStep
-      limits={limits()}
+      limits={limitValues}
       errors={errors}
       onUpdateLimits={onUpdateLimits}
       onUpdateResourcePair={onUpdateResourcePair}
-    />,
+    />
   );
+  const view = render(step({}));
 
   expect(view.getByText("Container Limits")).toBeTruthy();
   const cpu = view.getAllByPlaceholderText("e.g. 250m")[0] as HTMLInputElement;
@@ -68,10 +68,12 @@ test("LimitRangeValuesStep shows values, reports edits and shows errors pushed a
   );
 
   await act(async () => {
-    errors.value = {
-      containerDefaultCpu: "cpu is required",
-      containerDefaultMemory: "memory is required",
-    };
+    view.rerender(
+      step({
+        containerDefaultCpu: "cpu is required",
+        containerDefaultMemory: "memory is required",
+      }),
+    );
   });
   expect(view.getByText("cpu is required")).toBeTruthy();
   expect(view.getByText("memory is required")).toBeTruthy();
@@ -95,16 +97,17 @@ test("LimitRangeValuesStep shows values, reports edits and shows errors pushed a
   expect(view.queryByText("Pod Limits (Optional)")).toBeNull();
 });
 
-test("QuotaValuesStep shows values, reports edits and shows errors pushed after mount", async () => {
-  const errors = signal<Record<string, string>>({});
+test("QuotaValuesStep shows values, reports edits and shows errors passed after mount", async () => {
   const onUpdateQuota = mock();
-  const view = render(
+  const quotaValues = quota();
+  const step = (errors: Record<string, string>) => (
     <QuotaValuesStep
-      quota={quota()}
+      quota={quotaValues}
       errors={errors}
       onUpdateQuota={onUpdateQuota}
-    />,
+    />
   );
+  const view = render(step({}));
 
   expect(
     (view.getByPlaceholderText("e.g. 16Gi") as HTMLInputElement).value,
@@ -115,7 +118,7 @@ test("QuotaValuesStep shows values, reports edits and shows errors pushed after 
   expect(onUpdateQuota).toHaveBeenCalledWith("cpuHard", "12");
 
   await act(async () => {
-    errors.value = { cpuHard: "bad cpu", podsHard: "too many pods" };
+    view.rerender(step({ cpuHard: "bad cpu", podsHard: "too many pods" }));
   });
   expect(view.getByText("bad cpu")).toBeTruthy();
   expect(view.getByText("too many pods")).toBeTruthy();
@@ -129,8 +132,7 @@ test("QuotaValuesStep shows values, reports edits and shows errors pushed after 
   expect(onUpdateQuota).toHaveBeenCalledWith("warnThreshold", 70);
 });
 
-test("NamespacePresetStep lists namespaces, selects presets and shows errors pushed after mount", async () => {
-  const errors = signal<Record<string, string>>({});
+test("NamespacePresetStep lists namespaces, selects presets and shows errors passed after mount", async () => {
   const namespaces = ["default", "team-a"];
   const onUpdateField = mock();
   const onApplyPreset = mock();
@@ -142,7 +144,7 @@ test("NamespacePresetStep lists namespaces, selects presets and shows errors pus
     quota: quota(),
     limits: limits(),
   } as FormState;
-  const step = (list: string[]) => (
+  const step = (list: string[], errors: Record<string, string> = {}) => (
     <NamespacePresetStep
       form={form}
       errors={errors}
@@ -179,8 +181,12 @@ test("NamespacePresetStep lists namespaces, selects presets and shows errors pus
   expect(onApplyPreset).toHaveBeenCalledTimes(1);
 
   await act(async () => {
-    errors.value = { namespace: "pick a namespace", quotaName: "name taken" };
-    view.rerender(step([...namespaces, "team-b"]));
+    view.rerender(
+      step([...namespaces, "team-b"], {
+        namespace: "pick a namespace",
+        quotaName: "name taken",
+      }),
+    );
   });
   expect(view.getByText("pick a namespace")).toBeTruthy();
   expect(view.getByText("name taken")).toBeTruthy();

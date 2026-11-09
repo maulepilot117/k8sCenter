@@ -1,4 +1,3 @@
-import type { Signal } from "@preact/signals-core";
 import { createContext } from "react";
 
 /**
@@ -20,5 +19,9 @@ export interface WizardPrimaryAction {
   loading?: boolean;
 }
 
+export type SetWizardPrimaryAction = (
+  action: WizardPrimaryAction | null,
+) => void;
+
 export const WizardPrimaryActionContext =
-  createContext<Signal<WizardPrimaryAction | null> | null>(null);
+  createContext<SetWizardPrimaryAction | null>(null);

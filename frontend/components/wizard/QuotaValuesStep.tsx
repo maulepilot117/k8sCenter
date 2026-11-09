@@ -1,13 +1,11 @@
 /** @jsxImportSource react */
-import type { Signal } from "@preact/signals-core";
 import { useState } from "react";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { QuotaConfig } from "@/src/islands/NamespaceLimitsWizard.tsx";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface QuotaValuesStepProps {
   quota: QuotaConfig;
-  errors: Signal<Record<string, string>>;
+  errors: Record<string, string>;
   onUpdateQuota: <K extends keyof QuotaConfig>(
     field: K,
     value: QuotaConfig[K],
@@ -19,7 +17,6 @@ export function QuotaValuesStep({
   errors,
   onUpdateQuota,
 }: QuotaValuesStepProps) {
-  const errorMap = useSignalValue(errors);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   return (
@@ -57,7 +54,7 @@ export function QuotaValuesStep({
             className={WIZARD_INPUT_CLASS}
             placeholder="e.g. 8 or 8000m"
           />
-          {errorMap.cpuHard && (
+          {errors.cpuHard && (
             <p
               style={{
                 marginTop: "4px",
@@ -65,7 +62,7 @@ export function QuotaValuesStep({
                 color: "var(--error)",
               }}
             >
-              {errorMap.cpuHard}
+              {errors.cpuHard}
             </p>
           )}
         </div>
@@ -88,7 +85,7 @@ export function QuotaValuesStep({
             className={WIZARD_INPUT_CLASS}
             placeholder="e.g. 16Gi"
           />
-          {errorMap.memoryHard && (
+          {errors.memoryHard && (
             <p
               style={{
                 marginTop: "4px",
@@ -96,7 +93,7 @@ export function QuotaValuesStep({
                 color: "var(--error)",
               }}
             >
-              {errorMap.memoryHard}
+              {errors.memoryHard}
             </p>
           )}
         </div>
@@ -124,7 +121,7 @@ export function QuotaValuesStep({
           }
           className={WIZARD_INPUT_CLASS}
         />
-        {errorMap.podsHard && (
+        {errors.podsHard && (
           <p
             style={{
               marginTop: "4px",
@@ -132,7 +129,7 @@ export function QuotaValuesStep({
               color: "var(--error)",
             }}
           >
-            {errorMap.podsHard}
+            {errors.podsHard}
           </p>
         )}
       </div>

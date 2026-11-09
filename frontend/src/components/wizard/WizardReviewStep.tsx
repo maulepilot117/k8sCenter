@@ -134,7 +134,7 @@ export function WizardReviewStep({
 
   useLayoutEffect(() => {
     if (!primary) return;
-    primary.value = {
+    primary({
       label,
       href,
       disabled,
@@ -142,12 +142,12 @@ export function WizardReviewStep({
       // After a result, a click with no href falls through to the wizard's
       // own last-step action, which closes it.
       onClick: hasResult ? undefined : () => applyRef.current(),
-    };
+    });
   }, [primary, label, href, disabled, applying, hasResult]);
 
   useEffect(
     () => () => {
-      if (primary) primary.value = null;
+      primary?.(null);
     },
     [primary],
   );

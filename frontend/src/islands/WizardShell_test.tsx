@@ -1,9 +1,7 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * On a wizard's review step the footer's primary button is the Apply, and
@@ -11,23 +9,16 @@ import { setAccessToken } from "@/lib/api.ts";
  * apply so the wizard can drop its unsaved-changes guard.
  */
 
-beforeAll(() => GlobalRegistrator.register());
-afterAll(() => GlobalRegistrator.unregister());
+setupDom({ browser: true });
 
 const { default: WizardShell } = await import("./WizardShell.tsx");
 const { WizardReviewStep } = await import(
   "@/src/components/wizard/WizardReviewStep.tsx"
 );
 
-let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
   setAccessToken(null);
@@ -62,6 +53,8 @@ function stubApply(failed: number) {
     )) as unknown as typeof globalThis.fetch;
 }
 
+const YAML = "kind: ConfigMap\nmetadata:\n  name: cm\n";
+
 function mount(opts: {
   onNext: () => void;
   yaml?: string;
@@ -69,22 +62,20 @@ function mount(opts: {
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   setAccessToken("t");
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <WizardShell
-        title="Create ConfigMap"
-        steps={[{ label: "Basics" }, { label: "Review" }]}
-        current={1}
-        onStep={() => {}}
-        onCancel={() => {}}
-        onBack={() => {}}
-        onNext={opts.onNext}
-        nextLabel="Close"
-      >
+  const ui = (yaml: string, withReview = true) => (
+    <WizardShell
+      title="Create ConfigMap"
+      steps={[{ label: "Basics" }, { label: "Review" }]}
+      current={1}
+      onStep={() => {}}
+      onCancel={() => {}}
+      onBack={() => {}}
+      onNext={opts.onNext}
+      nextLabel="Close"
+    >
+      {withReview ? (
         <WizardReviewStep
-          yaml={opts.yaml ?? "kind: ConfigMap\nmetadata:\n  name: cm\n"}
+          yaml={yaml}
           onYamlChange={() => {}}
           loading={false}
           error={null}
@@ -92,11 +83,16 @@ function mount(opts: {
           maskValues={opts.maskValues}
           onDirtyChange={opts.onDirtyChange}
         />
-      </WizardShell>,
-      host as HTMLElement,
-    ),
+      ) : (
+        <p>plain step</p>
+      )}
+    </WizardShell>
   );
-  return host as HTMLElement;
+  const view = render(ui(opts.yaml ?? YAML));
+  return Object.assign(view.container as HTMLElement, {
+    rerenderYaml: (yaml: string) => view.rerender(ui(yaml)),
+    clearStep: () => view.rerender(ui(YAML, false)),
+  });
 }
 
 const buttons = (root: HTMLElement, label: string) =>
@@ -181,4 +177,43 @@ test("a masked review applies the real YAML and can show the values", async () =
 test("a review with no mask has no values toggle", () => {
   const root = mount({ onNext: () => {} });
   expect(buttons(root, "Show values")).toHaveLength(0);
+});
+
+test("registering replaces the footer's own button, clearing restores it", () => {
+  let next = 0;
+  const root = mount({ onNext: () => next++ });
+  expect(buttons(root, "Close")).toHaveLength(0);
+  expect(buttons(root, "Apply")).toHaveLength(1);
+
+  act(() => root.clearStep());
+  expect(buttons(root, "Apply")).toHaveLength(0);
+  expect(buttons(root, "Close")).toHaveLength(1);
+  act(() => buttons(root, "Close")[0].click());
+  expect(next).toBe(1);
+});
+
+test("the footer button runs the latest handler, so Apply sends the current YAML", async () => {
+  stubApply(0);
+  const sent: string[] = [];
+  const stubbed = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    sent.push(String(init?.body ?? ""));
+    return stubbed(input, init);
+  }) as typeof globalThis.fetch;
+  const root = mount({ onNext: () => {} });
+  const edited = "kind: ConfigMap\nmetadata:\n  name: edited\n";
+
+  act(() => root.rerenderYaml(edited));
+  expect(buttons(root, "Apply")).toHaveLength(1);
+  await act(async () => buttons(root, "Apply")[0].click());
+  await flush();
+  expect(sent).toEqual([edited]);
+});
+
+test("an empty YAML disables the footer button until YAML arrives", () => {
+  const root = mount({ onNext: () => {}, yaml: "  " });
+  const apply = buttons(root, "Apply")[0] as HTMLButtonElement;
+  expect(apply.disabled).toBe(true);
+  act(() => root.rerenderYaml(YAML));
+  expect((buttons(root, "Apply")[0] as HTMLButtonElement).disabled).toBe(false);
 });

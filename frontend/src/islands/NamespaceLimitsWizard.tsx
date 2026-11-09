@@ -10,7 +10,6 @@ import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 
 // ---------------------------------------------------------------------------
 // Shared types & constants — exported for step components
@@ -103,8 +102,7 @@ export default function NamespaceLimitsWizard({
   const close = onClose ?? (() => globalThis.history.back());
   const [currentStep, setCurrentStep] = useState(0);
   const [form, setForm] = useState<FormState>(initialState);
-  // The step components subscribe to these two signals, so they stay signals.
-  const errors = useSignal<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
 
   const [namespaces] = useNamespaces();
@@ -213,7 +211,7 @@ export default function NamespaceLimitsWizard({
       }
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
