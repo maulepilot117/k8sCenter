@@ -1,4 +1,5 @@
-import { useMemo } from "preact/hooks";
+/** @jsxImportSource react */
+import { useId } from "react";
 
 interface SparklineChartProps {
   data: number[];
@@ -21,10 +22,7 @@ export function SparklineChart({
 }: SparklineChartProps) {
   // Use Math.random instead of crypto.randomUUID — the latter requires
   // a secure context (HTTPS) and fails on HTTP-only deployments (homelab).
-  const gradientId = useMemo(
-    () => `spark-${Math.random().toString(36).slice(2, 10)}`,
-    [],
-  );
+  const gradientId = `spark-${useId()}`;
 
   // Drop non-finite samples (NaN/±Infinity) so they cannot produce broken
   // `M x,NaN` path coordinates that render an invisible, silently-empty chart.
@@ -58,12 +56,12 @@ export function SparklineChart({
       height={height}
       viewBox={`0 0 ${w} ${height}`}
       preserveAspectRatio={fluid ? "none" : undefined}
-      class={fluid ? "block w-full" : "inline-block"}
+      className={fluid ? "block w-full" : "inline-block"}
     >
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color={color} stop-opacity="0.3" />
-          <stop offset="100%" stop-color={color} stop-opacity="0" />
+          <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
       <path d={areaPath} fill={`url(#${gradientId})`} />
@@ -71,10 +69,10 @@ export function SparklineChart({
         points={polyline}
         fill="none"
         stroke={color}
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        vector-effect={fluid ? "non-scaling-stroke" : undefined}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        vectorEffect={fluid ? "non-scaling-stroke" : undefined}
       />
     </svg>
   );

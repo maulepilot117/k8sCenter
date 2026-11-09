@@ -1,4 +1,5 @@
-import { useMemo } from "preact/hooks";
+/** @jsxImportSource react */
+import { useId, useMemo } from "react";
 
 // ─── Chart constants ─────────────────────────────────────────────────────────
 
@@ -45,14 +46,8 @@ export function ResourceAreaChart({
     [memData],
   );
 
-  const cpuGradId = useMemo(
-    () => `cpu-grad-${Math.random().toString(36).slice(2, 9)}`,
-    [],
-  );
-  const memGradId = useMemo(
-    () => `mem-grad-${Math.random().toString(36).slice(2, 9)}`,
-    [],
-  );
+  const cpuGradId = `cpu-grad-${useId()}`;
+  const memGradId = `mem-grad-${useId()}`;
 
   if (!cpuPath && !memPath) {
     return (
@@ -81,19 +76,19 @@ export function ResourceAreaChart({
     >
       <defs>
         <linearGradient id={cpuGradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.35" />
-          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02" />
+          <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.35" />
+          <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.02" />
         </linearGradient>
         <linearGradient id={memGradId} x1="0" y1="0" x2="0" y2="1">
           <stop
             offset="0%"
-            stop-color="var(--accent-secondary)"
-            stop-opacity="0.30"
+            stopColor="var(--accent-secondary)"
+            stopOpacity="0.30"
           />
           <stop
             offset="100%"
-            stop-color="var(--accent-secondary)"
-            stop-opacity="0.02"
+            stopColor="var(--accent-secondary)"
+            stopOpacity="0.02"
           />
         </linearGradient>
       </defs>
@@ -104,10 +99,10 @@ export function ResourceAreaChart({
             d={memPath.line}
             fill="none"
             stroke="var(--accent-secondary)"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            vector-effect="non-scaling-stroke"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
           />
         </>
       )}
@@ -118,10 +113,10 @@ export function ResourceAreaChart({
             d={cpuPath.line}
             fill="none"
             stroke="var(--accent)"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            vector-effect="non-scaling-stroke"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
           />
         </>
       )}

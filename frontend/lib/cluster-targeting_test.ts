@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { effect } from "@preact/signals";
+import { effect } from "@preact/signals-core";
 import {
   api,
   apiGet,

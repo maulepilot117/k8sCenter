@@ -1,9 +1,10 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { hydrate, render } from "preact";
-import { act } from "preact/test-utils";
 import { renderToString } from "preact-render-to-string";
+import type { ReactNode } from "react";
+import { createRoot, hydrateRoot } from "react-dom/client";
+import { act } from "react-dom/test-utils";
 import { setAccessToken } from "@/lib/api.ts";
 
 /**
@@ -100,11 +101,25 @@ const PROPS = {
 };
 
 let host: HTMLElement | null = null;
+const roots = new WeakMap<HTMLElement, ReturnType<typeof createRoot>>();
+
+function mount(el: HTMLElement, node: ReactNode) {
+  const root = createRoot(el);
+  roots.set(el, root);
+  act(() => root.render(node));
+}
+
+function unmount(el: HTMLElement) {
+  const root = roots.get(el);
+  if (!root) return;
+  roots.delete(el);
+  act(() => root.unmount());
+}
 let originalFetch: typeof globalThis.fetch | undefined;
 
 afterEach(() => {
   if (host) {
-    act(() => render(null, host as HTMLElement));
+    unmount(host);
     host.remove();
     host = null;
   }
@@ -170,7 +185,12 @@ test("hydration keeps the rail grid and the content card on their own elements",
   host = document.createElement("div");
   host.innerHTML = ssr;
   document.body.appendChild(host);
-  act(() => hydrate(<ResourceDetail {...PROPS} />, host as HTMLElement));
+  act(() => {
+    roots.set(
+      host as HTMLElement,
+      hydrateRoot(host as HTMLElement, <ResourceDetail {...PROPS} />),
+    );
+  });
 
   const divs = [...host.querySelectorAll("div")];
   const grid = divs.find((d) =>
@@ -247,7 +267,7 @@ async function editAndApply(failed: boolean) {
 
   host = document.createElement("div");
   document.body.appendChild(host);
-  act(() => render(<ResourceDetail {...PROPS} />, host as HTMLElement));
+  mount(host, <ResourceDetail {...PROPS} />);
   await flush();
 
   act(() => button(host as HTMLElement, "Edit").click());
@@ -319,7 +339,7 @@ async function renderDetail(props: typeof PROPS, hash = "") {
   );
   host = document.createElement("div");
   document.body.appendChild(host);
-  act(() => render(<ResourceDetail {...props} />, host as HTMLElement));
+  mount(host, <ResourceDetail {...props} />);
   await flush();
   return host;
 }
@@ -327,7 +347,7 @@ async function renderDetail(props: typeof PROPS, hash = "") {
 test("a kind with metric queries has a Metrics tab; one without does not", async () => {
   const deployment = await renderDetail(PROPS);
   expect(tabLabels(deployment)).toContain("Metrics");
-  act(() => render(null, deployment));
+  unmount(deployment);
 
   const configMap = await renderDetail({
     kind: "configmaps",
@@ -400,7 +420,7 @@ test("a double-clicked Apply sends one apply request", async () => {
 
   host = document.createElement("div");
   document.body.appendChild(host);
-  act(() => render(<ResourceDetail {...PROPS} />, host as HTMLElement));
+  mount(host, <ResourceDetail {...PROPS} />);
   await flush();
   act(() => button(host as HTMLElement, "Edit").click());
   await flush();
@@ -439,7 +459,7 @@ test("a double-clicked confirm sends one restart request", async () => {
 
   host = document.createElement("div");
   document.body.appendChild(host);
-  act(() => render(<ResourceDetail {...PROPS} />, host as HTMLElement));
+  mount(host, <ResourceDetail {...PROPS} />);
   await flush();
   act(() => button(host as HTMLElement, "Restart").click());
   await flush();

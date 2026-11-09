@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useMemo } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useId, useState } from "react";
 
 interface GaugeRingProps {
   value: number; // 0-100
@@ -29,15 +29,9 @@ export function GaugeRing({
   valueGradient,
   indeterminate = false,
 }: GaugeRingProps) {
-  // Use Math.random instead of crypto.randomUUID — the latter requires
-  // a secure context (HTTPS) and fails on HTTP-only deployments (homelab).
-  const gradientId = useMemo(
-    () =>
-      !indeterminate && secondaryColor
-        ? `gauge-${Math.random().toString(36).slice(2, 10)}`
-        : null,
-    [secondaryColor, indeterminate],
-  );
+  const reactId = useId();
+  const gradientId =
+    !indeterminate && secondaryColor ? `gauge-${reactId}` : null;
 
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -49,27 +43,27 @@ export function GaugeRing({
   const center = size / 2;
 
   // Animate from fully hidden to target offset on mount / value change
-  const mountedOffset = useSignal(circumference);
+  const [mountedOffset, setMountedOffset] = useState(circumference);
 
   useEffect(() => {
     // Small delay to ensure the initial state renders first
     const id = setTimeout(() => {
-      mountedOffset.value = offset;
+      setMountedOffset(offset);
     }, 50);
     return () => clearTimeout(id);
   }, [offset]);
 
   return (
     <div
-      class="relative inline-flex items-center justify-center"
+      className="relative inline-flex items-center justify-center"
       style={{ width: `${size}px`, height: `${size}px` }}
     >
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
         {secondaryColor && gradientId && (
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color={color} />
-              <stop offset="100%" stop-color={secondaryColor} />
+              <stop offset="0%" stopColor={color} />
+              <stop offset="100%" stopColor={secondaryColor} />
             </linearGradient>
           </defs>
         )}
@@ -80,7 +74,7 @@ export function GaugeRing({
           r={radius}
           fill="none"
           stroke="var(--bg-elevated)"
-          stroke-width={strokeWidth}
+          strokeWidth={strokeWidth}
         />
         {/* Progress */}
         <circle
@@ -89,17 +83,17 @@ export function GaugeRing({
           r={radius}
           fill="none"
           stroke={!indeterminate && gradientId ? `url(#${gradientId})` : color}
-          stroke-width={strokeWidth}
-          stroke-linecap="round"
-          stroke-dasharray={circumference}
-          stroke-dashoffset={mountedOffset.value}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={mountedOffset}
           transform={`rotate(-90 ${center} ${center})`}
           style={{
             transition: "stroke-dashoffset 1s cubic-bezier(0.16, 1, 0.3, 1)",
           }}
         />
       </svg>
-      <div class="absolute inset-0 flex flex-col items-center justify-center">
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span
           style={{
             fontSize: valueSize ?? "14px",
@@ -118,7 +112,7 @@ export function GaugeRing({
           {displayValue ?? `${Math.round(clampedValue)}%`}
         </span>
         {label && (
-          <span class="text-xs" style={{ color: "var(--text-muted)" }}>
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
             {label}
           </span>
         )}
