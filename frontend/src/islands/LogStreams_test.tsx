@@ -1,25 +1,26 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { signal } from "@preact/signals";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
+import { type RefObject, useState } from "react";
 import { setAccessToken } from "@/lib/api.ts";
 import type { LogLine } from "@/lib/types/logs.ts";
 import {
   selectedCluster,
   selectedClusterGeneration,
 } from "@/src/lib/cluster.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The live log viewer and the Loki live tail name their cluster in the
  * WebSocket auth frame, as the flow viewer does (FlowViewer_test.tsx). The
  * server cannot read X-Cluster-ID from a browser WebSocket and treats a
  * stream that names no cluster as local, so without the frame a remote
- * selection would stream the local cluster's logs.
+ * selection would stream the local cluster's logs. Bun's own fetch and
+ * WebSocket are captured before happy-dom replaces them and put back in
+ * afterAll.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+const bunFetch = globalThis.fetch;
+const bunWebSocket = globalThis.WebSocket;
+setupDom({ browser: true });
 
 const { default: LogViewer } = await import("./LogViewer.tsx");
 const { default: LogLiveTail } = await import("./LogLiveTail.tsx");
@@ -41,14 +42,9 @@ class FakeWebSocket {
   close() {}
 }
 
-const realWebSocket = globalThis.WebSocket;
-let originalFetch: typeof globalThis.fetch | undefined;
-let host: HTMLElement | null = null;
-
 beforeEach(() => {
   FakeWebSocket.instances = [];
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ data: { lines: [] } }), {
       status: 200,
@@ -58,28 +54,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-  globalThis.WebSocket = realWebSocket;
-  if (originalFetch) globalThis.fetch = originalFetch;
   setAccessToken(null);
   selectedCluster.value = "local";
   selectedClusterGeneration.value = "local";
 });
 
 afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
+  globalThis.fetch = bunFetch;
+  globalThis.WebSocket = bunWebSocket;
 });
-
-function mount(vnode: preact.JSX.Element) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(vnode, host as HTMLElement));
-}
 
 /** Opens the newest socket and returns the first frame it sent. */
 function openLatest(): Record<string, unknown> {
@@ -88,19 +71,31 @@ function openLatest(): Record<string, unknown> {
   return ws.sent[0] as Record<string, unknown>;
 }
 
-function liveTailProps() {
-  return {
-    active: signal(true),
-    query: signal('{app="web"}'),
-    namespace: signal("default"),
-    lines: signal<LogLine[]>([]),
-  };
+/** What a test does to the tail the explorer would otherwise drive. */
+interface TailControls {
+  setQuery: (query: string) => void;
+}
+
+/** Owns the live tail's props the way the explorer does. */
+function TailHost({ controls }: { controls: RefObject<TailControls | null> }) {
+  const [query, setQuery] = useState('{app="web"}');
+  const [lines, setLines] = useState<LogLine[]>([]);
+  controls.current = { setQuery };
+  return (
+    <LogLiveTail
+      active
+      query={query}
+      namespace="default"
+      lines={lines}
+      setLines={setLines}
+    />
+  );
 }
 
 test("the log viewer's follow stream names the selected remote cluster", () => {
   selectedCluster.value = "c1";
   selectedClusterGeneration.value = "2026-10-01T12:30:00Z";
-  mount(<LogViewer namespace="default" pod="web-0" containers={["web"]} />);
+  render(<LogViewer namespace="default" pod="web-0" containers={["web"]} />);
   expect(openLatest()).toEqual({
     type: "auth",
     token: "test-token",
@@ -110,7 +105,7 @@ test("the log viewer's follow stream names the selected remote cluster", () => {
 });
 
 test("the log viewer names the local cluster explicitly", () => {
-  mount(<LogViewer namespace="default" pod="web-0" containers={["web"]} />);
+  render(<LogViewer namespace="default" pod="web-0" containers={["web"]} />);
   expect(openLatest()).toEqual({
     type: "auth",
     token: "test-token",
@@ -122,7 +117,7 @@ test("the log viewer names the local cluster explicitly", () => {
 test("the Loki live tail names the selected remote cluster", () => {
   selectedCluster.value = "c1";
   selectedClusterGeneration.value = "2026-10-01T12:30:00Z";
-  mount(<LogLiveTail {...liveTailProps()} />);
+  render(<TailHost controls={{ current: null }} />);
   expect(openLatest()).toEqual({
     type: "auth",
     token: "test-token",
@@ -134,14 +129,14 @@ test("the Loki live tail names the selected remote cluster", () => {
 test("a later live tail reuses the cluster pinned by the first", () => {
   selectedCluster.value = "c1";
   selectedClusterGeneration.value = "2026-10-01T12:30:00Z";
-  const props = liveTailProps();
-  mount(<LogLiveTail {...props} />);
+  const controls: { current: TailControls | null } = { current: null };
+  render(<TailHost controls={controls} />);
   openLatest();
 
   selectedCluster.value = "c2";
   selectedClusterGeneration.value = "2026-10-02T08:00:00Z";
   act(() => {
-    props.query.value = '{app="api"}';
+    controls.current?.setQuery('{app="api"}');
   });
 
   expect(FakeWebSocket.instances.length).toBe(2);

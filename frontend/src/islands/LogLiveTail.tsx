@@ -1,5 +1,11 @@
-import { type Signal, useSignal } from "@preact/signals";
-import { useEffect, useRef, useState } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type Dispatch,
+  type SetStateAction,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { getAccessToken, readyAccessToken, refreshSession } from "@/lib/api.ts";
 import {
@@ -13,12 +19,16 @@ import type { LogLine } from "@/lib/types/logs.ts";
 import { SessionClusterBadge } from "@/src/components/SessionClusterBadge.tsx";
 import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface LogLiveTailProps {
-  active: Signal<boolean>;
-  query: Signal<string>;
-  namespace: Signal<string>;
-  lines: Signal<LogLine[]>;
+  active: boolean;
+  query: string;
+  namespace: string;
+  lines: LogLine[];
+  setLines: Dispatch<SetStateAction<LogLine[]>>;
 }
 
 type TailStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
@@ -77,32 +87,40 @@ export default function LogLiveTail(props: LogLiveTailProps) {
   const lastTimestamp = useRef<string | null>(null);
   const resumeAfter = useRef<string | null>(null);
 
-  const autoScroll = useSignal(true);
-  const status = useSignal<TailStatus>("disconnected");
-  const error = useSignal("");
+  const isClient = useIsClient();
+  const [autoScroll, setAutoScroll, autoScrollRef] = useStateRef(true);
+  const [status, setStatus] = useState<TailStatus>("disconnected");
+  const [error, setError] = useState("");
+
+  // The socket and timer callbacks below outlive the render that made them,
+  // so they read the query, namespace and line setter through these.
+  const queryRef = useLatest(props.query);
+  const namespaceRef = useLatest(props.namespace);
+  const setLinesRef = useLatest(props.setLines);
 
   // Auto-scroll detection
   function handleScroll() {
     const el = containerRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-    autoScroll.value = atBottom;
+    setAutoScroll(atBottom);
   }
 
   function resumeScroll() {
-    autoScroll.value = true;
+    setAutoScroll(true);
     const el = containerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }
 
   function appendLines(newLines: LogLine[]) {
     if (newLines.length === 0) return;
-    const updated = [...props.lines.value, ...newLines];
-    props.lines.value =
-      updated.length > MAX_LINES
+    setLinesRef.current((prev) => {
+      const updated = [...prev, ...newLines];
+      return updated.length > MAX_LINES
         ? updated.slice(updated.length - MAX_LINES)
         : updated;
-    if (autoScroll.value) {
+    });
+    if (autoScrollRef.current) {
       requestAnimationFrame(() => {
         const el = containerRef.current;
         if (el) el.scrollTop = el.scrollHeight;
@@ -137,7 +155,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
     const delay = RECONNECT_DELAYS_MS[triesRef.current];
     if (frame.retryable && delay !== undefined) {
       triesRef.current++;
-      status.value = "reconnecting";
+      setStatus("reconnecting");
       const epoch = resumeEpoch.current;
       retryTimer.current = setTimeout(async () => {
         retryTimer.current = null;
@@ -147,8 +165,8 @@ export default function LogLiveTail(props: LogLiveTailProps) {
       }, delay);
       return;
     }
-    status.value = "disconnected";
-    error.value = streamErrorMessage(frame, "Live log search");
+    setStatus("disconnected");
+    setError(streamErrorMessage(frame, "Live log search"));
   }
 
   // "Reconnect" resumes with a fresh set of tries.
@@ -170,8 +188,8 @@ export default function LogLiveTail(props: LogLiveTailProps) {
     }
 
     // A resume stays "reconnecting" until it subscribes or ends.
-    if (!resume) status.value = "connecting";
-    error.value = "";
+    if (!resume) setStatus("connecting");
+    setError("");
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(
       `${protocol}//${location.host}/ws/v1/ws/logs-search`,
@@ -205,15 +223,15 @@ export default function LogLiveTail(props: LogLiveTailProps) {
         ended = true;
         wsRef.current = null;
         ws.close();
-        status.value = "disconnected";
-        error.value = "Not authenticated";
+        setStatus("disconnected");
+        setError("Not authenticated");
         return;
       }
       ws.send(JSON.stringify(streamAuthFrame(token, pin)));
       ws.send(
         subscribeFrame(
-          props.query.value,
-          props.namespace.value,
+          queryRef.current,
+          namespaceRef.current,
           resume ? resumeAfter.current : null,
         ),
       );
@@ -226,8 +244,8 @@ export default function LogLiveTail(props: LogLiveTailProps) {
         const msg = JSON.parse(event.data);
         if (msg.type === "subscribed") {
           subscribed = true;
-          status.value = "connected";
-          error.value = "";
+          setStatus("connected");
+          setError("");
           if (resume) appendLines([RECONNECTED_MARKER]);
           return;
         }
@@ -238,8 +256,8 @@ export default function LogLiveTail(props: LogLiveTailProps) {
             endTail(msg);
           } else {
             ended = true;
-            status.value = "disconnected";
-            error.value = streamErrorMessage(msg, "Live log search");
+            setStatus("disconnected");
+            setError(streamErrorMessage(msg, "Live log search"));
           }
           return;
         }
@@ -283,64 +301,67 @@ export default function LogLiveTail(props: LogLiveTailProps) {
         endTail({ reason: "connect_failed", retryable: true });
         return;
       }
-      status.value = "disconnected";
+      setStatus("disconnected");
     };
 
     // A failed resume is left to onclose, which always follows an error.
     ws.onerror = () => {
       if (wsRef.current !== ws) return;
       if (resume && !subscribed && !ended) return;
-      status.value = "disconnected";
+      setStatus("disconnected");
     };
   }
 
+  // The effect below runs on a tail start, stop or query change, not on every
+  // render, so it reaches connect and closeWS through this.
+  const tail = useLatest({ connect, closeWS });
+  const { active, query } = props;
+
   // Connect/disconnect as the tail starts, stops or changes query.
   useEffect(() => {
-    if (!IS_BROWSER || !props.active.value || !props.query.value) {
-      closeWS();
-      status.value = "disconnected";
+    if (!IS_BROWSER || !active || !query) {
+      tail.current.closeWS();
+      setStatus("disconnected");
       return;
     }
-    connect(false);
-    return closeWS;
-  }, [props.active.value, props.query.value]);
+    tail.current.connect(false);
+    return () => tail.current.closeWS();
+  }, [active, query]);
 
-  if (!IS_BROWSER || !props.active.value) return null;
+  if (!isClient || !props.active) return null;
 
   return (
-    <div class="flex flex-col rounded-lg border border-border-primary">
+    <div className="flex flex-col rounded-lg border border-border-primary">
       {/* Status bar */}
-      <div class="flex items-center justify-between border-b border-border-primary bg-surface px-4 py-2">
-        <div class="flex items-center gap-2 text-xs">
+      <div className="flex items-center justify-between border-b border-border-primary bg-surface px-4 py-2">
+        <div className="flex items-center gap-2 text-xs">
           <span
-            class={`h-2 w-2 rounded-full ${
-              status.value === "connected"
+            className={`h-2 w-2 rounded-full ${
+              status === "connected"
                 ? "bg-success"
-                : status.value === "disconnected"
+                : status === "disconnected"
                   ? "bg-danger"
                   : "bg-warning animate-pulse"
             }`}
           />
-          <span class="text-text-muted capitalize">
-            {status.value === "reconnecting" ? "Reconnecting..." : status.value}
+          <span className="text-text-muted capitalize">
+            {status === "reconnecting" ? "Reconnecting..." : status}
           </span>
           <SessionClusterBadge clusterId={pin.clusterId} />
-          <span class="text-text-muted">
-            &middot; {props.lines.value.length} lines
+          <span className="text-text-muted">
+            &middot; {props.lines.length} lines
           </span>
-          {error.value && (
-            <span class="text-danger">&middot; {error.value}</span>
-          )}
-          {error.value && status.value === "disconnected" && (
+          {error && <span className="text-danger">&middot; {error}</span>}
+          {error && status === "disconnected" && (
             <Button variant="ghost" size="sm" onClick={reconnect}>
               Reconnect
             </Button>
           )}
         </div>
-        {!autoScroll.value && (
+        {!autoScroll && (
           <button
             type="button"
-            class="rounded bg-accent px-2 py-0.5 text-xs text-(--bg-base) font-semibold"
+            className="rounded bg-accent px-2 py-0.5 text-xs text-(--bg-base) font-semibold"
             onClick={resumeScroll}
           >
             Resume scroll
@@ -351,13 +372,14 @@ export default function LogLiveTail(props: LogLiveTailProps) {
       {/* Log output */}
       <div
         ref={containerRef}
-        class="h-96 overflow-y-auto font-mono text-xs leading-relaxed"
+        className="h-96 overflow-y-auto font-mono text-xs leading-relaxed"
         onScroll={handleScroll}
       >
-        {props.lines.value.map((entry, i) => {
+        {props.lines.map((entry, i) => {
           if (!entry.timestamp) {
             return (
-              <div key={i} class="px-4 py-0.5 text-text-muted">
+              // biome-ignore lint/suspicious/noArrayIndexKey: log lines have no id, and the list only ever appends or drops from the front
+              <div key={i} className="px-4 py-0.5 text-text-muted">
                 {entry.line}
               </div>
             );
@@ -365,10 +387,11 @@ export default function LogLiveTail(props: LogLiveTailProps) {
           const isError = /error/i.test(entry.line.slice(0, 100));
           return (
             <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: log lines have no id, and the list only ever appends or drops from the front
               key={i}
-              class={`flex px-4 py-0.5 ${isError ? "bg-danger/5" : ""}`}
+              className={`flex px-4 py-0.5 ${isError ? "bg-danger/5" : ""}`}
             >
-              <span class="min-w-[140px] shrink-0 text-text-muted">
+              <span className="min-w-[140px] shrink-0 text-text-muted">
                 {(() => {
                   try {
                     const ms = parseInt(entry.timestamp, 10) / 1_000_000;
@@ -379,11 +402,13 @@ export default function LogLiveTail(props: LogLiveTailProps) {
                 })()}
               </span>
               {entry.labels?.pod && (
-                <span class="min-w-[120px] shrink-0 text-info">
+                <span className="min-w-[120px] shrink-0 text-info">
                   {entry.labels.pod.slice(0, 18)}
                 </span>
               )}
-              <span class="text-text-secondary break-all">{entry.line}</span>
+              <span className="text-text-secondary break-all">
+                {entry.line}
+              </span>
             </div>
           );
         })}

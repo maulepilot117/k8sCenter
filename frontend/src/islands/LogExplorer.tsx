@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import type { LogLine, VolumeEntry } from "@/lib/types/logs.ts";
@@ -10,6 +10,9 @@ import LogVolumeHistogram from "@/src/islands/LogVolumeHistogram.tsx";
 import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
 import { clusterLabel, useClusterNames } from "@/src/lib/cluster-label.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /** The selected cluster's Loki, as GET /logs/status reports it. */
 interface LokiStatus {
@@ -163,19 +166,25 @@ interface VolumeResponseData {
 export default function LogExplorer() {
   // A cluster switch reloads the page (ClusterSwitcher), so the cluster read
   // here is the one every request below goes to.
-  const clusterId = selectedCluster.value;
+  const isClient = useIsClient();
+  const clusterId = useSignalValue(selectedCluster);
   const local = clusterId === LOCAL_CLUSTER_ID;
-  const names = useClusterNames([clusterId]);
-  const label = clusterLabel(clusterId, names.value);
-  const lokiStatus = useSignal<LokiStatus | null>(null);
-  const searchResults = useSignal<LogLine[]>([]);
-  const volumeData = useSignal<VolumeEntry[] | null>(null);
-  const loading = useSignal(false);
-  const error = useSignal<string | null>(null);
-  const isTailing = useSignal(false);
-  const tailQuery = useSignal("");
-  const tailNamespace = useSignal("");
-  const tailLines = useSignal<LogLine[]>([]);
+  const names = useSignalValue(useClusterNames([clusterId]));
+  const label = clusterLabel(clusterId, names);
+  const [lokiStatus, setLokiStatus] = useState<LokiStatus | null>(null);
+  const [searchResults, setSearchResults] = useState<LogLine[]>([]);
+  const [volumeData, setVolumeData] = useState<VolumeEntry[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isTailing, setIsTailing] = useState(false);
+  const [tailQuery, setTailQuery] = useState("");
+  const [tailNamespace, setTailNamespace] = useState("");
+  const [tailLines, setTailLines] = useState<LogLine[]>([]);
+
+  // A failed query is worded when it fails, with the label and cluster as
+  // they are then, not as they were when it was sent.
+  const labelRef = useLatest(label);
+  const localRef = useLatest(local);
 
   // Check the selected cluster's Loki on mount. A status that cannot be
   // read is treated as Loki being unavailable, for the reason it gave, or
@@ -184,15 +193,15 @@ export default function LogExplorer() {
     if (!IS_BROWSER) return;
     apiGet<LokiStatus>("/v1/logs/status")
       .then((res) => {
-        lokiStatus.value = res.data ?? { detected: false };
+        setLokiStatus(res.data ?? { detected: false });
       })
       .catch((err) => {
-        lokiStatus.value = {
+        setLokiStatus({
           detected: false,
           reason:
             (err instanceof ApiError ? err.reason : undefined) ??
             STATUS_UNREADABLE,
-        };
+        });
       });
   }, []);
 
@@ -203,8 +212,8 @@ export default function LogExplorer() {
     limit: number,
     direction: string,
   ) {
-    loading.value = true;
-    error.value = null;
+    setLoading(true);
+    setError(null);
 
     const params = new URLSearchParams({
       query,
@@ -221,41 +230,41 @@ export default function LogExplorer() {
             lines.push({ timestamp: ts, line, labels: stream.stream ?? {} });
           }
         }
-        searchResults.value = lines;
+        setSearchResults(lines);
       })
       .catch((err) => {
-        error.value = queryErrorMessage(err, label, local);
+        setError(queryErrorMessage(err, labelRef.current, localRef.current));
       })
       .finally(() => {
-        loading.value = false;
+        setLoading(false);
       });
 
     // Also fetch volume data
     const volParams = new URLSearchParams({ query, start, end, step: "1m" });
     apiGet<VolumeResponseData>(`/v1/logs/volume?${volParams}`)
       .then((res) => {
-        volumeData.value = res.data?.data?.result ?? null;
+        setVolumeData(res.data?.data?.result ?? null);
       })
       .catch(() => {}); // non-critical
   }
 
   function handleLiveTail(query: string, namespace: string) {
-    tailQuery.value = query;
-    tailNamespace.value = namespace;
-    tailLines.value = [];
-    isTailing.value = true;
+    setTailQuery(query);
+    setTailNamespace(namespace);
+    setTailLines([]);
+    setIsTailing(true);
   }
 
   function handleStopTail() {
-    isTailing.value = false;
+    setIsTailing(false);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const status = lokiStatus.value;
+  const status = lokiStatus;
   if (status === null) {
     return (
-      <div class="flex items-center justify-center p-12 text-sm text-text-muted">
+      <div className="flex items-center justify-center p-12 text-sm text-text-muted">
         Checking Loki availability...
       </div>
     );
@@ -265,18 +274,20 @@ export default function LogExplorer() {
     const copy = lokiUnavailableCopy(status.reason, label, local);
     return (
       <div
-        class="rounded-lg border border-border-primary bg-surface p-8 text-center"
+        className="rounded-lg border border-border-primary bg-surface p-8 text-center"
         data-testid="loki-unavailable"
       >
-        <h3 class="text-lg font-semibold text-text-primary">{copy.title}</h3>
-        <p class="mt-2 text-sm text-text-secondary">{copy.body}</p>
+        <h3 className="text-lg font-semibold text-text-primary">
+          {copy.title}
+        </h3>
+        <p className="mt-2 text-sm text-text-secondary">{copy.body}</p>
       </div>
     );
   }
 
   return (
-    <div class="space-y-3">
-      <p class="text-xs text-text-muted" data-testid="loki-source">
+    <div className="space-y-3">
+      <p className="text-xs text-text-muted" data-testid="loki-source">
         Searching {label} &middot; Loki: {lokiSourceLabel(status)}
       </p>
       <LogFilterBar
@@ -287,13 +298,14 @@ export default function LogExplorer() {
         loading={loading}
       />
       <LogVolumeHistogram data={volumeData} />
-      {error.value && <ErrorBanner message={error.value} />}
-      {isTailing.value ? (
+      {error && <ErrorBanner message={error} />}
+      {isTailing ? (
         <LogLiveTail
           active={isTailing}
           query={tailQuery}
           namespace={tailNamespace}
           lines={tailLines}
+          setLines={setTailLines}
         />
       ) : (
         <LogResults lines={searchResults} loading={loading} />

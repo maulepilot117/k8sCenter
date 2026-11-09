@@ -1,9 +1,6 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { signal } from "@preact/signals";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, afterEach, expect, test } from "bun:test";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The filter bar starts from the global namespace picker. The picker's
@@ -12,13 +9,12 @@ import { act } from "preact/test-utils";
  * With no namespace and no other filter the selector must still match
  * something, because Loki rejects an empty `{}`.
  *
- * IS_BROWSER is stubbed to true and put back afterwards, and fetch answers
- * every label lookup with an empty list.
+ * Fetch answers every label lookup with an empty list and is put back
+ * afterwards.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+const bunFetch = globalThis.fetch;
+setupDom({ browser: true });
 
-const realFetch = globalThis.fetch;
 globalThis.fetch = (async () =>
   new Response(JSON.stringify({ data: [] }), {
     status: 200,
@@ -29,45 +25,32 @@ const { default: LogFilterBar } = await import("./LogFilterBar.tsx");
 const { selectedNamespace } = await import("@/src/lib/namespace.ts");
 
 afterAll(() => {
-  globalThis.fetch = realFetch;
-  selectedNamespace.value = "all";
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
+  globalThis.fetch = bunFetch;
 });
 
-let host: HTMLElement | null = null;
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  selectedNamespace.value = "all";
 });
 
 function mountAndRun(): { query: string; select: HTMLSelectElement } {
   const queries: string[] = [];
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <LogFilterBar
-        onSearch={(q) => queries.push(q)}
-        onLiveTail={() => {}}
-        onStopTail={() => {}}
-        isTailing={signal(false)}
-        loading={signal(false)}
-      />,
-      host as HTMLElement,
-    ),
+  const { container } = render(
+    <LogFilterBar
+      onSearch={(q) => queries.push(q)}
+      onLiveTail={() => {}}
+      onStopTail={() => {}}
+      isTailing={false}
+      loading={false}
+    />,
   );
-  const run = [...host.querySelectorAll("button")].find(
+  const run = [...container.querySelectorAll("button")].find(
     (b) => b.textContent?.trim() === "Run",
   );
   if (!run) throw new Error("Run button not rendered");
   act(() => run.click());
   return {
     query: queries[0] ?? "",
-    select: host.querySelector("select") as HTMLSelectElement,
+    select: container.querySelector("select") as HTMLSelectElement,
   };
 }
 
