@@ -12,7 +12,6 @@ import { singleSecretStoreHref } from "@/lib/secretstore-template-nav.ts";
 import { type ApplyResponse, useYamlApply } from "@/lib/yaml-apply.ts";
 import YamlEditor from "@/src/islands/YamlEditor.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface Props {
   /**
@@ -31,25 +30,20 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
     provider !== null ? ESO_YAML_TEMPLATES[provider] : null;
 
   const {
-    yamlContent,
-    applying,
-    validating,
-    error,
-    result,
-    preview,
+    yamlContent: yamlText,
+    setYamlContent,
+    yamlContentRef,
+    applying: applyingNow,
+    validating: validatingNow,
+    error: errorText,
+    result: resultNow,
+    preview: previewNow,
     clearPin,
     handleValidate,
     handleApply,
   } = useYamlApply(template?.yaml ?? "", {
     onApplySuccess: (res) => navigateOnSingleSecretStore(res),
   });
-
-  const yamlText = useSignalValue(yamlContent);
-  const applyingNow = useSignalValue(applying);
-  const validatingNow = useSignalValue(validating);
-  const errorText = useSignalValue(error);
-  const resultNow = useSignalValue(result);
-  const previewNow = useSignalValue(preview);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -149,8 +143,8 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
         <YamlEditor
           value={yamlText}
           onChange={(v) => {
-            if (v === yamlContent.value) return;
-            yamlContent.value = v;
+            if (v === yamlContentRef.current) return;
+            setYamlContent(v);
             // The last verdict described the text before this edit.
             clearPin();
           }}

@@ -8,8 +8,8 @@
  * Client-only, like `yaml-apply.ts`: effects never run during SSR.
  */
 
-import { type ReadonlySignal, type Signal, useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback, useEffect, useState } from "react";
+import { useLatest } from "@/src/lib/use-latest.ts";
 import { listReceipts, resolveOwnership } from "./change-api.ts";
 import {
   assembleOwnership,
@@ -26,27 +26,32 @@ import type { ValidateResponse, YamlApplyPin } from "./yaml-apply.ts";
 export const MAX_OWNERSHIP_REFS = 50;
 
 /**
- * Probes `GET /v1/changes` once. Reachable turns `tracked` on (the default for
- * a server that can keep the record); a 404 (no such route) or 503 (no
- * database) leaves it off, and the returned availability carries the reason
- * to show. `tracked` starts off, so nothing is recorded by surprise while the
- * probe is in flight.
+ * Probes `GET /v1/changes` once. Reachable turns tracking on through
+ * `setTracked` (the default for a server that can keep the record); a 404 (no
+ * such route) or 503 (no database) turns it off, and the returned
+ * availability carries the reason to show. The caller's tracked flag starts
+ * off, so nothing is recorded by surprise while the probe is in flight.
  */
 export function useTrackingAvailability(
-  tracked: Signal<boolean>,
-): ReadonlySignal<TrackingAvailability> {
-  const availability = useSignal<TrackingAvailability>({ status: "checking" });
+  setTracked: (on: boolean) => void,
+): TrackingAvailability {
+  const [availability, setAvailability] = useState<TrackingAvailability>({
+    status: "checking",
+  });
+  // The probe answers after an await: call the setter from the latest render.
+  const setTrackedRef = useLatest(setTracked);
   useEffect(() => {
     const controller = new AbortController();
     listReceipts({ pageSize: 1 }, controller.signal)
       .then(() => {
-        availability.value = { status: "available" };
-        tracked.value = true;
+        if (controller.signal.aborted) return;
+        setAvailability({ status: "available" });
+        setTrackedRef.current(true);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
-        availability.value = trackingAvailabilityFromError(err);
-        tracked.value = false;
+        setAvailability(trackingAvailabilityFromError(err));
+        setTrackedRef.current(false);
       });
     return () => controller.abort();
   }, []);
@@ -61,16 +66,18 @@ export type RepairState =
   | { status: "invalid" };
 
 /**
- * Reads `?repairOf=<operation id>` once and mirrors a valid id into
- * `repairOf` for the apply hook. It is only ever a link: nothing is loaded
- * from the receipt, which stores no content. A malformed id is reported and
- * never sent. `stopRepair` drops the link and removes it from the URL.
+ * Reads `?repairOf=<operation id>` once and hands a valid id to `setRepairOf`
+ * for the apply hook. It is only ever a link: nothing is loaded from the
+ * receipt, which stores no content. A malformed id is reported and never
+ * sent. `stopRepair` drops the link and removes it from the URL; it keeps its
+ * identity for the component's lifetime.
  */
-export function useRepairLink(repairOf: Signal<string | null>): {
-  repair: ReadonlySignal<RepairState>;
+export function useRepairLink(setRepairOf: (id: string | null) => void): {
+  repair: RepairState;
   stopRepair: () => void;
 } {
-  const repair = useSignal<RepairState>({ status: "none" });
+  const [repair, setRepair] = useState<RepairState>({ status: "none" });
+  const setRepairOfRef = useLatest(setRepairOf);
   useEffect(() => {
     const params = new URLSearchParams(globalThis.location.search);
     const raw = params.get("repairOf");
@@ -78,17 +85,19 @@ export function useRepairLink(repairOf: Signal<string | null>): {
     if (isOperationId(raw)) {
       const id = raw.toLowerCase();
       const clusterId = params.get("cluster") || undefined;
-      repair.value = clusterId
-        ? { status: "valid", id, clusterId }
-        : { status: "valid", id };
-      repairOf.value = id;
+      setRepair(
+        clusterId
+          ? { status: "valid", id, clusterId }
+          : { status: "valid", id },
+      );
+      setRepairOfRef.current(id);
     } else {
-      repair.value = { status: "invalid" };
+      setRepair({ status: "invalid" });
     }
   }, []);
   const stopRepair = useCallback(() => {
-    repairOf.value = null;
-    repair.value = { status: "none" };
+    setRepairOfRef.current(null);
+    setRepair({ status: "none" });
     const url = new URL(globalThis.location.href);
     url.searchParams.delete("repairOf");
     url.searchParams.delete("cluster");
@@ -109,53 +118,56 @@ export type OwnershipState =
  * the cluster the apply is pinned to. A new preview, an edit (which clears
  * the preview) or unmount cancels the request in flight. A response that
  * names a different cluster than the preview is discarded rather than shown.
+ *
+ * `yamlContent` is the text the preview ran over. It is read when a preview
+ * lands, not watched: an edit clears the preview, which is what re-runs this.
  */
 export function useOwnershipPreview(
-  preview: ReadonlySignal<ValidateResponse | null>,
-  pin: ReadonlySignal<YamlApplyPin | null>,
-  yamlContent: ReadonlySignal<string>,
-): ReadonlySignal<OwnershipState> {
-  const ownership = useSignal<OwnershipState>({ status: "idle" });
-  const previewed = preview.value;
-  const requestCluster = pin.value?.target.clusterId;
-  const serverCluster = pin.value?.targetCluster;
+  preview: ValidateResponse | null,
+  pin: YamlApplyPin | null,
+  yamlContent: string,
+): OwnershipState {
+  const [ownership, setOwnership] = useState<OwnershipState>({
+    status: "idle",
+  });
+  const yamlRef = useLatest(yamlContent);
+  const requestCluster = pin?.target.clusterId;
+  const serverCluster = pin?.targetCluster;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new preview or a new request cluster is what starts a lookup; serverCluster arrives with the same pin as requestCluster, and the YAML is read through a ref on purpose (see above).
   useEffect(() => {
-    if (!previewed || !requestCluster) {
-      ownership.value = { status: "idle" };
+    if (!preview || !requestCluster) {
+      setOwnership({ status: "idle" });
       return;
     }
-    const plan = ownershipPlanFromPreview(
-      previewed.documents,
-      yamlContent.peek(),
-    );
+    const plan = ownershipPlanFromPreview(preview.documents, yamlRef.current);
     const rowCluster = serverCluster ?? requestCluster;
     if (plan.slots.length === 0) {
-      ownership.value = { status: "idle" };
+      setOwnership({ status: "idle" });
       return;
     }
     const refs = plan.refs.slice(0, MAX_OWNERSHIP_REFS);
     if (refs.length === 0) {
       // Nothing resolvable: every row is "not checked", without a request.
-      ownership.value = {
+      setOwnership({
         status: "ready",
         ...assembleOwnership(plan, [], MAX_OWNERSHIP_REFS, rowCluster),
-      };
+      });
       return;
     }
     const controller = new AbortController();
-    ownership.value = { status: "loading" };
+    setOwnership({ status: "loading" });
     resolveOwnership(requestCluster, refs, controller.signal)
       .then((res) => {
         if (controller.signal.aborted) return;
         if (serverCluster && res.clusterId && res.clusterId !== serverCluster) {
-          ownership.value = {
+          setOwnership({
             status: "error",
             message:
               "Ownership was resolved against a different cluster than the preview, so it is not shown. Validate again.",
-          };
+          });
           return;
         }
-        ownership.value = {
+        setOwnership({
           status: "ready",
           ...assembleOwnership(
             plan,
@@ -163,17 +175,14 @@ export function useOwnershipPreview(
             MAX_OWNERSHIP_REFS,
             rowCluster,
           ),
-        };
+        });
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
-        ownership.value = {
-          status: "error",
-          message: ownershipFailureText(err),
-        };
+        setOwnership({ status: "error", message: ownershipFailureText(err) });
       });
     return () => controller.abort();
-  }, [previewed, requestCluster]);
+  }, [preview, requestCluster]);
   return ownership;
 }
 

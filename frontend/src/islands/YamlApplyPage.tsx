@@ -40,7 +40,6 @@ import {
   useClusterNames,
 } from "@/src/lib/cluster-label.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const PLACEHOLDER_YAML = `# Paste or type your Kubernetes YAML here.
@@ -67,30 +66,34 @@ type CapabilityState =
   | { status: "error" };
 
 export default function YamlApplyPage() {
-  const forceConflicts = useSignal(false);
+  const [forceNow, setForceConflicts] = useState(false);
   // Change tracking starts off and is switched on only once GET /v1/changes
   // proves the server can keep the record (see the probe below).
-  const tracked = useSignal(false);
-  const repairOf = useSignal<string | null>(null);
+  const [trackedNow, setTracked] = useState(false);
+  const [repairOf, setRepairOf] = useState<string | null>(null);
   const {
-    yamlContent,
-    applying,
-    validating,
-    error,
-    result: results,
-    preview,
-    pin,
-    pinStale,
+    yamlContent: yamlText,
+    setYamlContent,
+    yamlContentRef,
+    applying: applyingNow,
+    validating: validatingNow,
+    error: errorText,
+    setError,
+    result: resultNow,
+    setResult,
+    preview: previewNow,
+    pin: pinNow,
+    pinStale: stale,
     clearPin,
     handleValidate,
     handleApply,
-    lastOperationId,
-    attemptOutcomeUnknown,
-    trackedRefusal,
+    lastOperationId: lastOpId,
+    attemptOutcomeUnknown: outcomeUnknown,
+    trackedRefusal: refusal,
   } = useYamlApply(PLACEHOLDER_YAML, {
-    forceConflicts,
+    forceConflicts: forceNow,
     pinApplyToPreview: true,
-    tracked,
+    tracked: trackedNow,
     repairOf,
   });
   const [capability, setCapability] = useState<CapabilityState>({
@@ -101,19 +104,6 @@ export default function YamlApplyPage() {
   // capability check below re-runs for whichever cluster is now selected.
   const epoch = useSignalValue(clusterEpoch);
   const selected = useSignalValue(selectedCluster);
-  const yamlText = useSignalValue(yamlContent);
-  const applyingNow = useSignalValue(applying);
-  const validatingNow = useSignalValue(validating);
-  const errorText = useSignalValue(error);
-  const resultNow = useSignalValue(results);
-  const previewNow = useSignalValue(preview);
-  const pinNow = useSignalValue(pin);
-  const stale = useSignalValue(pinStale);
-  const lastOpId = useSignalValue(lastOperationId);
-  const outcomeUnknown = useSignalValue(attemptOutcomeUnknown);
-  const refusal = useSignalValue(trackedRefusal);
-  const forceNow = useSignalValue(forceConflicts);
-  const trackedNow = useSignalValue(tracked);
 
   // Set document title
   useEffect(() => {
@@ -148,8 +138,7 @@ export default function YamlApplyPage() {
   // registry. Best effort: an id is still an unambiguous label.
   // The repair link (Release E) is read first: the cluster its receipt names
   // is one of the clusters this page may have to name.
-  const { repair, stopRepair } = useRepairLink(repairOf);
-  const repairNow = useSignalValue(repair);
+  const { repair: repairNow, stopRepair } = useRepairLink(setRepairOf);
   const repairClusterId =
     repairNow.status === "valid" ? repairNow.clusterId : undefined;
   const pinnedClusterId = pinNow?.target.clusterId;
@@ -162,10 +151,8 @@ export default function YamlApplyPage() {
 
   // Change tracking (Release E): whether the server can keep a record, and
   // who manages the previewed objects.
-  const trackingAvailability = useTrackingAvailability(tracked);
-  const ownership = useOwnershipPreview(preview, pin, yamlContent);
-  const trackingNow = useSignalValue(trackingAvailability);
-  const ownershipNow = useSignalValue(ownership);
+  const trackingNow = useTrackingAvailability(setTracked);
+  const ownershipNow = useOwnershipPreview(previewNow, pinNow, yamlText);
 
   const clusterLabel = (id: string) => labelCluster(id, namesNow);
 
@@ -184,16 +171,18 @@ export default function YamlApplyPage() {
       // 2 MB limit matches backend MaxBodySize
       const MAX_FILE_SIZE = 2 * 1024 * 1024;
       if (file.size > MAX_FILE_SIZE) {
-        error.value = `File is too large (${(file.size / 1024 / 1024).toFixed(
-          1,
-        )} MB). Maximum size is 2 MB.`;
+        setError(
+          `File is too large (${(file.size / 1024 / 1024).toFixed(
+            1,
+          )} MB). Maximum size is 2 MB.`,
+        );
         return;
       }
       const text = await file.text();
-      yamlContent.value = text;
-      results.value = null;
+      setYamlContent(text);
+      setResult(null);
       clearPin();
-      error.value = null;
+      setError(null);
     };
     input.click();
   };
@@ -372,7 +361,7 @@ export default function YamlApplyPage() {
               type="checkbox"
               checked={forceNow}
               onChange={(e) => {
-                forceConflicts.value = e.currentTarget.checked;
+                setForceConflicts(e.currentTarget.checked);
               }}
               style={{ accentColor: "var(--accent)" }}
             />
@@ -391,7 +380,7 @@ export default function YamlApplyPage() {
               disabled={trackingDisabled || isWorking}
               aria-describedby={trackingNote ? TRACKING_NOTE_ID : undefined}
               onChange={(e) => {
-                tracked.value = e.currentTarget.checked;
+                setTracked(e.currentTarget.checked);
               }}
               className="accent-accent"
             />
@@ -475,8 +464,8 @@ export default function YamlApplyPage() {
             // the same value); ignore those so a valid pin isn't dropped for
             // content that never actually changed. A real edit invalidates
             // the previous verdict, so clear the pin until re-validated.
-            if (v === yamlContent.peek()) return;
-            yamlContent.value = v;
+            if (v === yamlContentRef.current) return;
+            setYamlContent(v);
             clearPin();
           }}
           readOnly={isWorking}
