@@ -199,18 +199,16 @@ test("the interval does not restart when only shouldContinuePolling changes", as
   respond = () => okResponse();
   let view: ReturnType<typeof render> | undefined;
   await act(async () => {
-    view = render(<Probe stopWhenNotOk />);
+    view = render(<Probe stopWhenNotOk key="same" />);
   });
-  // Re-render with a new shouldContinuePolling every few ms. A restart would
-  // fetch again each time and never let the interval fire.
+  expect(calls).toBe(1);
+  // Re-render with a new shouldContinuePolling, back to back. A restart
+  // fetches at once on every render, so eight renders would make at least
+  // nine fetches; without one, only an interval tick can add a fetch.
   for (let i = 0; i < 8; i++) {
     await act(async () => {
       view?.rerender(<Probe stopWhenNotOk key="same" />);
-      await wait(8);
     });
   }
-  // About one fetch per interval plus the first; a restart per render
-  // would be at least nine.
-  expect(calls).toBeGreaterThan(1);
-  expect(calls).toBeLessThanOrEqual(6);
+  expect(calls).toBeLessThanOrEqual(3);
 });

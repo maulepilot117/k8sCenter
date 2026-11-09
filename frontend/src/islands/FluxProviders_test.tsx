@@ -6,6 +6,7 @@ import {
   body,
   fireEvent,
   render,
+  settle,
   setupDom,
 } from "@/src/test-utils/render.tsx";
 
@@ -80,11 +81,6 @@ afterEach(() => {
   globalThis.WebSocket = bunWebSocket;
   setAccessToken(null);
 });
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 async function mount(count: number) {
   stubApi(count);

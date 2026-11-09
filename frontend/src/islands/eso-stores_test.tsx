@@ -5,7 +5,9 @@ import { selectedNamespace } from "@/src/lib/namespace.ts";
 import {
   act,
   fireEvent,
+  json,
   render,
+  settle,
   setupDom,
   waitFor,
 } from "@/src/test-utils/render.tsx";
@@ -48,12 +50,6 @@ function store(name: string, namespace: string | undefined, provider: string) {
   };
 }
 
-const json = (data: unknown) =>
-  new Response(JSON.stringify({ data }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
 /** Answers each request with `answer(url)` and records every URL asked. */
 function stubFetch(answer: (url: string) => unknown) {
   const urls: string[] = [];
@@ -69,11 +65,6 @@ function stubFailure() {
   globalThis.fetch = (async () =>
     new Response("{}", { status: 500 })) as unknown as typeof globalThis.fetch;
 }
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 const STORES = [
   store("vault-prod", "team-a", "vault"),

@@ -6,7 +6,9 @@ import {
   act,
   body,
   fireEvent,
+  json,
   render,
+  settle,
   setupDom,
   waitFor,
 } from "@/src/test-utils/render.tsx";
@@ -38,12 +40,6 @@ const { default: ESOPushSecretDetail } = await import(
   "./ESOPushSecretDetail.tsx"
 );
 
-const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify({ data }), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-
 const requests: { url: string; method: string }[] = [];
 
 type Route = (url: string, method: string) => Response | Promise<Response>;
@@ -71,11 +67,6 @@ afterEach(() => {
   setAccessToken(null);
   selectedNamespace.value = "all";
 });
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 const es = (name: string, namespace: string, extra = {}) => ({
   name,

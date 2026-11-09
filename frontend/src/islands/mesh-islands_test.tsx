@@ -5,7 +5,9 @@ import {
   act,
   body,
   fireEvent,
+  json,
   render,
+  settle,
   setupDom,
 } from "@/src/test-utils/render.tsx";
 
@@ -24,17 +26,6 @@ afterEach(() => {
   selectedNamespace.value = "all";
   globalThis.history.replaceState({}, "", "/");
 });
-
-const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify({ data }), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 const wait = (ms: number) =>
   act(async () => {

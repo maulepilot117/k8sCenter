@@ -82,10 +82,10 @@ export function settle(): Promise<void> {
   });
 }
 
-/** A 200 JSON response with `data` in the API's `{ data }` envelope. */
-export function json(data: unknown): Response {
+/** A JSON response with `data` in the API's `{ data }` envelope. */
+export function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify({ data }), {
-    status: 200,
+    status,
     headers: { "Content-Type": "application/json" },
   });
 }
