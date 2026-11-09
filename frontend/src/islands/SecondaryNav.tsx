@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import {
   domainById,
   getActiveDomain,
@@ -8,8 +8,8 @@ import {
 } from "@/lib/constants.ts";
 import { navCollapsed, toggleNav } from "@/lib/nav.ts";
 import PinnedResources from "@/src/islands/PinnedResources.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { formatCount, resourceCounts } from "@/src/lib/resource-counts.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 function dotColor(h?: Health): string {
   return h === "ok"
@@ -26,9 +26,9 @@ function dotColor(h?: Health): string {
  * a count update only re-renders this subtree, not the entire SecondaryNav.
  */
 function CountBadge({ kind }: { kind: string }) {
-  // This is the only place resourceCounts.value is read. Preact signals will
-  // subscribe THIS component (not SecondaryNav) to count updates.
-  const countsLoaded = resourceCounts.value !== null;
+  // This is the only place the counts are read, so only THIS component (not
+  // SecondaryNav) re-renders on count updates.
+  const countsLoaded = useSignalValue(resourceCounts) !== null;
   const liveCount = formatCount(kind);
 
   return (
@@ -65,7 +65,8 @@ interface SecondaryNavProps {
  * shows live per-kind numbers without any additional network requests.
  */
 export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
-  const query = useSignal("");
+  const [query, setQuery] = useState("");
+  const collapsed = useSignalValue(navCollapsed);
   const domainId = getActiveDomain(currentPath);
   const domain = domainById(domainId);
 
@@ -73,12 +74,11 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
   // Must run in an effect (not the render body) to avoid a synchronous
   // layout/CSS-grid-track write on every re-render.
   useEffect(() => {
-    if (!IS_BROWSER) return;
     document.documentElement.style.setProperty(
       "--panel-width",
-      navCollapsed.value ? "0px" : "250px",
+      collapsed ? "0px" : "250px",
     );
-  }, [navCollapsed.value]);
+  }, [collapsed]);
 
   // Overview has no children — the panel is otherwise empty for it. Pins are
   // still rendered here: they are the user's own shortcuts, not part of the
@@ -87,7 +87,7 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
   if (!domain?.groups?.length) {
     return (
       <nav
-        class="glass-bar"
+        className="glass-bar"
         style={{
           width: "100%",
           borderRight: "1px solid var(--glass-border)",
@@ -100,7 +100,7 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
     );
   }
 
-  const q = query.value.trim().toLowerCase();
+  const q = query.trim().toLowerCase();
   const groups = domain.groups
     .map((g) => ({
       header: g.header,
@@ -116,7 +116,7 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
 
   return (
     <nav
-      class="glass-bar"
+      className="glass-bar"
       style={{
         width: "100%",
         minWidth: 0,
@@ -192,9 +192,9 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
             viewBox="0 0 20 20"
             fill="none"
             stroke="currentColor"
-            stroke-width="1.7"
-            stroke-linecap="round"
-            stroke-linejoin="round"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
           >
             <path d="M12 5l-5 5 5 5" />
           </svg>
@@ -220,17 +220,15 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
             viewBox="0 0 20 20"
             fill="none"
             stroke="var(--text-muted)"
-            stroke-width="2"
-            stroke-linecap="round"
+            strokeWidth="2"
+            strokeLinecap="round"
           >
             <circle cx="9" cy="9" r="6" />
             <path d="M13.5 13.5 17 17" />
           </svg>
           <input
-            value={query.value}
-            onInput={(e) =>
-              (query.value = (e.target as HTMLInputElement).value)
-            }
+            value={query}
+            onChange={(e) => setQuery(e.currentTarget.value)}
             placeholder="Filter in this section"
             aria-label="Filter in this section"
             style={{

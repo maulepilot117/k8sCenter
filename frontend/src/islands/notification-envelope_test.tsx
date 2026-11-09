@@ -95,7 +95,10 @@ const { default: NotificationRules } = await import("./NotificationRules.tsx");
 const { default: NotificationFeed } = await import("./NotificationFeed.tsx");
 const { default: NotificationBell } = await import("./NotificationBell.tsx");
 
-afterAll(() => {
+afterAll(async () => {
+  // The ws store outlives this file; close the socket it opened here.
+  const { disconnectWS } = await import("@/src/lib/ws.ts");
+  disconnectWS();
   globalThis.fetch = realFetch;
   globalThis.WebSocket = realWebSocket;
   mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));

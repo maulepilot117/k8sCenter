@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
@@ -21,6 +21,9 @@ import {
 import { SessionClusterBadge } from "@/src/components/SessionClusterBadge.tsx";
 import { type ClusterTarget, currentTarget } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface LogViewerProps {
   namespace: string;
@@ -50,6 +53,18 @@ interface TabState {
   error: string;
 }
 
+// ansi_up ships no TypeScript types in its npm package.
+interface AnsiUpInstance {
+  use_classes: boolean;
+  escape_html: boolean;
+  ansi_to_html(text: string): string;
+}
+type AnsiUpConstructor = new () => AnsiUpInstance;
+interface AnsiUpModule {
+  AnsiUp?: AnsiUpConstructor;
+  default?: AnsiUpConstructor;
+}
+
 const MAX_LINES = 10_000;
 
 /** Where a resumed tail rejoins the lines already shown. */
@@ -72,25 +87,47 @@ export default function LogViewer({
   containers,
   initContainers = [],
 }: LogViewerProps) {
-  const activeTab = useSignal(0);
-  const mode = useSignal<"follow" | "snapshot">("follow");
-  const search = useSignal("");
-  const previous = useSignal(false);
-  const splitView = useSignal(false);
-  const splitTab = useSignal(1); // second tab in split view
-  // Per-tab state stored as array signal (display-relevant data only)
-  const tabStates = useSignal<TabState[]>(containers.map(() => EMPTY_TAB));
-  const loading = useSignal(true);
-  const autoScroll = useSignal(true);
+  const isClient = useIsClient();
+  const [activeTab, setActiveTab] = useState(0);
+  const [mode, setMode, modeRef] = useStateRef<"follow" | "snapshot">("follow");
+  const [search, setSearch] = useState("");
+  const [previous, setPrevious] = useState(false);
+  const [splitView, setSplitView] = useState(false);
+  const [splitTab, setSplitTab] = useState(1); // second tab in split view
+  // Per-tab state (display-relevant data only)
+  const [tabStates, setTabStates] = useState<TabState[]>(() =>
+    containers.map(() => EMPTY_TAB),
+  );
+  const [loading, setLoading] = useState(true);
+  const [autoScroll, setAutoScroll, autoScrollRef] = useStateRef(true);
   const preRefs = useRef<(HTMLPreElement | null)[]>([]);
-  // ansi_up ships no TypeScript types in its npm package.
-  const ansiUpRef = useRef<any>(null);
+  const ansiUpRef = useRef<AnsiUpInstance | null>(null);
 
-  // WS refs — tracked separately from signal to avoid storing non-serializable objects in signals
+  const allContainers = [
+    ...containers.map((c) => ({
+      name: c,
+      init: false,
+    })),
+    ...initContainers.map((c) => ({
+      name: c,
+      init: true,
+    })),
+  ];
+
+  // Socket callbacks, timers and frames run long after the render that
+  // created them, so they read these instead of rendered values. Mode and
+  // auto-scroll are written the moment a handler changes them: the stream
+  // guard and the next flush must see the change before the re-render.
+  const live = useLatest({ namespace, pod, allContainers });
+  const previousRef = useRef(previous);
+  const activeTabRef = useLatest(activeTab);
+  const splitViewRef = useLatest(splitView);
+  const splitTabRef = useLatest(splitTab);
+
+  // WS refs — sockets are not render data
   const wsRefs = useRef<Map<number, WebSocket>>(new Map());
   // The cluster this viewer streams from, taken once when it opens and kept
-  // across every reconnect, so a resume never follows a changed selection
-  // (KTD1).
+  // across every reconnect, so a resume never follows a changed selection.
   const pinRef = useRef<ClusterTarget | null>(null);
   if (IS_BROWSER && pinRef.current === null) pinRef.current = currentTarget();
 
@@ -117,31 +154,17 @@ export default function LogViewer({
   const snapshotGen = useRef(0);
   const scrollRafId = useRef(0);
 
-  const allContainers = [
-    ...containers.map((c) => ({
-      name: c,
-      init: false,
-    })),
-    ...initContainers.map((c) => ({
-      name: c,
-      init: true,
-    })),
-  ];
-
   // Load ansi_up dynamically (browser-only)
   useEffect(() => {
-    if (!IS_BROWSER) return;
     import("ansi_up").then((mod) => {
-      // U13 fix: verified live (Astro/Vite/Rollup) that this package's ESM
-      // build has no default export at all -- it exports only the named
-      // `AnsiUp` class, so the Fresh-era `mod.default ?? mod` fallback
-      // silently picked the whole module namespace object (not a
-      // constructor) and threw on `new AnsiUp()`. Deno's bundler must have
-      // synthesized a default from the CJS build; Astro's does not. Prefer
-      // the named export, keep both old fallbacks for whichever shape a
-      // future bundler/version produces.
-      const AnsiUp = (mod as any).AnsiUp ?? (mod as any).default ?? mod;
-      const instance = new AnsiUp();
+      // This package's ESM build has no default export at all -- it exports
+      // only the named `AnsiUp` class, so a `mod.default ?? mod` fallback
+      // picks the whole module namespace object (not a constructor) and
+      // throws on `new AnsiUp()`. Prefer the named export, keep both
+      // fallbacks for whichever shape a future bundler/version produces.
+      const shapes = mod as unknown as AnsiUpModule;
+      const AnsiUp = shapes.AnsiUp ?? shapes.default ?? shapes;
+      const instance = new (AnsiUp as AnsiUpConstructor)();
       instance.use_classes = true;
       instance.escape_html = true;
       ansiUpRef.current = instance;
@@ -149,13 +172,14 @@ export default function LogViewer({
   }, []);
 
   // Get current tab state
-  const getTabState = (idx: number): TabState =>
-    tabStates.value[idx] ?? EMPTY_TAB;
+  const getTabState = (idx: number): TabState => tabStates[idx] ?? EMPTY_TAB;
 
   const updateTabState = (idx: number, update: Partial<TabState>) => {
-    const states = [...tabStates.value];
-    states[idx] = { ...states[idx], ...update };
-    tabStates.value = states;
+    setTabStates((prev) => {
+      const states = [...prev];
+      states[idx] = { ...(states[idx] ?? EMPTY_TAB), ...update };
+      return states;
+    });
   };
 
   // Convert a raw log line to a LogLine with cached HTML
@@ -167,48 +191,58 @@ export default function LogViewer({
     };
   };
 
-  // Flush pending log lines from buffer into signal (called once per RAF)
+  // Flush pending log lines from the buffer into state (called once per RAF)
   const flushPendingLines = () => {
     flushRafId.current = 0;
-    let changed = false;
 
-    const states = [...tabStates.value];
+    const batches: [number, LogLine[]][] = [];
     for (const [idx, rawLines] of pendingLines.current) {
       if (rawLines.length === 0) continue;
-      const logLines = rawLines.map((l) =>
-        typeof l === "string" ? toLogLine(l) : l,
-      );
-      const merged = [...(states[idx]?.lines ?? []), ...logLines];
-      const trimmed =
-        merged.length > MAX_LINES
-          ? merged.slice(merged.length - MAX_LINES)
-          : merged;
-      states[idx] = { ...states[idx], lines: trimmed };
-      changed = true;
+      batches.push([
+        idx,
+        rawLines.map((l) => (typeof l === "string" ? toLogLine(l) : l)),
+      ]);
     }
     pendingLines.current.clear();
 
+    const drops: [number, number][] = [];
     for (const [idx, count] of pendingDrops.current) {
-      if (count > 0) {
-        states[idx] = {
-          ...states[idx],
-          droppedCount: (states[idx]?.droppedCount ?? 0) + count,
-        };
-        changed = true;
-      }
+      if (count > 0) drops.push([idx, count]);
     }
     pendingDrops.current.clear();
 
-    if (changed) {
-      tabStates.value = states;
-      // Auto-scroll after batch flush
-      if (autoScroll.value && !scrollRafId.current) {
-        scrollRafId.current = requestAnimationFrame(() => {
-          scrollRafId.current = 0;
-          const pre = preRefs.current[activeTab.value];
-          if (pre) pre.scrollTop = pre.scrollHeight;
-        });
+    if (batches.length === 0 && drops.length === 0) return;
+
+    setTabStates((prev) => {
+      const states = [...prev];
+      for (const [idx, logLines] of batches) {
+        const current = states[idx] ?? EMPTY_TAB;
+        const merged = [...current.lines, ...logLines];
+        states[idx] = {
+          ...current,
+          lines:
+            merged.length > MAX_LINES
+              ? merged.slice(merged.length - MAX_LINES)
+              : merged,
+        };
       }
+      for (const [idx, count] of drops) {
+        const current = states[idx] ?? EMPTY_TAB;
+        states[idx] = {
+          ...current,
+          droppedCount: current.droppedCount + count,
+        };
+      }
+      return states;
+    });
+
+    // Auto-scroll after batch flush
+    if (autoScrollRef.current && !scrollRafId.current) {
+      scrollRafId.current = requestAnimationFrame(() => {
+        scrollRafId.current = 0;
+        const pre = preRefs.current[activeTabRef.current];
+        if (pre) pre.scrollTop = pre.scrollHeight;
+      });
     }
   };
 
@@ -259,7 +293,7 @@ export default function LogViewer({
           retryTimers.current.delete(tabIdx);
           if (frame.reason === "token_expired") await refreshSession();
           if (resumeEpoch.current.get(tabIdx) !== epoch) return;
-          if (mode.value === "follow") connectWS(tabIdx, true);
+          if (modeRef.current === "follow") connectWS(tabIdx, true);
         }, delay),
       );
       return;
@@ -278,218 +312,220 @@ export default function LogViewer({
   };
 
   // Connect WS for follow mode. A resume keeps the lines already shown.
-  const connectWS = useCallback(
-    (tabIdx: number, resume = false) => {
-      const container = allContainers[tabIdx]?.name;
-      if (!container) return;
+  const connectWS = (tabIdx: number, resume = false) => {
+    const container = live.current.allContainers[tabIdx]?.name;
+    if (!container) return;
+    const { namespace: ns, pod: podName } = live.current;
 
-      // Close existing connection for this tab
-      closeTabWS(tabIdx);
-      if (resume) {
-        resumeAfter.current.set(
-          tabIdx,
-          lastTimestamp.current.get(tabIdx) ?? null,
-        );
-      } else {
-        triesRef.current.set(tabIdx, 0);
-        resumeAfter.current.delete(tabIdx);
+    // Close existing connection for this tab
+    closeTabWS(tabIdx);
+    if (resume) {
+      resumeAfter.current.set(
+        tabIdx,
+        lastTimestamp.current.get(tabIdx) ?? null,
+      );
+    } else {
+      triesRef.current.set(tabIdx, 0);
+      resumeAfter.current.delete(tabIdx);
+    }
+
+    const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${proto}//${globalThis.location.host}/ws/v1/ws/logs/${ns}/${podName}/${container}`;
+
+    const ws = new WebSocket(url);
+    wsRefs.current.set(tabIdx, ws);
+    // A resume stays "Reconnecting..." until it subscribes or ends.
+    updateTabState(tabIdx, {
+      error: "",
+      connected: false,
+      ...(resume ? {} : { reconnecting: false }),
+    });
+    // A resume that closes before it subscribes, with no end frame (the
+    // backend still down behind the proxy), is a failed try, not an end.
+    let subscribed = false;
+    let ended = false;
+
+    // Authenticates now when a token is in hand, else once the page's
+    // startup refresh lands, unless the socket was replaced meanwhile.
+    ws.onopen = () => {
+      const token = getAccessToken();
+      if (token) {
+        authenticate(token);
+        return;
+      }
+      void readyAccessToken().then((ready) => {
+        if (wsRefs.current.get(tabIdx) === ws) authenticate(ready);
+      });
+    };
+
+    const authenticate = (token: string | null) => {
+      if (!token) {
+        ws.close();
+        wsRefs.current.delete(tabIdx);
+        updateTabState(tabIdx, {
+          error: "Not authenticated",
+          reconnecting: false,
+        });
+        return;
+      }
+      pinRef.current ??= currentTarget();
+      ws.send(JSON.stringify(streamAuthFrame(token, pinRef.current)));
+      ws.send(
+        JSON.stringify({
+          container,
+          tailLines: 500,
+          previous: previousRef.current,
+          timestamps: true,
+        }),
+      );
+    };
+
+    ws.onmessage = (event) => {
+      // Mode guard: discard messages if we've switched to snapshot mode,
+      // or if this socket was already replaced
+      if (modeRef.current !== "follow" || wsRefs.current.get(tabIdx) !== ws) {
+        return;
       }
 
-      const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
-      const url = `${proto}//${globalThis.location.host}/ws/v1/ws/logs/${namespace}/${pod}/${container}`;
-
-      const ws = new WebSocket(url);
-      wsRefs.current.set(tabIdx, ws);
-      // A resume stays "Reconnecting..." until it subscribes or ends.
-      updateTabState(tabIdx, {
-        error: "",
-        connected: false,
-        ...(resume ? {} : { reconnecting: false }),
-      });
-      // A resume that closes before it subscribes, with no end frame (the
-      // backend still down behind the proxy), is a failed try, not an end.
-      let subscribed = false;
-      let ended = false;
-
-      // Authenticates now when a token is in hand, else once the page's
-      // startup refresh lands, unless the socket was replaced meanwhile.
-      ws.onopen = () => {
-        const token = getAccessToken();
-        if (token) {
-          authenticate(token);
-          return;
-        }
-        void readyAccessToken().then((ready) => {
-          if (wsRefs.current.get(tabIdx) === ws) authenticate(ready);
-        });
-      };
-
-      const authenticate = (token: string | null) => {
-        if (!token) {
-          ws.close();
-          wsRefs.current.delete(tabIdx);
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "subscribed") {
+          subscribed = true;
+          triesRef.current.set(tabIdx, 0);
           updateTabState(tabIdx, {
-            error: "Not authenticated",
+            connected: true,
             reconnecting: false,
+            error: "",
           });
+          setLoading(false);
+          if (resume) queueLine(tabIdx, RECONNECTED_MARKER);
           return;
         }
-        pinRef.current ??= currentTarget();
-        ws.send(JSON.stringify(streamAuthFrame(token, pinRef.current)));
-        ws.send(
-          JSON.stringify({
-            container,
-            tailLines: 500,
-            previous: previous.value,
-            timestamps: true,
-          }),
-        );
-      };
-
-      ws.onmessage = (event) => {
-        // Mode guard: discard messages if we've switched to snapshot mode,
-        // or if this socket was already replaced
-        if (mode.value !== "follow" || wsRefs.current.get(tabIdx) !== ws) {
+        if (msg.type === "log") {
+          const line = String(msg.data ?? "");
+          if (resumeAfter.current.has(tabIdx)) {
+            if (isReplayedLine(line, resumeAfter.current.get(tabIdx) ?? null)) {
+              return;
+            }
+            // The first line past the join ends the replay.
+            resumeAfter.current.delete(tabIdx);
+          }
+          const ts = logLineTimestamp(line);
+          if (ts) lastTimestamp.current.set(tabIdx, ts);
+          // Batch into pending buffer — flushed once per RAF
+          queueLine(tabIdx, line);
           return;
         }
-
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "subscribed") {
-            subscribed = true;
-            triesRef.current.set(tabIdx, 0);
+        if (msg.type === "dropped") {
+          const current = pendingDrops.current.get(tabIdx) ?? 0;
+          pendingDrops.current.set(tabIdx, current + (msg.count ?? 0));
+          if (!flushRafId.current) {
+            flushRafId.current = requestAnimationFrame(flushPendingLines);
+          }
+          return;
+        }
+        if (msg.type === "error") {
+          // An end with a reason follows the lifecycle; a frame without
+          // one (a bad container name, a failed open) keeps its message.
+          if (msg.reason) {
+            endTab(tabIdx, msg);
+          } else {
+            ended = true;
             updateTabState(tabIdx, {
-              connected: true,
+              error: streamErrorMessage(msg, "Live log streaming"),
               reconnecting: false,
-              error: "",
             });
-            loading.value = false;
-            if (resume) queueLine(tabIdx, RECONNECTED_MARKER);
-            return;
           }
-          if (msg.type === "log") {
-            const line = String(msg.data ?? "");
-            if (resumeAfter.current.has(tabIdx)) {
-              if (
-                isReplayedLine(line, resumeAfter.current.get(tabIdx) ?? null)
-              ) {
-                return;
-              }
-              // The first line past the join ends the replay.
-              resumeAfter.current.delete(tabIdx);
-            }
-            const ts = logLineTimestamp(line);
-            if (ts) lastTimestamp.current.set(tabIdx, ts);
-            // Batch into pending buffer — flushed once per RAF
-            queueLine(tabIdx, line);
-            return;
-          }
-          if (msg.type === "dropped") {
-            const current = pendingDrops.current.get(tabIdx) ?? 0;
-            pendingDrops.current.set(tabIdx, current + (msg.count ?? 0));
-            if (!flushRafId.current) {
-              flushRafId.current = requestAnimationFrame(flushPendingLines);
-            }
-            return;
-          }
-          if (msg.type === "error") {
-            // An end with a reason follows the lifecycle; a frame without
-            // one (a bad container name, a failed open) keeps its message.
-            if (msg.reason) {
-              endTab(tabIdx, msg);
-            } else {
-              ended = true;
-              updateTabState(tabIdx, {
-                error: streamErrorMessage(msg, "Live log streaming"),
-                reconnecting: false,
-              });
-            }
-            return;
-          }
-          if (msg.type === "end") {
-            updateTabState(tabIdx, { connected: false });
-            return;
-          }
-        } catch {
-          // ignore unparseable
-        }
-      };
-
-      // A socket this tab already replaced (a resume closes the old one
-      // first) must not touch the tab's state or its new socket.
-      ws.onclose = () => {
-        if (wsRefs.current.get(tabIdx) !== ws) return;
-        wsRefs.current.delete(tabIdx);
-        if (resume && !subscribed && !ended) {
-          endTab(tabIdx, { reason: "connect_failed", retryable: true });
           return;
         }
-        updateTabState(tabIdx, { connected: false });
-      };
+        if (msg.type === "end") {
+          updateTabState(tabIdx, { connected: false });
+          return;
+        }
+      } catch {
+        // ignore unparseable
+      }
+    };
 
-      // A failed resume is left to onclose, which always follows an error.
-      ws.onerror = () => {
-        if (wsRefs.current.get(tabIdx) !== ws) return;
-        if (resume && !subscribed && !ended) return;
-        updateTabState(tabIdx, { error: "WebSocket connection failed" });
-      };
-    },
-    [namespace, pod, previous.value],
-  );
+    // A socket this tab already replaced (a resume closes the old one
+    // first) must not touch the tab's state or its new socket.
+    ws.onclose = () => {
+      if (wsRefs.current.get(tabIdx) !== ws) return;
+      wsRefs.current.delete(tabIdx);
+      if (resume && !subscribed && !ended) {
+        endTab(tabIdx, { reason: "connect_failed", retryable: true });
+        return;
+      }
+      updateTabState(tabIdx, { connected: false });
+    };
+
+    // A failed resume is left to onclose, which always follows an error.
+    ws.onerror = () => {
+      if (wsRefs.current.get(tabIdx) !== ws) return;
+      if (resume && !subscribed && !ended) return;
+      updateTabState(tabIdx, { error: "WebSocket connection failed" });
+    };
+  };
 
   // Fetch logs via HTTP (snapshot mode)
-  const fetchSnapshot = useCallback(
-    async (tabIdx: number) => {
-      const container = allContainers[tabIdx]?.name;
-      if (!container) return;
-      const gen = ++snapshotGen.current;
-      loading.value = true;
-      updateTabState(tabIdx, { error: "" });
-      try {
-        const params = new URLSearchParams({
-          container,
-          tailLines: "500",
-          previous: String(previous.value),
-          timestamps: "true",
-        });
-        const res = await apiGet<LogResponse>(
-          `/v1/resources/pods/${namespace}/${pod}/logs?${params}`,
-        );
-        if (gen !== snapshotGen.current) return;
-        updateTabState(tabIdx, {
-          lines: (res.data.lines ?? []).map(toLogLine),
-        });
-        loading.value = false;
-        // Scroll to bottom
-        requestAnimationFrame(() => {
-          const pre = preRefs.current[tabIdx];
-          if (pre) pre.scrollTop = pre.scrollHeight;
-        });
-      } catch (err) {
-        if (gen !== snapshotGen.current) return;
-        const message =
-          err instanceof ApiError && err.body?.error?.message
-            ? err.body.error.message
-            : err instanceof Error
-              ? err.message
-              : "Failed to fetch logs";
-        updateTabState(tabIdx, { lines: [], error: message });
-        loading.value = false;
-      }
-    },
-    [namespace, pod, previous.value],
-  );
+  const fetchSnapshot = async (tabIdx: number) => {
+    const container = live.current.allContainers[tabIdx]?.name;
+    if (!container) return;
+    const { namespace: ns, pod: podName } = live.current;
+    const gen = ++snapshotGen.current;
+    setLoading(true);
+    updateTabState(tabIdx, { error: "" });
+    try {
+      const params = new URLSearchParams({
+        container,
+        tailLines: "500",
+        previous: String(previousRef.current),
+        timestamps: "true",
+      });
+      const res = await apiGet<LogResponse>(
+        `/v1/resources/pods/${ns}/${podName}/logs?${params}`,
+      );
+      if (gen !== snapshotGen.current) return;
+      updateTabState(tabIdx, {
+        lines: (res.data.lines ?? []).map(toLogLine),
+      });
+      setLoading(false);
+      // Scroll to bottom
+      requestAnimationFrame(() => {
+        const pre = preRefs.current[tabIdx];
+        if (pre) pre.scrollTop = pre.scrollHeight;
+      });
+    } catch (err) {
+      if (gen !== snapshotGen.current) return;
+      const message =
+        err instanceof ApiError && err.body?.error?.message
+          ? err.body.error.message
+          : err instanceof Error
+            ? err.message
+            : "Failed to fetch logs";
+      updateTabState(tabIdx, { lines: [], error: message });
+      setLoading(false);
+    }
+  };
+
+  // The connect effect re-runs on a tab, mode or Previous change only, so it
+  // calls this render's handlers through a ref rather than depending on them.
+  const actions = useLatest({
+    connectWS,
+    fetchSnapshot,
+    closeTabWS,
+    cancelResume,
+  });
 
   // Connect/fetch on mode or tab change
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    const run = actions.current;
+    previousRef.current = previous;
 
-    const idx = activeTab.value;
-
-    if (mode.value === "follow") {
-      connectWS(idx);
-      if (splitView.value && splitTab.value !== idx) {
-        connectWS(splitTab.value);
+    if (mode === "follow") {
+      run.connectWS(activeTab);
+      if (splitViewRef.current && splitTabRef.current !== activeTab) {
+        run.connectWS(splitTabRef.current);
       }
     } else {
       // Close ALL WS connections, and cancel any resume, when switching to
@@ -498,10 +534,18 @@ export default function LogViewer({
         ...wsRefs.current.keys(),
         ...retryTimers.current.keys(),
       ])) {
-        closeTabWS(i);
-        updateTabState(i, { connected: false, reconnecting: false });
+        run.closeTabWS(i);
+        setTabStates((prev) => {
+          const states = [...prev];
+          states[i] = {
+            ...(states[i] ?? EMPTY_TAB),
+            connected: false,
+            reconnecting: false,
+          };
+          return states;
+        });
       }
-      fetchSnapshot(idx);
+      run.fetchSnapshot(activeTab);
     }
 
     return () => {
@@ -510,7 +554,9 @@ export default function LogViewer({
         ws.close();
       }
       wsRefs.current.clear();
-      for (let i = 0; i < allContainers.length; i++) cancelResume(i);
+      for (let i = 0; i < live.current.allContainers.length; i++) {
+        actions.current.cancelResume(i);
+      }
       // Cancel pending RAFs
       if (flushRafId.current) cancelAnimationFrame(flushRafId.current);
       if (scrollRafId.current) cancelAnimationFrame(scrollRafId.current);
@@ -519,59 +565,16 @@ export default function LogViewer({
       pendingLines.current.clear();
       pendingDrops.current.clear();
     };
-  }, [activeTab.value, mode.value, previous.value]);
+  }, [activeTab, mode, previous]);
 
   // Scroll detection for auto-scroll pause
   const handleScroll = (tabIdx: number) => {
     const pre = preRefs.current[tabIdx];
     if (!pre) return;
     const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
-    if (!atBottom && autoScroll.value) {
-      autoScroll.value = false;
+    if (!atBottom && autoScrollRef.current) {
+      setAutoScroll(false);
     }
-  };
-
-  // Search filtering — operates on raw text, returns LogLine[]
-  const getFilteredLines = (tabIdx: number): LogLine[] => {
-    const state = getTabState(tabIdx);
-    if (!search.value.trim()) return state.lines;
-    const q = search.value.toLowerCase();
-    return state.lines.filter((line) => line.raw.toLowerCase().includes(q));
-  };
-
-  // Render log content using pre-cached HTML + search highlighting on raw text
-  const renderLogContent = (tabIdx: number): string => {
-    const filteredLines = getFilteredLines(tabIdx);
-    if (filteredLines.length === 0) {
-      if (loading.value) return "Loading logs...";
-      return "No log output";
-    }
-
-    const q = search.value.trim().toLowerCase();
-
-    if (!q) {
-      // Fast path: no search, just join pre-computed HTML
-      return filteredLines.map((l) => l.html).join("\n");
-    }
-
-    // Search highlighting: apply on the pre-computed HTML but only on text
-    // content (skip inside HTML tags to avoid breaking <span class="...">)
-    const re = new RegExp(escapeRegExp(q), "gi");
-    return filteredLines
-      .map((l) => {
-        return l.html.replace(
-          /(<[^>]*>)|([^<]+)/g,
-          (_full: string, tag: string, text: string) => {
-            if (tag) return tag; // pass HTML tags through unchanged
-            return text.replace(
-              re,
-              (match: string) =>
-                `<mark class="bg-warning-dim text-text-primary">${match}</mark>`,
-            );
-          },
-        );
-      })
-      .join("\n");
   };
 
   // Download logs
@@ -589,42 +592,63 @@ export default function LogViewer({
     URL.revokeObjectURL(url);
   };
 
-  if (!IS_BROWSER) return null;
+  // Search filtering and the panel HTML, per tab, on the inputs they read.
+  const activeLines = (tabStates[activeTab] ?? EMPTY_TAB).lines;
+  const splitLines = splitView
+    ? (tabStates[splitTab] ?? EMPTY_TAB).lines
+    : EMPTY_TAB.lines;
+  const activeFiltered = useMemo(
+    () => filterLines(activeLines, search),
+    [activeLines, search],
+  );
+  const splitFiltered = useMemo(
+    () => filterLines(splitLines, search),
+    [splitLines, search],
+  );
+  const activeHtml = useMemo(
+    () => logPanelHtml(activeFiltered, search, loading),
+    [activeFiltered, search, loading],
+  );
+  const splitHtml = useMemo(
+    () => logPanelHtml(splitFiltered, search, loading),
+    [splitFiltered, search, loading],
+  );
 
-  const currentState = getTabState(activeTab.value);
-  // Compute match count inline (avoid conditional hook call)
-  const matchCount = search.value.trim()
-    ? getFilteredLines(activeTab.value).length
-    : 0;
+  if (!isClient) return null;
 
-  const renderLogPanel = (tabIdx: number) => {
+  const currentState = getTabState(activeTab);
+  const matchCount = search.trim() ? activeFiltered.length : 0;
+
+  const renderLogPanel = (tabIdx: number, html: string) => {
     return (
       <pre
         ref={(el) => {
           preRefs.current[tabIdx] = el;
         }}
-        class="h-[600px] overflow-auto rounded-lg bg-base p-4 font-mono text-xs leading-5 text-text-primary"
+        // ANSI colour rendering needs markup; ansi_up runs with escape_html
+        // set, so the log text itself is escaped before any span is added.
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: escaped by ansi_up, see above
+        dangerouslySetInnerHTML={{ __html: html }}
+        className="h-[600px] overflow-auto rounded-lg bg-base p-4 font-mono text-xs leading-5 text-text-primary"
         onScroll={() => handleScroll(tabIdx)}
-        // ANSI colour rendering requires innerHTML; input is escaped by ansi_up.
-        dangerouslySetInnerHTML={{ __html: renderLogContent(tabIdx) }}
       />
     );
   };
 
   return (
-    <div class="flex flex-col gap-3">
+    <div className="flex flex-col gap-3">
       {/* Container tabs */}
       {allContainers.length > 1 && (
-        <div class="flex items-center gap-1 border-b border-border-primary">
+        <div className="flex items-center gap-1 border-b border-border-primary">
           {allContainers.map((c, idx) => (
             <button
               key={c.name}
               type="button"
               onClick={() => {
-                activeTab.value = idx;
+                setActiveTab(idx);
               }}
-              class={`px-3 py-1.5 text-sm font-medium border-b-2 transition-colors ${
-                activeTab.value === idx
+              className={`px-3 py-1.5 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === idx
                   ? "border-brand text-brand"
                   : "border-transparent text-text-muted hover:text-text-primary"
               }`}
@@ -637,49 +661,45 @@ export default function LogViewer({
       )}
 
       {/* Controls */}
-      <div class="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         {/* Mode toggle */}
-        <div class="flex rounded-md border border-border-primary">
+        <div className="flex rounded-md border border-border-primary">
           <button
             type="button"
             onClick={() => {
-              mode.value = "follow";
+              setMode("follow");
             }}
-            class={`px-3 py-1 text-xs font-medium ${
-              mode.value === "follow"
+            className={`px-3 py-1 text-xs font-medium ${
+              mode === "follow"
                 ? "bg-brand"
                 : "text-text-secondary hover:bg-elevated text-text-secondary"
             } rounded-l-md`}
-            style={
-              mode.value === "follow" ? { color: "var(--bg-base)" } : undefined
-            }
+            style={mode === "follow" ? { color: "var(--bg-base)" } : undefined}
           >
             Follow
           </button>
           <button
             type="button"
             onClick={() => {
-              mode.value = "snapshot";
+              setMode("snapshot");
             }}
-            class={`px-3 py-1 text-xs font-medium ${
-              mode.value === "snapshot"
+            className={`px-3 py-1 text-xs font-medium ${
+              mode === "snapshot"
                 ? "bg-brand"
                 : "text-text-secondary hover:bg-elevated text-text-secondary"
             } rounded-r-md`}
             style={
-              mode.value === "snapshot"
-                ? { color: "var(--bg-base)" }
-                : undefined
+              mode === "snapshot" ? { color: "var(--bg-base)" } : undefined
             }
           >
             Snapshot
           </button>
         </div>
 
-        <label class="flex items-center gap-1.5 text-sm text-text-secondary">
+        <label className="flex items-center gap-1.5 text-sm text-text-secondary">
           <input
             type="checkbox"
-            checked={previous.value}
+            checked={previous}
             onChange={(e) => {
               // Stop the other instance's stream now, not at the effect's
               // cleanup a frame later: its socket, its buffered lines and a
@@ -692,13 +712,15 @@ export default function LogViewer({
               snapshotGen.current++;
               lastTimestamp.current.clear();
               resumeAfter.current.clear();
-              tabStates.value = tabStates.value.map((s) => ({
-                ...s,
-                lines: [],
-                droppedCount: 0,
-                error: "",
-              }));
-              previous.value = (e.target as HTMLInputElement).checked;
+              setTabStates((prev) =>
+                prev.map((s) => ({
+                  ...s,
+                  lines: [],
+                  droppedCount: 0,
+                  error: "",
+                })),
+              );
+              setPrevious(e.currentTarget.checked);
             }}
           />
           Previous
@@ -706,35 +728,35 @@ export default function LogViewer({
 
         {/* Split view (only for multi-container pods) */}
         {allContainers.length >= 2 && (
-          <label class="flex items-center gap-1.5 text-sm text-text-secondary">
+          <label className="flex items-center gap-1.5 text-sm text-text-secondary">
             <input
               type="checkbox"
-              checked={splitView.value}
+              checked={splitView}
               onChange={(e) => {
-                const checked = (e.target as HTMLInputElement).checked;
+                const checked = e.currentTarget.checked;
                 if (checked) {
                   // Pick second container different from active
-                  const other = activeTab.value === 0 ? 1 : 0;
-                  splitTab.value = other;
-                  if (mode.value === "follow") connectWS(other);
+                  const other = activeTab === 0 ? 1 : 0;
+                  setSplitTab(other);
+                  if (modeRef.current === "follow") connectWS(other);
                   else fetchSnapshot(other);
                 } else {
                   // Close the split tab's WS when disabling split view
-                  closeTabWS(splitTab.value);
-                  updateTabState(splitTab.value, { connected: false });
+                  closeTabWS(splitTab);
+                  updateTabState(splitTab, { connected: false });
                 }
-                splitView.value = checked;
+                setSplitView(checked);
               }}
             />
             Split view
           </label>
         )}
 
-        {mode.value === "snapshot" && (
+        {mode === "snapshot" && (
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => fetchSnapshot(activeTab.value)}
+            onClick={() => fetchSnapshot(activeTab)}
           >
             Refresh
           </Button>
@@ -743,20 +765,20 @@ export default function LogViewer({
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => downloadLogs(activeTab.value)}
+          onClick={() => downloadLogs(activeTab)}
         >
           Download
         </Button>
 
         {/* Status indicators */}
-        {mode.value === "follow" && (
+        {mode === "follow" && (
           <span
-            class={`inline-flex items-center gap-1 text-xs ${
+            className={`inline-flex items-center gap-1 text-xs ${
               currentState.connected ? "text-success" : "text-text-muted"
             }`}
           >
             <span
-              class={`inline-block h-2 w-2 rounded-full ${
+              className={`inline-block h-2 w-2 rounded-full ${
                 currentState.connected
                   ? "bg-success animate-pulse"
                   : "bg-text-muted"
@@ -769,42 +791,42 @@ export default function LogViewer({
                 : "Disconnected"}
           </span>
         )}
-        {mode.value === "follow" && pinRef.current && (
+        {mode === "follow" && pinRef.current && (
           <SessionClusterBadge clusterId={pinRef.current.clusterId} />
         )}
-        {mode.value === "follow" &&
+        {mode === "follow" &&
           currentState.error &&
           !currentState.connected &&
           !currentState.reconnecting && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => reconnectTab(activeTab.value)}
+              onClick={() => reconnectTab(activeTab)}
             >
               Reconnect
             </Button>
           )}
 
-        <span class="text-xs text-text-muted">
-          {getTabState(activeTab.value).lines.length} lines
+        <span className="text-xs text-text-muted">
+          {getTabState(activeTab).lines.length} lines
           {currentState.droppedCount > 0 &&
             ` (${currentState.droppedCount} dropped)`}
         </span>
       </div>
 
       {/* Search */}
-      <div class="flex items-center gap-2">
-        <div class="max-w-sm flex-1">
+      <div className="flex items-center gap-2">
+        <div className="max-w-sm flex-1">
           <SearchBar
-            value={search.value}
+            value={search}
             onInput={(v) => {
-              search.value = v;
+              setSearch(v);
             }}
             placeholder="Search logs..."
           />
         </div>
-        {search.value && (
-          <span class="text-xs text-text-muted">
+        {search && (
+          <span className="text-xs text-text-muted">
             {matchCount} matching lines
           </span>
         )}
@@ -814,37 +836,37 @@ export default function LogViewer({
       {currentState.error && <ErrorBanner message={currentState.error} />}
 
       {/* Log output */}
-      {splitView.value ? (
-        <div class="grid grid-cols-2 gap-2">
+      {splitView ? (
+        <div className="grid grid-cols-2 gap-2">
           <div>
-            <div class="mb-1 text-xs font-medium text-text-muted">
-              {allContainers[activeTab.value]?.name}
+            <div className="mb-1 text-xs font-medium text-text-muted">
+              {allContainers[activeTab]?.name}
             </div>
-            {renderLogPanel(activeTab.value)}
+            {renderLogPanel(activeTab, activeHtml)}
           </div>
           <div>
-            <div class="mb-1 text-xs font-medium text-text-muted">
-              {allContainers[splitTab.value]?.name}
+            <div className="mb-1 text-xs font-medium text-text-muted">
+              {allContainers[splitTab]?.name}
             </div>
-            {renderLogPanel(splitTab.value)}
+            {renderLogPanel(splitTab, splitHtml)}
           </div>
         </div>
       ) : (
-        renderLogPanel(activeTab.value)
+        renderLogPanel(activeTab, activeHtml)
       )}
 
       {/* Resume auto-scroll FAB */}
-      {!autoScroll.value && mode.value === "follow" && (
+      {!autoScroll && mode === "follow" && (
         <button
           type="button"
           onClick={() => {
-            autoScroll.value = true;
-            const pre = preRefs.current[activeTab.value];
+            setAutoScroll(true);
+            const pre = preRefs.current[activeTab];
             if (pre) pre.scrollTop = pre.scrollHeight;
           }}
           // right-20 clears the 48px quick-actions button that sits at the
           // same corner (QuickActionsFab: bottom/right 24px, above z-30).
-          class="fixed bottom-6 right-20 z-30 rounded-full bg-brand px-4 py-2 text-sm font-medium shadow-lg hover:bg-brand/90"
+          className="fixed bottom-6 right-20 z-30 rounded-full bg-brand px-4 py-2 text-sm font-medium shadow-lg hover:bg-brand/90"
           style={{ color: "var(--bg-base)" }}
         >
           Resume auto-scroll
@@ -852,6 +874,51 @@ export default function LogViewer({
       )}
     </div>
   );
+}
+
+/** Search filtering: operates on raw text. */
+function filterLines(lines: LogLine[], search: string): LogLine[] {
+  if (!search.trim()) return lines;
+  const q = search.toLowerCase();
+  return lines.filter((line) => line.raw.toLowerCase().includes(q));
+}
+
+/** Log content using pre-cached HTML + search highlighting on raw text. */
+function logPanelHtml(
+  filteredLines: LogLine[],
+  search: string,
+  loading: boolean,
+): string {
+  if (filteredLines.length === 0) {
+    if (loading) return "Loading logs...";
+    return "No log output";
+  }
+
+  const q = search.trim().toLowerCase();
+
+  if (!q) {
+    // Fast path: no search, just join pre-computed HTML
+    return filteredLines.map((l) => l.html).join("\n");
+  }
+
+  // Search highlighting: apply on the pre-computed HTML but only on text
+  // content (skip inside HTML tags to avoid breaking <span class="...">)
+  const re = new RegExp(escapeRegExp(q), "gi");
+  return filteredLines
+    .map((l) => {
+      return l.html.replace(
+        /(<[^>]*>)|([^<]+)/g,
+        (_full: string, tag: string, text: string) => {
+          if (tag) return tag; // pass HTML tags through unchanged
+          return text.replace(
+            re,
+            (match: string) =>
+              `<mark class="bg-warning-dim text-text-primary">${match}</mark>`,
+          );
+        },
+      );
+    })
+    .join("\n");
 }
 
 function escapeHtml(s: string): string {

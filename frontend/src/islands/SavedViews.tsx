@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import {
   applyViewState,
@@ -14,9 +14,9 @@ import {
   preferencesApi,
   type SavedViewRecord,
 } from "@/lib/preferences.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { selectedCluster } from "@/src/lib/cluster.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface SavedViewsProps {
   /** Adapter kind slug, e.g. "pods". Matches ResourceTableIslandProps.kind. */
@@ -66,39 +66,47 @@ export default function SavedViews({
   current,
   onApply,
 }: SavedViewsProps) {
-  const views = useSignal<SavedViewRecord[]>([]);
-  const loading = useSignal(true);
+  const [views, setViews] = useState<SavedViewRecord[]>([]);
+  const [loading, setLoading] = useState(true);
   /**
    * Why the list is not usable, when it is not. Kept separate from `views` so
    * a failed load never renders as "you have no saved views" -- an absent
    * observation must not look like an empty one.
    */
-  const unavailable = useSignal<PreferenceReason | undefined>(undefined);
-  const loadFailed = useSignal(false);
-  const open = useSignal(false);
-  const mode = useSignal<Mode>({ kind: "idle" });
-  const nameDraft = useSignal("");
-  const busy = useSignal(false);
-  const actionError = useSignal<string | null>(null);
-  const deleteTarget = useSignal<SavedViewRecord | null>(null);
+  const [unavailable, setUnavailable] = useState<PreferenceReason | undefined>(
+    undefined,
+  );
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<Mode>({ kind: "idle" });
+  const [nameDraft, setNameDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SavedViewRecord | null>(
+    null,
+  );
 
   const listAbort = useRef<AbortController | null>(null);
-  const cluster = selectedCluster.value;
+  // The list as last loaded. A write handler reads it after awaiting a reload,
+  // when the `views` it closed over is already out of date.
+  const viewsRef = useRef<SavedViewRecord[]>([]);
+  const cluster = useSignalValue(selectedCluster);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     // Cancel any in-flight list so a slow response for the previous cluster
     // cannot land late and render another cluster's views as this one's.
     listAbort.current?.abort();
     const ac = new AbortController();
     listAbort.current = ac;
 
-    loading.value = true;
+    setLoading(true);
     try {
       const records = await preferencesApi.listViews(ac.signal);
       if (ac.signal.aborted) return;
-      views.value = records;
-      unavailable.value = undefined;
-      loadFailed.value = false;
+      viewsRef.current = records;
+      setViews(records);
+      setUnavailable(undefined);
+      setLoadFailed(false);
     } catch (err) {
       if (
         ac.signal.aborted ||
@@ -106,49 +114,56 @@ export default function SavedViews({
       ) {
         return;
       }
-      unavailable.value = preferenceReason(err);
-      loadFailed.value = true;
+      setUnavailable(preferenceReason(err));
+      setLoadFailed(true);
     } finally {
       if (listAbort.current === ac) {
-        loading.value = false;
+        setLoading(false);
       }
     }
-  };
+  }, []);
 
+  // `subscribe` runs the callback now (the first load) and on every cluster
+  // switch, so the list is always the active cluster's.
   useEffect(() => {
-    if (!IS_BROWSER) return;
-    load();
-    return () => listAbort.current?.abort();
-  }, [cluster]);
+    const unsubscribe = selectedCluster.subscribe(() => {
+      load();
+    });
+    return () => {
+      unsubscribe();
+      listAbort.current?.abort();
+    };
+  }, [load]);
 
   // Views for this table on the active cluster -- the only ones that can be
   // applied. A record is addressed by (cluster, kind); both must match.
-  const mine = views.value.filter(
+  const mine = views.filter(
     (v) => v.clusterId === cluster && v.config.resourceKind === resourceKind,
   );
   // Same table, a different cluster. Shown disabled rather than hidden, so a
   // view the user knows they saved does not silently disappear when they
   // switch clusters (R3).
-  const elsewhere = views.value.filter(
+  const elsewhere = views.filter(
     (v) => v.clusterId !== cluster && v.config.resourceKind === resourceKind,
   );
 
   const resetMode = () => {
-    mode.value = { kind: "idle" };
-    nameDraft.value = "";
-    actionError.value = null;
+    setMode({ kind: "idle" });
+    setNameDraft("");
+    setActionError(null);
   };
 
   const closeMenu = () => {
-    open.value = false;
+    setOpen(false);
     resetMode();
   };
 
   /** Routes a failed write to the banner inside the menu. */
   const reportError = (err: unknown, fallback: string) => {
     const reason = preferenceReason(err);
-    actionError.value =
-      reasonMessage(reason) ?? (err instanceof Error ? err.message : fallback);
+    setActionError(
+      reasonMessage(reason) ?? (err instanceof Error ? err.message : fallback),
+    );
   };
 
   const apply = (record: SavedViewRecord) => {
@@ -158,13 +173,13 @@ export default function SavedViews({
   };
 
   const save = async () => {
-    const name = nameDraft.value.trim();
+    const name = nameDraft.trim();
     if (!name) {
-      actionError.value = "Give the view a name.";
+      setActionError("Give the view a name.");
       return;
     }
-    busy.value = true;
-    actionError.value = null;
+    setBusy(true);
+    setActionError(null);
     try {
       await preferencesApi.createView(name, captureViewState(current));
       await load();
@@ -182,27 +197,27 @@ export default function SavedViews({
         // searching the cache would miss it and the user would get a generic
         // failure instead of the choice they are owed.
         await load();
-        const existing = views.value.find(
+        const existing = viewsRef.current.find(
           (v) =>
             v.clusterId === cluster &&
             v.config.resourceKind === resourceKind &&
             v.name.trim().toLowerCase() === name.toLowerCase(),
         );
         if (existing) {
-          mode.value = { kind: "overwrite", name, existing };
-          busy.value = false;
+          setMode({ kind: "overwrite", name, existing });
+          setBusy(false);
           return;
         }
       }
       reportError(err, "Failed to save the view.");
     } finally {
-      busy.value = false;
+      setBusy(false);
     }
   };
 
   const overwrite = async (name: string, existing: SavedViewRecord) => {
-    busy.value = true;
-    actionError.value = null;
+    setBusy(true);
+    setActionError(null);
     try {
       await preferencesApi.updateView(
         existing.id,
@@ -222,18 +237,18 @@ export default function SavedViews({
       }
       reportError(err, "Failed to replace the view.");
     } finally {
-      busy.value = false;
+      setBusy(false);
     }
   };
 
   const rename = async (record: SavedViewRecord) => {
-    const name = nameDraft.value.trim();
+    const name = nameDraft.trim();
     if (!name) {
-      actionError.value = "Give the view a name.";
+      setActionError("Give the view a name.");
       return;
     }
-    busy.value = true;
-    actionError.value = null;
+    setBusy(true);
+    setActionError(null);
     try {
       await preferencesApi.updateView(
         record.id,
@@ -250,12 +265,12 @@ export default function SavedViews({
       }
       reportError(err, "Failed to rename the view.");
     } finally {
-      busy.value = false;
+      setBusy(false);
     }
   };
 
   const remove = async (record: SavedViewRecord) => {
-    busy.value = true;
+    setBusy(true);
     try {
       await preferencesApi.deleteView(record.id);
       await load();
@@ -263,8 +278,8 @@ export default function SavedViews({
     } catch (err) {
       reportError(err, "Failed to delete the view.");
     } finally {
-      busy.value = false;
-      deleteTarget.value = null;
+      setBusy(false);
+      setDeleteTarget(null);
     }
   };
 
@@ -285,7 +300,7 @@ export default function SavedViews({
   // once, in place of the control, rather than offering a button that always
   // fails -- and never fall back to localStorage, which would look like it
   // worked until the user opened another browser.
-  if (unavailable.value === "database_unavailable") {
+  if (unavailable === "database_unavailable") {
     return (
       <span
         data-testid="saved-views-unavailable"
@@ -301,14 +316,14 @@ export default function SavedViews({
     );
   }
 
-  const mineLabel = loading.value ? "Views" : `Views (${mine.length})`;
+  const mineLabel = loading ? "Views" : `Views (${mine.length})`;
 
   return (
     <div style={{ position: "relative" }} data-testid="saved-views">
       <button
         type="button"
         data-testid="saved-views-toggle"
-        aria-expanded={open.value}
+        aria-expanded={open}
         aria-haspopup="menu"
         // "Views (0)" is short enough to fit the toolbar and says nothing about
         // what the control is for. The accessible name and the tooltip carry
@@ -317,8 +332,9 @@ export default function SavedViews({
         aria-label={`${mineLabel} — saved views; save the current filters as a view`}
         title="Save the current filters as a view"
         onClick={() => {
-          open.value = !open.value;
-          if (open.value) {
+          const next = !open;
+          setOpen(next);
+          if (next) {
             // Refresh on open, not just on mount. These records are shared
             // across every tab and session the user has open, so a list
             // fetched when the page loaded can be arbitrarily old by the time
@@ -331,19 +347,19 @@ export default function SavedViews({
         }}
         style={{
           ...buttonStyle,
-          background: open.value
+          background: open
             ? "color-mix(in srgb, var(--accent) 14%, transparent)"
             : "var(--bg-elevated)",
           border: `1px solid ${
-            open.value ? "var(--accent)" : "var(--border-primary)"
+            open ? "var(--accent)" : "var(--border-primary)"
           }`,
-          color: open.value ? "var(--accent)" : "var(--text-muted)",
+          color: open ? "var(--accent)" : "var(--text-muted)",
         }}
       >
         {mineLabel}
       </button>
 
-      {open.value && (
+      {open && (
         <div
           role="menu"
           data-testid="saved-views-menu"
@@ -361,7 +377,7 @@ export default function SavedViews({
             boxShadow: "0 12px 32px rgba(0, 0, 0, 0.32)",
           }}
         >
-          {loadFailed.value && (
+          {loadFailed && (
             <div
               data-testid="saved-views-list-error"
               style={{
@@ -373,8 +389,7 @@ export default function SavedViews({
                 background: "color-mix(in srgb, var(--error) 10%, transparent)",
               }}
             >
-              {reasonMessage(unavailable.value) ??
-                "Could not load your saved views."}{" "}
+              {reasonMessage(unavailable) ?? "Could not load your saved views."}{" "}
               <button
                 type="button"
                 onClick={load}
@@ -389,7 +404,7 @@ export default function SavedViews({
             </div>
           )}
 
-          {!loadFailed.value && loading.value && (
+          {!loadFailed && loading && (
             <div
               style={{
                 padding: "6px 8px",
@@ -401,7 +416,7 @@ export default function SavedViews({
             </div>
           )}
 
-          {!loadFailed.value && !loading.value && mine.length === 0 && (
+          {!loadFailed && !loading && mine.length === 0 && (
             <div
               data-testid="saved-views-empty"
               style={{
@@ -441,17 +456,14 @@ export default function SavedViews({
                 borderRadius: "7px",
               }}
             >
-              {mode.value.kind === "renaming" &&
-              mode.value.record.id === record.id ? (
+              {mode.kind === "renaming" && mode.record.id === record.id ? (
                 <>
                   <input
                     type="text"
-                    value={nameDraft.value}
+                    value={nameDraft}
                     maxLength={MAX_RECORD_NAME_LEN}
                     data-testid="saved-view-rename-input"
-                    onInput={(e) => {
-                      nameDraft.value = (e.target as HTMLInputElement).value;
-                    }}
+                    onChange={(e) => setNameDraft(e.currentTarget.value)}
                     style={{
                       flex: "1 1 auto",
                       minWidth: 0,
@@ -465,7 +477,7 @@ export default function SavedViews({
                   />
                   <button
                     type="button"
-                    disabled={busy.value}
+                    disabled={busy}
                     data-testid="saved-view-rename-confirm"
                     onClick={() => rename(record)}
                     style={buttonStyle}
@@ -508,9 +520,9 @@ export default function SavedViews({
                     type="button"
                     data-testid="saved-view-rename"
                     onClick={() => {
-                      nameDraft.value = record.name;
-                      actionError.value = null;
-                      mode.value = { kind: "renaming", record };
+                      setNameDraft(record.name);
+                      setActionError(null);
+                      setMode({ kind: "renaming", record });
                     }}
                     style={{ ...buttonStyle, padding: "2px 8px" }}
                   >
@@ -519,9 +531,7 @@ export default function SavedViews({
                   <button
                     type="button"
                     data-testid="saved-view-delete"
-                    onClick={() => {
-                      deleteTarget.value = record;
-                    }}
+                    onClick={() => setDeleteTarget(record)}
                     style={{ ...buttonStyle, padding: "2px 8px" }}
                   >
                     Delete
@@ -593,7 +603,7 @@ export default function SavedViews({
               borderTop: "1px solid var(--border-primary)",
             }}
           >
-            {mode.value.kind === "overwrite" ? (
+            {mode.kind === "overwrite" ? (
               <div data-testid="saved-view-overwrite">
                 <div
                   style={{
@@ -602,18 +612,17 @@ export default function SavedViews({
                     color: "var(--text-muted)",
                   }}
                 >
-                  A view named "{mode.value.name}" already exists. Replace its
-                  filters and sort with what is on screen?
+                  A view named "{mode.name}" already exists. Replace its filters
+                  and sort with what is on screen?
                 </div>
                 <div style={{ display: "flex", gap: "6px" }}>
                   <button
                     type="button"
-                    disabled={busy.value}
+                    disabled={busy}
                     data-testid="saved-view-overwrite-confirm"
                     onClick={() => {
-                      const m = mode.value;
-                      if (m.kind === "overwrite") {
-                        overwrite(m.name, m.existing);
+                      if (mode.kind === "overwrite") {
+                        overwrite(mode.name, mode.existing);
                       }
                     }}
                     style={buttonStyle}
@@ -625,17 +634,15 @@ export default function SavedViews({
                   </button>
                 </div>
               </div>
-            ) : mode.value.kind === "saving" ? (
+            ) : mode.kind === "saving" ? (
               <div style={{ display: "flex", gap: "6px" }}>
                 <input
                   type="text"
-                  value={nameDraft.value}
+                  value={nameDraft}
                   maxLength={MAX_RECORD_NAME_LEN}
                   placeholder="Name this view"
                   data-testid="saved-view-name-input"
-                  onInput={(e) => {
-                    nameDraft.value = (e.target as HTMLInputElement).value;
-                  }}
+                  onChange={(e) => setNameDraft(e.currentTarget.value)}
                   style={{
                     flex: "1 1 auto",
                     minWidth: 0,
@@ -649,7 +656,7 @@ export default function SavedViews({
                 />
                 <button
                   type="button"
-                  disabled={busy.value}
+                  disabled={busy}
                   data-testid="saved-view-save-confirm"
                   onClick={save}
                   style={buttonStyle}
@@ -665,9 +672,9 @@ export default function SavedViews({
                 type="button"
                 data-testid="saved-view-save"
                 onClick={() => {
-                  nameDraft.value = "";
-                  actionError.value = null;
-                  mode.value = { kind: "saving" };
+                  setNameDraft("");
+                  setActionError(null);
+                  setMode({ kind: "saving" });
                 }}
                 style={{ ...buttonStyle, width: "100%" }}
               >
@@ -675,7 +682,7 @@ export default function SavedViews({
               </button>
             )}
 
-            {actionError.value && (
+            {actionError && (
               <div
                 data-testid="saved-views-action-error"
                 style={{
@@ -688,27 +695,24 @@ export default function SavedViews({
                     "color-mix(in srgb, var(--error) 10%, transparent)",
                 }}
               >
-                {actionError.value}
+                {actionError}
               </div>
             )}
           </div>
         </div>
       )}
 
-      {deleteTarget.value && (
+      {deleteTarget && (
         <ConfirmDialog
           title="Delete saved view"
-          message={`"${deleteTarget.value.name}" will be removed from your saved views. The resources it points at are not affected.`}
+          message={`"${deleteTarget.name}" will be removed from your saved views. The resources it points at are not affected.`}
           confirmLabel="Delete"
           danger
-          loading={busy.value}
+          loading={busy}
           onConfirm={() => {
-            const target = deleteTarget.value;
-            if (target) remove(target);
+            remove(deleteTarget);
           }}
-          onCancel={() => {
-            deleteTarget.value = null;
-          }}
+          onCancel={() => setDeleteTarget(null)}
         />
       )}
     </div>

@@ -1,10 +1,8 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
 import { ApiError, setAccessToken } from "@/lib/api.ts";
 import type { DiagnosticResult } from "@/lib/types/diagnostics.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The diagnosis-to-incident entry point (U25b). Requests go through a fetch
@@ -12,7 +10,13 @@ import type { DiagnosticResult } from "@/lib/types/diagnostics.ts";
  * response open so a second click lands while the first is in flight.
  * Navigation is observed through a spy on `location.assign`.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
+// Bun's own fetch, captured before happy-dom replaces it, and put back once
+// the harness has removed happy-dom.
+const bunFetch = globalThis.fetch;
+setupDom({ browser: true });
+afterAll(() => {
+  globalThis.fetch = bunFetch;
+});
 
 const {
   default: CaptureToIncidentButton,
@@ -72,15 +76,13 @@ async function signIn(id: string) {
   }
 }
 
-afterAll(() => {
-  GlobalRegistrator.unregister();
-});
-
 interface Call {
   method: string;
   path: string;
   cluster: string | null;
   body: unknown;
+  /** The body exactly as sent, for byte-for-byte comparisons. */
+  raw: string | undefined;
 }
 
 type Reply =
@@ -91,18 +93,14 @@ type Reply =
     }>;
 type Route = (call: Call) => Reply | undefined;
 
-let host: HTMLElement | null = null;
+let view: ReturnType<typeof render> | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 let calls: Call[] = [];
 let assigned: string[] = [];
 let assignSpy: ReturnType<typeof spyOn> | null = null;
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  view = null;
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
   assignSpy?.mockRestore();
@@ -140,6 +138,7 @@ function stub(route: Route) {
       path: url.pathname + url.search,
       cluster: headers.get("X-Cluster-ID"),
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      raw: init?.body ? String(init.body) : undefined,
     };
     calls.push(call);
     // Honour the abort signal like real fetch: a request aborted before or
@@ -193,34 +192,34 @@ interface Props {
 async function show(props: Props) {
   const user = props.user === undefined ? "u1" : props.user;
   if (user !== null && currentUserId() !== user) await signIn(user);
-  if (!host) {
-    host = document.createElement("div");
-    document.body.appendChild(host);
-  }
-  act(() =>
-    render(
-      <CaptureToIncidentButton
-        clusterId={props.clusterId ?? "local"}
-        namespace="team-a"
-        kind={props.kind ?? "Pod"}
-        name="web"
-        windowStart={props.windowStart}
-      />,
-      host as HTMLElement,
-    ),
+  const ui = (
+    <CaptureToIncidentButton
+      clusterId={props.clusterId ?? "local"}
+      namespace="team-a"
+      kind={props.kind ?? "Pod"}
+      name="web"
+      windowStart={props.windowStart}
+    />
   );
+  if (view) {
+    const mounted = view;
+    act(() => mounted.rerender(ui));
+  } else {
+    view = render(ui);
+  }
   await settle();
-  return host as HTMLElement;
+  return (view as ReturnType<typeof render>).container as HTMLElement;
 }
 
 const mount = show;
 
 /** Unmounts the island and drops the host, as a Re-scan or navigation does. */
 function unmount() {
-  if (!host) return;
-  act(() => render(null, host as HTMLElement));
-  host.remove();
-  host = null;
+  if (!view) return;
+  const mounted = view;
+  view = null;
+  act(() => mounted.unmount());
+  mounted.container.remove();
 }
 
 function q(root: HTMLElement, testId: string): HTMLElement {
@@ -785,6 +784,7 @@ for (const [label, lost, says] of [
     expect(requestIdOf(creates()[1])).toBe(requestIdOf(creates()[0]));
     // The retry resends the same payload, window included.
     expect(creates()[1].body).toEqual(creates()[0].body);
+    expect(creates()[1].raw).toBe(creates()[0].raw);
     expect(server.made.size).toBe(1);
     expect(captures().map((c) => c.path)).toEqual([
       `/api/v1/incidents/${uuidFor("inc-1")}/capture`,

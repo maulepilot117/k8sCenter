@@ -1,4 +1,4 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import {
   afterAll,
   afterEach,
@@ -8,29 +8,41 @@ import {
   mock,
   test,
 } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
 import { refreshSession, setAccessToken } from "@/lib/api.ts";
 import {
   selectedCluster,
   selectedClusterGeneration,
 } from "@/src/lib/cluster.ts";
+import {
+  act,
+  body,
+  render,
+  setBrowser,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
 /**
- * The pod terminal authenticates in-band like every other stream (KTD2): a
- * browser WebSocket carries no X-Cluster-ID header, so the token and the
- * session's cluster go in the first frame, and no credential rides on the
- * handshake.
+ * The pod terminal authenticates in-band like every other stream: a browser
+ * WebSocket carries no X-Cluster-ID header, so the token and the session's
+ * cluster go in the first frame, and no credential rides on the handshake.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+// Bun's own WebSocket, captured before setupDom registers happy-dom's.
+const bunWebSocket = globalThis.WebSocket;
+setupDom({ browser: true });
 
 /** Stands in for xterm, which needs a real canvas. */
 class FakeTerminal {
   /** Every line written to any terminal, oldest first. */
   static lines: string[] = [];
-  open() {}
+  static instances: FakeTerminal[] = [];
+  opened: HTMLElement | null = null;
+  disposed = false;
+  constructor() {
+    FakeTerminal.instances.push(this);
+  }
+  open(el: HTMLElement) {
+    this.opened = el;
+  }
   loadAddon() {}
   focus() {}
   write() {}
@@ -39,7 +51,9 @@ class FakeTerminal {
   }
   onData() {}
   onResize() {}
-  dispose() {}
+  dispose() {
+    this.disposed = true;
+  }
 }
 mock.module("@xterm/xterm", () => ({ Terminal: FakeTerminal }));
 mock.module("@xterm/addon-fit", () => ({
@@ -53,11 +67,13 @@ const { default: PodTerminal } = await import("./PodTerminal.tsx");
 
 /** Records what the island sends; opening is driven by the test. */
 class FakeWebSocket {
+  static CONNECTING = 0;
   static OPEN = 1;
   static instances: FakeWebSocket[] = [];
   sent: unknown[] = [];
   binaryType = "";
   readyState = 0;
+  closeCalls = 0;
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -71,19 +87,40 @@ class FakeWebSocket {
   send(data: string) {
     this.sent.push(JSON.parse(data));
   }
-  close() {}
+  close() {
+    this.closeCalls++;
+    this.readyState = 3;
+  }
+}
+
+/** Records observers so a test can see them disconnected. */
+class FakeResizeObserver {
+  static instances: FakeResizeObserver[] = [];
+  disconnected = false;
+  observed: Element[] = [];
+  constructor() {
+    FakeResizeObserver.instances.push(this);
+  }
+  observe(el: Element) {
+    this.observed.push(el);
+  }
+  disconnect() {
+    this.disconnected = true;
+  }
 }
 
 const realWebSocket = globalThis.WebSocket;
 const realResizeObserver = globalThis.ResizeObserver;
-let host: HTMLElement | null = null;
 const realFetch = globalThis.fetch;
 
 // The island opens a terminal only into a visible element, and happy-dom
 // lays nothing out.
+// The harness removes happy-dom in its own afterAll, which runs before this
+// file's, so the prototype is held here.
+const elementPrototype = HTMLElement.prototype;
 beforeAll(() => {
   for (const prop of ["offsetWidth", "offsetHeight"]) {
-    Object.defineProperty(HTMLElement.prototype, prop, {
+    Object.defineProperty(elementPrototype, prop, {
       configurable: true,
       get: () => 100,
     });
@@ -93,20 +130,15 @@ beforeAll(() => {
 beforeEach(() => {
   FakeWebSocket.instances = [];
   FakeTerminal.lines = [];
+  FakeTerminal.instances = [];
+  FakeResizeObserver.instances = [];
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  globalThis.ResizeObserver = class {
-    observe() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver;
+  globalThis.ResizeObserver =
+    FakeResizeObserver as unknown as typeof ResizeObserver;
   setAccessToken("test-token");
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   globalThis.fetch = realFetch;
   globalThis.WebSocket = realWebSocket;
   globalThis.ResizeObserver = realResizeObserver;
@@ -117,28 +149,20 @@ afterEach(() => {
 
 afterAll(() => {
   for (const prop of ["offsetWidth", "offsetHeight"]) {
-    delete (HTMLElement.prototype as unknown as Record<string, unknown>)[prop];
+    delete (elementPrototype as unknown as Record<string, unknown>)[prop];
   }
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
+  globalThis.WebSocket = bunWebSocket;
 });
 
 function mount() {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <PodTerminal namespace="default" name="web-0" containers={["app"]} />,
-      host as HTMLElement,
-    ),
+  return render(
+    <PodTerminal namespace="default" name="web-0" containers={["app"]} />,
   );
 }
 
 /** Clicks Open Terminal; returns once the click's synchronous part ran. */
 function clickOpen() {
-  const button = [...(host as HTMLElement).querySelectorAll("button")].find(
-    (b) => b.textContent?.includes("Open Terminal"),
-  ) as HTMLButtonElement;
+  const button = body().getByRole("button", { name: "Open Terminal" });
   act(() => button.click());
 }
 
@@ -206,7 +230,7 @@ test("a remote cluster's refusal shows the unsupported copy, not the server's wo
   act(() => ws.onclose?.());
 
   // Both places the error appears: the reconnect overlay and the terminal.
-  const text = (host as HTMLElement).textContent ?? "";
+  const text = document.body.textContent ?? "";
   expect(text).toContain("Terminal is not available for this cluster yet.");
   expect(text).not.toContain("pod exec is not available on remote clusters");
   const pane = FakeTerminal.lines.join("\n");
@@ -250,4 +274,58 @@ test("a session opened during the startup refresh authenticates once it lands", 
   const ws = await nextSocket();
   act(() => ws.onopen?.());
   expect(ws.sent[0]).toMatchObject({ type: "auth", token: "fresh-token" });
+});
+
+test("unmounting closes the socket, disposes the terminal and disconnects the resize observer", async () => {
+  const view = mount();
+  clickOpen();
+  const ws = await nextSocket();
+  act(() => ws.onopen?.());
+  expect(ws.closeCalls).toBe(0);
+  expect(FakeTerminal.instances).toHaveLength(1);
+  expect(FakeTerminal.instances[0].disposed).toBe(false);
+  expect(FakeResizeObserver.instances).toHaveLength(1);
+  expect(FakeResizeObserver.instances[0].disconnected).toBe(false);
+
+  act(() => view.unmount());
+
+  expect(ws.closeCalls).toBe(1);
+  expect(FakeTerminal.instances[0].disposed).toBe(true);
+  expect(FakeResizeObserver.instances[0].disconnected).toBe(true);
+});
+
+test("the terminal mounts after server render and hydration", async () => {
+  const { hydrateRoot } = await import("react-dom/client");
+  const { renderToString } = await import("react-dom/server");
+  const element = (
+    <PodTerminal namespace="default" name="web-0" containers={["app"]} />
+  );
+
+  setBrowser(false);
+  const html = renderToString(element);
+  expect(html).toBe("");
+
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  document.body.appendChild(container);
+  setBrowser(true);
+  let root: ReturnType<typeof hydrateRoot> | undefined;
+  await act(() => {
+    root = hydrateRoot(container, element);
+  });
+  await act(() => {
+    root?.render(element);
+  });
+
+  const button = [...container.querySelectorAll("button")].find((b) =>
+    b.textContent?.includes("Open Terminal"),
+  ) as HTMLButtonElement;
+  act(() => button.click());
+  const ws = await nextSocket();
+
+  expect(FakeTerminal.instances).toHaveLength(1);
+  expect(container.contains(FakeTerminal.instances[0].opened)).toBe(true);
+  expect(ws.url).toBe("ws://localhost/ws/v1/ws/exec/default/web-0/app");
+  await act(() => root?.unmount());
+  container.remove();
 });

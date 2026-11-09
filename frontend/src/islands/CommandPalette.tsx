@@ -1,5 +1,11 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   DOMAIN_SECTIONS,
   flattenGroups,
@@ -7,7 +13,8 @@ import {
 } from "@/lib/constants.ts";
 import type { SearchItem } from "@/lib/fuzzy-search.ts";
 import { fuzzySearch } from "@/lib/fuzzy-search.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 function buildSearchIndex(): SearchItem[] {
   const items: SearchItem[] = [];
@@ -197,37 +204,39 @@ const TYPE_LABELS: Record<string, string> = {
 const TYPE_ORDER: string[] = ["action", "resource", "navigation"];
 
 export default function CommandPalette() {
-  const open = useSignal(false);
-  const query = useSignal("");
-  const selectedIndex = useSignal(0);
+  const isClient = useIsClient();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const searchIndex = useRef<SearchItem[]>(buildSearchIndex());
-  const results = fuzzySearch(searchIndex.current, query.value);
+  const searchIndex = useMemo(() => buildSearchIndex(), []);
 
-  // Group results by type in defined order
-  const grouped: { type: string; items: SearchItem[] }[] = [];
-  for (const type of TYPE_ORDER) {
-    const items = results.filter((r) => r.type === type);
-    if (items.length > 0) {
-      grouped.push({ type, items });
+  const { grouped, flatResults } = useMemo(() => {
+    const results = fuzzySearch(searchIndex, query);
+    // Group results by type in defined order
+    const groups: { type: string; items: SearchItem[] }[] = [];
+    for (const type of TYPE_ORDER) {
+      const items = results.filter((r) => r.type === type);
+      if (items.length > 0) {
+        groups.push({ type, items });
+      }
     }
-  }
-
-  // Flat list for keyboard navigation
-  const flatResults = grouped.flatMap((g) => g.items);
+    // Flat list for keyboard navigation
+    return { grouped: groups, flatResults: groups.flatMap((g) => g.items) };
+  }, [searchIndex, query]);
 
   function openPalette() {
-    open.value = true;
-    query.value = "";
-    selectedIndex.value = 0;
+    setOpen(true);
+    setQuery("");
+    setSelectedIndex(0);
     // Focus input on next tick
     setTimeout(() => inputRef.current?.focus(), 10);
   }
 
   function closePalette() {
-    open.value = false;
-    query.value = "";
+    setOpen(false);
+    setQuery("");
   }
 
   function selectItem(item: SearchItem) {
@@ -239,19 +248,23 @@ export default function CommandPalette() {
     }
   }
 
+  // The listeners below are registered once; they reach the current open
+  // state and actions through this ref.
+  const latest = useLatest({ open, openPalette, closePalette });
+
   // Keyboard shortcut: Cmd+K / Ctrl+K + custom event from TopBarV2 search trigger
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        if (open.value) {
-          closePalette();
+        if (latest.current.open) {
+          latest.current.closePalette();
         } else {
-          openPalette();
+          latest.current.openPalette();
         }
       }
     };
-    const handleOpen = () => openPalette();
+    const handleOpen = () => latest.current.openPalette();
     globalThis.addEventListener("keydown", handleKeyDown);
     globalThis.addEventListener("open-command-palette", handleOpen);
     return () => {
@@ -260,27 +273,24 @@ export default function CommandPalette() {
     };
   }, []);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (!open.value) return null;
+  if (!open) return null;
 
-  const handleInputKeyDown = (e: KeyboardEvent) => {
+  const handleInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
-        selectedIndex.value = Math.min(
-          selectedIndex.value + 1,
-          flatResults.length - 1,
-        );
+        setSelectedIndex((i) => Math.min(i + 1, flatResults.length - 1));
         break;
       case "ArrowUp":
         e.preventDefault();
-        selectedIndex.value = Math.max(selectedIndex.value - 1, 0);
+        setSelectedIndex((i) => Math.max(i - 1, 0));
         break;
       case "Enter":
         e.preventDefault();
-        if (flatResults[selectedIndex.value]) {
-          selectItem(flatResults[selectedIndex.value]);
+        if (flatResults[selectedIndex]) {
+          selectItem(flatResults[selectedIndex]);
         }
         break;
       case "Escape":
@@ -307,13 +317,13 @@ export default function CommandPalette() {
         justifyContent: "center",
         paddingTop: "min(20vh, 120px)",
       }}
-      class="glass-scrim"
+      className="glass-scrim"
       onClick={(e) => {
         if (e.target === e.currentTarget) closePalette();
       }}
     >
       <div
-        class="glass-elevated"
+        className="glass-elevated"
         style={{
           width: "100%",
           maxWidth: "560px",
@@ -337,8 +347,8 @@ export default function CommandPalette() {
             viewBox="0 0 20 20"
             fill="none"
             stroke="var(--text-muted)"
-            stroke-width="2"
-            stroke-linecap="round"
+            strokeWidth="2"
+            strokeLinecap="round"
           >
             <circle cx="9" cy="9" r="6" />
             <path d="M13.5 13.5L17 17" />
@@ -347,15 +357,15 @@ export default function CommandPalette() {
             ref={inputRef}
             type="text"
             placeholder="Search commands, resources, pages..."
-            value={query.value}
+            value={query}
             role="combobox"
             aria-expanded="true"
             aria-haspopup="listbox"
             aria-controls="cmd-results"
-            aria-activedescendant={flatResults[selectedIndex.value]?.id}
-            onInput={(e) => {
-              query.value = (e.target as HTMLInputElement).value;
-              selectedIndex.value = 0;
+            aria-activedescendant={flatResults[selectedIndex]?.id}
+            onChange={(e) => {
+              setQuery(e.currentTarget.value);
+              setSelectedIndex(0);
             }}
             onKeyDown={handleInputKeyDown}
             style={{
@@ -405,17 +415,17 @@ export default function CommandPalette() {
           {grouped.map((group) => {
             const groupItems = group.items.map((item) => {
               const index = cumulativeIndex++;
-              const isSelected = index === selectedIndex.value;
+              const isSelected = index === selectedIndex;
               return (
                 <button
                   key={item.id}
                   type="button"
                   id={item.id}
                   role="option"
-                  aria-selected={index === selectedIndex.value}
+                  aria-selected={index === selectedIndex}
                   onClick={() => selectItem(item)}
                   onMouseEnter={() => {
-                    selectedIndex.value = index;
+                    setSelectedIndex(index);
                   }}
                   style={{
                     display: "flex",

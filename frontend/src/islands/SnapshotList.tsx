@@ -7,8 +7,8 @@ import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { apiDelete, apiGet } from "@/lib/api.ts";
 import ScheduledSnapshotWizard from "@/src/islands/ScheduledSnapshotWizard.tsx";
 import SnapshotWizard from "@/src/islands/SnapshotWizard.tsx";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 interface SnapshotInfo {
   name: string;

@@ -1,12 +1,24 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import { withUniqueKeys } from "@/lib/unique-keys.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 // ── Backend topology API types ──
 
@@ -272,6 +284,73 @@ export function fitViewBox(nodes: readonly { x: number; y: number }[]): {
   };
 }
 
+/**
+ * Custom left-to-right topological layout (no dagre: it uses Node.js
+ * builtins). Columns are the longest path from a root, each centred on y = 0.
+ */
+function layoutGraph(graph: TopoGraph): LayoutNode[] {
+  if (graph.nodes.length === 0) return [];
+  const nodes = graph.nodes;
+  const edges = graph.edges;
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+
+  // Build adjacency: children[parentId] = [childIds], parents[childId] = [parentIds]
+  const children = new Map<string, string[]>();
+  const parents = new Map<string, string[]>();
+  for (const n of nodes) {
+    children.set(n.id, []);
+    parents.set(n.id, []);
+  }
+  for (const e of edges) {
+    if (nodeMap.has(e.source) && nodeMap.has(e.target)) {
+      children.get(e.source)!.push(e.target);
+      parents.get(e.target)!.push(e.source);
+    }
+  }
+
+  // Assign layers via longest-path from roots (nodes with no parents)
+  const layer = new Map<string, number>();
+  const visited = new Set<string>();
+  function assignLayer(id: string): number {
+    if (layer.has(id)) return layer.get(id)!;
+    // Cycle protection: if we re-enter a node during traversal, assign layer 0
+    // to break the cycle. This may cause visual overlap in the rare case of cyclic
+    // ownership (e.g. mutually owning resources), but prevents infinite recursion.
+    if (visited.has(id)) return 0;
+    visited.add(id);
+    const parentLayers = (parents.get(id) ?? []).map((pid) => assignLayer(pid));
+    const l = parentLayers.length > 0 ? Math.max(...parentLayers) + 1 : 0;
+    layer.set(id, l);
+    return l;
+  }
+  for (const n of nodes) assignLayer(n.id);
+
+  // Group nodes by layer
+  const layers = new Map<number, string[]>();
+  for (const [id, l] of layer) {
+    if (!layers.has(l)) layers.set(l, []);
+    layers.get(l)!.push(id);
+  }
+
+  // Position: x by layer, y by index within layer
+  const LAYER_GAP = 220;
+  const NODE_GAP = 80;
+  const positioned: LayoutNode[] = [];
+  for (const [l, ids] of layers) {
+    const totalHeight = ids.length * (NODE_HEIGHT + NODE_GAP) - NODE_GAP;
+    const startY = -totalHeight / 2;
+    ids.forEach((id, i) => {
+      const node = nodeMap.get(id)!;
+      positioned.push({
+        ...node,
+        x: l * LAYER_GAP + NODE_WIDTH / 2 + 40,
+        y: startY + i * (NODE_HEIGHT + NODE_GAP) + NODE_HEIGHT / 2,
+      });
+    });
+  }
+  return positioned;
+}
+
 export default function NamespaceTopology({
   namespace,
   defaultOverlay = "none",
@@ -279,29 +358,44 @@ export default function NamespaceTopology({
   embedded = false,
   minHeight,
 }: NamespaceTopologyProps) {
-  const graph = useSignal<TopoGraph | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
+  const isClient = useIsClient();
+  const storeNamespace = useSignalValue(selectedNamespace);
+  const ns = namespace ?? storeNamespace;
+  const [graph, setGraph] = useState<TopoGraph | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   // The backend refuses topology under a remote cluster selection with
   // reason unsupported_platform (#532): the graph comes from the local
   // cluster's informers. That is a fixed fact about the feature, not a
   // failure, so it gets its own state with no Retry.
-  const remoteUnsupported = useSignal(false);
-  const selectedNode = useSignal<string | null>(null);
-  const hoveredNode = useSignal<string | null>(null);
-  const zoom = useSignal(1);
-  const panX = useSignal(0);
-  const panY = useSignal(0);
-  const dragging = useSignal(false);
-  const dragStart = useSignal({ x: 0, y: 0 });
-  const panStart = useSignal({ x: 0, y: 0 });
-
-  const overlayMode = useSignal<OverlayMode>(defaultOverlay);
-  const unavailableOverlay = useSignal<OverlayMode | null>(null);
+  const [remoteUnsupported, setRemoteUnsupported] = useState(false);
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  const [view, setView, viewRef] = useStateRef({ zoom: 1, panX: 0, panY: 0 });
+  const [dragging, setDragging] = useState(false);
+  const [overlayMode, setOverlayMode] = useState<OverlayMode>(defaultOverlay);
+  const [unavailableOverlay, setUnavailableOverlay] =
+    useState<OverlayMode | null>(null);
 
   const svgRef = useRef<SVGSVGElement>(null);
-  const layoutNodes = useSignal<LayoutNode[]>([]);
-  const layoutNodeMap = useSignal<Map<string, LayoutNode>>(new Map());
+  // The wheel listener and the drag session run later than the render that
+  // created them, so they read the current view from the ref the setter
+  // writes first: two events before the next render compound instead of
+  // overwriting each other.
+  const dragRef = useRef({
+    active: false,
+    startX: 0,
+    startY: 0,
+    panX: 0,
+    panY: 0,
+  });
+  const latestRef = useLatest({ ns, overlayMode, focusedNodeId });
+
+  const layoutNodes = useMemo(() => (graph ? layoutGraph(graph) : []), [graph]);
+  const layoutNodeMap = useMemo(
+    () => new Map(layoutNodes.map((n) => [n.id, n])),
+    [layoutNodes],
+  );
   // A full page sizes the graph to the window (see the SVG's height), so its
   // floors are low enough not to override that on a short window; they only
   // stop the graph collapsing on a very short one.
@@ -310,208 +404,161 @@ export default function NamespaceTopology({
 
   // ── Data fetching ──
 
-  const fetchGraph = async () => {
-    const ns = namespace ?? selectedNamespace.value;
-    if (ns === "all") return;
-    loading.value = true;
-    error.value = null;
-    remoteUnsupported.value = false;
-    try {
-      const overlayParam =
-        overlayMode.value === "none" ? "" : `?overlay=${overlayMode.value}`;
-      const res = await apiGet<TopoGraph>(`/v1/topology/${ns}${overlayParam}`);
-      graph.value = focusedSubgraph(res.data, focusedNodeId);
-      if (res.data.overlay === "unavailable") {
-        unavailableOverlay.value = overlayMode.value;
-        overlayMode.value = "none";
-      } else if (res.data.overlay === overlayMode.value) {
-        unavailableOverlay.value = null;
+  const fetchGraph = useCallback(
+    async (target: string, overlay: OverlayMode, focus?: string) => {
+      if (target === "all") return;
+      setLoading(true);
+      setError(null);
+      setRemoteUnsupported(false);
+      try {
+        const overlayParam = overlay === "none" ? "" : `?overlay=${overlay}`;
+        const res = await apiGet<TopoGraph>(
+          `/v1/topology/${target}${overlayParam}`,
+        );
+        setGraph(focusedSubgraph(res.data, focus));
+        if (res.data.overlay === "unavailable") {
+          setUnavailableOverlay(overlay);
+          setOverlayMode("none");
+        } else if (res.data.overlay === latestRef.current.overlayMode) {
+          setUnavailableOverlay(null);
+        }
+      } catch (err) {
+        setGraph(null);
+        if (err instanceof ApiError && err.reason === "unsupported_platform") {
+          setRemoteUnsupported(true);
+          return;
+        }
+        setError(
+          err instanceof Error ? err.message : "Failed to fetch topology",
+        );
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      graph.value = null;
-      if (err instanceof ApiError && err.reason === "unsupported_platform") {
-        remoteUnsupported.value = true;
-        return;
-      }
-      error.value =
-        err instanceof Error ? err.message : "Failed to fetch topology";
-    } finally {
-      loading.value = false;
-    }
-  };
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    const ns = namespace ?? selectedNamespace.value;
     if (ns === "all") {
-      loading.value = false;
+      setLoading(false);
       return;
     }
-    unavailableOverlay.value = null;
-    fetchGraph();
-  }, [namespace, selectedNamespace.value, focusedNodeId]);
+    setUnavailableOverlay(null);
+    fetchGraph(ns, latestRef.current.overlayMode, focusedNodeId);
+  }, [ns, focusedNodeId, fetchGraph]);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    const ns = namespace ?? selectedNamespace.value;
-    if (ns === "all") return;
-    fetchGraph();
-  }, [overlayMode.value]);
+    const current = latestRef.current;
+    if (current.ns === "all") return;
+    fetchGraph(current.ns, overlayMode, current.focusedNodeId);
+  }, [overlayMode, fetchGraph]);
 
-  // ── Layout: custom LR topological sort (no dagre — it uses Node.js builtins) ──
-
+  // A new layout is framed to fit.
   useEffect(() => {
-    if (!graph.value || graph.value.nodes.length === 0) {
-      layoutNodes.value = [];
-      return;
-    }
+    setView(fitViewBox(layoutNodes));
+  }, [layoutNodes]);
 
-    const nodes = graph.value.nodes;
-    const edges = graph.value.edges;
-    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const showGraph =
+    isClient &&
+    ns !== "all" &&
+    !loading &&
+    !remoteUnsupported &&
+    !error &&
+    graph !== null &&
+    graph.nodes.length > 0;
 
-    // Build adjacency: children[parentId] = [childIds], parents[childId] = [parentIds]
-    const children = new Map<string, string[]>();
-    const parents = new Map<string, string[]>();
-    for (const n of nodes) {
-      children.set(n.id, []);
-      parents.set(n.id, []);
-    }
-    for (const e of edges) {
-      if (nodeMap.has(e.source) && nodeMap.has(e.target)) {
-        children.get(e.source)!.push(e.target);
-        parents.get(e.target)!.push(e.source);
-      }
-    }
+  // React attaches onWheel as a passive listener, where preventDefault does
+  // nothing and the page would scroll while zooming, so the listener is
+  // native and non-passive.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!showGraph || !svg) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const { zoom, panX, panY } = viewRef.current;
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom + delta));
 
-    // Assign layers via longest-path from roots (nodes with no parents)
-    const layer = new Map<string, number>();
-    const visited = new Set<string>();
-    function assignLayer(id: string): number {
-      if (layer.has(id)) return layer.get(id)!;
-      // Cycle protection: if we re-enter a node during traversal, assign layer 0
-      // to break the cycle. This may cause visual overlap in the rare case of cyclic
-      // ownership (e.g. mutually owning resources), but prevents infinite recursion.
-      if (visited.has(id)) return 0;
-      visited.add(id);
-      const parentLayers = (parents.get(id) ?? []).map((pid) =>
-        assignLayer(pid),
-      );
-      const l = parentLayers.length > 0 ? Math.max(...parentLayers) + 1 : 0;
-      layer.set(id, l);
-      return l;
-    }
-    for (const n of nodes) assignLayer(n.id);
+      const rect = svg.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) / rect.width;
+      const my = (e.clientY - rect.top) / rect.height;
 
-    // Group nodes by layer
-    const layers = new Map<number, string[]>();
-    for (const [id, l] of layer) {
-      if (!layers.has(l)) layers.set(l, []);
-      layers.get(l)!.push(id);
-    }
+      const oldW = BASE_WIDTH / zoom;
+      const oldH = BASE_HEIGHT / zoom;
+      const newW = BASE_WIDTH / nextZoom;
+      const newH = BASE_HEIGHT / nextZoom;
 
-    // Position: x by layer, y by index within layer
-    const LAYER_GAP = 220;
-    const NODE_GAP = 80;
-    const positioned: LayoutNode[] = [];
-    for (const [l, ids] of layers) {
-      const totalHeight = ids.length * (NODE_HEIGHT + NODE_GAP) - NODE_GAP;
-      const startY = -totalHeight / 2;
-      ids.forEach((id, i) => {
-        const node = nodeMap.get(id)!;
-        positioned.push({
-          ...node,
-          x: l * LAYER_GAP + NODE_WIDTH / 2 + 40,
-          y: startY + i * (NODE_HEIGHT + NODE_GAP) + NODE_HEIGHT / 2,
-        });
-      });
-    }
-
-    layoutNodes.value = positioned;
-    layoutNodeMap.value = new Map(positioned.map((n) => [n.id, n]));
-    applyView(fitViewBox(positioned));
-  }, [graph.value]);
+      const next = {
+        zoom: nextZoom,
+        panX: panX + (oldW - newW) * mx,
+        panY: panY + (oldH - newH) * my,
+      };
+      setView(next);
+    };
+    svg.addEventListener("wheel", handleWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", handleWheel);
+  }, [showGraph]);
 
   // ── Connectivity sets for hover highlight ──
 
   function getConnectedIds(nodeId: string): Set<string> {
     const connected = new Set<string>([nodeId]);
-    if (!graph.value) return connected;
-    for (const edge of graph.value.edges) {
+    if (!graph) return connected;
+    for (const edge of graph.edges) {
       if (edge.source === nodeId) connected.add(edge.target);
       if (edge.target === nodeId) connected.add(edge.source);
     }
     return connected;
   }
 
-  // ── Zoom/Pan handlers ──
+  // ── Pan handlers ──
 
-  const handleWheel = (e: WheelEvent) => {
-    e.preventDefault();
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    const delta = e.deltaY > 0 ? -0.1 : 0.1;
-    const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom.value + delta));
-
-    const rect = svg.getBoundingClientRect();
-    const mx = (e.clientX - rect.left) / rect.width;
-    const my = (e.clientY - rect.top) / rect.height;
-
-    const oldW = BASE_WIDTH / zoom.value;
-    const oldH = BASE_HEIGHT / zoom.value;
-    const newW = BASE_WIDTH / nextZoom;
-    const newH = BASE_HEIGHT / nextZoom;
-
-    panX.value = panX.value + (oldW - newW) * mx;
-    panY.value = panY.value + (oldH - newH) * my;
-    zoom.value = nextZoom;
-  };
-
-  const handleMouseDown = (e: MouseEvent) => {
+  const handleMouseDown = (e: MouseEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
-    dragging.value = true;
-    dragStart.value = { x: e.clientX, y: e.clientY };
-    panStart.value = { x: panX.value, y: panY.value };
+    dragRef.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      panX: viewRef.current.panX,
+      panY: viewRef.current.panY,
+    };
+    setDragging(true);
   };
 
-  const handleMouseMove = (e: MouseEvent) => {
-    if (!dragging.value) return;
+  const handleMouseMove = (e: MouseEvent<SVGSVGElement>) => {
+    const drag = dragRef.current;
+    if (!drag.active) return;
     const svg = svgRef.current;
     if (!svg) return;
 
     const rect = svg.getBoundingClientRect();
-    const vbW = BASE_WIDTH / zoom.value;
-    const vbH = BASE_HEIGHT / zoom.value;
-    const scaleX = vbW / rect.width;
-    const scaleY = vbH / rect.height;
+    const { zoom } = viewRef.current;
+    const scaleX = BASE_WIDTH / zoom / rect.width;
+    const scaleY = BASE_HEIGHT / zoom / rect.height;
 
-    const dx = (e.clientX - dragStart.value.x) * scaleX;
-    const dy = (e.clientY - dragStart.value.y) * scaleY;
-    panX.value = panStart.value.x - dx;
-    panY.value = panStart.value.y - dy;
+    const next = {
+      zoom,
+      panX: drag.panX - (e.clientX - drag.startX) * scaleX,
+      panY: drag.panY - (e.clientY - drag.startY) * scaleY,
+    };
+    setView(next);
   };
 
   const handleMouseUp = () => {
-    dragging.value = false;
+    dragRef.current.active = false;
+    setDragging(false);
   };
 
-  function applyView(v: { zoom: number; panX: number; panY: number }) {
-    zoom.value = v.zoom;
-    panX.value = v.panX;
-    panY.value = v.panY;
-  }
-
-  const fitToView = () => applyView(fitViewBox(layoutNodes.value));
+  const fitToView = () => setView(fitViewBox(layoutNodes));
 
   // ── Render helpers ──
 
-  const vbW = BASE_WIDTH / zoom.value;
-  const vbH = BASE_HEIGHT / zoom.value;
+  const vbW = BASE_WIDTH / view.zoom;
+  const vbH = BASE_HEIGHT / view.zoom;
 
-  const connectedSet = hoveredNode.value
-    ? getConnectedIds(hoveredNode.value)
-    : null;
+  const connectedSet = hoveredNode ? getConnectedIds(hoveredNode) : null;
 
   function nodeOpacity(id: string): number {
     if (!connectedSet) return 1;
@@ -523,32 +570,34 @@ export default function NamespaceTopology({
     return connectedSet.has(source) && connectedSet.has(target) ? base : 0.08;
   }
 
+  // ── Loading (also the server and hydration pass) ──
+
+  const loadingPanel = (
+    <div className="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
+      <Spinner className="text-accent" />
+      <span className="ml-3 text-text-secondary">Loading topology...</span>
+    </div>
+  );
+
   // ── No namespace selected ──
 
-  if ((namespace ?? selectedNamespace.value) === "all") {
+  if (!isClient) return loadingPanel;
+
+  if (ns === "all") {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
-        <p class="text-text-secondary">
+      <div className="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
+        <p className="text-text-secondary">
           Select a namespace to view its resource topology.
         </p>
       </div>
     );
   }
 
-  // ── Loading ──
-
-  if (loading.value) {
-    return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
-        <Spinner className="text-accent" />
-        <span class="ml-3 text-text-secondary">Loading topology...</span>
-      </div>
-    );
-  }
+  if (loading) return loadingPanel;
 
   // ── Unsupported on a remote cluster ──
 
-  if (remoteUnsupported.value) {
+  if (remoteUnsupported) {
     return (
       <div data-topology-state="remote-unsupported">
         <Alert variant="info">
@@ -562,15 +611,15 @@ export default function NamespaceTopology({
 
   // ── Error ──
 
-  if (error.value) {
+  if (error) {
     return (
-      <div class="space-y-4">
-        <ErrorBanner message={error.value} />
+      <div className="space-y-4">
+        <ErrorBanner message={error} />
         <button
           type="button"
-          class="rounded bg-accent px-3 py-1.5 text-sm font-medium hover:opacity-90"
+          className="rounded bg-accent px-3 py-1.5 text-sm font-medium hover:opacity-90"
           style={{ color: "var(--bg-base)" }}
-          onClick={() => fetchGraph()}
+          onClick={() => fetchGraph(ns, overlayMode, focusedNodeId)}
         >
           Retry
         </button>
@@ -580,50 +629,52 @@ export default function NamespaceTopology({
 
   // ── Empty state ──
 
-  if (!graph.value || graph.value.nodes.length === 0) {
+  if (!graph || graph.nodes.length === 0) {
     return (
-      <div class="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
-        <p class="text-text-secondary">No resources found in this namespace.</p>
+      <div className="flex items-center justify-center rounded-lg border border-border-primary bg-surface p-12">
+        <p className="text-text-secondary">
+          No resources found in this namespace.
+        </p>
       </div>
     );
   }
 
   // ── Selected node data ──
 
-  const selected = selectedNode.value
-    ? (graph.value.nodes.find((n) => n.id === selectedNode.value) ?? null)
+  const selected = selectedNode
+    ? (graph.nodes.find((n) => n.id === selectedNode) ?? null)
     : null;
 
   // ── Main render ──
 
   return (
-    <div class="relative flex gap-0">
+    <div className="relative flex gap-0">
       {/* Graph area */}
       <div
-        class="flex-1 overflow-hidden rounded-lg border border-border-primary bg-surface"
+        className="flex-1 overflow-hidden rounded-lg border border-border-primary bg-surface"
         style={{ minHeight: `${panelMinHeight}px` }}
       >
         {/* Toolbar */}
-        <div class="flex items-center justify-between border-b border-border-primary px-4 py-2">
-          <div class="flex items-center gap-2">
+        <div className="flex items-center justify-between border-b border-border-primary px-4 py-2">
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              class="rounded border border-border-primary bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
+              className="rounded border border-border-primary bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
               onClick={fitToView}
             >
               Fit to view
             </button>
             <button
               type="button"
-              class="rounded border border-border-primary bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
-              onClick={() => fetchGraph()}
+              className="rounded border border-border-primary bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
+              onClick={() => fetchGraph(ns, overlayMode, focusedNodeId)}
             >
               Refresh
             </button>
             <div
               role="radiogroup"
               aria-label="Topology overlay"
-              class="ml-2 inline-flex overflow-hidden rounded border border-border-primary"
+              className="ml-2 inline-flex overflow-hidden rounded border border-border-primary"
             >
               {(
                 [
@@ -632,8 +683,8 @@ export default function NamespaceTopology({
                   ["eso-chain", "ESO chain"],
                 ] as Array<[OverlayMode, string]>
               ).map(([mode, label]) => {
-                const disabled = unavailableOverlay.value === mode;
-                const active = overlayMode.value === mode;
+                const disabled = unavailableOverlay === mode;
+                const active = overlayMode === mode;
                 return (
                   <button
                     key={mode}
@@ -648,15 +699,13 @@ export default function NamespaceTopology({
                           : "No service mesh detected in this cluster"
                         : label
                     }
-                    class={`px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       active
                         ? "bg-accent"
                         : "bg-surface text-text-secondary hover:text-text-primary"
                     }`}
                     style={active ? { color: "var(--bg-base)" } : undefined}
-                    onClick={() => {
-                      overlayMode.value = mode;
-                    }}
+                    onClick={() => setOverlayMode(mode)}
                   >
                     {label}
                   </button>
@@ -664,20 +713,20 @@ export default function NamespaceTopology({
               })}
             </div>
           </div>
-          <div class="flex items-center gap-3">
-            {overlayMode.value === "mesh" && graph.value.overlay === "mesh" && (
-              <div class="flex items-center gap-3 text-xs text-text-muted">
-                <span class="flex items-center gap-1.5">
+          <div className="flex items-center gap-3">
+            {overlayMode === "mesh" && graph.overlay === "mesh" && (
+              <div className="flex items-center gap-3 text-xs text-text-muted">
+                <span className="flex items-center gap-1.5">
                   <span
-                    class="inline-block h-0.5 w-4"
+                    className="inline-block h-0.5 w-4"
                     style={{ backgroundColor: "var(--accent)" }}
                     aria-hidden="true"
                   />
                   Istio
                 </span>
-                <span class="flex items-center gap-1.5">
+                <span className="flex items-center gap-1.5">
                   <span
-                    class="inline-block h-0.5 w-4"
+                    className="inline-block h-0.5 w-4"
                     style={{ backgroundColor: "var(--accent-secondary)" }}
                     aria-hidden="true"
                   />
@@ -685,38 +734,37 @@ export default function NamespaceTopology({
                 </span>
               </div>
             )}
-            {overlayMode.value === "eso-chain" &&
-              graph.value.overlay === "eso-chain" && (
-                <div class="flex items-center gap-3 text-xs text-text-muted">
-                  <span class="flex items-center gap-1.5">
-                    <span
-                      class="inline-block h-0.5 w-4"
-                      style={{ backgroundColor: "var(--accent)" }}
-                      aria-hidden="true"
-                    />
-                    Auth
-                  </span>
-                  <span class="flex items-center gap-1.5">
-                    <span
-                      class="inline-block h-0.5 w-4"
-                      style={{ backgroundColor: "var(--accent-secondary)" }}
-                      aria-hidden="true"
-                    />
-                    Sync
-                  </span>
-                  <span class="flex items-center gap-1.5">
-                    <span
-                      class="inline-block h-0.5 w-4"
-                      style={{ backgroundColor: "var(--text-muted)" }}
-                      aria-hidden="true"
-                    />
-                    Consumer
-                  </span>
-                </div>
-              )}
-            {graph.value.computedAt && (
-              <span class="text-xs text-text-muted">
-                Updated {timeAgo(graph.value.computedAt)}
+            {overlayMode === "eso-chain" && graph.overlay === "eso-chain" && (
+              <div className="flex items-center gap-3 text-xs text-text-muted">
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-0.5 w-4"
+                    style={{ backgroundColor: "var(--accent)" }}
+                    aria-hidden="true"
+                  />
+                  Auth
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-0.5 w-4"
+                    style={{ backgroundColor: "var(--accent-secondary)" }}
+                    aria-hidden="true"
+                  />
+                  Sync
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-0.5 w-4"
+                    style={{ backgroundColor: "var(--text-muted)" }}
+                    aria-hidden="true"
+                  />
+                  Consumer
+                </span>
+              </div>
+            )}
+            {graph.computedAt && (
+              <span className="text-xs text-text-muted">
+                Updated {timeAgo(graph.computedAt)}
               </span>
             )}
           </div>
@@ -727,11 +775,11 @@ export default function NamespaceTopology({
           ref={svgRef}
           width="100%"
           height="100%"
-          viewBox={`${panX.value} ${panY.value} ${vbW} ${vbH}`}
+          viewBox={`${view.panX} ${view.panY} ${vbW} ${vbH}`}
           preserveAspectRatio="xMidYMid meet"
           aria-label="Namespace resource topology graph"
           style={{
-            cursor: dragging.value ? "grabbing" : "grab",
+            cursor: dragging ? "grabbing" : "grab",
             minHeight: `${svgMinHeight}px`,
             // Without a height the SVG takes its viewBox's aspect ratio and
             // on a wide page runs past the bottom of the window, so a fitted
@@ -739,7 +787,6 @@ export default function NamespaceTopology({
             // space below the page header and the graph toolbar.
             ...(embedded ? {} : { height: "calc(100dvh - 260px)" }),
           }}
-          onWheel={handleWheel}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -840,9 +887,12 @@ export default function NamespaceTopology({
           </defs>
 
           {/* Edges */}
-          {graph.value.edges.map((edge, i) => {
-            const src = layoutNodeMap.value.get(edge.source);
-            const tgt = layoutNodeMap.value.get(edge.target);
+          {withUniqueKeys(
+            graph.edges,
+            (e) => `${e.type}:${e.source}:${e.target}`,
+          ).map(({ item: edge, key }) => {
+            const src = layoutNodeMap.get(edge.source);
+            const tgt = layoutNodeMap.get(edge.target);
             if (!src || !tgt) return null;
             // Backend EdgeType is a Go string typedef (open enum); a new
             // type added server-side would land in the response before
@@ -857,44 +907,39 @@ export default function NamespaceTopology({
               (edge.type === "mount" ? "arrow-mount" : "arrow-default");
             return (
               <line
-                key={`edge-${i}`}
+                key={key}
                 x1={src.x}
                 y1={src.y}
                 x2={tgt.x}
                 y2={tgt.y}
                 stroke={stroke}
-                stroke-width={isOverlayEdge(edge.type) ? 2 : 1.5}
-                stroke-dasharray={style.dasharray}
+                strokeWidth={isOverlayEdge(edge.type) ? 2 : 1.5}
+                strokeDasharray={style.dasharray}
                 opacity={op}
-                marker-end={`url(#${markerId})`}
+                markerEnd={`url(#${markerId})`}
               />
             );
           })}
 
           {/* Nodes */}
-          {layoutNodes.value.map((node) => {
+          {layoutNodes.map((node) => {
             const healthColor = HEALTH_COLORS[node.health];
             const op = nodeOpacity(node.id);
-            const isSelected = selectedNode.value === node.id;
+            const isSelected = selectedNode === node.id;
             return (
               <g
                 key={node.id}
-                class={node.health === "failing" ? "ns-topo-failing" : ""}
+                className={node.health === "failing" ? "ns-topo-failing" : ""}
                 transform={`translate(${node.x - NODE_WIDTH / 2}, ${
                   node.y - NODE_HEIGHT / 2
                 })`}
                 opacity={op}
                 style={{ cursor: "pointer" }}
-                onMouseEnter={() => {
-                  hoveredNode.value = node.id;
-                }}
-                onMouseLeave={() => {
-                  hoveredNode.value = null;
-                }}
-                onClick={() => {
-                  selectedNode.value =
-                    selectedNode.value === node.id ? null : node.id;
-                }}
+                onMouseEnter={() => setHoveredNode(node.id)}
+                onMouseLeave={() => setHoveredNode(null)}
+                onClick={() =>
+                  setSelectedNode((prev) => (prev === node.id ? null : node.id))
+                }
               >
                 <rect
                   width={NODE_WIDTH}
@@ -902,15 +947,15 @@ export default function NamespaceTopology({
                   rx={8}
                   fill="var(--bg-surface)"
                   stroke={healthColor}
-                  stroke-width={isSelected ? 2.5 : 1.5}
+                  strokeWidth={isSelected ? 2.5 : 1.5}
                 />
                 {/* Kind label */}
                 <text
                   x={10}
                   y={20}
-                  font-size="10"
+                  fontSize="10"
                   fill="var(--text-muted)"
-                  font-family="var(--font-mono, monospace)"
+                  fontFamily="var(--font-mono, monospace)"
                 >
                   {displayKind(node.kind)}
                 </text>
@@ -918,10 +963,10 @@ export default function NamespaceTopology({
                 <text
                   x={10}
                   y={40}
-                  font-size="13"
-                  font-weight="600"
+                  fontSize="13"
+                  fontWeight="600"
                   fill="var(--text-primary)"
-                  font-family="var(--font-sans, sans-serif)"
+                  fontFamily="var(--font-sans, sans-serif)"
                 >
                   {node.name.length > 20
                     ? `${node.name.substring(0, 18)}...`
@@ -936,17 +981,17 @@ export default function NamespaceTopology({
       {/* Slide-out detail panel */}
       {selected && (
         <div
-          class="shrink-0 overflow-y-auto border-l border-border-primary bg-surface"
+          className="shrink-0 overflow-y-auto border-l border-border-primary bg-surface"
           style={{
             width: `${PANEL_WIDTH}px`,
             minHeight: `${panelMinHeight}px`,
           }}
         >
           {/* Panel header */}
-          <div class="flex items-center justify-between border-b border-border-primary px-4 py-3">
-            <div class="min-w-0">
+          <div className="flex items-center justify-between border-b border-border-primary px-4 py-3">
+            <div className="min-w-0">
               <span
-                class="inline-block rounded px-1.5 py-0.5 text-xs font-medium"
+                className="inline-block rounded px-1.5 py-0.5 text-xs font-medium"
                 style={{
                   backgroundColor: "var(--bg-elevated)",
                   color: "var(--text-secondary)",
@@ -954,16 +999,14 @@ export default function NamespaceTopology({
               >
                 {selected.kind}
               </span>
-              <h3 class="mt-1 truncate text-sm font-semibold text-text-primary">
+              <h3 className="mt-1 truncate text-sm font-semibold text-text-primary">
                 {selected.name}
               </h3>
             </div>
             <button
               type="button"
-              class="ml-2 shrink-0 rounded p-1 text-text-muted hover:text-text-primary"
-              onClick={() => {
-                selectedNode.value = null;
-              }}
+              className="ml-2 shrink-0 rounded p-1 text-text-muted hover:text-text-primary"
+              onClick={() => setSelectedNode(null)}
               aria-label="Close panel"
             >
               <svg
@@ -972,7 +1015,7 @@ export default function NamespaceTopology({
                 viewBox="0 0 16 16"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="2"
+                strokeWidth="2"
               >
                 <path d="M4 4l8 8M12 4l-8 8" />
               </svg>
@@ -980,12 +1023,12 @@ export default function NamespaceTopology({
           </div>
 
           {/* Panel body */}
-          <div class="space-y-4 p-4">
+          <div className="space-y-4 p-4">
             {/* Health badge */}
-            <div class="flex items-center gap-2">
-              <span class="text-xs text-text-muted">Health</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-text-muted">Health</span>
               <span
-                class="inline-block rounded-full px-2 py-0.5 text-xs font-medium"
+                className="inline-block rounded-full px-2 py-0.5 text-xs font-medium"
                 style={{
                   backgroundColor:
                     selected.health === "healthy"
@@ -1005,16 +1048,16 @@ export default function NamespaceTopology({
             {/* Summary */}
             {selected.summary && (
               <div>
-                <span class="text-xs text-text-muted">Summary</span>
-                <p class="mt-1 text-sm text-text-secondary">
+                <span className="text-xs text-text-muted">Summary</span>
+                <p className="mt-1 text-sm text-text-secondary">
                   {selected.summary}
                 </p>
               </div>
             )}
 
             {/* Quick actions */}
-            <div class="space-y-2 pt-2">
-              <span class="text-xs font-medium text-text-muted">
+            <div className="space-y-2 pt-2">
+              <span className="text-xs font-medium text-text-muted">
                 Quick Actions
               </span>
               <a
@@ -1023,7 +1066,7 @@ export default function NamespaceTopology({
                   selected.namespace,
                   selected.name,
                 )}
-                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
+                className="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
               >
                 View Detail
               </a>
@@ -1032,7 +1075,7 @@ export default function NamespaceTopology({
                   href={`/observability/logs?namespace=${encodeURIComponent(
                     selected.namespace,
                   )}&pod=${encodeURIComponent(selected.name)}`}
-                  class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
+                  className="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
                 >
                   View Logs
                 </a>
@@ -1041,7 +1084,7 @@ export default function NamespaceTopology({
                 href={`/observability/logs?namespace=${encodeURIComponent(
                   selected.namespace,
                 )}`}
-                class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
+                className="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-elevated"
               >
                 Investigate
               </a>

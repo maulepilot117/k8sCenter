@@ -1,5 +1,11 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { connectionStatusColor } from "@/lib/status-colors.ts";
 import {
@@ -12,6 +18,8 @@ import {
   UNKNOWN_GENERATION,
 } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
  * One row of GET /v1/clusters. A subset of the backend's `ClusterRecord` —
@@ -112,10 +120,12 @@ export default function ClusterSwitcher() {
   // `selectedCluster` hydrates to the restored id immediately, and a trigger
   // that says "local" while other islands already send a remote X-Cluster-ID
   // is a manufactured reading of state we actually know.
-  const options = useSignal<ClusterOption[]>(fallbackOptions());
-  const open = useSignal(false);
-  const activeIndex = useSignal(0);
-  const loadFailed = useSignal(false);
+  const [options, setOptions] = useState<ClusterOption[]>(fallbackOptions);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const isClient = useIsClient();
+  const selected = useSignalValue(selectedCluster);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -142,72 +152,80 @@ export default function ClusterSwitcher() {
    *   deleting the cluster you are on, is handled at its source in
    *   ClusterManager rather than by silently retargeting here.
    */
-  async function loadClusters(signal?: AbortSignal): Promise<void> {
-    try {
-      const res = await apiGet<ClusterListItem[]>("/v1/clusters", {
-        // The list itself is not cluster-scoped, but an unpinned request
-        // would address whatever cluster is selected — including one that
-        // has since been deleted. Ask the local cluster, always.
-        clusterId: LOCAL_CLUSTER_ID,
-        signal,
-      });
-      if (signal?.aborted) return;
+  const loadClusters = useCallback(
+    async (signal?: AbortSignal): Promise<void> => {
+      try {
+        const res = await apiGet<ClusterListItem[]>("/v1/clusters", {
+          // The list itself is not cluster-scoped, but an unpinned request
+          // would address whatever cluster is selected — including one that
+          // has since been deleted. Ask the local cluster, always.
+          clusterId: LOCAL_CLUSTER_ID,
+          signal,
+        });
+        if (signal?.aborted) return;
 
-      const rows = Array.isArray(res.data) ? res.data : [];
-      const seen = new Set<string>();
-      const mapped: ClusterOption[] = [];
-      for (const row of rows) {
-        const o = toOption(row);
-        // A duplicate id would produce duplicate Preact keys and duplicate
-        // DOM ids, which breaks aria-activedescendant targeting.
-        if (!o.id || seen.has(o.id)) continue;
-        seen.add(o.id);
-        mapped.push(o);
-      }
-      if (!seen.has(LOCAL_CLUSTER_ID)) mapped.unshift(LOCAL_OPTION);
+        const rows = Array.isArray(res.data) ? res.data : [];
+        const seen = new Set<string>();
+        const mapped: ClusterOption[] = [];
+        for (const row of rows) {
+          const o = toOption(row);
+          // A duplicate id would produce duplicate React keys and duplicate
+          // DOM ids, which breaks aria-activedescendant targeting.
+          if (!o.id || seen.has(o.id)) continue;
+          seen.add(o.id);
+          mapped.push(o);
+        }
+        if (!seen.has(LOCAL_CLUSTER_ID)) mapped.unshift(LOCAL_OPTION);
 
-      const current = selectedCluster.peek();
-      const match = mapped.find((o) => o.id === current);
-      const selectionIsKnown = Boolean(match) || current === LOCAL_CLUSTER_ID;
-      options.value = selectionIsKnown
-        ? mapped
-        : [
-            ...mapped,
-            unavailableOption(current, selectedClusterGeneration.peek()),
-          ];
-      if (match) switchCluster(match.id, match.generation);
-      loadFailed.value = false;
-    } catch (err) {
-      if (signal?.aborted) return;
-      const status = err instanceof ApiError ? err.status : 0;
-      if (status === 403 || status === 503) {
-        switchCluster(LOCAL_CLUSTER_ID, LOCAL_GENERATION);
-        options.value = [LOCAL_OPTION];
-        loadFailed.value = false;
-        return;
+        const current = selectedCluster.peek();
+        const match = mapped.find((o) => o.id === current);
+        const selectionIsKnown = Boolean(match) || current === LOCAL_CLUSTER_ID;
+        setOptions(
+          selectionIsKnown
+            ? mapped
+            : [
+                ...mapped,
+                unavailableOption(current, selectedClusterGeneration.peek()),
+              ],
+        );
+        if (match) switchCluster(match.id, match.generation);
+        setLoadFailed(false);
+      } catch (err) {
+        if (signal?.aborted) return;
+        const status = err instanceof ApiError ? err.status : 0;
+        if (status === 403 || status === 503) {
+          switchCluster(LOCAL_CLUSTER_ID, LOCAL_GENERATION);
+          setOptions([LOCAL_OPTION]);
+          setLoadFailed(false);
+          return;
+        }
+        setOptions(fallbackOptions());
+        setLoadFailed(true);
       }
-      options.value = fallbackOptions();
-      loadFailed.value = true;
-    }
-  }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     const controller = new AbortController();
     loadClusters(controller.signal);
     return () => controller.abort();
-  }, []);
+  }, [loadClusters]);
 
   // Move focus to the listbox once it has actually rendered, so arrow keys
   // drive aria-activedescendant. Scheduling this from the click handler would
   // race Preact's own render flush. preventScroll keeps the browser from
   // scrolling an ancestor to reveal the list.
   useEffect(() => {
-    if (open.value) listRef.current?.focus({ preventScroll: true });
-  }, [open.value]);
+    if (open) listRef.current?.focus({ preventScroll: true });
+  }, [open]);
 
-  const current =
-    options.value.find((o) => o.id === selectedCluster.value) ?? LOCAL_OPTION;
+  // The restored selection is known only in the browser, so the server markup
+  // names the local cluster and the client then shows the restored one.
+  const current = isClient
+    ? (options.find((o) => o.id === selected) ?? LOCAL_OPTION)
+    : LOCAL_OPTION;
 
   /**
    * Commits a switch, then reloads.
@@ -229,7 +247,7 @@ export default function ClusterSwitcher() {
    * target survives the reload.
    */
   function choose(o: ClusterOption) {
-    open.value = false;
+    setOpen(false);
     const before = clusterEpoch.peek();
     switchCluster(o.id, o.generation);
     if (clusterEpoch.peek() === before) {
@@ -241,49 +259,48 @@ export default function ClusterSwitcher() {
   }
 
   function openList() {
-    const idx = options.value.findIndex((o) => o.id === selectedCluster.value);
-    activeIndex.value = idx >= 0 ? idx : 0;
-    open.value = true;
+    const idx = options.findIndex((o) => o.id === selectedCluster.peek());
+    setActiveIndex(idx >= 0 ? idx : 0);
+    setOpen(true);
     // The list is fetched once on mount; a transient failure would otherwise
     // strand the operator with no way to retry short of a full page reload.
-    if (loadFailed.value) loadClusters();
+    if (loadFailed) loadClusters();
   }
 
-  function onButtonKeyDown(e: KeyboardEvent) {
+  function onButtonKeyDown(e: KeyboardEvent<HTMLButtonElement>) {
     if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter") {
       e.preventDefault();
       openList();
     }
   }
 
-  function onListKeyDown(e: KeyboardEvent) {
-    const items = options.value;
+  function onListKeyDown(e: KeyboardEvent<HTMLUListElement>) {
+    const items = options;
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
-        activeIndex.value = (activeIndex.value + 1) % items.length;
+        setActiveIndex((i) => (i + 1) % items.length);
         break;
       case "ArrowUp":
         e.preventDefault();
-        activeIndex.value =
-          (activeIndex.value - 1 + items.length) % items.length;
+        setActiveIndex((i) => (i - 1 + items.length) % items.length);
         break;
       case "Home":
         e.preventDefault();
-        activeIndex.value = 0;
+        setActiveIndex(0);
         break;
       case "End":
         e.preventDefault();
-        activeIndex.value = items.length - 1;
+        setActiveIndex(items.length - 1);
         break;
       case "Enter":
       case " ":
         e.preventDefault();
-        if (items[activeIndex.value]) choose(items[activeIndex.value]);
+        if (items[activeIndex]) choose(items[activeIndex]);
         break;
       case "Escape":
         e.preventDefault();
-        open.value = false;
+        setOpen(false);
         buttonRef.current?.focus();
         break;
     }
@@ -296,10 +313,10 @@ export default function ClusterSwitcher() {
       // Close when focus leaves the switcher entirely. Scoped to the wrapper
       // rather than put on the listbox so that moving focus back to the
       // trigger does not close-then-reopen the list.
-      onFocusOut={(e) => {
+      onBlur={(e) => {
         const next = e.relatedTarget as Node | null;
         if (next && rootRef.current?.contains(next)) return;
-        open.value = false;
+        setOpen(false);
       }}
     >
       <button
@@ -307,7 +324,7 @@ export default function ClusterSwitcher() {
         type="button"
         aria-label={`Active cluster: ${current.label}. Change cluster`}
         aria-haspopup="listbox"
-        aria-expanded={open.value}
+        aria-expanded={open}
         aria-controls="cluster-switcher-list"
         // Keep focus inside the wrapper on pointer-down so the focusout
         // containment check passes and the click handler sees the real open
@@ -318,8 +335,8 @@ export default function ClusterSwitcher() {
           buttonRef.current?.focus();
         }}
         onClick={() => {
-          if (open.value) {
-            open.value = false;
+          if (open) {
+            setOpen(false);
           } else {
             openList();
           }
@@ -353,7 +370,7 @@ export default function ClusterSwitcher() {
         </span>
       </button>
 
-      {open.value && (
+      {open && (
         <ul
           ref={listRef}
           id="cluster-switcher-list"
@@ -362,9 +379,9 @@ export default function ClusterSwitcher() {
           aria-label="Clusters"
           // Chrome surface — the glass utilities own the background, border
           // and elevation, so no literal colour is needed here.
-          class="glass-elevated"
+          className="glass-elevated"
           aria-activedescendant={`cluster-option-${
-            options.value[activeIndex.value]?.id ?? ""
+            options[activeIndex]?.id ?? ""
           }`}
           onKeyDown={onListKeyDown}
           style={{
@@ -380,12 +397,12 @@ export default function ClusterSwitcher() {
             zIndex: 50,
           }}
         >
-          {options.value.map((o, i) => (
+          {options.map((o, i) => (
             <li
               key={o.id}
               id={`cluster-option-${o.id}`}
               role="option"
-              aria-selected={o.id === selectedCluster.value}
+              aria-selected={o.id === selected}
               // Pointer selection must beat the listbox's own blur handler,
               // which would otherwise close the list before the click lands.
               onMouseDown={(e) => {
@@ -393,7 +410,7 @@ export default function ClusterSwitcher() {
                 choose(o);
               }}
               onMouseEnter={() => {
-                activeIndex.value = i;
+                setActiveIndex(i);
               }}
               style={{
                 display: "flex",
@@ -405,7 +422,7 @@ export default function ClusterSwitcher() {
                 color: "var(--text-primary)",
                 cursor: "pointer",
                 background:
-                  i === activeIndex.value ? "var(--bg-hover)" : "transparent",
+                  i === activeIndex ? "var(--bg-hover)" : "transparent",
               }}
             >
               <span
@@ -418,14 +435,14 @@ export default function ClusterSwitcher() {
                 }}
               />
               <span style={{ flex: 1 }}>{o.label}</span>
-              {o.id === selectedCluster.value && (
+              {o.id === selected && (
                 <span aria-hidden="true" style={{ color: "var(--accent)" }}>
                   ✓
                 </span>
               )}
             </li>
           ))}
-          {loadFailed.value && (
+          {loadFailed && (
             <li
               role="option"
               aria-selected={false}

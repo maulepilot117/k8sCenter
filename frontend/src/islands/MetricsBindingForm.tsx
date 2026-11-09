@@ -3,7 +3,7 @@ import { useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { ApiError, apiDelete, apiGet, apiPut } from "@/lib/api.ts";
 import { sameOrigin } from "@/lib/origin.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 /**
  * GET and PUT /v1/clusters/{id}/metrics. The tokens themselves are never

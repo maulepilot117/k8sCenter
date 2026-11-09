@@ -4,8 +4,8 @@ import { useEffect } from "preact/hooks";
 import { apiDelete, apiGet, apiPost } from "@/lib/api.ts";
 import type { NotificationStatus } from "@/lib/notification-types.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 /** Base interface for items managed by the notification CRUD hook. */
 interface NotificationItem {

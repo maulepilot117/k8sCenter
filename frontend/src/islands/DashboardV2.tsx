@@ -60,8 +60,8 @@ import { sourcesOf } from "@/lib/dashboard/widget-state.ts";
 import type { ClusterInfoData } from "@/lib/dashboard/wire-types.ts";
 import { useDashboardFocus } from "@/lib/hooks/use-dashboard-focus.ts";
 import { preferenceReason } from "@/lib/preferences.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 /**
  * What Save's title says once a write has been refused.

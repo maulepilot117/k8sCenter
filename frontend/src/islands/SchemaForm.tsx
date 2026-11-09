@@ -9,10 +9,10 @@ import { inputStyle, selectStyle } from "@/lib/form-styles.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { formStateToYaml, safeDeepSet } from "@/lib/schema-to-yaml.ts";
 import SchemaFormField from "@/src/islands/SchemaFormField.tsx";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import YamlPreview from "@/src/islands/YamlPreview.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 
 /** The root every return shares. Preact hydration keeps the server-rendered
  * root's own props, so each branch styles an inner box instead. */

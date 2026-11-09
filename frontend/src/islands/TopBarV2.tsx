@@ -1,5 +1,5 @@
-import { useComputed, useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import { initAnimationPrefs } from "@/lib/animation-prefs.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -10,11 +10,21 @@ import NotificationBell from "@/src/islands/NotificationBell.tsx";
 import ThemeToggle from "@/src/islands/ThemeToggle.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export default function TopBarV2() {
-  const { user, logout, fetchCurrentUser, refreshPermissions } = useAuth();
-  const namespaces = useNamespaces();
-  const showUserMenu = useSignal(false);
+  const {
+    user: userSignal,
+    logout,
+    fetchCurrentUser,
+    refreshPermissions,
+  } = useAuth();
+  const namespaces = useSignalValue(useNamespaces());
+  const user = useSignalValue(userSignal);
+  const namespace = useSignalValue(selectedNamespace);
+  const isClient = useIsClient();
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Initialize theme and animation prefs on mount
@@ -32,30 +42,26 @@ export default function TopBarV2() {
     if (!IS_BROWSER) return;
     const ns = selectedNamespace.value;
     fetchCurrentUser(ns !== "all" ? ns : undefined);
-  }, []);
+  }, [fetchCurrentUser]);
 
   // Close user menu on outside click
   useEffect(() => {
     if (!IS_BROWSER) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (
-        showUserMenu.value &&
-        menuRef.current &&
-        !menuRef.current.contains(e.target as Node)
-      ) {
-        showUserMenu.value = false;
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowUserMenu(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const displayName = useComputed(() => user.value?.username ?? "User");
-  const userRole = useComputed(() => user.value?.roles?.[0] ?? "user");
+  const displayName = user?.username ?? "User";
+  const userRole = user?.roles?.[0] ?? "user";
 
   return (
     <header
-      class="glass-bar"
+      className="glass-bar"
       style={{
         height: "var(--topbar-height, 56px)",
         borderBottom: "1px solid var(--glass-border)",
@@ -83,9 +89,11 @@ export default function TopBarV2() {
         {/* Namespace selector */}
         <select
           aria-label="Select namespace"
-          value={selectedNamespace.value}
+          // Restored from storage in the browser, so the server markup shows
+          // the placeholder and the client then shows the restored selection.
+          value={isClient ? namespace : "all"}
           onChange={(e) => {
-            const ns = (e.target as HTMLSelectElement).value;
+            const ns = e.currentTarget.value;
             selectedNamespace.value = ns;
             if (ns && ns !== "all") {
               refreshPermissions(ns);
@@ -103,7 +111,7 @@ export default function TopBarV2() {
           }}
         >
           <option value="all">All Namespaces</option>
-          {namespaces.value.map((ns) => (
+          {namespaces.map((ns) => (
             <option key={ns} value={ns}>
               {ns}
             </option>
@@ -136,8 +144,8 @@ export default function TopBarV2() {
             viewBox="0 0 20 20"
             fill="none"
             stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
+            strokeWidth="2"
+            strokeLinecap="round"
           >
             <circle cx="9" cy="9" r="6" />
             <path d="M13.5 13.5L17 17" />
@@ -180,10 +188,10 @@ export default function TopBarV2() {
           <button
             type="button"
             aria-label="Account menu"
-            aria-expanded={showUserMenu.value}
+            aria-expanded={showUserMenu}
             aria-haspopup="true"
             onClick={() => {
-              showUserMenu.value = !showUserMenu.value;
+              setShowUserMenu((open) => !open);
             }}
             style={{
               display: "flex",
@@ -213,7 +221,7 @@ export default function TopBarV2() {
                 flexShrink: 0,
               }}
             >
-              {displayName.value.charAt(0).toUpperCase()}
+              {displayName.charAt(0).toUpperCase()}
             </span>
             <svg
               width="12"
@@ -226,7 +234,7 @@ export default function TopBarV2() {
             </svg>
           </button>
 
-          {showUserMenu.value && (
+          {showUserMenu && (
             <div
               style={{
                 position: "absolute",
@@ -255,7 +263,7 @@ export default function TopBarV2() {
                     color: "var(--text-primary)",
                   }}
                 >
-                  {displayName.value}
+                  {displayName}
                 </div>
                 <div
                   style={{
@@ -264,7 +272,7 @@ export default function TopBarV2() {
                     marginTop: "2px",
                   }}
                 >
-                  {userRole.value}
+                  {userRole}
                 </div>
               </div>
 
@@ -295,7 +303,7 @@ export default function TopBarV2() {
                   viewBox="0 0 16 16"
                   fill="none"
                   stroke="currentColor"
-                  stroke-width="1.5"
+                  strokeWidth="1.5"
                 >
                   <path d="M6 14H3a1 1 0 01-1-1V3a1 1 0 011-1h3M11 11l3-3-3-3M14 8H6" />
                 </svg>

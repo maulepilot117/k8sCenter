@@ -1,6 +1,5 @@
-import { useSignal } from "@preact/signals";
-import type * as preact from "preact";
-import { useCallback, useEffect, useState } from "preact/hooks";
+/** @jsxImportSource react */
+import { type CSSProperties, useEffect, useState } from "react";
 import { Alert } from "@/components/ui/Alert.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
@@ -41,6 +40,8 @@ import {
   useClusterNames,
 } from "@/src/lib/cluster-label.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const PLACEHOLDER_YAML = `# Paste or type your Kubernetes YAML here.
 # Multi-document YAML (separated by ---) is supported.
@@ -92,11 +93,27 @@ export default function YamlApplyPage() {
     tracked,
     repairOf,
   });
-  const capability = useSignal<CapabilityState>({ status: "loading" });
+  const [capability, setCapability] = useState<CapabilityState>({
+    status: "loading",
+  });
 
   // Reading the epoch here subscribes the page to cluster switches, so the
   // capability check below re-runs for whichever cluster is now selected.
-  const epoch = clusterEpoch.value;
+  const epoch = useSignalValue(clusterEpoch);
+  const selected = useSignalValue(selectedCluster);
+  const yamlText = useSignalValue(yamlContent);
+  const applyingNow = useSignalValue(applying);
+  const validatingNow = useSignalValue(validating);
+  const errorText = useSignalValue(error);
+  const resultNow = useSignalValue(results);
+  const previewNow = useSignalValue(preview);
+  const pinNow = useSignalValue(pin);
+  const stale = useSignalValue(pinStale);
+  const lastOpId = useSignalValue(lastOperationId);
+  const outcomeUnknown = useSignalValue(attemptOutcomeUnknown);
+  const refusal = useSignalValue(trackedRefusal);
+  const forceNow = useSignalValue(forceConflicts);
+  const trackedNow = useSignalValue(tracked);
 
   // Set document title
   useEffect(() => {
@@ -114,15 +131,15 @@ export default function YamlApplyPage() {
   useEffect(() => {
     const target = currentTarget();
     const controller = new AbortController();
-    capability.value = { status: "loading" };
+    setCapability({ status: "loading" });
     fetchCapabilities(target, controller.signal)
       .then((caps) => {
-        if (clusterEpoch.peek() === target.epoch) {
-          capability.value = { status: "ready", caps };
+        if (clusterEpoch.peek() === epoch) {
+          setCapability({ status: "ready", caps });
         }
       })
       .catch(() => {
-        if (!controller.signal.aborted) capability.value = { status: "error" };
+        if (!controller.signal.aborted) setCapability({ status: "error" });
       });
     return () => controller.abort();
   }, [epoch]);
@@ -132,28 +149,32 @@ export default function YamlApplyPage() {
   // The repair link (Release E) is read first: the cluster its receipt names
   // is one of the clusters this page may have to name.
   const { repair, stopRepair } = useRepairLink(repairOf);
+  const repairNow = useSignalValue(repair);
   const repairClusterId =
-    repair.value.status === "valid" ? repair.value.clusterId : undefined;
-  const pinnedClusterId = pin.value?.target.clusterId;
+    repairNow.status === "valid" ? repairNow.clusterId : undefined;
+  const pinnedClusterId = pinNow?.target.clusterId;
   const clusterNames = useClusterNames([
-    selectedCluster.value,
+    selected,
     pinnedClusterId,
     repairClusterId,
   ]);
+  const namesNow = useSignalValue(clusterNames);
 
   // Change tracking (Release E): whether the server can keep a record, and
   // who manages the previewed objects.
   const trackingAvailability = useTrackingAvailability(tracked);
   const ownership = useOwnershipPreview(preview, pin, yamlContent);
+  const trackingNow = useSignalValue(trackingAvailability);
+  const ownershipNow = useSignalValue(ownership);
 
-  const clusterLabel = (id: string) => labelCluster(id, clusterNames.value);
+  const clusterLabel = (id: string) => labelCluster(id, namesNow);
 
-  const handleRepreview = useCallback(() => {
+  const handleRepreview = () => {
     clearPin();
     void handleValidate();
-  }, []);
+  };
 
-  const handleFileUpload = useCallback(() => {
+  const handleFileUpload = () => {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".yaml,.yml,.json";
@@ -175,15 +196,15 @@ export default function YamlApplyPage() {
       error.value = null;
     };
     input.click();
-  }, []);
+  };
 
-  const isWorking = applying.value || validating.value;
-  const isEmpty = yamlContent.value === PLACEHOLDER_YAML;
-  const applyDisabled = isWorking || isEmpty || pin.value === null;
+  const isWorking = applyingNow || validatingNow;
+  const isEmpty = yamlText === PLACEHOLDER_YAML;
+  const applyDisabled = isWorking || isEmpty || pinNow === null;
   const capabilityNotices =
-    capability.value.status === "ready"
-      ? noticesFor(capability.value.caps)
-      : capability.value.status === "error"
+    capability.status === "ready"
+      ? noticesFor(capability.caps)
+      : capability.status === "error"
         ? [
             {
               tone: "unknown" as const,
@@ -192,17 +213,13 @@ export default function YamlApplyPage() {
             },
           ]
         : [];
-  const managedText = managedSummary(managedCount(ownership.value));
-  const refusal = trackedRefusal.value;
+  const managedText = managedSummary(managedCount(ownershipNow));
   // Only a tracked apply whose failure may still have changed the cluster
   // (the hook decides: an unknown outcome, or a store failure that does not
   // rule it out) points at its receipt. Definite refusals do not, and a
   // later Validate or Apply press clears it.
-  const attemptReceiptId =
-    attemptOutcomeUnknown.value && !results.value
-      ? lastOperationId.value
-      : null;
-  const availability = trackingAvailability.value;
+  const attemptReceiptId = outcomeUnknown && !resultNow ? lastOpId : null;
+  const availability = trackingNow;
   const trackingDisabled =
     availability.status === "checking" ||
     availability.status === "unsupported" ||
@@ -245,19 +262,19 @@ export default function YamlApplyPage() {
         <CapabilityNotice key={n.message} notice={n} />
       ))}
 
-      {error.value && (
+      {errorText && (
         <div role="alert">
           <ErrorBanner
-            message={refusal ? trackedRefusalText(refusal) : error.value}
+            message={refusal ? trackedRefusalText(refusal) : errorText}
           />
         </div>
       )}
 
       {refusal?.receiptId && (
-        <p class="m-0 text-sm">
+        <p className="m-0 text-sm">
           <a
             href={receiptHref(refusal.receiptId)}
-            class="font-medium text-accent"
+            className="font-medium text-accent"
           >
             Open the change receipt of the apply still running
           </a>
@@ -265,12 +282,12 @@ export default function YamlApplyPage() {
       )}
 
       {attemptReceiptId && (
-        <p class="m-0 text-sm text-text-secondary">
+        <p className="m-0 text-sm text-text-secondary">
           This attempt may have changed the cluster. If the server recorded it,
           its receipt shows what was applied:{" "}
           <a
             href={receiptHref(attemptReceiptId)}
-            class="font-medium text-accent"
+            className="font-medium text-accent"
           >
             change receipt {shortId(attemptReceiptId)}
           </a>
@@ -279,30 +296,29 @@ export default function YamlApplyPage() {
       )}
 
       <RepairBanner
-        repair={repair.value}
-        tracked={tracked.value}
+        repair={repairNow}
+        tracked={trackedNow}
         onStop={stopRepair}
-        selectedClusterId={selectedCluster.value}
+        selectedClusterId={selected}
         clusterLabel={clusterLabel}
       />
 
-      {managedText && !results.value && (
+      {managedText && !resultNow && (
         <div role="status">
           <Alert variant="warning">{managedText}</Alert>
         </div>
       )}
 
-      {pin.value && pinStale.value && (
+      {pinNow && stale && (
         <div role="status">
           <Alert
             variant="warning"
             className="flex flex-wrap items-center justify-between gap-3"
           >
             <span>
-              You are now viewing{" "}
-              <strong>{clusterLabel(selectedCluster.value)}</strong>. Apply
-              still targets{" "}
-              <strong>{clusterLabel(pin.value.target.clusterId)}</strong>.
+              You are now viewing <strong>{clusterLabel(selected)}</strong>.
+              Apply still targets{" "}
+              <strong>{clusterLabel(pinNow.target.clusterId)}</strong>.
             </span>
             <button
               type="button"
@@ -310,7 +326,7 @@ export default function YamlApplyPage() {
               disabled={isWorking || isEmpty}
               style={ghostButtonStyle(isWorking || isEmpty)}
             >
-              Re-preview on {clusterLabel(selectedCluster.value)}
+              Re-preview on {clusterLabel(selected)}
             </button>
           </Alert>
         </div>
@@ -354,16 +370,16 @@ export default function YamlApplyPage() {
           >
             <input
               type="checkbox"
-              checked={forceConflicts.value}
+              checked={forceNow}
               onChange={(e) => {
-                forceConflicts.value = (e.target as HTMLInputElement).checked;
+                forceConflicts.value = e.currentTarget.checked;
               }}
               style={{ accentColor: "var(--accent)" }}
             />
             Force conflicts
           </label>
           <label
-            class={`flex items-center gap-1.5 text-[13px] text-text-muted ${
+            className={`flex items-center gap-1.5 text-[13px] text-text-muted ${
               trackingDisabled
                 ? "cursor-not-allowed opacity-60"
                 : "cursor-pointer"
@@ -371,13 +387,13 @@ export default function YamlApplyPage() {
           >
             <input
               type="checkbox"
-              checked={tracked.value}
+              checked={trackedNow}
               disabled={trackingDisabled || isWorking}
               aria-describedby={trackingNote ? TRACKING_NOTE_ID : undefined}
               onChange={(e) => {
-                tracked.value = (e.target as HTMLInputElement).checked;
+                tracked.value = e.currentTarget.checked;
               }}
-              class="accent-accent"
+              className="accent-accent"
             />
             Keep a record of this change
           </label>
@@ -391,13 +407,13 @@ export default function YamlApplyPage() {
           }}
         >
           <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-            {pin.value ? (
+            {pinNow ? (
               <>
                 Applies to{" "}
                 <strong style={{ color: "var(--text-primary)" }}>
-                  {clusterLabel(pin.value.target.clusterId)}
+                  {clusterLabel(pinNow.target.clusterId)}
                 </strong>{" "}
-                — previewed <PinAge pinnedAt={pin.value.pinnedAt} />
+                — previewed <PinAge pinnedAt={pinNow.pinnedAt} />
               </>
             ) : (
               "Validate to choose the cluster Apply targets"
@@ -409,7 +425,7 @@ export default function YamlApplyPage() {
             disabled={isWorking || isEmpty}
             style={ghostButtonStyle(isWorking || isEmpty)}
           >
-            {validating.value ? "Validating…" : "Validate"}
+            {validatingNow ? "Validating…" : "Validate"}
           </button>
           <button
             type="button"
@@ -432,13 +448,13 @@ export default function YamlApplyPage() {
               transition: "opacity 0.15s",
             }}
           >
-            {applying.value ? "Applying…" : "Apply"}
+            {applyingNow ? "Applying…" : "Apply"}
           </button>
         </div>
       </div>
 
       {trackingNote && (
-        <p id={TRACKING_NOTE_ID} class="-mt-3 mb-0 text-xs text-text-muted">
+        <p id={TRACKING_NOTE_ID} className="-mt-3 mb-0 text-xs text-text-muted">
           {trackingNote}
         </p>
       )}
@@ -453,13 +469,13 @@ export default function YamlApplyPage() {
         }}
       >
         <YamlEditor
-          value={yamlContent.value}
+          value={yamlText}
           onChange={(v) => {
             // Editors can echo programmatic value changes (e.g. re-applying
             // the same value); ignore those so a valid pin isn't dropped for
             // content that never actually changed. A real edit invalidates
             // the previous verdict, so clear the pin until re-validated.
-            if (v === yamlContent.value) return;
+            if (v === yamlContent.peek()) return;
             yamlContent.value = v;
             clearPin();
           }}
@@ -469,7 +485,7 @@ export default function YamlApplyPage() {
       </div>
 
       {/* Results */}
-      {(applying.value || validating.value) && (
+      {(applyingNow || validatingNow) && (
         <div
           style={{
             display: "flex",
@@ -481,17 +497,15 @@ export default function YamlApplyPage() {
         </div>
       )}
 
-      {preview.value && !results.value && (
-        <ValidationResults response={preview.value} />
-      )}
-      {results.value && <ApplyResults response={results.value} />}
-      {results.value && (
+      {previewNow && !resultNow && <ValidationResults response={previewNow} />}
+      {resultNow && <ApplyResults response={resultNow} />}
+      {resultNow && (
         <TrackedApplyPanel
-          tracking={results.value.tracking}
-          sentOperationId={lastOperationId.value}
+          tracking={resultNow.tracking}
+          sentOperationId={lastOpId}
         />
       )}
-      <OwnershipSection state={ownership.value} />
+      <OwnershipSection state={ownershipNow} />
     </div>
   );
 }
@@ -678,7 +692,7 @@ function ApplyResults({ response }: { response: ApplyResponse }) {
 
 // ── Shared style helpers ──────────────────────────────────────────────────────
 
-function ghostButtonStyle(disabled: boolean): preact.CSSProperties {
+function ghostButtonStyle(disabled: boolean): CSSProperties {
   return {
     display: "inline-flex",
     alignItems: "center",

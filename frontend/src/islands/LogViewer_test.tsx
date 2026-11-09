@@ -1,36 +1,30 @@
-/** @jsxImportSource preact */
-import {
-  afterAll,
-  afterEach,
-  beforeEach,
-  expect,
-  jest,
-  mock,
-  test,
-} from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { refreshSession, setAccessToken } from "@/lib/api.ts";
 import {
   selectedCluster,
   selectedClusterGeneration,
 } from "@/src/lib/cluster.ts";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The live log viewer resumes a tail that ends with a retryable reason, on
- * the cluster it opened on, and names that cluster (remote logs and shells
- * U8, AE4). As in FlowViewer_test.tsx, IS_BROWSER is stubbed to true for
- * this island and put back afterwards.
+ * the cluster it opened on, and names that cluster. Bun's own fetch and
+ * WebSocket are captured before happy-dom replaces them and put back in
+ * afterAll.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+const bunFetch = globalThis.fetch;
+const bunWebSocket = globalThis.WebSocket;
+setupDom({ browser: true });
 
 const { default: LogViewer } = await import("./LogViewer.tsx");
 
 /** Records what the island sends; opening is driven by the test. */
 class FakeWebSocket {
+  static OPEN = 1;
+  static CONNECTING = 0;
   static instances: FakeWebSocket[] = [];
+  readyState = 0;
   sent: unknown[] = [];
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
@@ -46,20 +40,22 @@ class FakeWebSocket {
   /** Records the close; a test fires onclose itself, as a browser would later. */
   close() {
     this.closed = true;
+    this.readyState = 3;
   }
 }
 
 const REMOTE = "c-remote";
 const REMOTE_GENERATION = "2026-10-01T00:00:00Z";
 
-const realWebSocket = globalThis.WebSocket;
 const realRaf = globalThis.requestAnimationFrame;
 const realCancelRaf = globalThis.cancelAnimationFrame;
-let originalFetch: typeof globalThis.fetch | undefined;
 let host: HTMLElement | null = null;
+let unmountViewer: (() => void) | null = null;
 let refreshCalls = 0;
 /** When set, a session refresh waits for it before answering. */
 let refreshGate: Promise<void> | null = null;
+/** Animation frames requested and neither run nor cancelled yet. */
+const pendingFrames = new Map<unknown, FrameRequestCallback>();
 
 function json(data: unknown): Response {
   return new Response(JSON.stringify({ data }), {
@@ -73,11 +69,19 @@ beforeEach(() => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   // The viewer batches lines once per animation frame. A timer-backed frame
   // lets the fake timers drive the flush.
-  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) =>
-    setTimeout(() => cb(0), 16)) as unknown as typeof requestAnimationFrame;
-  globalThis.cancelAnimationFrame = ((id: number) =>
-    clearTimeout(id)) as unknown as typeof cancelAnimationFrame;
-  originalFetch = globalThis.fetch;
+  pendingFrames.clear();
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+    const id = setTimeout(() => {
+      pendingFrames.delete(id);
+      cb(0);
+    }, 16);
+    pendingFrames.set(id, cb);
+    return id;
+  }) as unknown as typeof requestAnimationFrame;
+  globalThis.cancelAnimationFrame = ((id: number) => {
+    pendingFrames.delete(id);
+    clearTimeout(id);
+  }) as unknown as typeof cancelAnimationFrame;
   refreshCalls = 0;
   refreshGate = null;
   globalThis.fetch = (async (input: string | URL | Request) => {
@@ -96,23 +100,19 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-  globalThis.WebSocket = realWebSocket;
+  act(() => unmountViewer?.());
+  unmountViewer = null;
+  host = null;
   globalThis.requestAnimationFrame = realRaf;
   globalThis.cancelAnimationFrame = realCancelRaf;
-  if (originalFetch) globalThis.fetch = originalFetch;
   setAccessToken(null);
   selectedCluster.value = "local";
   selectedClusterGeneration.value = "local";
 });
 
 afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
+  globalThis.fetch = bunFetch;
+  globalThis.WebSocket = bunWebSocket;
 });
 
 const settle = () =>
@@ -124,16 +124,13 @@ function latestSocket(): FakeWebSocket {
   return FakeWebSocket.instances.at(-1) as FakeWebSocket;
 }
 
-/** Mounts the viewer on one container and opens its first socket. */
-function mountViewer(): FakeWebSocket {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <LogViewer namespace="default" pod="web-1" containers={["app"]} />,
-      host as HTMLElement,
-    ),
+/** Mounts the viewer and opens its first socket. */
+function mountViewer(containers: string[] = ["app"]): FakeWebSocket {
+  const result = render(
+    <LogViewer namespace="default" pod="web-1" containers={containers} />,
   );
+  host = result.container as HTMLElement;
+  unmountViewer = result.unmount;
   const ws = latestSocket();
   act(() => ws.onopen?.());
   return ws;
@@ -175,7 +172,6 @@ function reconnectButton(): HTMLButtonElement | undefined {
   );
 }
 
-// Covers AE4.
 test("an expired token is refreshed and the tail resumes on the cluster it opened on", async () => {
   selectedCluster.value = REMOTE;
   selectedClusterGeneration.value = REMOTE_GENERATION;
@@ -370,7 +366,8 @@ test("a resume waiting on a session refresh opens nothing once the viewer is gon
     expect(refreshCalls).toBe(1);
 
     const before = FakeWebSocket.instances.length;
-    act(() => render(null, host as HTMLElement));
+    act(() => unmountViewer?.());
+    unmountViewer = null;
     release();
     await settle();
     expect(FakeWebSocket.instances.length).toBe(before);
@@ -515,4 +512,182 @@ test("a tail opened during the startup refresh authenticates once it lands", asy
   await settle();
   expect(ws.sent[0]).toMatchObject({ type: "auth", token: "fresh-token" });
   expect(host?.textContent).not.toContain("Not authenticated");
+});
+
+/** Gives the log pane a scrollable size; happy-dom does no layout. */
+function sizePane(pre: HTMLPreElement) {
+  Object.defineProperty(pre, "scrollHeight", {
+    configurable: true,
+    value: 1000,
+  });
+  Object.defineProperty(pre, "clientHeight", {
+    configurable: true,
+    value: 100,
+  });
+}
+
+function pane(): HTMLPreElement {
+  return host?.querySelector("pre") as HTMLPreElement;
+}
+
+function resumeButton(): HTMLButtonElement | undefined {
+  return Array.from(document.querySelectorAll("button")).find(
+    (b) => b.textContent === "Resume auto-scroll",
+  );
+}
+
+test("lines received within one frame all appear once the frame flushes", async () => {
+  jest.useFakeTimers();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    deliver(ws, { type: "log", data: "alpha" });
+    deliver(ws, { type: "log", data: "beta" });
+    deliver(ws, { type: "log", data: "gamma" });
+    expect(shownLines()).not.toContain("alpha");
+    expect(pendingFrames.size).toBe(1);
+
+    jest.advanceTimersByTime(16);
+    await settle();
+    expect(shownLines()).toEqual(["alpha", "beta", "gamma"]);
+    expect(host?.textContent).toContain("3 lines");
+
+    // Lines arriving after the flush start a new frame and are kept too.
+    deliver(ws, { type: "log", data: "delta" });
+    jest.advanceTimersByTime(16);
+    await settle();
+    expect(shownLines()).toEqual(["alpha", "beta", "gamma", "delta"]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("switching container closes the old socket and opens one for the new container", async () => {
+  jest.useFakeTimers();
+  try {
+    const first = mountViewer(["app", "sidecar"]);
+    expect(first.url).toEndWith("/logs/default/web-1/app");
+    deliver(first, { type: "subscribed" });
+
+    const tab = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (b) => b.textContent === "sidecar",
+    );
+    act(() => tab?.click());
+    await settle();
+
+    expect(first.closed).toBe(true);
+    expect(FakeWebSocket.instances.length).toBe(2);
+    expect(latestSocket().url).toEndWith("/logs/default/web-1/sidecar");
+    // The closed socket's late frames no longer reach the viewer.
+    await deliverLines(first, ["late line"]);
+    expect(host?.textContent).not.toContain("late line");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("unmounting closes the socket and cancels the pending frame", async () => {
+  jest.useFakeTimers();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    deliver(ws, { type: "log", data: "buffered" });
+    expect(pendingFrames.size).toBe(1);
+
+    act(() => unmountViewer?.());
+    unmountViewer = null;
+
+    expect(ws.closed).toBe(true);
+    expect(pendingFrames.size).toBe(0);
+    const before = FakeWebSocket.instances.length;
+    jest.advanceTimersByTime(30_000);
+    await settle();
+    expect(FakeWebSocket.instances.length).toBe(before);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("new lines scroll the pane to the bottom while following", async () => {
+  jest.useFakeTimers();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    sizePane(pane());
+    await deliverLines(ws, ["one", "two"]);
+    expect(pane().scrollTop).toBe(1000);
+    expect(resumeButton()).toBeUndefined();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("scrolling up pauses follow: lines keep arriving and the position holds", async () => {
+  jest.useFakeTimers();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    sizePane(pane());
+    await deliverLines(ws, ["one"]);
+
+    pane().scrollTop = 200;
+    act(() => {
+      fireEvent.scroll(pane());
+    });
+    await settle();
+    expect(resumeButton()).toBeDefined();
+
+    await deliverLines(ws, ["two", "three"]);
+    expect(shownLines()).toEqual(["one", "two", "three"]);
+    expect(pane().scrollTop).toBe(200);
+
+    act(() => resumeButton()?.click());
+    await settle();
+    expect(pane().scrollTop).toBe(1000);
+    expect(resumeButton()).toBeUndefined();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("pausing between a line's arrival and its frame still holds the position", async () => {
+  jest.useFakeTimers();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    sizePane(pane());
+    await deliverLines(ws, ["one"]);
+
+    // The frame for "two" is already scheduled when the reader scrolls up.
+    deliver(ws, { type: "log", data: "two" });
+    pane().scrollTop = 200;
+    act(() => {
+      fireEvent.scroll(pane());
+    });
+    jest.advanceTimersByTime(50);
+    await settle();
+
+    expect(shownLines()).toEqual(["one", "two"]);
+    expect(pane().scrollTop).toBe(200);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("switching to snapshot mode closes the stream and ignores its late lines", async () => {
+  jest.useFakeTimers();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    const snapshot = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (b) => b.textContent === "Snapshot",
+    );
+    act(() => snapshot?.click());
+    await settle();
+    expect(ws.closed).toBe(true);
+    await deliverLines(ws, ["late line"]);
+    expect(host?.textContent).not.toContain("late line");
+  } finally {
+    jest.useRealTimers();
+  }
 });

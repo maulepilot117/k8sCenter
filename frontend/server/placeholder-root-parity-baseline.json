@@ -22,48 +22,6 @@
     "note": "Inherited verbatim from the pre-migration Fresh tree (components/ui/CodeMirrorEditor.tsx:106 -> 111, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
   },
   {
-    "file": "src/islands/CRDResourceList.tsx",
-    "tag": "div",
-    "at": {
-      "component": 3,
-      "placeholder": 0,
-      "placeholderRoot": 0,
-      "hydrated": 0,
-      "hydratedRoot": 0
-    },
-    "placeholder": {
-      "attrs": {
-        "style": "{{ minHeight: \"400px\" }}"
-      }
-    },
-    "hydrated": {
-      "attrs": {}
-    },
-    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/CRDResourceList.tsx:168 -> 172, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
-  },
-  {
-    "file": "src/islands/CRDResourceList.tsx",
-    "tag": "div",
-    "at": {
-      "component": 3,
-      "placeholder": 0,
-      "placeholderRoot": 0,
-      "hydrated": 1,
-      "hydratedRoot": 0
-    },
-    "placeholder": {
-      "attrs": {
-        "style": "{{ minHeight: \"400px\" }}"
-      }
-    },
-    "hydrated": {
-      "attrs": {
-        "class": "\"flex flex-col h-full\""
-      }
-    },
-    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/CRDResourceList.tsx:168 -> 208, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
-  },
-  {
     "file": "src/islands/CniOverview.tsx",
     "tag": "div",
     "at": {

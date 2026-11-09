@@ -1,5 +1,6 @@
-import { useSignal } from "@preact/signals";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+/** @jsxImportSource react */
+import { useState } from "react";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface QuickAction {
   label: string;
@@ -31,16 +32,17 @@ const ACTIONS: QuickAction[] = [
 ];
 
 export default function QuickActionsFab() {
-  const expanded = useSignal(false);
+  const [expanded, setExpanded] = useState(false);
+  const isClient = useIsClient();
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   function toggle() {
-    expanded.value = !expanded.value;
+    setExpanded((prev) => !prev);
   }
 
   function close() {
-    expanded.value = false;
+    setExpanded(false);
   }
 
   return (
@@ -75,9 +77,7 @@ export default function QuickActionsFab() {
           boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
           transition: "transform 0.2s ease",
         }}
-        aria-label={
-          expanded.value ? "Close quick actions" : "Open quick actions"
-        }
+        aria-label={expanded ? "Close quick actions" : "Open quick actions"}
       >
         <svg
           width="20"
@@ -85,12 +85,12 @@ export default function QuickActionsFab() {
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          stroke-width="2.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
           style={{
             transition: "transform 0.2s ease",
-            transform: expanded.value ? "rotate(45deg)" : "rotate(0deg)",
+            transform: expanded ? "rotate(45deg)" : "rotate(0deg)",
           }}
         >
           <path d="M12 5v14M5 12h14" />
@@ -99,9 +99,9 @@ export default function QuickActionsFab() {
 
       {/* Action items — ONE glass panel wrapping all items: a per-item
           glass-elevated class would stack N backdrop-filter layers. */}
-      {expanded.value && (
+      {expanded && (
         <div
-          class="glass-elevated"
+          className="glass-elevated"
           style={{
             display: "flex",
             flexDirection: "column",
@@ -144,9 +144,9 @@ export default function QuickActionsFab() {
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="var(--accent)"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
               >
                 <path d={action.icon} />
               </svg>

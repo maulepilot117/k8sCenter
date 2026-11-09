@@ -6,6 +6,7 @@ import {
   expect,
   type Page,
   type PlaywrightWorkerArgs,
+  test,
 } from "@playwright/test";
 
 /** Get the stored E2E access token from the browser context's localStorage */
@@ -397,12 +398,35 @@ export async function postWithBackoff(
         `${what}: still rate limited (429) after ${attempt} attempts; the shared auth bucket never cleared, so cross-user isolation was NOT checked`,
       );
     }
-    const retryAfter = Number(res.headers()["retry-after"]);
-    const waitS = Number.isFinite(retryAfter) && retryAfter > 0
-      ? Math.min(retryAfter, 30)
-      : Math.min(5 * 2 ** (attempt - 1), 30);
-    await page.waitForTimeout(waitS * 1000);
+    await waitOutRateLimit(page, res.headers(), attempt);
   }
+}
+
+/**
+ * Sleep for a 429's Retry-After (or an exponential fallback), capped at 30s.
+ *
+ * When a test is running, the wait is added to its timeout first, so a spec with the
+ * default 30s budget is not killed while it is waiting the window out. A test
+ * that is never throttled keeps its normal timeout.
+ */
+async function waitOutRateLimit(
+  page: Page,
+  headers: Record<string, string>,
+  attempt: number,
+): Promise<void> {
+  const retryAfter = Number(headers["retry-after"]);
+  const waitS = Number.isFinite(retryAfter) && retryAfter > 0
+    ? Math.min(retryAfter, 30)
+    : Math.min(5 * 2 ** (attempt - 1), 30);
+  // test.info() throws outside a test or hook (a worker fixture, say), where
+  // there is no test timeout to extend.
+  try {
+    const info = test.info();
+    info.setTimeout(info.timeout + waitS * 1000);
+  } catch {
+    // No running test: nothing to extend.
+  }
+  await page.waitForTimeout(waitS * 1000);
 }
 
 /**
@@ -778,9 +802,30 @@ export const E2E_PASSWORD = "admin123";
  */
 export async function loginThroughUI(page: Page): Promise<void> {
   await page.goto("/login");
-  await page.getByLabel("Username").fill(E2E_USERNAME);
-  await page.getByLabel("Password").fill(E2E_PASSWORD);
-  await page.getByRole("button", { name: /sign in/i }).click();
+  // Login shares the per-IP auth bucket with every other spec's logins and
+  // refreshes, so a sign-in can be refused with a 429. Wait out the server's
+  // Retry-After and sign in again, as postWithBackoff does for API logins;
+  // giving up at once failed this spec on every retry, because each retry
+  // lands inside the same window.
+  const deadline = Date.now() + 130_000;
+  for (let attempt = 1; ; attempt++) {
+    await page.getByLabel("Username").fill(E2E_USERNAME);
+    await page.getByLabel("Password").fill(E2E_PASSWORD);
+    const [res] = await Promise.all([
+      page.waitForResponse((r) =>
+        r.request().method() === "POST" &&
+        new URL(r.url()).pathname === "/api/v1/auth/login"
+      ),
+      page.getByRole("button", { name: /sign in/i }).click(),
+    ]);
+    if (res.status() !== 429) break;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `signing in through the UI: still rate limited (429) after ${attempt} attempts`,
+      );
+    }
+    await waitOutRateLimit(page, res.headers(), attempt);
+  }
   // Landing on the dashboard is what proves the token is in memory.
   await page.waitForURL((url) => url.pathname === "/");
 
@@ -790,17 +835,17 @@ export async function loginThroughUI(page: Page): Promise<void> {
   // script and nothing here installs one -- so the app keeps authenticating
   // its socket with the in-memory token the login above minted, which is the
   // entire reason for logging in.
-  const token = await page.evaluate(async (creds) => {
-    const res = await fetch("/api/v1/auth/login", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: JSON.stringify(creds),
-    });
-    return (await res.json()).data.accessToken as string;
-  }, { username: E2E_USERNAME, password: E2E_PASSWORD });
+  const login = await postWithBackoff(page, "/api/v1/auth/login", "minting the API token", {
+    headers: {
+      "Content-Type": "application/json",
+      "X-Requested-With": "XMLHttpRequest",
+    },
+    data: { username: E2E_USERNAME, password: E2E_PASSWORD },
+  });
+  if (!login.ok()) {
+    throw new Error(`minting the API token failed: ${login.status()} ${await login.text()}`);
+  }
+  const token = (await login.json()).data.accessToken as string;
   await page.evaluate(
     (t: string) => localStorage.setItem("e2e_access_token", t),
     token,

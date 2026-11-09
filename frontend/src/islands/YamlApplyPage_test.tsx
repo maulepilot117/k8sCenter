@@ -17,6 +17,7 @@ import { LOCAL_CLUSTER_ID, switchCluster } from "@/src/lib/cluster.ts";
  * The editor island loads Monaco from a CDN, which a test cannot do; it is
  * replaced by a plain textarea that honours the same value/onChange contract.
  */
+const realYamlEditor = { ...(await import("./YamlEditor.tsx")) };
 mock.module("./YamlEditor.tsx", () => ({
   default: (props: { value: string; onChange?: (v: string) => void }) => (
     <textarea
@@ -34,7 +35,10 @@ const { default: YamlApplyPage } = await import("./YamlApplyPage.tsx");
 // A real origin, so the page can read ?repairOf= and rewrite its own URL.
 const PAGE_URL = "http://localhost/tools/yaml-apply";
 beforeAll(() => GlobalRegistrator.register({ url: PAGE_URL }));
-afterAll(() => GlobalRegistrator.unregister());
+afterAll(() => {
+  GlobalRegistrator.unregister();
+  mock.module("./YamlEditor.tsx", () => realYamlEditor);
+});
 
 interface Call {
   url: string;
@@ -258,6 +262,19 @@ test("after a switch the page names both clusters and Apply stays pinned", async
   expect(
     new URL(apply?.url ?? "", "http://x").searchParams.get("targetCluster"),
   ).toBe(a);
+});
+
+test("one click on Apply sends exactly one apply request", async () => {
+  freshCluster();
+  stubFetch();
+  const root = await mount();
+  await type(root, "kind: ConfigMap");
+  await click(button(root, "Validate"));
+
+  await click(button(root, "Apply"));
+
+  const applies = calls.filter((c) => c.url.startsWith("/api/v1/yaml/apply"));
+  expect(applies).toHaveLength(1);
 });
 
 test("Re-preview moves the pin to the cluster now on screen", async () => {

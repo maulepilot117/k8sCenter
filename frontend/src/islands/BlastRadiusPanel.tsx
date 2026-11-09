@@ -1,4 +1,4 @@
-import type { Signal } from "@preact/signals";
+/** @jsxImportSource react */
 import { KIND_ROUTE_MAP } from "@/lib/types/diagnostics.ts";
 
 export interface AffectedResource {
@@ -9,8 +9,8 @@ export interface AffectedResource {
 }
 
 interface BlastRadiusPanelProps {
-  directlyAffected: Signal<AffectedResource[]>;
-  potentiallyAffected: Signal<AffectedResource[]>;
+  directlyAffected: AffectedResource[];
+  potentiallyAffected: AffectedResource[];
   namespace: string;
 }
 
@@ -194,13 +194,13 @@ export default function BlastRadiusPanel({
       <Section
         title="Directly Affected"
         borderColor="var(--error)"
-        resources={directlyAffected.value}
+        resources={directlyAffected}
         namespace={namespace}
       />
       <Section
         title="Potentially Affected"
         borderColor="var(--warning)"
-        resources={potentiallyAffected.value}
+        resources={potentiallyAffected}
         namespace={namespace}
       />
     </div>

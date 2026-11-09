@@ -1,52 +1,68 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
+import {
+  act,
+  body,
+  fireEvent,
+  render,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
 /**
  * The bell's list marks each row with its severity dot. A filled dot reads
  * as "unread", so a read notification's dot is a ring, and "Mark all read"
- * turns every dot into one. As in DiagnosticWorkspace_test.tsx, IS_BROWSER
- * is stubbed to true for this island and put back afterwards.
+ * turns every dot into one. A notification event arriving over the socket
+ * re-fetches the unread count, except for a short window after "Mark all
+ * read".
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+// Bun's own WebSocket, Date.now and fetch, captured before happy-dom
+// replaces them.
+const bunWebSocket = globalThis.WebSocket;
+const bunFetch = globalThis.fetch;
+const realNow = Date.now;
+setupDom({ browser: true });
 
 const { default: NotificationBell } = await import("./NotificationBell.tsx");
+const { disconnectWS } = await import("@/src/lib/ws.ts");
 
-class NoopWebSocket {
+/** Stands in for the browser socket the ws store opens. */
+class FakeWebSocket {
+  static instances: FakeWebSocket[] = [];
+  // Never open, so the ws store, which is shared by every test file in the
+  // process, opens a fresh socket for each subscription.
+  static OPEN = 1;
+  static CONNECTING = 0;
+  readyState = 3;
   onopen: (() => void) | null = null;
-  onmessage: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  constructor() {
+    FakeWebSocket.instances.push(this);
+  }
   send() {}
   close() {}
 }
 
-const realWebSocket = globalThis.WebSocket;
-const realFetch = globalThis.fetch;
-let host: HTMLElement | null = null;
+globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
 
-beforeAll(() => {
-  globalThis.WebSocket = NoopWebSocket as unknown as typeof WebSocket;
+// The ws store is one module shared by every test file in the run: drop a
+// socket an earlier file left behind, so the bell opens one of these fakes.
+beforeEach(() => {
+  disconnectWS();
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
-  globalThis.fetch = realFetch;
+  globalThis.fetch = bunFetch;
+  Date.now = realNow;
   setAccessToken(null);
 });
 
 afterAll(() => {
-  globalThis.WebSocket = realWebSocket;
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
+  globalThis.WebSocket = bunWebSocket;
+  globalThis.fetch = bunFetch;
+  Date.now = realNow;
 });
 
 const notification = (id: string, read: boolean) => ({
@@ -59,7 +75,9 @@ const notification = (id: string, read: boolean) => ({
   ...(read ? { read: true } : {}),
 });
 
-function stubApi(items: unknown[]) {
+/** Serves the notification endpoints; `server.unread` is what the count reads. */
+function stubApi(items: unknown[], unread = 1) {
+  const server = { unread, unreadFetches: 0 };
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = String(input);
     const json = (data: unknown) =>
@@ -67,11 +85,15 @@ function stubApi(items: unknown[]) {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
-    if (url.includes("/notifications/unread-count")) return json({ count: 1 });
+    if (url.includes("/notifications/unread-count")) {
+      server.unreadFetches++;
+      return json({ count: server.unread });
+    }
     if (url.includes("/notifications/read-all")) return json({});
     if (url.includes("/notifications")) return json(items);
     return json(null);
   }) as unknown as typeof globalThis.fetch;
+  return server;
 }
 
 const settle = () =>
@@ -80,7 +102,7 @@ const settle = () =>
   });
 
 /** The dots a reader can see: a read row's dot has no fill and no outline. */
-function visibleDots(root: HTMLElement): number {
+function visibleDots(root: Element): number {
   return [...root.querySelectorAll("span")].filter((s) => {
     const style = (s as HTMLElement).style;
     return (
@@ -94,22 +116,87 @@ function visibleDots(root: HTMLElement): number {
 test("only unread rows show a dot, and Mark all read clears them all", async () => {
   stubApi([notification("a", false), notification("b", true)]);
   setAccessToken("t");
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<NotificationBell />, host as HTMLElement));
+  const { container } = render(<NotificationBell />);
   await settle();
 
-  const bell = host.querySelector(
-    'button[aria-label="Notifications"]',
-  ) as HTMLButtonElement;
-  await act(async () => bell.click());
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Notifications" }));
+  });
   await settle();
-  expect(visibleDots(host)).toBe(1);
+  expect(visibleDots(container)).toBe(1);
 
-  const markAll = [...host.querySelectorAll("button")].find(
-    (b) => b.textContent?.trim() === "Mark all read",
-  ) as HTMLButtonElement;
-  await act(async () => markAll.click());
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Mark all read" }));
+  });
   await settle();
-  expect(visibleDots(host)).toBe(0);
+  expect(visibleDots(container)).toBe(0);
+});
+
+test("Mark all read clears the badge", async () => {
+  stubApi([notification("a", false)], 3);
+  setAccessToken("t");
+  render(<NotificationBell />);
+  await settle();
+  expect(body().getByText("3")).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Notifications" }));
+  });
+  await settle();
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Mark all read" }));
+  });
+  await settle();
+  expect(body().queryByText("3")).toBeNull();
+});
+
+/** Delivers a notification event through the socket the ws store opened. */
+function pushNotificationEvent() {
+  const socket = FakeWebSocket.instances.at(-1);
+  if (!socket?.onmessage) throw new Error("the bell opened no socket");
+  const onmessage = socket.onmessage;
+  onmessage({
+    data: JSON.stringify({
+      type: "event",
+      id: "notif-bell",
+      eventType: "ADDED",
+      object: { id: "n1" },
+    }),
+  });
+}
+
+test("a notification event inside the suppression window after Mark all read leaves the badge cleared, and one after it brings the badge back", async () => {
+  const server = stubApi([notification("a", false)], 1);
+  setAccessToken("t");
+  const start = realNow();
+  let now = start;
+  Date.now = () => now;
+  render(<NotificationBell />);
+  await settle();
+  expect(body().getByText("1")).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Notifications" }));
+  });
+  await settle();
+  await act(async () => {
+    fireEvent.click(body().getByRole("button", { name: "Mark all read" }));
+  });
+  await settle();
+  expect(body().queryByText("1")).toBeNull();
+
+  // The server would report one unread again; only a re-fetch shows it.
+  server.unread = 1;
+  const fetchesBefore = server.unreadFetches;
+  now = start + 1000;
+  await act(async () => pushNotificationEvent());
+  await settle();
+  expect(server.unreadFetches).toBe(fetchesBefore);
+  expect(body().queryByText("1")).toBeNull();
+
+  now = start + 5000;
+  await act(async () => pushNotificationEvent());
+  await settle();
+  expect(server.unreadFetches).toBe(fetchesBefore + 1);
+  expect(body().getByText("1")).toBeTruthy();
 });

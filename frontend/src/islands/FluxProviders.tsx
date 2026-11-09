@@ -19,9 +19,9 @@ import { apiPost, apiPut } from "@/lib/api.ts";
 import type { NormalizedProvider } from "@/lib/notification-types.ts";
 import { INPUT_CLASS, PAGE_SIZE } from "@/lib/notification-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
+import { showToast } from "@/src/lib/toast-store.ts";
 import { useNotificationCrud } from "@/src/lib/useNotificationCrud.ts";
 
 /** All Flux notification provider types (alphabetical). */
