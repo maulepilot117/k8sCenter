@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import DetailShell from "@/components/k8s/DetailShell.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
@@ -26,6 +26,8 @@ import { resourceHref } from "@/lib/k8s-links.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 /** Map syncStatus string → DetailShell tone */
 const SYNC_TONE: Record<string, Tone> = {
@@ -46,9 +48,9 @@ function GitOpsIcon() {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
       style={{ color: "var(--accent)" }}
     >
       <circle cx="12" cy="12" r="3" />
@@ -61,16 +63,18 @@ function GitOpsIcon() {
 }
 
 export default function GitOpsAppDetail({ id }: { id: string }) {
-  const detail = useSignal<AppDetail | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const refreshing = useSignal(false);
-  const actionInFlight = useSignal(false);
-  const commits = useSignal<Record<string, CommitInfo>>({});
-  const activeTab = useSignal("overview");
+  const isClient = useIsClient();
+  const [detail, setDetail] = useState<AppDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [actionInFlight, setActionInFlight] = useState(false);
+  const [commits, setCommits] = useState<Record<string, CommitInfo>>({});
+  const [activeTab, setActiveTab] = useState("overview");
+  const detailRef = useLatest(detail);
 
   // Confirmation dialog state
-  const confirmAction = useSignal<{
+  const [confirmAction, setConfirmAction] = useState<{
     title: string;
     message: string;
     label: string;
@@ -78,37 +82,40 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
     onConfirm: () => void;
   } | null>(null);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       const res = await apiGet<AppDetail>(
         `/v1/gitops/applications/${encodeURIComponent(id)}`,
       );
-      detail.value = res.data;
-      error.value = null;
+      setDetail(res.data);
+      setError(null);
     } catch {
-      error.value = "Failed to load application";
+      setError("Failed to load application");
     }
-  }
+  }, [id]);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
-  }, []);
+  }, [fetchData]);
 
   // Async commit message enrichment — fetches after detail loads
+  const appId = detail?.app?.id;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch the commits only when a different application loads, not on every refresh of the same one
   useEffect(() => {
-    if (!IS_BROWSER || !detail.value) return;
+    const loaded = detailRef.current;
+    if (!IS_BROWSER || !loaded) return;
 
-    const app = detail.value.app;
+    const app = loaded.app;
     const repoURL = app.source?.repoURL;
     if (!repoURL?.includes("://")) return;
 
     // Collect SHAs: current revision + history revisions
     const shas = new Set<string>();
     if (app.currentRevision) shas.add(app.currentRevision);
-    for (const h of detail.value.history ?? []) {
+    for (const h of loaded.history ?? []) {
       if (h.revision) shas.add(h.revision);
     }
     if (shas.size === 0) return;
@@ -122,7 +129,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
     api<CommitsResponse>(url, { method: "GET", signal: controller.signal })
       .then((res) => {
         if (res.data?.commits) {
-          commits.value = res.data.commits;
+          setCommits(res.data.commits);
         }
       })
       .catch(() => {
@@ -130,7 +137,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
       });
 
     return () => controller.abort();
-  }, [detail.value?.app?.id]);
+  }, [appId]);
 
   // Determine the CRD kind from the composite ID
   const toolPrefix = id.split(":")[0];
@@ -144,13 +151,13 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   useWsRefetch(fetchData, [[`gitops-detail-${id}`, kind, ""]], 3000);
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
   async function performAction(action: string, body?: unknown) {
-    actionInFlight.value = true;
+    setActionInFlight(true);
     try {
       const res = await apiPost<{ message: string }>(
         `/v1/gitops/applications/${encodeURIComponent(id)}/${action}`,
@@ -162,7 +169,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
       const msg = e instanceof Error ? e.message : "Action failed";
       showToast(msg, "error");
     } finally {
-      actionInFlight.value = false;
+      setActionInFlight(false);
     }
   }
 
@@ -173,11 +180,11 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
     danger: boolean,
     onConfirm: () => void,
   ) {
-    confirmAction.value = { title, message, label, danger, onConfirm };
+    setConfirmAction({ title, message, label, danger, onConfirm });
   }
 
   function handleSync() {
-    const app = detail.value?.app;
+    const app = detail?.app;
     if (!app) return;
     const verb = app.tool === "argocd" ? "Sync" : "Reconcile";
     requestConfirm(
@@ -186,14 +193,14 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
       verb,
       false,
       () => {
-        confirmAction.value = null;
+        setConfirmAction(null);
         performAction("sync");
       },
     );
   }
 
   function handleSuspend(suspend: boolean) {
-    const app = detail.value?.app;
+    const app = detail?.app;
     if (!app) return;
     if (suspend) {
       requestConfirm(
@@ -202,7 +209,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
         "Suspend",
         true,
         () => {
-          confirmAction.value = null;
+          setConfirmAction(null);
           performAction("suspend", { suspend: true });
         },
       );
@@ -212,7 +219,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   }
 
   function handleRollback(revision: string, deployedAt: string) {
-    const app = detail.value?.app;
+    const app = detail?.app;
     if (!app) return;
     const shortRev = revision.length > 7 ? revision.slice(0, 7) : revision;
     const dateStr = deployedAt
@@ -224,30 +231,30 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
       "Rollback",
       true,
       () => {
-        confirmAction.value = null;
+        setConfirmAction(null);
         performAction("rollback", { revision });
       },
     );
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   /* Loading state */
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="flex justify-center py-12">
+      <div className="flex justify-center py-12">
         <Spinner className="text-brand" />
       </div>
     );
   }
 
   /* Error state */
-  if (error.value || !detail.value) {
+  if (error || !detail) {
     return (
-      <div class="p-6">
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted mb-4">
-            {error.value ?? "Application not found"}
+      <div className="p-6">
+        <div className="text-center py-12 rounded-lg border border-border-primary bg-elevated">
+          <p className="text-text-muted mb-4">
+            {error ?? "Application not found"}
           </p>
           <Button type="button" variant="ghost" onClick={handleRefresh}>
             Retry
@@ -257,7 +264,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
     );
   }
 
-  const { app, resources, history } = detail.value;
+  const { app, resources, history } = detail;
   const isArgo = app.tool === "argocd";
   const isSyncing = app.syncStatus === "progressing";
   const compareBase = /^https?:\/\//i.test(app.source.repoURL ?? "")
@@ -283,9 +290,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
         type="button"
         variant="primary"
         onClick={handleSync}
-        disabled={
-          actionInFlight.value || isSyncing || (app.suspended && !isArgo)
-        }
+        disabled={actionInFlight || isSyncing || (app.suspended && !isArgo)}
         title={
           app.suspended && !isArgo
             ? "Resume before reconciling"
@@ -302,7 +307,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
           type="button"
           variant="ghost"
           onClick={() => handleSuspend(false)}
-          disabled={actionInFlight.value}
+          disabled={actionInFlight}
         >
           Resume
         </Button>
@@ -311,7 +316,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
           type="button"
           variant="ghost"
           onClick={() => handleSuspend(true)}
-          disabled={actionInFlight.value}
+          disabled={actionInFlight}
         >
           Suspend
         </Button>
@@ -322,9 +327,9 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
         type="button"
         variant="ghost"
         onClick={handleRefresh}
-        disabled={refreshing.value || actionInFlight.value}
+        disabled={refreshing || actionInFlight}
       >
-        {refreshing.value ? "Refreshing..." : "Refresh"}
+        {refreshing ? "Refreshing..." : "Refresh"}
       </Button>
     </>
   );
@@ -332,13 +337,13 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   /* ── Overview tab ─────────────────────────────────────────────── */
   const overviewPanel = (
     <GlassCard>
-      <div class="flex items-center gap-2 flex-wrap mb-4">
+      <div className="flex items-center gap-2 flex-wrap mb-4">
         <ToolBadge tool={app.tool as string} />
         <SyncStatusBadge status={app.syncStatus} />
         <HealthStatusBadge status={app.healthStatus} />
         {app.suspended && (
           <span
-            class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
+            className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
             style={{
               color: "var(--text-muted)",
               background: "var(--bg-elevated)",
@@ -349,12 +354,12 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
         )}
       </div>
       <h2
-        class="text-xs font-semibold uppercase tracking-wider mb-3"
+        className="text-xs font-semibold uppercase tracking-wider mb-3"
         style={{ color: "var(--text-muted)" }}
       >
         Source
       </h2>
-      <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
         {app.source.repoURL && (
           <div>
             <dt style={{ color: "var(--text-muted)" }}>Repository</dt>
@@ -364,13 +369,13 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                   href={app.source.repoURL}
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="hover:underline break-all"
+                  className="hover:underline break-all"
                   style={{ color: "var(--accent)" }}
                 >
                   {app.source.repoURL}
                 </a>
               ) : (
-                <span class="break-all">{app.source.repoURL}</span>
+                <span className="break-all">{app.source.repoURL}</span>
               )}
             </dd>
           </div>
@@ -378,7 +383,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
         {app.source.path && (
           <div>
             <dt style={{ color: "var(--text-muted)" }}>Path</dt>
-            <dd class="font-mono" style={{ color: "var(--text-primary)" }}>
+            <dd className="font-mono" style={{ color: "var(--text-primary)" }}>
               {app.source.path}
             </dd>
           </div>
@@ -386,7 +391,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
         {app.source.targetRevision && (
           <div>
             <dt style={{ color: "var(--text-muted)" }}>Target Revision</dt>
-            <dd class="font-mono" style={{ color: "var(--text-primary)" }}>
+            <dd className="font-mono" style={{ color: "var(--text-primary)" }}>
               {app.source.targetRevision}
             </dd>
           </div>
@@ -430,47 +435,47 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   const anyHealth = (resources ?? []).some((r) => r.health);
   const resourcesPanel =
     resources && resources.length > 0 ? (
-      <div class="space-y-2">
+      <div className="space-y-2">
         <div
-          class="overflow-x-auto rounded-lg border"
+          className="overflow-x-auto rounded-lg border"
           style={{ borderColor: "var(--border-primary)" }}
         >
-          <table class="w-full text-sm">
+          <table className="w-full text-sm">
             <thead>
               <tr
-                class="border-b"
+                className="border-b"
                 style={{
                   borderColor: "var(--border-primary)",
                   background: "var(--bg-surface)",
                 }}
               >
                 <th
-                  class="px-3 py-2 text-left text-xs font-medium"
+                  className="px-3 py-2 text-left text-xs font-medium"
                   style={{ color: "var(--text-muted)" }}
                 >
                   Kind
                 </th>
                 <th
-                  class="px-3 py-2 text-left text-xs font-medium"
+                  className="px-3 py-2 text-left text-xs font-medium"
                   style={{ color: "var(--text-muted)" }}
                 >
                   Name
                 </th>
                 <th
-                  class="px-3 py-2 text-left text-xs font-medium"
+                  className="px-3 py-2 text-left text-xs font-medium"
                   style={{ color: "var(--text-muted)" }}
                 >
                   Namespace
                 </th>
                 <th
-                  class="px-3 py-2 text-left text-xs font-medium"
+                  className="px-3 py-2 text-left text-xs font-medium"
                   style={{ color: "var(--text-muted)" }}
                 >
                   Status
                 </th>
                 {anyHealth && (
                   <th
-                    class="px-3 py-2 text-left text-xs font-medium"
+                    className="px-3 py-2 text-left text-xs font-medium"
                     style={{ color: "var(--text-muted)" }}
                   >
                     Health
@@ -478,7 +483,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                 )}
               </tr>
             </thead>
-            <tbody class="divide-y divide-border-subtle">
+            <tbody className="divide-y divide-border-subtle">
               {resources.map((r: ManagedResource, i: number) => {
                 const href = resourceHref(r.kind, r.namespace, r.name);
                 const syncColor =
@@ -490,20 +495,21 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                   : undefined;
                 return (
                   <tr
+                    // biome-ignore lint/suspicious/noArrayIndexKey: managed resources have no unique id, so the key is the identity plus position
                     key={`${r.kind}-${r.namespace}-${r.name}-${i}`}
-                    class="hover:bg-hover/30"
+                    className="hover:bg-hover/30"
                   >
                     <td
-                      class="px-3 py-2"
+                      className="px-3 py-2"
                       style={{ color: "var(--text-secondary)" }}
                     >
                       {r.kind}
                     </td>
-                    <td class="px-3 py-2">
+                    <td className="px-3 py-2">
                       {href ? (
                         <a
                           href={href}
-                          class="hover:underline"
+                          className="hover:underline"
                           style={{ color: "var(--accent)" }}
                         >
                           {r.name}
@@ -515,16 +521,16 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                       )}
                     </td>
                     <td
-                      class="px-3 py-2"
+                      className="px-3 py-2"
                       style={{ color: "var(--text-muted)" }}
                     >
                       {r.namespace ?? "-"}
                     </td>
-                    <td class="px-3 py-2">
+                    <td className="px-3 py-2">
                       <span style={{ color: syncColor }}>{r.status}</span>
                     </td>
                     {anyHealth && (
-                      <td class="px-3 py-2">
+                      <td className="px-3 py-2">
                         {r.health ? (
                           <span style={{ color: healthColor }}>{r.health}</span>
                         ) : (
@@ -539,7 +545,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
           </table>
         </div>
         {!anyHealth && isArgo && (
-          <p class="text-xs" style={{ color: "var(--text-muted)" }}>
+          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
             Argo CD isn't reporting per-resource health in this Application.
             Argo CD 3 leaves it out unless controller.resource.health.persist is
             enabled; the application's overall health is shown above.
@@ -548,7 +554,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
       </div>
     ) : (
       <div
-        class="text-center py-8 rounded-lg border"
+        className="text-center py-8 rounded-lg border"
         style={{
           borderColor: "var(--border-primary)",
           background: "var(--bg-elevated)",
@@ -564,45 +570,45 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   const historyPanel =
     history && history.length > 0 ? (
       <div
-        class="overflow-x-auto rounded-lg border"
+        className="overflow-x-auto rounded-lg border"
         style={{ borderColor: "var(--border-primary)" }}
       >
-        <table class="w-full text-sm">
+        <table className="w-full text-sm">
           <thead>
             <tr
-              class="border-b"
+              className="border-b"
               style={{
                 borderColor: "var(--border-primary)",
                 background: "var(--bg-surface)",
               }}
             >
               <th
-                class="px-3 py-2 text-left text-xs font-medium"
+                className="px-3 py-2 text-left text-xs font-medium"
                 style={{ color: "var(--text-muted)" }}
               >
                 Revision
               </th>
               <th
-                class="px-3 py-2 text-left text-xs font-medium"
+                className="px-3 py-2 text-left text-xs font-medium"
                 style={{ color: "var(--text-muted)" }}
               >
                 Status
               </th>
               <th
-                class="px-3 py-2 text-left text-xs font-medium"
+                className="px-3 py-2 text-left text-xs font-medium"
                 style={{ color: "var(--text-muted)" }}
               >
                 Message
               </th>
               <th
-                class="px-3 py-2 text-left text-xs font-medium"
+                className="px-3 py-2 text-left text-xs font-medium"
                 style={{ color: "var(--text-muted)" }}
               >
                 Deployed At
               </th>
               {isArgo && (
                 <th
-                  class="px-3 py-2 text-right text-xs font-medium"
+                  className="px-3 py-2 text-right text-xs font-medium"
                   style={{ color: "var(--text-muted)" }}
                 >
                   Action
@@ -610,11 +616,11 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
               )}
             </tr>
           </thead>
-          <tbody class="divide-y divide-border-subtle">
+          <tbody className="divide-y divide-border-subtle">
             {history.map((h: RevisionEntry, i: number) => {
               const syncColor =
                 SYNC_COLORS[h.status.toLowerCase()] ?? "var(--text-secondary)";
-              const ci = commits.value[h.revision];
+              const ci = commits[h.revision];
               const commitUrl = ci?.webUrl?.startsWith("https://")
                 ? ci.webUrl
                 : undefined;
@@ -622,9 +628,13 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                 h.revision.length > 7 ? h.revision.slice(0, 7) : h.revision;
               const prevRevision = i > 0 ? history[i - 1].revision : null;
               return (
-                <tr key={`${h.revision}-${i}`} class="hover:bg-hover/30">
+                <tr
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a revision can repeat in the history, so the key is the revision plus position
+                  key={`${h.revision}-${i}`}
+                  className="hover:bg-hover/30"
+                >
                   <td
-                    class="px-3 py-2 font-mono"
+                    className="px-3 py-2 font-mono"
                     style={{ color: "var(--text-primary)" }}
                   >
                     {commitUrl ? (
@@ -632,7 +642,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                         href={commitUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        class="hover:underline"
+                        className="hover:underline"
                         style={{ color: "var(--accent)" }}
                       >
                         {shortSha}
@@ -645,7 +655,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                         href={`${compareBase}/compare/${prevRevision}...${h.revision}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        class="ml-2 text-xs hover:underline"
+                        className="ml-2 text-xs hover:underline"
                         style={{ color: "var(--text-muted)" }}
                         title="Compare with previous deployment"
                       >
@@ -653,17 +663,17 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                       </a>
                     )}
                   </td>
-                  <td class="px-3 py-2">
+                  <td className="px-3 py-2">
                     <span style={{ color: syncColor }}>{h.status}</span>
                   </td>
                   <td
-                    class="px-3 py-2 max-w-xs"
+                    className="px-3 py-2 max-w-xs"
                     style={{ color: "var(--text-secondary)" }}
                   >
                     {ci ? (
-                      <div class="min-w-0">
+                      <div className="min-w-0">
                         <div
-                          class="truncate text-sm"
+                          className="truncate text-sm"
                           style={{ color: "var(--text-primary)" }}
                         >
                           {commitUrl ? (
@@ -671,7 +681,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                               href={commitUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              class="hover:underline"
+                              className="hover:underline"
                             >
                               {ci.title}
                             </a>
@@ -680,7 +690,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                           )}
                         </div>
                         <div
-                          class="text-xs truncate"
+                          className="text-xs truncate"
                           style={{ color: "var(--text-muted)" }}
                         >
                           {ci.authorName}
@@ -690,18 +700,21 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                       (h.message ?? "-")
                     )}
                   </td>
-                  <td class="px-3 py-2" style={{ color: "var(--text-muted)" }}>
+                  <td
+                    className="px-3 py-2"
+                    style={{ color: "var(--text-muted)" }}
+                  >
                     {h.deployedAt
                       ? new Date(h.deployedAt).toLocaleString()
                       : "-"}
                   </td>
                   {isArgo && (
-                    <td class="px-3 py-2 text-right">
+                    <td className="px-3 py-2 text-right">
                       <button
                         type="button"
                         onClick={() => handleRollback(h.revision, h.deployedAt)}
-                        disabled={actionInFlight.value || isSyncing}
-                        class="text-xs hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={actionInFlight || isSyncing}
+                        className="text-xs hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
                         style={{ color: "var(--accent)" }}
                       >
                         Rollback
@@ -716,7 +729,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
       </div>
     ) : (
       <div
-        class="text-center py-8 rounded-lg border"
+        className="text-center py-8 rounded-lg border"
         style={{
           borderColor: "var(--border-primary)",
           background: "var(--bg-elevated)",
@@ -743,27 +756,25 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
           { id: "resources", label: `Resources (${resources?.length ?? 0})` },
           { id: "history", label: "History" },
         ]}
-        active={activeTab.value}
-        onTab={(id) => {
-          activeTab.value = id;
-        }}
+        active={activeTab}
+        onTab={setActiveTab}
       >
-        {activeTab.value === "overview" && overviewPanel}
-        {activeTab.value === "resources" && resourcesPanel}
-        {activeTab.value === "history" && historyPanel}
+        {activeTab === "overview" && overviewPanel}
+        {activeTab === "resources" && resourcesPanel}
+        {activeTab === "history" && historyPanel}
       </DetailShell>
 
       {/* Confirmation dialog — floats above DetailShell */}
-      {confirmAction.value && (
+      {confirmAction && (
         <ConfirmDialog
-          title={confirmAction.value.title}
-          message={confirmAction.value.message}
-          confirmLabel={confirmAction.value.label}
-          danger={confirmAction.value.danger}
-          loading={actionInFlight.value}
-          onConfirm={confirmAction.value.onConfirm}
+          title={confirmAction.title}
+          message={confirmAction.message}
+          confirmLabel={confirmAction.label}
+          danger={confirmAction.danger}
+          loading={actionInFlight}
+          onConfirm={confirmAction.onConfirm}
           onCancel={() => {
-            confirmAction.value = null;
+            setConfirmAction(null);
           }}
         />
       )}
