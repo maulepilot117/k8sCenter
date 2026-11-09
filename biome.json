@@ -180,6 +180,7 @@
         "frontend/components/ui/NotifCenterBadges.tsx",
         "frontend/components/ui/NotificationBadges.tsx",
         "frontend/components/ui/NotificationShared.tsx",
+        "frontend/components/ui/NotificationShared_test.tsx",
         "frontend/components/ui/PanelStateNotice.tsx",
         "frontend/components/ui/PolicyBadges.tsx",
         "frontend/components/ui/RemoveButton.tsx",

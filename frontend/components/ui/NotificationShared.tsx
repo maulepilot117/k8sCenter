@@ -7,6 +7,7 @@ import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import type { EventSourceRef } from "@/lib/notification-types.ts";
 import { PAGE_SIZE } from "@/lib/notification-types.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 // ---------------------------------------------------------------------------
 // NotificationPageHeader
@@ -305,21 +306,23 @@ export function NotificationFormShell({
   children,
 }: FormShellProps) {
   const firstInputRef = useRef<HTMLDivElement>(null);
+  // Callers pass a new onCancel on every render, so the listener reads it
+  // through a ref and the focus runs once, when the shell opens.
+  const onCancelRef = useLatest(onCancel);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") onCancelRef.current();
     };
     globalThis.addEventListener("keydown", handler);
 
-    // Auto-focus first input inside shell
     const input = firstInputRef.current?.querySelector<HTMLElement>(
       "input:not([disabled]), select:not([disabled])",
     );
     input?.focus();
 
     return () => globalThis.removeEventListener("keydown", handler);
-  }, [onCancel]);
+  }, []);
 
   return (
     <div
