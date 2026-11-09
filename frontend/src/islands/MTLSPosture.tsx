@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import {
   MTLSSourceBadge,
@@ -9,7 +9,8 @@ import { Spinner } from "@/components/ui/Spinner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { meshApi } from "@/lib/mesh-api.ts";
 import type { MTLSPostureResponse, WorkloadMTLS } from "@/lib/mesh-types.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 /** Warning-level error keys (metric/truncation issues) vs. error-level (pod/policy fetch failures). */
 const WARN_KEYS = new Set(["prometheus-cross-check", "truncated"]);
@@ -82,7 +83,7 @@ function buildCards(workloads: WorkloadMTLS[]): NamespaceCard[] {
 
 /** A single workload row in the drill-down table. */
 function WorkloadRow({ w }: { w: WorkloadMTLS }) {
-  const hovered = useSignal(false);
+  const [hovered, setHovered] = useState(false);
   const kindLabel = w.workloadKind ?? "—";
   const workloadLabel = `${kindLabel}/${w.workload}`;
 
@@ -100,15 +101,15 @@ function WorkloadRow({ w }: { w: WorkloadMTLS }) {
     <tr
       style={{
         borderBottom: "1px solid var(--border-primary)",
-        background: hovered.value
+        background: hovered
           ? "color-mix(in srgb, var(--accent) 5%, transparent)"
           : "transparent",
       }}
       onMouseEnter={() => {
-        hovered.value = true;
+        setHovered(true);
       }}
       onMouseLeave={() => {
-        hovered.value = false;
+        setHovered(false);
       }}
     >
       <td style={{ padding: "8px 12px" }}>
@@ -464,13 +465,16 @@ function ErrorBanner({
 }
 
 export default function MTLSPosture() {
-  const data = useSignal<MTLSPostureResponse | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const namespace = useSignal<string>("");
-  const expandedNamespaces = useSignal<Record<string, boolean>>({});
-  const expandedNotInMesh = useSignal(false);
-  const refreshing = useSignal(false);
+  const isClient = useIsClient();
+  const [data, setData] = useState<MTLSPostureResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [namespace, setNamespace, namespaceRef] = useStateRef<string>("");
+  const [expandedNamespaces, setExpandedNamespaces] = useState<
+    Record<string, boolean>
+  >({});
+  const [expandedNotInMesh, setExpandedNotInMesh] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Sequence counter: every fetch increments and captures a token; a
   // response is applied only if its token is the latest. Stops slow
@@ -479,28 +483,29 @@ export default function MTLSPosture() {
   // Debounce handle for namespace-input → fetch.
   const debounceHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function fetchData() {
+  // Reads the namespace through the ref: it also runs from the debounce
+  // timer, which outlives the render that scheduled it.
+  const fetchData = useCallback(async () => {
     const seq = ++fetchSeq.current;
     try {
-      const ns = namespace.value.trim() || undefined;
+      const ns = namespaceRef.current.trim() || undefined;
       const res = await meshApi.mtls({ namespace: ns });
       if (seq !== fetchSeq.current) return; // stale response — drop
-      data.value = res.data ?? null;
-      error.value = null;
+      setData(res.data ?? null);
+      setError(null);
     } catch {
       if (seq !== fetchSeq.current) return; // stale error — drop
-      error.value = "Failed to load mTLS posture data";
+      setError("Failed to load mTLS posture data");
     }
-  }
+  }, []);
 
   // Read namespace from URL on mount, then fetch
   useEffect(() => {
-    if (!IS_BROWSER) return;
     const url = new URL(globalThis.location.href);
     const ns = url.searchParams.get("namespace") ?? "";
-    namespace.value = ns;
+    setNamespace(ns);
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
     return () => {
       if (debounceHandle.current !== null) {
@@ -508,10 +513,10 @@ export default function MTLSPosture() {
         debounceHandle.current = null;
       }
     };
-  }, []);
+  }, [fetchData]);
 
   function handleNamespaceChange(newNs: string) {
-    namespace.value = newNs;
+    setNamespace(newNs);
     // Update URL so the view is deep-linkable
     const url = new URL(globalThis.location.href);
     if (newNs) {
@@ -538,22 +543,19 @@ export default function MTLSPosture() {
       clearTimeout(debounceHandle.current);
       debounceHandle.current = null;
     }
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
   function toggleNamespace(ns: string) {
-    expandedNamespaces.value = {
-      ...expandedNamespaces.value,
-      [ns]: !expandedNamespaces.value[ns],
-    };
+    setExpandedNamespaces((prev) => ({ ...prev, [ns]: !prev[ns] }));
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const workloads = data.value?.workloads ?? [];
-  const errors = data.value?.errors ?? {};
+  const workloads = data?.workloads ?? [];
+  const errors = data?.errors ?? {};
   const errorKeys = Object.keys(errors);
 
   const allCards = buildCards(workloads);
@@ -584,14 +586,14 @@ export default function MTLSPosture() {
         >
           mTLS Posture
         </h1>
-        {!loading.value && (
+        {!loading && (
           <Button
             type="button"
             variant="ghost"
             onClick={handleRefresh}
-            disabled={refreshing.value}
+            disabled={refreshing}
           >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
+            {refreshing ? "Refreshing..." : "Refresh"}
           </Button>
         )}
       </div>
@@ -639,12 +641,10 @@ export default function MTLSPosture() {
             maxWidth: "320px",
           }}
           placeholder="All namespaces"
-          value={namespace.value}
-          onInput={(e) =>
-            handleNamespaceChange((e.target as HTMLInputElement).value)
-          }
+          value={namespace}
+          onChange={(e) => handleNamespaceChange(e.currentTarget.value)}
         />
-        {namespace.value && (
+        {namespace && (
           <button
             type="button"
             style={{
@@ -680,7 +680,7 @@ export default function MTLSPosture() {
       )}
 
       {/* Loading state */}
-      {loading.value && (
+      {loading && (
         <div
           style={{
             display: "flex",
@@ -693,16 +693,16 @@ export default function MTLSPosture() {
       )}
 
       {/* Error state */}
-      {!loading.value && error.value && (
+      {!loading && error && (
         <p
           style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
         >
-          {error.value}
+          {error}
         </p>
       )}
 
       {/* Empty state */}
-      {!loading.value && !error.value && workloads.length === 0 && (
+      {!loading && !error && workloads.length === 0 && (
         <WidgetShell>
           <div style={{ textAlign: "center", padding: "48px 24px" }}>
             <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
@@ -713,7 +713,7 @@ export default function MTLSPosture() {
       )}
 
       {/* Main card grid */}
-      {!loading.value && !error.value && meshedCards.length > 0 && (
+      {!loading && !error && meshedCards.length > 0 && (
         <div
           style={{
             display: "grid",
@@ -726,7 +726,7 @@ export default function MTLSPosture() {
             <NamespacePostureCard
               key={card.namespace}
               card={card}
-              expanded={!!expandedNamespaces.value[card.namespace]}
+              expanded={!!expandedNamespaces[card.namespace]}
               onToggle={() => toggleNamespace(card.namespace)}
             />
           ))}
@@ -734,13 +734,13 @@ export default function MTLSPosture() {
       )}
 
       {/* Not in mesh section */}
-      {!loading.value && !error.value && unmeshedOnlyCards.length > 0 && (
+      {!loading && !error && unmeshedOnlyCards.length > 0 && (
         <div style={{ marginTop: "16px" }}>
           <NotInMeshSection
             cards={unmeshedOnlyCards}
-            expanded={expandedNotInMesh.value}
+            expanded={expandedNotInMesh}
             onToggle={() => {
-              expandedNotInMesh.value = !expandedNotInMesh.value;
+              setExpandedNotInMesh((v) => !v);
             }}
           />
         </div>

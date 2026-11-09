@@ -1,49 +1,48 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { MeshBadge } from "@/components/ui/MeshBadges.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { meshApi } from "@/lib/mesh-api.ts";
 import type { MeshInfo, MeshStatus } from "@/lib/mesh-types.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 export default function MeshDashboard() {
-  const meshStatus = useSignal<MeshStatus | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const refreshing = useSignal(false);
+  const isClient = useIsClient();
+  const [meshStatus, setMeshStatus] = useState<MeshStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       const res = await meshApi.status();
-      meshStatus.value = res.data.status;
-      error.value = null;
+      setMeshStatus(res.data.status);
+      setError(null);
     } catch {
-      error.value = "Failed to load service mesh status";
+      setError("Failed to load service mesh status");
     }
-  }
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    fetchData().then(() => {
-      loading.value = false;
-    });
   }, []);
 
+  useEffect(() => {
+    fetchData().then(() => {
+      setLoading(false);
+    });
+  }, [fetchData]);
+
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const status = meshStatus.value;
+  const status = meshStatus;
   const istioInstalled = status?.istio?.installed === true;
   const linkerdInstalled = status?.linkerd?.installed === true;
-  const noMesh =
-    !loading.value && !error.value && !istioInstalled && !linkerdInstalled;
+  const noMesh = !loading && !error && !istioInstalled && !linkerdInstalled;
 
   return (
     <div style={{ padding: "24px" }}>
@@ -66,14 +65,14 @@ export default function MeshDashboard() {
         >
           Service Mesh
         </h1>
-        {!loading.value && (
+        {!loading && (
           <Button
             type="button"
             variant="ghost"
             onClick={handleRefresh}
-            disabled={refreshing.value}
+            disabled={refreshing}
           >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
+            {refreshing ? "Refreshing..." : "Refresh"}
           </Button>
         )}
       </div>
@@ -88,7 +87,7 @@ export default function MeshDashboard() {
       </p>
 
       {/* Loading state */}
-      {loading.value && (
+      {loading && (
         <div
           style={{
             display: "flex",
@@ -102,7 +101,7 @@ export default function MeshDashboard() {
       )}
 
       {/* Error state */}
-      {error.value && (
+      {error && (
         <p
           style={{
             fontSize: "13px",
@@ -111,38 +110,36 @@ export default function MeshDashboard() {
             paddingBottom: "16px",
           }}
         >
-          {error.value}
+          {error}
         </p>
       )}
 
       {/* Mesh cards — one per detected mesh */}
-      {!loading.value &&
-        !error.value &&
-        (istioInstalled || linkerdInstalled) && (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-              gap: "16px",
-              marginBottom: "24px",
-            }}
-          >
-            {istioInstalled && status?.istio && (
-              <MeshInfoCard
-                mesh="istio"
-                info={status.istio}
-                lastChecked={status.lastChecked}
-              />
-            )}
-            {linkerdInstalled && status?.linkerd && (
-              <MeshInfoCard
-                mesh="linkerd"
-                info={status.linkerd}
-                lastChecked={status.lastChecked}
-              />
-            )}
-          </div>
-        )}
+      {!loading && !error && (istioInstalled || linkerdInstalled) && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+            gap: "16px",
+            marginBottom: "24px",
+          }}
+        >
+          {istioInstalled && status?.istio && (
+            <MeshInfoCard
+              mesh="istio"
+              info={status.istio}
+              lastChecked={status.lastChecked}
+            />
+          )}
+          {linkerdInstalled && status?.linkerd && (
+            <MeshInfoCard
+              mesh="linkerd"
+              info={status.linkerd}
+              lastChecked={status.lastChecked}
+            />
+          )}
+        </div>
+      )}
 
       {/* Empty state */}
       {noMesh && (
@@ -203,39 +200,37 @@ export default function MeshDashboard() {
       )}
 
       {/* Navigation hints — only shown when mesh is present */}
-      {!loading.value &&
-        !error.value &&
-        (istioInstalled || linkerdInstalled) && (
-          <div
+      {!loading && !error && (istioInstalled || linkerdInstalled) && (
+        <div
+          style={{
+            marginTop: "24px",
+            display: "flex",
+            alignItems: "center",
+            gap: "16px",
+          }}
+        >
+          <a
+            href="/networking/mesh/routing"
             style={{
-              marginTop: "24px",
-              display: "flex",
-              alignItems: "center",
-              gap: "16px",
+              fontSize: "13px",
+              color: "var(--accent)",
+              textDecoration: "none",
             }}
           >
-            <a
-              href="/networking/mesh/routing"
-              style={{
-                fontSize: "13px",
-                color: "var(--accent)",
-                textDecoration: "none",
-              }}
-            >
-              View Mesh Routing &rarr;
-            </a>
-            <a
-              href="/networking/mesh/mtls"
-              style={{
-                fontSize: "13px",
-                color: "var(--accent)",
-                textDecoration: "none",
-              }}
-            >
-              View mTLS Posture &rarr;
-            </a>
-          </div>
-        )}
+            View Mesh Routing &rarr;
+          </a>
+          <a
+            href="/networking/mesh/mtls"
+            style={{
+              fontSize: "13px",
+              color: "var(--accent)",
+              textDecoration: "none",
+            }}
+          >
+            View mTLS Posture &rarr;
+          </a>
+        </div>
+      )}
     </div>
   );
 }
