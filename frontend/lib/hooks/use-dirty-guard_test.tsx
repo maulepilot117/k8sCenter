@@ -1,10 +1,13 @@
 /** @jsxImportSource react */
 import { expect, test } from "bun:test";
 import { type Signal, signal } from "@preact/signals-core";
+// A static import, so the hook module loads before setupDom registers a DOM,
+// as it does when another test file (or a server render) imports it first:
+// the guard must not decide "no browser" once at load and keep that forever.
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 setupDom({ browser: true });
-const { useDirtyGuard } = await import("@/lib/hooks/use-dirty-guard.ts");
 
 function leave(): Event {
   const event = new Event("beforeunload", { cancelable: true });

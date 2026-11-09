@@ -1,16 +1,13 @@
 import type { ReadonlySignal } from "@preact/signals-core";
 import { useEffect } from "react";
 
-// Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
-// this file is shared by both the Fresh tree and the Astro/Bun port, and the
-// bare specifier would otherwise resolve to the always-false test shim under
-// Astro. Value-neutral for Fresh: identical to @fresh/core's own IS_BROWSER.
-const IS_BROWSER = typeof document !== "undefined";
-
 /** Warns the user before leaving the page when dirty is true. */
 export function useDirtyGuard(dirty: ReadonlySignal<boolean>) {
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    // Checked when the effect runs, not once at module load: a module first
+    // imported where there is no DOM (a server render, a test) would
+    // otherwise keep answering "no browser" for the rest of the process.
+    if (typeof document === "undefined") return;
     const handler = (e: BeforeUnloadEvent) => {
       if (dirty.value) {
         e.preventDefault();
