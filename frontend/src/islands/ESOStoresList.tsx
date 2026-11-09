@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import ResourceTable from "@/components/ui/ResourceTable.tsx";
@@ -10,6 +10,9 @@ import type { SecretStore } from "@/lib/eso-types.ts";
 import SecretStoreWizard from "@/src/islands/SecretStoreWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 const NAMESPACE_DEBOUNCE_MS = 300;
 
@@ -30,30 +33,33 @@ function storeToDot(
 }
 
 export default function ESOStoresList() {
-  const items = useSignal<SecretStore[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const namespace = useSignal("");
-  const search = useSignal("");
-  const detected = useSignal<boolean | null>(null);
-  const wizardOpen = useSignal(false);
+  const isClient = useIsClient();
+  const nsByGlobal = useSignalValue(selectedNamespace);
+  const [items, setItems] = useState<SecretStore[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // The debounced refetch reads the box through the ref, not a captured value.
+  const [namespace, setNamespace, namespaceRef] = useStateRef("");
+  const [search, setSearch] = useState("");
+  const [detected, setDetected] = useState<boolean | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const fetchSeq = useRef(0);
   const debounceHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     const seq = ++fetchSeq.current;
     try {
-      const ns = namespace.value.trim() || undefined;
+      const ns = namespaceRef.current.trim() || undefined;
       const res = await esoApi.listStores(ns);
       if (seq !== fetchSeq.current) return;
-      items.value = Array.isArray(res.data) ? res.data : [];
-      error.value = null;
+      setItems(Array.isArray(res.data) ? res.data : []);
+      setError(null);
     } catch {
       if (seq !== fetchSeq.current) return;
-      error.value = "Failed to load SecretStores";
+      setError("Failed to load SecretStores");
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -61,13 +67,13 @@ export default function ESOStoresList() {
       try {
         const statusRes = await esoApi.status();
         const present = statusRes.data?.detected !== false;
-        detected.value = present;
+        setDetected(present);
         if (present) await fetchData();
       } catch {
-        detected.value = true;
+        setDetected(true);
         await fetchData();
       } finally {
-        loading.value = false;
+        setLoading(false);
       }
     })();
     return () => {
@@ -76,16 +82,16 @@ export default function ESOStoresList() {
         debounceHandle.current = null;
       }
     };
-  }, []);
+  }, [fetchData]);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     const params = new URLSearchParams(globalThis.location.search);
-    if (params.get("action") === "create") wizardOpen.value = true;
+    if (params.get("action") === "create") setWizardOpen(true);
   }, []);
 
   function handleNamespaceChange(value: string) {
-    namespace.value = value;
+    setNamespace(value);
     if (debounceHandle.current !== null) clearTimeout(debounceHandle.current);
     debounceHandle.current = setTimeout(() => {
       debounceHandle.current = null;
@@ -93,11 +99,11 @@ export default function ESOStoresList() {
     }, NAMESPACE_DEBOUNCE_MS);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (!loading.value && detected.value === false) {
+  if (!loading && detected === false) {
     return (
-      <div class="p-6">
+      <div className="p-6">
         <h1
           style={{
             fontSize: "24px",
@@ -105,7 +111,7 @@ export default function ESOStoresList() {
             letterSpacing: "-0.02em",
             color: "var(--text-primary)",
           }}
-          class="mb-6"
+          className="mb-6"
         >
           SecretStores
         </h1>
@@ -114,11 +120,10 @@ export default function ESOStoresList() {
     );
   }
 
-  const nsByGlobal = selectedNamespace.value;
-  const byNamespace = filterByNamespace(items.value, nsByGlobal);
+  const byNamespace = filterByNamespace(items, nsByGlobal);
   const filtered = byNamespace.filter((s) => {
-    if (!search.value) return true;
-    const q = search.value.toLowerCase();
+    if (!search) return true;
+    const q = search.toLowerCase();
     return (
       s.name.toLowerCase().includes(q) ||
       (s.namespace ?? "").toLowerCase().includes(q) ||
@@ -130,9 +135,9 @@ export default function ESOStoresList() {
     "rounded-lg px-3 py-1.5 text-sm max-w-xs focus:outline-none focus:ring-1";
 
   return (
-    <div class="p-6">
+    <div className="p-6">
       {/* Page header */}
-      <div class="flex items-start justify-between mb-1">
+      <div className="flex items-start justify-between mb-1">
         <h1
           style={{
             fontSize: "24px",
@@ -145,20 +150,23 @@ export default function ESOStoresList() {
         </h1>
         <button
           type="button"
-          onClick={() => (wizardOpen.value = true)}
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
+          onClick={() => setWizardOpen(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
           style={{ background: "var(--accent)", color: "var(--bg-base)" }}
         >
           + New SecretStore
         </button>
       </div>
-      <p class="mb-6" style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+      <p
+        className="mb-6"
+        style={{ fontSize: "13px", color: "var(--text-muted)" }}
+      >
         Namespaced SecretStores describe how ESO talks to a secret backend.
       </p>
 
       {/* Filters */}
-      <div class="mb-4 flex flex-wrap items-center gap-4">
-        <div class="flex items-center gap-2">
+      <div className="mb-4 flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2">
           <label
             style={{
               fontSize: "13px",
@@ -172,24 +180,22 @@ export default function ESOStoresList() {
           <input
             id="eso-stores-ns"
             type="text"
-            class={inputStyle}
+            className={inputStyle}
             style={{
               background: "var(--bg-elevated)",
               border: "1px solid var(--border-subtle)",
               color: "var(--text-primary)",
             }}
             placeholder="All namespaces"
-            value={namespace.value}
+            value={namespace}
             aria-describedby="eso-stores-ns-hint"
-            onInput={(e) =>
-              handleNamespaceChange((e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => handleNamespaceChange(e.currentTarget.value)}
           />
-          <span id="eso-stores-ns-hint" class="sr-only">
+          <span id="eso-stores-ns-hint" className="sr-only">
             Filter SecretStores by namespace; updates after a brief pause.
           </span>
         </div>
-        <div class="flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <label
             style={{
               fontSize: "13px",
@@ -203,39 +209,36 @@ export default function ESOStoresList() {
           <input
             id="eso-stores-search"
             type="text"
-            class={inputStyle}
+            className={inputStyle}
             style={{
               background: "var(--bg-elevated)",
               border: "1px solid var(--border-subtle)",
               color: "var(--text-primary)",
             }}
             placeholder="name, provider…"
-            value={search.value}
-            onInput={(e) => {
-              search.value = (e.target as HTMLInputElement).value;
-            }}
+            value={search}
+            onChange={(e) => setSearch(e.currentTarget.value)}
           />
         </div>
         <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
           {filtered.length} of {byNamespace.length} SecretStores
-          {byNamespace.length < items.value.length &&
-            ` (${items.value.length} total)`}
+          {byNamespace.length < items.length && ` (${items.length} total)`}
         </span>
       </div>
 
-      {loading.value && (
-        <div class="flex justify-center py-12">
+      {loading && (
+        <div className="flex justify-center py-12">
           <Spinner className="text-brand" />
         </div>
       )}
 
-      {!loading.value && error.value && (
-        <p style={{ fontSize: "13px", color: "var(--error)" }} class="py-4">
-          {error.value}
+      {!loading && error && (
+        <p style={{ fontSize: "13px", color: "var(--error)" }} className="py-4">
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && filtered.length > 0 && (
+      {!loading && !error && filtered.length > 0 && (
         <ResourceTable
           columns={[
             { key: "name", label: "Name", width: "1.6fr" },
@@ -254,12 +257,12 @@ export default function ESOStoresList() {
               id: s.uid,
               cells: {
                 name: (
-                  <span class="inline-flex items-center gap-2">
+                  <span className="inline-flex items-center gap-2">
                     <StatusDot status={storeToDot(s.status, s.ready)} />
                     {detailHref ? (
                       <a
                         href={detailHref}
-                        class="hover:underline"
+                        className="hover:underline"
                         style={{
                           fontSize: "13px",
                           fontWeight: 500,
@@ -325,12 +328,12 @@ export default function ESOStoresList() {
         />
       )}
 
-      {!loading.value &&
-        !error.value &&
+      {!loading &&
+        !error &&
         filtered.length === 0 &&
         byNamespace.length > 0 && (
           <div
-            class="text-center py-12 rounded-lg"
+            className="text-center py-12 rounded-lg"
             style={{
               background: "var(--bg-surface)",
               border: "1px solid var(--border-subtle)",
@@ -342,9 +345,9 @@ export default function ESOStoresList() {
           </div>
         )}
 
-      {!loading.value && !error.value && byNamespace.length === 0 && (
+      {!loading && !error && byNamespace.length === 0 && (
         <div
-          class="text-center py-12 rounded-lg"
+          className="text-center py-12 rounded-lg"
           style={{
             background: "var(--bg-surface)",
             border: "1px solid var(--border-subtle)",
@@ -357,10 +360,10 @@ export default function ESOStoresList() {
         </div>
       )}
 
-      {wizardOpen.value && (
+      {wizardOpen && (
         <SecretStoreWizard
           scope="namespaced"
-          onClose={() => (wizardOpen.value = false)}
+          onClose={() => setWizardOpen(false)}
         />
       )}
     </div>

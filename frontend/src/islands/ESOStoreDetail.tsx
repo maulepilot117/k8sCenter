@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
@@ -10,6 +10,7 @@ import ESOChainPanel from "@/src/islands/ESOChainPanel.tsx";
 import ESOEvidencePanel from "@/src/islands/ESOEvidencePanel.tsx";
 import ESOStoreMetricsPanel from "@/src/islands/ESOStoreMetricsPanel.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 interface Props {
   namespace: string;
@@ -34,27 +35,28 @@ function isEvidenceTab(tab: TabKey): tab is EvidenceTabKey {
 const EM_DASH = "—";
 
 export default function ESOStoreDetail({ namespace, name }: Props) {
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const data = useSignal<SecretStore | null>(null);
-  const activeTab = useSignal<TabKey>("overview");
+  const isClient = useIsClient();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<SecretStore | null>(null);
+  const [activeTab, setActiveTab] = useState<TabKey>("overview");
   // The last evidence tab opened; the panel stays mounted once opened.
-  const evidenceTab = useSignal<EvidenceTabKey | null>(null);
-  const showRefreshDialog = useSignal(false);
+  const [evidenceTab, setEvidenceTab] = useState<EvidenceTabKey | null>(null);
+  const [showRefreshDialog, setShowRefreshDialog] = useState(false);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     let cancelled = false;
     (async () => {
-      loading.value = true;
-      error.value = null;
+      setLoading(true);
+      setError(null);
       try {
         const res = await esoApi.getStore(namespace, name);
-        if (!cancelled) data.value = res.data ?? null;
+        if (!cancelled) setData(res.data ?? null);
       } catch {
-        if (!cancelled) error.value = "Failed to load SecretStore";
+        if (!cancelled) setError("Failed to load SecretStore");
       } finally {
-        if (!cancelled) loading.value = false;
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
@@ -62,50 +64,50 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
     };
   }, [namespace, name]);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (loading.value) {
+  if (loading) {
     return (
-      <div class="flex justify-center py-12">
+      <div className="flex justify-center py-12">
         <Spinner className="text-brand" />
       </div>
     );
   }
 
-  if (error.value) {
-    return <p class="text-sm text-danger p-6">{error.value}</p>;
+  if (error) {
+    return <p className="text-sm text-danger p-6">{error}</p>;
   }
 
-  if (!data.value) return null;
+  if (!data) return null;
 
-  const store = data.value;
+  const store = data;
 
   return (
-    <div class="p-6 space-y-6">
-      <div class="flex flex-wrap items-center gap-3">
-        <h1 class="text-2xl font-bold text-text-primary">{store.name}</h1>
+    <div className="p-6 space-y-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-2xl font-bold text-text-primary">{store.name}</h1>
         <StatusBadge status={store.status} />
         <ProviderBadge provider={store.provider} />
         <button
           type="button"
-          onClick={() => (showRefreshDialog.value = true)}
-          class="ml-auto px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
+          onClick={() => setShowRefreshDialog(true)}
+          className="ml-auto px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
         >
           Refresh dependent ExternalSecrets
         </button>
       </div>
 
-      {showRefreshDialog.value && (
+      {showRefreshDialog && (
         <ESOBulkRefreshDialog
           action="refresh_store"
           target={{ namespace, name }}
-          onClose={() => (showRefreshDialog.value = false)}
+          onClose={() => setShowRefreshDialog(false)}
         />
       )}
 
-      <div role="tablist" class="flex gap-1 border-b border-border-primary">
+      <div role="tablist" className="flex gap-1 border-b border-border-primary">
         {TABS.map(({ key, label }) => {
-          const active = activeTab.value === key;
+          const active = activeTab === key;
           return (
             <button
               key={key}
@@ -113,10 +115,10 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
               role="tab"
               aria-selected={active}
               onClick={() => {
-                activeTab.value = key;
-                if (isEvidenceTab(key)) evidenceTab.value = key;
+                setActiveTab(key);
+                if (isEvidenceTab(key)) setEvidenceTab(key);
               }}
-              class={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
+              className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
                 active
                   ? "border-brand text-text-primary"
                   : "border-transparent text-text-muted hover:text-text-primary"
@@ -128,59 +130,65 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
         })}
       </div>
 
-      {activeTab.value === "overview" && (
-        <div role="tabpanel" class="space-y-4">
-          <div class="rounded-lg border border-border-primary bg-elevated p-5">
-            <h2 class="text-sm font-semibold text-text-primary mb-4">
+      {activeTab === "overview" && (
+        <div role="tabpanel" className="space-y-4">
+          <div className="rounded-lg border border-border-primary bg-elevated p-5">
+            <h2 className="text-sm font-semibold text-text-primary mb-4">
               Details
             </h2>
-            <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
               <div>
-                <dt class="text-text-muted">Namespace</dt>
-                <dd class="text-text-primary">{store.namespace || EM_DASH}</dd>
+                <dt className="text-text-muted">Namespace</dt>
+                <dd className="text-text-primary">
+                  {store.namespace || EM_DASH}
+                </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Name</dt>
-                <dd class="text-text-primary">{store.name}</dd>
+                <dt className="text-text-muted">Name</dt>
+                <dd className="text-text-primary">{store.name}</dd>
               </div>
-              <div class="sm:col-span-2">
-                <dt class="text-text-muted">UID</dt>
-                <dd class="text-text-primary font-mono text-xs">{store.uid}</dd>
+              <div className="sm:col-span-2">
+                <dt className="text-text-muted">UID</dt>
+                <dd className="text-text-primary font-mono text-xs">
+                  {store.uid}
+                </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Status</dt>
+                <dt className="text-text-muted">Status</dt>
                 <dd>
                   <StatusBadge status={store.status} />
                 </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Ready</dt>
-                <dd class="text-text-primary">{store.ready ? "Yes" : "No"}</dd>
+                <dt className="text-text-muted">Ready</dt>
+                <dd className="text-text-primary">
+                  {store.ready ? "Yes" : "No"}
+                </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Provider</dt>
+                <dt className="text-text-muted">Provider</dt>
                 <dd>
                   <ProviderBadge provider={store.provider} />
                 </dd>
               </div>
               <div>
-                <dt class="text-text-muted">Scope</dt>
-                <dd class="text-text-primary">{store.scope}</dd>
+                <dt className="text-text-muted">Scope</dt>
+                <dd className="text-text-primary">{store.scope}</dd>
               </div>
               {store.readyReason && (
-                <div class="sm:col-span-2">
-                  <dt class="text-text-muted">Ready Reason</dt>
-                  <dd class="text-text-primary">{store.readyReason}</dd>
+                <div className="sm:col-span-2">
+                  <dt className="text-text-muted">Ready Reason</dt>
+                  <dd className="text-text-primary">{store.readyReason}</dd>
                 </div>
               )}
               {store.readyMessage && (
-                <div class="sm:col-span-2">
-                  <dt class="text-text-muted">Ready Message</dt>
-                  <dd class="text-text-secondary">{store.readyMessage}</dd>
+                <div className="sm:col-span-2">
+                  <dt className="text-text-muted">Ready Message</dt>
+                  <dd className="text-text-secondary">{store.readyMessage}</dd>
                 </div>
               )}
             </dl>
-            <p class="mt-4 text-sm text-text-muted">
+            <p className="mt-4 text-sm text-text-muted">
               Reconciliation history is collected per ExternalSecret. Open an
               ExternalSecret that references this store to see its sync
               attempts.
@@ -194,14 +202,14 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
           />
 
           {store.providerSpec && Object.keys(store.providerSpec).length > 0 && (
-            <div class="rounded-lg border border-border-primary bg-elevated p-5">
-              <h2 class="text-sm font-semibold text-text-primary mb-1">
+            <div className="rounded-lg border border-border-primary bg-elevated p-5">
+              <h2 className="text-sm font-semibold text-text-primary mb-1">
                 Provider spec
               </h2>
-              <p class="text-xs text-text-muted mb-3">
+              <p className="text-xs text-text-muted mb-3">
                 Read-only infrastructure addressing — never credentials.
               </p>
-              <pre class="text-xs font-mono text-text-primary bg-base border border-border-subtle rounded p-3 overflow-x-auto">
+              <pre className="text-xs font-mono text-text-primary bg-base border border-border-subtle rounded p-3 overflow-x-auto">
                 {JSON.stringify(store.providerSpec, null, 2)}
               </pre>
             </div>
@@ -209,8 +217,8 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
         </div>
       )}
 
-      {evidenceTab.value && (
-        <div hidden={!isEvidenceTab(activeTab.value)}>
+      {evidenceTab && (
+        <div hidden={!isEvidenceTab(activeTab)}>
           {/* Route params, not store.namespace: that field is optional on the
               shared SecretStore type, and this page is always namespaced. */}
           <ESOEvidencePanel
@@ -218,12 +226,12 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
             namespace={namespace}
             name={name}
             uid={store.uid}
-            activeTab={evidenceTab.value}
+            activeTab={evidenceTab}
           />
         </div>
       )}
 
-      {activeTab.value === "chain" && (
+      {activeTab === "chain" && (
         <ESOChainPanel namespace={store.namespace} focusedNodeId={store.uid} />
       )}
     </div>

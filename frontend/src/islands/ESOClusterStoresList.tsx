@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -8,6 +8,7 @@ import { esoApi } from "@/lib/eso-api.ts";
 import type { SecretStore } from "@/lib/eso-types.ts";
 import SecretStoreWizard from "@/src/islands/SecretStoreWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 const TH_STYLE = {
   fontSize: "11px",
@@ -18,36 +19,36 @@ const TH_STYLE = {
 };
 
 export default function ESOClusterStoresList() {
-  const items = useSignal<SecretStore[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const search = useSignal("");
-  const detected = useSignal<boolean | null>(null);
-  const wizardOpen = useSignal(false);
-
-  async function fetchData() {
-    try {
-      const res = await esoApi.listClusterStores();
-      items.value = Array.isArray(res.data) ? res.data : [];
-      error.value = null;
-    } catch {
-      error.value = "Failed to load ClusterSecretStores";
-    }
-  }
+  const isClient = useIsClient();
+  const [items, setItems] = useState<SecretStore[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [detected, setDetected] = useState<boolean | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
+    async function fetchData() {
+      try {
+        const res = await esoApi.listClusterStores();
+        setItems(Array.isArray(res.data) ? res.data : []);
+        setError(null);
+      } catch {
+        setError("Failed to load ClusterSecretStores");
+      }
+    }
     (async () => {
       try {
         const statusRes = await esoApi.status();
         const present = statusRes.data?.detected !== false;
-        detected.value = present;
+        setDetected(present);
         if (present) await fetchData();
       } catch {
-        detected.value = true;
+        setDetected(true);
         await fetchData();
       } finally {
-        loading.value = false;
+        setLoading(false);
       }
     })();
   }, []);
@@ -55,14 +56,14 @@ export default function ESOClusterStoresList() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     const params = new URLSearchParams(globalThis.location.search);
-    if (params.get("action") === "create") wizardOpen.value = true;
+    if (params.get("action") === "create") setWizardOpen(true);
   }, []);
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  if (!loading.value && detected.value === false) {
+  if (!loading && detected === false) {
     return (
-      <div class="p-6">
+      <div className="p-6">
         <h1
           style={{
             fontSize: "24px",
@@ -70,7 +71,7 @@ export default function ESOClusterStoresList() {
             letterSpacing: "-0.02em",
             color: "var(--text-primary)",
           }}
-          class="mb-6"
+          className="mb-6"
         >
           ClusterSecretStores
         </h1>
@@ -79,9 +80,9 @@ export default function ESOClusterStoresList() {
     );
   }
 
-  const filtered = items.value.filter((s) => {
-    if (!search.value) return true;
-    const q = search.value.toLowerCase();
+  const filtered = items.filter((s) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
     return (
       s.name.toLowerCase().includes(q) ||
       (s.provider ?? "").toLowerCase().includes(q)
@@ -92,9 +93,9 @@ export default function ESOClusterStoresList() {
     "rounded-lg px-3 py-1.5 text-sm max-w-xs focus:outline-none focus:ring-1";
 
   return (
-    <div class="p-6">
+    <div className="p-6">
       {/* Page header */}
-      <div class="flex items-start justify-between mb-1">
+      <div className="flex items-start justify-between mb-1">
         <h1
           style={{
             fontSize: "24px",
@@ -107,21 +108,24 @@ export default function ESOClusterStoresList() {
         </h1>
         <button
           type="button"
-          onClick={() => (wizardOpen.value = true)}
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
+          onClick={() => setWizardOpen(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
           style={{ background: "var(--accent)", color: "var(--bg-base)" }}
         >
           + New ClusterSecretStore
         </button>
       </div>
-      <p class="mb-6" style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+      <p
+        className="mb-6"
+        style={{ fontSize: "13px", color: "var(--text-muted)" }}
+      >
         Cluster-scoped SecretStores accessible to ExternalSecrets in any
         namespace.
       </p>
 
       {/* Filters */}
-      <div class="mb-4 flex flex-wrap items-center gap-4">
-        <div class="flex items-center gap-2">
+      <div className="mb-4 flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2">
           <label
             style={{
               fontSize: "13px",
@@ -135,60 +139,74 @@ export default function ESOClusterStoresList() {
           <input
             id="eso-cstores-search"
             type="text"
-            class={inputStyle}
+            className={inputStyle}
             style={{
               background: "var(--bg-elevated)",
               border: "1px solid var(--border-subtle)",
               color: "var(--text-primary)",
             }}
             placeholder="name, provider…"
-            value={search.value}
-            onInput={(e) => {
-              search.value = (e.target as HTMLInputElement).value;
-            }}
+            value={search}
+            onChange={(e) => setSearch(e.currentTarget.value)}
           />
         </div>
         <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-          {filtered.length} of {items.value.length} ClusterSecretStores
+          {filtered.length} of {items.length} ClusterSecretStores
         </span>
       </div>
 
-      {loading.value && (
-        <div class="flex justify-center py-12">
+      {loading && (
+        <div className="flex justify-center py-12">
           <Spinner className="text-brand" />
         </div>
       )}
 
-      {!loading.value && error.value && (
-        <p style={{ fontSize: "13px", color: "var(--error)" }} class="py-4">
-          {error.value}
+      {!loading && error && (
+        <p style={{ fontSize: "13px", color: "var(--error)" }} className="py-4">
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && filtered.length > 0 && (
+      {!loading && !error && filtered.length > 0 && (
         <div
-          class="overflow-x-auto rounded-lg"
+          className="overflow-x-auto rounded-lg"
           style={{
             background: "var(--bg-surface)",
             border: "1px solid var(--border-subtle)",
           }}
         >
-          <table class="w-full">
+          <table className="w-full">
             <thead>
               <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-left"
+                  style={TH_STYLE}
+                >
                   Name
                 </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-left"
+                  style={TH_STYLE}
+                >
                   Status
                 </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-left"
+                  style={TH_STYLE}
+                >
                   Provider
                 </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
+                <th
+                  scope="col"
+                  className="px-3 py-2 text-left"
+                  style={TH_STYLE}
+                >
                   Ready
                 </th>
-                <th scope="col" class="px-3 py-2" style={TH_STYLE} />
+                <th scope="col" className="px-3 py-2" style={TH_STYLE} />
               </tr>
             </thead>
             <tbody>
@@ -199,18 +217,18 @@ export default function ESOClusterStoresList() {
                 return (
                   <tr
                     key={s.uid}
-                    class="hover:bg-hover/30 cursor-pointer"
+                    className="hover:bg-hover/30 cursor-pointer"
                     style={{ borderTop: "1px solid var(--border-subtle)" }}
                     onClick={() => {
                       globalThis.location.href = detailHref;
                     }}
                   >
-                    <td class="px-3 py-2">
-                      <span class="inline-flex items-center gap-2">
+                    <td className="px-3 py-2">
+                      <span className="inline-flex items-center gap-2">
                         <StatusDot status={s.ready ? "success" : "error"} />
                         <a
                           href={detailHref}
-                          class="hover:underline"
+                          className="hover:underline"
                           style={{
                             fontSize: "13px",
                             fontWeight: 500,
@@ -223,13 +241,13 @@ export default function ESOClusterStoresList() {
                         </a>
                       </span>
                     </td>
-                    <td class="px-3 py-2">
+                    <td className="px-3 py-2">
                       <StatusBadge status={s.status} />
                     </td>
-                    <td class="px-3 py-2">
+                    <td className="px-3 py-2">
                       <ProviderBadge provider={s.provider} />
                     </td>
-                    <td class="px-3 py-2">
+                    <td className="px-3 py-2">
                       {s.ready ? (
                         <span
                           style={{
@@ -253,7 +271,7 @@ export default function ESOClusterStoresList() {
                       )}
                     </td>
                     <td
-                      class="px-3 py-2 text-right"
+                      className="px-3 py-2 text-right"
                       style={{ color: "var(--text-muted)" }}
                     >
                       ›
@@ -266,26 +284,23 @@ export default function ESOClusterStoresList() {
         </div>
       )}
 
-      {!loading.value &&
-        !error.value &&
-        filtered.length === 0 &&
-        items.value.length > 0 && (
-          <div
-            class="text-center py-12 rounded-lg"
-            style={{
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-subtle)",
-            }}
-          >
-            <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-              No ClusterSecretStores match your filters.
-            </p>
-          </div>
-        )}
-
-      {!loading.value && !error.value && items.value.length === 0 && (
+      {!loading && !error && filtered.length === 0 && items.length > 0 && (
         <div
-          class="text-center py-12 rounded-lg"
+          className="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+            No ClusterSecretStores match your filters.
+          </p>
+        </div>
+      )}
+
+      {!loading && !error && items.length === 0 && (
+        <div
+          className="text-center py-12 rounded-lg"
           style={{
             background: "var(--bg-surface)",
             border: "1px solid var(--border-subtle)",
@@ -298,10 +313,10 @@ export default function ESOClusterStoresList() {
         </div>
       )}
 
-      {wizardOpen.value && (
+      {wizardOpen && (
         <SecretStoreWizard
           scope="cluster"
-          onClose={() => (wizardOpen.value = false)}
+          onClose={() => setWizardOpen(false)}
         />
       )}
     </div>
