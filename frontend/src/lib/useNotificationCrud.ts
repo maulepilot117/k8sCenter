@@ -41,7 +41,6 @@ export interface NotificationCrudResult<T extends NotificationItem> {
   setShowForm: (next: boolean) => void;
   editingItem: T | null;
   formSubmitting: boolean;
-  /** Reads the current in-flight state, for a submit guard. */
   formSubmittingRef: { current: boolean };
   setFormSubmitting: (next: boolean) => void;
   formError: string | null;

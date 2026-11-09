@@ -120,8 +120,6 @@ export default function ViolationBrowser() {
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
   const currentPage = Math.min(page, totalPages);
-  // Keep the stored page in range as well, so a list that shrinks and grows
-  // back stays on the clamped page instead of returning to the old one.
   if (page > totalPages) setPage(totalPages);
   const displayed = filtered.slice(
     (currentPage - 1) * PAGE_SIZE,

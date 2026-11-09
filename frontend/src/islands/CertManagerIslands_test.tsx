@@ -1,7 +1,14 @@
 /** @jsxImportSource react */
 import { afterEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
-import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
+import {
+  act,
+  fireEvent,
+  json,
+  render,
+  settle,
+  setupDom,
+} from "@/src/test-utils/render.tsx";
 
 /**
  * cert-manager list and detail islands: filters, the expiring URL filter,
@@ -23,17 +30,6 @@ afterEach(() => {
   setAccessToken(null);
   globalThis.history.replaceState(null, "", `/${realSearch}`);
 });
-
-const json = (data: unknown) =>
-  new Response(JSON.stringify({ data }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 const cert = (name: string, status: string, ns = "default", issuer = "le") => ({
   uid: name,

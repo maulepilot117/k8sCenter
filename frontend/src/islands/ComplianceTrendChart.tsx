@@ -472,8 +472,6 @@ export default function ComplianceTrendChart() {
     }
   }, []);
 
-  // The refetch keys on the selected cluster so a switch shows the new
-  // cluster's trend, never the previous one's.
   const clusterId = useSignalValue(selectedCluster);
   // biome-ignore lint/correctness/useExhaustiveDependencies: clusterId is not read by the effect; a cluster switch is meant to refetch
   useEffect(() => {

@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { act, render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The compliance page scores the namespace the global picker is on. A change
@@ -79,11 +79,6 @@ function stubApi(urls: string[]) {
     });
   }) as unknown as typeof globalThis.fetch;
 }
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 test("the score follows the global namespace picker", async () => {
   const urls: string[] = [];

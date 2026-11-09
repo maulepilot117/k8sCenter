@@ -4,10 +4,10 @@ import { setAccessToken } from "@/lib/api.ts";
 import { LOCAL_CLUSTER_ID, switchCluster } from "@/src/lib/cluster.ts";
 import { toasts } from "@/src/lib/toast-store.ts";
 import {
-  act,
   body,
   fireEvent,
   render,
+  settle,
   setupDom,
 } from "@/src/test-utils/render.tsx";
 
@@ -130,11 +130,6 @@ function serve(detail: unknown) {
     });
   }) as unknown as typeof globalThis.fetch;
 }
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 const writes = () => sent.filter((s) => s.method !== "GET");
 const loads = () =>

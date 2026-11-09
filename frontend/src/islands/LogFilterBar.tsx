@@ -68,8 +68,8 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       .catch(() => {});
   }, [namespace]);
 
-  // Fetch containers when pod changes. A namespace change clears the pod in
-  // the same update, so this never runs for a namespace alone.
+  // A namespace change clears the pod in the same update, so this never runs
+  // for a namespace alone.
   useEffect(() => {
     if (!IS_BROWSER || !namespace || !pod) return;
     const query = `{namespace="${namespace}",pod="${pod}"}`;

@@ -5,7 +5,9 @@ import {
   act,
   body,
   fireEvent,
+  json,
   render,
+  settle,
   setupDom,
 } from "@/src/test-utils/render.tsx";
 
@@ -25,17 +27,6 @@ const status = (hasOperator: boolean) => ({
   dashboards: { provisioned: true, count: 3 },
   hasOperator,
 });
-
-const json = (data: unknown) =>
-  new Response(JSON.stringify({ data }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 test("shows the status cards, and Re-scan posts once and shows the new result", async () => {
   setAccessToken("t");

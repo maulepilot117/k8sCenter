@@ -7,6 +7,7 @@ import {
   body,
   fireEvent,
   render,
+  settle,
   setupDom,
   waitFor,
 } from "@/src/test-utils/render.tsx";
@@ -86,11 +87,6 @@ const GATEWAYS: Route = [
     { name: "public", namespace: "web", gatewayClassName: "istio" },
   ],
 ];
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 async function openGateways() {
   serve([STATUS, SUMMARY, GATEWAYS]);

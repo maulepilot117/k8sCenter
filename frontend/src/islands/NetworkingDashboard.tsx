@@ -109,7 +109,6 @@ export default function NetworkingDashboard({
   const { kind, title, createLabel, isFlows, isCni } = resolveTab(currentPath);
   const WizardComponent = WIZARD_MAP[kind] ?? null;
 
-  // Wizard modal state — open=true shows the floating WizardShell
   const [wizardOpen, setWizardOpen] = useState(false);
 
   // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)

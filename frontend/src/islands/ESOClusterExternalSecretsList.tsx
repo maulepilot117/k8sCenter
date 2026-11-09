@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -42,17 +42,16 @@ export default function ESOClusterExternalSecretsList() {
   const [search, setSearch] = useState("");
   const [detected, setDetected] = useState<boolean | null>(null);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const res = await esoApi.listClusterExternalSecrets();
-      setItems(Array.isArray(res.data) ? res.data : []);
-      setError(null);
-    } catch {
-      setError("Failed to load ClusterExternalSecrets");
-    }
-  }, []);
-
   useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const res = await esoApi.listClusterExternalSecrets();
+        setItems(Array.isArray(res.data) ? res.data : []);
+        setError(null);
+      } catch {
+        setError("Failed to load ClusterExternalSecrets");
+      }
+    };
     (async () => {
       try {
         const statusRes = await esoApi.status();
@@ -66,7 +65,7 @@ export default function ESOClusterExternalSecretsList() {
         setLoading(false);
       }
     })();
-  }, [fetchData]);
+  }, []);
 
   if (!isClient) return null;
 

@@ -8,6 +8,7 @@ import {
   body,
   fireEvent,
   render,
+  settle,
   setupDom,
 } from "@/src/test-utils/render.tsx";
 
@@ -94,11 +95,6 @@ function serve(routes: Record<string, unknown>) {
     });
   }) as unknown as typeof globalThis.fetch;
 }
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 function serveApplications() {
   serve({

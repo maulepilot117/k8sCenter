@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { act, render, settle, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * useNamespaces starts from "default", replaces it with the cluster's
@@ -36,11 +36,6 @@ function Probe() {
   latest = useNamespaces();
   return <span>{latest[0].join(",")}</span>;
 }
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 test("starts from default, then shows the cluster's namespaces sorted", async () => {
   respond = () => namespaceList("team-b", "default", "team-a");

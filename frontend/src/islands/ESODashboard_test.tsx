@@ -8,6 +8,7 @@ import {
   body,
   fireEvent,
   render,
+  settle,
   setupDom,
 } from "@/src/test-utils/render.tsx";
 
@@ -69,11 +70,6 @@ function stubApi(items: () => ExternalSecret[]) {
   });
   return calls;
 }
-
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 test("shows the ring and the broken ExternalSecrets, worst first", async () => {
   stubApi(() => [

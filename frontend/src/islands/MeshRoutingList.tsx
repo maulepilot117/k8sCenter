@@ -83,9 +83,6 @@ export default function MeshRoutingList() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  // Clamp on read instead of writing state during render. Filter
-  // changes already reset to page 1; this guard handles the post-refresh
-  // case where data shrinks while page is still on a higher page.
   const currentPage = Math.min(page, totalPages);
   const displayed = filtered.slice(
     (currentPage - 1) * PAGE_SIZE,

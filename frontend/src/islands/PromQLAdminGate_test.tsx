@@ -2,7 +2,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { fetchCurrentUser, logout } from "@/lib/auth.ts";
-import { act, render, setupDom } from "@/src/test-utils/render.tsx";
+import { act, json, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The raw PromQL editor is for administrators. While the user is unknown the
@@ -13,12 +13,6 @@ const bunFetch = globalThis.fetch;
 setupDom({ browser: true });
 
 const { default: PromQLAdminGate } = await import("./PromQLAdminGate.tsx");
-
-const json = (data: unknown) =>
-  new Response(JSON.stringify({ data }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 
 afterEach(async () => {
   globalThis.fetch = (async () =>

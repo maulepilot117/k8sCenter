@@ -30,7 +30,7 @@
  */
 import { afterAll, afterEach, mock } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { cleanup, within } from "@testing-library/preact";
+import { act, cleanup, within } from "@testing-library/preact";
 
 export {
   act,
@@ -70,4 +70,22 @@ export function setBrowser(value: boolean): void {
 /** Testing Library queries bound to the current document's body. */
 export function body(): ReturnType<typeof within> {
   return within(document.body);
+}
+
+/**
+ * Lets queued fetch responses, timers set to 0 and the renders they cause
+ * finish, in ten rounds of the macrotask queue.
+ */
+export function settle(): Promise<void> {
+  return act(async () => {
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+/** A 200 JSON response with `data` in the API's `{ data }` envelope. */
+export function json(data: unknown): Response {
+  return new Response(JSON.stringify({ data }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }

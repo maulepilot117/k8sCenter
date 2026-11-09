@@ -33,8 +33,6 @@ const LOADING_CLASS =
  */
 export default function PromQLAdminGate(props: { children: ReactNode }) {
   // Hooks must run unconditionally, so read the user before the SSR bail-out.
-  // Read through useSignalValue rather than `user.value`: a bare read in
-  // render does not subscribe.
   const u = useSignalValue(useAuth().user);
   const isClient = useIsClient();
 

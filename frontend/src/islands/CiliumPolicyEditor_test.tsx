@@ -6,15 +6,14 @@ import {
   body,
   fireEvent,
   render,
+  settle,
   setupDom,
   waitFor,
 } from "@/src/test-utils/render.tsx";
 
 /**
  * The Cilium policy editor builds a YAML preview and a create request from
- * the same form. A policy with endpoint labels and two rules of different
- * kinds must produce exactly the same preview text and request body as
- * before the editor moved to React APIs.
+ * the same form.
  */
 const bunFetch = globalThis.fetch;
 setupDom({ browser: true });
@@ -53,10 +52,6 @@ afterEach(() => {
 });
 
 /** Lets the namespace list request finish before the form is used. */
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
-  });
 
 function type(el: HTMLElement, value: string) {
   act(() => {
@@ -102,10 +97,7 @@ function fillPolicy(root: HTMLElement) {
   type(rule2.querySelector('input[placeholder="80,443"]') as HTMLElement, "53");
 }
 
-// The expected text is the editor's output as it stood before the conversion,
-// including its one-space indentation.
-// The expected text is the editor's output as it stood before the conversion,
-// including its one-space indentation.
+// The preview pins the editor's current one-space indentation.
 test("the preview shows the YAML for the form", async () => {
   const view = render(<CiliumPolicyEditor />);
   await settle();
