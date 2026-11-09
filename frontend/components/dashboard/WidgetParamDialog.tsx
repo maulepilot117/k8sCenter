@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useLayoutEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useLayoutEffect, useRef, useState } from "react";
 import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 // Every rule this dialog enforces lives in lib/, under test, because this repo
 // has no component test harness (D-10) and each of them mirrors a rule the
@@ -19,6 +19,7 @@ import {
 import type { LayoutItem, WidgetDef } from "@/lib/dashboard/types.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useNamespacedServices } from "@/lib/hooks/use-services.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 /**
  * The values a parameterized widget needs, collected before it is placed and
@@ -104,20 +105,20 @@ export default function WidgetParamDialog({
   const declared = def.params ?? {};
   const keys = Object.keys(declared);
 
-  const values = useSignal<WidgetParamValues>({
+  const [values, setValues] = useState<WidgetParamValues>(() => ({
     ...Object.fromEntries(keys.map((k) => [k, ""])),
     ...(editing?.params ?? {}),
-  });
+  }));
   /** The refusal under the fields, or null. Cleared by any edit, because a
    * message about a value the user has already changed is noise. */
-  const problem = useSignal<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
   const firstField = useRef<HTMLSelectElement>(null);
 
   // The namespace picker's options. Fetched here rather than passed in: this
   // dialog is mounted from a click and unmounted on the way out, so the read
   // is made by someone who is about to use it, and a failure leaves the list
   // at its "default" fallback rather than blocking the dialog.
-  const namespaces = useNamespaces();
+  const namespaceOptions = useSignalValue(useNamespaces());
   // The service picker's options, scoped to whatever namespace is currently
   // chosen. Re-read when that changes, which is why it takes the value rather
   // than the signal: this component re-renders on every value change already,
@@ -126,10 +127,12 @@ export default function WidgetParamDialog({
   // A widget that declares no service key still calls this -- hooks cannot be
   // conditional -- and it costs nothing, because the hook issues no request
   // for an empty namespace and a parameterless widget never has one.
-  const services = useNamespacedServices(
-    keys.includes(PARAM_KEY_SERVICE)
-      ? (values.value[PARAM_KEY_NAMESPACE] ?? "")
-      : "",
+  const serviceOptions = useSignalValue(
+    useNamespacedServices(
+      keys.includes(PARAM_KEY_SERVICE)
+        ? (values[PARAM_KEY_NAMESPACE] ?? "")
+        : "",
+    ),
   );
 
   // On the first field, not on Cancel: every field is something to fill in and
@@ -157,7 +160,7 @@ export default function WidgetParamDialog({
    */
   function confirm() {
     const next: WidgetParamValues = Object.fromEntries(
-      keys.map((k) => [k, (values.value[k] ?? "").trim()]),
+      keys.map((k) => [k, (values[k] ?? "").trim()]),
     );
 
     // Unfilled fields first, and named. One field could report this through
@@ -168,14 +171,14 @@ export default function WidgetParamDialog({
     // namespace and no service, which the backing read needs both of.
     const missing = missingParamKeys(declared, next);
     if (missing.length > 0) {
-      problem.value = `Choose a ${missing.join(" and a ")}.`;
+      setProblem(`Choose a ${missing.join(" and a ")}.`);
       return;
     }
 
     for (const key of keys) {
       const error = paramValueError(key, next[key], declared[key] ?? []);
       if (error !== null) {
-        problem.value = error;
+        setProblem(error);
         return;
       }
     }
@@ -187,9 +190,10 @@ export default function WidgetParamDialog({
       editing?.instanceId,
     );
     if (clash !== null) {
-      problem.value =
+      setProblem(
         `${def.title} is already on this dashboard with the same values. ` +
-        "Choose different ones, or change the card you already have.";
+          "Choose different ones, or change the card you already have.",
+      );
       return;
     }
 
@@ -204,7 +208,7 @@ export default function WidgetParamDialog({
       closeTestId="close-widget-params"
       onClose={onCancel}
     >
-      <div class="flex flex-col gap-3 px-4 py-3">
+      <div className="flex flex-col gap-3 px-4 py-3">
         {keys.map((key, index) => {
           const allowed = declared[key] ?? [];
           // Three sources of options, one control. A closed set the widget
@@ -218,10 +222,10 @@ export default function WidgetParamDialog({
             allowed.length > 0
               ? [...allowed]
               : key === PARAM_KEY_SERVICE
-                ? services.value
-                : namespaces.value;
-          const current = values.value[key] ?? "";
-          const field = paramFieldState(key, values.value, options);
+                ? serviceOptions
+                : namespaceOptions;
+          const current = values[key] ?? "";
+          const field = paramFieldState(key, values, options);
           const parent = paramParentKey(key);
           // Two reasons a field is unusable and they need different copy: one
           // is waiting for something the user is about to do, the other is
@@ -232,11 +236,11 @@ export default function WidgetParamDialog({
               : field.blocked === "no-options"
                 ? parent === null
                   ? `No ${key} on this cluster is available to choose.`
-                  : `No ${key} you can list in ${values.value[parent] ?? ""}.`
+                  : `No ${key} you can list in ${values[parent] ?? ""}.`
                 : null;
           return (
-            <label key={key} class="flex flex-col gap-1">
-              <span class="text-xs font-medium capitalize text-text-secondary">
+            <label key={key} className="flex flex-col gap-1">
+              <span className="text-xs font-medium capitalize text-text-secondary">
                 {key}
               </span>
               <select
@@ -251,14 +255,11 @@ export default function WidgetParamDialog({
                   // a name the new namespace may not have, and the mesh
                   // answers zeros for a service that is not there -- a card
                   // reporting no traffic for something that does not exist.
-                  values.value = withParamValue(
-                    values.value,
-                    key,
-                    (e.target as HTMLSelectElement).value,
-                  );
-                  problem.value = null;
+                  const next = e.currentTarget.value;
+                  setValues((prev) => withParamValue(prev, key, next));
+                  setProblem(null);
                 }}
-                class="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {/* A placeholder row, so an unfilled field reads as unfilled
                     rather than as the first namespace in the list. It carries
@@ -281,7 +282,7 @@ export default function WidgetParamDialog({
               {hint !== null && (
                 <span
                   data-testid={`widget-param-${key}-hint`}
-                  class="text-[11px] leading-snug text-text-muted"
+                  className="text-[11px] leading-snug text-text-muted"
                 >
                   {hint}
                 </span>
@@ -290,23 +291,23 @@ export default function WidgetParamDialog({
           );
         })}
 
-        {problem.value !== null && (
+        {problem !== null && (
           <p
             data-testid="widget-param-error"
             role="alert"
-            class="text-xs text-danger"
+            className="text-xs text-danger"
           >
-            {problem.value}
+            {problem}
           </p>
         )}
       </div>
 
-      <div class="flex justify-end gap-2 border-t border-border-subtle px-4 py-3">
+      <div className="flex justify-end gap-2 border-t border-border-subtle px-4 py-3">
         <button
           type="button"
           data-testid="cancel-widget-params"
           onClick={onCancel}
-          class="rounded-lg px-3 py-1.5 text-xs font-medium text-text-muted hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+          className="rounded-lg px-3 py-1.5 text-xs font-medium text-text-muted hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
         >
           Cancel
         </button>
@@ -314,7 +315,7 @@ export default function WidgetParamDialog({
           type="button"
           data-testid="confirm-widget-params"
           onClick={confirm}
-          class="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           // The same exception EditToolbar.tsx and ConfirmDialog.tsx already
           // make for this one colour: the theme token is `--bg-base`, whose
           // utility would be `text-base` -- which Tailwind already owns as a

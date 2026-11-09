@@ -1,7 +1,14 @@
-import type { CSSProperties } from "preact";
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
-import { dashboardData } from "@/lib/dashboard/data.ts";
+import type { SourceState } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 // The joins, the health grading, the layout and the per-row coverage live in
 // lib/, under test (D-10, KTD8). This file only draws what they return.
@@ -27,7 +34,9 @@ import {
   zoomTopologyCameraAt,
 } from "@/lib/dashboard/topology.ts";
 import type { DataSourceKey } from "@/lib/dashboard/types.ts";
+import { useSourceState } from "@/lib/dashboard/use-source-state.ts";
 import type { ResourceListPage } from "@/lib/dashboard/wire-types.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
 const KIND_COLOR: Readonly<Record<TopologyKind, string>> = {
   node: "var(--accent)",
@@ -97,15 +106,14 @@ interface Active {
  * crossed it.
  */
 function ClusterTopology() {
-  const read = (key: DataSourceKey) =>
-    dashboardData.state<ResourceListPage>(key).data;
-  const nodes = read("nodes-list");
-  const services = read("services-list");
-  const deployments = read("deployments-list");
-  const statefulsets = read("statefulsets-list");
-  const daemonsets = read("daemonsets-list");
-  const pods = read("pods-list");
-  const pvcs = read("pvcs-list");
+  const nodes = useSourceState<ResourceListPage>("nodes-list").data;
+  const services = useSourceState<ResourceListPage>("services-list").data;
+  const deployments = useSourceState<ResourceListPage>("deployments-list").data;
+  const statefulsets =
+    useSourceState<ResourceListPage>("statefulsets-list").data;
+  const daemonsets = useSourceState<ResourceListPage>("daemonsets-list").data;
+  const pods = useSourceState<ResourceListPage>("pods-list").data;
+  const pvcs = useSourceState<ResourceListPage>("pvcs-list").data;
 
   const view = useMemo(
     () =>
@@ -127,14 +135,14 @@ function ClusterTopology() {
       action={
         <a
           href={TOPOLOGY_PAGE_HREF}
-          class="text-xs text-accent no-underline"
+          className="text-xs text-accent no-underline"
           data-testid="cluster-topology-link"
         >
           Open topology →
         </a>
       }
     >
-      <div class="flex h-full min-h-[220px] flex-col gap-2">
+      <div className="flex h-full min-h-[220px] flex-col gap-2">
         {view.nodes.length === 0 ? (
           <p
             data-testid={
@@ -142,7 +150,7 @@ function ClusterTopology() {
                 ? "cluster-topology-empty"
                 : "cluster-topology-unreadable"
             }
-            class="flex flex-1 items-center justify-center py-4 text-center text-xs text-text-muted"
+            className="flex flex-1 items-center justify-center py-4 text-center text-xs text-text-muted"
           >
             {view.rows.pod.readable
               ? "There is nothing on this cluster this account can draw."
@@ -221,17 +229,29 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
     );
   };
 
-  const onWheel = (e: WheelEvent) => {
-    if (!e.ctrlKey && !e.metaKey) return;
-    e.preventDefault();
-    const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
-    zoomStep(e.deltaY > 0 ? -1 : 1, {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    });
-  };
+  // A native listener: preventDefault stops the browser's page zoom, and a
+  // JSX onWheel is attached as passive, where preventDefault does nothing.
+  // The listener is attached once, so it reaches the current zoom step through
+  // a ref.
+  const zoomStepRef = useLatest(zoomStep);
+  const svgRef = useRef<SVGSVGElement>(null);
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      zoomStepRef.current(e.deltaY > 0 ? -1 : 1, {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
-  const onPointerDown = (e: PointerEvent) => {
+  const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
     press.current = {
       id: e.pointerId,
@@ -242,7 +262,7 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
     };
   };
 
-  const onPointerMove = (e: PointerEvent) => {
+  const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
     const p = press.current;
     if (p === null || p.id !== e.pointerId) return;
     // Released outside the svg before the press became a pan (capture is only
@@ -273,7 +293,7 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
     );
   };
 
-  const endPress = (e: PointerEvent) => {
+  const endPress = (e: ReactPointerEvent<SVGSVGElement>) => {
     const p = press.current;
     if (p === null || p.id !== e.pointerId) return;
     // Only a pointerup is followed by a click; a cancelled drag has none to
@@ -301,20 +321,20 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
   return (
     <div
       ref={boxRef}
-      class="relative min-h-0 flex-1 overflow-hidden rounded-md border border-border-subtle bg-base"
+      className="relative min-h-0 flex-1 overflow-hidden rounded-md border border-border-subtle bg-base"
       data-testid="cluster-topology-canvas"
     >
       <svg
+        ref={svgRef}
         role="group"
         aria-label={`Cluster topology: ${view.nodes.length} resources, ${view.edges.length} relationships`}
         width="100%"
         height="100%"
         viewBox={`${camera.x} ${camera.y} ${vbW} ${vbH}`}
         preserveAspectRatio="xMidYMid meet"
-        class={`block h-full w-full touch-none select-none ${
+        className={`block h-full w-full touch-none select-none ${
           dragging ? "cursor-grabbing" : "cursor-grab"
         }`}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPress}
@@ -341,8 +361,8 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
               x2={to.x}
               y2={to.y}
               stroke={EDGE_COLOR[edge.kind]}
-              stroke-width={lit ? 2.5 : 1.5}
-              stroke-opacity={activeId === null ? 0.35 : lit ? 0.9 : 0.12}
+              strokeWidth={lit ? 2.5 : 1.5}
+              strokeOpacity={activeId === null ? 0.35 : lit ? 0.9 : 0.12}
             />
           );
         })}
@@ -361,7 +381,7 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
         ))}
       </svg>
 
-      <div class="absolute right-1.5 top-1.5 flex gap-1">
+      <div className="absolute right-1.5 top-1.5 flex gap-1">
         <CanvasButton
           label="Zoom in"
           disabled={camera.zoom >= maxZoom}
@@ -385,7 +405,7 @@ function TopologyCanvas({ view }: { view: TopologyView }) {
       </div>
 
       {camera.zoom !== 1 && (
-        <span class="pointer-events-none absolute bottom-1 right-2 text-[10px] text-text-muted">
+        <span className="pointer-events-none absolute bottom-1 right-2 text-[10px] text-text-muted">
           {Math.round(camera.zoom * 100)}%
         </span>
       )}
@@ -415,7 +435,7 @@ function CanvasButton({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      class="flex h-6 w-6 items-center justify-center rounded border border-border-subtle bg-elevated text-xs text-text-secondary enabled:hover:bg-hover enabled:hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+      className="flex h-6 w-6 items-center justify-center rounded border border-border-subtle bg-elevated text-xs text-text-secondary enabled:hover:bg-hover enabled:hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
     >
       {children}
     </button>
@@ -431,7 +451,7 @@ function NodeGlyph({
 }: {
   node: TopologyNode;
   active: boolean;
-  onEnter: (e: PointerEvent) => void;
+  onEnter: (e: ReactPointerEvent<SVGSVGElement>) => void;
   onFocus: (el: Element) => void;
   onLeave: () => void;
 }) {
@@ -457,7 +477,7 @@ function NodeGlyph({
     <a
       href={node.href}
       aria-label={title}
-      class="outline-none"
+      className="outline-none"
       onFocus={(e) => onFocus(e.currentTarget as Element)}
       onBlur={onLeave}
     >
@@ -465,7 +485,7 @@ function NodeGlyph({
         transform={`translate(${node.x}, ${node.y})`}
         onPointerEnter={onEnter}
         onPointerLeave={onLeave}
-        class="cursor-pointer"
+        className="cursor-pointer"
       >
         {square ? (
           <rect
@@ -476,45 +496,45 @@ function NodeGlyph({
             rx={node.kind === "workload" ? 8 : 6}
             fill={fill}
             stroke={ring}
-            stroke-width={active ? 3 : 2}
+            strokeWidth={active ? 3 : 2}
           />
         ) : (
           <circle
             r={r}
             fill={fill}
             stroke={ring}
-            stroke-width={active ? 3 : 2}
+            strokeWidth={active ? 3 : 2}
           />
         )}
         <text
-          text-anchor="middle"
+          textAnchor="middle"
           dy="0.35em"
           fill={kindColor}
-          font-size={Math.max(9, node.size * 0.22)}
-          font-weight="700"
-          class="pointer-events-none"
+          fontSize={Math.max(9, node.size * 0.22)}
+          fontWeight="700"
+          className="pointer-events-none"
         >
           {node.abbr}
         </text>
         <text
-          text-anchor="middle"
+          textAnchor="middle"
           y={r + 14}
           fill="var(--text-muted)"
-          font-size="9"
-          class="pointer-events-none"
+          fontSize="9"
+          className="pointer-events-none"
         >
           {label}
         </text>
         {node.containers.length > 1 && (
-          <g class="pointer-events-none">
+          <g className="pointer-events-none">
             <circle cx={r - 4} cy={-r + 4} r="7" fill="var(--accent)" />
             <text
               x={r - 4}
               y={-r + 4}
-              text-anchor="middle"
+              textAnchor="middle"
               dy="0.35em"
-              font-size="8"
-              font-weight="700"
+              fontSize="8"
+              fontWeight="700"
               fill="var(--bg-base)"
             >
               {node.containers.length}
@@ -551,11 +571,11 @@ function DetailPanel({ node, at }: { node: TopologyNode; at: Active }) {
     <div
       data-testid="cluster-topology-detail"
       style={style}
-      class="pointer-events-none absolute z-10 w-60 max-w-[calc(100%-1rem)] overflow-hidden rounded-md border border-border-subtle bg-elevated text-[11px] shadow-lg"
+      className="pointer-events-none absolute z-10 w-60 max-w-[calc(100%-1rem)] overflow-hidden rounded-md border border-border-subtle bg-elevated text-[11px] shadow-lg"
     >
-      <div class="flex items-center gap-2 border-b border-border-subtle px-2.5 py-2">
+      <div className="flex items-center gap-2 border-b border-border-subtle px-2.5 py-2">
         <span
-          class="shrink-0 rounded px-1 py-0.5 font-mono text-[9px] font-bold uppercase"
+          className="shrink-0 rounded px-1 py-0.5 font-mono text-[9px] font-bold uppercase"
           style={{
             color: KIND_COLOR[node.kind],
             background: `color-mix(in srgb, ${KIND_COLOR[node.kind]} 14%, transparent)`,
@@ -563,68 +583,71 @@ function DetailPanel({ node, at }: { node: TopologyNode; at: Active }) {
         >
           {kindLabel}
         </span>
-        <span class="min-w-0 flex-1">
-          <span class="block truncate text-xs font-semibold text-text-primary">
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-semibold text-text-primary">
             {node.name}
           </span>
           {node.namespace !== "" && (
-            <span class="block truncate text-[10px] text-text-muted">
+            <span className="block truncate text-[10px] text-text-muted">
               {node.namespace}
             </span>
           )}
         </span>
         <span
-          class="h-2 w-2 shrink-0 rounded-full"
+          className="h-2 w-2 shrink-0 rounded-full"
           style={{ background: HEALTH_COLOR[node.health] }}
         />
       </div>
-      <div class="flex flex-col gap-1.5 px-2.5 py-2 text-text-secondary">
+      <div className="flex flex-col gap-1.5 px-2.5 py-2 text-text-secondary">
         <span>
-          <span class="text-text-muted">Status </span>
+          <span className="text-text-muted">Status </span>
           <span style={{ color: HEALTH_COLOR[node.health] }}>
             {node.status}
           </span>
         </span>
         {node.nodeName !== "" && (
           <span>
-            <span class="text-text-muted">Node </span>
+            <span className="text-text-muted">Node </span>
             {node.nodeName}
           </span>
         )}
         {node.volumeName !== "" && (
           <span>
-            <span class="text-text-muted">Volume </span>
+            <span className="text-text-muted">Volume </span>
             {node.volumeName}
           </span>
         )}
         {node.containers.length > 0 && (
-          <span class="truncate">
-            <span class="text-text-muted">
+          <span className="truncate">
+            <span className="text-text-muted">
               {node.containers.length === 1 ? "Container " : "Containers "}
             </span>
-            <span class="font-mono">{node.containers.join(", ")}</span>
+            <span className="font-mono">{node.containers.join(", ")}</span>
           </span>
         )}
         {node.related.map((group) => (
-          <div key={group.kind} class="border-t border-border-subtle pt-1.5">
+          <div
+            key={group.kind}
+            className="border-t border-border-subtle pt-1.5"
+          >
             <span
-              class="block text-[9px] font-semibold uppercase tracking-wide"
+              className="block text-[9px] font-semibold uppercase tracking-wide"
               style={{ color: KIND_COLOR[group.kind] }}
             >
               {TOPOLOGY_KIND_LABEL[group.kind]}{" "}
-              <span class="font-normal text-text-muted">{group.total}</span>
+              <span className="font-normal text-text-muted">{group.total}</span>
             </span>
-            <span class="mt-1 flex flex-wrap gap-1">
+            <span className="mt-1 flex flex-wrap gap-1">
               {group.items.map((item) => (
                 <span
                   key={item}
-                  class="max-w-[9rem] truncate rounded bg-hover px-1.5 font-mono text-[10px]"
+                  className="max-w-[9rem] truncate rounded bg-hover px-1.5 font-mono text-[10px]"
                 >
                   {item}
                 </span>
               ))}
               {group.total > group.items.length && (
-                <span class="text-[10px] text-text-muted">
+                <span className="text-[10px] text-text-muted">
                   +{group.total - group.items.length} more
                 </span>
               )}
@@ -639,17 +662,17 @@ function DetailPanel({ node, at }: { node: TopologyNode; at: Active }) {
 function Legend({ view }: { view: TopologyView }) {
   return (
     <div
-      class="flex shrink-0 flex-wrap gap-x-3 gap-y-1 text-[11px] text-text-muted"
+      className="flex shrink-0 flex-wrap gap-x-3 gap-y-1 text-[11px] text-text-muted"
       data-testid="cluster-topology-legend"
     >
       {TOPOLOGY_KINDS.map((kind) => (
-        <span key={kind} class="flex items-center gap-1">
+        <span key={kind} className="flex items-center gap-1">
           <span
-            class="h-2 w-2 rounded-full"
+            className="h-2 w-2 rounded-full"
             style={{ background: KIND_COLOR[kind] }}
           />
           {TOPOLOGY_KIND_LABEL[kind]}{" "}
-          <span class="text-text-secondary">
+          <span className="text-text-secondary">
             {view.rows[kind].available ? view.rows[kind].counted : "—"}
           </span>
         </span>
@@ -659,8 +682,11 @@ function Legend({ view }: { view: TopologyView }) {
 }
 
 /** Why reads have no page, in the words a coverage note can use. */
-function whyAbsent(sources: readonly TopologySource[]): string {
-  const states = sources.map((s) => dashboardData.state(SOURCE_KEY[s]));
+function whyAbsent(
+  sources: readonly TopologySource[],
+  stateOf: (source: TopologySource) => SourceState,
+): string {
+  const states = sources.map(stateOf);
   if (states.some((s) => s.loading)) return "loading";
   if (states.every((s) => s.errorKind === "permission")) {
     return "not permitted for this account";
@@ -674,6 +700,16 @@ function whyAbsent(sources: readonly TopologySource[]): string {
  * not invite.
  */
 function CoverageNotes({ view }: { view: TopologyView }) {
+  const sourceStates: Record<TopologySource, SourceState> = {
+    nodes: useSourceState(SOURCE_KEY.nodes),
+    services: useSourceState(SOURCE_KEY.services),
+    deployments: useSourceState(SOURCE_KEY.deployments),
+    statefulsets: useSourceState(SOURCE_KEY.statefulsets),
+    daemonsets: useSourceState(SOURCE_KEY.daemonsets),
+    pods: useSourceState(SOURCE_KEY.pods),
+    pvcs: useSourceState(SOURCE_KEY.pvcs),
+  };
+  const stateOf = (source: TopologySource) => sourceStates[source];
   // A row with no page at all is named as the row. A row missing only some of
   // its reads -- the workload row, with one controller kind refused or still
   // loading -- names those reads, so its count is never taken for the whole.
@@ -681,10 +717,10 @@ function CoverageNotes({ view }: { view: TopologyView }) {
     const row = view.rows[k];
     if (row.absent.length === 0) return [];
     if (!row.available) {
-      return [`${TOPOLOGY_KIND_LABEL[k]} (${whyAbsent(row.absent)})`];
+      return [`${TOPOLOGY_KIND_LABEL[k]} (${whyAbsent(row.absent, stateOf)})`];
     }
     return row.absent.map(
-      (s) => `${TOPOLOGY_SOURCE_LABEL[s]} (${whyAbsent([s])})`,
+      (s) => `${TOPOLOGY_SOURCE_LABEL[s]} (${whyAbsent([s], stateOf)})`,
     );
   });
   const capped = TOPOLOGY_KINDS.filter((k) => view.rows[k].truncated);
@@ -694,7 +730,7 @@ function CoverageNotes({ view }: { view: TopologyView }) {
   }
   return (
     <div
-      class="flex shrink-0 flex-col gap-0.5 text-[11px] leading-snug text-text-muted"
+      className="flex shrink-0 flex-col gap-0.5 text-[11px] leading-snug text-text-muted"
       data-testid="cluster-topology-coverage"
     >
       {missing.length > 0 && <span>Not drawn: {missing.join(", ")}.</span>}

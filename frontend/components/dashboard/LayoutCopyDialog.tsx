@@ -1,4 +1,5 @@
-import { useLayoutEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useLayoutEffect, useRef } from "react";
 import ModalDialogShell from "@/components/dashboard/ModalDialogShell.tsx";
 // Which layouts are offered, and what taking one would lose, is decided in
 // lib/ rather than here: this is a component, and the repo has no component
@@ -80,7 +81,7 @@ export default function LayoutCopyDialog({
       closeTestId="close-layout-copy"
       onClose={onClose}
     >
-      <p class="border-b border-border-subtle px-4 py-2 text-xs text-text-muted">
+      <p className="border-b border-border-subtle px-4 py-2 text-xs text-text-muted">
         This replaces the arrangement you are editing. Nothing is saved until
         you press Save.
       </p>
@@ -90,7 +91,7 @@ export default function LayoutCopyDialog({
             arrow keys therefore stay the browser's, and Tab is the way
             through -- which is also why every row is a real tab stop here and
             the palette's option rows are not. */}
-      <div class="flex-1 overflow-y-auto py-1">
+      <div className="flex-1 overflow-y-auto py-1">
         {layouts.map((entry, index) => {
           const saved = savedOn(entry.updatedAt);
           const count = entry.config.items.length;
@@ -102,12 +103,12 @@ export default function LayoutCopyDialog({
               data-testid="copy-layout-option"
               data-cluster-id={entry.clusterId}
               onClick={() => onCopy(entry)}
-              class="flex w-full flex-col items-start gap-0.5 border-l-2 border-transparent px-4 py-2 text-left hover:border-accent hover:bg-accent-dim focus-visible:border-accent focus-visible:bg-accent-dim focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand"
+              className="flex w-full flex-col items-start gap-0.5 border-l-2 border-transparent px-4 py-2 text-left hover:border-accent hover:bg-accent-dim focus-visible:border-accent focus-visible:bg-accent-dim focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand"
             >
-              <span class="text-sm font-medium text-text-primary">
+              <span className="text-sm font-medium text-text-primary">
                 {entry.clusterLabel}
               </span>
-              <span class="text-xs text-text-muted">
+              <span className="text-xs text-text-muted">
                 {[
                   `${count} widget${count === 1 ? "" : "s"}`,
                   saved === null ? null : `saved ${saved}`,
@@ -119,7 +120,7 @@ export default function LayoutCopyDialog({
                     layout is already on screen reads as an error the user
                     caused; here it is part of what they are choosing. */}
               {entry.warnings.map((warning) => (
-                <span key={warning} class="text-xs text-warning">
+                <span key={warning} className="text-xs text-warning">
                   {warning}
                 </span>
               ))}

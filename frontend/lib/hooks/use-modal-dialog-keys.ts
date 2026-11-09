@@ -1,5 +1,4 @@
-import type { RefObject } from "preact";
-import { useRef } from "preact/hooks";
+import { type RefObject, useRef } from "react";
 
 /**
  * The keyboard contract every `aria-modal="true"` dialog in this app owes:
@@ -69,8 +68,8 @@ export function useModalDialogKeys(onClose: () => void): ModalDialogKeys {
    * and this dialog's own Escape no longer reachable.
    *
    * This belongs on the dialog container rather than on whichever control has
-   * focus: Preact's onKeyDown is a real DOM listener, so a keydown fired on a
-   * child still bubbles through the container before it would reach `window`,
+   * focus: a keydown fired on a child
+   * still bubbles through the container before it would reach `window`,
    * and this runs first and stops it there. Every branch that calls
    * `preventDefault` for a key the dialog owns calls `stopPropagation`
    * alongside it for the same reason -- nothing a dialog handles should be
