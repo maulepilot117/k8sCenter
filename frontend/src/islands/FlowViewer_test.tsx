@@ -1,22 +1,18 @@
-/** @jsxImportSource preact */
-import {
-  afterAll,
-  afterEach,
-  beforeEach,
-  expect,
-  jest,
-  mock,
-  test,
-} from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { refreshSession, setAccessToken } from "@/lib/api.ts";
 import {
   selectedCluster,
   selectedClusterGeneration,
   UNKNOWN_GENERATION,
 } from "@/src/lib/cluster.ts";
+import {
+  act,
+  fireEvent,
+  render,
+  setupDom,
+  waitFor,
+} from "@/src/test-utils/render.tsx";
 
 /**
  * The live flow viewer names its cluster in the WebSocket auth frame (#608
@@ -24,12 +20,8 @@ import {
  * refuses a flows stream that names no cluster rather than serving local.
  * The generation is sent so a re-registered cluster is refused, except for
  * the `unknown` sentinel, which names no registration.
- *
- * As in NamespaceTopology_test.tsx, IS_BROWSER is stubbed to true for this
- * island and put back afterwards.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+setupDom({ browser: true });
 
 const { default: FlowViewer } = await import("./FlowViewer.tsx");
 
@@ -47,7 +39,10 @@ class FakeWebSocket {
   send(data: string) {
     this.sent.push(JSON.parse(data));
   }
-  close() {}
+  closed = false;
+  close() {
+    this.closed = true;
+  }
 }
 
 const realWebSocket = globalThis.WebSocket;
@@ -67,11 +62,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  host = null;
   globalThis.WebSocket = realWebSocket;
   if (originalFetch) globalThis.fetch = originalFetch;
   setAccessToken(null);
@@ -79,16 +70,9 @@ afterEach(() => {
   selectedClusterGeneration.value = "local";
 });
 
-afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
-});
-
 /** Mounts the viewer, opens its socket and returns the auth frame sent. */
 function authFrame(): Record<string, unknown> {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<FlowViewer />, host as HTMLElement));
+  host = render(<FlowViewer />).container as HTMLElement;
   const ws = FakeWebSocket.instances.at(-1) as FakeWebSocket;
   act(() => ws.onopen?.());
   return ws.sent[0] as Record<string, unknown>;
@@ -131,9 +115,7 @@ const settle = () =>
 
 /** Mounts the viewer and opens its first socket. */
 function mountViewer(): FakeWebSocket {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<FlowViewer />, host as HTMLElement));
+  host = render(<FlowViewer />).container as HTMLElement;
   const ws = latestSocket();
   act(() => ws.onopen?.());
   return ws;
@@ -343,9 +325,7 @@ test("a stream opened during the startup refresh authenticates once it lands", a
   const { release } = gatedRefresh();
   const boot = refreshSession();
 
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<FlowViewer />, host as HTMLElement));
+  host = render(<FlowViewer />).container as HTMLElement;
   await settle();
   expect(FakeWebSocket.instances).toHaveLength(0);
 
@@ -357,4 +337,174 @@ test("a stream opened during the startup refresh authenticates once it lands", a
   expect(ws).toBeDefined();
   act(() => ws.onopen?.());
   expect(ws.sent[0]).toMatchObject({ type: "auth", token: "fresh-token" });
+});
+
+// --- Filters, batching and cleanup ---
+
+const jsonResponse = (data: unknown) =>
+  new Response(JSON.stringify({ data }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+
+/** Answers the namespace list, and records every other request's URL. */
+function stubNamespacesAndFlows(urls: string[]) {
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("/resources/namespaces")) {
+      return jsonResponse([
+        { metadata: { name: "default" } },
+        { metadata: { name: "prod" } },
+      ]);
+    }
+    urls.push(url);
+    return jsonResponse([]);
+  }) as unknown as typeof globalThis.fetch;
+}
+
+/** Holds animation frames until a test runs them. */
+function captureFrames() {
+  const realRaf = globalThis.requestAnimationFrame;
+  const realCancel = globalThis.cancelAnimationFrame;
+  const pending = new Map<number, FrameRequestCallback>();
+  let next = 1;
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+    pending.set(next, cb);
+    return next++;
+  }) as typeof globalThis.requestAnimationFrame;
+  globalThis.cancelAnimationFrame = ((id: number) => {
+    pending.delete(id);
+  }) as typeof globalThis.cancelAnimationFrame;
+  return {
+    pending,
+    run: () => {
+      const callbacks = [...pending.values()];
+      pending.clear();
+      act(() => {
+        for (const cb of callbacks) cb(0);
+      });
+    },
+    restore: () => {
+      globalThis.requestAnimationFrame = realRaf;
+      globalThis.cancelAnimationFrame = realCancel;
+    },
+  };
+}
+
+const flowFrame = (pod: string) => ({
+  type: "flow",
+  data: {
+    time: "2026-10-01T12:00:00Z",
+    verdict: "FORWARDED",
+    direction: "INGRESS",
+    srcNamespace: "default",
+    srcPod: pod,
+    dstNamespace: "default",
+    dstPod: "db",
+    protocol: "TCP",
+  },
+});
+
+function pickFilter(label: "Namespace" | "Verdict", value: string) {
+  const select = Array.from(host?.querySelectorAll("label") ?? [])
+    .find((l) => l.textContent === label)
+    ?.parentElement?.querySelector("select") as HTMLSelectElement;
+  act(() => {
+    fireEvent.change(select, { target: { value } });
+  });
+}
+
+test("changing a filter reconnects with the new filter, and a flow still on the old stream is ignored", async () => {
+  stubNamespacesAndFlows([]);
+  const frames = captureFrames();
+  try {
+    const first = mountViewer();
+    await settle();
+    deliver(first, { type: "subscribed" });
+
+    pickFilter("Namespace", "prod");
+    pickFilter("Verdict", "DROPPED");
+    const next = latestSocket();
+    expect(next).not.toBe(first);
+    act(() => next.onopen?.());
+    expect(next.sent[1]).toEqual({ namespace: "prod", verdict: "DROPPED" });
+
+    deliver(first, flowFrame("stale-pod"));
+    deliver(next, { type: "subscribed" });
+    deliver(next, flowFrame("fresh-pod"));
+    frames.run();
+    expect(host?.textContent).toContain("fresh-pod");
+    expect(host?.textContent).not.toContain("stale-pod");
+    expect(host?.textContent).toContain("1 flows");
+  } finally {
+    frames.restore();
+  }
+});
+
+test("flows arriving in one frame are batched, newest first", async () => {
+  const frames = captureFrames();
+  try {
+    const ws = mountViewer();
+    deliver(ws, { type: "subscribed" });
+    deliver(ws, flowFrame("pod-a"));
+    deliver(ws, flowFrame("pod-b"));
+    expect(host?.textContent).toContain("0 flows");
+    expect(frames.pending.size).toBe(1);
+
+    frames.run();
+    expect(host?.textContent).toContain("2 flows");
+    const rows = Array.from(host?.querySelectorAll("tbody tr") ?? []);
+    expect(rows[0].textContent).toContain("pod-b");
+    expect(rows[1].textContent).toContain("pod-a");
+
+    deliver(ws, flowFrame("pod-c"));
+    frames.run();
+    expect(host?.querySelectorAll("tbody tr")[0].textContent).toContain(
+      "pod-c",
+    );
+    expect(host?.textContent).toContain("3 flows");
+  } finally {
+    frames.restore();
+  }
+});
+
+test("a failed socket falls back to the flows request with the current filters", async () => {
+  const urls: string[] = [];
+  stubNamespacesAndFlows(urls);
+  const first = mountViewer();
+  await settle();
+  pickFilter("Namespace", "prod");
+  pickFilter("Verdict", "DROPPED");
+  const next = latestSocket();
+  expect(next).not.toBe(first);
+
+  act(() => next.onerror?.());
+  await settle();
+  const fallback = urls.find((u) => u.includes("/hubble/flows")) ?? "";
+  expect(fallback).toContain("namespace=prod");
+  expect(fallback).toContain("verdict=DROPPED");
+  expect(fallback).toContain("limit=200");
+});
+
+test("leaving the page closes the socket and drops a pending frame", async () => {
+  const frames = captureFrames();
+  try {
+    const view = render(<FlowViewer />);
+    host = view.container as HTMLElement;
+    const ws = latestSocket();
+    act(() => ws.onopen?.());
+    deliver(ws, { type: "subscribed" });
+    deliver(ws, flowFrame("pod-a"));
+    expect(frames.pending.size).toBe(1);
+
+    act(() => view.unmount());
+    expect(ws.closed).toBe(true);
+    expect(frames.pending.size).toBe(0);
+    const before = FakeWebSocket.instances.length;
+    await waitFor(() => {
+      expect(FakeWebSocket.instances.length).toBe(before);
+    });
+  } finally {
+    frames.restore();
+  }
 });

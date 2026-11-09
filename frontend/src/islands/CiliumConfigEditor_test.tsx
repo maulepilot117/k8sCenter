@@ -1,10 +1,8 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { setAccessToken } from "@/lib/api.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
+import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The Cilium config editor reads a cluster's cilium-config and writes one key
@@ -13,21 +11,12 @@ import { selectedCluster } from "@/src/lib/cluster.ts";
  * cluster, whatever is selected by then. Failures render from the response's
  * reason (KTD5, KTD14), so "not permitted", "reload" and "changed by someone
  * else" stay distinct.
- *
- * As in NamespaceTopology_test.tsx, IS_BROWSER is stubbed to true for this
- * island and put back afterwards.
  */
-GlobalRegistrator.register({ url: "http://localhost/" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+setupDom({ browser: true });
 
 const { default: CiliumConfigEditor } = await import(
   "./CiliumConfigEditor.tsx"
 );
-
-afterAll(() => {
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
-});
 
 interface Call {
   method: string;
@@ -37,7 +26,6 @@ interface Call {
 
 type Reply = { status: number; body: unknown };
 
-let host: HTMLElement | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 let calls: Call[] = [];
 // Replies are consumed in order per method; the last one repeats.
@@ -96,11 +84,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
   if (originalFetch) globalThis.fetch = originalFetch;
   originalFetch = undefined;
   setAccessToken(null);
@@ -117,11 +100,9 @@ async function settle() {
 }
 
 async function mount() {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() => render(<CiliumConfigEditor />, host as HTMLElement));
+  const view = render(<CiliumConfigEditor />);
   await settle();
-  return host;
+  return view.container as HTMLElement;
 }
 
 function buttons(root: HTMLElement, label: string) {
@@ -262,6 +243,30 @@ test("a second Enter while a save is in flight sends no second PUT", async () =>
   };
   act(enter);
   act(enter);
+  release();
+  await settle();
+
+  expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+});
+
+test("two Enters before the editor re-renders send one PUT", async () => {
+  let release = () => {};
+  putGate = new Promise<void>((r) => {
+    release = r;
+  });
+  const root = await mount();
+  const row = [...root.querySelectorAll("tr")].find((tr) =>
+    tr.textContent?.includes("enable-hubble"),
+  ) as HTMLElement;
+  act(() => (buttons(row, "Edit")[0] as HTMLButtonElement).click());
+  const input = root.querySelector("input") as HTMLInputElement;
+  act(() => {
+    for (let i = 0; i < 2; i++) {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    }
+  });
   release();
   await settle();
 

@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card.tsx";
 import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
 import { apiGet, apiPut } from "@/lib/api.ts";
@@ -8,7 +8,8 @@ import {
   type PanelState,
   panelState,
 } from "@/lib/networking-state.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 
 interface CiliumConfig {
   cniType: string;
@@ -37,15 +38,18 @@ const SAVED_NOT_REFRESHED: PanelState = {
 };
 
 export default function CiliumConfigEditor() {
-  const config = useSignal<CiliumConfig | null>(null);
-  const loading = useSignal(true);
-  const loadState = useSignal<PanelState | null>(null);
-  const editKey = useSignal<string | null>(null);
-  const editValue = useSignal("");
-  const saving = useSignal(false);
+  const isClient = useIsClient();
+  const [config, setConfig] = useState<CiliumConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadState, setLoadState] = useState<PanelState | null>(null);
+  const [editKey, setEditKey] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  // Read through the ref: a second Enter can arrive before the render that
+  // disables the Save button.
+  const [saving, setSaving, savingRef] = useStateRef(false);
   // The outcome of the last save, and what its "Try again" repeats.
-  const notice = useSignal<PanelState | null>(null);
-  const retry = useSignal<"save" | "refresh">("save");
+  const [notice, setNotice] = useState<PanelState | null>(null);
+  const [retry, setRetry] = useState<"save" | "refresh">("save");
 
   /** Reads the config. Returns the failure state, or null on success. */
   const fetchConfig = async (): Promise<PanelState | null> => {
@@ -53,8 +57,9 @@ export default function CiliumConfigEditor() {
       const resp = await apiGet<CiliumConfig | Record<string, unknown>>(
         "/v1/networking/cni/config",
       );
-      config.value =
-        resp.data && "config" in resp.data ? (resp.data as CiliumConfig) : null;
+      setConfig(
+        resp.data && "config" in resp.data ? (resp.data as CiliumConfig) : null,
+      );
       return null;
     } catch (err) {
       return panelState(failureOf(err), WHAT);
@@ -62,46 +67,46 @@ export default function CiliumConfigEditor() {
   };
 
   const load = async () => {
-    loading.value = true;
-    loadState.value = await fetchConfig();
-    loading.value = false;
+    setLoading(true);
+    setLoadState(await fetchConfig());
+    setLoading(false);
   };
 
   const refresh = async () => {
-    notice.value = (await fetchConfig()) ? SAVED_NOT_REFRESHED : null;
+    setNotice((await fetchConfig()) ? SAVED_NOT_REFRESHED : null);
   };
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loads once on mount; `load` is recreated every render
   useEffect(() => {
-    if (!IS_BROWSER) return;
     load();
   }, []);
 
   const closeEdit = () => {
-    editKey.value = null;
-    editValue.value = "";
+    setEditKey(null);
+    setEditValue("");
   };
 
   const startEdit = (key: string, value: string) => {
-    editKey.value = key;
-    editValue.value = value;
-    notice.value = null;
+    setEditKey(key);
+    setEditValue(value);
+    setNotice(null);
   };
 
   const cancelEdit = () => {
     closeEdit();
-    notice.value = null;
+    setNotice(null);
   };
 
   const saveEdit = async () => {
-    const key = editKey.value;
-    const loaded = config.value;
+    const key = editKey;
+    const loaded = config;
     // A save in flight blocks another: Enter and the notice's Try again
     // reach here even while the Save button is disabled.
-    if (key === null || !loaded || saving.value) return;
-    const value = editValue.value;
-    saving.value = true;
-    notice.value = null;
-    retry.value = "save";
+    if (key === null || !loaded || savingRef.current) return;
+    const value = editValue;
+    setSaving(true);
+    setNotice(null);
+    setRetry("save");
 
     try {
       await apiPut(
@@ -116,23 +121,23 @@ export default function CiliumConfigEditor() {
       );
       // The write landed: show it even if the re-read below fails.
       closeEdit();
-      config.value = { ...loaded, config: { ...loaded.config, [key]: value } };
-      retry.value = "refresh";
+      setConfig({ ...loaded, config: { ...loaded.config, [key]: value } });
+      setRetry("refresh");
       await refresh();
     } catch (err) {
       const failure = failureOf(err);
       if (failure && failure.status !== 403 && !failure.reason) {
         // A local failure carries no reason; its message is the server's
         // own fixed copy, and the edit stays open to try again.
-        notice.value = {
+        setNotice({
           kind: "unavailable",
           message: (err as Error).message,
           action: null,
-        };
+        });
         return;
       }
       const state = panelState(failure, WHAT, "save");
-      notice.value = state;
+      setNotice(state);
       if (state.kind === "reload" || state.kind === "outcome_unknown") {
         // Saving again cannot work, or might apply the change twice: only a
         // reload resolves it.
@@ -142,110 +147,108 @@ export default function CiliumConfigEditor() {
         await fetchConfig();
       }
     } finally {
-      saving.value = false;
+      setSaving(false);
     }
   };
 
-  if (!IS_BROWSER || loading.value) {
+  if (!isClient || loading) {
     return (
-      <div class="animate-pulse space-y-4">
-        <div class="h-8 bg-elevated rounded w-48" />
-        <div class="h-64 bg-elevated rounded" />
+      <div className="animate-pulse space-y-4">
+        <div className="h-8 bg-elevated rounded w-48" />
+        <div className="h-64 bg-elevated rounded" />
       </div>
     );
   }
 
-  if (loadState.value) {
+  if (loadState) {
     return (
       <Card>
-        <PanelStateNotice state={loadState.value} onRetry={load} />
+        <PanelStateNotice state={loadState} onRetry={load} />
       </Card>
     );
   }
 
-  if (!config.value) {
+  if (!config) {
     return (
       <Card>
-        <p class="text-text-muted text-center py-8">
+        <p className="text-text-muted text-center py-8">
           Configuration not available.
         </p>
       </Card>
     );
   }
 
-  const sortedKeys = Object.keys(config.value.config).sort();
+  const sortedKeys = Object.keys(config.config).sort();
 
   return (
     <Card
-      title={`Cilium Configuration (${config.value.configMapNamespace}/${config.value.configMapName})`}
+      title={`Cilium Configuration (${config.configMapNamespace}/${config.configMapName})`}
     >
-      {notice.value && (
-        <div class="mb-4">
+      {notice && (
+        <div className="mb-4">
           <PanelStateNotice
-            state={notice.value}
-            onRetry={retry.value === "refresh" ? refresh : saveEdit}
+            state={notice}
+            onRetry={retry === "refresh" ? refresh : saveEdit}
           />
         </div>
       )}
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
           <thead>
-            <tr class="border-b border-border-primary">
-              <th class="text-left py-2 px-3 font-medium text-text-muted w-1/3">
+            <tr className="border-b border-border-primary">
+              <th className="text-left py-2 px-3 font-medium text-text-muted w-1/3">
                 Key
               </th>
-              <th class="text-left py-2 px-3 font-medium text-text-muted">
+              <th className="text-left py-2 px-3 font-medium text-text-muted">
                 Value
               </th>
-              <th class="py-2 px-3 w-20" />
+              <th className="py-2 px-3 w-20" />
             </tr>
           </thead>
           <tbody>
             {sortedKeys.map((key) => (
               <tr
                 key={key}
-                class="border-b border-border-subtle hover:bg-hover/50"
+                className="border-b border-border-subtle hover:bg-hover/50"
               >
-                <td class="py-2 px-3 font-mono text-xs text-text-secondary">
+                <td className="py-2 px-3 font-mono text-xs text-text-secondary">
                   {key}
                 </td>
-                <td class="py-2 px-3">
-                  {editKey.value === key ? (
+                <td className="py-2 px-3">
+                  {editKey === key ? (
                     <input
                       type="text"
-                      value={editValue.value}
-                      onInput={(e) =>
-                        (editValue.value = (e.target as HTMLInputElement).value)
-                      }
-                      class="w-full px-2 py-1 text-xs font-mono border border-brand rounded bg-surface text-text-primary"
+                      value={editValue}
+                      onChange={(e) => setEditValue(e.currentTarget.value)}
+                      className="w-full px-2 py-1 text-xs font-mono border border-brand rounded bg-surface text-text-primary"
                       onKeyDown={(e) => {
                         if (e.key === "Enter") saveEdit();
                         if (e.key === "Escape") cancelEdit();
                       }}
                     />
                   ) : (
-                    <span class="font-mono text-xs text-text-secondary">
-                      {config.value?.config[key] || (
-                        <em class="text-text-muted">empty</em>
+                    <span className="font-mono text-xs text-text-secondary">
+                      {config.config[key] || (
+                        <em className="text-text-muted">empty</em>
                       )}
                     </span>
                   )}
                 </td>
-                <td class="py-2 px-3 text-right">
-                  {editKey.value === key ? (
-                    <div class="flex gap-1 justify-end">
+                <td className="py-2 px-3 text-right">
+                  {editKey === key ? (
+                    <div className="flex gap-1 justify-end">
                       <button
                         type="button"
                         onClick={saveEdit}
-                        disabled={saving.value}
-                        class="text-xs text-success hover:text-success font-medium"
+                        disabled={saving}
+                        className="text-xs text-success hover:text-success font-medium"
                       >
-                        {saving.value ? "..." : "Save"}
+                        {saving ? "..." : "Save"}
                       </button>
                       <button
                         type="button"
                         onClick={cancelEdit}
-                        class="text-xs text-text-muted hover:text-text-secondary"
+                        className="text-xs text-text-muted hover:text-text-secondary"
                       >
                         Cancel
                       </button>
@@ -253,8 +256,8 @@ export default function CiliumConfigEditor() {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => startEdit(key, config.value!.config[key])}
-                      class="text-xs text-brand hover:text-brand/80"
+                      onClick={() => startEdit(key, config.config[key])}
+                      className="text-xs text-brand hover:text-brand/80"
                     >
                       Edit
                     </button>
