@@ -173,6 +173,8 @@
         "frontend/components/wizard/ServicePortsStep.tsx",
         "frontend/components/wizard/StepRail.tsx",
         "frontend/lib/dashboard/types.ts",
+        "frontend/lib/dashboard/use-source-state.ts",
+        "frontend/lib/dashboard/use-source-state_test.tsx",
         "frontend/lib/hooks/use-dirty-guard.ts",
         "frontend/lib/hooks/use-dirty-guard_test.tsx",
         "frontend/lib/hooks/use-namespaces.ts",
