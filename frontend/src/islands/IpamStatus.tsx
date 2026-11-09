@@ -1,10 +1,11 @@
+/** @jsxImportSource react */
 import { Card } from "@/components/ui/Card.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { PanelStateNotice } from "@/components/ui/PanelStateNotice.tsx";
 import type { CiliumIPAMResponse } from "@/lib/cilium-types.ts";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
 import { panelState } from "@/lib/networking-state.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 export default function IpamStatus() {
   const { data, loading, error, failure, refetch, lastFetchedAt } =
@@ -12,27 +13,28 @@ export default function IpamStatus() {
       interval: 60_000,
       shouldContinuePolling: (d) => d.configured,
     });
+  const isClient = useIsClient();
 
-  if (!IS_BROWSER || loading.value) {
-    return <div class="animate-pulse h-40 bg-elevated rounded-lg" />;
+  if (!isClient || loading) {
+    return <div className="animate-pulse h-40 bg-elevated rounded-lg" />;
   }
 
-  if (error.value) {
+  if (error) {
     return (
       <Card title="IP Address Management">
         <PanelStateNotice
-          state={panelState(failure.value, "IPAM data")}
+          state={panelState(failure, "IPAM data")}
           onRetry={refetch}
         />
       </Card>
     );
   }
 
-  const resp = data.value;
+  const resp = data;
   if (!resp?.configured) {
     return (
       <Card title="IP Address Management" className="opacity-50">
-        <p class="text-sm text-text-muted">IPAM data not available.</p>
+        <p className="text-sm text-text-muted">IPAM data not available.</p>
       </Card>
     );
   }
@@ -44,36 +46,36 @@ export default function IpamStatus() {
 
   return (
     <Card title="IP Address Management">
-      <div class="space-y-3">
-        <div class="flex justify-between">
-          <span class="text-text-muted">Mode</span>
-          <span class="text-text-primary font-medium capitalize">
+      <div className="space-y-3">
+        <div className="flex justify-between">
+          <span className="text-text-muted">Mode</span>
+          <span className="text-text-primary font-medium capitalize">
             {resp.mode.replace(/-/g, " ")}
           </span>
         </div>
         {resp.podCIDRs.length > 0 && (
-          <div class="flex justify-between">
-            <span class="text-text-muted">Pod CIDR</span>
-            <span class="font-mono text-sm text-text-primary">
+          <div className="flex justify-between">
+            <span className="text-text-muted">Pod CIDR</span>
+            <span className="font-mono text-sm text-text-primary">
               {resp.podCIDRs[0]}
               {resp.podCIDRs.length > 1 && (
-                <span class="text-text-muted">
+                <span className="text-text-muted">
                   &nbsp;+{resp.podCIDRs.length - 1}
                 </span>
               )}
             </span>
           </div>
         )}
-        <div class="flex justify-between">
-          <span class="text-text-muted">Allocated</span>
-          <span class="font-mono text-sm text-text-primary">
+        <div className="flex justify-between">
+          <span className="text-text-muted">Allocated</span>
+          <span className="font-mono text-sm text-text-primary">
             {allocated.toLocaleString()} / {total.toLocaleString()}
           </span>
         </div>
         {/* Progress bar */}
-        <div class="w-full bg-elevated rounded-full h-2">
+        <div className="w-full bg-elevated rounded-full h-2">
           <div
-            class="h-2 rounded-full"
+            className="h-2 rounded-full"
             style={{
               width: `${Math.max(pct, 1)}%`,
               background:
@@ -86,8 +88,8 @@ export default function IpamStatus() {
             }}
           />
         </div>
-        <div class="flex justify-between">
-          <span class="text-text-muted">Exhaustion Risk</span>
+        <div className="flex justify-between">
+          <span className="text-text-muted">Exhaustion Risk</span>
           <StatusBadge
             label={
               resp.exhaustionRisk === "none"
@@ -107,15 +109,17 @@ export default function IpamStatus() {
 
         {/* Per-node breakdown */}
         {resp.perNode.length > 0 && (
-          <div class="mt-4 pt-3 border-t border-border-subtle">
-            <p class="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
+          <div className="mt-4 pt-3 border-t border-border-subtle">
+            <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
               Per Node
             </p>
-            <div class="space-y-1.5">
+            <div className="space-y-1.5">
               {resp.perNode.map((node) => (
-                <div key={node.node} class="flex justify-between text-xs">
-                  <span class="font-mono text-text-secondary">{node.node}</span>
-                  <span class="text-text-muted">
+                <div key={node.node} className="flex justify-between text-xs">
+                  <span className="font-mono text-text-secondary">
+                    {node.node}
+                  </span>
+                  <span className="text-text-muted">
                     {node.allocated} used / {node.allocated + node.available}{" "}
                     total
                   </span>
@@ -125,10 +129,10 @@ export default function IpamStatus() {
           </div>
         )}
       </div>
-      {lastFetchedAt.value && (
-        <div class="mt-3 pt-2 border-t border-border-subtle text-right">
-          <span class="text-xs text-text-muted">
-            Updated {lastFetchedAt.value.toLocaleTimeString()}
+      {lastFetchedAt && (
+        <div className="mt-3 pt-2 border-t border-border-subtle text-right">
+          <span className="text-xs text-text-muted">
+            Updated {lastFetchedAt.toLocaleTimeString()}
           </span>
         </div>
       )}

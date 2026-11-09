@@ -39,12 +39,26 @@ function errorResponse(status: number, reason: string): Response {
 
 let latest: ReturnType<typeof usePoll<{ ok: boolean }>> | null = null;
 
-function Probe() {
-  latest = usePoll<{ ok: boolean }>("/v1/networking/cilium/bgp", {
+function Probe({
+  url = "/v1/networking/cilium/bgp",
+  stopWhenNotOk = false,
+}: {
+  url?: string;
+  stopWhenNotOk?: boolean;
+}) {
+  latest = usePoll<{ ok: boolean }>(url, {
     interval: INTERVAL,
+    // A fresh function every render: only its latest value may matter.
+    shouldContinuePolling: stopWhenNotOk ? (d) => d.ok : undefined,
   });
   return null;
 }
+
+const okResponse = (ok = true) =>
+  new Response(JSON.stringify({ data: { ok } }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -65,7 +79,7 @@ async function becomeVisible() {
 test("a 403 records its reason and stops polling for good", async () => {
   respond = () => errorResponse(403, "forbidden");
   await mount();
-  expect(latest?.failure.value).toEqual({ status: 403, reason: "forbidden" });
+  expect(latest?.failure).toEqual({ status: 403, reason: "forbidden" });
   const afterFirst = calls;
   expect(afterFirst).toBe(1);
 
@@ -77,7 +91,7 @@ test("a 403 records its reason and stops polling for good", async () => {
 test("other failures keep polling and resume on visibility", async () => {
   respond = () => errorResponse(502, "unreachable");
   await mount();
-  expect(latest?.failure.value).toEqual({ status: 502, reason: "unreachable" });
+  expect(latest?.failure).toEqual({ status: 502, reason: "unreachable" });
 
   await act(() => wait(INTERVAL * 5));
   const paused = calls;
@@ -97,12 +111,12 @@ test("a success clears the failure", async () => {
           headers: { "Content-Type": "application/json" },
         });
   await mount();
-  expect(latest?.failure.value?.status).toBe(502);
+  expect(latest?.failure?.status).toBe(502);
 
   fail = false;
   await act(() => wait(INTERVAL * 2));
-  expect(latest?.failure.value).toBeNull();
-  expect(latest?.data.value).toEqual({ ok: true });
+  expect(latest?.failure).toBeNull();
+  expect(latest?.data).toEqual({ ok: true });
 });
 
 test("a manual refetch that succeeds restarts paused polling", async () => {
@@ -127,4 +141,76 @@ test("a manual refetch that succeeds restarts paused polling", async () => {
   const afterRefetch = calls;
   await act(() => wait(INTERVAL * 4));
   expect(calls).toBeGreaterThan(afterRefetch);
+});
+
+test("polling stops when shouldContinuePolling returns false", async () => {
+  respond = () => okResponse(false);
+  await act(async () => {
+    render(<Probe stopWhenNotOk />);
+  });
+  await act(() => wait(10));
+  expect(calls).toBe(1);
+  expect(latest?.data).toEqual({ ok: false });
+
+  await act(() => wait(INTERVAL * 5));
+  await becomeVisible();
+  expect(calls).toBe(1);
+});
+
+test("ticks are skipped while the tab is hidden", async () => {
+  respond = () => okResponse();
+  const hidden = Object.getOwnPropertyDescriptor(document, "hidden");
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    get: () => true,
+  });
+  try {
+    await mount();
+    expect(calls).toBe(1);
+    await act(() => wait(INTERVAL * 5));
+    expect(calls).toBe(1);
+  } finally {
+    if (hidden) Object.defineProperty(document, "hidden", hidden);
+    else Reflect.deleteProperty(document, "hidden");
+  }
+  await act(() => wait(INTERVAL * 3));
+  expect(calls).toBeGreaterThan(1);
+});
+
+test("a new url starts from a clean slate after a 403", async () => {
+  respond = () => errorResponse(403, "forbidden");
+  let view: ReturnType<typeof render> | undefined;
+  await act(async () => {
+    view = render(<Probe url="/v1/a" />);
+  });
+  await act(() => wait(INTERVAL * 4));
+  expect(calls).toBe(1);
+
+  respond = () => okResponse();
+  await act(async () => {
+    view?.rerender(<Probe url="/v1/b" />);
+  });
+  await act(() => wait(INTERVAL * 4));
+  expect(latest?.data).toEqual({ ok: true });
+  expect(calls).toBeGreaterThan(2);
+});
+
+test("the interval does not restart when only shouldContinuePolling changes", async () => {
+  respond = () => okResponse();
+  let view: ReturnType<typeof render> | undefined;
+  await act(async () => {
+    view = render(<Probe stopWhenNotOk />);
+  });
+  // Re-render with a new shouldContinuePolling every few ms. A restart would
+  // fetch again each time and never let the interval fire.
+  for (let i = 0; i < 8; i++) {
+    await act(async () => {
+      view?.rerender(<Probe stopWhenNotOk key="same" />);
+      await wait(8);
+    });
+  }
+  // About one fetch per interval plus the first; a restart per render
+  // would be at least nine.
+  expect(calls).toBeGreaterThan(1);
+  expect(calls).toBeLessThanOrEqual(6);
 });
