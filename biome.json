@@ -300,6 +300,10 @@
         "frontend/src/islands/ExternalSecretWizard.tsx",
         "frontend/src/islands/FlowViewer.tsx",
         "frontend/src/islands/FlowViewer_test.tsx",
+        "frontend/src/islands/FluxAlerts.tsx",
+        "frontend/src/islands/FluxProviders.tsx",
+        "frontend/src/islands/FluxProviders_test.tsx",
+        "frontend/src/islands/FluxReceivers.tsx",
         "frontend/src/islands/GitOpsAppDetail.tsx",
         "frontend/src/islands/GitOpsApplications.tsx",
         "frontend/src/islands/GitOpsAppSetDetail.tsx",
@@ -404,6 +408,7 @@
         "frontend/src/lib/use-signal-value_test.tsx",
         "frontend/src/lib/use-state-ref.ts",
         "frontend/src/lib/use-state-ref_test.tsx",
+        "frontend/src/lib/useNotificationCrud.ts",
         "frontend/src/test-utils/render.tsx",
         "frontend/src/test-utils/render_test.tsx"
       ],

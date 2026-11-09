@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import { StatusBadge } from "@/components/ui/NotificationBadges.tsx";
 import {
   ActionsDropdown,
@@ -21,9 +22,10 @@ import {
   PAGE_SIZE,
 } from "@/lib/notification-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 import { useNotificationCrud } from "@/src/lib/useNotificationCrud.ts";
 
 /** Receiver types supported by Flux notification-controller. */
@@ -75,11 +77,13 @@ export default function FluxReceivers() {
     label: "receiver",
   });
 
-  const form = useSignal<ReceiverForm>({ ...EMPTY_FORM });
+  const isClient = useIsClient();
+  const namespace = useSignalValue(selectedNamespace);
+  const [form, setForm] = useState<ReceiverForm>({ ...EMPTY_FORM });
 
   function openEdit(r: NormalizedReceiver) {
     crud.openEdit(r, () => {
-      form.value = {
+      setForm({
         name: r.name,
         namespace: r.namespace,
         type: r.type,
@@ -88,23 +92,23 @@ export default function FluxReceivers() {
             ? r.resources.map((res) => ({ kind: res.kind, name: res.name }))
             : [{ kind: "GitRepository", name: "*" }],
         secretRef: r.secretRef,
-      };
+      });
     });
   }
 
   async function handleFormSubmit() {
-    if (crud.formSubmitting.value) return;
-    const f = form.value;
+    if (crud.formSubmittingRef.current) return;
+    const f = form;
     if (!f.name.trim()) {
-      crud.formError.value = "Name is required";
+      crud.setFormError("Name is required");
       return;
     }
     if (!f.secretRef.trim()) {
-      crud.formError.value = "Secret reference is required";
+      crud.setFormError("Secret reference is required");
       return;
     }
-    crud.formSubmitting.value = true;
-    crud.formError.value = null;
+    crud.setFormSubmitting(true);
+    crud.setFormError(null);
 
     const payload = {
       name: f.name,
@@ -115,11 +119,11 @@ export default function FluxReceivers() {
     };
 
     try {
-      if (crud.editingItem.value) {
+      if (crud.editingItem) {
         await apiPut(
           `/v1/gitops/notifications/receivers/${encodeURIComponent(
-            crud.editingItem.value.namespace,
-          )}/${encodeURIComponent(crud.editingItem.value.name)}`,
+            crud.editingItem.namespace,
+          )}/${encodeURIComponent(crud.editingItem.name)}`,
           payload,
         );
         showToast("Receiver updated", "success");
@@ -127,13 +131,14 @@ export default function FluxReceivers() {
         await apiPost("/v1/gitops/notifications/receivers", payload);
         showToast("Receiver created", "success");
       }
-      crud.showForm.value = false;
+      crud.setShowForm(false);
       await crud.fetchData();
     } catch (err) {
-      crud.formError.value =
-        err instanceof Error ? err.message : "Failed to save receiver";
+      crud.setFormError(
+        err instanceof Error ? err.message : "Failed to save receiver",
+      );
     } finally {
-      crud.formSubmitting.value = false;
+      crud.setFormSubmitting(false);
     }
   }
 
@@ -142,28 +147,25 @@ export default function FluxReceivers() {
     field: "kind" | "name",
     value: string,
   ) {
-    const updated = form.value.resources.map((r, i) =>
+    const updated = form.resources.map((r, i) =>
       i === index ? { ...r, [field]: value } : r,
     );
-    form.value = { ...form.value, resources: updated };
+    setForm({ ...form, resources: updated });
   }
 
   function addResource() {
-    form.value = {
-      ...form.value,
-      resources: [
-        ...form.value.resources,
-        { kind: "GitRepository", name: "*" },
-      ],
-    };
+    setForm({
+      ...form,
+      resources: [...form.resources, { kind: "GitRepository", name: "*" }],
+    });
   }
 
   function removeResource(index: number) {
-    if (form.value.resources.length <= 1) return;
-    form.value = {
-      ...form.value,
-      resources: form.value.resources.filter((_, i) => i !== index),
-    };
+    if (form.resources.length <= 1) return;
+    setForm({
+      ...form,
+      resources: form.resources.filter((_, i) => i !== index),
+    });
   }
 
   /** Copy text to clipboard with toast feedback. */
@@ -174,14 +176,14 @@ export default function FluxReceivers() {
     );
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const notAvailable = !!(crud.status.value && !crud.status.value.available);
+  const notAvailable = !!(crud.status && !crud.status.available);
 
-  const nsByNs = filterByNamespace(crud.items.value, selectedNamespace.value);
+  const nsByNs = filterByNamespace(crud.items, namespace);
   const filtered = nsByNs.filter((r) => {
-    if (!crud.search.value) return true;
-    const q = crud.search.value.toLowerCase();
+    if (!crud.search) return true;
+    const q = crud.search.toLowerCase();
     return (
       r.name.toLowerCase().includes(q) ||
       r.namespace.toLowerCase().includes(q) ||
@@ -191,54 +193,53 @@ export default function FluxReceivers() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (crud.page.value > totalPages) crud.page.value = totalPages;
-  const displayed = filtered.slice(
-    (crud.page.value - 1) * PAGE_SIZE,
-    crud.page.value * PAGE_SIZE,
-  );
+  const page = Math.min(crud.page, totalPages);
+  if (crud.page > totalPages) crud.setPage(totalPages);
+  const displayed = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
-    <div class="p-6">
+    <div className="p-6">
       <NotificationPageHeader
         kind="Receiver"
         description="Flux notification receivers &mdash; webhook endpoints that trigger reconciliation."
-        loading={crud.loading.value}
+        loading={crud.loading}
         notAvailable={notAvailable}
-        refreshing={crud.refreshing.value}
+        refreshing={crud.refreshing}
         onRefresh={crud.handleRefresh}
         onCreate={() =>
           crud.openCreate(() => {
-            form.value = {
+            setForm({
               ...EMPTY_FORM,
               resources: [{ kind: "GitRepository", name: "*" }],
-            };
+            });
           })
         }
       />
 
       <NotificationUnavailableBanner
-        visible={notAvailable && !crud.loading.value}
+        visible={notAvailable && !crud.loading}
         resourceLabel="receivers"
       />
 
       <NotificationSearchBar
         search={crud.search}
-        page={crud.page}
+        onSearchChange={crud.setSearch}
+        onPageChange={crud.setPage}
         filteredCount={filtered.length}
-        totalCount={crud.items.value.length}
+        totalCount={crud.items.length}
         resourceLabel="receivers"
         placeholder="Filter by name, namespace, type..."
       />
 
-      <NotificationLoadingSpinner loading={crud.loading.value} />
+      <NotificationLoadingSpinner loading={crud.loading} />
 
-      {crud.error.value && (
-        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
-          {crud.error.value}
+      {crud.error && (
+        <p className="text-sm py-4" style={{ color: "var(--error)" }}>
+          {crud.error}
         </p>
       )}
 
-      {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
+      {!crud.loading && !crud.error && filtered.length > 0 && (
         <ResourceTable
           chevron={false}
           columns={[
@@ -256,32 +257,37 @@ export default function FluxReceivers() {
             cells: {
               name: (
                 <div>
-                  <div class="font-medium text-text-primary">{r.name}</div>
+                  <div className="font-medium text-text-primary">{r.name}</div>
                   {r.suspend && (
-                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                    <span
+                      className="text-xs"
+                      style={{ color: "var(--warning)" }}
+                    >
                       suspended
                     </span>
                   )}
                 </div>
               ),
               namespace: (
-                <span class="text-xs text-text-secondary">{r.namespace}</span>
+                <span className="text-xs text-text-secondary">
+                  {r.namespace}
+                </span>
               ),
               type: (
-                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent">
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent">
                   {r.type}
                 </span>
               ),
               resources: <CountBadge items={r.resources} label="resource" />,
               webhookPath: r.webhookPath ? (
-                <div class="flex items-center gap-1.5 max-w-[200px]">
-                  <code class="text-xs text-text-secondary truncate">
+                <div className="flex items-center gap-1.5 max-w-[200px]">
+                  <code className="text-xs text-text-secondary truncate">
                     {r.webhookPath}
                   </code>
                   <button
                     type="button"
                     onClick={() => copyToClipboard(r.webhookPath)}
-                    class="flex-shrink-0 rounded p-0.5 hover:bg-hover text-text-muted hover:text-text-primary"
+                    className="flex-shrink-0 rounded p-0.5 hover:bg-hover text-text-muted hover:text-text-primary"
                     title="Copy webhook path"
                   >
                     <svg
@@ -290,9 +296,9 @@ export default function FluxReceivers() {
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
                     >
                       <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
                       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
@@ -300,13 +306,15 @@ export default function FluxReceivers() {
                   </button>
                 </div>
               ) : (
-                <span class="text-xs text-text-muted italic">Pending...</span>
+                <span className="text-xs text-text-muted italic">
+                  Pending...
+                </span>
               ),
               status: (
                 <StatusBadge status={r.suspend ? "suspended" : r.status} />
               ),
               createdAt: (
-                <span class="text-xs text-text-muted">
+                <span className="text-xs text-text-muted">
                   {r.createdAt ? timeAgo(r.createdAt) : "-"}
                 </span>
               ),
@@ -315,10 +323,11 @@ export default function FluxReceivers() {
                   itemKey={`${r.namespace}/${r.name}`}
                   suspended={r.suspend}
                   openDropdown={crud.openDropdown}
+                  onOpenDropdownChange={crud.setOpenDropdown}
                   onEdit={() => openEdit(r)}
                   onSuspendToggle={() => crud.handleSuspendToggle(r)}
                   onDelete={() => {
-                    crud.deleteTarget.value = r;
+                    crud.setDeleteTarget(r);
                   }}
                 />
               ),
@@ -328,88 +337,93 @@ export default function FluxReceivers() {
       )}
 
       <NotificationPagination
-        loading={crud.loading.value}
-        error={crud.error.value}
+        loading={crud.loading}
+        error={crud.error}
         filteredCount={filtered.length}
-        page={crud.page}
+        page={page}
+        onPageChange={crud.setPage}
         totalPages={totalPages}
         resourceLabel="receivers"
       />
 
       <NotificationEmptyState
-        loading={crud.loading.value}
-        error={crud.error.value}
+        loading={crud.loading}
+        error={crud.error}
         filteredCount={filtered.length}
-        totalCount={crud.items.value.length}
+        totalCount={crud.items.length}
         notAvailable={notAvailable}
         kind="Receiver"
         onCreate={() =>
           crud.openCreate(() => {
-            form.value = {
+            setForm({
               ...EMPTY_FORM,
               resources: [{ kind: "GitRepository", name: "*" }],
-            };
+            });
           })
         }
       />
 
-      {crud.showForm.value && (
+      {crud.showForm && (
         <NotificationFormShell
           id="receiver-form"
-          title={crud.editingItem.value ? "Edit Receiver" : "Create Receiver"}
-          submitting={crud.formSubmitting.value}
-          error={crud.formError.value}
+          title={crud.editingItem ? "Edit Receiver" : "Create Receiver"}
+          submitting={crud.formSubmitting}
+          error={crud.formError}
           onSubmit={handleFormSubmit}
           onCancel={() => {
-            crud.showForm.value = false;
+            crud.setShowForm(false);
           }}
           wide
         >
           <div>
-            <label class="block text-sm text-text-secondary mb-1">Name</label>
+            <label className="block text-sm text-text-secondary mb-1">
+              Name
+            </label>
             <input
               type="text"
-              value={form.value.name}
-              disabled={!!crud.editingItem.value}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  name: (e.target as HTMLInputElement).value,
+              value={form.name}
+              disabled={!!crud.editingItem}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  name: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="my-receiver"
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Namespace
             </label>
             <input
               type="text"
-              value={form.value.namespace}
-              disabled={!!crud.editingItem.value}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  namespace: (e.target as HTMLInputElement).value,
+              value={form.namespace}
+              disabled={!!crud.editingItem}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  namespace: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="default"
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">Type</label>
+            <label className="block text-sm text-text-secondary mb-1">
+              Type
+            </label>
             <select
-              value={form.value.type}
+              value={form.type}
               onChange={(e) =>
-                (form.value = {
-                  ...form.value,
-                  type: (e.target as HTMLSelectElement).value,
+                setForm({
+                  ...form,
+                  type: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
             >
               {RECEIVER_TYPES.map((t) => (
                 <option key={t} value={t}>
@@ -421,22 +435,19 @@ export default function FluxReceivers() {
 
           {/* Resources */}
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Resources
             </label>
-            <div class="space-y-2">
-              {form.value.resources.map((res, i) => (
-                <div key={i} class="flex items-center gap-2">
+            <div className="space-y-2">
+              {form.resources.map((res, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: rows are editable and have no id; the list is keyed by position as before
+                <div key={i} className="flex items-center gap-2">
                   <select
                     value={res.kind}
                     onChange={(e) =>
-                      updateResource(
-                        i,
-                        "kind",
-                        (e.target as HTMLSelectElement).value,
-                      )
+                      updateResource(i, "kind", e.currentTarget.value)
                     }
-                    class="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
+                    className="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                   >
                     {FLUX_RESOURCE_KINDS.map((k) => (
                       <option key={k} value={k}>
@@ -447,21 +458,17 @@ export default function FluxReceivers() {
                   <input
                     type="text"
                     value={res.name}
-                    onInput={(e) =>
-                      updateResource(
-                        i,
-                        "name",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateResource(i, "name", e.currentTarget.value)
                     }
-                    class="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
+                    className="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                     placeholder="* (wildcard)"
                   />
                   <button
                     type="button"
                     onClick={() => removeResource(i)}
-                    disabled={form.value.resources.length <= 1}
-                    class="rounded px-2 py-1 text-xs font-medium hover:bg-hover disabled:opacity-30"
+                    disabled={form.resources.length <= 1}
+                    className="rounded px-2 py-1 text-xs font-medium hover:bg-hover disabled:opacity-30"
                     style={{ color: "var(--error)" }}
                     title="Remove resource"
                   >
@@ -473,26 +480,26 @@ export default function FluxReceivers() {
             <button
               type="button"
               onClick={addResource}
-              class="mt-2 text-xs font-medium text-brand hover:underline"
+              className="mt-2 text-xs font-medium text-brand hover:underline"
             >
               + Add Resource
             </button>
           </div>
 
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Secret Ref
             </label>
             <input
               type="text"
-              value={form.value.secretRef}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  secretRef: (e.target as HTMLInputElement).value,
+              value={form.secretRef}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  secretRef: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="webhook-token-secret"
             />
           </div>
@@ -500,16 +507,16 @@ export default function FluxReceivers() {
       )}
 
       <NotificationDeleteDialog
-        target={crud.deleteTarget.value}
-        loading={crud.deleteLoading.value}
+        target={crud.deleteTarget}
+        loading={crud.deleteLoading}
         kind="Receiver"
         onConfirm={() => {
-          if (crud.deleteTarget.value) {
-            crud.handleDelete(crud.deleteTarget.value);
+          if (crud.deleteTarget) {
+            crud.handleDelete(crud.deleteTarget);
           }
         }}
         onCancel={() => {
-          crud.deleteTarget.value = null;
+          crud.setDeleteTarget(null);
         }}
       />
     </div>

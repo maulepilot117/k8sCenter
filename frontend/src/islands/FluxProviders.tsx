@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useState } from "react";
 import {
   ProviderTypeBadge,
   StatusBadge,
@@ -19,9 +20,10 @@ import { apiPost, apiPut } from "@/lib/api.ts";
 import type { NormalizedProvider } from "@/lib/notification-types.ts";
 import { INPUT_CLASS, PAGE_SIZE } from "@/lib/notification-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 import { useNotificationCrud } from "@/src/lib/useNotificationCrud.ts";
 
 /** All Flux notification provider types (alphabetical). */
@@ -90,36 +92,38 @@ export default function FluxProviders() {
     label: "provider",
   });
 
-  const form = useSignal<ProviderForm>({ ...EMPTY_FORM });
+  const isClient = useIsClient();
+  const namespace = useSignalValue(selectedNamespace);
+  const [form, setForm] = useState<ProviderForm>({ ...EMPTY_FORM });
 
   function openEdit(p: NormalizedProvider) {
     crud.openEdit(p, () => {
-      form.value = {
+      setForm({
         name: p.name,
         namespace: p.namespace,
         type: p.type,
         address: p.address,
         channel: p.channel,
         secretRef: p.secretRef,
-      };
+      });
     });
   }
 
   async function handleFormSubmit() {
-    if (crud.formSubmitting.value) return;
-    const f = form.value;
+    if (crud.formSubmittingRef.current) return;
+    const f = form;
     if (!f.name.trim()) {
-      crud.formError.value = "Name is required";
+      crud.setFormError("Name is required");
       return;
     }
-    crud.formSubmitting.value = true;
-    crud.formError.value = null;
+    crud.setFormSubmitting(true);
+    crud.setFormError(null);
     try {
-      if (crud.editingItem.value) {
+      if (crud.editingItem) {
         await apiPut(
           `/v1/gitops/notifications/providers/${encodeURIComponent(
-            crud.editingItem.value.namespace,
-          )}/${encodeURIComponent(crud.editingItem.value.name)}`,
+            crud.editingItem.namespace,
+          )}/${encodeURIComponent(crud.editingItem.name)}`,
           f,
         );
         showToast("Provider updated", "success");
@@ -127,24 +131,25 @@ export default function FluxProviders() {
         await apiPost("/v1/gitops/notifications/providers", f);
         showToast("Provider created", "success");
       }
-      crud.showForm.value = false;
+      crud.setShowForm(false);
       await crud.fetchData();
     } catch (err) {
-      crud.formError.value =
-        err instanceof Error ? err.message : "Failed to save provider";
+      crud.setFormError(
+        err instanceof Error ? err.message : "Failed to save provider",
+      );
     } finally {
-      crud.formSubmitting.value = false;
+      crud.setFormSubmitting(false);
     }
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const notAvailable = !!(crud.status.value && !crud.status.value.available);
+  const notAvailable = !!(crud.status && !crud.status.available);
 
-  const nsByNs = filterByNamespace(crud.items.value, selectedNamespace.value);
+  const nsByNs = filterByNamespace(crud.items, namespace);
   const filtered = nsByNs.filter((p) => {
-    if (!crud.search.value) return true;
-    const q = crud.search.value.toLowerCase();
+    if (!crud.search) return true;
+    const q = crud.search.toLowerCase();
     return (
       p.name.toLowerCase().includes(q) ||
       p.namespace.toLowerCase().includes(q) ||
@@ -155,51 +160,50 @@ export default function FluxProviders() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (crud.page.value > totalPages) crud.page.value = totalPages;
-  const displayed = filtered.slice(
-    (crud.page.value - 1) * PAGE_SIZE,
-    crud.page.value * PAGE_SIZE,
-  );
+  const page = Math.min(crud.page, totalPages);
+  if (crud.page > totalPages) crud.setPage(totalPages);
+  const displayed = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
-    <div class="p-6">
+    <div className="p-6">
       <NotificationPageHeader
         kind="Provider"
         description="Flux notification providers &mdash; configure where alerts are sent."
-        loading={crud.loading.value}
+        loading={crud.loading}
         notAvailable={notAvailable}
-        refreshing={crud.refreshing.value}
+        refreshing={crud.refreshing}
         onRefresh={crud.handleRefresh}
         onCreate={() =>
           crud.openCreate(() => {
-            form.value = { ...EMPTY_FORM };
+            setForm({ ...EMPTY_FORM });
           })
         }
       />
 
       <NotificationUnavailableBanner
-        visible={notAvailable && !crud.loading.value}
+        visible={notAvailable && !crud.loading}
         resourceLabel="providers"
       />
 
       <NotificationSearchBar
         search={crud.search}
-        page={crud.page}
+        onSearchChange={crud.setSearch}
+        onPageChange={crud.setPage}
         filteredCount={filtered.length}
-        totalCount={crud.items.value.length}
+        totalCount={crud.items.length}
         resourceLabel="providers"
         placeholder="Filter by name, namespace, type..."
       />
 
-      <NotificationLoadingSpinner loading={crud.loading.value} />
+      <NotificationLoadingSpinner loading={crud.loading} />
 
-      {crud.error.value && (
-        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
-          {crud.error.value}
+      {crud.error && (
+        <p className="text-sm py-4" style={{ color: "var(--error)" }}>
+          {crud.error}
         </p>
       )}
 
-      {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
+      {!crud.loading && !crud.error && filtered.length > 0 && (
         <ResourceTable
           chevron={false}
           columns={[
@@ -216,20 +220,25 @@ export default function FluxProviders() {
             cells: {
               name: (
                 <div>
-                  <div class="font-medium text-text-primary">{p.name}</div>
+                  <div className="font-medium text-text-primary">{p.name}</div>
                   {p.suspend && (
-                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                    <span
+                      className="text-xs"
+                      style={{ color: "var(--warning)" }}
+                    >
                       suspended
                     </span>
                   )}
                 </div>
               ),
               namespace: (
-                <span class="text-xs text-text-secondary">{p.namespace}</span>
+                <span className="text-xs text-text-secondary">
+                  {p.namespace}
+                </span>
               ),
               type: <ProviderTypeBadge type={p.type} />,
               channel: (
-                <span class="text-xs text-text-secondary truncate block max-w-[240px]">
+                <span className="text-xs text-text-secondary truncate block max-w-[240px]">
                   {p.channel || p.address || "-"}
                 </span>
               ),
@@ -237,7 +246,7 @@ export default function FluxProviders() {
                 <StatusBadge status={p.suspend ? "suspended" : p.status} />
               ),
               createdAt: (
-                <span class="text-xs text-text-muted">
+                <span className="text-xs text-text-muted">
                   {p.createdAt ? timeAgo(p.createdAt) : "-"}
                 </span>
               ),
@@ -246,10 +255,11 @@ export default function FluxProviders() {
                   itemKey={`${p.namespace}/${p.name}`}
                   suspended={p.suspend}
                   openDropdown={crud.openDropdown}
+                  onOpenDropdownChange={crud.setOpenDropdown}
                   onEdit={() => openEdit(p)}
                   onSuspendToggle={() => crud.handleSuspendToggle(p)}
                   onDelete={() => {
-                    crud.deleteTarget.value = p;
+                    crud.setDeleteTarget(p);
                   }}
                 />
               ),
@@ -259,84 +269,89 @@ export default function FluxProviders() {
       )}
 
       <NotificationPagination
-        loading={crud.loading.value}
-        error={crud.error.value}
+        loading={crud.loading}
+        error={crud.error}
         filteredCount={filtered.length}
-        page={crud.page}
+        page={page}
+        onPageChange={crud.setPage}
         totalPages={totalPages}
         resourceLabel="providers"
       />
 
       <NotificationEmptyState
-        loading={crud.loading.value}
-        error={crud.error.value}
+        loading={crud.loading}
+        error={crud.error}
         filteredCount={filtered.length}
-        totalCount={crud.items.value.length}
+        totalCount={crud.items.length}
         notAvailable={notAvailable}
         kind="Provider"
         onCreate={() =>
           crud.openCreate(() => {
-            form.value = { ...EMPTY_FORM };
+            setForm({ ...EMPTY_FORM });
           })
         }
       />
 
-      {crud.showForm.value && (
+      {crud.showForm && (
         <NotificationFormShell
           id="provider-form"
-          title={crud.editingItem.value ? "Edit Provider" : "Create Provider"}
-          submitting={crud.formSubmitting.value}
-          error={crud.formError.value}
+          title={crud.editingItem ? "Edit Provider" : "Create Provider"}
+          submitting={crud.formSubmitting}
+          error={crud.formError}
           onSubmit={handleFormSubmit}
           onCancel={() => {
-            crud.showForm.value = false;
+            crud.setShowForm(false);
           }}
         >
           <div>
-            <label class="block text-sm text-text-secondary mb-1">Name</label>
+            <label className="block text-sm text-text-secondary mb-1">
+              Name
+            </label>
             <input
               type="text"
-              value={form.value.name}
-              disabled={!!crud.editingItem.value}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  name: (e.target as HTMLInputElement).value,
+              value={form.name}
+              disabled={!!crud.editingItem}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  name: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="my-slack-provider"
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Namespace
             </label>
             <input
               type="text"
-              value={form.value.namespace}
-              disabled={!!crud.editingItem.value}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  namespace: (e.target as HTMLInputElement).value,
+              value={form.namespace}
+              disabled={!!crud.editingItem}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  namespace: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="default"
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">Type</label>
+            <label className="block text-sm text-text-secondary mb-1">
+              Type
+            </label>
             <select
-              value={form.value.type}
+              value={form.type}
               onChange={(e) =>
-                (form.value = {
-                  ...form.value,
-                  type: (e.target as HTMLSelectElement).value,
+                setForm({
+                  ...form,
+                  type: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
             >
               {PROVIDER_TYPES.map((t) => (
                 <option key={t} value={t}>
@@ -346,53 +361,53 @@ export default function FluxProviders() {
             </select>
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Address
             </label>
             <input
               type="text"
-              value={form.value.address}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  address: (e.target as HTMLInputElement).value,
+              value={form.address}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  address: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="https://hooks.slack.com/..."
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Channel
             </label>
             <input
               type="text"
-              value={form.value.channel}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  channel: (e.target as HTMLInputElement).value,
+              value={form.channel}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  channel: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="#alerts"
             />
           </div>
           <div>
-            <label class="block text-sm text-text-secondary mb-1">
+            <label className="block text-sm text-text-secondary mb-1">
               Secret Ref
             </label>
             <input
               type="text"
-              value={form.value.secretRef}
-              onInput={(e) =>
-                (form.value = {
-                  ...form.value,
-                  secretRef: (e.target as HTMLInputElement).value,
+              value={form.secretRef}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  secretRef: e.currentTarget.value,
                 })
               }
-              class={INPUT_CLASS}
+              className={INPUT_CLASS}
               placeholder="webhook-url-secret"
             />
           </div>
@@ -400,16 +415,16 @@ export default function FluxProviders() {
       )}
 
       <NotificationDeleteDialog
-        target={crud.deleteTarget.value}
-        loading={crud.deleteLoading.value}
+        target={crud.deleteTarget}
+        loading={crud.deleteLoading}
         kind="Provider"
         onConfirm={() => {
-          if (crud.deleteTarget.value) {
-            crud.handleDelete(crud.deleteTarget.value);
+          if (crud.deleteTarget) {
+            crud.handleDelete(crud.deleteTarget);
           }
         }}
         onCancel={() => {
-          crud.deleteTarget.value = null;
+          crud.setDeleteTarget(null);
         }}
       />
     </div>
