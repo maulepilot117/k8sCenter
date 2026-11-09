@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -12,6 +12,9 @@ import type { LabelEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface NPPortState {
   port: number;
@@ -131,183 +134,181 @@ export default function NetworkPolicyWizard({
   onClose?: () => void;
 }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<NetworkPolicyFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<NetworkPolicyFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
+  const formRef = useLatest(form);
+  const stepRef = useLatest(currentStep);
 
-  const namespaces = useNamespaces();
+  const namespaces = useSignalValue(useNamespaces());
   useDirtyGuard(dirty);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
-  }, []);
+  const podLabelKeys = useRowKeys(form.podSelectorLabels.length);
+  const ingressKeys = useRowKeys(form.ingressRules.length);
+  const egressKeys = useRowKeys(form.egressRules.length);
+  const ruleKeys = { ingressRules: ingressKeys, egressRules: egressKeys };
+
+  const updateForm = useCallback(
+    (updater: (prev: NetworkPolicyFormState) => NetworkPolicyFormState) => {
+      setDirty(true);
+      setForm(updater);
+    },
+    [],
+  );
+
+  const updateField = (field: string, value: unknown) => {
+    updateForm((prev) => ({ ...prev, [field]: value }));
+  };
 
   // Pod selector label helpers
-  const addPodSelectorLabel = useCallback(() => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      podSelectorLabels: [...form.value.podSelectorLabels, newLabelEntry()],
-    };
-  }, []);
+  const addPodSelectorLabel = () => {
+    updateForm((prev) => ({
+      ...prev,
+      podSelectorLabels: [...prev.podSelectorLabels, newLabelEntry()],
+    }));
+  };
 
-  const removePodSelectorLabel = useCallback((idx: number) => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      podSelectorLabels: form.value.podSelectorLabels.filter(
-        (_, i) => i !== idx,
-      ),
-    };
-  }, []);
+  const removePodSelectorLabel = (idx: number) => {
+    podLabelKeys.removeAt(idx);
+    updateForm((prev) => ({
+      ...prev,
+      podSelectorLabels: prev.podSelectorLabels.filter((_, i) => i !== idx),
+    }));
+  };
 
-  const updatePodSelectorLabel = useCallback(
-    (idx: number, field: "key" | "value", value: string) => {
-      dirty.value = true;
-      const labels = [...form.value.podSelectorLabels];
+  const updatePodSelectorLabel = (
+    idx: number,
+    field: "key" | "value",
+    value: string,
+  ) => {
+    updateForm((prev) => {
+      const labels = [...prev.podSelectorLabels];
       labels[idx] = { ...labels[idx], [field]: value };
-      form.value = { ...form.value, podSelectorLabels: labels };
-    },
-    [],
-  );
+      return { ...prev, podSelectorLabels: labels };
+    });
+  };
 
   // Policy type toggle
-  const togglePolicyType = useCallback((type: string, checked: boolean) => {
-    dirty.value = true;
-    const current = form.value.policyTypes;
-    const next = checked
-      ? [...current, type]
-      : current.filter((t) => t !== type);
-    form.value = { ...form.value, policyTypes: next };
-  }, []);
+  const togglePolicyType = (type: string, checked: boolean) => {
+    updateForm((prev) => ({
+      ...prev,
+      policyTypes: checked
+        ? [...prev.policyTypes, type]
+        : prev.policyTypes.filter((t) => t !== type),
+    }));
+  };
 
   // Rule helpers (parameterized by rule type)
-  const addRule = useCallback((ruleType: "ingressRules" | "egressRules") => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      [ruleType]: [...form.value[ruleType], newRule()],
-    };
-  }, []);
+  const addRule = (ruleType: "ingressRules" | "egressRules") => {
+    updateForm((prev) => ({
+      ...prev,
+      [ruleType]: [...prev[ruleType], newRule()],
+    }));
+  };
 
-  const removeRule = useCallback(
-    (ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
-      dirty.value = true;
-      form.value = {
-        ...form.value,
-        [ruleType]: form.value[ruleType].filter((_, i) => i !== ruleIdx),
-      };
-    },
-    [],
-  );
+  const removeRule = (
+    ruleType: "ingressRules" | "egressRules",
+    ruleIdx: number,
+  ) => {
+    ruleKeys[ruleType].removeAt(ruleIdx);
+    updateForm((prev) => ({
+      ...prev,
+      [ruleType]: prev[ruleType].filter((_, i) => i !== ruleIdx),
+    }));
+  };
 
   // Generic rule update helper
-  const updateRuleArray = useCallback(
-    (
-      ruleType: "ingressRules" | "egressRules",
-      ruleIdx: number,
-      updater: (rule: NPRuleState) => NPRuleState,
-    ) => {
-      dirty.value = true;
-      const rules = [...form.value[ruleType]];
+  const updateRuleArray = (
+    ruleType: "ingressRules" | "egressRules",
+    ruleIdx: number,
+    updater: (rule: NPRuleState) => NPRuleState,
+  ) => {
+    updateForm((prev) => {
+      const rules = [...prev[ruleType]];
       rules[ruleIdx] = updater(rules[ruleIdx]);
-      form.value = { ...form.value, [ruleType]: rules };
-    },
-    [],
-  );
+      return { ...prev, [ruleType]: rules };
+    });
+  };
 
   // Peer helpers
-  const addPeer = useCallback(
-    (ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
-      updateRuleArray(ruleType, ruleIdx, (rule) => ({
-        ...rule,
-        peers: [...rule.peers, newPeer()],
-      }));
-    },
-    [],
-  );
+  const addPeer = (
+    ruleType: "ingressRules" | "egressRules",
+    ruleIdx: number,
+  ) => {
+    updateRuleArray(ruleType, ruleIdx, (rule) => ({
+      ...rule,
+      peers: [...rule.peers, newPeer()],
+    }));
+  };
 
-  const removePeer = useCallback(
-    (
-      ruleType: "ingressRules" | "egressRules",
-      ruleIdx: number,
-      peerIdx: number,
-    ) => {
-      updateRuleArray(ruleType, ruleIdx, (rule) => ({
-        ...rule,
-        peers: rule.peers.filter((_, i) => i !== peerIdx),
-      }));
-    },
-    [],
-  );
+  const updatePeer = (
+    ruleType: "ingressRules" | "egressRules",
+    ruleIdx: number,
+    peerIdx: number,
+    updater: (peer: NPPeerState) => NPPeerState,
+  ) => {
+    updateRuleArray(ruleType, ruleIdx, (rule) => {
+      const peers = [...rule.peers];
+      peers[peerIdx] = updater(peers[peerIdx]);
+      return { ...rule, peers };
+    });
+  };
 
-  const updatePeer = useCallback(
-    (
-      ruleType: "ingressRules" | "egressRules",
-      ruleIdx: number,
-      peerIdx: number,
-      updater: (peer: NPPeerState) => NPPeerState,
-    ) => {
-      updateRuleArray(ruleType, ruleIdx, (rule) => {
-        const peers = [...rule.peers];
-        peers[peerIdx] = updater(peers[peerIdx]);
-        return { ...rule, peers };
-      });
-    },
-    [],
-  );
+  const removePeer = (
+    ruleType: "ingressRules" | "egressRules",
+    ruleIdx: number,
+    peerIdx: number,
+  ) => {
+    updateRuleArray(ruleType, ruleIdx, (rule) => ({
+      ...rule,
+      peers: rule.peers.filter((_, i) => i !== peerIdx),
+    }));
+  };
 
   // Port helpers
-  const addPort = useCallback(
-    (ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
-      updateRuleArray(ruleType, ruleIdx, (rule) => ({
-        ...rule,
-        ports: [...rule.ports, newPort()],
-      }));
-    },
-    [],
-  );
+  const addPort = (
+    ruleType: "ingressRules" | "egressRules",
+    ruleIdx: number,
+  ) => {
+    updateRuleArray(ruleType, ruleIdx, (rule) => ({
+      ...rule,
+      ports: [...rule.ports, newPort()],
+    }));
+  };
 
-  const removePort = useCallback(
-    (
-      ruleType: "ingressRules" | "egressRules",
-      ruleIdx: number,
-      portIdx: number,
-    ) => {
-      updateRuleArray(ruleType, ruleIdx, (rule) => ({
-        ...rule,
-        ports: rule.ports.filter((_, i) => i !== portIdx),
-      }));
-    },
-    [],
-  );
+  const removePort = (
+    ruleType: "ingressRules" | "egressRules",
+    ruleIdx: number,
+    portIdx: number,
+  ) => {
+    updateRuleArray(ruleType, ruleIdx, (rule) => ({
+      ...rule,
+      ports: rule.ports.filter((_, i) => i !== portIdx),
+    }));
+  };
 
-  const updatePort = useCallback(
-    (
-      ruleType: "ingressRules" | "egressRules",
-      ruleIdx: number,
-      portIdx: number,
-      field: keyof NPPortState,
-      value: unknown,
-    ) => {
-      updateRuleArray(ruleType, ruleIdx, (rule) => {
-        const ports = [...rule.ports];
-        ports[portIdx] = { ...ports[portIdx], [field]: value };
-        return { ...rule, ports };
-      });
-    },
-    [],
-  );
+  const updatePort = (
+    ruleType: "ingressRules" | "egressRules",
+    ruleIdx: number,
+    portIdx: number,
+    field: keyof NPPortState,
+    value: unknown,
+  ) => {
+    updateRuleArray(ruleType, ruleIdx, (rule) => {
+      const ports = [...rule.ports];
+      ports[portIdx] = { ...ports[portIdx], [field]: value };
+      return { ...rule, ports };
+    });
+  };
 
   const validateStep = (step: number): boolean => {
-    const f = form.value;
+    const f = formRef.current;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -381,16 +382,16 @@ export default function NetworkPolicyWizard({
       }
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = formRef.current;
 
     const payload = {
       name: f.name,
@@ -421,39 +422,39 @@ export default function NetworkPolicyWizard({
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
+    const step = stepRef.current;
+    if (!validateStep(step)) return;
 
-    if (currentStep.value === 1) {
-      currentStep.value = 2;
+    if (step === 1) {
+      setCurrentStep(2);
       await fetchPreview();
     } else {
-      currentStep.value = currentStep.value + 1;
+      setCurrentStep(step + 1);
     }
   };
 
   const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
-    }
+    setCurrentStep((step) => (step > 0 ? step - 1 : step));
   };
 
-  const f = form.value;
+  const f = form;
 
   return (
     <WizardShell
       title="Create Network Policy"
-      subtitle={`Step ${currentStep.value + 1} of 3 · namespace ${f.namespace}`}
+      subtitle={`Step ${currentStep + 1} of 3 · namespace ${f.namespace}`}
       icon={
         <svg
           width="21"
@@ -461,9 +462,9 @@ export default function NetworkPolicyWizard({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <rect x="2" y="2" width="7" height="7" rx="1.5" />
           <rect x="11" y="2" width="7" height="7" rx="1.5" />
@@ -473,18 +474,18 @@ export default function NetworkPolicyWizard({
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
       onNext={goNext}
-      nextLabel={currentStep.value === 2 ? "Close" : "Continue"}
-      yaml={currentStep.value < 2 ? buildManifest(f) : undefined}
+      nextLabel={currentStep === 2 ? "Close" : "Continue"}
+      yaml={currentStep < 2 ? buildManifest(f) : undefined}
     >
       {/* Step 0: Basics */}
-      {currentStep.value === 0 && (
+      {currentStep === 0 && (
         <div
           style={{
             display: "flex",
@@ -508,13 +509,11 @@ export default function NetworkPolicyWizard({
             <input
               type="text"
               value={f.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
+              onChange={(e) => updateField("name", e.currentTarget.value)}
               placeholder="my-network-policy"
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
-            {errors.value.name && (
+            {errors.name && (
               <p
                 style={{
                   marginTop: "4px",
@@ -522,7 +521,7 @@ export default function NetworkPolicyWizard({
                   color: "var(--error)",
                 }}
               >
-                {errors.value.name}
+                {errors.name}
               </p>
             )}
           </div>
@@ -541,18 +540,16 @@ export default function NetworkPolicyWizard({
             </label>
             <select
               value={f.namespace}
-              onChange={(e) =>
-                updateField("namespace", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              onChange={(e) => updateField("namespace", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
-              {namespaces.value.map((ns) => (
+              {namespaces.map((ns) => (
                 <option key={ns} value={ns}>
                   {ns}
                 </option>
               ))}
             </select>
-            {errors.value.namespace && (
+            {errors.namespace && (
               <p
                 style={{
                   marginTop: "4px",
@@ -560,7 +557,7 @@ export default function NetworkPolicyWizard({
                   color: "var(--error)",
                 }}
               >
-                {errors.value.namespace}
+                {errors.namespace}
               </p>
             )}
           </div>
@@ -624,21 +621,17 @@ export default function NetworkPolicyWizard({
             >
               {f.podSelectorLabels.map((label, idx) => (
                 <div
-                  key={idx}
+                  key={podLabelKeys.keyAt(idx)}
                   style={{ display: "flex", gap: "8px", alignItems: "center" }}
                 >
                   <input
                     type="text"
                     value={label.key}
-                    onInput={(e) =>
-                      updatePodSelectorLabel(
-                        idx,
-                        "key",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updatePodSelectorLabel(idx, "key", e.currentTarget.value)
                     }
                     placeholder="key"
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     style={{ flex: 1 }}
                   />
                   <span
@@ -649,15 +642,15 @@ export default function NetworkPolicyWizard({
                   <input
                     type="text"
                     value={label.value}
-                    onInput={(e) =>
+                    onChange={(e) =>
                       updatePodSelectorLabel(
                         idx,
                         "value",
-                        (e.target as HTMLInputElement).value,
+                        e.currentTarget.value,
                       )
                     }
                     placeholder="value"
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     style={{ flex: 1 }}
                   />
                   <button
@@ -707,10 +700,7 @@ export default function NetworkPolicyWizard({
                     type="checkbox"
                     checked={f.policyTypes.includes(type)}
                     onChange={(e) =>
-                      togglePolicyType(
-                        type,
-                        (e.target as HTMLInputElement).checked,
-                      )
+                      togglePolicyType(type, e.currentTarget.checked)
                     }
                     style={{ width: "15px", height: "15px" }}
                   />
@@ -725,7 +715,7 @@ export default function NetworkPolicyWizard({
                 </label>
               ))}
             </div>
-            {errors.value.policyTypes && (
+            {errors.policyTypes && (
               <p
                 style={{
                   marginTop: "6px",
@@ -733,7 +723,7 @@ export default function NetworkPolicyWizard({
                   color: "var(--error)",
                 }}
               >
-                {errors.value.policyTypes}
+                {errors.policyTypes}
               </p>
             )}
           </div>
@@ -741,7 +731,7 @@ export default function NetworkPolicyWizard({
       )}
 
       {/* Step 1: Rules */}
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
           {/* Ingress Rules */}
           {f.policyTypes.includes("Ingress") && (
@@ -799,11 +789,11 @@ export default function NetworkPolicyWizard({
               >
                 {f.ingressRules.map((rule, ruleIdx) => (
                   <RuleEditor
-                    key={ruleIdx}
+                    key={ingressKeys.keyAt(ruleIdx)}
                     ruleIdx={ruleIdx}
                     rule={rule}
                     direction="Ingress"
-                    errors={errors.value}
+                    errors={errors}
                     errorPrefix={`ingress[${ruleIdx}]`}
                     onRemove={() => removeRule("ingressRules", ruleIdx)}
                     onAddPeer={() => addPeer("ingressRules", ruleIdx)}
@@ -882,11 +872,11 @@ export default function NetworkPolicyWizard({
               >
                 {f.egressRules.map((rule, ruleIdx) => (
                   <RuleEditor
-                    key={ruleIdx}
+                    key={egressKeys.keyAt(ruleIdx)}
                     ruleIdx={ruleIdx}
                     rule={rule}
                     direction="Egress"
-                    errors={errors.value}
+                    errors={errors}
                     errorPrefix={`egress[${ruleIdx}]`}
                     onRemove={() => removeRule("egressRules", ruleIdx)}
                     onAddPeer={() => addPeer("egressRules", ruleIdx)}
@@ -912,16 +902,14 @@ export default function NetworkPolicyWizard({
       )}
 
       {/* Step 2: Review */}
-      {currentStep.value === 2 && (
+      {currentStep === 2 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/networking/networkpolicies"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>
@@ -967,6 +955,8 @@ function RuleEditor({
   onUpdatePort,
 }: RuleEditorProps) {
   const peerLabel = direction === "Ingress" ? "From" : "To";
+  const peerKeys = useRowKeys(rule.peers.length);
+  const portKeys = useRowKeys(rule.ports.length);
 
   return (
     <div
@@ -1060,11 +1050,14 @@ function RuleEditor({
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           {rule.peers.map((peer, peerIdx) => (
             <PeerEditor
-              key={peerIdx}
+              key={peerKeys.keyAt(peerIdx)}
               peer={peer}
               errors={errors}
               errorPrefix={`${errorPrefix}.peers[${peerIdx}]`}
-              onRemove={() => onRemovePeer(peerIdx)}
+              onRemove={() => {
+                peerKeys.removeAt(peerIdx);
+                onRemovePeer(peerIdx);
+              }}
               onUpdate={(updater) => onUpdatePeer(peerIdx, updater)}
             />
           ))}
@@ -1119,35 +1112,31 @@ function RuleEditor({
         <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
           {rule.ports.map((p, portIdx) => (
             <div
-              key={portIdx}
+              key={portKeys.keyAt(portIdx)}
               style={{ display: "flex", gap: "8px", alignItems: "center" }}
             >
               <input
                 type="number"
                 value={p.port === 0 ? "" : p.port}
-                onInput={(e) =>
+                onChange={(e) =>
                   onUpdatePort(
                     portIdx,
                     "port",
-                    parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                    parseInt(e.currentTarget.value, 10) || 0,
                   )
                 }
                 placeholder="Port (e.g. 80)"
                 min={1}
                 max={65535}
-                class={WIZARD_INPUT_CLASS}
+                className={WIZARD_INPUT_CLASS}
                 style={{ width: "130px" }}
               />
               <select
                 value={p.protocol}
                 onChange={(e) =>
-                  onUpdatePort(
-                    portIdx,
-                    "protocol",
-                    (e.target as HTMLSelectElement).value,
-                  )
+                  onUpdatePort(portIdx, "protocol", e.currentTarget.value)
                 }
-                class={WIZARD_INPUT_CLASS}
+                className={WIZARD_INPUT_CLASS}
                 style={{ width: "90px" }}
               >
                 {PROTOCOL_OPTIONS.map((proto) => (
@@ -1158,7 +1147,10 @@ function RuleEditor({
               </select>
               <button
                 type="button"
-                onClick={() => onRemovePort(portIdx)}
+                onClick={() => {
+                  portKeys.removeAt(portIdx);
+                  onRemovePort(portIdx);
+                }}
                 style={{
                   fontSize: "13px",
                   color: "var(--error)",
@@ -1200,49 +1192,42 @@ function PeerEditor({
   onRemove,
   onUpdate,
 }: PeerEditorProps) {
-  const addLabel = useCallback(() => {
+  const labelKeys = useRowKeys(peer.labels.length);
+  const exceptKeys = useRowKeys(peer.except.length);
+
+  const addLabel = () => {
     onUpdate((p) => ({ ...p, labels: [...p.labels, newLabelEntry()] }));
-  }, [onUpdate]);
+  };
 
-  const removeLabel = useCallback(
-    (idx: number) => {
-      onUpdate((p) => ({ ...p, labels: p.labels.filter((_, i) => i !== idx) }));
-    },
-    [onUpdate],
-  );
+  const removeLabel = (idx: number) => {
+    labelKeys.removeAt(idx);
+    onUpdate((p) => ({ ...p, labels: p.labels.filter((_, i) => i !== idx) }));
+  };
 
-  const updateLabel = useCallback(
-    (idx: number, field: "key" | "value", value: string) => {
-      onUpdate((p) => {
-        const labels = [...p.labels];
-        labels[idx] = { ...labels[idx], [field]: value };
-        return { ...p, labels };
-      });
-    },
-    [onUpdate],
-  );
+  const updateLabel = (idx: number, field: "key" | "value", value: string) => {
+    onUpdate((p) => {
+      const labels = [...p.labels];
+      labels[idx] = { ...labels[idx], [field]: value };
+      return { ...p, labels };
+    });
+  };
 
-  const addExcept = useCallback(() => {
+  const addExcept = () => {
     onUpdate((p) => ({ ...p, except: [...p.except, ""] }));
-  }, [onUpdate]);
+  };
 
-  const removeExcept = useCallback(
-    (idx: number) => {
-      onUpdate((p) => ({ ...p, except: p.except.filter((_, i) => i !== idx) }));
-    },
-    [onUpdate],
-  );
+  const removeExcept = (idx: number) => {
+    exceptKeys.removeAt(idx);
+    onUpdate((p) => ({ ...p, except: p.except.filter((_, i) => i !== idx) }));
+  };
 
-  const updateExcept = useCallback(
-    (idx: number, value: string) => {
-      onUpdate((p) => {
-        const except = [...p.except];
-        except[idx] = value;
-        return { ...p, except };
-      });
-    },
-    [onUpdate],
-  );
+  const updateExcept = (idx: number, value: string) => {
+    onUpdate((p) => {
+      const except = [...p.except];
+      except[idx] = value;
+      return { ...p, except };
+    });
+  };
 
   return (
     <div
@@ -1267,14 +1252,14 @@ function PeerEditor({
           onChange={(e) =>
             onUpdate((p) => ({
               ...p,
-              type: (e.target as HTMLSelectElement)
+              type: (e.currentTarget as HTMLSelectElement)
                 .value as NPPeerState["type"],
               labels: [newLabelEntry()],
               cidr: "",
               except: [],
             }))
           }
-          class={WIZARD_INPUT_CLASS}
+          className={WIZARD_INPUT_CLASS}
           style={{ width: "180px" }}
         >
           {PEER_TYPE_OPTIONS.map((opt) => (
@@ -1342,21 +1327,17 @@ function PeerEditor({
           <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
             {peer.labels.map((label, idx) => (
               <div
-                key={idx}
+                key={labelKeys.keyAt(idx)}
                 style={{ display: "flex", gap: "6px", alignItems: "center" }}
               >
                 <input
                   type="text"
                   value={label.key}
-                  onInput={(e) =>
-                    updateLabel(
-                      idx,
-                      "key",
-                      (e.target as HTMLInputElement).value,
-                    )
+                  onChange={(e) =>
+                    updateLabel(idx, "key", e.currentTarget.value)
                   }
                   placeholder="key"
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   style={{ flex: 1 }}
                 />
                 <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
@@ -1365,15 +1346,11 @@ function PeerEditor({
                 <input
                   type="text"
                   value={label.value}
-                  onInput={(e) =>
-                    updateLabel(
-                      idx,
-                      "value",
-                      (e.target as HTMLInputElement).value,
-                    )
+                  onChange={(e) =>
+                    updateLabel(idx, "value", e.currentTarget.value)
                   }
                   placeholder="value"
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   style={{ flex: 1 }}
                 />
                 <button
@@ -1424,14 +1401,14 @@ function PeerEditor({
             <input
               type="text"
               value={peer.cidr}
-              onInput={(e) =>
+              onChange={(e) =>
                 onUpdate((p) => ({
                   ...p,
-                  cidr: (e.target as HTMLInputElement).value,
+                  cidr: e.currentTarget.value,
                 }))
               }
               placeholder="10.0.0.0/8"
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
             {errors[`${errorPrefix}.cidr`] && (
               <p
@@ -1477,17 +1454,15 @@ function PeerEditor({
             >
               {peer.except.map((ex, idx) => (
                 <div
-                  key={idx}
+                  key={exceptKeys.keyAt(idx)}
                   style={{ display: "flex", gap: "6px", alignItems: "center" }}
                 >
                   <input
                     type="text"
                     value={ex}
-                    onInput={(e) =>
-                      updateExcept(idx, (e.target as HTMLInputElement).value)
-                    }
+                    onChange={(e) => updateExcept(idx, e.currentTarget.value)}
                     placeholder="192.168.0.0/24"
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     style={{ flex: 1 }}
                   />
                   <button

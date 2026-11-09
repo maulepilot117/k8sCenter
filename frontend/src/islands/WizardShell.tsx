@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import type { ComponentChildren } from "preact";
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
 import YamlView from "@/components/ui/YamlView.tsx";
 import StepRail from "@/components/wizard/StepRail.tsx";
 import { wizardBusy } from "@/lib/wizard-busy.ts";
@@ -7,6 +7,8 @@ import {
   type WizardPrimaryAction,
   WizardPrimaryActionContext,
 } from "@/lib/wizard-primary-action.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export interface WizardStep {
   label: string;
@@ -15,7 +17,7 @@ export interface WizardStep {
 
 interface WizardShellProps {
   title: string;
-  icon?: ComponentChildren;
+  icon?: ReactNode;
   subtitle?: string;
   steps: WizardStep[];
   current: number;
@@ -27,7 +29,7 @@ interface WizardShellProps {
   /** live manifest text — pass undefined to hide the right pane */
   yaml?: string;
   /** the active step's form */
-  children: ComponentChildren;
+  children: ReactNode;
 }
 
 /**
@@ -57,12 +59,12 @@ export default function WizardShell({
 }: WizardShellProps) {
   // While a server-side apply is in flight, suppress every close affordance
   // (scrim, X, Cancel) so the user cannot abandon the request with no feedback.
-  const busy = wizardBusy.value;
+  const busy = useSignalValue(wizardBusy);
   const guardedCancel = () => {
     if (!busy) onCancel();
   };
   const registered = useSignal<WizardPrimaryAction | null>(null);
-  const action = registered.value;
+  const action = useSignalValue(registered);
   const primaryLabel = action?.label ?? nextLabel;
   const primaryDisabled = action?.disabled ?? false;
   const primaryStyle = {
@@ -93,11 +95,11 @@ export default function WizardShell({
         viewBox="0 0 20 20"
         fill="none"
         stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
         aria-hidden="true"
-        class={action?.loading ? "animate-spin" : undefined}
+        className={action?.loading ? "animate-spin" : undefined}
       >
         {action?.loading ? (
           <path d="M10 3a7 7 0 1 0 7 7" />
@@ -124,7 +126,7 @@ export default function WizardShell({
       }}
     >
       <div
-        class="glass-elevated"
+        className="glass-elevated"
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "980px",
@@ -211,8 +213,8 @@ export default function WizardShell({
               viewBox="0 0 20 20"
               fill="none"
               stroke="currentColor"
-              stroke-width="1.7"
-              stroke-linecap="round"
+              strokeWidth="1.7"
+              strokeLinecap="round"
             >
               <path d="M5 5l10 10M15 5L5 15" />
             </svg>

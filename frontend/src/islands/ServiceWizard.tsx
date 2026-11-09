@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { ServiceBasicsStep } from "@/components/wizard/ServiceBasicsStep.tsx";
 import { ServicePortsStep } from "@/components/wizard/ServicePortsStep.tsx";
 import { apiPost } from "@/lib/api.ts";
@@ -15,6 +15,7 @@ import {
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface ServiceFormState {
   name: string;
@@ -73,47 +74,50 @@ function buildManifest(f: ServiceFormState): string {
 
 export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<ServiceFormState>(initialState());
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<ServiceFormState>(initialState);
   const namespaces = useNamespaces();
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const namespaceList = useSignalValue(namespaces);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    const f = { ...form.value, [field]: value };
-    // Auto-sync app label/selector with name
-    if (field === "name") {
-      const nameVal = value as string;
-      const labelIdx = f.labels.findIndex(
-        (l: { key: string }) => l.key === "app",
-      );
-      if (labelIdx >= 0) {
-        const updated = [...f.labels];
-        updated[labelIdx] = { ...updated[labelIdx], value: nameVal };
-        f.labels = updated;
+    setDirty(true);
+    setForm((prev) => {
+      const f = { ...prev, [field]: value };
+      // Auto-sync app label/selector with name
+      if (field === "name") {
+        const nameVal = value as string;
+        const labelIdx = f.labels.findIndex(
+          (l: { key: string }) => l.key === "app",
+        );
+        if (labelIdx >= 0) {
+          const updated = [...f.labels];
+          updated[labelIdx] = { ...updated[labelIdx], value: nameVal };
+          f.labels = updated;
+        }
+        const selIdx = f.selector.findIndex(
+          (s: { key: string }) => s.key === "app",
+        );
+        if (selIdx >= 0) {
+          const updated = [...f.selector];
+          updated[selIdx] = { ...updated[selIdx], value: nameVal };
+          f.selector = updated;
+        }
       }
-      const selIdx = f.selector.findIndex(
-        (s: { key: string }) => s.key === "app",
-      );
-      if (selIdx >= 0) {
-        const updated = [...f.selector];
-        updated[selIdx] = { ...updated[selIdx], value: nameVal };
-        f.selector = updated;
-      }
-    }
-    form.value = f;
+      return f;
+    });
   }, []);
 
   const validateStep = (step: number): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -155,16 +159,16 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
       });
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = form;
     const labelsMap: Record<string, string> = {};
     for (const l of f.labels) {
       if (l.key) labelsMap[l.key] = l.value;
@@ -200,39 +204,38 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
+    if (!validateStep(currentStep)) return;
 
-    if (currentStep.value === 1) {
-      currentStep.value = 2;
+    if (currentStep === 1) {
+      setCurrentStep(2);
       await fetchPreview();
     } else {
-      currentStep.value = currentStep.value + 1;
+      setCurrentStep((step) => step + 1);
     }
   };
 
   const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
-    }
+    setCurrentStep((step) => Math.max(0, step - 1));
   };
 
-  const f = form.value;
+  const f = form;
 
   return (
     <WizardShell
       title="Create Service"
-      subtitle={`Step ${currentStep.value + 1} of 3 · namespace ${f.namespace}`}
+      subtitle={`Step ${currentStep + 1} of 3 · namespace ${f.namespace}`}
       icon={
         <svg
           width="21"
@@ -240,9 +243,9 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <circle cx="10" cy="10" r="7.2" />
           <path d="M2.8 10h14.4M10 2.8v14.4" />
@@ -250,24 +253,24 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
       onNext={goNext}
-      nextLabel={currentStep.value === 2 ? "Close" : "Continue"}
-      yaml={currentStep.value < 2 ? buildManifest(f) : undefined}
+      nextLabel={currentStep === 2 ? "Close" : "Continue"}
+      yaml={currentStep < 2 ? buildManifest(f) : undefined}
     >
-      {currentStep.value === 0 && (
+      {currentStep === 0 && (
         <ServiceBasicsStep
           name={f.name}
           namespace={f.namespace}
           type={f.type}
           labels={f.labels}
-          namespaces={namespaces.value}
-          errors={errors.value}
+          namespaces={namespaceList}
+          errors={errors}
           onChange={updateField}
           onNamespaceCreated={(ns) => {
             if (!namespaces.value.includes(ns)) {
@@ -277,26 +280,24 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
         />
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <ServicePortsStep
           ports={f.ports}
           selector={f.selector}
           serviceType={f.type}
-          errors={errors.value}
+          errors={errors}
           onChange={updateField}
         />
       )}
 
-      {currentStep.value === 2 && (
+      {currentStep === 2 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/networking/services"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

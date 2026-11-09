@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import Field from "@/components/ui/form/Field.tsx";
 import Select from "@/components/ui/form/Select.tsx";
 import TextField from "@/components/ui/form/TextField.tsx";
@@ -11,6 +11,8 @@ import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface SnapshotFormState {
   name: string;
@@ -77,25 +79,29 @@ export default function SnapshotWizard({
   preselectedPvc?: string;
 }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const step = useSignal(0);
-  const form = useSignal<SnapshotFormState>({
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState<SnapshotFormState>(() => ({
     name: preselectedPvc ? generateSnapshotName(preselectedPvc) : "",
     namespace: preselectedNs || initialNamespace(),
     sourcePVC: preselectedPvc || "",
     volumeSnapshotClassName: "",
-  });
-  const errors = useSignal<Record<string, string>>({});
+  }));
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const namespaces = useNamespaces();
-  const pvcs = useSignal<PVCItem[]>([]);
-  const snapshotClasses = useSignal<SnapshotClassItem[]>([]);
+  const namespaceList = useSignalValue(namespaces);
+  const [pvcs, setPvcs] = useState<PVCItem[]>([]);
+  const [snapshotClasses, setSnapshotClasses] = useState<SnapshotClassItem[]>(
+    [],
+  );
   const storageClasses = useStorageClasses();
-  const snapshotsAvailable = useSignal(true);
+  const [snapshotsAvailable, setSnapshotsAvailable] = useState(true);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+  const formRef = useLatest(form);
 
   // Fetch snapshot classes
   useEffect(() => {
@@ -104,10 +110,10 @@ export default function SnapshotWizard({
     )
       .then((resp) => {
         if (resp.data && Array.isArray(resp.data.data)) {
-          snapshotClasses.value = resp.data.data;
+          setSnapshotClasses(resp.data.data);
         }
         if (resp.data?.metadata?.available === false) {
-          snapshotsAvailable.value = false;
+          setSnapshotsAvailable(false);
         }
       })
       .catch(() => {});
@@ -115,39 +121,37 @@ export default function SnapshotWizard({
 
   // Fetch PVCs when namespace changes
   useEffect(() => {
-    const ns = form.value.namespace;
+    const ns = form.namespace;
     if (!ns) return;
     apiGet<PVCItem[]>(`/v1/resources/pvcs/${ns}?limit=500`)
       .then((resp) => {
-        if (Array.isArray(resp.data)) pvcs.value = resp.data;
+        if (Array.isArray(resp.data)) setPvcs(resp.data);
       })
       .catch(() => {
-        pvcs.value = [];
+        setPvcs([]);
       });
-  }, [form.value.namespace]);
+  }, [form.namespace]);
 
   const updateField = (field: string, value: unknown) => {
-    form.value = { ...form.value, [field]: value };
+    setForm((prev) => ({ ...prev, [field]: value }));
   };
 
   // Filter PVCs to Bound only
-  const boundPVCs = pvcs.value.filter((p) => p.status?.phase === "Bound");
+  const boundPVCs = pvcs.filter((p) => p.status?.phase === "Bound");
 
   // Filter snapshot classes by PVC's provisioner
-  const selectedPVC = boundPVCs.find(
-    (p) => p.metadata.name === form.value.sourcePVC,
-  );
+  const selectedPVC = boundPVCs.find((p) => p.metadata.name === form.sourcePVC);
   const pvcStorageClass = selectedPVC?.spec?.storageClassName || "";
   const pvcProvisioner =
-    storageClasses.value.find(
+    storageClasses.find(
       (sc: StorageClassItem) => sc.metadata.name === pvcStorageClass,
     )?.provisioner || "";
   const filteredSnapshotClasses = pvcProvisioner
-    ? snapshotClasses.value.filter((sc) => sc.driver === pvcProvisioner)
-    : snapshotClasses.value;
+    ? snapshotClasses.filter((sc) => sc.driver === pvcProvisioner)
+    : snapshotClasses;
 
   const validateStep = (): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
       errs.name =
@@ -155,15 +159,15 @@ export default function SnapshotWizard({
     }
     if (!f.namespace) errs.namespace = "Required";
     if (!f.sourcePVC) errs.sourcePVC = "Required";
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
-    const f = form.value;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const f = formRef.current;
     const payload: Record<string, string> = {
       name: f.name,
       namespace: f.namespace,
@@ -178,20 +182,21 @@ export default function SnapshotWizard({
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const handleNext = async () => {
-    if (step.value === 0) {
+    if (step === 0) {
       if (!validateStep()) return;
-      step.value = 1;
+      setStep(1);
       await fetchPreview();
     } else {
       close();
@@ -199,7 +204,7 @@ export default function SnapshotWizard({
   };
 
   // CRD unavailable — render inline notice inside the modal body
-  if (!snapshotsAvailable.value) {
+  if (!snapshotsAvailable) {
     return (
       <WizardShell
         title="Create Volume Snapshot"
@@ -248,7 +253,7 @@ export default function SnapshotWizard({
     );
   }
 
-  const f = form.value;
+  const f = form;
   // Snapshot class select: use raw names as option values; "(default)" shown as hint
   const snapshotClassSelectOptions = [
     "",
@@ -260,7 +265,7 @@ export default function SnapshotWizard({
   return (
     <WizardShell
       title="Create Volume Snapshot"
-      subtitle={`Step ${step.value + 1} of 2 · namespace ${f.namespace}`}
+      subtitle={`Step ${step + 1} of 2 · namespace ${f.namespace}`}
       icon={
         <svg
           width="21"
@@ -268,26 +273,26 @@ export default function SnapshotWizard({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <circle cx="10" cy="10" r="7" />
           <path d="M10 6v4l3 3" />
         </svg>
       }
       steps={STEPS}
-      current={step.value}
+      current={step}
       onStep={(i) => {
-        if (i < step.value) step.value = i;
+        if (i < step) setStep(i);
       }}
       onCancel={close}
-      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onBack={() => setStep((prev) => Math.max(0, prev - 1))}
       onNext={handleNext}
-      nextLabel={step.value === 0 ? "Continue" : "Done"}
-      yaml={step.value === 0 ? buildManifest(f) : undefined}
+      nextLabel={step === 0 ? "Continue" : "Done"}
+      yaml={step === 0 ? buildManifest(f) : undefined}
     >
-      {step.value === 0 && (
+      {step === 0 && (
         <div
           style={{
             display: "flex",
@@ -299,12 +304,17 @@ export default function SnapshotWizard({
           <Field label="Namespace">
             <Select
               value={f.namespace}
-              options={namespaces.value}
+              options={namespaceList}
               onChange={(v) => {
-                form.value = { ...f, namespace: v, sourcePVC: "", name: "" };
+                setForm((prev) => ({
+                  ...prev,
+                  namespace: v,
+                  sourcePVC: "",
+                  name: "",
+                }));
               }}
             />
-            {errors.value.namespace && (
+            {errors.namespace && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -312,7 +322,7 @@ export default function SnapshotWizard({
                   marginTop: "5px",
                 }}
               >
-                {errors.value.namespace}
+                {errors.namespace}
               </p>
             )}
           </Field>
@@ -322,15 +332,15 @@ export default function SnapshotWizard({
               value={f.sourcePVC}
               options={["", ...boundPVCs.map((p) => p.metadata.name)]}
               onChange={(v) => {
-                form.value = {
-                  ...f,
+                setForm((prev) => ({
+                  ...prev,
                   sourcePVC: v,
                   name: v ? generateSnapshotName(v) : "",
                   volumeSnapshotClassName: "",
-                };
+                }));
               }}
             />
-            {errors.value.sourcePVC && (
+            {errors.sourcePVC && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -338,10 +348,10 @@ export default function SnapshotWizard({
                   marginTop: "5px",
                 }}
               >
-                {errors.value.sourcePVC}
+                {errors.sourcePVC}
               </p>
             )}
-            {boundPVCs.length === 0 && pvcs.value.length > 0 && (
+            {boundPVCs.length === 0 && pvcs.length > 0 && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -369,7 +379,7 @@ export default function SnapshotWizard({
             />
             {pvcProvisioner &&
               filteredSnapshotClasses.length === 0 &&
-              snapshotClasses.value.length > 0 && (
+              snapshotClasses.length > 0 && (
                 <p
                   style={{
                     fontSize: "11.5px",
@@ -388,7 +398,7 @@ export default function SnapshotWizard({
               onInput={(v) => updateField("name", v)}
               placeholder="e.g. my-pvc-snap-20260323-120000"
             />
-            {errors.value.name && (
+            {errors.name && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -396,21 +406,19 @@ export default function SnapshotWizard({
                   marginTop: "5px",
                 }}
               >
-                {errors.value.name}
+                {errors.name}
               </p>
             )}
           </Field>
         </div>
       )}
 
-      {step.value === 1 && (
+      {step === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/storage/snapshots"
         />
       )}

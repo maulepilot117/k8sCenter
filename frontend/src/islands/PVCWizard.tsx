@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import Field from "@/components/ui/form/Field.tsx";
 import Segmented from "@/components/ui/form/Segmented.tsx";
 import Select from "@/components/ui/form/Select.tsx";
@@ -12,6 +12,8 @@ import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface PVCFormState {
   name: string;
@@ -61,34 +63,36 @@ spec:
 
 export default function PVCWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const step = useSignal(0);
-  const form = useSignal<PVCFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState<PVCFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
   const storageClasses = useStorageClasses();
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+  const formRef = useLatest(form);
 
   // Auto-select first storage class when loaded
   useEffect(() => {
-    if (storageClasses.value.length > 0 && !form.value.storageClassName) {
-      form.value = {
-        ...form.value,
-        storageClassName: storageClasses.value[0].metadata.name,
-      };
+    if (storageClasses.length > 0) {
+      const first = storageClasses[0].metadata.name;
+      setForm((prev) =>
+        prev.storageClassName ? prev : { ...prev, storageClassName: first },
+      );
     }
-  }, [storageClasses.value]);
+  }, [storageClasses]);
 
   const updateField = (field: string, value: unknown) => {
-    form.value = { ...form.value, [field]: value };
+    setForm((prev) => ({ ...prev, [field]: value }));
   };
 
   const validateStep = (): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
       errs.name =
@@ -99,15 +103,15 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
     const size = parseFloat(f.sizeValue);
     if (Number.isNaN(size) || size <= 0)
       errs.sizeValue = "Must be a positive number";
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
-    const f = form.value;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const f = formRef.current;
     try {
       const resp = await apiPost<{ yaml: string }>("/v1/wizards/pvc/preview", {
         name: f.name,
@@ -117,36 +121,35 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
         accessMode: f.accessMode,
       });
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const handleNext = async () => {
-    if (step.value === 0) {
+    if (step === 0) {
       if (!validateStep()) return;
-      step.value = 1;
+      setStep(1);
       await fetchPreview();
     } else {
       close();
     }
   };
 
-  const scNames = storageClasses.value.map(
+  const scNames = storageClasses.map(
     (sc: StorageClassItem) => sc.metadata.name,
   );
 
   return (
     <WizardShell
       title="Create PVC"
-      subtitle={`Step ${
-        step.value + 1
-      } of 2 · namespace ${form.value.namespace}`}
+      subtitle={`Step ${step + 1} of 2 · namespace ${form.namespace}`}
       icon={
         <svg
           width="21"
@@ -154,26 +157,26 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <rect x="3" y="5" width="14" height="10" rx="2" />
           <path d="M7 10h6M10 7v6" />
         </svg>
       }
       steps={STEPS}
-      current={step.value}
+      current={step}
       onStep={(i) => {
-        if (i < step.value) step.value = i;
+        if (i < step) setStep(i);
       }}
       onCancel={close}
-      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onBack={() => setStep((prev) => Math.max(0, prev - 1))}
       onNext={handleNext}
-      nextLabel={step.value === 0 ? "Continue" : "Done"}
-      yaml={step.value === 0 ? buildManifest(form.value) : undefined}
+      nextLabel={step === 0 ? "Continue" : "Done"}
+      yaml={step === 0 ? buildManifest(form) : undefined}
     >
-      {step.value === 0 && (
+      {step === 0 && (
         <div
           style={{
             display: "flex",
@@ -184,11 +187,11 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
         >
           <Field label="Name">
             <TextField
-              value={form.value.name}
+              value={form.name}
               onInput={(v) => updateField("name", v)}
               placeholder="e.g. my-data"
             />
-            {errors.value.name && (
+            {errors.name && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -196,18 +199,18 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
                   marginTop: "5px",
                 }}
               >
-                {errors.value.name}
+                {errors.name}
               </p>
             )}
           </Field>
 
           <Field label="Namespace">
             <Select
-              value={form.value.namespace}
-              options={namespaces.value}
+              value={form.namespace}
+              options={namespaceList}
               onChange={(v) => updateField("namespace", v)}
             />
-            {errors.value.namespace && (
+            {errors.namespace && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -215,18 +218,18 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
                   marginTop: "5px",
                 }}
               >
-                {errors.value.namespace}
+                {errors.namespace}
               </p>
             )}
           </Field>
 
           <Field label="Storage Class">
             <Select
-              value={form.value.storageClassName}
+              value={form.storageClassName}
               options={["", ...scNames]}
               onChange={(v) => updateField("storageClassName", v)}
             />
-            {errors.value.storageClassName && (
+            {errors.storageClassName && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -234,7 +237,7 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
                   marginTop: "5px",
                 }}
               >
-                {errors.value.storageClassName}
+                {errors.storageClassName}
               </p>
             )}
           </Field>
@@ -242,19 +245,19 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
           <Field label="Size">
             <div style={{ display: "flex", gap: "10px" }}>
               <TextField
-                value={form.value.sizeValue}
+                value={form.sizeValue}
                 onInput={(v) => updateField("sizeValue", v)}
                 mono
                 width="100px"
                 placeholder="10"
               />
               <Segmented
-                value={form.value.sizeUnit}
+                value={form.sizeUnit}
                 options={SIZE_UNITS}
                 onChange={(v) => updateField("sizeUnit", v)}
               />
             </div>
-            {errors.value.sizeValue && (
+            {errors.sizeValue && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -262,14 +265,14 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
                   marginTop: "5px",
                 }}
               >
-                {errors.value.sizeValue}
+                {errors.sizeValue}
               </p>
             )}
           </Field>
 
           <Field label="Access Mode">
             <Segmented
-              value={form.value.accessMode}
+              value={form.accessMode}
               options={ACCESS_MODE_VALUES}
               onChange={(v) => updateField("accessMode", v)}
             />
@@ -277,14 +280,12 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
         </div>
       )}
 
-      {step.value === 1 && (
+      {step === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/storage/pvcs"
         />
       )}

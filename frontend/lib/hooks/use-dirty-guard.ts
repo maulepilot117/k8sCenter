@@ -1,22 +1,18 @@
-import type { ReadonlySignal } from "@preact/signals-core";
 import { useEffect } from "react";
+import { hasDom } from "@/src/lib/has-dom.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 
-// Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
-// this file is shared by both the Fresh tree and the Astro/Bun port, and the
-// bare specifier would otherwise resolve to the always-false test shim under
-// Astro. Value-neutral for Fresh: identical to @fresh/core's own IS_BROWSER.
-const IS_BROWSER = typeof document !== "undefined";
-
-/** Warns the user before leaving the page when dirty is true. */
-export function useDirtyGuard(dirty: ReadonlySignal<boolean>) {
+/** Warns the user before leaving the page while `dirty` is true. */
+export function useDirtyGuard(dirty: boolean) {
+  const dirtyRef = useLatest(dirty);
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    if (!hasDom()) return;
     const handler = (e: BeforeUnloadEvent) => {
-      if (dirty.value) {
+      if (dirtyRef.current) {
         e.preventDefault();
       }
     };
     globalThis.addEventListener("beforeunload", handler);
     return () => globalThis.removeEventListener("beforeunload", handler);
-  }, [dirty]);
+  }, []);
 }

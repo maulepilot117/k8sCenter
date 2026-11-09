@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -11,6 +11,9 @@ import {
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface IngressPathState {
   path: string;
@@ -95,87 +98,92 @@ function buildManifest(f: IngressFormState): string {
 
 export default function IngressWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<IngressFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<IngressFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
+  const formRef = useLatest(form);
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
   useDirtyGuard(dirty);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
-  const markDirty = useCallback(() => {
-    dirty.value = true;
-  }, []);
-
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
   }, []);
 
   const updateRule = useCallback(
     (ruleIdx: number, field: string, value: unknown) => {
-      dirty.value = true;
-      const rules = [...form.value.rules];
-      rules[ruleIdx] = { ...rules[ruleIdx], [field]: value };
-      form.value = { ...form.value, rules };
+      setDirty(true);
+      setForm((prev) => {
+        const rules = [...prev.rules];
+        rules[ruleIdx] = { ...rules[ruleIdx], [field]: value };
+        return { ...prev, rules };
+      });
     },
     [],
   );
 
   const updatePath = useCallback(
     (ruleIdx: number, pathIdx: number, field: string, value: unknown) => {
-      dirty.value = true;
-      const rules = [...form.value.rules];
-      const paths = [...rules[ruleIdx].paths];
-      paths[pathIdx] = { ...paths[pathIdx], [field]: value };
-      rules[ruleIdx] = { ...rules[ruleIdx], paths };
-      form.value = { ...form.value, rules };
+      setDirty(true);
+      setForm((prev) => {
+        const rules = [...prev.rules];
+        const paths = [...rules[ruleIdx].paths];
+        paths[pathIdx] = { ...paths[pathIdx], [field]: value };
+        rules[ruleIdx] = { ...rules[ruleIdx], paths };
+        return { ...prev, rules };
+      });
     },
     [],
   );
 
   const addRule = useCallback(() => {
-    markDirty();
-    form.value = { ...form.value, rules: [...form.value.rules, newRule()] };
+    setDirty(true);
+    setForm((prev) => ({ ...prev, rules: [...prev.rules, newRule()] }));
   }, []);
 
   const removeRule = useCallback((ruleIdx: number) => {
-    markDirty();
-    const rules = form.value.rules.filter((_, i) => i !== ruleIdx);
-    form.value = {
-      ...form.value,
-      rules: rules.length > 0 ? rules : [newRule()],
-    };
+    setDirty(true);
+    setForm((prev) => {
+      const rules = prev.rules.filter((_, i) => i !== ruleIdx);
+      return { ...prev, rules: rules.length > 0 ? rules : [newRule()] };
+    });
   }, []);
 
   const addPath = useCallback((ruleIdx: number) => {
-    markDirty();
-    const rules = [...form.value.rules];
-    rules[ruleIdx] = {
-      ...rules[ruleIdx],
-      paths: [...rules[ruleIdx].paths, newPath()],
-    };
-    form.value = { ...form.value, rules };
+    setDirty(true);
+    setForm((prev) => {
+      const rules = [...prev.rules];
+      rules[ruleIdx] = {
+        ...rules[ruleIdx],
+        paths: [...rules[ruleIdx].paths, newPath()],
+      };
+      return { ...prev, rules };
+    });
   }, []);
 
   const removePath = useCallback((ruleIdx: number, pathIdx: number) => {
-    markDirty();
-    const rules = [...form.value.rules];
-    const paths = rules[ruleIdx].paths.filter((_, i) => i !== pathIdx);
-    rules[ruleIdx] = {
-      ...rules[ruleIdx],
-      paths: paths.length > 0 ? paths : [newPath()],
-    };
-    form.value = { ...form.value, rules };
+    setDirty(true);
+    setForm((prev) => {
+      const rules = [...prev.rules];
+      const paths = rules[ruleIdx].paths.filter((_, i) => i !== pathIdx);
+      rules[ruleIdx] = {
+        ...rules[ruleIdx],
+        paths: paths.length > 0 ? paths : [newPath()],
+      };
+      return { ...prev, rules };
+    });
   }, []);
 
   const validateStep = (step: number): boolean => {
-    const f = form.value;
+    const f = formRef.current;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -224,16 +232,16 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
       }
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = formRef.current;
 
     const payload: Record<string, unknown> = {
       name: f.name,
@@ -266,59 +274,54 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
+    if (!validateStep(currentStep)) return;
 
-    if (currentStep.value === 0) {
-      currentStep.value = 1;
+    if (currentStep === 0) {
+      setCurrentStep(1);
       await fetchPreview();
     } else {
-      currentStep.value = currentStep.value + 1;
+      setCurrentStep((prev) => prev + 1);
     }
   };
 
   const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
+    if (currentStep > 0) {
+      setCurrentStep((prev) => prev - 1);
     }
   };
 
   // Sync TLS hosts from rules when TLS is toggled on
   const toggleTLS = useCallback((enabled: boolean) => {
-    dirty.value = true;
-    const f = form.value;
-    if (enabled) {
-      const hosts = f.rules.map((r) => r.host).filter((h) => h !== "");
-      const uniqueHosts = [...new Set(hosts)];
-      form.value = {
-        ...f,
+    setDirty(true);
+    setForm((prev) => {
+      if (!enabled) return { ...prev, enableTLS: false, tls: [] };
+      const hosts = prev.rules.map((r) => r.host).filter((h) => h !== "");
+      return {
+        ...prev,
         enableTLS: true,
-        tls:
-          uniqueHosts.length > 0
-            ? [{ hosts: uniqueHosts, secretName: "" }]
-            : [{ hosts: [], secretName: "" }],
+        tls: [{ hosts: [...new Set(hosts)], secretName: "" }],
       };
-    } else {
-      form.value = { ...f, enableTLS: false, tls: [] };
-    }
+    });
   }, []);
 
-  const f = form.value;
+  const f = form;
 
   return (
     <WizardShell
       title="Create Ingress"
-      subtitle={`Step ${currentStep.value + 1} of 2 · namespace ${f.namespace}`}
+      subtitle={`Step ${currentStep + 1} of 2 · namespace ${f.namespace}`}
       icon={
         <svg
           width="21"
@@ -326,29 +329,29 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <path d="M3 10h14M10 3l7 7-7 7" />
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
       onNext={goNext}
-      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
-      yaml={currentStep.value === 0 ? buildManifest(f) : undefined}
+      nextLabel={currentStep === 0 ? "Continue" : "Close"}
+      yaml={currentStep === 0 ? buildManifest(f) : undefined}
     >
-      {currentStep.value === 0 && (
+      {currentStep === 0 && (
         <ConfigureStep
           form={f}
-          namespaces={namespaces.value}
-          errors={errors.value}
+          namespaces={namespaceList}
+          errors={errors}
           onFieldChange={updateField}
           onRuleChange={updateRule}
           onPathChange={updatePath}
@@ -360,16 +363,14 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
         />
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/networking/ingresses"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>
@@ -410,6 +411,11 @@ function ConfigureStep({
   onRemovePath,
   onToggleTLS,
 }: ConfigureStepProps) {
+  const ruleKeys = useRowKeys(form.rules.length);
+  const tlsKeys = useRowKeys(form.tls.length);
+  // The hosts field is parsed into a list, so keep what was typed (a trailing
+  // comma, a space) until the entry is rebuilt by toggling TLS.
+  const [tlsHostsText, setTlsHostsText] = useState<string | null>(null);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
       {/* Name & Namespace */}
@@ -435,11 +441,9 @@ function ConfigureStep({
           <input
             type="text"
             value={form.name}
-            onInput={(e) =>
-              onFieldChange("name", (e.target as HTMLInputElement).value)
-            }
+            onChange={(e) => onFieldChange("name", e.currentTarget.value)}
             placeholder="my-ingress"
-            class={WIZARD_INPUT_CLASS}
+            className={WIZARD_INPUT_CLASS}
           />
           {errors.name && (
             <p
@@ -467,10 +471,8 @@ function ConfigureStep({
           </label>
           <select
             value={form.namespace}
-            onChange={(e) =>
-              onFieldChange("namespace", (e.target as HTMLSelectElement).value)
-            }
-            class={WIZARD_INPUT_CLASS}
+            onChange={(e) => onFieldChange("namespace", e.currentTarget.value)}
+            className={WIZARD_INPUT_CLASS}
           >
             {namespaces.map((ns) => (
               <option key={ns} value={ns}>
@@ -505,14 +507,11 @@ function ConfigureStep({
           <input
             type="text"
             value={form.ingressClassName}
-            onInput={(e) =>
-              onFieldChange(
-                "ingressClassName",
-                (e.target as HTMLInputElement).value,
-              )
+            onChange={(e) =>
+              onFieldChange("ingressClassName", e.currentTarget.value)
             }
             placeholder="nginx (optional)"
-            class={WIZARD_INPUT_CLASS}
+            className={WIZARD_INPUT_CLASS}
           />
         </div>
       </div>
@@ -565,313 +564,21 @@ function ConfigureStep({
 
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           {form.rules.map((rule, ruleIdx) => (
-            <div
-              key={ruleIdx}
-              style={{
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "10px",
-                padding: "14px",
+            <RuleCard
+              key={ruleKeys.keyAt(ruleIdx)}
+              rule={rule}
+              ruleIdx={ruleIdx}
+              canRemove={form.rules.length > 1}
+              errors={errors}
+              onRuleChange={onRuleChange}
+              onPathChange={onPathChange}
+              onAddPath={onAddPath}
+              onRemovePath={onRemovePath}
+              onRemove={() => {
+                ruleKeys.removeAt(ruleIdx);
+                onRemoveRule(ruleIdx);
               }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  marginBottom: "10px",
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: "12.5px",
-                    fontWeight: 600,
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  Rule {ruleIdx + 1}
-                </span>
-                {form.rules.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => onRemoveRule(ruleIdx)}
-                    style={{
-                      fontSize: "11px",
-                      color: "var(--error)",
-                      background: "transparent",
-                      border: "none",
-                      cursor: "pointer",
-                      padding: 0,
-                    }}
-                  >
-                    Remove Rule
-                  </button>
-                )}
-              </div>
-
-              <div style={{ marginBottom: "10px" }}>
-                <label
-                  style={{
-                    display: "block",
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    color: "var(--text-muted)",
-                    marginBottom: "4px",
-                  }}
-                >
-                  Host (leave empty for wildcard)
-                </label>
-                <input
-                  type="text"
-                  value={rule.host}
-                  onInput={(e) =>
-                    onRuleChange(
-                      ruleIdx,
-                      "host",
-                      (e.target as HTMLInputElement).value,
-                    )
-                  }
-                  placeholder="example.com"
-                  class={WIZARD_INPUT_CLASS}
-                />
-              </div>
-
-              {/* Paths sub-table */}
-              <div>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    marginBottom: "6px",
-                  }}
-                >
-                  <label
-                    style={{
-                      fontSize: "11px",
-                      fontWeight: 600,
-                      color: "var(--text-muted)",
-                    }}
-                  >
-                    Paths
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => onAddPath(ruleIdx)}
-                    style={{
-                      fontSize: "11px",
-                      color: "var(--accent)",
-                      background: "transparent",
-                      border: "none",
-                      cursor: "pointer",
-                      padding: 0,
-                    }}
-                  >
-                    + Add Path
-                  </button>
-                </div>
-
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "6px",
-                  }}
-                >
-                  {rule.paths.map((p, pathIdx) => (
-                    <div
-                      key={pathIdx}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "2fr 2fr 3fr 2fr auto",
-                        gap: "6px",
-                        alignItems: "end",
-                        background: "var(--bg-elevated)",
-                        borderRadius: "7px",
-                        padding: "8px",
-                      }}
-                    >
-                      <div>
-                        <label
-                          style={{
-                            display: "block",
-                            fontSize: "10px",
-                            color: "var(--text-muted)",
-                            marginBottom: "3px",
-                          }}
-                        >
-                          Path
-                        </label>
-                        <input
-                          type="text"
-                          value={p.path}
-                          onInput={(e) =>
-                            onPathChange(
-                              ruleIdx,
-                              pathIdx,
-                              "path",
-                              (e.target as HTMLInputElement).value,
-                            )
-                          }
-                          placeholder="/"
-                          class={WIZARD_INPUT_CLASS}
-                        />
-                        {errors[`rules[${ruleIdx}].paths[${pathIdx}].path`] && (
-                          <p
-                            style={{
-                              fontSize: "10px",
-                              color: "var(--error)",
-                              marginTop: "2px",
-                            }}
-                          >
-                            {errors[`rules[${ruleIdx}].paths[${pathIdx}].path`]}
-                          </p>
-                        )}
-                      </div>
-                      <div>
-                        <label
-                          style={{
-                            display: "block",
-                            fontSize: "10px",
-                            color: "var(--text-muted)",
-                            marginBottom: "3px",
-                          }}
-                        >
-                          Path Type
-                        </label>
-                        <select
-                          value={p.pathType}
-                          onChange={(e) =>
-                            onPathChange(
-                              ruleIdx,
-                              pathIdx,
-                              "pathType",
-                              (e.target as HTMLSelectElement).value,
-                            )
-                          }
-                          class={WIZARD_INPUT_CLASS}
-                        >
-                          {PATH_TYPE_OPTIONS.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label
-                          style={{
-                            display: "block",
-                            fontSize: "10px",
-                            color: "var(--text-muted)",
-                            marginBottom: "3px",
-                          }}
-                        >
-                          Service Name
-                        </label>
-                        <input
-                          type="text"
-                          value={p.serviceName}
-                          onInput={(e) =>
-                            onPathChange(
-                              ruleIdx,
-                              pathIdx,
-                              "serviceName",
-                              (e.target as HTMLInputElement).value,
-                            )
-                          }
-                          placeholder="my-service"
-                          class={WIZARD_INPUT_CLASS}
-                        />
-                        {errors[
-                          `rules[${ruleIdx}].paths[${pathIdx}].serviceName`
-                        ] && (
-                          <p
-                            style={{
-                              fontSize: "10px",
-                              color: "var(--error)",
-                              marginTop: "2px",
-                            }}
-                          >
-                            {
-                              errors[
-                                `rules[${ruleIdx}].paths[${pathIdx}].serviceName`
-                              ]
-                            }
-                          </p>
-                        )}
-                      </div>
-                      <div>
-                        <label
-                          style={{
-                            display: "block",
-                            fontSize: "10px",
-                            color: "var(--text-muted)",
-                            marginBottom: "3px",
-                          }}
-                        >
-                          Port
-                        </label>
-                        <input
-                          type="number"
-                          value={p.servicePort}
-                          onInput={(e) =>
-                            onPathChange(
-                              ruleIdx,
-                              pathIdx,
-                              "servicePort",
-                              parseInt(
-                                (e.target as HTMLInputElement).value,
-                                10,
-                              ) || 0,
-                            )
-                          }
-                          min={1}
-                          max={65535}
-                          class={WIZARD_INPUT_CLASS}
-                        />
-                        {errors[
-                          `rules[${ruleIdx}].paths[${pathIdx}].servicePort`
-                        ] && (
-                          <p
-                            style={{
-                              fontSize: "10px",
-                              color: "var(--error)",
-                              marginTop: "2px",
-                            }}
-                          >
-                            {
-                              errors[
-                                `rules[${ruleIdx}].paths[${pathIdx}].servicePort`
-                              ]
-                            }
-                          </p>
-                        )}
-                      </div>
-                      <div
-                        style={{ display: "flex", justifyContent: "flex-end" }}
-                      >
-                        {rule.paths.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => onRemovePath(ruleIdx, pathIdx)}
-                            style={{
-                              fontSize: "11px",
-                              color: "var(--error)",
-                              background: "transparent",
-                              border: "none",
-                              cursor: "pointer",
-                              padding: 0,
-                            }}
-                          >
-                            ×
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            />
           ))}
         </div>
       </div>
@@ -896,13 +603,14 @@ function ConfigureStep({
             type="checkbox"
             id="enableTLS"
             checked={form.enableTLS}
-            onChange={(e) =>
-              onToggleTLS((e.target as HTMLInputElement).checked)
-            }
+            onChange={(e) => {
+              setTlsHostsText(null);
+              onToggleTLS(e.currentTarget.checked);
+            }}
             style={{ width: "15px", height: "15px" }}
           />
           <label
-            for="enableTLS"
+            htmlFor="enableTLS"
             style={{
               fontSize: "13px",
               fontWeight: 600,
@@ -917,7 +625,7 @@ function ConfigureStep({
         {form.enableTLS &&
           form.tls.map((tlsEntry, tlsIdx) => (
             <div
-              key={tlsIdx}
+              key={tlsKeys.keyAt(tlsIdx)}
               style={{ display: "flex", flexDirection: "column", gap: "10px" }}
             >
               <div>
@@ -934,9 +642,10 @@ function ConfigureStep({
                 </label>
                 <input
                   type="text"
-                  value={tlsEntry.hosts.join(",")}
-                  onInput={(e) => {
-                    const val = (e.target as HTMLInputElement).value;
+                  value={tlsHostsText ?? tlsEntry.hosts.join(",")}
+                  onChange={(e) => {
+                    const val = e.currentTarget.value;
+                    setTlsHostsText(val);
                     const hosts = val
                       .split(",")
                       .map((h) => h.trim())
@@ -946,7 +655,7 @@ function ConfigureStep({
                     onFieldChange("tls", tls);
                   }}
                   placeholder="example.com, api.example.com"
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                 />
                 {errors[`tls[${tlsIdx}].hosts`] && (
                   <p
@@ -975,16 +684,16 @@ function ConfigureStep({
                 <input
                   type="text"
                   value={tlsEntry.secretName}
-                  onInput={(e) => {
+                  onChange={(e) => {
                     const tls = [...form.tls];
                     tls[tlsIdx] = {
                       ...tls[tlsIdx],
-                      secretName: (e.target as HTMLInputElement).value,
+                      secretName: e.currentTarget.value,
                     };
                     onFieldChange("tls", tls);
                   }}
                   placeholder="tls-secret"
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                 />
                 {errors[`tls[${tlsIdx}].secretName`] && (
                   <p
@@ -1000,6 +709,325 @@ function ConfigureStep({
               </div>
             </div>
           ))}
+      </div>
+    </div>
+  );
+}
+
+interface RuleCardProps {
+  rule: IngressRuleState;
+  ruleIdx: number;
+  canRemove: boolean;
+  errors: Record<string, string>;
+  onRuleChange: (ruleIdx: number, field: string, value: unknown) => void;
+  onPathChange: (
+    ruleIdx: number,
+    pathIdx: number,
+    field: string,
+    value: unknown,
+  ) => void;
+  onAddPath: (ruleIdx: number) => void;
+  onRemovePath: (ruleIdx: number, pathIdx: number) => void;
+  onRemove: () => void;
+}
+
+function RuleCard({
+  rule,
+  ruleIdx,
+  canRemove,
+  errors,
+  onRuleChange,
+  onPathChange,
+  onAddPath,
+  onRemovePath,
+  onRemove,
+}: RuleCardProps) {
+  const pathKeys = useRowKeys(rule.paths.length);
+  return (
+    <div
+      style={{
+        border: "1px solid var(--border-subtle)",
+        borderRadius: "10px",
+        padding: "14px",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "10px",
+        }}
+      >
+        <span
+          style={{
+            fontSize: "12.5px",
+            fontWeight: 600,
+            color: "var(--text-secondary)",
+          }}
+        >
+          Rule {ruleIdx + 1}
+        </span>
+        {canRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            style={{
+              fontSize: "11px",
+              color: "var(--error)",
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+            }}
+          >
+            Remove Rule
+          </button>
+        )}
+      </div>
+
+      <div style={{ marginBottom: "10px" }}>
+        <label
+          style={{
+            display: "block",
+            fontSize: "11px",
+            fontWeight: 600,
+            color: "var(--text-muted)",
+            marginBottom: "4px",
+          }}
+        >
+          Host (leave empty for wildcard)
+        </label>
+        <input
+          type="text"
+          value={rule.host}
+          onChange={(e) => onRuleChange(ruleIdx, "host", e.currentTarget.value)}
+          placeholder="example.com"
+          className={WIZARD_INPUT_CLASS}
+        />
+      </div>
+
+      {/* Paths sub-table */}
+      <div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: "6px",
+          }}
+        >
+          <label
+            style={{
+              fontSize: "11px",
+              fontWeight: 600,
+              color: "var(--text-muted)",
+            }}
+          >
+            Paths
+          </label>
+          <button
+            type="button"
+            onClick={() => onAddPath(ruleIdx)}
+            style={{
+              fontSize: "11px",
+              color: "var(--accent)",
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+            }}
+          >
+            + Add Path
+          </button>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "6px",
+          }}
+        >
+          {rule.paths.map((p, pathIdx) => (
+            <div
+              key={pathKeys.keyAt(pathIdx)}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "2fr 2fr 3fr 2fr auto",
+                gap: "6px",
+                alignItems: "end",
+                background: "var(--bg-elevated)",
+                borderRadius: "7px",
+                padding: "8px",
+              }}
+            >
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "10px",
+                    color: "var(--text-muted)",
+                    marginBottom: "3px",
+                  }}
+                >
+                  Path
+                </label>
+                <input
+                  type="text"
+                  value={p.path}
+                  onChange={(e) =>
+                    onPathChange(
+                      ruleIdx,
+                      pathIdx,
+                      "path",
+                      e.currentTarget.value,
+                    )
+                  }
+                  placeholder="/"
+                  className={WIZARD_INPUT_CLASS}
+                />
+                {errors[`rules[${ruleIdx}].paths[${pathIdx}].path`] && (
+                  <p
+                    style={{
+                      fontSize: "10px",
+                      color: "var(--error)",
+                      marginTop: "2px",
+                    }}
+                  >
+                    {errors[`rules[${ruleIdx}].paths[${pathIdx}].path`]}
+                  </p>
+                )}
+              </div>
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "10px",
+                    color: "var(--text-muted)",
+                    marginBottom: "3px",
+                  }}
+                >
+                  Path Type
+                </label>
+                <select
+                  value={p.pathType}
+                  onChange={(e) =>
+                    onPathChange(
+                      ruleIdx,
+                      pathIdx,
+                      "pathType",
+                      e.currentTarget.value,
+                    )
+                  }
+                  className={WIZARD_INPUT_CLASS}
+                >
+                  {PATH_TYPE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "10px",
+                    color: "var(--text-muted)",
+                    marginBottom: "3px",
+                  }}
+                >
+                  Service Name
+                </label>
+                <input
+                  type="text"
+                  value={p.serviceName}
+                  onChange={(e) =>
+                    onPathChange(
+                      ruleIdx,
+                      pathIdx,
+                      "serviceName",
+                      e.currentTarget.value,
+                    )
+                  }
+                  placeholder="my-service"
+                  className={WIZARD_INPUT_CLASS}
+                />
+                {errors[`rules[${ruleIdx}].paths[${pathIdx}].serviceName`] && (
+                  <p
+                    style={{
+                      fontSize: "10px",
+                      color: "var(--error)",
+                      marginTop: "2px",
+                    }}
+                  >
+                    {errors[`rules[${ruleIdx}].paths[${pathIdx}].serviceName`]}
+                  </p>
+                )}
+              </div>
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "10px",
+                    color: "var(--text-muted)",
+                    marginBottom: "3px",
+                  }}
+                >
+                  Port
+                </label>
+                <input
+                  type="number"
+                  value={p.servicePort}
+                  onChange={(e) =>
+                    onPathChange(
+                      ruleIdx,
+                      pathIdx,
+                      "servicePort",
+                      parseInt(e.currentTarget.value, 10) || 0,
+                    )
+                  }
+                  min={1}
+                  max={65535}
+                  className={WIZARD_INPUT_CLASS}
+                />
+                {errors[`rules[${ruleIdx}].paths[${pathIdx}].servicePort`] && (
+                  <p
+                    style={{
+                      fontSize: "10px",
+                      color: "var(--error)",
+                      marginTop: "2px",
+                    }}
+                  >
+                    {errors[`rules[${ruleIdx}].paths[${pathIdx}].servicePort`]}
+                  </p>
+                )}
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                {rule.paths.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      pathKeys.removeAt(pathIdx);
+                      onRemovePath(ruleIdx, pathIdx);
+                    }}
+                    style={{
+                      fontSize: "11px",
+                      color: "var(--error)",
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

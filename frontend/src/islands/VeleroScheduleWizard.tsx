@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -8,6 +8,8 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface ScheduleFormState {
   name: string;
@@ -62,17 +64,19 @@ interface Props {
 
 export default function VeleroScheduleWizard({ onClose }: Props) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<ScheduleFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<ScheduleFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
+  const formRef = useLatest(form);
 
   const namespaces = useNamespaces();
-  const bsls = useSignal<BackupStorageLocation[]>([]);
+  const namespaceList = useSignalValue(namespaces);
+  const [bsls, setBsls] = useState<BackupStorageLocation[]>([]);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   // Fetch BSLs
@@ -83,12 +87,16 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
     )
       .then((resp) => {
         if (resp.data?.backupStorageLocations) {
-          bsls.value = resp.data.backupStorageLocations;
+          setBsls(resp.data.backupStorageLocations);
           const defaultBsl = resp.data.backupStorageLocations.find(
             (b) => b.default,
           );
-          if (defaultBsl && !form.value.storageLocation) {
-            form.value = { ...form.value, storageLocation: defaultBsl.name };
+          if (defaultBsl) {
+            setForm((prev) =>
+              prev.storageLocation
+                ? prev
+                : { ...prev, storageLocation: defaultBsl.name },
+            );
           }
         }
       })
@@ -98,74 +106,72 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
   useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
   }, []);
 
   const validate = useCallback((): boolean => {
+    const f = formRef.current;
     const newErrors: Record<string, string> = {};
-    if (!DNS_LABEL_REGEX.test(form.value.name)) {
+    if (!DNS_LABEL_REGEX.test(f.name)) {
       newErrors.name =
         "Must be a valid DNS label (lowercase, hyphens allowed, 1-63 chars)";
     }
-    if (!form.value.schedule) {
+    if (!f.schedule) {
       newErrors.schedule = "Cron schedule is required";
     } else {
       // Basic cron validation (5 fields)
-      const parts = form.value.schedule.trim().split(/\s+/);
+      const parts = f.schedule.trim().split(/\s+/);
       if (parts.length !== 5) {
         newErrors.schedule = "Must be a valid cron expression (5 fields)";
       }
     }
-    errors.value = newErrors;
+    setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }, []);
 
   const fetchPreview = useCallback(async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
     try {
+      const f = formRef.current;
       const body = {
-        name: form.value.name,
-        namespace: form.value.namespace,
-        schedule: form.value.schedule,
+        name: f.name,
+        namespace: f.namespace,
+        schedule: f.schedule,
         includedNamespaces:
-          form.value.includedNamespaces.length > 0
-            ? form.value.includedNamespaces
-            : undefined,
+          f.includedNamespaces.length > 0 ? f.includedNamespaces : undefined,
         excludedNamespaces:
-          form.value.excludedNamespaces.length > 0
-            ? form.value.excludedNamespaces
-            : undefined,
-        storageLocation: form.value.storageLocation || undefined,
-        ttl: form.value.ttl || undefined,
-        snapshotVolumes: form.value.snapshotVolumes,
-        paused: form.value.paused || undefined,
+          f.excludedNamespaces.length > 0 ? f.excludedNamespaces : undefined,
+        storageLocation: f.storageLocation || undefined,
+        ttl: f.ttl || undefined,
+        snapshotVolumes: f.snapshotVolumes,
+        paused: f.paused || undefined,
       };
       const resp = await apiPost<{ yaml: string }>(
         "/v1/wizards/velero-schedule/preview",
         body,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (e: unknown) {
       if (gen !== previewGen.current) return;
-      previewError.value = e instanceof Error ? e.message : "Preview failed";
+      setPreviewError(e instanceof Error ? e.message : "Preview failed");
     }
-    if (gen === previewGen.current) previewLoading.value = false;
+    if (gen === previewGen.current) setPreviewLoading(false);
   }, []);
 
-  const handleNext = useCallback(async () => {
-    if (currentStep.value === 0) {
+  const goNext = useCallback(async () => {
+    if (currentStep === 0) {
       if (!validate()) return;
       await fetchPreview();
     }
-    currentStep.value++;
-  }, []);
+    setCurrentStep((s) => s + 1);
+  }, [currentStep, validate, fetchPreview]);
 
-  const handleBack = useCallback(() => {
-    currentStep.value--;
+  const goBack = useCallback(() => {
+    setCurrentStep((s) => s - 1);
   }, []);
 
   return (
@@ -178,9 +184,9 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
           <line x1="16" y1="2" x2="16" y2="6" />
@@ -190,59 +196,57 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
           <path d="M12 14v2l1 1" />
         </svg>
       }
-      subtitle={`Step ${currentStep.value + 1} of 2`}
+      subtitle={`Step ${currentStep + 1} of 2`}
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
-      onBack={handleBack}
-      onNext={currentStep.value === 0 ? handleNext : close}
-      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
-      yaml={previewYaml.value || undefined}
+      onBack={goBack}
+      onNext={currentStep === 0 ? goNext : close}
+      nextLabel={currentStep === 0 ? "Continue" : "Close"}
+      yaml={previewYaml || undefined}
     >
-      {currentStep.value === 0 && (
-        <div class="space-y-6">
+      {currentStep === 0 && (
+        <div className="space-y-6">
           {/* Name */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-schedule-name"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-schedule-name"
             >
               Schedule Name *
             </label>
             <input
               id="velero-schedule-name"
               type="text"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.name}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
               placeholder="daily-backup"
             />
-            {errors.value.name && (
-              <p class="text-xs text-error mt-1">{errors.value.name}</p>
+            {errors.name && (
+              <p className="text-xs text-error mt-1">{errors.name}</p>
             )}
           </div>
 
           {/* Cron Schedule */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-schedule-cron"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-schedule-cron"
             >
               Schedule (Cron) *
             </label>
-            <div class="flex gap-2 mb-2">
+            <div className="flex gap-2 mb-2">
               {CRON_PRESETS.map((preset) => (
                 <button
                   key={preset.value}
                   type="button"
                   onClick={() => updateField("schedule", preset.value)}
-                  class={`px-2 py-1 text-xs rounded border ${
-                    form.value.schedule === preset.value
+                  className={`px-2 py-1 text-xs rounded border ${
+                    form.schedule === preset.value
                       ? "border-accent bg-accent/10 text-accent"
                       : "border-border-primary text-text-muted hover:border-text-muted"
                   }`}
@@ -254,17 +258,15 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
             <input
               id="velero-schedule-cron"
               type="text"
-              value={form.value.schedule}
-              onInput={(e) =>
-                updateField("schedule", (e.target as HTMLInputElement).value)
-              }
-              class={`${WIZARD_INPUT_CLASS} font-mono`}
+              value={form.schedule}
+              onChange={(e) => updateField("schedule", e.currentTarget.value)}
+              className={`${WIZARD_INPUT_CLASS} font-mono`}
               placeholder="0 0 * * *"
             />
-            {errors.value.schedule && (
-              <p class="text-xs text-error mt-1">{errors.value.schedule}</p>
+            {errors.schedule && (
+              <p className="text-xs text-error mt-1">{errors.schedule}</p>
             )}
-            <p class="text-xs text-text-muted mt-1">
+            <p className="text-xs text-text-muted mt-1">
               Format: minute hour day-of-month month day-of-week
             </p>
           </div>
@@ -272,31 +274,36 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
           {/* Included Namespaces */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-schedule-namespaces"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-schedule-namespaces"
             >
               Include Namespaces
             </label>
-            <p class="text-xs text-text-muted mb-2">
+            <p className="text-xs text-text-muted mb-2">
               Leave empty to back up all namespaces.
             </p>
             <select
               id="velero-schedule-namespaces"
               multiple
-              onChange={(e) => {
-                const select = e.target as HTMLSelectElement;
-                const selected = Array.from(select.selectedOptions).map(
-                  (o) => o.value,
-                );
-                updateField("includedNamespaces", selected);
-              }}
-              class={`${WIZARD_INPUT_CLASS} h-32`}
+              onChange={(e) =>
+                updateField(
+                  "includedNamespaces",
+                  Array.from(e.currentTarget.selectedOptions).map(
+                    (o) => o.value,
+                  ),
+                )
+              }
+              className={`${WIZARD_INPUT_CLASS} h-32`}
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option
                   key={ns}
                   value={ns}
-                  selected={form.value.includedNamespaces.includes(ns)}
+                  // The selection of a multi-select is not a single value the
+                  // JSX types accept, so each option carries its own state.
+                  ref={(el) => {
+                    if (el) el.selected = form.includedNamespaces.includes(ns);
+                  }}
                 >
                   {ns}
                 </option>
@@ -307,24 +314,21 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
           {/* Storage Location */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-schedule-storage-location"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-schedule-storage-location"
             >
               Storage Location
             </label>
             <select
               id="velero-schedule-storage-location"
-              value={form.value.storageLocation}
+              value={form.storageLocation}
               onChange={(e) =>
-                updateField(
-                  "storageLocation",
-                  (e.target as HTMLSelectElement).value,
-                )
+                updateField("storageLocation", e.currentTarget.value)
               }
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             >
               <option value="">Default</option>
-              {bsls.value.map((bsl) => (
+              {bsls.map((bsl) => (
                 <option key={bsl.name} value={bsl.name}>
                   {bsl.name} ({bsl.provider}){bsl.default ? " - default" : ""}
                 </option>
@@ -335,18 +339,16 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
           {/* TTL */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-schedule-ttl"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-schedule-ttl"
             >
               Retention (TTL)
             </label>
             <select
               id="velero-schedule-ttl"
-              value={form.value.ttl}
-              onChange={(e) =>
-                updateField("ttl", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.ttl}
+              onChange={(e) => updateField("ttl", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
               {TTL_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -357,38 +359,36 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
           </div>
 
           {/* Checkboxes */}
-          <div class="space-y-2">
-            <div class="flex items-center gap-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
               <input
                 type="checkbox"
                 id="snapshotVolumes"
-                checked={form.value.snapshotVolumes}
+                checked={form.snapshotVolumes}
                 onChange={(e) =>
-                  updateField(
-                    "snapshotVolumes",
-                    (e.target as HTMLInputElement).checked,
-                  )
+                  updateField("snapshotVolumes", e.currentTarget.checked)
                 }
-                class="rounded border-border-primary"
+                className="rounded border-border-primary"
               />
               <label
-                for="snapshotVolumes"
-                class="text-sm font-medium text-text-primary"
+                htmlFor="snapshotVolumes"
+                className="text-sm font-medium text-text-primary"
               >
                 Snapshot persistent volumes
               </label>
             </div>
-            <div class="flex items-center gap-2">
+            <div className="flex items-center gap-2">
               <input
                 type="checkbox"
                 id="paused"
-                checked={form.value.paused}
-                onChange={(e) =>
-                  updateField("paused", (e.target as HTMLInputElement).checked)
-                }
-                class="rounded border-border-primary"
+                checked={form.paused}
+                onChange={(e) => updateField("paused", e.currentTarget.checked)}
+                className="rounded border-border-primary"
               />
-              <label for="paused" class="text-sm font-medium text-text-primary">
+              <label
+                htmlFor="paused"
+                className="text-sm font-medium text-text-primary"
+              >
                 Create paused (won't run until unpaused)
               </label>
             </div>
@@ -396,14 +396,14 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
         </div>
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => (previewYaml.value = v)}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/backup/schedules"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

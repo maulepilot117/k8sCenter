@@ -1,6 +1,12 @@
-import type { Signal } from "@preact/signals";
-import { useComputed, useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type Dispatch,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import { ApiError, apiGet, apiPost, apiPut } from "@/lib/api.ts";
@@ -10,12 +16,13 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { formStateToYaml, safeDeepSet } from "@/lib/schema-to-yaml.ts";
 import SchemaFormField from "@/src/islands/SchemaFormField.tsx";
 import YamlPreview from "@/src/islands/YamlPreview.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
-/** The root every return shares. Preact hydration keeps the server-rendered
- * root's own props, so each branch styles an inner box instead. */
+/** The root every return shares. Hydration keeps the server-rendered root's
+ * own props, so each branch styles an inner box instead. */
 const FORM_ROOT_STYLE = { maxWidth: "800px" };
 
 /** A field that identifies an existing object: shown, but visibly not
@@ -85,6 +92,16 @@ function entriesToKV(record: Record<string, string>): KVEntry[] {
     key: k,
     value: v,
   }));
+}
+
+/** The spec as YAML for the fallback textarea; empty when there is none. */
+function stringifySpec(spec: Record<string, unknown>): string {
+  if (Object.keys(spec).length === 0) return "";
+  try {
+    return yamlStringify(spec);
+  } catch {
+    return "";
+  }
 }
 
 // ── Styles ──────────────────────────────────────────────────────────────
@@ -187,16 +204,22 @@ const kvAddBtnStyle: Record<string, string | number> = {
 
 function KeyValueSection({
   title,
-  signal,
+  entries,
+  setEntries,
   addLabel,
   useTextarea,
 }: {
   title: string;
-  signal: Signal<KVEntry[]>;
+  entries: KVEntry[];
+  setEntries: Dispatch<SetStateAction<KVEntry[]>>;
   addLabel: string;
   useTextarea?: boolean;
 }) {
-  const entries = signal.value;
+  const patchEntry = (idx: number, patch: Partial<KVEntry>) => {
+    setEntries((prev) =>
+      prev.map((entry, i) => (i === idx ? { ...entry, ...patch } : entry)),
+    );
+  };
   const duplicateKeys = findDuplicateKeys(entries);
 
   return (
@@ -223,14 +246,9 @@ function KeyValueSection({
                 style={isDuplicate ? kvKeyErrorStyle : kvKeyStyle}
                 value={entry.key}
                 title={isDuplicate ? "Duplicate key" : undefined}
-                onInput={(e) => {
-                  const next = [...signal.value];
-                  next[idx] = {
-                    ...next[idx],
-                    key: (e.target as HTMLInputElement).value,
-                  };
-                  signal.value = next;
-                }}
+                onChange={(e) =>
+                  patchEntry(idx, { key: e.currentTarget.value })
+                }
               />
               {useTextarea ? (
                 <textarea
@@ -238,14 +256,9 @@ function KeyValueSection({
                   rows={1}
                   style={kvValueTextareaStyle}
                   value={entry.value}
-                  onInput={(e) => {
-                    const next = [...signal.value];
-                    next[idx] = {
-                      ...next[idx],
-                      value: (e.target as HTMLTextAreaElement).value,
-                    };
-                    signal.value = next;
-                  }}
+                  onChange={(e) =>
+                    patchEntry(idx, { value: e.currentTarget.value })
+                  }
                 />
               ) : (
                 <input
@@ -253,20 +266,15 @@ function KeyValueSection({
                   placeholder="value"
                   style={kvValueInputStyle}
                   value={entry.value}
-                  onInput={(e) => {
-                    const next = [...signal.value];
-                    next[idx] = {
-                      ...next[idx],
-                      value: (e.target as HTMLInputElement).value,
-                    };
-                    signal.value = next;
-                  }}
+                  onChange={(e) =>
+                    patchEntry(idx, { value: e.currentTarget.value })
+                  }
                 />
               )}
               <button
                 type="button"
                 onClick={() => {
-                  signal.value = signal.value.filter((_, i) => i !== idx);
+                  setEntries((prev) => prev.filter((_, i) => i !== idx));
                 }}
                 style={kvRemoveBtnStyle}
                 title="Remove"
@@ -279,14 +287,14 @@ function KeyValueSection({
         <button
           type="button"
           onClick={() => {
-            signal.value = [
-              ...signal.value,
+            setEntries((prev) => [
+              ...prev,
               {
                 id: nextEntryId++,
                 key: "",
                 value: "",
               },
-            ];
+            ]);
           }}
           style={kvAddBtnStyle}
         >
@@ -308,38 +316,42 @@ export default function SchemaForm({
   onClose,
 }: SchemaFormProps) {
   const close = onClose ?? (() => globalThis.history.back());
+  const isClient = useIsClient();
   // State
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const crd = useSignal<CRDGetResponse | null>(null);
-  const specSchema = useSignal<SchemaProperty | null>(null);
-  const storageVersion = useSignal("");
-  const kind = useSignal("");
-  const scope = useSignal<"Namespaced" | "Cluster">("Namespaced");
-  const viewMode = useSignal<ViewMode>("form");
-  const submitting = useSignal(false);
-  const validating = useSignal(false);
-  const validationResult = useSignal<{ ok: boolean; message: string } | null>(
-    null,
-  );
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [specSchema, setSpecSchema] = useState<SchemaProperty | null>(null);
+  const [storageVersion, setStorageVersion] = useState("");
+  const [kind, setKind] = useState("");
+  const [scope, setScope] = useState<"Namespaced" | "Cluster">("Namespaced");
+  const [viewMode, setViewMode] = useState<ViewMode>("form");
+  const [submitting, setSubmitting] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [validationResult, setValidationResult] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
 
   // Form state
-  const formName = useSignal(name ?? "");
-  const formNamespace = useSignal(namespace ?? initialNamespace());
-  const formLabels = useSignal<KVEntry[]>([]);
-  const formAnnotations = useSignal<KVEntry[]>([]);
-  const formSpec = useSignal<Record<string, unknown>>({});
-  const resourceVersion = useSignal<string>("");
-  const namespaces = useNamespaces();
+  const [formName, setFormName] = useState(name ?? "");
+  const [formNamespace, setFormNamespace] = useState(
+    namespace ?? initialNamespace(),
+  );
+  const [formLabels, setFormLabels] = useState<KVEntry[]>([]);
+  const [formAnnotations, setFormAnnotations] = useState<KVEntry[]>([]);
+  const [formSpec, setFormSpec] = useState<Record<string, unknown>>({});
+  // The spec textarea shown when the CRD has no structured schema keeps what
+  // was typed, valid YAML or not; it shows the parsed spec until typing starts.
+  const [specText, setSpecText] = useState<string | null>(null);
+  const [resourceVersion, setResourceVersion] = useState("");
+  const namespaces = useSignalValue(useNamespaces());
 
   // ── Fetch CRD schema ─────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
-
     const fetchData = async () => {
-      loading.value = true;
-      error.value = null;
+      setLoading(true);
+      setError(null);
 
       try {
         // Fetch CRD info + schema from backend
@@ -348,24 +360,17 @@ export default function SchemaForm({
         );
         const crdResp = res.data;
         if (!crdResp?.info) {
-          error.value = "CRD not found";
+          setError("CRD not found");
           return;
         }
 
-        crd.value = crdResp;
-        kind.value = crdResp.info.kind;
-        scope.value = crdResp.info.scope;
-        storageVersion.value = crdResp.info.version;
+        setKind(crdResp.info.kind);
+        setScope(crdResp.info.scope);
+        setStorageVersion(crdResp.info.version);
 
         // Extract spec schema from the root schema
         const rootSchema = crdResp.schema as SchemaProperty | null;
-        if (rootSchema?.properties?.spec) {
-          specSchema.value = rootSchema.properties.spec;
-        } else if (rootSchema?.["x-kubernetes-preserve-unknown-fields"]) {
-          specSchema.value = null;
-        } else {
-          specSchema.value = null;
-        }
+        setSpecSchema(rootSchema?.properties?.spec ?? null);
 
         // In edit mode, fetch the instance
         if (mode === "edit" && name) {
@@ -379,30 +384,29 @@ export default function SchemaForm({
               | Record<string, unknown>
               | undefined;
             if (meta?.labels && typeof meta.labels === "object") {
-              formLabels.value = entriesToKV(
-                meta.labels as Record<string, string>,
-              );
+              setFormLabels(entriesToKV(meta.labels as Record<string, string>));
             }
             if (meta?.annotations && typeof meta.annotations === "object") {
-              formAnnotations.value = entriesToKV(
-                meta.annotations as Record<string, string>,
+              setFormAnnotations(
+                entriesToKV(meta.annotations as Record<string, string>),
               );
             }
             if (meta?.resourceVersion) {
-              resourceVersion.value = meta.resourceVersion as string;
+              setResourceVersion(meta.resourceVersion as string);
             }
             if (instance.spec && typeof instance.spec === "object") {
-              formSpec.value = instance.spec as Record<string, unknown>;
+              setFormSpec(instance.spec as Record<string, unknown>);
             }
           }
         }
       } catch (err) {
-        error.value =
+        setError(
           err instanceof ApiError
             ? (err.detail ?? err.message)
-            : "Failed to load CRD schema";
+            : "Failed to load CRD schema",
+        );
       } finally {
-        loading.value = false;
+        setLoading(false);
       }
     };
 
@@ -414,77 +418,82 @@ export default function SchemaForm({
   const handleSpecChange = useCallback((path: string, value: unknown) => {
     // path is like "spec.issuerRef.name" — strip the "spec." prefix
     const relPath = path.startsWith("spec.") ? path.slice(5) : path;
-    formSpec.value = safeDeepSet(formSpec.value, relPath, value);
+    setFormSpec((prev) => safeDeepSet(prev, relPath, value));
   }, []);
 
   // ── Build YAML preview (only when YAML tab is active) ────────────────
 
-  const yamlPreview = useComputed(() => {
-    if (viewMode.value !== "yaml") return "";
-    const labels = toRecord(formLabels.value);
-    const annotations = toRecord(formAnnotations.value);
-    const apiVersion = `${group}/${storageVersion.value}`;
+  const yamlPreview = useMemo(() => {
+    if (viewMode !== "yaml") return "";
+    const labels = toRecord(formLabels);
+    const annotations = toRecord(formAnnotations);
+    const apiVersion = `${group}/${storageVersion}`;
     return formStateToYaml(
       apiVersion,
-      kind.value,
+      kind,
       {
-        name: formName.value,
-        namespace:
-          scope.value === "Namespaced" ? formNamespace.value : undefined,
+        name: formName,
+        namespace: scope === "Namespaced" ? formNamespace : undefined,
         labels: Object.keys(labels).length > 0 ? labels : undefined,
         annotations:
           Object.keys(annotations).length > 0 ? annotations : undefined,
       },
-      formSpec.value,
+      formSpec,
     );
-  });
+  }, [
+    viewMode,
+    group,
+    storageVersion,
+    kind,
+    scope,
+    formName,
+    formNamespace,
+    formLabels,
+    formAnnotations,
+    formSpec,
+  ]);
 
   // ── Build the JSON body for API calls ─────────────────────────────────
-  // Signal refs are stable (never change identity), so deps are effectively [].
 
-  const buildBody = useCallback((): Record<string, unknown> => {
-    const labels = toRecord(formLabels.value);
-    const annotations = toRecord(formAnnotations.value);
+  const buildBody = (): Record<string, unknown> => {
+    const labels = toRecord(formLabels);
+    const annotations = toRecord(formAnnotations);
     const body: Record<string, unknown> = {
-      apiVersion: `${group}/${storageVersion.value}`,
-      kind: kind.value,
+      apiVersion: `${group}/${storageVersion}`,
+      kind,
       metadata: {
-        name: formName.value,
-        ...(scope.value === "Namespaced"
-          ? { namespace: formNamespace.value }
-          : {}),
+        name: formName,
+        ...(scope === "Namespaced" ? { namespace: formNamespace } : {}),
         ...(Object.keys(labels).length > 0 ? { labels } : {}),
         ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
-        ...(mode === "edit" && resourceVersion.value
-          ? { resourceVersion: resourceVersion.value }
-          : {}),
+        ...(mode === "edit" && resourceVersion ? { resourceVersion } : {}),
       },
     };
-    if (Object.keys(formSpec.value).length > 0) {
-      body.spec = formSpec.value;
+    if (Object.keys(formSpec).length > 0) {
+      body.spec = formSpec;
     }
     return body;
-  }, []);
+  };
 
   // ── Actions ──────────────────────────────────────────────────────────
 
-  const handleSubmit = useCallback(async () => {
-    if (!formName.value.trim()) {
+  const handleSubmit = async () => {
+    if (!formName.trim()) {
       showToast("Name is required", "error");
       return;
     }
 
-    submitting.value = true;
+    setSubmitting(true);
     try {
       const body = buildBody();
-      const ns = scope.value === "Namespaced" ? formNamespace.value : "_";
+      const ns = scope === "Namespaced" ? formNamespace : "_";
 
       if (mode === "create") {
         await apiPost(
           `/v1/extensions/resources/${group}/${resource}/${ns}`,
           body,
         );
-        showToast(`Created ${formName.value}`, "success");
+        showToast(`Created ${formName}`, "success");
         close();
       } else {
         const res = await apiPut<Record<string, unknown>>(
@@ -496,9 +505,9 @@ export default function SchemaForm({
           | Record<string, unknown>
           | undefined;
         if (resMeta?.resourceVersion) {
-          resourceVersion.value = resMeta.resourceVersion as string;
+          setResourceVersion(resMeta.resourceVersion as string);
         }
-        showToast(`Updated ${formName.value}`, "success");
+        showToast(`Updated ${formName}`, "success");
       }
     } catch (err) {
       const msg =
@@ -507,34 +516,34 @@ export default function SchemaForm({
           : "Operation failed";
       showToast(msg, "error");
     } finally {
-      submitting.value = false;
+      setSubmitting(false);
     }
-  }, []);
+  };
 
-  const handleValidate = useCallback(async () => {
-    validating.value = true;
-    validationResult.value = null;
+  const handleValidate = async () => {
+    setValidating(true);
+    setValidationResult(null);
     try {
       const body = buildBody();
       await apiPost(
         `/v1/extensions/resources/${group}/${resource}/-/validate`,
         body,
       );
-      validationResult.value = { ok: true, message: "Validation passed" };
+      setValidationResult({ ok: true, message: "Validation passed" });
     } catch (err) {
       const msg =
         err instanceof ApiError
           ? (err.detail ?? err.message)
           : "Validation failed";
-      validationResult.value = { ok: false, message: msg };
+      setValidationResult({ ok: false, message: msg });
     } finally {
-      validating.value = false;
+      setValidating(false);
     }
-  }, []);
+  };
 
   // ── SSR placeholder ──────────────────────────────────────────────────
 
-  if (!IS_BROWSER) {
+  if (!isClient) {
     return (
       <div style={FORM_ROOT_STYLE}>
         <div style={{ minHeight: "400px" }} />
@@ -544,7 +553,7 @@ export default function SchemaForm({
 
   // ── Loading state ────────────────────────────────────────────────────
 
-  if (loading.value) {
+  if (loading) {
     return (
       <div style={FORM_ROOT_STYLE}>
         <div>
@@ -559,7 +568,7 @@ export default function SchemaForm({
 
   // ── Error state ──────────────────────────────────────────────────────
 
-  if (error.value) {
+  if (error) {
     return (
       <div style={FORM_ROOT_STYLE}>
         <div
@@ -576,7 +585,7 @@ export default function SchemaForm({
               marginBottom: "12px",
             }}
           >
-            {error.value}
+            {error}
           </p>
           <button
             type="button"
@@ -592,10 +601,8 @@ export default function SchemaForm({
 
   // ── Determine schema tier ────────────────────────────────────────────
 
-  const hasSpecSchema =
-    specSchema.value !== null && specSchema.value.properties != null;
-  const specProperties = hasSpecSchema ? specSchema.value!.properties! : {};
-  const specRequired = hasSpecSchema ? (specSchema.value!.required ?? []) : [];
+  const specProperties = specSchema?.properties ?? null;
+  const specRequired = specSchema?.required ?? [];
 
   // ── Render ───────────────────────────────────────────────────────────
 
@@ -630,7 +637,7 @@ export default function SchemaForm({
           href={`/extensions/${group}/${resource}`}
           style={{ color: "var(--accent)", textDecoration: "none" }}
         >
-          {kind.value}
+          {kind}
         </a>
         <span>/</span>
         <span style={{ color: "var(--text-primary)" }}>
@@ -657,7 +664,7 @@ export default function SchemaForm({
               letterSpacing: "-0.02em",
             }}
           >
-            {mode === "create" ? `New ${kind.value}` : `Edit ${name}`}
+            {mode === "create" ? `New ${kind}` : `Edit ${name}`}
           </h1>
           <p
             style={{
@@ -666,7 +673,7 @@ export default function SchemaForm({
               margin: "2px 0 0",
             }}
           >
-            {resource}.{group}/{storageVersion.value}
+            {resource}.{group}/{storageVersion}
           </p>
         </div>
 
@@ -685,7 +692,7 @@ export default function SchemaForm({
             <button
               type="button"
               key={m}
-              onClick={() => (viewMode.value = m)}
+              onClick={() => setViewMode(m)}
               style={{
                 padding: "4px 12px",
                 fontSize: "11px",
@@ -693,10 +700,8 @@ export default function SchemaForm({
                 borderRadius: "4px",
                 border: "none",
                 cursor: "pointer",
-                background:
-                  viewMode.value === m ? "var(--accent)" : "transparent",
-                color:
-                  viewMode.value === m ? "var(--bg-base)" : "var(--text-muted)",
+                background: viewMode === m ? "var(--accent)" : "transparent",
+                color: viewMode === m ? "var(--bg-base)" : "var(--text-muted)",
               }}
             >
               {m === "form" ? "Form" : "YAML"}
@@ -706,10 +711,10 @@ export default function SchemaForm({
       </div>
 
       {/* YAML preview mode */}
-      {viewMode.value === "yaml" && <YamlPreview yaml={yamlPreview.value} />}
+      {viewMode === "yaml" && <YamlPreview yaml={yamlPreview} />}
 
       {/* Form mode */}
-      {viewMode.value === "form" && (
+      {viewMode === "form" && (
         <div>
           {/* ── Metadata Section ─────────────────────────────────────── */}
           <div style={sectionHeaderStyle}>
@@ -740,16 +745,14 @@ export default function SchemaForm({
               id="field-metadata-name"
               type="text"
               style={mode === "edit" ? lockedStyle(inputStyle) : inputStyle}
-              value={formName.value}
+              value={formName}
               disabled={mode === "edit"}
-              onInput={(e) =>
-                (formName.value = (e.target as HTMLInputElement).value)
-              }
+              onChange={(e) => setFormName(e.currentTarget.value)}
               placeholder="my-resource"
             />
           </div>
 
-          {scope.value === "Namespaced" && (
+          {scope === "Namespaced" && (
             <div style={{ marginBottom: "12px" }}>
               <label
                 htmlFor="field-metadata-namespace"
@@ -766,13 +769,11 @@ export default function SchemaForm({
               <select
                 id="field-metadata-namespace"
                 style={mode === "edit" ? lockedStyle(selectStyle) : selectStyle}
-                value={formNamespace.value}
+                value={formNamespace}
                 disabled={mode === "edit"}
-                onChange={(e) =>
-                  (formNamespace.value = (e.target as HTMLSelectElement).value)
-                }
+                onChange={(e) => setFormNamespace(e.currentTarget.value)}
               >
-                {namespaces.value.map((ns) => (
+                {namespaces.map((ns) => (
                   <option key={ns} value={ns}>
                     {ns}
                   </option>
@@ -797,14 +798,16 @@ export default function SchemaForm({
           {/* ── Labels Section ───────────────────────────────────────── */}
           <KeyValueSection
             title="Labels"
-            signal={formLabels}
+            entries={formLabels}
+            setEntries={setFormLabels}
             addLabel="+ Add Label"
           />
 
           {/* ── Annotations Section ─────────────────────────────────── */}
           <KeyValueSection
             title="Annotations"
-            signal={formAnnotations}
+            entries={formAnnotations}
+            setEntries={setFormAnnotations}
             addLabel="+ Add Annotation"
             useTextarea
           />
@@ -821,7 +824,7 @@ export default function SchemaForm({
             />
           </div>
 
-          {hasSpecSchema ? (
+          {specProperties ? (
             <div>
               {Object.entries(specProperties).map(([key, propSchema]) => (
                 <SchemaFormField
@@ -829,7 +832,7 @@ export default function SchemaForm({
                   name={key}
                   path={`spec.${key}`}
                   schema={propSchema}
-                  value={formSpec.value[key]}
+                  value={formSpec[key]}
                   onChange={handleSpecChange}
                   required={specRequired.includes(key)}
                   depth={0}
@@ -846,7 +849,7 @@ export default function SchemaForm({
                   marginBottom: "8px",
                 }}
               >
-                {specSchema.value === null && !error.value
+                {specSchema === null && !error
                   ? "This CRD does not define a structured schema. Enter the spec as YAML."
                   : "Enter the spec as YAML."}
               </p>
@@ -857,30 +860,21 @@ export default function SchemaForm({
                   resize: "vertical",
                   lineHeight: "1.5",
                 }}
-                value={
-                  Object.keys(formSpec.value).length > 0
-                    ? (() => {
-                        try {
-                          return yamlStringify(formSpec.value);
-                        } catch {
-                          return "";
-                        }
-                      })()
-                    : ""
-                }
-                onInput={(e) => {
+                value={specText ?? stringifySpec(formSpec)}
+                onChange={(e) => {
+                  const text = e.currentTarget.value;
+                  setSpecText(text);
                   try {
-                    const parsed = yamlParse(
-                      (e.target as HTMLTextAreaElement).value,
-                    );
+                    const parsed = yamlParse(text);
                     if (parsed && typeof parsed === "object") {
-                      formSpec.value = parsed as Record<string, unknown>;
+                      setFormSpec(parsed as Record<string, unknown>);
                     }
                   } catch {
                     // invalid YAML
                   }
                 }}
                 placeholder="# Enter spec YAML..."
+                // Preact types lack spellCheck; compat maps it to the attribute.
                 spellcheck={false}
               />
             </div>
@@ -889,25 +883,23 @@ export default function SchemaForm({
       )}
 
       {/* ── Validation Result ──────────────────────────────────────── */}
-      {validationResult.value && (
+      {validationResult && (
         <div
           style={{
             padding: "10px 14px",
             marginBottom: "16px",
             borderRadius: "6px",
             fontSize: "12px",
-            background: validationResult.value.ok
+            background: validationResult.ok
               ? "var(--success-dim)"
               : "var(--error-dim)",
-            color: validationResult.value.ok
-              ? "var(--success)"
-              : "var(--error)",
+            color: validationResult.ok ? "var(--success)" : "var(--error)",
             border: `1px solid ${
-              validationResult.value.ok ? "var(--success)" : "var(--error)"
+              validationResult.ok ? "var(--success)" : "var(--error)"
             }`,
           }}
         >
-          {validationResult.value.message}
+          {validationResult.message}
         </div>
       )}
 
@@ -925,14 +917,14 @@ export default function SchemaForm({
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={submitting.value}
+          disabled={submitting}
           style={{
             ...btnPrimaryStyle,
-            opacity: submitting.value ? 0.6 : 1,
-            cursor: submitting.value ? "default" : "pointer",
+            opacity: submitting ? 0.6 : 1,
+            cursor: submitting ? "default" : "pointer",
           }}
         >
-          {submitting.value
+          {submitting
             ? mode === "create"
               ? "Creating..."
               : "Updating..."
@@ -944,20 +936,20 @@ export default function SchemaForm({
         <button
           type="button"
           onClick={handleValidate}
-          disabled={validating.value}
+          disabled={validating}
           style={{
             ...btnSecondaryStyle,
-            opacity: validating.value ? 0.6 : 1,
-            cursor: validating.value ? "default" : "pointer",
+            opacity: validating ? 0.6 : 1,
+            cursor: validating ? "default" : "pointer",
           }}
         >
-          {validating.value ? "Validating..." : "Validate"}
+          {validating ? "Validating..." : "Validate"}
         </button>
 
-        {viewMode.value === "form" && (
+        {viewMode === "form" && (
           <button
             type="button"
-            onClick={() => (viewMode.value = "yaml")}
+            onClick={() => setViewMode("yaml")}
             style={btnSecondaryStyle}
           >
             View YAML

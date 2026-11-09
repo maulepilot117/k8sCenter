@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
@@ -25,6 +25,9 @@ import type {
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface VolumeClaimEntry {
   name: string;
@@ -92,44 +95,46 @@ export default function StatefulSetWizard({
   onClose?: () => void;
 }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<StatefulSetFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<StatefulSetFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
   const storageClasses = useStorageClasses();
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+  const formRef = useLatest(form);
+  const vctKeys = useRowKeys(form.volumeClaimTemplates.length);
 
   useDirtyGuard(dirty);
 
-  // Auto-sync serviceName with name when name changes and serviceName is empty or matches old name
-  const prevName = useSignal("");
-
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    const f = { ...form.value, [field]: value };
-    // Auto-sync serviceName with name
-    if (field === "name") {
-      const newName = value as string;
-      if (
-        !f.serviceName ||
-        f.serviceName === prevName.value ||
-        f.serviceName === `${prevName.value}-headless`
-      ) {
-        f.serviceName = newName ? `${newName}-headless` : "";
+    setDirty(true);
+    setForm((prev) => {
+      const f = { ...prev, [field]: value };
+      // Auto-sync serviceName with name when it is empty or still the
+      // default derived from the previous name
+      if (field === "name") {
+        const newName = value as string;
+        if (
+          !f.serviceName ||
+          f.serviceName === prev.name ||
+          f.serviceName === `${prev.name}-headless`
+        ) {
+          f.serviceName = newName ? `${newName}-headless` : "";
+        }
       }
-      prevName.value = newName;
-    }
-    form.value = f;
+      return f;
+    });
   }, []);
 
   const validateStep = (step: number): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -177,16 +182,16 @@ export default function StatefulSetWizard({
       });
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = formRef.current;
 
     // Build the container sub-object
     const container: Record<string, unknown> = {
@@ -261,29 +266,30 @@ export default function StatefulSetWizard({
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
+    if (!validateStep(currentStep)) return;
 
-    if (currentStep.value === 1) {
-      currentStep.value = 2;
+    if (currentStep === 1) {
+      setCurrentStep(2);
       await fetchPreview();
     } else {
-      currentStep.value = currentStep.value + 1;
+      setCurrentStep((step) => step + 1);
     }
   };
 
   const manifest = () => {
-    const f = form.value;
+    const f = form;
     const name = f.name || "<name>";
     const ns = f.namespace || "default";
     return `apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  serviceName: ${
@@ -296,7 +302,7 @@ export default function StatefulSetWizard({
   return (
     <WizardShell
       title="Create StatefulSet"
-      subtitle={`${form.value.namespace || "default"}`}
+      subtitle={`${form.namespace || "default"}`}
       icon={
         <svg
           width="21"
@@ -304,9 +310,9 @@ export default function StatefulSetWizard({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <ellipse cx="10" cy="6" rx="7" ry="2.5" />
           <path d="M3 6v4c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6" />
@@ -314,51 +320,47 @@ export default function StatefulSetWizard({
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i <= currentStep.value) currentStep.value = i;
+        if (i <= currentStep) setCurrentStep(i);
       }}
       onCancel={close}
-      onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
+      onBack={() => setCurrentStep((step) => Math.max(0, step - 1))}
       onNext={() => {
-        if (currentStep.value < 2) goNext();
+        if (currentStep < 2) goNext();
         else close();
       }}
-      nextLabel={currentStep.value < 2 ? "Continue" : "Close"}
-      yaml={currentStep.value < 2 ? manifest() : previewYaml.value}
+      nextLabel={currentStep < 2 ? "Continue" : "Close"}
+      yaml={currentStep < 2 ? manifest() : previewYaml}
     >
       {/* Step 1: Basics */}
-      {currentStep.value === 0 && (
-        <div class="max-w-lg space-y-4">
+      {currentStep === 0 && (
+        <div className="max-w-lg space-y-4">
           <Input
             label="Name"
-            value={form.value.name}
-            onInput={(e) =>
-              updateField("name", (e.target as HTMLInputElement).value)
-            }
+            value={form.name}
+            onChange={(e) => updateField("name", e.currentTarget.value)}
             placeholder="my-statefulset"
-            error={errors.value.name}
+            error={errors.name}
             required
           />
 
           <NamespaceSelect
-            value={form.value.namespace}
-            namespaces={namespaces.value}
-            error={errors.value.namespace}
+            value={form.namespace}
+            namespaces={namespaceList}
+            error={errors.namespace}
             onChange={(ns) => updateField("namespace", ns)}
           />
 
           <Input
             label="Headless Service Name"
-            value={form.value.serviceName}
-            onInput={(e) =>
-              updateField("serviceName", (e.target as HTMLInputElement).value)
-            }
+            value={form.serviceName}
+            onChange={(e) => updateField("serviceName", e.currentTarget.value)}
             placeholder="my-statefulset-headless"
-            error={errors.value.serviceName}
+            error={errors.serviceName}
             required
           />
-          <p class="-mt-2 text-xs text-text-muted">
+          <p className="-mt-2 text-xs text-text-muted">
             The headless Service that governs this StatefulSet. Must exist or be
             created separately.
           </p>
@@ -366,26 +368,20 @@ export default function StatefulSetWizard({
           <Input
             label="Replicas"
             type="number"
-            value={String(form.value.replicas)}
-            onInput={(e) =>
-              updateField(
-                "replicas",
-                parseInt((e.target as HTMLInputElement).value, 10) || 0,
-              )
+            value={String(form.replicas)}
+            onChange={(e) =>
+              updateField("replicas", parseInt(e.currentTarget.value, 10) || 0)
             }
             min={0}
             max={1000}
-            error={errors.value.replicas}
+            error={errors.replicas}
           />
 
           <Select
             label="Pod Management Policy"
-            value={form.value.podManagementPolicy}
+            value={form.podManagementPolicy}
             onChange={(e) =>
-              updateField(
-                "podManagementPolicy",
-                (e.target as HTMLSelectElement).value,
-              )
+              updateField("podManagementPolicy", e.currentTarget.value)
             }
             options={POD_MANAGEMENT_OPTIONS}
           />
@@ -393,52 +389,51 @@ export default function StatefulSetWizard({
       )}
 
       {/* Step 2: Container & Volumes */}
-      {currentStep.value === 1 && (
-        <div class="space-y-8">
+      {currentStep === 1 && (
+        <div className="space-y-8">
           <ContainerForm
-            image={form.value.image}
-            command={form.value.command}
-            args={form.value.args}
-            ports={form.value.ports}
-            envVars={form.value.envVars}
-            requestCpu={form.value.requestCpu}
-            requestMemory={form.value.requestMemory}
-            limitCpu={form.value.limitCpu}
-            limitMemory={form.value.limitMemory}
-            errors={errors.value}
+            image={form.image}
+            command={form.command}
+            args={form.args}
+            ports={form.ports}
+            envVars={form.envVars}
+            requestCpu={form.requestCpu}
+            requestMemory={form.requestMemory}
+            limitCpu={form.limitCpu}
+            limitMemory={form.limitMemory}
+            errors={errors}
             onChange={updateField}
           />
 
           {/* Volume Claim Templates */}
-          <div class="max-w-2xl space-y-4">
+          <div className="max-w-2xl space-y-4">
             <div>
-              <h3 class="text-sm font-medium text-text-secondary">
+              <h3 className="text-sm font-medium text-text-secondary">
                 Volume Claim Templates
               </h3>
-              <p class="mt-1 text-xs text-text-muted">
+              <p className="mt-1 text-xs text-text-muted">
                 Persistent storage for each pod replica. Each pod gets its own
                 PVC.
               </p>
             </div>
 
-            {form.value.volumeClaimTemplates.map((vct, i) => (
+            {form.volumeClaimTemplates.map((vct, i) => (
               <div
-                key={i}
-                class="rounded-lg border border-border-primary p-4 space-y-3"
+                key={vctKeys.keyAt(i)}
+                className="rounded-lg border border-border-primary p-4 space-y-3"
               >
-                <div class="flex items-center justify-between">
-                  <span class="text-sm font-medium text-text-secondary">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-text-secondary">
                     Volume {i + 1}
                   </span>
                   <RemoveButton
-                    onClick={() =>
+                    onClick={() => {
+                      vctKeys.removeAt(i);
                       updateField(
                         "volumeClaimTemplates",
-                        form.value.volumeClaimTemplates.filter(
-                          (_, idx) => idx !== i,
-                        ),
-                      )
-                    }
+                        form.volumeClaimTemplates.filter((_, idx) => idx !== i),
+                      );
+                    }}
                     title="Remove volume"
                     className="p-1"
                   />
@@ -447,37 +442,37 @@ export default function StatefulSetWizard({
                 <Input
                   label="Volume Name"
                   value={vct.name}
-                  onInput={(e) => {
-                    const updated = [...form.value.volumeClaimTemplates];
+                  onChange={(e) => {
+                    const updated = [...form.volumeClaimTemplates];
                     updated[i] = {
                       ...updated[i],
-                      name: (e.target as HTMLInputElement).value,
+                      name: e.currentTarget.value,
                     };
                     updateField("volumeClaimTemplates", updated);
                   }}
                   placeholder="data"
-                  error={errors.value[`vct[${i}].name`]}
+                  error={errors[`vct[${i}].name`]}
                   required
                 />
 
                 <div>
-                  <label class="block text-sm font-medium text-text-secondary">
+                  <label className="block text-sm font-medium text-text-secondary">
                     Storage Class
                   </label>
                   <select
                     value={vct.storageClassName}
                     onChange={(e) => {
-                      const updated = [...form.value.volumeClaimTemplates];
+                      const updated = [...form.volumeClaimTemplates];
                       updated[i] = {
                         ...updated[i],
-                        storageClassName: (e.target as HTMLSelectElement).value,
+                        storageClassName: e.currentTarget.value,
                       };
                       updateField("volumeClaimTemplates", updated);
                     }}
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                   >
                     <option value="">Default (cluster default)</option>
-                    {storageClasses.value.map((sc: StorageClassItem) => (
+                    {storageClasses.map((sc: StorageClassItem) => (
                       <option key={sc.metadata.name} value={sc.metadata.name}>
                         {sc.metadata.name}
                       </option>
@@ -486,57 +481,57 @@ export default function StatefulSetWizard({
                 </div>
 
                 <div>
-                  <label class="block text-sm font-medium text-text-secondary">
-                    Size <span class="text-error">*</span>
+                  <label className="block text-sm font-medium text-text-secondary">
+                    Size <span className="text-error">*</span>
                   </label>
-                  <div class="mt-1 flex gap-2">
+                  <div className="mt-1 flex gap-2">
                     <input
                       type="number"
                       min="1"
                       value={vct.sizeValue}
-                      onInput={(e) => {
-                        const updated = [...form.value.volumeClaimTemplates];
+                      onChange={(e) => {
+                        const updated = [...form.volumeClaimTemplates];
                         updated[i] = {
                           ...updated[i],
-                          sizeValue: (e.target as HTMLInputElement).value,
+                          sizeValue: e.currentTarget.value,
                         };
                         updateField("volumeClaimTemplates", updated);
                       }}
-                      class="w-32 rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                      className="w-32 rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
                     />
                     <select
                       value={vct.sizeUnit}
                       onChange={(e) => {
-                        const updated = [...form.value.volumeClaimTemplates];
+                        const updated = [...form.volumeClaimTemplates];
                         updated[i] = {
                           ...updated[i],
-                          sizeUnit: (e.target as HTMLSelectElement).value,
+                          sizeUnit: e.currentTarget.value,
                         };
                         updateField("volumeClaimTemplates", updated);
                       }}
-                      class="rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+                      className="rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
                     >
                       <option value="Mi">Mi</option>
                       <option value="Gi">Gi</option>
                       <option value="Ti">Ti</option>
                     </select>
                   </div>
-                  {errors.value[`vct[${i}].size`] && (
-                    <p class="mt-1 text-xs text-error">
-                      {errors.value[`vct[${i}].size`]}
+                  {errors[`vct[${i}].size`] && (
+                    <p className="mt-1 text-xs text-error">
+                      {errors[`vct[${i}].size`]}
                     </p>
                   )}
                 </div>
 
                 <div>
-                  <label class="block text-sm font-medium text-text-secondary">
+                  <label className="block text-sm font-medium text-text-secondary">
                     Access Mode
                   </label>
-                  <div class="mt-2 space-y-1">
+                  <div className="mt-2 space-y-1">
                     {ACCESS_MODES.map((mode) => (
                       <label
                         key={mode.value}
-                        class="flex items-center gap-3 rounded-md border border-border-primary px-3 py-1.5 cursor-pointer hover:bg-surface /50"
+                        className="flex items-center gap-3 rounded-md border border-border-primary px-3 py-1.5 cursor-pointer hover:bg-surface /50"
                       >
                         <input
                           type="radio"
@@ -544,22 +539,20 @@ export default function StatefulSetWizard({
                           value={mode.value}
                           checked={vct.accessMode === mode.value}
                           onChange={() => {
-                            const updated = [
-                              ...form.value.volumeClaimTemplates,
-                            ];
+                            const updated = [...form.volumeClaimTemplates];
                             updated[i] = {
                               ...updated[i],
                               accessMode: mode.value,
                             };
                             updateField("volumeClaimTemplates", updated);
                           }}
-                          class="text-brand focus:ring-brand"
+                          className="text-brand focus:ring-brand"
                         />
                         <div>
-                          <span class="text-sm font-medium text-text-secondary">
+                          <span className="text-sm font-medium text-text-secondary">
                             {mode.label}
                           </span>
-                          <span class="ml-2 text-xs text-text-muted">
+                          <span className="ml-2 text-xs text-text-muted">
                             {mode.desc}
                           </span>
                         </div>
@@ -570,17 +563,17 @@ export default function StatefulSetWizard({
               </div>
             ))}
 
-            {form.value.volumeClaimTemplates.length < 20 && (
+            {form.volumeClaimTemplates.length < 20 && (
               <button
                 type="button"
                 onClick={() =>
                   updateField("volumeClaimTemplates", [
-                    ...form.value.volumeClaimTemplates,
+                    ...form.volumeClaimTemplates,
                     {
                       name: "",
                       storageClassName:
-                        storageClasses.value.length > 0
-                          ? storageClasses.value[0].metadata.name
+                        storageClasses.length > 0
+                          ? storageClasses[0].metadata.name
                           : "",
                       sizeValue: "10",
                       sizeUnit: "Gi",
@@ -588,7 +581,7 @@ export default function StatefulSetWizard({
                     },
                   ])
                 }
-                class="text-sm text-brand hover:text-brand/80"
+                className="text-sm text-brand hover:text-brand/80"
               >
                 + Add Volume Claim Template
               </button>
@@ -598,16 +591,14 @@ export default function StatefulSetWizard({
       )}
 
       {/* Step 3: Review */}
-      {currentStep.value === 2 && (
+      {currentStep === 2 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/workloads/statefulsets"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

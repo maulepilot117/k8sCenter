@@ -1,9 +1,11 @@
-import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
+/** @jsxImportSource react */
+import { type ChangeEvent, type ReactNode, useCallback, useState } from "react";
 import { parse, stringify } from "yaml";
 import type { SchemaProperty } from "@/lib/crd-types.ts";
 import { inputStyle, labelStyle, selectStyle } from "@/lib/form-styles.ts";
 import { safeDeepSet } from "@/lib/schema-to-yaml.ts";
+import { withUniqueKeys } from "@/lib/unique-keys.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -107,8 +109,8 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
           style={inputStyle}
           value={value != null ? String(value) : ""}
           placeholder="integer or string"
-          onInput={(e) => {
-            const v = (e.target as HTMLInputElement).value;
+          onChange={(e) => {
+            const v = e.currentTarget.value;
             const num = Number(v);
             onChange(
               path,
@@ -224,7 +226,7 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
           style={selectStyle}
           value={value === true ? "true" : value === false ? "false" : ""}
           onChange={(e) => {
-            const v = (e.target as HTMLSelectElement).value;
+            const v = e.currentTarget.value;
             onChange(path, v === "" ? undefined : v === "true");
           }}
         >
@@ -253,8 +255,8 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
           min={schema.minimum}
           max={schema.maximum}
           step={schema.type === "integer" ? 1 : "any"}
-          onInput={(e) => {
-            const v = (e.target as HTMLInputElement).value;
+          onChange={(e) => {
+            const v = e.currentTarget.value;
             if (v === "") {
               onChange(path, undefined);
             } else {
@@ -287,9 +289,7 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
             list={listId}
             style={inputStyle}
             value={(value as string) ?? ""}
-            onInput={(e) =>
-              onChange(path, (e.target as HTMLInputElement).value || undefined)
-            }
+            onChange={(e) => onChange(path, e.currentTarget.value || undefined)}
           />
           <datalist id={listId}>
             {schema.enum.map((opt) => (
@@ -310,9 +310,7 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
           id={id}
           style={selectStyle}
           value={(value as string) ?? ""}
-          onChange={(e) =>
-            onChange(path, (e.target as HTMLSelectElement).value || undefined)
-          }
+          onChange={(e) => onChange(path, e.currentTarget.value || undefined)}
         >
           <option value="">-- select --</option>
           {schema.enum!.map((opt) => (
@@ -346,9 +344,7 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
         style={inputStyle}
         value={(value as string) ?? ""}
         placeholder={placeholder}
-        onInput={(e) =>
-          onChange(path, (e.target as HTMLInputElement).value || undefined)
-        }
+        onChange={(e) => onChange(path, e.currentTarget.value || undefined)}
       />
     </FieldWrapper>
   );
@@ -367,7 +363,7 @@ function FieldWrapper({
   path: string;
   required?: boolean;
   description?: string;
-  children: preact.ComponentChildren;
+  children: ReactNode;
 }) {
   const id = fieldId(path);
   return (
@@ -404,12 +400,12 @@ function ObjectFieldset({
   depth: number;
 }) {
   // Required objects start expanded, optional start collapsed (lazy mount)
-  const expanded = useSignal(!!required);
+  const [expanded, setExpanded] = useState(!!required);
   const props = schema.properties!;
   const requiredFields = schema.required ?? [];
 
   const toggle = useCallback(() => {
-    expanded.value = !expanded.value;
+    setExpanded((prev) => !prev);
   }, []);
 
   const badge = required ? "required" : "optional";
@@ -419,7 +415,7 @@ function ObjectFieldset({
     <div style={{ marginBottom: "12px" }}>
       <button type="button" onClick={toggle} style={fieldsetHeaderStyle}>
         <span style={{ fontSize: "10px", width: "14px", flexShrink: 0 }}>
-          {expanded.value ? "\u25BC" : "\u25B6"}
+          {expanded ? "\u25BC" : "\u25B6"}
         </span>
         <span style={{ flex: 1, textAlign: "left" }}>{name}</span>
         <span
@@ -441,7 +437,7 @@ function ObjectFieldset({
       {schema.description && (
         <p style={{ ...descStyle, marginLeft: "14px" }}>{schema.description}</p>
       )}
-      {expanded.value && (
+      {expanded && (
         <div
           style={{
             marginTop: "8px",
@@ -486,6 +482,7 @@ function PrimitiveArrayField({
   required?: boolean;
 }) {
   const items = value ?? [];
+  const rowKeys = useRowKeys(items.length);
 
   const addItem = useCallback(() => {
     onChange(path, [...items, ""]);
@@ -493,10 +490,11 @@ function PrimitiveArrayField({
 
   const removeItem = useCallback(
     (idx: number) => {
+      rowKeys.removeAt(idx);
       const next = items.filter((_, i) => i !== idx);
       onChange(path, next.length > 0 ? next : undefined);
     },
-    [path, items, onChange],
+    [path, items, onChange, rowKeys],
   );
 
   const updateItem = useCallback(
@@ -526,7 +524,7 @@ function PrimitiveArrayField({
       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
         {items.map((item, idx) => (
           <div
-            key={idx}
+            key={rowKeys.keyAt(idx)}
             style={{ display: "flex", gap: "6px", alignItems: "center" }}
           >
             <input
@@ -539,9 +537,7 @@ function PrimitiveArrayField({
                 : { type: "text" as const })}
               style={{ ...inputStyle, flex: 1 }}
               value={item != null ? String(item) : ""}
-              onInput={(e) =>
-                updateItem(idx, (e.target as HTMLInputElement).value)
-              }
+              onChange={(e) => updateItem(idx, e.currentTarget.value)}
             />
             <button
               type="button"
@@ -581,6 +577,7 @@ function ObjectArrayField({
   depth: number;
 }) {
   const items = value ?? [];
+  const rowKeys = useRowKeys(items.length);
 
   const addItem = useCallback(() => {
     onChange(path, [...items, {}]);
@@ -588,10 +585,11 @@ function ObjectArrayField({
 
   const removeItem = useCallback(
     (idx: number) => {
+      rowKeys.removeAt(idx);
       const next = items.filter((_, i) => i !== idx);
       onChange(path, next.length > 0 ? next : undefined);
     },
-    [path, items, onChange],
+    [path, items, onChange, rowKeys],
   );
 
   // Each array item's onChange must splice into the array
@@ -626,7 +624,7 @@ function ObjectArrayField({
       <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
         {items.map((item, idx) => (
           <ArrayItemFieldset
-            key={idx}
+            key={rowKeys.keyAt(idx)}
             index={idx}
             path={`${path}.${idx}`}
             schema={itemSchema}
@@ -663,7 +661,7 @@ function ArrayItemFieldset({
   onRemove: () => void;
   depth: number;
 }) {
-  const expanded = useSignal(true);
+  const [expanded, setExpanded] = useState(true);
   const props = schema.properties ?? {};
   const requiredFields = schema.required ?? [];
 
@@ -684,10 +682,10 @@ function ArrayItemFieldset({
           background: "var(--bg-surface)",
           cursor: "pointer",
         }}
-        onClick={() => (expanded.value = !expanded.value)}
+        onClick={() => setExpanded((prev) => !prev)}
       >
         <span style={{ fontSize: "10px", width: "14px" }}>
-          {expanded.value ? "\u25BC" : "\u25B6"}
+          {expanded ? "\u25BC" : "\u25B6"}
         </span>
         <span
           style={{ flex: 1, fontSize: "12px", color: "var(--text-secondary)" }}
@@ -705,7 +703,7 @@ function ArrayItemFieldset({
           Remove
         </button>
       </div>
-      {expanded.value && (
+      {expanded && (
         <div style={{ padding: "12px", paddingTop: "8px" }}>
           {/* If the schema defines properties, render them as fields */}
           {Object.keys(props).length > 0 ? (
@@ -754,6 +752,7 @@ function KeyValueEditor({
   description?: string;
 }) {
   const entries = Object.entries(value ?? {});
+  const rowKeys = useRowKeys(entries.length);
 
   const addEntry = useCallback(() => {
     onChange(path, { ...(value ?? {}), "": "" });
@@ -782,12 +781,13 @@ function KeyValueEditor({
   );
 
   const removeEntry = useCallback(
-    (key: string) => {
+    (key: string, idx: number) => {
+      rowKeys.removeAt(idx);
       const current = { ...(value ?? {}) };
       delete current[key];
       onChange(path, Object.keys(current).length > 0 ? current : undefined);
     },
-    [path, value, onChange],
+    [path, value, onChange, rowKeys],
   );
 
   return (
@@ -800,7 +800,7 @@ function KeyValueEditor({
       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
         {entries.map(([k, v], idx) => (
           <div
-            key={idx}
+            key={rowKeys.keyAt(idx)}
             style={{ display: "flex", gap: "6px", alignItems: "center" }}
           >
             <input
@@ -808,22 +808,18 @@ function KeyValueEditor({
               placeholder="key"
               style={{ ...inputStyle, flex: 1 }}
               value={k}
-              onInput={(e) =>
-                updateKey(k, (e.target as HTMLInputElement).value, idx)
-              }
+              onChange={(e) => updateKey(k, e.currentTarget.value, idx)}
             />
             <input
               type="text"
               placeholder="value"
               style={{ ...inputStyle, flex: 1 }}
               value={v}
-              onInput={(e) =>
-                updateValue(k, (e.target as HTMLInputElement).value)
-              }
+              onChange={(e) => updateValue(k, e.currentTarget.value)}
             />
             <button
               type="button"
-              onClick={() => removeEntry(k)}
+              onClick={() => removeEntry(k, idx)}
               style={removeBtnStyle}
               title="Remove"
             >
@@ -859,7 +855,7 @@ function VariantSelector({
   depth: number;
 }) {
   const variants = schema.oneOf ?? schema.anyOf ?? [];
-  const selected = useSignal(0);
+  const [selected, setSelected] = useState(0);
 
   // Build labels for each variant
   const labels = variants.map((v, i) => {
@@ -871,7 +867,7 @@ function VariantSelector({
     return `Variant ${i + 1}`;
   });
 
-  const selectedSchema = variants[selected.value];
+  const selectedSchema = variants[selected];
 
   return (
     <FieldWrapper
@@ -882,16 +878,19 @@ function VariantSelector({
     >
       <select
         style={{ ...selectStyle, marginBottom: "8px" }}
-        value={selected.value}
+        value={selected}
         onChange={(e) => {
-          selected.value = parseInt((e.target as HTMLSelectElement).value, 10);
+          setSelected(parseInt(e.currentTarget.value, 10));
           // Clear the value when switching variants
           onChange(path, undefined);
         }}
       >
-        {labels.map((label, i) => (
-          <option key={i} value={i}>
-            {label}
+        {withUniqueKeys(
+          labels.map((label, i) => ({ label, i })),
+          (v) => v.label,
+        ).map(({ item, key }) => (
+          <option key={key} value={item.i}>
+            {item.label}
           </option>
         ))}
       </select>
@@ -928,7 +927,7 @@ function YamlSubtreeField({
   description?: string;
 }) {
   // Convert current value to YAML for display
-  const yamlText = useSignal(
+  const [yamlText, setYamlText] = useState(() =>
     value != null && typeof value === "object"
       ? stringify(value)
       : value != null
@@ -937,9 +936,9 @@ function YamlSubtreeField({
   );
 
   const handleChange = useCallback(
-    (e: Event) => {
-      const text = (e.target as HTMLTextAreaElement).value;
-      yamlText.value = text;
+    (e: ChangeEvent<HTMLTextAreaElement>) => {
+      const text = e.currentTarget.value;
+      setYamlText(text);
       try {
         const parsed = parse(text);
         onChange(path, parsed);
@@ -965,9 +964,10 @@ function YamlSubtreeField({
           resize: "vertical",
           lineHeight: "1.5",
         }}
-        value={yamlText.value}
-        onInput={handleChange}
+        value={yamlText}
+        onChange={handleChange}
         placeholder="# Enter YAML..."
+        // Preact types lack spellCheck; compat maps it to the attribute.
         spellcheck={false}
       />
     </FieldWrapper>

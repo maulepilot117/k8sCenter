@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -8,6 +8,8 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface RestoreFormState {
   name: string;
@@ -51,22 +53,24 @@ interface Props {
 
 export default function VeleroRestoreWizard({ onClose }: Props) {
   const close = onClose ?? (() => globalThis.history.back());
-  const urlParams = IS_BROWSER
-    ? new URLSearchParams(globalThis.location.search)
-    : null;
-  const preselectedBackup = urlParams?.get("backup") || undefined;
-
-  const currentStep = useSignal(0);
-  const form = useSignal<RestoreFormState>(initialState(preselectedBackup));
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<RestoreFormState>(() => {
+    const urlParams = IS_BROWSER
+      ? new URLSearchParams(globalThis.location.search)
+      : null;
+    return initialState(urlParams?.get("backup") || undefined);
+  });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
+  const formRef = useLatest(form);
 
   const namespaces = useNamespaces();
-  const backups = useSignal<Backup[]>([]);
+  const namespaceList = useSignalValue(namespaces);
+  const [backups, setBackups] = useState<Backup[]>([]);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   // Fetch backups
@@ -75,8 +79,10 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
     apiGet<Backup[]>("/v1/velero/backups")
       .then((resp) => {
         if (Array.isArray(resp.data)) {
-          backups.value = resp.data.filter(
-            (b) => b.phase === "Completed" || b.phase === "PartiallyFailed",
+          setBackups(
+            resp.data.filter(
+              (b) => b.phase === "Completed" || b.phase === "PartiallyFailed",
+            ),
           );
         }
       })
@@ -84,72 +90,71 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
   }, []);
 
   // Update name when backup changes
+  const selectedBackup = form.backupName;
   useEffect(() => {
-    if (form.value.backupName && !form.value.name) {
-      form.value = {
-        ...form.value,
-        name: generateRestoreName(form.value.backupName),
-      };
-    }
-  }, [form.value.backupName]);
+    if (!selectedBackup) return;
+    setForm((prev) =>
+      prev.name ? prev : { ...prev, name: generateRestoreName(selectedBackup) },
+    );
+  }, [selectedBackup]);
 
   useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
   }, []);
 
   const validate = useCallback((): boolean => {
+    const f = formRef.current;
     const newErrors: Record<string, string> = {};
-    if (!DNS_LABEL_REGEX.test(form.value.name)) {
+    if (!DNS_LABEL_REGEX.test(f.name)) {
       newErrors.name = "Must be a valid DNS label";
     }
-    if (!form.value.backupName) {
+    if (!f.backupName) {
       newErrors.backupName = "Backup is required";
     }
-    errors.value = newErrors;
+    setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }, []);
 
   const fetchPreview = useCallback(async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
     try {
+      const f = formRef.current;
       const body = {
-        name: form.value.name,
-        namespace: form.value.namespace,
-        backupName: form.value.backupName,
+        name: f.name,
+        namespace: f.namespace,
+        backupName: f.backupName,
         includedNamespaces:
-          form.value.includedNamespaces.length > 0
-            ? form.value.includedNamespaces
-            : undefined,
-        restorePVs: form.value.restorePVs,
+          f.includedNamespaces.length > 0 ? f.includedNamespaces : undefined,
+        restorePVs: f.restorePVs,
       };
       const resp = await apiPost<{ yaml: string }>(
         "/v1/wizards/velero-restore/preview",
         body,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (e: unknown) {
       if (gen !== previewGen.current) return;
-      previewError.value = e instanceof Error ? e.message : "Preview failed";
+      setPreviewError(e instanceof Error ? e.message : "Preview failed");
     }
-    if (gen === previewGen.current) previewLoading.value = false;
+    if (gen === previewGen.current) setPreviewLoading(false);
   }, []);
 
   const goNext = useCallback(async () => {
-    if (currentStep.value === 0) {
+    if (currentStep === 0) {
       if (!validate()) return;
       await fetchPreview();
     }
-    currentStep.value++;
-  }, []);
+    setCurrentStep((s) => s + 1);
+  }, [currentStep, validate, fetchPreview]);
 
   const goBack = useCallback(() => {
-    currentStep.value--;
+    setCurrentStep((s) => s - 1);
   }, []);
 
   return (
@@ -162,107 +167,108 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <path d="M12 2a8 8 0 0 1 8 8v1a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V10a8 8 0 0 1 8-8z" />
           <path d="M12 14v6M15 17l-3 3-3-3" />
         </svg>
       }
-      subtitle={`Step ${currentStep.value + 1} of 2`}
+      subtitle={`Step ${currentStep + 1} of 2`}
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
-      onNext={currentStep.value === 0 ? goNext : close}
-      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
-      yaml={previewYaml.value || undefined}
+      onNext={currentStep === 0 ? goNext : close}
+      nextLabel={currentStep === 0 ? "Continue" : "Close"}
+      yaml={previewYaml || undefined}
     >
-      {currentStep.value === 0 && (
-        <div class="space-y-6">
+      {currentStep === 0 && (
+        <div className="space-y-6">
           {/* Backup Selection */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-restore-backup"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-restore-backup"
             >
               Source Backup *
             </label>
             <select
               id="velero-restore-backup"
-              value={form.value.backupName}
-              onChange={(e) =>
-                updateField("backupName", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.backupName}
+              onChange={(e) => updateField("backupName", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
               <option value="">Select a backup...</option>
-              {backups.value.map((b) => (
+              {backups.map((b) => (
                 <option key={b.name} value={b.name}>
                   {b.name} ({b.phase})
                 </option>
               ))}
             </select>
-            {errors.value.backupName && (
-              <p class="text-xs text-error mt-1">{errors.value.backupName}</p>
+            {errors.backupName && (
+              <p className="text-xs text-error mt-1">{errors.backupName}</p>
             )}
           </div>
 
           {/* Restore Name */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-restore-name"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-restore-name"
             >
               Restore Name
             </label>
             <input
               id="velero-restore-name"
               type="text"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.name}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
               placeholder="my-restore"
             />
-            {errors.value.name && (
-              <p class="text-xs text-error mt-1">{errors.value.name}</p>
+            {errors.name && (
+              <p className="text-xs text-error mt-1">{errors.name}</p>
             )}
           </div>
 
           {/* Included Namespaces */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-restore-namespaces"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-restore-namespaces"
             >
               Include Namespaces (optional)
             </label>
-            <p class="text-xs text-text-muted mb-2">
+            <p className="text-xs text-text-muted mb-2">
               Leave empty to restore all namespaces from the backup.
             </p>
             <select
               id="velero-restore-namespaces"
               multiple
-              onChange={(e) => {
-                const select = e.target as HTMLSelectElement;
-                const selected = Array.from(select.selectedOptions).map(
-                  (o) => o.value,
-                );
-                updateField("includedNamespaces", selected);
-              }}
-              class={`${WIZARD_INPUT_CLASS} h-32`}
+              onChange={(e) =>
+                updateField(
+                  "includedNamespaces",
+                  Array.from(e.currentTarget.selectedOptions).map(
+                    (o) => o.value,
+                  ),
+                )
+              }
+              className={`${WIZARD_INPUT_CLASS} h-32`}
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option
                   key={ns}
                   value={ns}
-                  selected={form.value.includedNamespaces.includes(ns)}
+                  // The selection of a multi-select is not a single value the
+                  // JSX types accept, so each option carries its own state.
+                  ref={(el) => {
+                    if (el) el.selected = form.includedNamespaces.includes(ns);
+                  }}
                 >
                   {ns}
                 </option>
@@ -271,22 +277,19 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
           </div>
 
           {/* Restore PVs */}
-          <div class="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <input
               type="checkbox"
               id="restorePVs"
-              checked={form.value.restorePVs}
+              checked={form.restorePVs}
               onChange={(e) =>
-                updateField(
-                  "restorePVs",
-                  (e.target as HTMLInputElement).checked,
-                )
+                updateField("restorePVs", e.currentTarget.checked)
               }
-              class="rounded border-border-primary"
+              className="rounded border-border-primary"
             />
             <label
-              for="restorePVs"
-              class="text-sm font-medium text-text-primary"
+              htmlFor="restorePVs"
+              className="text-sm font-medium text-text-primary"
             >
               Restore persistent volumes
             </label>
@@ -294,14 +297,14 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
         </div>
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => (previewYaml.value = v)}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/backup/restores"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

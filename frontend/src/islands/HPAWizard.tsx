@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -7,6 +7,8 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface HPAMetricState {
   type: "Resource";
@@ -37,9 +39,9 @@ const HPA_ICON = (
     viewBox="0 0 20 20"
     fill="none"
     stroke="currentColor"
-    stroke-width="1.6"
-    stroke-linecap="round"
-    stroke-linejoin="round"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M3 10h14M13 6l4 4-4 4M7 14l-4-4 4-4" />
   </svg>
@@ -67,41 +69,45 @@ function initialState(): HPAFormState {
 
 export default function HPAWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<HPAFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<HPAFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
+  const metricKeys = useRowKeys(form.metrics.length);
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
   }, []);
 
   const updateMetric = useCallback(
     (index: number, field: keyof HPAMetricState, val: unknown) => {
-      dirty.value = true;
-      const metrics = [...form.value.metrics];
-      metrics[index] = { ...metrics[index], [field]: val };
-      form.value = { ...form.value, metrics };
+      setDirty(true);
+      setForm((prev) => {
+        const metrics = [...prev.metrics];
+        metrics[index] = { ...metrics[index], [field]: val };
+        return { ...prev, metrics };
+      });
     },
     [],
   );
 
   const addMetric = useCallback(() => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
+    setDirty(true);
+    setForm((prev) => ({
+      ...prev,
       metrics: [
-        ...form.value.metrics,
+        ...prev.metrics,
         {
           type: "Resource",
           resourceName: "cpu",
@@ -109,30 +115,36 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
           targetAverageValue: 80,
         },
       ],
-    };
+    }));
   }, []);
 
-  const removeMetric = useCallback((index: number) => {
-    dirty.value = true;
-    const metrics = form.value.metrics.filter((_, i) => i !== index);
-    form.value = {
-      ...form.value,
-      metrics:
-        metrics.length > 0
-          ? metrics
-          : [
-              {
-                type: "Resource",
-                resourceName: "cpu",
-                targetType: "Utilization",
-                targetAverageValue: 80,
-              },
-            ],
-    };
-  }, []);
+  const removeMetric = useCallback(
+    (index: number) => {
+      setDirty(true);
+      metricKeys.removeAt(index);
+      setForm((prev) => {
+        const metrics = prev.metrics.filter((_, i) => i !== index);
+        return {
+          ...prev,
+          metrics:
+            metrics.length > 0
+              ? metrics
+              : [
+                  {
+                    type: "Resource",
+                    resourceName: "cpu",
+                    targetType: "Utilization",
+                    targetAverageValue: 80,
+                  },
+                ],
+        };
+      });
+    },
+    [metricKeys],
+  );
 
   const validateStep = (): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
@@ -164,22 +176,22 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
       }
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const goNext = async () => {
     if (!validateStep()) return;
-    currentStep.value = 1;
+    setCurrentStep(1);
     await fetchPreview();
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = form;
     const payload = {
       name: f.name,
       namespace: f.namespace,
@@ -201,18 +213,19 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const manifest = () => {
-    const f = form.value;
+    const f = form;
     const name = f.name || "<name>";
     const ns = f.namespace || "default";
     return `apiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  scaleTargetRef:\n    apiVersion: apps/v1\n    kind: ${f.targetKind}\n    name: ${
@@ -220,10 +233,10 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
     }\n  minReplicas: ${f.minReplicas}\n  maxReplicas: ${f.maxReplicas}`;
   };
 
-  const nextLabel = currentStep.value === 0 ? "Continue" : "Close";
+  const nextLabel = currentStep === 0 ? "Continue" : "Close";
 
   const handleNext = () => {
-    if (currentStep.value === 1) {
+    if (currentStep === 1) {
       close();
     } else {
       goNext();
@@ -236,79 +249,74 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
       icon={HPA_ICON}
       subtitle="Automatically scale workload replicas"
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={() => {
-        if (currentStep.value > 0) currentStep.value = 0;
+        if (currentStep > 0) setCurrentStep(0);
       }}
       onNext={handleNext}
       nextLabel={nextLabel}
-      yaml={currentStep.value === 1 ? undefined : manifest()}
+      yaml={currentStep === 1 ? undefined : manifest()}
     >
-      {currentStep.value === 0 && (
-        <div class="mx-auto max-w-lg space-y-4">
+      {currentStep === 0 && (
+        <div className="mx-auto max-w-lg space-y-4">
           {/* Name */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Name <span class="text-danger">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Name <span className="text-danger">*</span>
             </label>
             <input
               type="text"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.name}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
               placeholder="e.g. my-app-hpa"
             />
-            {errors.value.name && (
-              <p class="mt-1 text-xs text-danger">{errors.value.name}</p>
+            {errors.name && (
+              <p className="mt-1 text-xs text-danger">{errors.name}</p>
             )}
           </div>
 
           {/* Namespace */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Namespace <span class="text-danger">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Namespace <span className="text-danger">*</span>
             </label>
             <select
-              value={form.value.namespace}
-              onChange={(e) =>
-                updateField("namespace", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.namespace}
+              onChange={(e) => updateField("namespace", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option key={ns} value={ns}>
                   {ns}
                 </option>
               ))}
             </select>
-            {errors.value.namespace && (
-              <p class="mt-1 text-xs text-danger">{errors.value.namespace}</p>
+            {errors.namespace && (
+              <p className="mt-1 text-xs text-danger">{errors.namespace}</p>
             )}
           </div>
 
           {/* Scale Target */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
+            <label className="block text-sm font-medium text-text-secondary">
               Scale Target
             </label>
-            <div class="mt-2 grid grid-cols-2 gap-3">
+            <div className="mt-2 grid grid-cols-2 gap-3">
               <div>
-                <label class="block text-xs text-text-muted mb-1">Kind</label>
+                <label className="block text-xs text-text-muted mb-1">
+                  Kind
+                </label>
                 <select
-                  value={form.value.targetKind}
+                  value={form.targetKind}
                   onChange={(e) =>
-                    updateField(
-                      "targetKind",
-                      (e.target as HTMLSelectElement).value,
-                    )
+                    updateField("targetKind", e.currentTarget.value)
                   }
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                 >
                   <option value="Deployment">Deployment</option>
                   <option value="StatefulSet">StatefulSet</option>
@@ -316,24 +324,21 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
                 </select>
               </div>
               <div>
-                <label class="block text-xs text-text-muted mb-1">
-                  Name <span class="text-danger">*</span>
+                <label className="block text-xs text-text-muted mb-1">
+                  Name <span className="text-danger">*</span>
                 </label>
                 <input
                   type="text"
-                  value={form.value.targetName}
-                  onInput={(e) =>
-                    updateField(
-                      "targetName",
-                      (e.target as HTMLInputElement).value,
-                    )
+                  value={form.targetName}
+                  onChange={(e) =>
+                    updateField("targetName", e.currentTarget.value)
                   }
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                   placeholder="e.g. my-app"
                 />
-                {errors.value.targetName && (
-                  <p class="mt-1 text-xs text-danger">
-                    {errors.value.targetName}
+                {errors.targetName && (
+                  <p className="mt-1 text-xs text-danger">
+                    {errors.targetName}
                   </p>
                 )}
               </div>
@@ -342,51 +347,51 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
 
           {/* Replicas */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
+            <label className="block text-sm font-medium text-text-secondary">
               Replicas
             </label>
-            <div class="mt-2 grid grid-cols-2 gap-3">
+            <div className="mt-2 grid grid-cols-2 gap-3">
               <div>
-                <label class="block text-xs text-text-muted mb-1">
+                <label className="block text-xs text-text-muted mb-1">
                   Min Replicas
                 </label>
                 <input
                   type="number"
                   min={1}
-                  value={form.value.minReplicas}
-                  onInput={(e) =>
+                  value={form.minReplicas}
+                  onChange={(e) =>
                     updateField(
                       "minReplicas",
-                      parseInt((e.target as HTMLInputElement).value, 10) || 1,
+                      parseInt(e.currentTarget.value, 10) || 1,
                     )
                   }
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                 />
-                {errors.value.minReplicas && (
-                  <p class="mt-1 text-xs text-danger">
-                    {errors.value.minReplicas}
+                {errors.minReplicas && (
+                  <p className="mt-1 text-xs text-danger">
+                    {errors.minReplicas}
                   </p>
                 )}
               </div>
               <div>
-                <label class="block text-xs text-text-muted mb-1">
-                  Max Replicas <span class="text-danger">*</span>
+                <label className="block text-xs text-text-muted mb-1">
+                  Max Replicas <span className="text-danger">*</span>
                 </label>
                 <input
                   type="number"
                   min={1}
-                  value={form.value.maxReplicas}
-                  onInput={(e) =>
+                  value={form.maxReplicas}
+                  onChange={(e) =>
                     updateField(
                       "maxReplicas",
-                      parseInt((e.target as HTMLInputElement).value, 10) || 1,
+                      parseInt(e.currentTarget.value, 10) || 1,
                     )
                   }
-                  class={WIZARD_INPUT_CLASS}
+                  className={WIZARD_INPUT_CLASS}
                 />
-                {errors.value.maxReplicas && (
-                  <p class="mt-1 text-xs text-danger">
-                    {errors.value.maxReplicas}
+                {errors.maxReplicas && (
+                  <p className="mt-1 text-xs text-danger">
+                    {errors.maxReplicas}
                   </p>
                 )}
               </div>
@@ -395,103 +400,92 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
 
           {/* Metrics */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
+            <label className="block text-sm font-medium text-text-secondary">
               Metrics
             </label>
-            <div class="mt-2 space-y-3">
-              {form.value.metrics.map((metric, i) => (
+            <div className="mt-2 space-y-3">
+              {form.metrics.map((metric, i) => (
                 <div
-                  key={i}
-                  class="rounded-md border border-border-primary p-3 space-y-3"
+                  key={metricKeys.keyAt(i)}
+                  className="rounded-md border border-border-primary p-3 space-y-3"
                 >
-                  <div class="flex items-center justify-between">
-                    <span class="text-xs font-medium text-text-muted">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-text-muted">
                       Metric {i + 1}
                     </span>
                     <button
                       type="button"
                       onClick={() => removeMetric(i)}
-                      class="rounded p-1 text-text-muted hover:bg-danger-dim hover:text-danger"
+                      className="rounded p-1 text-text-muted hover:bg-danger-dim hover:text-danger"
                       title="Remove metric"
                     >
                       <svg
-                        class="h-4 w-4"
+                        className="h-4 w-4"
                         fill="none"
                         viewBox="0 0 24 24"
                         stroke="currentColor"
                       >
                         <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width={2}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
                           d="M6 18L18 6M6 6l12 12"
                         />
                       </svg>
                     </button>
                   </div>
-                  <div class="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     <div>
-                      <label class="block text-xs text-text-muted mb-1">
+                      <label className="block text-xs text-text-muted mb-1">
                         Resource
                       </label>
                       <select
                         value={metric.resourceName}
                         onChange={(e) =>
-                          updateMetric(
-                            i,
-                            "resourceName",
-                            (e.target as HTMLSelectElement).value,
-                          )
+                          updateMetric(i, "resourceName", e.currentTarget.value)
                         }
-                        class={WIZARD_INPUT_CLASS}
+                        className={WIZARD_INPUT_CLASS}
                       >
                         <option value="cpu">CPU</option>
                         <option value="memory">Memory</option>
                       </select>
                     </div>
                     <div>
-                      <label class="block text-xs text-text-muted mb-1">
+                      <label className="block text-xs text-text-muted mb-1">
                         Target Type
                       </label>
                       <select
                         value={metric.targetType}
                         onChange={(e) =>
-                          updateMetric(
-                            i,
-                            "targetType",
-                            (e.target as HTMLSelectElement).value,
-                          )
+                          updateMetric(i, "targetType", e.currentTarget.value)
                         }
-                        class={WIZARD_INPUT_CLASS}
+                        className={WIZARD_INPUT_CLASS}
                       >
                         <option value="Utilization">Utilization</option>
                         <option value="AverageValue">AverageValue</option>
                       </select>
                     </div>
                     <div>
-                      <label class="block text-xs text-text-muted mb-1">
-                        Target Value <span class="text-danger">*</span>
+                      <label className="block text-xs text-text-muted mb-1">
+                        Target Value <span className="text-danger">*</span>
                       </label>
                       <input
                         type="number"
                         min={1}
                         value={metric.targetAverageValue}
-                        onInput={(e) =>
+                        onChange={(e) =>
                           updateMetric(
                             i,
                             "targetAverageValue",
-                            parseInt(
-                              (e.target as HTMLInputElement).value,
-                              10,
-                            ) || 1,
+                            parseInt(e.currentTarget.value, 10) || 1,
                           )
                         }
-                        class={WIZARD_INPUT_CLASS}
+                        className={WIZARD_INPUT_CLASS}
                         placeholder="80"
                       />
-                      {errors.value[`metrics_${i}_targetAverageValue`] && (
-                        <p class="mt-1 text-xs text-danger">
-                          {errors.value[`metrics_${i}_targetAverageValue`]}
+                      {errors[`metrics_${i}_targetAverageValue`] && (
+                        <p className="mt-1 text-xs text-danger">
+                          {errors[`metrics_${i}_targetAverageValue`]}
                         </p>
                       )}
                     </div>
@@ -502,7 +496,7 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
             <button
               type="button"
               onClick={addMetric}
-              class="mt-2 text-sm text-brand hover:text-brand/80"
+              className="mt-2 text-sm text-brand hover:text-brand/80"
             >
               + Add metric
             </button>
@@ -510,16 +504,14 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
         </div>
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/scaling/hpas"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

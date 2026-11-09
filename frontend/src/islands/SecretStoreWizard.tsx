@@ -1,6 +1,5 @@
-import { useSignal } from "@preact/signals";
-import type { ComponentType } from "preact";
-import { useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { type ComponentType, useRef, useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { AWSForm } from "@/components/wizard/secretstore/AWSForm.tsx";
@@ -23,8 +22,10 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export type { ProviderFormProps };
 
@@ -104,16 +105,23 @@ export default function SecretStoreWizard({
   onClose,
 }: SecretStoreWizardProps) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<SecretStoreWizardForm>(initialForm(scope));
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const isClient = useIsClient();
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<SecretStoreWizardForm>(() =>
+    initialForm(scope),
+  );
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewSeq = useRef(0);
+  // The preview's 422 handler runs after an await and picks the Configure
+  // step from the provider chosen by then.
+  const providerRef = useLatest(form.provider);
 
   useDirtyGuard(dirty);
 
@@ -121,23 +129,23 @@ export default function SecretStoreWizard({
     field: K,
     value: SecretStoreWizardForm[K],
   ) {
-    dirty.value = true;
+    setDirty(true);
     // Switching provider clears the spec slate cleanly so a stale value from
     // a prior provider can't leak into the new spec (L7.5 touched-flag
     // pattern applied at the provider level).
     if (field === "provider") {
-      form.value = {
-        ...form.value,
+      setForm((prev) => ({
+        ...prev,
         provider: value as SecretStoreProvider,
         providerSpec: {},
-      };
+      }));
       return;
     }
-    form.value = { ...form.value, [field]: value };
+    setForm((prev) => ({ ...prev, [field]: value }));
   }
 
   function validateStep(step: number): boolean {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -273,15 +281,15 @@ export default function SecretStoreWizard({
       }
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   }
 
   async function fetchPreview() {
     const seq = ++previewSeq.current;
-    previewLoading.value = true;
-    previewError.value = null;
-    const f = form.value;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const f = form;
 
     const payload = {
       name: f.name,
@@ -299,7 +307,7 @@ export default function SecretStoreWizard({
     try {
       const resp = await apiPost<{ yaml: string }>(endpoint, payload);
       if (seq !== previewSeq.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (seq !== previewSeq.current) return;
       // On 422 the backend encodes FieldError[] as JSON in error.detail.
@@ -318,14 +326,14 @@ export default function SecretStoreWizard({
               for (const fe of fieldErrors) {
                 errsMap[fe.field] = fe.message;
               }
-              errors.value = errsMap;
+              setErrors(errsMap);
               // Navigate back to Configure step so field errors are visible.
-              const steps = stepsFor(form.value.provider);
+              const steps = stepsFor(providerRef.current);
               const configureIdx = steps.findIndex(
                 (s) => s.label === "Configure",
               );
               if (configureIdx >= 0) {
-                currentStep.value = configureIdx;
+                setCurrentStep(configureIdx);
               }
               return;
             }
@@ -334,35 +342,36 @@ export default function SecretStoreWizard({
           }
         }
       }
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
       if (seq === previewSeq.current) {
-        previewLoading.value = false;
+        setPreviewLoading(false);
       }
     }
   }
 
   async function goNext() {
-    if (!validateStep(currentStep.value)) return;
-    const steps = stepsFor(form.value.provider);
-    if (currentStep.value === steps.length - 2) {
-      currentStep.value = steps.length - 1;
+    if (!validateStep(currentStep)) return;
+    const steps = stepsFor(form.provider);
+    if (currentStep === steps.length - 2) {
+      setCurrentStep(steps.length - 1);
       await fetchPreview();
     } else {
-      currentStep.value = currentStep.value + 1;
+      setCurrentStep(currentStep + 1);
     }
   }
 
   function goBack() {
-    if (currentStep.value > 0) currentStep.value = currentStep.value - 1;
+    if (currentStep > 0) setCurrentStep(currentStep - 1);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   // Resolve step list once per render; all step-count references use this
-  // local rather than re-calling stepsFor(form.value.provider) six times.
-  const steps = stepsFor(form.value.provider);
+  // local rather than re-calling stepsFor(form.provider) six times.
+  const steps = stepsFor(form.provider);
 
   const title =
     scope === "cluster" ? "Create ClusterSecretStore" : "Create SecretStore";
@@ -375,11 +384,11 @@ export default function SecretStoreWizard({
   // Resolve the Configure-step form component from the registry (or undefined
   // when the selected provider has no guided form yet). This is the single
   // edit point for adding new provider forms — no scattered if/else branches.
-  const ProviderForm = form.value.provider
-    ? PROVIDER_FORMS[form.value.provider]
+  const ProviderForm = form.provider
+    ? PROVIDER_FORMS[form.provider]
     : undefined;
 
-  const isLastStep = currentStep.value === steps.length - 1;
+  const isLastStep = currentStep === steps.length - 1;
 
   const storeIcon = (
     <svg
@@ -388,9 +397,9 @@ export default function SecretStoreWizard({
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="1.8"
-      stroke-linecap="round"
-      stroke-linejoin="round"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
     >
       <ellipse cx="12" cy="5" rx="9" ry="3" />
       <path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12" />
@@ -402,11 +411,11 @@ export default function SecretStoreWizard({
     <WizardShell
       title={title}
       icon={storeIcon}
-      subtitle={`Step ${currentStep.value + 1} of ${steps.length}`}
+      subtitle={`Step ${currentStep + 1} of ${steps.length}`}
       steps={steps}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
@@ -418,29 +427,27 @@ export default function SecretStoreWizard({
         }
       }}
       nextLabel={isLastStep ? "Close" : "Continue"}
-      yaml={isLastStep ? previewYaml.value || undefined : undefined}
+      yaml={isLastStep ? previewYaml || undefined : undefined}
     >
-      {currentStep.value === 0 && (
-        <div class="space-y-5">
-          <div class="grid grid-cols-2 gap-4">
+      {currentStep === 0 && (
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 gap-4">
             <Input
               id="store-name"
               label="Name"
               required
-              value={form.value.name}
-              onInput={(e) =>
-                update("name", (e.target as HTMLInputElement).value)
-              }
+              value={form.name}
+              onChange={(e) => update("name", e.currentTarget.value)}
               placeholder={
                 scope === "cluster" ? "shared-vault-store" : "vault-store"
               }
-              error={errors.value.name}
+              error={errors.name}
             />
             {scope === "namespaced" && (
               <NamespaceSelect
-                value={form.value.namespace}
-                namespaces={namespaces.value}
-                error={errors.value.namespace}
+                value={form.namespace}
+                namespaces={namespaceList}
+                error={errors.namespace}
                 onChange={(ns) => update("namespace", ns)}
               />
             )}
@@ -448,47 +455,43 @@ export default function SecretStoreWizard({
           <Input
             id="store-refresh"
             label="Refresh interval"
-            value={form.value.refreshInterval}
-            onInput={(e) =>
-              update("refreshInterval", (e.target as HTMLInputElement).value)
-            }
+            value={form.refreshInterval}
+            onChange={(e) => update("refreshInterval", e.currentTarget.value)}
             placeholder="1h"
             description="Go duration. Leave blank to use ESO's default. Use `0` to disable polling."
-            error={errors.value.refreshInterval}
+            error={errors.refreshInterval}
           />
         </div>
       )}
 
-      {currentStep.value === 1 && (
-        <div class="space-y-3">
+      {currentStep === 1 && (
+        <div className="space-y-3">
           <SecretStoreProviderPickerStep
-            selected={form.value.provider}
+            selected={form.provider}
             onSelect={(p) => update("provider", p)}
           />
-          {errors.value.provider && (
-            <p class="text-sm text-danger">{errors.value.provider}</p>
+          {errors.provider && (
+            <p className="text-sm text-danger">{errors.provider}</p>
           )}
         </div>
       )}
 
-      {currentStep.value === 2 && ProviderForm && (
+      {currentStep === 2 && ProviderForm && (
         <ProviderForm
-          spec={form.value.providerSpec}
-          errors={errors.value}
+          spec={form.providerSpec}
+          errors={errors}
           onUpdateSpec={(spec) => update("providerSpec", spec)}
         />
       )}
 
       {isLastStep && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath={detailBasePath}
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

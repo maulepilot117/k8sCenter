@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -8,6 +8,8 @@ import type { LabelEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface PDBFormState {
   name: string;
@@ -29,9 +31,9 @@ const PDB_ICON = (
     viewBox="0 0 20 20"
     fill="none"
     stroke="currentColor"
-    stroke-width="1.6"
-    stroke-linecap="round"
-    stroke-linejoin="round"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M10 2.5L3 5.5v5c0 4 3 6.5 7 7.5 4-1 7-3.5 7-7.5v-5L10 2.5Z" />
     <path d="M7 10l2 2 4-4" />
@@ -51,57 +53,69 @@ function initialState(): PDBFormState {
 
 export default function PDBWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<PDBFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<PDBFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
+  const labelKeys = useRowKeys(form.selectorLabels.length);
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
   }, []);
 
   const updateLabel = useCallback(
     (index: number, field: "key" | "value", val: string) => {
-      dirty.value = true;
-      const selectorLabels = [...form.value.selectorLabels];
-      selectorLabels[index] = { ...selectorLabels[index], [field]: val };
-      form.value = { ...form.value, selectorLabels };
+      setDirty(true);
+      setForm((prev) => {
+        const selectorLabels = [...prev.selectorLabels];
+        selectorLabels[index] = { ...selectorLabels[index], [field]: val };
+        return { ...prev, selectorLabels };
+      });
     },
     [],
   );
 
   const addLabel = useCallback(() => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      selectorLabels: [...form.value.selectorLabels, { key: "", value: "" }],
-    };
+    setDirty(true);
+    setForm((prev) => ({
+      ...prev,
+      selectorLabels: [...prev.selectorLabels, { key: "", value: "" }],
+    }));
   }, []);
 
-  const removeLabel = useCallback((index: number) => {
-    dirty.value = true;
-    const selectorLabels = form.value.selectorLabels.filter(
-      (_, i) => i !== index,
-    );
-    form.value = {
-      ...form.value,
-      selectorLabels:
-        selectorLabels.length > 0 ? selectorLabels : [{ key: "", value: "" }],
-    };
-  }, []);
+  const removeLabel = useCallback(
+    (index: number) => {
+      setDirty(true);
+      labelKeys.removeAt(index);
+      setForm((prev) => {
+        const selectorLabels = prev.selectorLabels.filter(
+          (_, i) => i !== index,
+        );
+        return {
+          ...prev,
+          selectorLabels:
+            selectorLabels.length > 0
+              ? selectorLabels
+              : [{ key: "", value: "" }],
+        };
+      });
+    },
+    [labelKeys],
+  );
 
   const validateStep = (): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
@@ -120,22 +134,22 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
       errs.budgetValue = "Enter a number (e.g. 2) or percentage (e.g. 50%)";
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const goNext = async () => {
     if (!validateStep()) return;
-    currentStep.value = 1;
+    setCurrentStep(1);
     await fetchPreview();
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = form;
     const payload: Record<string, unknown> = {
       name: f.name,
       namespace: f.namespace,
@@ -155,18 +169,19 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const manifest = () => {
-    const f = form.value;
+    const f = form;
     const name = f.name || "<name>";
     const ns = f.namespace || "default";
     const selectorEntries =
@@ -181,10 +196,10 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
     }\n  selector:\n    matchLabels:\n${selectorEntries}`;
   };
 
-  const nextLabel = currentStep.value === 0 ? "Continue" : "Close";
+  const nextLabel = currentStep === 0 ? "Continue" : "Close";
 
   const handleNext = () => {
-    if (currentStep.value === 1) {
+    if (currentStep === 1) {
       close();
     } else {
       goNext();
@@ -197,119 +212,110 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
       icon={PDB_ICON}
       subtitle="Define disruption budget for pods"
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={() => {
-        if (currentStep.value > 0) currentStep.value = 0;
+        if (currentStep > 0) setCurrentStep(0);
       }}
       onNext={handleNext}
       nextLabel={nextLabel}
-      yaml={currentStep.value === 1 ? undefined : manifest()}
+      yaml={currentStep === 1 ? undefined : manifest()}
     >
-      {currentStep.value === 0 && (
-        <div class="mx-auto max-w-lg space-y-4">
+      {currentStep === 0 && (
+        <div className="mx-auto max-w-lg space-y-4">
           {/* Name */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Name <span class="text-danger">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Name <span className="text-danger">*</span>
             </label>
             <input
               type="text"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.name}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
               placeholder="e.g. my-app-pdb"
             />
-            {errors.value.name && (
-              <p class="mt-1 text-xs text-danger">{errors.value.name}</p>
+            {errors.name && (
+              <p className="mt-1 text-xs text-danger">{errors.name}</p>
             )}
           </div>
 
           {/* Namespace */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Namespace <span class="text-danger">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Namespace <span className="text-danger">*</span>
             </label>
             <select
-              value={form.value.namespace}
-              onChange={(e) =>
-                updateField("namespace", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.namespace}
+              onChange={(e) => updateField("namespace", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option key={ns} value={ns}>
                   {ns}
                 </option>
               ))}
             </select>
-            {errors.value.namespace && (
-              <p class="mt-1 text-xs text-danger">{errors.value.namespace}</p>
+            {errors.namespace && (
+              <p className="mt-1 text-xs text-danger">{errors.namespace}</p>
             )}
           </div>
 
           {/* Pod Selector */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Pod Selector <span class="text-danger">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Pod Selector <span className="text-danger">*</span>
             </label>
-            <p class="mb-2 text-xs text-text-muted">
+            <p className="mb-2 text-xs text-text-muted">
               Labels used to select the pods this budget applies to.
             </p>
-            <div class="mt-2 space-y-3">
-              {form.value.selectorLabels.map((label, i) => (
-                <div key={i} class="flex gap-2 items-start">
-                  <div class="flex-1">
+            <div className="mt-2 space-y-3">
+              {form.selectorLabels.map((label, i) => (
+                <div
+                  key={labelKeys.keyAt(i)}
+                  className="flex gap-2 items-start"
+                >
+                  <div className="flex-1">
                     <input
                       type="text"
                       value={label.key}
-                      onInput={(e) =>
-                        updateLabel(
-                          i,
-                          "key",
-                          (e.target as HTMLInputElement).value,
-                        )
+                      onChange={(e) =>
+                        updateLabel(i, "key", e.currentTarget.value)
                       }
-                      class={WIZARD_INPUT_CLASS}
+                      className={WIZARD_INPUT_CLASS}
                       placeholder="Key"
                     />
                   </div>
-                  <div class="flex-1">
+                  <div className="flex-1">
                     <input
                       type="text"
                       value={label.value}
-                      onInput={(e) =>
-                        updateLabel(
-                          i,
-                          "value",
-                          (e.target as HTMLInputElement).value,
-                        )
+                      onChange={(e) =>
+                        updateLabel(i, "value", e.currentTarget.value)
                       }
-                      class={WIZARD_INPUT_CLASS}
+                      className={WIZARD_INPUT_CLASS}
                       placeholder="Value"
                     />
                   </div>
                   <button
                     type="button"
                     onClick={() => removeLabel(i)}
-                    class="mt-1 rounded p-2 text-text-muted hover:bg-danger-dim hover:text-danger"
+                    className="mt-1 rounded p-2 text-text-muted hover:bg-danger-dim hover:text-danger"
                     title="Remove label"
                   >
                     <svg
-                      class="h-4 w-4"
+                      className="h-4 w-4"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
                     >
                       <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width={2}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
                         d="M6 18L18 6M6 6l12 12"
                       />
                     </svg>
@@ -317,15 +323,15 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
                 </div>
               ))}
             </div>
-            {errors.value.selectorLabels && (
-              <p class="mt-1 text-xs text-danger">
-                {errors.value.selectorLabels}
+            {errors.selectorLabels && (
+              <p className="mt-1 text-xs text-danger">
+                {errors.selectorLabels}
               </p>
             )}
             <button
               type="button"
               onClick={addLabel}
-              class="mt-2 text-sm text-brand hover:text-brand/80"
+              className="mt-2 text-sm text-brand hover:text-brand/80"
             >
               + Add label
             </button>
@@ -333,62 +339,64 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
 
           {/* Disruption Budget */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Disruption Budget <span class="text-danger">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Disruption Budget <span className="text-danger">*</span>
             </label>
-            <div class="mt-2 flex gap-4">
-              <label class="flex items-center gap-2 cursor-pointer">
+            <div className="mt-2 flex gap-4">
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="budgetType"
                   value="minAvailable"
-                  checked={form.value.budgetType === "minAvailable"}
+                  checked={form.budgetType === "minAvailable"}
                   onChange={() => updateField("budgetType", "minAvailable")}
-                  class="h-4 w-4 text-brand"
+                  className="h-4 w-4 text-brand"
                 />
-                <span class="text-sm text-text-secondary">Min Available</span>
+                <span className="text-sm text-text-secondary">
+                  Min Available
+                </span>
               </label>
-              <label class="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
                   name="budgetType"
                   value="maxUnavailable"
-                  checked={form.value.budgetType === "maxUnavailable"}
+                  checked={form.budgetType === "maxUnavailable"}
                   onChange={() => updateField("budgetType", "maxUnavailable")}
-                  class="h-4 w-4 text-brand"
+                  className="h-4 w-4 text-brand"
                 />
-                <span class="text-sm text-text-secondary">Max Unavailable</span>
+                <span className="text-sm text-text-secondary">
+                  Max Unavailable
+                </span>
               </label>
             </div>
             <input
               type="text"
-              value={form.value.budgetValue}
-              onInput={(e) =>
-                updateField("budgetValue", (e.target as HTMLInputElement).value)
+              value={form.budgetValue}
+              onChange={(e) =>
+                updateField("budgetValue", e.currentTarget.value)
               }
-              class={`${WIZARD_INPUT_CLASS} mt-2`}
+              className={`${WIZARD_INPUT_CLASS} mt-2`}
               placeholder="e.g. 1 or 50%"
             />
-            <p class="mt-1 text-xs text-text-muted">
+            <p className="mt-1 text-xs text-text-muted">
               Enter a number (e.g. 2) or percentage (e.g. 50%)
             </p>
-            {errors.value.budgetValue && (
-              <p class="mt-1 text-xs text-danger">{errors.value.budgetValue}</p>
+            {errors.budgetValue && (
+              <p className="mt-1 text-xs text-danger">{errors.budgetValue}</p>
             )}
           </div>
         </div>
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/scaling/pdbs"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PolicyConfigStep } from "@/components/wizard/PolicyConfigStep.tsx";
 import { PolicyTemplateStep } from "@/components/wizard/PolicyTemplateStep.tsx";
 import { apiGet, apiPost } from "@/lib/api.ts";
@@ -42,16 +42,16 @@ function initialForm(): PolicyWizardForm {
 
 export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<PolicyWizardForm>(initialForm());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<PolicyWizardForm>(initialForm);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
-  const engineStatus = useSignal<EngineStatus | null>(null);
+  const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
 
   useDirtyGuard(dirty);
 
@@ -59,9 +59,10 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
     apiGet<EngineStatus>("/v1/policies/status")
       .then((resp) => {
         const status = resp.data;
-        engineStatus.value = status;
+        setEngineStatus(status);
         if (status.detected === "kyverno" || status.detected === "gatekeeper") {
-          form.value = { ...form.value, engine: status.detected };
+          const engine = status.detected;
+          setForm((prev) => ({ ...prev, engine }));
         }
       })
       .catch(() => {
@@ -70,52 +71,54 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
   }, []);
 
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    const f = { ...form.value, [field]: value };
+    setDirty(true);
+    setForm((prev) => {
+      const f = { ...prev, [field]: value };
 
-    if (field === "templateId") {
-      const tmpl = getTemplate(value as string);
-      if (tmpl) {
-        f.name = f.name || tmpl.id;
-        f.targetKinds = tmpl.targetKinds;
-        f.description = tmpl.description;
-        const defaults: Record<string, unknown> = {};
-        for (const pf of tmpl.paramFields) {
-          defaults[pf.key] = pf.defaultValue ?? "";
-        }
-        f.params = defaults;
-        if (f.engine === "kyverno") {
-          f.action = tmpl.defaultKyvernoAction;
-        } else if (f.engine === "gatekeeper") {
-          f.action = tmpl.defaultGatekeeperAction;
-        }
-      }
-    }
-
-    if (field === "engine") {
-      const tmpl = getTemplate(f.templateId);
-      if (tmpl) {
-        if (value === "kyverno") {
-          f.action = tmpl.defaultKyvernoAction;
-        } else if (value === "gatekeeper") {
-          f.action = tmpl.defaultGatekeeperAction;
+      if (field === "templateId") {
+        const tmpl = getTemplate(value as string);
+        if (tmpl) {
+          f.name = f.name || tmpl.id;
+          f.targetKinds = tmpl.targetKinds;
+          f.description = tmpl.description;
+          const defaults: Record<string, unknown> = {};
+          for (const pf of tmpl.paramFields) {
+            defaults[pf.key] = pf.defaultValue ?? "";
+          }
+          f.params = defaults;
+          if (f.engine === "kyverno") {
+            f.action = tmpl.defaultKyvernoAction;
+          } else if (f.engine === "gatekeeper") {
+            f.action = tmpl.defaultGatekeeperAction;
+          }
         }
       }
-    }
 
-    form.value = f;
+      if (field === "engine") {
+        const tmpl = getTemplate(f.templateId);
+        if (tmpl) {
+          if (value === "kyverno") {
+            f.action = tmpl.defaultKyvernoAction;
+          } else if (value === "gatekeeper") {
+            f.action = tmpl.defaultGatekeeperAction;
+          }
+        }
+      }
+
+      return f;
+    });
   }, []);
 
   const updateParam = useCallback((key: string, value: unknown) => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      params: { ...form.value.params, [key]: value },
-    };
+    setDirty(true);
+    setForm((prev) => ({
+      ...prev,
+      params: { ...prev.params, [key]: value },
+    }));
   }, []);
 
   const validateStep = (step: number): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -162,16 +165,16 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
       }
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = form;
     const payload: Record<string, unknown> = {
       templateId: f.templateId,
       engine: f.engine,
@@ -195,81 +198,80 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
+    if (!validateStep(currentStep)) return;
 
-    if (currentStep.value === 1) {
-      currentStep.value = 2;
+    if (currentStep === 1) {
+      setCurrentStep(2);
       await fetchPreview();
     } else {
-      currentStep.value = currentStep.value + 1;
+      setCurrentStep((prev) => prev + 1);
     }
   };
 
   const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
-    }
+    setCurrentStep((prev) => Math.max(0, prev - 1));
   };
 
   return (
     <WizardShell
       title="Create Policy"
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
       onNext={async () => {
-        if (currentStep.value === 2) {
+        if (currentStep === 2) {
           close();
         } else {
           await goNext();
         }
       }}
-      nextLabel={currentStep.value === 2 ? "Close" : "Continue"}
-      yaml={previewYaml.value || undefined}
+      nextLabel={currentStep === 2 ? "Close" : "Continue"}
+      yaml={previewYaml || undefined}
     >
-      {engineStatus.value && engineStatus.value.detected === "" ? (
-        <div class="rounded-lg border border-border-primary bg-surface p-8 text-center">
+      {engineStatus && engineStatus.detected === "" ? (
+        <div className="rounded-lg border border-border-primary bg-surface p-8 text-center">
           <svg
-            class="w-12 h-12 mx-auto mb-4 text-text-muted"
+            className="w-12 h-12 mx-auto mb-4 text-text-muted"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
           >
             <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="1.5"
               d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
             />
           </svg>
-          <h2 class="text-lg font-semibold text-text-primary mb-2">
+          <h2 className="text-lg font-semibold text-text-primary mb-2">
             No Policy Engine Detected
           </h2>
-          <p class="text-text-muted mb-4">
+          <p className="text-text-muted mb-4">
             A policy engine is required to create policies. Install one of the
             following:
           </p>
-          <div class="flex justify-center gap-6">
+          <div className="flex justify-center gap-6">
             <a
               href="https://kyverno.io/docs/installation/"
               target="_blank"
               rel="noopener noreferrer"
-              class="text-brand hover:text-brand/80 font-medium"
+              className="text-brand hover:text-brand/80 font-medium"
             >
               Install Kyverno
             </a>
@@ -277,7 +279,7 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
               href="https://open-policy-agent.github.io/gatekeeper/website/docs/install/"
               target="_blank"
               rel="noopener noreferrer"
-              class="text-brand hover:text-brand/80 font-medium"
+              className="text-brand hover:text-brand/80 font-medium"
             >
               Install Gatekeeper
             </a>
@@ -285,33 +287,31 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
         </div>
       ) : (
         <>
-          {currentStep.value === 0 && (
+          {currentStep === 0 && (
             <PolicyTemplateStep
-              selectedId={form.value.templateId}
+              selectedId={form.templateId}
               onSelect={(id) => updateField("templateId", id)}
             />
           )}
 
-          {currentStep.value === 1 && (
+          {currentStep === 1 && (
             <PolicyConfigStep
-              form={form.value}
-              errors={errors.value}
-              engineStatus={engineStatus.value}
+              form={form}
+              errors={errors}
+              engineStatus={engineStatus}
               onUpdate={updateField}
               onUpdateParam={updateParam}
             />
           )}
 
-          {currentStep.value === 2 && (
+          {currentStep === 2 && (
             <WizardReviewStep
-              yaml={previewYaml.value}
-              onYamlChange={(v) => {
-                previewYaml.value = v;
-              }}
-              loading={previewLoading.value}
-              error={previewError.value}
+              yaml={previewYaml}
+              onYamlChange={setPreviewYaml}
+              loading={previewLoading}
+              error={previewError}
               detailBasePath="/security/policies"
-              dirty={dirty}
+              onDirtyChange={setDirty}
             />
           )}
         </>

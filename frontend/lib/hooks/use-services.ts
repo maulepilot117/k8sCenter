@@ -1,12 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
-
-// Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
-// this file is shared by both the Fresh tree and the Astro/Bun port, and the
-// bare specifier would otherwise resolve to the always-false test shim under
-// Astro. Value-neutral for Fresh: identical to @fresh/core's own IS_BROWSER.
-const IS_BROWSER = typeof document !== "undefined";
+import { hasDom } from "@/src/lib/has-dom.ts";
 
 /** The route caps a page here anyway; asking for more silently gets this. */
 const PAGE_LIMIT = 500;
@@ -35,7 +30,7 @@ export function useNamespacedServices(namespace: string) {
   const services = useSignal<string[]>([]);
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    if (!hasDom()) return;
     // Cleared synchronously rather than left showing the previous namespace's
     // services while the new list is in flight: a dropdown that briefly offers
     // values from somewhere else is one a fast user can pick from.

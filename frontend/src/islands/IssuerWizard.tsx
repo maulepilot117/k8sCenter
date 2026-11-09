@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useRef, useState } from "react";
 import { IssuerFormStep } from "@/components/wizard/IssuerFormStep.tsx";
 import { IssuerTypePickerStep } from "@/components/wizard/IssuerTypePickerStep.tsx";
 import { apiPost } from "@/lib/api.ts";
@@ -8,6 +8,7 @@ import { DNS_LABEL_REGEX, LE_STAGING_ACME } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export type IssuerType = "selfSigned" | "acme";
 
@@ -97,48 +98,53 @@ spec:
 
 export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
   const close = onClose ?? (() => globalThis.history.back());
-  const step = useSignal(0);
-  const form = useSignal<IssuerWizardForm>(initialForm());
-  const errors = useSignal<Record<string, string>>({});
-  const namespaces = useNamespaces();
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState<IssuerWizardForm>(initialForm);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const namespaces = useSignalValue(useNamespaces());
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   const updateField = (field: string, value: unknown) => {
-    const f = { ...form.value, [field]: value } as IssuerWizardForm;
-    // Auto-derive ACME account-key Secret name from issuer name until touched
-    if (
-      field === "name" &&
-      typeof value === "string" &&
-      f.type === "acme" &&
-      !f.acme.privateKeySecretRefNameTouched
-    ) {
-      f.acme = {
-        ...f.acme,
-        privateKeySecretRefName: value ? `${value}-account` : "",
-      };
-    }
-    form.value = f;
+    setForm((prev) => {
+      const f = { ...prev, [field]: value } as IssuerWizardForm;
+      // Auto-derive ACME account-key Secret name from issuer name until touched
+      if (
+        field === "name" &&
+        typeof value === "string" &&
+        f.type === "acme" &&
+        !f.acme.privateKeySecretRefNameTouched
+      ) {
+        f.acme = {
+          ...f.acme,
+          privateKeySecretRefName: value ? `${value}-account` : "",
+        };
+      }
+      return f;
+    });
   };
 
   const updateAcme = (field: string, value: unknown) => {
-    const next = { ...form.value.acme, [field]: value };
-    if (field === "privateKeySecretRefName") {
-      next.privateKeySecretRefNameTouched = true;
-    }
-    form.value = { ...form.value, acme: next };
+    setForm((prev) => {
+      const next = { ...prev.acme, [field]: value };
+      if (field === "privateKeySecretRefName") {
+        next.privateKeySecretRefNameTouched = true;
+      }
+      return { ...prev, acme: next };
+    });
   };
 
   const selectType = (t: IssuerType) => {
-    if (t === form.value.type) return;
-    form.value = { ...form.value, type: t, acme: initialAcme() };
+    setForm((prev) =>
+      t === prev.type ? prev : { ...prev, type: t, acme: initialAcme() },
+    );
   };
 
   const validateStep = (s: number): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (s === 0 && !f.type) {
@@ -170,19 +176,19 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
       }
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
-    const f = form.value;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const f = form;
     if (!f.type) {
       if (gen !== previewGen.current) return;
-      previewError.value = "Issuer type is not selected";
-      previewLoading.value = false;
+      setPreviewError("Issuer type is not selected");
+      setPreviewLoading(false);
       return;
     }
     const payload: Record<string, unknown> = { name: f.name, type: f.type };
@@ -209,8 +215,8 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
       default: {
         const _exhaustive: never = f.type;
         if (gen !== previewGen.current) return;
-        previewError.value = `Unsupported issuer type: ${_exhaustive}`;
-        previewLoading.value = false;
+        setPreviewError(`Unsupported issuer type: ${_exhaustive}`);
+        setPreviewLoading(false);
         return;
       }
     }
@@ -222,23 +228,24 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
     try {
       const resp = await apiPost<{ yaml: string }>(endpoint, payload);
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const handleNext = async () => {
-    if (!validateStep(step.value)) return;
-    if (step.value === 1) {
-      step.value = 2;
+    if (!validateStep(step)) return;
+    if (step === 1) {
+      setStep(2);
       await fetchPreview();
-    } else if (step.value < 2) {
-      step.value += 1;
+    } else if (step < 2) {
+      setStep((prev) => prev + 1);
     } else {
       close();
     }
@@ -246,12 +253,12 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
 
   const heading =
     scope === "cluster" ? "Create ClusterIssuer" : "Create Issuer";
-  const f = form.value;
+  const f = form;
 
   return (
     <WizardShell
       title={heading}
-      subtitle={`Step ${step.value + 1} of 3`}
+      subtitle={`Step ${step + 1} of 3`}
       icon={
         <svg
           width="21"
@@ -259,28 +266,28 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <path d="M10 2l2.4 4.8L18 7.6l-4 3.9.9 5.5L10 14.5l-4.9 2.5.9-5.5L2 7.6l5.6-.8L10 2z" />
         </svg>
       }
       steps={STEPS}
-      current={step.value}
+      current={step}
       onStep={(i) => {
-        if (i < step.value) step.value = i;
+        if (i < step) setStep(i);
       }}
       onCancel={close}
-      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onBack={() => setStep((prev) => Math.max(0, prev - 1))}
       onNext={handleNext}
-      nextLabel={step.value === 2 ? "Done" : "Continue"}
-      yaml={step.value < 2 ? buildManifest(f, scope) : undefined}
+      nextLabel={step === 2 ? "Done" : "Continue"}
+      yaml={step < 2 ? buildManifest(f, scope) : undefined}
     >
-      {step.value === 0 && (
+      {step === 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           <IssuerTypePickerStep selected={f.type} onSelect={selectType} />
-          {errors.value.type && (
+          {errors.type && (
             <p
               style={{
                 fontSize: "11.5px",
@@ -288,31 +295,29 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
                 marginTop: "4px",
               }}
             >
-              {errors.value.type}
+              {errors.type}
             </p>
           )}
         </div>
       )}
 
-      {step.value === 1 && f.type !== "" && (
+      {step === 1 && f.type !== "" && (
         <IssuerFormStep
           scope={scope}
           form={f}
-          errors={errors.value}
-          namespaces={namespaces.value}
+          errors={errors}
+          namespaces={namespaces}
           onUpdate={updateField}
           onUpdateAcme={updateAcme}
         />
       )}
 
-      {step.value === 2 && (
+      {step === 2 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath={
             scope === "cluster"
               ? "/security/certificates/cluster-issuers"

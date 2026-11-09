@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
@@ -16,6 +16,8 @@ import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface NodeSelectorEntry {
   key: string;
@@ -66,27 +68,60 @@ function initialState(): DaemonSetFormState {
 
 export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<DaemonSetFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<DaemonSetFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+
+  const nodeSelectorKeys = useRowKeys(form.nodeSelector.length);
 
   useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
   }, []);
 
+  const updateNodeSelector = (
+    index: number,
+    field: "key" | "value",
+    val: string,
+  ) => {
+    setDirty(true);
+    setForm((prev) => {
+      const nodeSelector = [...prev.nodeSelector];
+      nodeSelector[index] = { ...nodeSelector[index], [field]: val };
+      return { ...prev, nodeSelector };
+    });
+  };
+
+  const addNodeSelector = () => {
+    setDirty(true);
+    setForm((prev) => ({
+      ...prev,
+      nodeSelector: [...prev.nodeSelector, { key: "", value: "" }],
+    }));
+  };
+
+  const removeNodeSelector = (index: number) => {
+    setDirty(true);
+    nodeSelectorKeys.removeAt(index);
+    setForm((prev) => ({
+      ...prev,
+      nodeSelector: prev.nodeSelector.filter((_, idx) => idx !== index),
+    }));
+  };
+
   const validateStep = (): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
@@ -110,16 +145,16 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
       }
     });
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = form;
 
     // Build the container sub-object
     const container: Record<string, unknown> = {
@@ -179,24 +214,25 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const goNext = async () => {
     if (!validateStep()) return;
-    currentStep.value = 1;
+    setCurrentStep(1);
     await fetchPreview();
   };
 
   const manifest = () => {
-    const f = form.value;
+    const f = form;
     const name = f.name || "<name>";
     const ns = f.namespace || "default";
     return `apiVersion: apps/v1\nkind: DaemonSet\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  selector:\n    matchLabels:\n      app: ${name}\n  template:\n    metadata:\n      labels:\n        app: ${name}\n    spec:\n      containers:\n        - name: ${name}\n          image: ${
@@ -207,7 +243,7 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
   return (
     <WizardShell
       title="Create DaemonSet"
-      subtitle={form.value.namespace || "default"}
+      subtitle={form.namespace || "default"}
       icon={
         <svg
           width="21"
@@ -215,9 +251,9 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <circle cx="10" cy="10" r="2.5" />
           <path d="M10 3v3M10 14v3M3 10h3M14 10h3" />
@@ -225,119 +261,100 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i <= currentStep.value) currentStep.value = i;
+        if (i <= currentStep) setCurrentStep(i);
       }}
       onCancel={close}
-      onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
+      onBack={() => setCurrentStep((step) => Math.max(0, step - 1))}
       onNext={() => {
-        if (currentStep.value === 0) goNext();
+        if (currentStep === 0) goNext();
         else close();
       }}
-      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
-      yaml={currentStep.value === 0 ? manifest() : previewYaml.value}
+      nextLabel={currentStep === 0 ? "Continue" : "Close"}
+      yaml={currentStep === 0 ? manifest() : previewYaml}
     >
-      {currentStep.value === 0 && (
-        <div class="space-y-8">
+      {currentStep === 0 && (
+        <div className="space-y-8">
           {/* Name & Namespace */}
-          <div class="max-w-lg space-y-4">
+          <div className="max-w-lg space-y-4">
             <Input
               label="Name"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
+              value={form.name}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
               placeholder="my-daemonset"
-              error={errors.value.name}
+              error={errors.name}
               required
             />
 
             <NamespaceSelect
-              value={form.value.namespace}
-              namespaces={namespaces.value}
-              error={errors.value.namespace}
+              value={form.namespace}
+              namespaces={namespaceList}
+              error={errors.namespace}
               onChange={(ns) => updateField("namespace", ns)}
             />
           </div>
 
           {/* Container Form */}
           <ContainerForm
-            image={form.value.image}
-            command={form.value.command}
-            args={form.value.args}
-            ports={form.value.ports}
-            envVars={form.value.envVars}
-            requestCpu={form.value.requestCpu}
-            requestMemory={form.value.requestMemory}
-            limitCpu={form.value.limitCpu}
-            limitMemory={form.value.limitMemory}
-            errors={errors.value}
+            image={form.image}
+            command={form.command}
+            args={form.args}
+            ports={form.ports}
+            envVars={form.envVars}
+            requestCpu={form.requestCpu}
+            requestMemory={form.requestMemory}
+            limitCpu={form.limitCpu}
+            limitMemory={form.limitMemory}
+            errors={errors}
             onChange={updateField}
           />
 
           {/* Node Selector */}
-          <div class="max-w-2xl space-y-3">
-            <label class="block text-sm font-medium text-text-secondary">
+          <div className="max-w-2xl space-y-3">
+            <label className="block text-sm font-medium text-text-secondary">
               Node Selector
             </label>
-            <p class="text-xs text-text-muted">
+            <p className="text-xs text-text-muted">
               Optional. Constrain the DaemonSet to nodes matching these labels.
             </p>
-            {form.value.nodeSelector.map((entry, i) => (
-              <div key={i} class="flex items-end gap-2">
-                <div class="flex-1">
+            {form.nodeSelector.map((entry, i) => (
+              <div
+                key={nodeSelectorKeys.keyAt(i)}
+                className="flex items-end gap-2"
+              >
+                <div className="flex-1">
                   <Input
                     label={i === 0 ? "Key" : undefined}
                     value={entry.key}
-                    onInput={(e) => {
-                      const updated = [...form.value.nodeSelector];
-                      updated[i] = {
-                        ...updated[i],
-                        key: (e.target as HTMLInputElement).value,
-                      };
-                      updateField("nodeSelector", updated);
-                    }}
+                    onChange={(e) =>
+                      updateNodeSelector(i, "key", e.currentTarget.value)
+                    }
                     placeholder="kubernetes.io/os"
                   />
                 </div>
-                <div class="flex-1">
+                <div className="flex-1">
                   <Input
                     label={i === 0 ? "Value" : undefined}
                     value={entry.value}
-                    onInput={(e) => {
-                      const updated = [...form.value.nodeSelector];
-                      updated[i] = {
-                        ...updated[i],
-                        value: (e.target as HTMLInputElement).value,
-                      };
-                      updateField("nodeSelector", updated);
-                    }}
+                    onChange={(e) =>
+                      updateNodeSelector(i, "value", e.currentTarget.value)
+                    }
                     placeholder="linux"
                   />
                 </div>
                 <RemoveButton
-                  onClick={() =>
-                    updateField(
-                      "nodeSelector",
-                      form.value.nodeSelector.filter((_, idx) => idx !== i),
-                    )
-                  }
+                  onClick={() => removeNodeSelector(i)}
                   title="Remove selector"
                   className="p-2 mb-1"
                 />
               </div>
             ))}
-            {form.value.nodeSelector.length < 50 && (
+            {form.nodeSelector.length < 50 && (
               <button
                 type="button"
-                onClick={() =>
-                  updateField("nodeSelector", [
-                    ...form.value.nodeSelector,
-                    { key: "", value: "" },
-                  ])
-                }
-                class="text-sm text-brand hover:text-brand/80"
+                onClick={addNodeSelector}
+                className="text-sm text-brand hover:text-brand/80"
               >
                 + Add Node Selector
               </button>
@@ -345,19 +362,16 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
           </div>
 
           {/* Max Unavailable */}
-          <div class="max-w-lg">
+          <div className="max-w-lg">
             <Input
               label="Max Unavailable"
-              value={form.value.maxUnavailable}
-              onInput={(e) =>
-                updateField(
-                  "maxUnavailable",
-                  (e.target as HTMLInputElement).value,
-                )
+              value={form.maxUnavailable}
+              onChange={(e) =>
+                updateField("maxUnavailable", e.currentTarget.value)
               }
               placeholder="1 or 25%"
             />
-            <p class="mt-1 text-xs text-text-muted">
+            <p className="mt-1 text-xs text-text-muted">
               Maximum number of pods that can be unavailable during a rolling
               update. Accepts an integer or percentage.
             </p>
@@ -365,16 +379,14 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
         </div>
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/workloads/daemonsets"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

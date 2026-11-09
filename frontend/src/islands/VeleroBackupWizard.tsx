@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -8,6 +8,8 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface BackupFormState {
   name: string;
@@ -64,17 +66,19 @@ interface Props {
 
 export default function VeleroBackupWizard({ onClose }: Props) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<BackupFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<BackupFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
+  const formRef = useLatest(form);
 
   const namespaces = useNamespaces();
-  const bsls = useSignal<BackupStorageLocation[]>([]);
+  const namespaceList = useSignalValue(namespaces);
+  const [bsls, setBsls] = useState<BackupStorageLocation[]>([]);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   // Fetch BSLs
@@ -85,12 +89,16 @@ export default function VeleroBackupWizard({ onClose }: Props) {
     )
       .then((resp) => {
         if (resp.data?.backupStorageLocations) {
-          bsls.value = resp.data.backupStorageLocations;
+          setBsls(resp.data.backupStorageLocations);
           const defaultBsl = resp.data.backupStorageLocations.find(
             (b) => b.default,
           );
-          if (defaultBsl && !form.value.storageLocation) {
-            form.value = { ...form.value, storageLocation: defaultBsl.name };
+          if (defaultBsl) {
+            setForm((prev) =>
+              prev.storageLocation
+                ? prev
+                : { ...prev, storageLocation: defaultBsl.name },
+            );
           }
         }
       })
@@ -100,62 +108,59 @@ export default function VeleroBackupWizard({ onClose }: Props) {
   useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
+    setDirty(true);
+    setForm((prev) => ({ ...prev, [field]: value }));
   }, []);
 
   const validate = useCallback((): boolean => {
     const newErrors: Record<string, string> = {};
-    if (!DNS_LABEL_REGEX.test(form.value.name)) {
+    if (!DNS_LABEL_REGEX.test(formRef.current.name)) {
       newErrors.name = "Must be a valid DNS label (lowercase, hyphens allowed)";
     }
-    errors.value = newErrors;
+    setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }, []);
 
   const fetchPreview = useCallback(async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
     try {
+      const f = formRef.current;
       const body = {
-        name: form.value.name,
-        namespace: form.value.namespace,
+        name: f.name,
+        namespace: f.namespace,
         includedNamespaces:
-          form.value.includedNamespaces.length > 0
-            ? form.value.includedNamespaces
-            : undefined,
+          f.includedNamespaces.length > 0 ? f.includedNamespaces : undefined,
         excludedNamespaces:
-          form.value.excludedNamespaces.length > 0
-            ? form.value.excludedNamespaces
-            : undefined,
-        storageLocation: form.value.storageLocation || undefined,
-        ttl: form.value.ttl || undefined,
-        snapshotVolumes: form.value.snapshotVolumes,
+          f.excludedNamespaces.length > 0 ? f.excludedNamespaces : undefined,
+        storageLocation: f.storageLocation || undefined,
+        ttl: f.ttl || undefined,
+        snapshotVolumes: f.snapshotVolumes,
       };
       const resp = await apiPost<{ yaml: string }>(
         "/v1/wizards/velero-backup/preview",
         body,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (e: unknown) {
       if (gen !== previewGen.current) return;
-      previewError.value = e instanceof Error ? e.message : "Preview failed";
+      setPreviewError(e instanceof Error ? e.message : "Preview failed");
     }
-    if (gen === previewGen.current) previewLoading.value = false;
+    if (gen === previewGen.current) setPreviewLoading(false);
   }, []);
 
   const goNext = useCallback(async () => {
-    if (currentStep.value === 0) {
+    if (currentStep === 0) {
       if (!validate()) return;
       await fetchPreview();
     }
-    currentStep.value++;
-  }, []);
+    setCurrentStep((s) => s + 1);
+  }, [currentStep, validate, fetchPreview]);
 
   const goBack = useCallback(() => {
-    currentStep.value--;
+    setCurrentStep((s) => s - 1);
   }, []);
 
   return (
@@ -168,80 +173,83 @@ export default function VeleroBackupWizard({ onClose }: Props) {
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <path d="M12 2a8 8 0 0 1 8 8v1a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V10a8 8 0 0 1 8-8z" />
           <path d="M12 14v6M9 17l3 3 3-3" />
         </svg>
       }
-      subtitle={`Step ${currentStep.value + 1} of 2`}
+      subtitle={`Step ${currentStep + 1} of 2`}
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
-      onNext={currentStep.value === 0 ? goNext : close}
-      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
-      yaml={previewYaml.value || undefined}
+      onNext={currentStep === 0 ? goNext : close}
+      nextLabel={currentStep === 0 ? "Continue" : "Close"}
+      yaml={previewYaml || undefined}
     >
-      {currentStep.value === 0 && (
-        <div class="space-y-6">
+      {currentStep === 0 && (
+        <div className="space-y-6">
           {/* Name */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-backup-name"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-backup-name"
             >
               Backup Name
             </label>
             <input
               id="velero-backup-name"
               type="text"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.name}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
               placeholder="my-backup"
             />
-            {errors.value.name && (
-              <p class="text-xs text-error mt-1">{errors.value.name}</p>
+            {errors.name && (
+              <p className="text-xs text-error mt-1">{errors.name}</p>
             )}
           </div>
 
           {/* Included Namespaces */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-backup-namespaces"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-backup-namespaces"
             >
               Include Namespaces
             </label>
-            <p class="text-xs text-text-muted mb-2">
+            <p className="text-xs text-text-muted mb-2">
               Leave empty to back up all namespaces. Use Ctrl/Cmd+click to
               select multiple.
             </p>
             <select
               id="velero-backup-namespaces"
               multiple
-              onChange={(e) => {
-                const select = e.target as HTMLSelectElement;
-                const selected = Array.from(select.selectedOptions).map(
-                  (o) => o.value,
-                );
-                updateField("includedNamespaces", selected);
-              }}
-              class={`${WIZARD_INPUT_CLASS} h-32`}
+              onChange={(e) =>
+                updateField(
+                  "includedNamespaces",
+                  Array.from(e.currentTarget.selectedOptions).map(
+                    (o) => o.value,
+                  ),
+                )
+              }
+              className={`${WIZARD_INPUT_CLASS} h-32`}
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option
                   key={ns}
                   value={ns}
-                  selected={form.value.includedNamespaces.includes(ns)}
+                  // The selection of a multi-select is not a single value the
+                  // JSX types accept, so each option carries its own state.
+                  ref={(el) => {
+                    if (el) el.selected = form.includedNamespaces.includes(ns);
+                  }}
                 >
                   {ns}
                 </option>
@@ -252,24 +260,21 @@ export default function VeleroBackupWizard({ onClose }: Props) {
           {/* Storage Location */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-backup-storage-location"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-backup-storage-location"
             >
               Storage Location
             </label>
             <select
               id="velero-backup-storage-location"
-              value={form.value.storageLocation}
+              value={form.storageLocation}
               onChange={(e) =>
-                updateField(
-                  "storageLocation",
-                  (e.target as HTMLSelectElement).value,
-                )
+                updateField("storageLocation", e.currentTarget.value)
               }
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             >
               <option value="">Default</option>
-              {bsls.value.map((bsl) => (
+              {bsls.map((bsl) => (
                 <option key={bsl.name} value={bsl.name}>
                   {bsl.name} ({bsl.provider}){bsl.default ? " - default" : ""}
                 </option>
@@ -280,18 +285,16 @@ export default function VeleroBackupWizard({ onClose }: Props) {
           {/* TTL */}
           <div>
             <label
-              class="block text-sm font-medium text-text-primary mb-1"
-              for="velero-backup-ttl"
+              className="block text-sm font-medium text-text-primary mb-1"
+              htmlFor="velero-backup-ttl"
             >
               Retention (TTL)
             </label>
             <select
               id="velero-backup-ttl"
-              value={form.value.ttl}
-              onChange={(e) =>
-                updateField("ttl", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.ttl}
+              onChange={(e) => updateField("ttl", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
               {TTL_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -302,22 +305,19 @@ export default function VeleroBackupWizard({ onClose }: Props) {
           </div>
 
           {/* Snapshot Volumes */}
-          <div class="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <input
               type="checkbox"
               id="snapshotVolumes"
-              checked={form.value.snapshotVolumes}
+              checked={form.snapshotVolumes}
               onChange={(e) =>
-                updateField(
-                  "snapshotVolumes",
-                  (e.target as HTMLInputElement).checked,
-                )
+                updateField("snapshotVolumes", e.currentTarget.checked)
               }
-              class="rounded border-border-primary"
+              className="rounded border-border-primary"
             />
             <label
-              for="snapshotVolumes"
-              class="text-sm font-medium text-text-primary"
+              htmlFor="snapshotVolumes"
+              className="text-sm font-medium text-text-primary"
             >
               Snapshot persistent volumes
             </label>
@@ -325,14 +325,14 @@ export default function VeleroBackupWizard({ onClose }: Props) {
         </div>
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => (previewYaml.value = v)}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/backup/backups"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>

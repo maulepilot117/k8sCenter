@@ -2,14 +2,9 @@ import type { Signal } from "@preact/signals-core";
 import { useEffect, useRef } from "react";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { failureOf } from "@/lib/networking-state.ts";
+import { hasDom } from "@/src/lib/has-dom.ts";
 import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
-
-// Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
-// this file is shared by both the Fresh tree and the Astro/Bun port, and the
-// bare specifier would otherwise resolve to the always-false test shim under
-// Astro. Value-neutral for Fresh: identical to @fresh/core's own IS_BROWSER.
-const IS_BROWSER = typeof document !== "undefined";
 
 interface UsePollOptions<T> {
   /** Polling interval in milliseconds. */
@@ -69,7 +64,7 @@ export function usePoll<T>(
   const shouldContinueRef = useLatest(opts.shouldContinuePolling);
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    if (!hasDom()) return;
     if (opts.enabled === false) return;
 
     // A new url starts from a clean slate: a refusal or failures recorded

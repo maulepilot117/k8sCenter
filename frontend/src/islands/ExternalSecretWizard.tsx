@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import { ExternalSecretForm } from "@/components/wizard/ExternalSecretForm.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
@@ -7,8 +7,9 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export interface ExternalSecretWizardDataItem {
   secretKey: string;
@@ -68,18 +69,20 @@ export default function ExternalSecretWizard({
   onClose,
 }: ExternalSecretWizardProps) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<ExternalSecretWizardForm>(initialForm());
-  const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
+  const isClient = useIsClient();
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<ExternalSecretWizardForm>(initialForm);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [dirty, setDirty] = useState(false);
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
 
-  const stores = useSignal<ExternalSecretWizardStoreOption[]>([]);
-  const storesLoading = useSignal(true);
+  const [stores, setStores] = useState<ExternalSecretWizardStoreOption[]>([]);
+  const [storesLoading, setStoresLoading] = useState(true);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewSeq = useRef(0);
 
   useDirtyGuard(dirty);
@@ -89,7 +92,6 @@ export default function ExternalSecretWizard({
   // failure (e.g. user lacks ClusterSecretStore permission) doesn't discard
   // the other slice.
   useEffect(() => {
-    if (!IS_BROWSER) return;
     let cancelled = false;
     Promise.allSettled([esoApi.listStores(), esoApi.listClusterStores()])
       .then(([nsResult, clResult]) => {
@@ -118,10 +120,10 @@ export default function ExternalSecretWizard({
         } else {
           console.warn("Failed to load ClusterSecretStores:", clResult.reason);
         }
-        stores.value = list;
+        setStores(list);
       })
       .finally(() => {
-        if (!cancelled) storesLoading.value = false;
+        if (!cancelled) setStoresLoading(false);
       });
     return () => {
       cancelled = true;
@@ -129,18 +131,20 @@ export default function ExternalSecretWizard({
   }, []);
 
   function updateField(field: keyof ExternalSecretWizardForm, value: unknown) {
-    dirty.value = true;
+    setDirty(true);
     // Switching kind clears the selected store so a stale selection doesn't
     // bleed into the new kind's option list.
     if (field === "storeRefKind") {
-      form.value = {
-        ...form.value,
+      setForm((prev) => ({
+        ...prev,
         storeRefKind: value as "SecretStore" | "ClusterSecretStore",
         storeRefName: "",
-      };
+      }));
       return;
     }
-    form.value = { ...form.value, [field]: value } as ExternalSecretWizardForm;
+    setForm(
+      (prev) => ({ ...prev, [field]: value }) as ExternalSecretWizardForm,
+    );
   }
 
   function updateData(
@@ -148,36 +152,42 @@ export default function ExternalSecretWizard({
     field: "secretKey" | "key" | "property",
     value: string,
   ) {
-    dirty.value = true;
-    const next = form.value.data.map((item, i) =>
-      i === index ? { ...item, [field]: value } : item,
-    );
-    form.value = { ...form.value, data: next };
+    setDirty(true);
+    setForm((prev) => ({
+      ...prev,
+      data: prev.data.map((item, i) =>
+        i === index ? { ...item, [field]: value } : item,
+      ),
+    }));
   }
 
   function markPathTouched(index: number) {
-    if (form.value.data[index].pathTouched) return;
-    const next = form.value.data.map((item, i) =>
-      i === index ? { ...item, pathTouched: true } : item,
-    );
-    form.value = { ...form.value, data: next };
+    setForm((prev) => {
+      if (prev.data[index].pathTouched) return prev;
+      return {
+        ...prev,
+        data: prev.data.map((item, i) =>
+          i === index ? { ...item, pathTouched: true } : item,
+        ),
+      };
+    });
   }
 
   function addDataItem() {
-    dirty.value = true;
-    form.value = { ...form.value, data: [...form.value.data, newDataItem()] };
+    setDirty(true);
+    setForm((prev) => ({ ...prev, data: [...prev.data, newDataItem()] }));
   }
 
   function removeDataItem(index: number) {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      data: form.value.data.filter((_, i) => i !== index),
-    };
+    setDirty(true);
+    setForm((prev) => ({
+      ...prev,
+      data: prev.data.filter((_, i) => i !== index),
+    }));
   }
 
   function validate(): boolean {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
@@ -212,15 +222,15 @@ export default function ExternalSecretWizard({
       }
     });
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   }
 
   async function fetchPreview() {
     const seq = ++previewSeq.current;
-    previewLoading.value = true;
-    previewError.value = null;
-    const f = form.value;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const f = form;
 
     const payload = {
       name: f.name,
@@ -243,29 +253,30 @@ export default function ExternalSecretWizard({
     try {
       const resp = await esoApi.previewExternalSecret(payload);
       if (seq !== previewSeq.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (seq !== previewSeq.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (seq === previewSeq.current) previewLoading.value = false;
+      if (seq === previewSeq.current) setPreviewLoading(false);
     }
   }
 
   async function goNext() {
-    if (currentStep.value === 0) {
+    if (currentStep === 0) {
       if (!validate()) return;
-      currentStep.value = 1;
+      setCurrentStep(1);
       await fetchPreview();
     }
   }
 
   function goBack() {
-    if (currentStep.value > 0) currentStep.value = currentStep.value - 1;
+    if (currentStep > 0) setCurrentStep(currentStep - 1);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   const keyIcon = (
     <svg
@@ -274,9 +285,9 @@ export default function ExternalSecretWizard({
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="1.8"
-      stroke-linecap="round"
-      stroke-linejoin="round"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
     >
       <circle cx="7.5" cy="15.5" r="4.5" />
       <path d="M21 2l-9.6 9.6" />
@@ -288,35 +299,33 @@ export default function ExternalSecretWizard({
     <WizardShell
       title="Create ExternalSecret"
       icon={keyIcon}
-      subtitle={`Step ${currentStep.value + 1} of ${STEPS.length}`}
+      subtitle={`Step ${currentStep + 1} of ${STEPS.length}`}
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
       onNext={async () => {
-        if (currentStep.value === STEPS.length - 1) {
+        if (currentStep === STEPS.length - 1) {
           close();
         } else {
           await goNext();
         }
       }}
-      nextLabel={currentStep.value === STEPS.length - 1 ? "Close" : "Continue"}
+      nextLabel={currentStep === STEPS.length - 1 ? "Close" : "Continue"}
       yaml={
-        currentStep.value === STEPS.length - 1
-          ? previewYaml.value || undefined
-          : undefined
+        currentStep === STEPS.length - 1 ? previewYaml || undefined : undefined
       }
     >
-      {currentStep.value === 0 && (
+      {currentStep === 0 && (
         <ExternalSecretForm
-          form={form.value}
-          errors={errors.value}
-          namespaces={namespaces.value}
-          stores={stores.value}
-          storesLoading={storesLoading.value}
+          form={form}
+          errors={errors}
+          namespaces={namespaceList}
+          stores={stores}
+          storesLoading={storesLoading}
           onUpdate={updateField}
           onUpdateData={updateData}
           onAddDataItem={addDataItem}
@@ -325,16 +334,14 @@ export default function ExternalSecretWizard({
         />
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/external-secrets/external-secrets"
-          dirty={dirty}
+          onDirtyChange={setDirty}
         />
       )}
     </WizardShell>
