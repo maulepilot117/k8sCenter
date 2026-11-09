@@ -17,14 +17,10 @@
  * unpinned apply, which is what the template editor relies on.
  */
 
-import type { ReadonlySignal, Signal } from "@preact/signals-core";
-import { useCallback, useEffect, useRef } from "react";
-import {
-  useComputed,
-  useSignal,
-  useSignalEffect,
-} from "@/src/lib/signal-hooks.ts";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 import { ApiError, apiPostRaw, errorExtra, errorExtraFlag } from "./api.ts";
 import { currentUserId } from "./auth.ts";
 import type {
@@ -111,12 +107,16 @@ export interface YamlApplyPin {
   readonly pinnedAt: number;
 }
 
+/**
+ * Read when Apply is pressed, from the latest render's options: changing one
+ * takes effect at the next press without re-creating the handlers.
+ */
 export interface UseYamlApplyOptions {
   /**
    * When set, an apply call appends `?force=true` to the apply URL. The
    * upstream `/yaml/apply` route honors this flag for SSA conflict resolution.
    */
-  forceConflicts?: Signal<boolean>;
+  forceConflicts?: boolean;
   /**
    * Called after a successful apply with the parsed response. Lets the caller
    * trigger side effects (e.g., navigate to the resulting resource's detail
@@ -147,33 +147,43 @@ export interface UseYamlApplyOptions {
    * unavailable only the in-memory copy exists, and a remount forgets it:
    * check the receipt list before applying again after such an interruption.
    */
-  tracked?: Signal<boolean>;
+  tracked?: boolean;
   /**
    * Operation id of the receipt this apply repairs, sent as `?repairOf=`.
    * Recorded server-side as a link only; it grants nothing. Ignored unless
    * the apply is tracked.
    */
-  repairOf?: Signal<string | null>;
+  repairOf?: string | null;
 }
 
+/**
+ * Values are this render's state. The handlers and setters keep their
+ * identity for the component's lifetime, and the handlers always act on the
+ * current state, whichever render they were taken from.
+ */
 export interface UseYamlApplyReturn {
-  yamlContent: Signal<string>;
-  applying: Signal<boolean>;
-  validating: Signal<boolean>;
-  error: Signal<string | null>;
+  yamlContent: string;
+  /** Replaces the editor text. It does not clear the pin; see `clearPin`. */
+  setYamlContent: (yaml: string) => void;
+  applying: boolean;
+  validating: boolean;
+  error: string | null;
+  /** Shows a caller's own error, such as a file the editor cannot take. */
+  setError: (message: string | null) => void;
   /** The last apply's outcome. Validate results go to `preview`. */
-  result: Signal<ApplyResponse | null>;
+  result: ApplyResponse | null;
+  setResult: (result: ApplyResponse | null) => void;
   handleValidate: () => Promise<void>;
   handleApply: () => Promise<void>;
   /** The last successful preview's verdicts. */
-  preview: ReadonlySignal<ValidateResponse | null>;
+  preview: ValidateResponse | null;
   /** The target the last successful preview ran against. */
-  pin: ReadonlySignal<YamlApplyPin | null>;
+  pin: YamlApplyPin | null;
   /**
    * The operator has since selected a different cluster than the pin. The
    * pin is unchanged: a pinned apply still goes to the previewed cluster.
    */
-  pinStale: ReadonlySignal<boolean>;
+  pinStale: boolean;
   /** Forgets the preview and its pin; a pinned apply then needs a new one. */
   clearPin: () => void;
   /**
@@ -182,20 +192,20 @@ export interface UseYamlApplyReturn {
    * started over. It describes only that last attempt; the id a retry will
    * reuse is kept separately.
    */
-  lastOperationId: ReadonlySignal<string | null>;
+  lastOperationId: string | null;
   /**
    * Whether the last tracked apply failed in a way that may still have
    * changed the cluster under `lastOperationId` (see attemptMayHaveApplied),
    * so its receipt is worth pointing at. False after any definite refusal,
    * and reset by Validate and by each Apply press.
    */
-  attemptOutcomeUnknown: ReadonlySignal<boolean>;
+  attemptOutcomeUnknown: boolean;
   /**
    * The typed reason the server refused the last tracked apply (409 id
    * reasons, 503 receipt store), or null. `error` carries the same refusal as
    * operator-facing text.
    */
-  trackedRefusal: ReadonlySignal<TrackedApplyRefusal | null>;
+  trackedRefusal: TrackedApplyRefusal | null;
 }
 
 /** The pin parameters an apply echoes back to the server. */
@@ -361,23 +371,32 @@ function pinRefusalMessage(err: unknown): string | null {
 
 /**
  * Hook that owns the full validate/apply state machine for a single YAML
- * editor instance. Caller passes the initial YAML; this hook returns signals
- * for editor binding, plus stable handlers wired to the api module.
+ * editor instance. Caller passes the initial YAML; this hook returns the
+ * editor's state with setters, plus stable handlers wired to the api module.
+ *
+ * Every value a handler reads after it starts (and after each `await`) comes
+ * from a ref kept current by its setter (`useStateRef`) or by the latest
+ * render (`useLatest`), never from the render that created the handler. So a
+ * press always acts on what is on screen, and the guards that stop a second
+ * press see the first one at once.
  */
 export function useYamlApply(
   initialYaml: string,
   options: UseYamlApplyOptions = {},
 ): UseYamlApplyReturn {
-  const yamlContent = useSignal(initialYaml);
-  const applying = useSignal(false);
-  const validating = useSignal(false);
-  const error = useSignal<string | null>(null);
-  const result = useSignal<ApplyResponse | null>(null);
-  const preview = useSignal<ValidateResponse | null>(null);
-  const pin = useSignal<YamlApplyPin | null>(null);
-  const lastOperationId = useSignal<string | null>(null);
-  const attemptOutcomeUnknown = useSignal(false);
-  const trackedRefusal = useSignal<TrackedApplyRefusal | null>(null);
+  const [yamlContent, setYamlContent, yamlRef] = useStateRef(initialYaml);
+  const [applying, setApplying, applyingRef] = useStateRef(false);
+  const [validating, setValidating, validatingRef] = useStateRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<ApplyResponse | null>(null);
+  const [preview, setPreview] = useState<ValidateResponse | null>(null);
+  const [pin, setPin, pinRef] = useStateRef<YamlApplyPin | null>(null);
+  const [lastOperationId, setLastOperationId, lastOperationIdRef] = useStateRef<
+    string | null
+  >(null);
+  const [attemptOutcomeUnknown, setAttemptOutcomeUnknown] = useState(false);
+  const [trackedRefusal, setTrackedRefusal] =
+    useState<TrackedApplyRefusal | null>(null);
   // The attempt a retry would continue: its id plus the request it was minted
   // for. Reused only while the request is unchanged, so an id never travels
   // with different content (the server refuses that as operation_id_reused).
@@ -395,52 +414,56 @@ export function useYamlApply(
   // later is not a move. (The server's targetGeneration is not compared here:
   // it and the cluster list's createdAt format the same instant differently
   // unless the backend runs in UTC. The apply is enforced on it server-side.)
-  const pinStale = useComputed(() => {
-    const p = pin.value;
-    if (!p) return false;
-    if (p.target.clusterId !== selectedCluster.value) return true;
-    return (
-      p.target.generation !== UNKNOWN_GENERATION &&
-      p.target.generation !== selectedClusterGeneration.value
-    );
-  });
+  const selected = useSignalValue(selectedCluster);
+  const selectedGeneration = useSignalValue(selectedClusterGeneration);
+  const pinStale =
+    pin !== null &&
+    (pin.target.clusterId !== selected ||
+      (pin.target.generation !== UNKNOWN_GENERATION &&
+        pin.target.generation !== selectedGeneration));
 
   // A switch makes an in-flight preview describe a cluster that is no longer
   // on screen: cancel it rather than let it land late. An in-flight apply is
   // deliberately left alone — aborting the fetch cannot undo a server-side
   // apply, only hide its outcome, and that outcome is labelled with its pin.
-  useSignalEffect(() => {
-    const epoch = clusterEpoch.value;
-    const ctl = validateAbort.current;
-    if (ctl && ctl.issuedEpoch !== epoch) ctl.controller.abort();
-  });
-  useEffect(() => () => validateAbort.current?.controller.abort(), []);
+  // Subscribed directly rather than through a render, so the abort happens
+  // when the switch does.
+  useEffect(() => {
+    const unsubscribe = clusterEpoch.subscribe((epoch) => {
+      const ctl = validateAbort.current;
+      if (ctl && ctl.issuedEpoch !== epoch) ctl.controller.abort();
+    });
+    return () => {
+      unsubscribe();
+      validateAbort.current?.controller.abort();
+    };
+  }, []);
 
   const clearPin = useCallback(() => {
-    pin.value = null;
-    preview.value = null;
-  }, [pin, preview]);
+    setPin(null);
+    setPreview(null);
+  }, []);
 
   const handleValidate = useCallback(async () => {
-    if (applying.value || validating.value) return;
+    if (applyingRef.current || validatingRef.current) return;
     const target = currentTarget();
     const controller = new AbortController();
     const inFlight = { controller, issuedEpoch: target.epoch };
     validateAbort.current = inFlight;
-    validating.value = true;
-    error.value = null;
-    result.value = null;
-    preview.value = null;
-    pin.value = null;
-    trackedRefusal.value = null;
+    setValidating(true);
+    setError(null);
+    setResult(null);
+    setPreview(null);
+    setPin(null);
+    setTrackedRefusal(null);
     // A new preview starts over: the last apply's outcome no longer describes
     // what is on screen. (The retry id itself lives in pendingAttempt.)
-    lastOperationId.value = null;
-    attemptOutcomeUnknown.value = false;
+    setLastOperationId(null);
+    setAttemptOutcomeUnknown(false);
     try {
       const res = await apiPostRaw<ValidateResponse>(
         "/v1/yaml/validate",
-        yamlContent.value,
+        yamlRef.current,
         "text/yaml",
         { clusterId: target.clusterId, signal: controller.signal },
       );
@@ -452,57 +475,47 @@ export function useYamlApply(
         normalizeClusterId(data.targetCluster) !==
         normalizeClusterId(target.clusterId)
       ) {
-        error.value = `Validation ran against cluster "${data.targetCluster}" instead of "${target.clusterId}". Validate again.`;
+        setError(
+          `Validation ran against cluster "${data.targetCluster}" instead of "${target.clusterId}". Validate again.`,
+        );
         return;
       }
-      preview.value = data;
-      pin.value = {
+      setPreview(data);
+      setPin({
         target,
         targetCluster: data.targetCluster,
         targetGeneration: data.targetGeneration,
         pinnedAt: Date.now(),
-      };
+      });
     } catch (err) {
       if (controller.signal.aborted || clusterEpoch.peek() !== target.epoch) {
         return;
       }
-      error.value = err instanceof Error ? err.message : "Validation failed";
+      setError(err instanceof Error ? err.message : "Validation failed");
     } finally {
       if (validateAbort.current === inFlight) validateAbort.current = null;
-      validating.value = false;
+      setValidating(false);
     }
-  }, [
-    applying,
-    validating,
-    error,
-    result,
-    preview,
-    pin,
-    trackedRefusal,
-    lastOperationId,
-    attemptOutcomeUnknown,
-    yamlContent,
-  ]);
+  }, []);
 
   const handleApply = useCallback(async () => {
-    if (applying.value || validating.value) return;
+    if (applyingRef.current || validatingRef.current) return;
     const options = optionsRef.current;
     // A new press starts a new answer: nothing from the previous attempt
     // describes it, even when it is refused before it is sent.
-    lastOperationId.value = null;
-    attemptOutcomeUnknown.value = false;
-    const pinned = pin.peek();
+    setLastOperationId(null);
+    setAttemptOutcomeUnknown(false);
+    const pinned = pinRef.current;
     if (options.pinApplyToPreview && !pinned) {
-      error.value =
-        "Validate first, so the apply is tied to a reviewed cluster.";
+      setError("Validate first, so the apply is tied to a reviewed cluster.");
       return;
     }
-    applying.value = true;
-    error.value = null;
-    result.value = null;
-    trackedRefusal.value = null;
+    setApplying(true);
+    setError(null);
+    setResult(null);
+    setTrackedRefusal(null);
     // Read once: the retry key and the request body must be the same text.
-    const yaml = yamlContent.value;
+    const yaml = yamlRef.current;
     // Whether this send continues an earlier attempt's id (a retry) rather
     // than minting its own.
     let reusedId = false;
@@ -515,7 +528,7 @@ export function useYamlApply(
     };
     try {
       const baseQuery: ApplyQueryInput = {
-        force: Boolean(options.forceConflicts?.value),
+        force: Boolean(options.forceConflicts),
         pin:
           options.pinApplyToPreview && pinned
             ? {
@@ -523,7 +536,7 @@ export function useYamlApply(
                 targetGeneration: pinned.targetGeneration,
               }
             : null,
-        repairOf: options.repairOf?.value ?? null,
+        repairOf: options.repairOf ?? null,
       };
       // The cluster is decided once, here: it keys the retry and is the
       // X-Cluster-ID, so the two cannot diverge.
@@ -543,7 +556,7 @@ export function useYamlApply(
         yaml,
       ]);
       let trackedOperationId: string | null = null;
-      if (options.tracked?.value) {
+      if (options.tracked) {
         const now = Date.now();
         const mem = pendingAttempt.current;
         const pending =
@@ -566,7 +579,7 @@ export function useYamlApply(
         // superseded.
         releaseAttempt();
       }
-      lastOperationId.value = trackedOperationId;
+      setLastOperationId(trackedOperationId);
       const queryStr = buildApplyQuery({ ...baseQuery, trackedOperationId });
       const res = await apiPostRaw<ApplyResponse>(
         `/v1/yaml/apply${queryStr}`,
@@ -575,7 +588,7 @@ export function useYamlApply(
         { clusterId },
       );
       releaseAttempt();
-      result.value = res.data;
+      setResult(res.data);
       options.onApplySuccess?.(res.data);
     } catch (err) {
       const refusal = pinRefusalMessage(err);
@@ -600,43 +613,36 @@ export function useYamlApply(
       if (!isIndeterminateApplyFailure(err) || releaseStoreFailure) {
         releaseAttempt();
       }
-      attemptOutcomeUnknown.value =
-        lastOperationId.peek() !== null &&
-        attemptMayHaveApplied(err, trackedFailure);
+      setAttemptOutcomeUnknown(
+        lastOperationIdRef.current !== null &&
+          attemptMayHaveApplied(err, trackedFailure),
+      );
       if (trackedFailure) {
-        trackedRefusal.value = trackedFailure;
-        error.value = trackedFailure.message;
+        setTrackedRefusal(trackedFailure);
+        setError(trackedFailure.message);
       } else if (refusal) {
         // A refused pin can never succeed on retry. Drop it so the only way
         // forward is a fresh preview against the cluster actually targeted.
-        pin.value = null;
-        preview.value = null;
-        error.value = refusal;
+        setPin(null);
+        setPreview(null);
+        setError(refusal);
       } else {
-        error.value = err instanceof Error ? err.message : "Apply failed";
+        setError(err instanceof Error ? err.message : "Apply failed");
       }
     } finally {
-      applying.value = false;
+      setApplying(false);
     }
-  }, [
-    applying,
-    validating,
-    error,
-    result,
-    preview,
-    pin,
-    trackedRefusal,
-    lastOperationId,
-    attemptOutcomeUnknown,
-    yamlContent,
-  ]);
+  }, []);
 
   return {
     yamlContent,
+    setYamlContent,
     applying,
     validating,
     error,
+    setError,
     result,
+    setResult,
     handleValidate,
     handleApply,
     preview,

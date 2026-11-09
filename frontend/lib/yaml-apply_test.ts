@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { signal } from "@preact/signals-core";
 import { createElement } from "react";
 import { act, render, setupDom } from "@/src/test-utils/render.tsx";
 import { ApiError, setAccessToken } from "./api.ts";
@@ -131,32 +130,73 @@ function unmount() {
   act(() => rendered.unmount());
 }
 
-/** Mounts the hook and returns what it returned on its first render. */
-function mount(
-  initialYaml = "kind: ConfigMap",
-  options?: UseYamlApplyOptions,
-): UseYamlApplyReturn {
-  let captured: UseYamlApplyReturn | undefined;
-  function Harness() {
-    captured = useYamlApply(initialYaml, options);
-    latest = captured;
-    return null;
-  }
-  act(() => {
-    mounted = render(createElement(Harness, null));
-  });
-  rerenderHook = () => {
-    const rendered = mounted;
-    if (rendered) act(() => rendered.rerender(createElement(Harness, null)));
-  };
-  if (!captured) throw new Error("hook did not render");
-  return captured;
+/**
+ * A mounted hook. Each property reads what the hook returned on its latest
+ * render, which is what the component using it renders from. Handlers and
+ * setters keep one identity for the hook's lifetime (a test below checks
+ * this), so calling one through here is calling the first render's.
+ */
+interface Mounted extends UseYamlApplyReturn {
+  /** What the hook returned on each render, oldest first. */
+  readonly renders: readonly UseYamlApplyReturn[];
+  /** Renders again with the same arguments. */
+  rerender(): void;
+  /**
+   * Renders again with `next` merged into the options, as a page does when
+   * the operator changes one of them.
+   */
+  setOptions(next: Partial<UseYamlApplyOptions>): void;
 }
 
-/** What the mounted hook returned on its most recent render. */
-let latest: UseYamlApplyReturn | undefined;
-/** Renders the mounted hook again with the same arguments. */
-let rerenderHook: () => void = () => {};
+/** Mounts the hook. */
+function mount(
+  initialYaml = "kind: ConfigMap",
+  initialOptions?: UseYamlApplyOptions,
+): Mounted {
+  const renders: UseYamlApplyReturn[] = [];
+  // Options travel as props, as they do from a real caller, and every
+  // rerender passes new props. With @preact/signals loaded (another test file
+  // may load it first), a component re-rendered with props equal to the last
+  // ones is skipped, so the new options would never reach the hook.
+  interface HarnessProps {
+    options?: UseYamlApplyOptions;
+    pass: number;
+  }
+  let options = initialOptions;
+  let pass = 0;
+  function Harness(props: HarnessProps) {
+    renders.push(useYamlApply(initialYaml, props.options));
+    return null;
+  }
+  const element = () =>
+    createElement(Harness, { options, pass: ++pass } satisfies HarnessProps);
+  let rendered: ReturnType<typeof render> | undefined;
+  act(() => {
+    rendered = render(element());
+  });
+  const first = renders[0];
+  if (!rendered || !first) throw new Error("hook did not render");
+  mounted = rendered;
+  const rerender = () => {
+    const r = rendered;
+    act(() => r?.rerender(element()));
+  };
+  const handle: Partial<Mounted> = {
+    renders,
+    rerender,
+    setOptions(next: Partial<UseYamlApplyOptions>) {
+      options = { ...options, ...next };
+      rerender();
+    },
+  };
+  for (const key of Object.keys(first) as (keyof UseYamlApplyReturn)[]) {
+    Object.defineProperty(handle, key, {
+      enumerable: true,
+      get: () => renders[renders.length - 1][key],
+    });
+  }
+  return handle as Mounted;
+}
 
 function preview(targetCluster: string, targetGeneration: string) {
   return {
@@ -227,7 +267,7 @@ test("apply sends the pinned cluster after a switch", async () => {
   const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
 
   await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
-  switchCluster("cluster-b", "gen-b");
+  act(() => switchCluster("cluster-b", "gen-b"));
   const call = await run(hook.handleApply, 200, applied);
 
   const url = new URL(call.url, "http://x");
@@ -235,7 +275,7 @@ test("apply sends the pinned cluster after a switch", async () => {
   expect(url.searchParams.get("targetCluster")).toBe("cluster-a");
   expect(url.searchParams.get("targetGeneration")).toBe("gen-a");
   expect(call.clusterHeader).toBe("cluster-a");
-  expect(hook.result.value?.summary.created).toBe(1);
+  expect(hook.result?.summary.created).toBe(1);
 });
 
 test("apply is disabled with no pin", async () => {
@@ -246,8 +286,8 @@ test("apply is disabled with no pin", async () => {
   await hook.handleApply();
 
   expect(calls.length).toBe(0);
-  expect(hook.error.value).toContain("Validate");
-  expect(hook.applying.value).toBe(false);
+  expect(hook.error).toContain("Validate");
+  expect(hook.applying).toBe(false);
 });
 
 test("pinStale is set by an epoch change", async () => {
@@ -256,14 +296,14 @@ test("pinStale is set by an epoch change", async () => {
   const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
 
   await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
-  const pinned = hook.pin.value;
+  const pinned = hook.pin;
   expect(pinned?.target.clusterId).toBe("cluster-a");
-  expect(hook.pinStale.value).toBe(false);
+  expect(hook.pinStale).toBe(false);
 
-  switchCluster("cluster-b", "gen-b");
+  act(() => switchCluster("cluster-b", "gen-b"));
 
-  expect(hook.pinStale.value).toBe(true);
-  expect(hook.pin.value).toBe(pinned);
+  expect(hook.pinStale).toBe(true);
+  expect(hook.pin).toBe(pinned);
 });
 
 test("a preview in flight while the restored generation resolves still pins", async () => {
@@ -283,8 +323,8 @@ test("a preview in flight while the restored generation resolves still pins", as
   inFlight.respond(200, preview("cluster-a", "gen-a"));
   await done;
 
-  expect(hook.pin.value?.targetGeneration).toBe("gen-a");
-  expect(hook.pinStale.value).toBe(false);
+  expect(hook.pin?.targetGeneration).toBe("gen-a");
+  expect(hook.pinStale).toBe(false);
 });
 
 test("a pin taken before the restored generation resolves is not stale", async () => {
@@ -297,7 +337,7 @@ test("a pin taken before the restored generation resolves is not stale", async (
 
   // The server already told us which registration it validated against; the
   // client learning the same generation later does not make that pin stale.
-  expect(hook.pinStale.value).toBe(false);
+  expect(hook.pinStale).toBe(false);
 });
 
 test("a pin on a known generation is stale once that generation changes", async () => {
@@ -308,7 +348,7 @@ test("a pin on a known generation is stale once that generation changes", async 
   await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
   act(() => switchCluster("cluster-a", "gen-a-second-registration"));
 
-  expect(hook.pinStale.value).toBe(true);
+  expect(hook.pinStale).toBe(true);
 });
 
 test("clearPin forces a fresh preview", async () => {
@@ -317,14 +357,14 @@ test("clearPin forces a fresh preview", async () => {
   const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
 
   await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
-  hook.clearPin();
-  expect(hook.pin.value).toBeNull();
-  expect(hook.preview.value).toBeNull();
+  act(() => hook.clearPin());
+  expect(hook.pin).toBeNull();
+  expect(hook.preview).toBeNull();
 
   await hook.handleApply();
   expect(calls.length).toBe(1); // the validate only
 
-  switchCluster("cluster-b", "gen-b");
+  act(() => switchCluster("cluster-b", "gen-b"));
   await run(hook.handleValidate, 200, preview("cluster-b", "gen-b"));
   const call = await run(hook.handleApply, 200, applied);
   expect(call.clusterHeader).toBe("cluster-b");
@@ -351,10 +391,10 @@ test("late validate response from a prior epoch is discarded", async () => {
   inFlight.respond(200, preview("cluster-a", "gen-a"));
   await done;
 
-  expect(hook.pin.value).toBeNull();
-  expect(hook.preview.value).toBeNull();
-  expect(hook.error.value).toBeNull();
-  expect(hook.validating.value).toBe(false);
+  expect(hook.pin).toBeNull();
+  expect(hook.preview).toBeNull();
+  expect(hook.error).toBeNull();
+  expect(hook.validating).toBe(false);
 });
 
 test("a preview answered by a different cluster does not pin", async () => {
@@ -364,8 +404,8 @@ test("a preview answered by a different cluster does not pin", async () => {
 
   await run(hook.handleValidate, 200, preview("cluster-z", "gen-z"));
 
-  expect(hook.pin.value).toBeNull();
-  expect(hook.error.value).toContain("cluster-z");
+  expect(hook.pin).toBeNull();
+  expect(hook.error).toContain("cluster-z");
 });
 
 test("validate results land in preview, not result", async () => {
@@ -377,8 +417,8 @@ test("validate results land in preview, not result", async () => {
 
   await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
 
-  expect(hook.result.value).toBeNull();
-  expect(hook.preview.value?.documents[0].name).toBe("cm");
+  expect(hook.result).toBeNull();
+  expect(hook.preview?.documents[0].name).toBe("cm");
 });
 
 test("a failing verdict lands in preview, not error, pinned or not", async () => {
@@ -390,9 +430,9 @@ test("a failing verdict lands in preview, not error, pinned or not", async () =>
 
   await run(unpinned.handleValidate, 200, invalidPreview("cluster-a", "gen-a"));
 
-  expect(unpinned.error.value).toBeNull();
-  expect(unpinned.result.value).toBeNull();
-  expect(unpinned.preview.value?.valid).toBe(false);
+  expect(unpinned.error).toBeNull();
+  expect(unpinned.result).toBeNull();
+  expect(unpinned.preview?.valid).toBe(false);
 });
 
 test("pinned validate failure leaves error null and carries the errors in preview", async () => {
@@ -402,9 +442,9 @@ test("pinned validate failure leaves error null and carries the errors in previe
 
   await run(hook.handleValidate, 200, invalidPreview("cluster-a", "gen-a"));
 
-  expect(hook.error.value).toBeNull();
-  expect(hook.preview.value?.valid).toBe(false);
-  expect(hook.preview.value?.documents[0].errors?.[0].message).toBe(
+  expect(hook.error).toBeNull();
+  expect(hook.preview?.valid).toBe(false);
+  expect(hook.preview?.documents[0].errors?.[0].message).toBe(
     "must be a string",
   );
 });
@@ -425,11 +465,11 @@ test("a 409 cluster_pin_mismatch surfaces its reason", async () => {
     },
   });
 
-  expect(hook.error.value).toContain("cluster-a");
-  expect(hook.error.value).toContain("cluster-b");
+  expect(hook.error).toContain("cluster-a");
+  expect(hook.error).toContain("cluster-b");
   // The refused pin cannot succeed on retry; a fresh preview is required.
-  expect(hook.pin.value).toBeNull();
-  expect(hook.result.value).toBeNull();
+  expect(hook.pin).toBeNull();
+  expect(hook.result).toBeNull();
 });
 
 test("a 409 cluster_generation_mismatch requires a fresh preview", async () => {
@@ -448,15 +488,15 @@ test("a 409 cluster_generation_mismatch requires a fresh preview", async () => {
     },
   });
 
-  expect(hook.error.value).toContain("re-registered");
-  expect(hook.pin.value).toBeNull();
+  expect(hook.error).toContain("re-registered");
+  expect(hook.pin).toBeNull();
 });
 
 test("hook remains backward compatible", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
   const successes: ApplyResponse[] = [];
-  const forceConflicts = signal(true);
+  const forceConflicts = true;
   const hook = mount("kind: ConfigMap", {
     forceConflicts,
     onApplySuccess: (res) => successes.push(res),
@@ -473,10 +513,10 @@ test("hook remains backward compatible", async () => {
   ] as const) {
     expect(hook[key]).toBeDefined();
   }
-  expect(hook.yamlContent.value).toBe("kind: ConfigMap");
+  expect(hook.yamlContent).toBe("kind: ConfigMap");
 
   // No preview needed and no pin sent: the pre-existing unpinned apply.
-  switchCluster("cluster-b", "gen-b");
+  act(() => switchCluster("cluster-b", "gen-b"));
   const call = await run(hook.handleApply, 200, applied);
 
   const url = new URL(call.url, "http://x");
@@ -484,7 +524,7 @@ test("hook remains backward compatible", async () => {
   expect(url.searchParams.get("force")).toBe("true");
   expect(url.searchParams.has("targetCluster")).toBe(false);
   expect(call.clusterHeader).toBe("cluster-b");
-  expect(hook.result.value).toEqual(applied.data);
+  expect(hook.result).toEqual(applied.data);
   expect(successes).toEqual([applied.data]);
 });
 
@@ -661,32 +701,32 @@ test("tracked absent leaves the request identical to today", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
   const hook = mount("kind: ConfigMap", {
-    forceConflicts: signal(true),
+    forceConflicts: true,
   });
 
   const call = await run(hook.handleApply, 200, applied);
 
   expect(call.url).toBe("/api/v1/yaml/apply?force=true");
   expect(operationIdOf(call)).toBeNull();
-  expect(hook.lastOperationId.value).toBeNull();
-  expect(hook.result.value?.tracking).toBeUndefined();
+  expect(hook.lastOperationId).toBeNull();
+  expect(hook.result?.tracking).toBeUndefined();
 });
 
 test("tracked false is the same as absent", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(false) });
+  const hook = mount("kind: ConfigMap", { tracked: false });
 
   const call = await run(hook.handleApply, 200, applied);
 
   expect(call.url).toBe("/api/v1/yaml/apply");
-  expect(hook.lastOperationId.value).toBeNull();
+  expect(hook.lastOperationId).toBeNull();
 });
 
 test("tracked apply sends a UUIDv4 id and surfaces the tracking block", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const done = hook.handleApply();
   await flush();
@@ -695,21 +735,21 @@ test("tracked apply sends a UUIDv4 id and surfaces the tracking block", async ()
   calls[0].respond(200, appliedTracked(id as string));
   await done;
 
-  expect(hook.lastOperationId.value).toBe(id);
-  expect(hook.result.value?.tracking?.operationId ?? null).toBe(id);
-  expect(hook.error.value).toBeNull();
+  expect(hook.lastOperationId).toBe(id);
+  expect(hook.result?.tracking?.operationId ?? null).toBe(id);
+  expect(hook.error).toBeNull();
 });
 
 test("a retry after a dropped connection reuses the operation id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await runDropped(hook.handleApply);
   const id = operationIdOf(first);
   expect(id).toMatch(UUID_V4);
-  expect(hook.error.value).not.toBeNull();
-  expect(hook.lastOperationId.value).toBe(id);
+  expect(hook.error).not.toBeNull();
+  expect(hook.lastOperationId).toBe(id);
 
   const retry = await run(hook.handleApply, 200, appliedTracked(id as string));
   expect(operationIdOf(retry)).toBe(id);
@@ -719,7 +759,7 @@ test("a retry after a dropped connection reuses the operation id", async () => {
 test("a retry after a 5xx reuses the operation id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await run(hook.handleApply, 502, { error: { code: 502 } });
   const retry = await run(hook.handleApply, 200, applied);
@@ -730,7 +770,7 @@ test("a retry after a 5xx reuses the operation id", async () => {
 test("a new apply after a success mints a new operation id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await run(hook.handleApply, 200, applied);
   const second = await run(hook.handleApply, 200, applied);
@@ -743,7 +783,7 @@ test("a new apply after a success mints a new operation id", async () => {
 test("a new apply after a definite refusal mints a new operation id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await run(hook.handleApply, 422, {
     error: { code: 422, message: "invalid" },
@@ -758,10 +798,10 @@ test("edited content after an unknown outcome mints a new operation id", async (
   // sends that combination.
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await runDropped(hook.handleApply);
-  hook.yamlContent.value = "kind: Secret";
+  act(() => hook.setYamlContent("kind: Secret"));
   const second = await run(hook.handleApply, 200, applied);
 
   expect(operationIdOf(second)).not.toBe(operationIdOf(first));
@@ -770,14 +810,13 @@ test("edited content after an unknown outcome mints a new operation id", async (
 test("changed options after an unknown outcome mint a new operation id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const forceConflicts = signal(false);
   const hook = mount("kind: ConfigMap", {
-    tracked: signal(true),
-    forceConflicts,
+    tracked: true,
+    forceConflicts: false,
   });
 
   const first = await runDropped(hook.handleApply);
-  forceConflicts.value = true;
+  hook.setOptions({ forceConflicts: true });
   const second = await run(hook.handleApply, 200, applied);
 
   expect(operationIdOf(second)).not.toBe(operationIdOf(first));
@@ -787,13 +826,12 @@ test("changed options after an unknown outcome mint a new operation id", async (
 test("switching tracking off discards the pending id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const tracked = signal(true);
-  const hook = mount("kind: ConfigMap", { tracked });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await runDropped(hook.handleApply);
-  tracked.value = false;
+  hook.setOptions({ tracked: false });
   const untracked = await run(hook.handleApply, 200, applied);
-  tracked.value = true;
+  hook.setOptions({ tracked: true });
   const third = await run(hook.handleApply, 200, applied);
 
   expect(untracked.url).toBe("/api/v1/yaml/apply");
@@ -805,13 +843,13 @@ test("a tracked apply composes with the target pin and repairOf", async () => {
   stubFetch();
   const hook = mount("kind: ConfigMap", {
     pinApplyToPreview: true,
-    tracked: signal(true),
-    forceConflicts: signal(true),
-    repairOf: signal<string | null>(OTHER_OP),
+    tracked: true,
+    forceConflicts: true,
+    repairOf: OTHER_OP,
   });
 
   await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
-  switchCluster("cluster-b", "gen-b");
+  act(() => switchCluster("cluster-b", "gen-b"));
   const call = await run(hook.handleApply, 200, applied);
 
   const url = new URL(call.url, "http://x");
@@ -833,7 +871,7 @@ test("repairOf without tracking is not sent", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
   const hook = mount("kind: ConfigMap", {
-    repairOf: signal<string | null>(OTHER_OP),
+    repairOf: OTHER_OP,
   });
 
   const call = await run(hook.handleApply, 200, applied);
@@ -844,7 +882,7 @@ test("repairOf without tracking is not sent", async () => {
 test("tracked refusals map each 409 reason and the 503 to a typed error", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const cases: Array<{
     status: number;
@@ -875,31 +913,31 @@ test("tracked refusals map each 409 reason and the 503 to a typed error", async 
 
   for (const c of cases) {
     await run(hook.handleApply, c.status, refusal(c.status, c.reason, c.extra));
-    expect(hook.trackedRefusal.value?.reason).toBe(c.reason);
-    expect(hook.trackedRefusal.value?.receiptId).toBe(c.receiptId);
-    expect(hook.error.value).toMatch(c.text);
-    expect(hook.error.value).toBe(hook.trackedRefusal.value?.message ?? null);
-    expect(hook.result.value).toBeNull();
+    expect(hook.trackedRefusal?.reason).toBe(c.reason);
+    expect(hook.trackedRefusal?.receiptId).toBe(c.receiptId);
+    expect(hook.error).toMatch(c.text);
+    expect(hook.error).toBe(hook.trackedRefusal?.message ?? null);
+    expect(hook.result).toBeNull();
   }
 });
 
 test("a refusal is cleared by the next attempt", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   await run(hook.handleApply, 409, refusal(409, "operation_id_reused"));
-  expect(hook.trackedRefusal.value).not.toBeNull();
+  expect(hook.trackedRefusal).not.toBeNull();
 
   await run(hook.handleApply, 200, applied);
-  expect(hook.trackedRefusal.value).toBeNull();
-  expect(hook.error.value).toBeNull();
+  expect(hook.trackedRefusal).toBeNull();
+  expect(hook.error).toBeNull();
 });
 
 test("operation_in_flight keeps the id; the other refusals release it", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const inflight = await run(
     hook.handleApply,
@@ -922,28 +960,28 @@ test("a pin refusal is still reported as a pin refusal on a tracked apply", asyn
   stubFetch();
   const hook = mount("kind: ConfigMap", {
     pinApplyToPreview: true,
-    tracked: signal(true),
+    tracked: true,
   });
 
   await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
   await run(hook.handleApply, 409, refusal(409, "cluster_generation_mismatch"));
 
-  expect(hook.error.value).toContain("re-registered");
-  expect(hook.trackedRefusal.value).toBeNull();
-  expect(hook.pin.value).toBeNull();
+  expect(hook.error).toContain("re-registered");
+  expect(hook.trackedRefusal).toBeNull();
+  expect(hook.pin).toBeNull();
 });
 
 test("a tracked apply still mints a v4 id where crypto.randomUUID is undefined", async () => {
   // An HTTP-only deployment is not a secure context: randomUUID is missing.
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
   const c = globalThis.crypto as unknown as { randomUUID?: unknown };
   c.randomUUID = undefined;
   try {
     const call = await run(hook.handleApply, 200, applied);
     expect(operationIdOf(call)).toMatch(UUID_V4);
-    expect(hook.error.value).toBeNull();
+    expect(hook.error).toBeNull();
   } finally {
     delete c.randomUUID;
   }
@@ -952,11 +990,10 @@ test("a tracked apply still mints a v4 id where crypto.randomUUID is undefined",
 test("a changed repairOf after an unknown outcome mints a new operation id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const repairOf = signal<string | null>(OTHER_OP);
-  const hook = mount("kind: ConfigMap", { tracked: signal(true), repairOf });
+  const hook = mount("kind: ConfigMap", { tracked: true, repairOf: OTHER_OP });
 
   const first = await runDropped(hook.handleApply);
-  repairOf.value = OP;
+  hook.setOptions({ repairOf: OP });
   const second = await run(hook.handleApply, 200, applied);
 
   expect(operationIdOf(second)).not.toBe(operationIdOf(first));
@@ -967,8 +1004,8 @@ test("an unchanged repairOf after an unknown outcome reuses the operation id", a
   switchCluster("cluster-a", "gen-a");
   stubFetch();
   const hook = mount("kind: ConfigMap", {
-    tracked: signal(true),
-    repairOf: signal<string | null>(OTHER_OP),
+    tracked: true,
+    repairOf: OTHER_OP,
   });
 
   const first = await runDropped(hook.handleApply);
@@ -980,11 +1017,11 @@ test("an unchanged repairOf after an unknown outcome reuses the operation id", a
 test("an unpinned retry on another cluster mints a new operation id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await runDropped(hook.handleApply);
   expect(first.clusterHeader).toBe("cluster-a");
-  switchCluster("cluster-b", "gen-b");
+  act(() => switchCluster("cluster-b", "gen-b"));
   const second = await run(hook.handleApply, 200, applied);
 
   expect(second.clusterHeader).toBe("cluster-b");
@@ -994,7 +1031,7 @@ test("an unpinned retry on another cluster mints a new operation id", async () =
 test("an unpinned retry on the same cluster reuses the operation id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await runDropped(hook.handleApply);
   const second = await run(hook.handleApply, 200, applied);
@@ -1008,7 +1045,7 @@ test("a fresh preview after an unknown outcome mints a new operation id", async 
   stubFetch();
   const hook = mount("kind: ConfigMap", {
     pinApplyToPreview: true,
-    tracked: signal(true),
+    tracked: true,
   });
 
   await run(hook.handleValidate, 200, preview("cluster-a", "gen-a"));
@@ -1022,7 +1059,7 @@ test("a fresh preview after an unknown outcome mints a new operation id", async 
 test("a 503 receipt_store_unavailable on a fresh id releases it", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await run(
     hook.handleApply,
@@ -1039,7 +1076,7 @@ test("a 503 receipt_store_unavailable on a reused id keeps it", async () => {
   // apply; minting a new id then could apply twice.
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await runDropped(hook.handleApply);
   const second = await run(
@@ -1056,7 +1093,7 @@ test("a 503 receipt_store_unavailable on a reused id keeps it", async () => {
 test("retrySameOperationId=false releases the id, even on a reused one", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await runDropped(hook.handleApply);
   const second = await run(
@@ -1069,7 +1106,7 @@ test("retrySameOperationId=false releases the id, even on a reused one", async (
   );
   const third = await run(hook.handleApply, 200, applied);
 
-  expect(hook.trackedRefusal.value).toBeNull(); // cleared by the third attempt
+  expect(hook.trackedRefusal).toBeNull(); // cleared by the third attempt
   expect(operationIdOf(second)).toBe(operationIdOf(first));
   expect(operationIdOf(third)).not.toBe(operationIdOf(first));
 });
@@ -1077,7 +1114,7 @@ test("retrySameOperationId=false releases the id, even on a reused one", async (
 test("retrySameOperationId=true keeps the id, even on a fresh one", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await run(
     hook.handleApply,
@@ -1087,8 +1124,8 @@ test("retrySameOperationId=true keeps the id, even on a fresh one", async () => 
       retrySameOperationId: true,
     }),
   );
-  expect(hook.trackedRefusal.value?.retrySameOperationId).toBe(true);
-  expect(hook.trackedRefusal.value?.applied).toBe(false);
+  expect(hook.trackedRefusal?.retrySameOperationId).toBe(true);
+  expect(hook.trackedRefusal?.applied).toBe(false);
   const second = await run(hook.handleApply, 200, applied);
 
   expect(operationIdOf(second)).toBe(operationIdOf(first));
@@ -1097,11 +1134,11 @@ test("retrySameOperationId=true keeps the id, even on a fresh one", async () => 
 test("a store failure without the flag falls back to first-send versus retry", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   await run(hook.handleApply, 503, refusal(503, "receipt_store_unavailable"));
-  expect(hook.trackedRefusal.value?.retrySameOperationId).toBeUndefined();
-  expect(hook.trackedRefusal.value?.applied).toBeUndefined();
+  expect(hook.trackedRefusal?.retrySameOperationId).toBeUndefined();
+  expect(hook.trackedRefusal?.applied).toBeUndefined();
 });
 
 test("a non-boolean retrySameOperationId is ignored", () => {
@@ -1119,20 +1156,20 @@ test("a non-boolean retrySameOperationId is ignored", () => {
 test("the same request from another user does not reuse the id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   try {
     await signIn("user-1");
     const first = await runDropped(hook.handleApply);
     unmount();
     await signIn("user-2");
-    const second = mount("kind: ConfigMap", { tracked: signal(true) });
+    const second = mount("kind: ConfigMap", { tracked: true });
     const next = await run(second.handleApply, 200, applied);
 
     expect(operationIdOf(next)).not.toBe(operationIdOf(first));
     unmount();
     await signIn("user-1");
-    const third = mount("kind: ConfigMap", { tracked: signal(true) });
+    const third = mount("kind: ConfigMap", { tracked: true });
     const back = await run(third.handleApply, 200, applied);
     expect(operationIdOf(back)).toBe(operationIdOf(first));
   } finally {
@@ -1143,7 +1180,7 @@ test("the same request from another user does not reuse the id", async () => {
 test("logging out forgets a pending id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   try {
     await signIn("user-1");
@@ -1151,9 +1188,9 @@ test("logging out forgets a pending id", async () => {
     unmount();
     await signOut();
     // Logout resets the cluster; restore it so only the pending id differs.
-    switchCluster("cluster-a", "gen-a");
+    act(() => switchCluster("cluster-a", "gen-a"));
     await signIn("user-1");
-    const second = mount("kind: ConfigMap", { tracked: signal(true) });
+    const second = mount("kind: ConfigMap", { tracked: true });
     const next = await run(second.handleApply, 200, applied);
 
     expect(operationIdOf(next)).not.toBe(operationIdOf(first));
@@ -1165,7 +1202,7 @@ test("logging out forgets a pending id", async () => {
 test("other 5xx on a fresh id keep it", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+  const hook = mount("kind: ConfigMap", { tracked: true });
 
   const first = await run(hook.handleApply, 503, { error: { code: 503 } });
   const second = await run(hook.handleApply, 200, applied);
@@ -1176,12 +1213,12 @@ test("other 5xx on a fresh id keep it", async () => {
 test("a remount after a dropped response continues the same attempt", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const first = mount("kind: ConfigMap", { tracked: true });
   const dropped = await runDropped(first.handleApply);
   unmount();
 
   // A new hook instance, as after an Astro navigation or reload.
-  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const second = mount("kind: ConfigMap", { tracked: true });
   const retry = await run(second.handleApply, 200, applied);
 
   expect(operationIdOf(retry)).toBe(operationIdOf(dropped));
@@ -1190,11 +1227,11 @@ test("a remount after a dropped response continues the same attempt", async () =
 test("a remount does not reuse the id for different content", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const first = mount("kind: ConfigMap", { tracked: true });
   const dropped = await runDropped(first.handleApply);
   unmount();
 
-  const second = mount("kind: Secret", { tracked: signal(true) });
+  const second = mount("kind: Secret", { tracked: true });
   const next = await run(second.handleApply, 200, applied);
 
   expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
@@ -1203,12 +1240,12 @@ test("a remount does not reuse the id for different content", async () => {
 test("a success clears the persisted id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const first = mount("kind: ConfigMap", { tracked: true });
   const dropped = await runDropped(first.handleApply);
   await run(first.handleApply, 200, applied);
   unmount();
 
-  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const second = mount("kind: ConfigMap", { tracked: true });
   const next = await run(second.handleApply, 200, applied);
 
   expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
@@ -1217,12 +1254,12 @@ test("a success clears the persisted id", async () => {
 test("a definite refusal clears the persisted id", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const first = mount("kind: ConfigMap", { tracked: true });
   const dropped = await runDropped(first.handleApply);
   await run(first.handleApply, 422, { error: { code: 422, message: "bad" } });
   unmount();
 
-  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const second = mount("kind: ConfigMap", { tracked: true });
   const next = await run(second.handleApply, 200, applied);
 
   expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
@@ -1231,14 +1268,13 @@ test("a definite refusal clears the persisted id", async () => {
 test("an unpinned untracked apply supersedes a persisted tracked attempt", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const tracked = signal(true);
-  const first = mount("kind: ConfigMap", { tracked });
+  const first = mount("kind: ConfigMap", { tracked: true });
   const dropped = await runDropped(first.handleApply);
-  tracked.value = false;
+  first.setOptions({ tracked: false });
   await run(first.handleApply, 200, applied);
   unmount();
 
-  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const second = mount("kind: ConfigMap", { tracked: true });
   const next = await run(second.handleApply, 200, applied);
 
   expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
@@ -1249,12 +1285,12 @@ test("a persisted id expires after the reuse window", async () => {
   stubFetch();
   const realNow = Date.now;
   try {
-    const first = mount("kind: ConfigMap", { tracked: signal(true) });
+    const first = mount("kind: ConfigMap", { tracked: true });
     const dropped = await runDropped(first.handleApply);
     unmount();
 
     Date.now = () => realNow() + PENDING_ATTEMPT_TTL_MS + 1;
-    const second = mount("kind: ConfigMap", { tracked: signal(true) });
+    const second = mount("kind: ConfigMap", { tracked: true });
     const next = await run(second.handleApply, 200, applied);
 
     expect(operationIdOf(next)).not.toBe(operationIdOf(dropped));
@@ -1266,7 +1302,7 @@ test("a persisted id expires after the reuse window", async () => {
 test("a corrupt persisted entry is ignored", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const first = mount("kind: ConfigMap", { tracked: signal(true) });
+  const first = mount("kind: ConfigMap", { tracked: true });
   const dropped = await runDropped(first.handleApply);
   unmount();
   for (let i = 0; i < globalThis.sessionStorage.length; i++) {
@@ -1274,7 +1310,7 @@ test("a corrupt persisted entry is ignored", async () => {
     if (key) globalThis.sessionStorage.setItem(key, "{not json");
   }
 
-  const second = mount("kind: ConfigMap", { tracked: signal(true) });
+  const second = mount("kind: ConfigMap", { tracked: true });
   const next = await run(second.handleApply, 200, applied);
 
   expect(operationIdOf(next)).toMatch(UUID_V4);
@@ -1295,12 +1331,12 @@ test("unavailable storage falls back to the in-memory attempt", async () => {
   try {
     // Guard the stub itself: it must really make storage throw.
     expect(() => globalThis.sessionStorage).toThrow("storage blocked");
-    const hook = mount("kind: ConfigMap", { tracked: signal(true) });
+    const hook = mount("kind: ConfigMap", { tracked: true });
     const first = await runDropped(hook.handleApply);
     const retry = await run(hook.handleApply, 200, applied);
     expect(operationIdOf(first)).toMatch(UUID_V4);
     expect(operationIdOf(retry)).toBe(operationIdOf(first));
-    expect(hook.error.value).toBeNull();
+    expect(hook.error).toBeNull();
   } finally {
     if (real) Object.defineProperty(globalThis, "sessionStorage", real);
   }
@@ -1340,15 +1376,21 @@ test("the refusal and retry helpers ignore errors that are not tracked refusals"
 test("handlers keep their identity across renders, so a stored one stays current", async () => {
   switchCluster("cluster-a", "gen-a");
   stubFetch();
-  const first = mount("kind: ConfigMap", { pinApplyToPreview: true });
+  const hook = mount("kind: ConfigMap", { pinApplyToPreview: true });
+  const first = hook.renders[0];
 
   await run(first.handleValidate, 200, preview("cluster-a", "gen-a"));
-  rerenderHook();
+  hook.rerender();
 
+  const latest = hook.renders.at(-1);
   expect(latest).toBeDefined();
+  expect(latest).not.toBe(first);
   expect(latest?.handleValidate).toBe(first.handleValidate);
   expect(latest?.handleApply).toBe(first.handleApply);
   expect(latest?.clearPin).toBe(first.clearPin);
+  expect(latest?.setYamlContent).toBe(first.setYamlContent);
+  expect(latest?.setError).toBe(first.setError);
+  expect(latest?.setResult).toBe(first.setResult);
   // The first render's handler sees the pin the preview set afterwards.
   const call = await run(first.handleApply, 200, applied);
   expect(new URL(call.url, "http://x").searchParams.get("targetCluster")).toBe(
