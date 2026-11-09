@@ -148,8 +148,9 @@ export default function YamlApplyPage() {
   // registry. Best effort: an id is still an unambiguous label.
   // The repair link (Release E) is read first: the cluster its receipt names
   // is one of the clusters this page may have to name.
-  const { repair, stopRepair } = useRepairLink(repairOf);
-  const repairNow = useSignalValue(repair);
+  const { repair: repairNow, stopRepair } = useRepairLink((id) => {
+    repairOf.value = id;
+  });
   const repairClusterId =
     repairNow.status === "valid" ? repairNow.clusterId : undefined;
   const pinnedClusterId = pinNow?.target.clusterId;
@@ -162,10 +163,10 @@ export default function YamlApplyPage() {
 
   // Change tracking (Release E): whether the server can keep a record, and
   // who manages the previewed objects.
-  const trackingAvailability = useTrackingAvailability(tracked);
-  const ownership = useOwnershipPreview(preview, pin, yamlContent);
-  const trackingNow = useSignalValue(trackingAvailability);
-  const ownershipNow = useSignalValue(ownership);
+  const trackingNow = useTrackingAvailability((on) => {
+    tracked.value = on;
+  });
+  const ownershipNow = useOwnershipPreview(previewNow, pinNow, yamlText);
 
   const clusterLabel = (id: string) => labelCluster(id, namesNow);
 

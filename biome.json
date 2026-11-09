@@ -230,6 +230,7 @@
         "frontend/components/wizard/ServiceBasicsStep.tsx",
         "frontend/components/wizard/ServicePortsStep.tsx",
         "frontend/components/wizard/StepRail.tsx",
+        "frontend/lib/change-tracking.ts",
         "frontend/lib/dashboard/types.ts",
         "frontend/lib/dashboard/use-source-state.ts",
         "frontend/lib/dashboard/use-source-state_test.tsx",
