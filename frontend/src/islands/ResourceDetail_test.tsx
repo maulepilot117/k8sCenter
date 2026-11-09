@@ -365,3 +365,96 @@ test("a #terminal link waits for the pod's containers before connecting", async 
   expect(terminalContainers.length).toBeGreaterThan(0);
   expect(terminalContainers.every((c) => c.join() === "app")).toBe(true);
 });
+
+/**
+ * Wraps the stubbed fetch so requests whose URL matches are held until the
+ * test releases them. Counts the held requests.
+ */
+function holdRequests(match: string) {
+  const inner = globalThis.fetch;
+  const held: Array<() => void> = [];
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    if (!String(input).includes(match)) return inner(input, init);
+    return new Promise<Response>((resolve) => {
+      held.push(() =>
+        resolve(
+          new Response(JSON.stringify({ data: applyResponse(false) }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+    });
+  }) as typeof globalThis.fetch;
+  return held;
+}
+
+test("a double-clicked Apply sends one apply request", async () => {
+  enterBrowser();
+  setAccessToken("test-token");
+  location.hash = "#yaml";
+  stubFetch((url) =>
+    url.includes("/v1/resources/deployments/default/web") ? DEPLOYMENT : [],
+  );
+  const held = holdRequests("/v1/yaml/apply");
+
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  act(() => render(<ResourceDetail {...PROPS} />, host as HTMLElement));
+  await flush();
+  act(() => button(host as HTMLElement, "Edit").click());
+  await flush();
+  const editor = host.querySelector(
+    "[data-testid=yaml]",
+  ) as HTMLTextAreaElement;
+  act(() => {
+    editor.value = editor.value.replace("replicas: 2", "replicas: 3");
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  // Both clicks land before the first request resolves and before any
+  // re-render could disable the button.
+  const apply = button(host, "Apply");
+  act(() => {
+    apply.click();
+    apply.click();
+  });
+  await flush();
+  expect(held).toHaveLength(1);
+
+  // Releasing the held request must not produce a second one.
+  held[0]();
+  await flush();
+  expect(held).toHaveLength(1);
+});
+
+test("a double-clicked confirm sends one restart request", async () => {
+  enterBrowser();
+  setAccessToken("test-token");
+  location.hash = "";
+  stubFetch((url) =>
+    url.includes("/v1/resources/deployments/default/web") ? DEPLOYMENT : [],
+  );
+  const held = holdRequests("/web/restart");
+
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  act(() => render(<ResourceDetail {...PROPS} />, host as HTMLElement));
+  await flush();
+  act(() => button(host as HTMLElement, "Restart").click());
+  await flush();
+
+  const dialog = host.querySelector("[role=dialog]") as HTMLElement;
+  expect(dialog).not.toBeNull();
+  const confirm = button(dialog, "Restart");
+  act(() => {
+    confirm.click();
+    confirm.click();
+  });
+  await flush();
+  expect(held).toHaveLength(1);
+
+  held[0]();
+  await flush();
+  expect(held).toHaveLength(1);
+});

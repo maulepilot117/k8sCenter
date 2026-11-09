@@ -43,6 +43,7 @@ import { getCount, resourceCounts } from "@/src/lib/resource-counts.ts";
 import { showToast } from "@/src/lib/toast-store.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
+import { useStateRef } from "@/src/lib/use-state-ref.ts";
 import {
   EVENT_ADDED,
   EVENT_DELETED,
@@ -278,16 +279,15 @@ export default function ResourceTableIsland({
   const [items, setItems] = useState<K8sResource[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<TableFilters>({
+  // The ref is written with every filter change, ahead of the next render, so
+  // the fetch that a mount-time link filter triggers reads the chip just chosen
+  // rather than the one last rendered.
+  const [filters, setFilters, filtersRef] = useStateRef<TableFilters>({
     search: "",
     statusFilter: "all",
     sortKey: "name",
     sortDir: "asc",
   });
-  // Written with every filter change, ahead of the next render, so the fetch
-  // that a mount-time link filter triggers reads the chip just chosen rather
-  // than the one last rendered.
-  const filtersRef = useRef(filters);
   const { search, statusFilter, sortKey, sortDir } = filters;
   // Degradations reported by applyViewState when a saved view is restored.
   // Surfaced above the table and dismissible; never swallowed, because a view
@@ -321,11 +321,8 @@ export default function ResourceTableIsland({
   const filterChips = podFilterKind ? POD_FILTER_CHIPS : WORKLOAD_FILTER_CHIPS;
 
   const updateFilters = useCallback(
-    (change: (prev: TableFilters) => TableFilters) => {
-      const next = change(filtersRef.current);
-      filtersRef.current = next;
-      setFilters(next);
-    },
+    (change: (prev: TableFilters) => TableFilters) =>
+      setFilters(change(filtersRef.current)),
     [],
   );
 

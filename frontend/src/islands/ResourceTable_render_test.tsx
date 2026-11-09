@@ -1,5 +1,6 @@
 /** @jsxImportSource react */
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { within } from "@testing-library/preact";
 import { setAccessToken } from "@/lib/api.ts";
 import type { K8sResource } from "@/lib/k8s-types.ts";
 import { disconnectWS } from "@/src/lib/ws.ts";
@@ -33,9 +34,15 @@ function pod(name: string, uid = name): K8sResource {
   } as unknown as K8sResource;
 }
 
+let requests: Array<{ url: string; method: string }> = [];
+let deletes: string[] = [];
+
 function stubList(items: K8sResource[]) {
+  requests = [];
+  deletes = [];
   // Only the resource list returns the rows; saved views and the rest are empty.
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({ url: String(input), method: init?.method ?? "GET" });
     const isList = String(input).includes("/v1/resources/");
     return new Response(
       JSON.stringify({ data: isList ? items : [], metadata: {} }),
@@ -119,16 +126,20 @@ test("the toolbar count reads N of M match only while a filter narrows the list"
   await waitFor(() => expect(view.queryByTestId("toolbar-count")).toBeNull());
 });
 
-async function mountWithSocket() {
+async function mountWithSocket(initial: K8sResource[] = []) {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   globalThis.requestAnimationFrame = ((cb: () => void) => {
     frames.push(cb);
     return frames.length;
   }) as unknown as typeof requestAnimationFrame;
   globalThis.cancelAnimationFrame = (() => {}) as typeof cancelAnimationFrame;
-  stubList([]);
+  stubList(initial);
   const view = render(<ResourceTable kind="pods" title="Pods" />);
-  await waitFor(() => view.getByText("No pods found"));
+  await waitFor(() =>
+    initial.length > 0
+      ? view.getByText(initial[0].metadata.name)
+      : view.getByText("No pods found"),
+  );
   await waitFor(() => expect(FakeWebSocket.instances.length).toBe(1));
   const sock = FakeWebSocket.instances[0];
   await act(async () => {
@@ -196,4 +207,89 @@ test("rows from a later frame are added to the rows an earlier frame delivered",
     flushFrame();
   });
   for (const n of [...first, ...second]) view.getByText(n);
+});
+
+function event(eventType: string, object?: K8sResource) {
+  return { type: "event", id: "pods-all", eventType, object };
+}
+
+test("one frame holding MODIFIED, DELETED and ADDED applies all three", async () => {
+  const { view, sock } = await mountWithSocket([
+    pod("alpha", "uid-a"),
+    pod("beta", "uid-b"),
+    pod("gamma", "uid-c"),
+  ]);
+  await act(async () => {
+    sock.receive(event("MODIFIED", pod("alpha-renamed", "uid-a")));
+    sock.receive(event("DELETED", pod("beta", "uid-b")));
+    sock.receive(event("ADDED", pod("delta", "uid-d")));
+  });
+  expect(frames.length).toBe(1);
+  await act(async () => {
+    flushFrame();
+  });
+  view.getByText("alpha-renamed");
+  expect(view.queryByText("alpha")).toBeNull();
+  expect(view.queryByText("beta")).toBeNull();
+  view.getByText("gamma");
+  view.getByText("delta");
+});
+
+test("a resync_required message refetches the list instead of applying rows", async () => {
+  const { view, sock } = await mountWithSocket([pod("alpha", "uid-a")]);
+  const listRequests = () =>
+    requests.filter((r) => r.url.includes("/v1/resources/pods")).length;
+  const before = listRequests();
+  await act(async () => {
+    sock.receive(event("ADDED", pod("late", "uid-late")));
+    sock.receive({ type: "resync_required", id: "pods-all" });
+  });
+  await act(async () => {
+    flushFrame();
+  });
+  await waitFor(() => expect(listRequests()).toBe(before + 1));
+  // The queued ADDED was dropped with the resync; the refetch owns the rows.
+  expect(view.queryByText("late")).toBeNull();
+  view.getByText("alpha");
+});
+
+test("confirming a row delete twice before the request resolves sends one DELETE", async () => {
+  const { view } = await mountWithSocket([pod("alpha", "uid-a")]);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "DELETE") {
+      deletes.push(String(input));
+      await gate;
+      return new Response(null, { status: 204 });
+    }
+    return inner(input, init);
+  }) as unknown as typeof fetch;
+
+  await act(async () => {
+    fireEvent.click(view.getByTitle("Actions"));
+  });
+  await act(async () => {
+    fireEvent.click(view.getByText("Delete"));
+  });
+  await act(async () => {
+    fireEvent.input(view.getByPlaceholderText("alpha"), {
+      target: { value: "alpha" },
+    });
+  });
+  const dialog = view.getByRole("dialog");
+  const confirm = within(dialog).getByText("Delete");
+  // Both clicks land before React renders the loading state.
+  await act(async () => {
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+  });
+  expect(deletes.length).toBe(1);
+  await act(async () => {
+    release();
+  });
+  expect(deletes.length).toBe(1);
 });
