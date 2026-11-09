@@ -1,16 +1,17 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { type FormEvent, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
 import { apiPost } from "@/lib/api.ts";
 import { NS_NAME_REGEX } from "@/lib/wizard-constants.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 const NAMESPACE_LIST = "/cluster/namespaces";
 
-/** One root class for the SSR placeholder and the form: Preact hydration
- * keeps the server-rendered root's props, so a root that differed would keep
- * the placeholder's classes. */
+/** One root class for the SSR placeholder and the form: hydration keeps the
+ * server-rendered root's props, so a root that differed would keep the
+ * placeholder's classes. */
 const ROOT_CLASS = "p-6 max-w-lg";
 
 /** Where a successful create goes: the new namespace's detail page. */
@@ -19,17 +20,18 @@ export function createdNamespaceHref(name: string): string {
 }
 
 export default function NamespaceCreator() {
-  const name = useSignal("");
-  const labels = useSignal<Array<{ key: string; value: string }>>([
+  const isClient = useIsClient();
+  const [name, setName] = useState("");
+  const [labels, setLabels] = useState<Array<{ key: string; value: string }>>([
     { key: "", value: "" },
   ]);
-  const submitting = useSignal(false);
-  const error = useSignal<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (!IS_BROWSER) {
+  if (!isClient) {
     return (
-      <div class={ROOT_CLASS}>
-        <h1 class="text-2xl font-semibold text-text-primary">
+      <div className={ROOT_CLASS}>
+        <h1 className="text-2xl font-semibold text-text-primary">
           Create Namespace
         </h1>
       </div>
@@ -37,108 +39,108 @@ export default function NamespaceCreator() {
   }
 
   const validate = (): string | null => {
-    if (!name.value.trim()) return "Name is required";
-    if (!NS_NAME_REGEX.test(name.value)) {
+    if (!name.trim()) return "Name is required";
+    if (!NS_NAME_REGEX.test(name)) {
       return "Must be lowercase alphanumeric with dashes, max 63 chars";
     }
-    if (name.value.startsWith("kube-")) {
+    if (name.startsWith("kube-")) {
       return 'Names starting with "kube-" are reserved for Kubernetes system namespaces';
     }
     return null;
   };
 
-  const handleSubmit = async (e: Event) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    error.value = null;
+    setError(null);
     const err = validate();
     if (err) {
-      error.value = err;
+      setError(err);
       return;
     }
 
-    submitting.value = true;
+    setSubmitting(true);
     try {
       const nsLabels: Record<string, string> = {};
-      for (const l of labels.value) {
+      for (const l of labels) {
         if (l.key.trim()) nsLabels[l.key.trim()] = l.value.trim();
       }
 
       await apiPost("/v1/resources/namespaces", {
         metadata: {
-          name: name.value,
+          name,
           labels: Object.keys(nsLabels).length > 0 ? nsLabels : undefined,
         },
       });
-      globalThis.location.href = createdNamespaceHref(name.value);
+      globalThis.location.href = createdNamespaceHref(name);
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : "Failed to create namespace";
-      error.value = msg;
+      setError(msg);
     } finally {
-      submitting.value = false;
+      setSubmitting(false);
     }
   };
 
   const updateLabel = (index: number, field: "key" | "value", val: string) => {
-    const updated = [...labels.value];
-    updated[index] = { ...updated[index], [field]: val };
-    labels.value = updated;
+    setLabels((prev) =>
+      prev.map((l, i) => (i === index ? { ...l, [field]: val } : l)),
+    );
   };
 
   const addLabel = () => {
-    labels.value = [...labels.value, { key: "", value: "" }];
+    setLabels((prev) => [...prev, { key: "", value: "" }]);
   };
 
   const removeLabel = (index: number) => {
-    labels.value = labels.value.filter((_, i) => i !== index);
+    setLabels((prev) => prev.filter((_, i) => i !== index));
   };
 
   return (
-    <div class={ROOT_CLASS}>
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-semibold text-text-primary">
+    <div className={ROOT_CLASS}>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-semibold text-text-primary">
           Create Namespace
         </h1>
         <a
           href={NAMESPACE_LIST}
-          class="text-sm text-text-muted hover:text-text-secondary"
+          className="text-sm text-text-muted hover:text-text-secondary"
         >
           Back to list
         </a>
       </div>
 
-      {error.value && (
-        <div class="mb-4 rounded-md bg-danger-dim p-4 border border-danger">
-          <p class="text-sm text-danger">{error.value}</p>
+      {error && (
+        <div className="mb-4 rounded-md bg-danger-dim p-4 border border-danger">
+          <p className="text-sm text-danger">{error}</p>
         </div>
       )}
 
-      <form onSubmit={handleSubmit} class="space-y-6">
+      <form onSubmit={handleSubmit} className="space-y-6">
         <Input
           label="Namespace Name"
-          value={name.value}
-          onInput={(e) => (name.value = (e.target as HTMLInputElement).value)}
+          value={name}
+          onChange={(e) => setName(e.currentTarget.value)}
           placeholder="my-namespace"
           required
         />
 
         <KeyValueListEditor
           label="Labels (optional)"
-          entries={labels.value}
+          entries={labels}
           onUpdate={updateLabel}
           onAdd={addLabel}
           onRemove={removeLabel}
           addLabel="+ Add Label"
         />
 
-        <div class="flex items-center gap-4">
-          <Button type="submit" variant="primary" disabled={submitting.value}>
-            {submitting.value ? "Creating..." : "Create Namespace"}
+        <div className="flex items-center gap-4">
+          <Button type="submit" variant="primary" disabled={submitting}>
+            {submitting ? "Creating..." : "Create Namespace"}
           </Button>
           <button
             type="button"
             onClick={() => globalThis.history.back()}
-            class="text-sm text-text-muted hover:text-text-secondary"
+            className="text-sm text-text-muted hover:text-text-secondary"
           >
             Cancel
           </button>

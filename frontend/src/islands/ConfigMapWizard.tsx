@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import type { KeyValueEntry } from "@/components/ui/KeyValueListEditor.tsx";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
@@ -8,6 +8,9 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface ConfigMapFormState {
   name: string;
@@ -42,54 +45,67 @@ function buildManifest(f: ConfigMapFormState): string {
 
 export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<ConfigMapFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<ConfigMapFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const dirty = useSignal(false);
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+  const rowKeys = useRowKeys(form.entries.length);
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
-  }, []);
+  const updateField = useCallback(
+    (field: string, value: unknown) => {
+      dirty.value = true;
+      setForm((prev) => ({ ...prev, [field]: value }));
+    },
+    [dirty],
+  );
 
   const updateEntry = useCallback(
     (index: number, field: "key" | "value", val: string) => {
       dirty.value = true;
-      const entries = [...form.value.entries];
-      entries[index] = { ...entries[index], [field]: val };
-      form.value = { ...form.value, entries };
+      setForm((prev) => {
+        const entries = [...prev.entries];
+        entries[index] = { ...entries[index], [field]: val };
+        return { ...prev, entries };
+      });
     },
-    [],
+    [dirty],
   );
 
   const addEntry = useCallback(() => {
     dirty.value = true;
-    form.value = {
-      ...form.value,
-      entries: [...form.value.entries, { key: "", value: "" }],
-    };
-  }, []);
+    setForm((prev) => ({
+      ...prev,
+      entries: [...prev.entries, { key: "", value: "" }],
+    }));
+  }, [dirty]);
 
-  const removeEntry = useCallback((index: number) => {
-    dirty.value = true;
-    const entries = form.value.entries.filter((_, i) => i !== index);
-    form.value = {
-      ...form.value,
-      entries: entries.length > 0 ? entries : [{ key: "", value: "" }],
-    };
-  }, []);
+  const removeEntry = useCallback(
+    (index: number) => {
+      dirty.value = true;
+      rowKeys.removeAt(index);
+      setForm((prev) => {
+        const entries = prev.entries.filter((_, i) => i !== index);
+        return {
+          ...prev,
+          entries: entries.length > 0 ? entries : [{ key: "", value: "" }],
+        };
+      });
+    },
+    [dirty, rowKeys],
+  );
 
   const validateStep = (): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
@@ -122,26 +138,26 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
       errs.data = "Total data size must be less than 1MB";
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const goNext = async () => {
     if (!validateStep()) return;
-    currentStep.value = 1;
+    setCurrentStep(1);
     await fetchPreview();
   };
 
   const goBack = () => {
-    if (currentStep.value > 0) currentStep.value = 0;
+    if (currentStep > 0) setCurrentStep(0);
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = form;
     const data: Record<string, string> = {};
     for (const entry of f.entries) {
       if (entry.key) {
@@ -161,22 +177,23 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
-  const f = form.value;
+  const f = form;
 
   return (
     <WizardShell
       title="Create ConfigMap"
-      subtitle={`Step ${currentStep.value + 1} of 2 · namespace ${f.namespace}`}
+      subtitle={`Step ${currentStep + 1} of 2 · namespace ${f.namespace}`}
       icon={
         <svg
           width="21"
@@ -184,26 +201,26 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <rect x="3" y="3" width="14" height="14" rx="2" />
           <path d="M7 7h6M7 10h6M7 13h4" />
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
-      onNext={currentStep.value === 0 ? goNext : close}
-      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
-      yaml={currentStep.value === 0 ? buildManifest(f) : undefined}
+      onNext={currentStep === 0 ? goNext : close}
+      nextLabel={currentStep === 0 ? "Continue" : "Close"}
+      yaml={currentStep === 0 ? buildManifest(f) : undefined}
     >
-      {currentStep.value === 0 && (
+      {currentStep === 0 && (
         <div
           style={{
             display: "flex",
@@ -228,13 +245,11 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
             <input
               type="text"
               value={f.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
               placeholder="e.g. my-config"
             />
-            {errors.value.name && (
+            {errors.name && (
               <p
                 style={{
                   marginTop: "4px",
@@ -242,7 +257,7 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
                   color: "var(--error)",
                 }}
               >
-                {errors.value.name}
+                {errors.name}
               </p>
             )}
           </div>
@@ -262,12 +277,10 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
             </label>
             <select
               value={f.namespace}
-              onChange={(e) =>
-                updateField("namespace", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              onChange={(e) => updateField("namespace", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option key={ns} value={ns}>
                   {ns}
                 </option>
@@ -293,7 +306,7 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
             >
               {f.entries.map((entry, i) => (
                 <div
-                  key={i}
+                  key={rowKeys.keyAt(i)}
                   style={{
                     display: "flex",
                     gap: "8px",
@@ -304,17 +317,13 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
                     <input
                       type="text"
                       value={entry.key}
-                      onInput={(e) =>
-                        updateEntry(
-                          i,
-                          "key",
-                          (e.target as HTMLInputElement).value,
-                        )
+                      onChange={(e) =>
+                        updateEntry(i, "key", e.currentTarget.value)
                       }
-                      class={WIZARD_INPUT_CLASS}
+                      className={WIZARD_INPUT_CLASS}
                       placeholder="Key"
                     />
-                    {errors.value[`entry_${i}_key`] && (
+                    {errors[`entry_${i}_key`] && (
                       <p
                         style={{
                           marginTop: "3px",
@@ -322,21 +331,17 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
                           color: "var(--error)",
                         }}
                       >
-                        {errors.value[`entry_${i}_key`]}
+                        {errors[`entry_${i}_key`]}
                       </p>
                     )}
                   </div>
                   <div style={{ flex: 1 }}>
                     <textarea
                       value={entry.value}
-                      onInput={(e) =>
-                        updateEntry(
-                          i,
-                          "value",
-                          (e.target as HTMLTextAreaElement).value,
-                        )
+                      onChange={(e) =>
+                        updateEntry(i, "value", e.currentTarget.value)
                       }
-                      class={WIZARD_INPUT_CLASS}
+                      className={WIZARD_INPUT_CLASS}
                       placeholder="Value"
                       rows={1}
                       style={{ minHeight: "36px", resize: "vertical" }}
@@ -363,8 +368,8 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
                       fill="none"
                       viewBox="0 0 20 20"
                       stroke="currentColor"
-                      stroke-width="1.8"
-                      stroke-linecap="round"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
                     >
                       <path d="M5 5l10 10M15 5L5 15" />
                     </svg>
@@ -372,7 +377,7 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
                 </div>
               ))}
             </div>
-            {errors.value.data && (
+            {errors.data && (
               <p
                 style={{
                   marginTop: "6px",
@@ -380,7 +385,7 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
                   color: "var(--error)",
                 }}
               >
-                {errors.value.data}
+                {errors.data}
               </p>
             )}
             <button
@@ -403,14 +408,12 @@ export default function ConfigMapWizard({ onClose }: { onClose?: () => void }) {
         </div>
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/config/configmaps"
           dirty={dirty}
         />

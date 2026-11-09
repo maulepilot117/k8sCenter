@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { DeploymentBasicsStep } from "@/components/wizard/DeploymentBasicsStep.tsx";
 import { DeploymentNetworkStep } from "@/components/wizard/DeploymentNetworkStep.tsx";
 import { DeploymentResourcesStep } from "@/components/wizard/DeploymentResourcesStep.tsx";
@@ -16,6 +16,8 @@ import type { ProbeState } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface DeploymentFormState {
   name: string;
@@ -73,37 +75,45 @@ export default function DeploymentWizard({
   onClose?: () => void;
 }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<DeploymentFormState>(initialState());
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<DeploymentFormState>(initialState);
   const namespaces = useNamespaces();
-  const errors = useSignal<Record<string, string>>({});
+  const namespaceList = useSignalValue(namespaces);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const dirty = useSignal(false);
 
   // Review step state
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    const f = { ...form.value, [field]: value };
-    // Auto-sync app label value with name
-    if (field === "name") {
-      const idx = f.labels.findIndex((l: { key: string }) => l.key === "app");
-      if (idx >= 0) {
-        const updated = [...f.labels];
-        updated[idx] = { ...updated[idx], value: value as string };
-        f.labels = updated;
-      }
-    }
-    form.value = f;
-  }, []);
+  const updateField = useCallback(
+    (field: string, value: unknown) => {
+      dirty.value = true;
+      setForm((prev) => {
+        const f = { ...prev, [field]: value };
+        // Auto-sync app label value with name
+        if (field === "name") {
+          const idx = f.labels.findIndex(
+            (l: { key: string }) => l.key === "app",
+          );
+          if (idx >= 0) {
+            const updated = [...f.labels];
+            updated[idx] = { ...updated[idx], value: value as string };
+            f.labels = updated;
+          }
+        }
+        return f;
+      });
+    },
+    [dirty],
+  );
 
   const validateStep = (step: number): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -134,28 +144,28 @@ export default function DeploymentWizard({
       });
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
+    if (!validateStep(currentStep)) return;
 
-    if (currentStep.value === 2) {
+    if (currentStep === 2) {
       // Moving to Review step — fetch preview
-      currentStep.value = 3;
+      setCurrentStep(3);
       await fetchPreview();
     } else {
-      currentStep.value = currentStep.value + 1;
+      setCurrentStep((step) => step + 1);
     }
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = form;
     // Build the backend payload
     const payload: Record<string, unknown> = {
       name: f.name,
@@ -218,18 +228,19 @@ export default function DeploymentWizard({
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const manifest = () => {
-    const f = form.value;
+    const f = form;
     const name = f.name || "<name>";
     const ns = f.namespace || "default";
     const img = f.image || "<image>";
@@ -239,7 +250,7 @@ export default function DeploymentWizard({
   return (
     <WizardShell
       title="Create Deployment"
-      subtitle={`${form.value.namespace || "default"}`}
+      subtitle={`${form.namespace || "default"}`}
       icon={
         <svg
           width="21"
@@ -247,8 +258,8 @@ export default function DeploymentWizard({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinejoin="round"
         >
           <path d="M10 2.5 17 6v8l-7 3.5L3 14V6l7-3.5Z" />
           <path d="M3 6l7 3.5L17 6" />
@@ -256,28 +267,28 @@ export default function DeploymentWizard({
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i <= currentStep.value) currentStep.value = i;
+        if (i <= currentStep) setCurrentStep(i);
       }}
       onCancel={close}
-      onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
+      onBack={() => setCurrentStep((step) => Math.max(0, step - 1))}
       onNext={() => {
-        if (currentStep.value < 3) goNext();
+        if (currentStep < 3) goNext();
         else close();
       }}
-      nextLabel={currentStep.value < 3 ? "Continue" : "Close"}
-      yaml={currentStep.value < 3 ? manifest() : previewYaml.value}
+      nextLabel={currentStep < 3 ? "Continue" : "Close"}
+      yaml={currentStep < 3 ? manifest() : previewYaml}
     >
-      {currentStep.value === 0 && (
+      {currentStep === 0 && (
         <DeploymentBasicsStep
-          name={form.value.name}
-          namespace={form.value.namespace}
-          image={form.value.image}
-          replicas={form.value.replicas}
-          labels={form.value.labels}
-          namespaces={namespaces.value}
-          errors={errors.value}
+          name={form.name}
+          namespace={form.namespace}
+          image={form.image}
+          replicas={form.replicas}
+          labels={form.labels}
+          namespaces={namespaceList}
+          errors={errors}
           onChange={updateField}
           onNamespaceCreated={(ns) => {
             if (!namespaces.value.includes(ns)) {
@@ -287,37 +298,35 @@ export default function DeploymentWizard({
         />
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <DeploymentNetworkStep
-          ports={form.value.ports}
-          envVars={form.value.envVars}
-          errors={errors.value}
+          ports={form.ports}
+          envVars={form.envVars}
+          errors={errors}
           onChange={updateField}
         />
       )}
 
-      {currentStep.value === 2 && (
+      {currentStep === 2 && (
         <DeploymentResourcesStep
-          cpuRequest={form.value.cpuRequest}
-          memoryRequest={form.value.memoryRequest}
-          cpuLimit={form.value.cpuLimit}
-          memoryLimit={form.value.memoryLimit}
-          livenessProbe={form.value.livenessProbe}
-          readinessProbe={form.value.readinessProbe}
-          strategy={form.value.strategy}
-          errors={errors.value}
+          cpuRequest={form.cpuRequest}
+          memoryRequest={form.memoryRequest}
+          cpuLimit={form.cpuLimit}
+          memoryLimit={form.memoryLimit}
+          livenessProbe={form.livenessProbe}
+          readinessProbe={form.readinessProbe}
+          strategy={form.strategy}
+          errors={errors}
           onChange={updateField}
         />
       )}
 
-      {currentStep.value === 3 && (
+      {currentStep === 3 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/workloads/deployments"
           dirty={dirty}
         />

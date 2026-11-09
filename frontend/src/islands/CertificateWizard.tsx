@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import { CertificateForm } from "@/components/wizard/CertificateForm.tsx";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import type { Issuer } from "@/lib/certmanager-types.ts";
@@ -8,6 +8,7 @@ import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 export interface CertificateWizardForm {
   name: string;
@@ -106,17 +107,17 @@ export default function CertificateWizard({
   onClose?: () => void;
 }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const step = useSignal(0);
-  const form = useSignal<CertificateWizardForm>(initialForm());
-  const errors = useSignal<Record<string, string>>({});
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState<CertificateWizardForm>(initialForm);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const issuers = useSignal<Issuer[]>([]);
-  const issuersLoading = useSignal(true);
-  const namespaces = useNamespaces();
+  const [issuers, setIssuers] = useState<Issuer[]>([]);
+  const [issuersLoading, setIssuersLoading] = useState(true);
+  const namespaces = useSignalValue(useNamespaces());
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   useEffect(() => {
@@ -127,40 +128,44 @@ export default function CertificateWizard({
       .then(([ns, cl]) => {
         const nsList = Array.isArray(ns.data) ? ns.data : [];
         const clList = Array.isArray(cl.data) ? cl.data : [];
-        issuers.value = [...nsList, ...clList];
+        setIssuers([...nsList, ...clList]);
       })
       .catch(() => {})
       .finally(() => {
-        issuersLoading.value = false;
+        setIssuersLoading(false);
       });
   }, []);
 
   const updateField = (field: string, value: unknown) => {
-    const f = { ...form.value, [field]: value };
-    // Auto-derive secretName from name until the user has diverged it
-    if (
-      field === "name" &&
-      typeof value === "string" &&
-      value !== "" &&
-      (f.secretName === "" || f.secretName === `${form.value.name}-tls`)
-    ) {
-      f.secretName = `${value}-tls`;
-    }
-    form.value = f;
+    setForm((prev) => {
+      const f = { ...prev, [field]: value };
+      // Auto-derive secretName from name until the user has diverged it
+      if (
+        field === "name" &&
+        typeof value === "string" &&
+        value !== "" &&
+        (f.secretName === "" || f.secretName === `${prev.name}-tls`)
+      ) {
+        f.secretName = `${value}-tls`;
+      }
+      return f;
+    });
   };
 
   const updatePrivateKey = (field: string, value: unknown) => {
-    const pk = { ...form.value.privateKey, [field]: value };
-    if (field === "algorithm") {
-      if (value === "RSA") pk.size = 2048;
-      else if (value === "ECDSA") pk.size = 256;
-      else if (value === "Ed25519") pk.size = 0;
-    }
-    form.value = { ...form.value, privateKey: pk };
+    setForm((prev) => {
+      const pk = { ...prev.privateKey, [field]: value };
+      if (field === "algorithm") {
+        if (value === "RSA") pk.size = 2048;
+        else if (value === "ECDSA") pk.size = 256;
+        else if (value === "Ed25519") pk.size = 0;
+      }
+      return { ...prev, privateKey: pk };
+    });
   };
 
   const validateStep = (): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
       errs.name =
@@ -181,20 +186,20 @@ export default function CertificateWizard({
     if (dnsNames.length === 0 && f.commonName.trim() === "") {
       errs.dnsNames = "At least one DNS name or a common name is required";
     }
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
-    const f = form.value;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const f = form;
     const ref = decodeIssuerRef(f.issuerRefValue);
     if (!ref) {
       if (gen !== previewGen.current) return;
-      previewError.value = "Invalid issuer selection";
-      previewLoading.value = false;
+      setPreviewError("Invalid issuer selection");
+      setPreviewLoading(false);
       return;
     }
     const dnsNames = splitDnsNames(f.dnsNamesInput);
@@ -221,20 +226,21 @@ export default function CertificateWizard({
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const handleNext = async () => {
-    if (step.value === 0) {
+    if (step === 0) {
       if (!validateStep()) return;
-      step.value = 1;
+      setStep(1);
       await fetchPreview();
     } else {
       close();
@@ -244,9 +250,7 @@ export default function CertificateWizard({
   return (
     <WizardShell
       title="Create Certificate"
-      subtitle={`Step ${
-        step.value + 1
-      } of 2 · namespace ${form.value.namespace}`}
+      subtitle={`Step ${step + 1} of 2 · namespace ${form.namespace}`}
       icon={
         <svg
           width="21"
@@ -254,45 +258,43 @@ export default function CertificateWizard({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <circle cx="10" cy="9" r="5" />
           <path d="M7 14l-2 4M13 14l2 4M8 18h4" />
         </svg>
       }
       steps={STEPS}
-      current={step.value}
+      current={step}
       onStep={(i) => {
-        if (i < step.value) step.value = i;
+        if (i < step) setStep(i);
       }}
       onCancel={close}
-      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onBack={() => setStep((prev) => Math.max(0, prev - 1))}
       onNext={handleNext}
-      nextLabel={step.value === 0 ? "Continue" : "Done"}
-      yaml={step.value === 0 ? buildManifest(form.value) : undefined}
+      nextLabel={step === 0 ? "Continue" : "Done"}
+      yaml={step === 0 ? buildManifest(form) : undefined}
     >
-      {step.value === 0 && (
+      {step === 0 && (
         <CertificateForm
-          form={form.value}
-          errors={errors.value}
-          issuers={issuers.value}
-          issuersLoading={issuersLoading.value}
-          namespaces={namespaces.value}
+          form={form}
+          errors={errors}
+          issuers={issuers}
+          issuersLoading={issuersLoading}
+          namespaces={namespaces}
           onUpdate={updateField}
           onUpdatePrivateKey={updatePrivateKey}
         />
       )}
 
-      {step.value === 1 && (
+      {step === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/security/certificates"
         />
       )}
