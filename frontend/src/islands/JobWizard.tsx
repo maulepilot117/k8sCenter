@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { Select } from "@/components/ui/Select.tsx";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
 import { apiPost } from "@/lib/api.ts";
@@ -16,6 +16,9 @@ import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface JobFormState {
   name: string;
@@ -65,27 +68,32 @@ function initialState(): JobFormState {
 
 export default function JobWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<JobFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<JobFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const dirty = useSignal(false);
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+  const formRef = useLatest(form);
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
-  }, []);
+  const updateField = useCallback(
+    (field: string, value: unknown) => {
+      dirty.value = true;
+      setForm((prev) => ({ ...prev, [field]: value }));
+    },
+    [dirty],
+  );
 
   const validateStep = (step: number): boolean => {
-    const f = form.value;
+    const f = formRef.current;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -125,16 +133,16 @@ export default function JobWizard({ onClose }: { onClose?: () => void }) {
       });
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = formRef.current;
 
     // Build the container sub-object
     const container: Record<string, unknown> = {
@@ -200,30 +208,31 @@ export default function JobWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
+    if (!validateStep(currentStep)) return;
 
-    if (currentStep.value === 1) {
+    if (currentStep === 1) {
       // Moving to Review step
-      currentStep.value = 2;
+      setCurrentStep(2);
       await fetchPreview();
     } else {
-      currentStep.value = currentStep.value + 1;
+      setCurrentStep(currentStep + 1);
     }
   };
 
   const manifest = () => {
-    const f = form.value;
+    const f = form;
     const name = f.name || "<name>";
     const ns = f.namespace || "default";
     return `apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  completions: ${
@@ -235,12 +244,12 @@ export default function JobWizard({ onClose }: { onClose?: () => void }) {
     }`;
   };
 
-  const nextLabel = currentStep.value === 2 ? "Close" : "Continue";
+  const nextLabel = currentStep === 2 ? "Close" : "Continue";
 
   return (
     <WizardShell
       title="Create Job"
-      subtitle={form.value.namespace || "default"}
+      subtitle={form.namespace || "default"}
       icon={
         <svg
           width="21"
@@ -248,9 +257,9 @@ export default function JobWizard({ onClose }: { onClose?: () => void }) {
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <circle cx="10" cy="10" r="7.5" />
           <path d="M10 6v4l2.5 2.5" />
@@ -258,131 +267,124 @@ export default function JobWizard({ onClose }: { onClose?: () => void }) {
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i <= currentStep.value) currentStep.value = i;
+        if (i <= currentStep) setCurrentStep(i);
       }}
       onCancel={close}
-      onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
+      onBack={() => setCurrentStep((step) => Math.max(0, step - 1))}
       onNext={() => {
-        if (currentStep.value < 2) goNext();
+        if (currentStep < 2) goNext();
         else close();
       }}
       nextLabel={nextLabel}
-      yaml={currentStep.value < 2 ? manifest() : previewYaml.value}
+      yaml={currentStep < 2 ? manifest() : previewYaml}
     >
-      {currentStep.value === 0 && (
-        <div class="space-y-6 max-w-2xl">
+      {currentStep === 0 && (
+        <div className="space-y-6 max-w-2xl">
           {/* Name */}
-          <div class="space-y-1">
-            <label class="block text-sm font-medium text-text-secondary">
-              Job Name <span class="text-danger">*</span>
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-text-secondary">
+              Job Name <span className="text-danger">*</span>
             </label>
             <input
               type="text"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
+              value={form.name}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
               placeholder="my-batch-job"
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
-            {errors.value.name && (
-              <p class="text-sm text-danger">{errors.value.name}</p>
+            {errors.name && (
+              <p className="text-sm text-danger">{errors.name}</p>
             )}
           </div>
 
           {/* Namespace */}
-          <div class="space-y-1">
-            <label class="block text-sm font-medium text-text-secondary">
-              Namespace <span class="text-danger">*</span>
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-text-secondary">
+              Namespace <span className="text-danger">*</span>
             </label>
             <select
-              value={form.value.namespace}
-              onChange={(e) =>
-                updateField("namespace", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.namespace}
+              onChange={(e) => updateField("namespace", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option key={ns} value={ns}>
                   {ns}
                 </option>
               ))}
             </select>
-            {errors.value.namespace && (
-              <p class="text-sm text-danger">{errors.value.namespace}</p>
+            {errors.namespace && (
+              <p className="text-sm text-danger">{errors.namespace}</p>
             )}
           </div>
 
           {/* Completions */}
-          <div class="space-y-1">
-            <label class="block text-sm font-medium text-text-secondary">
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-text-secondary">
               Completions
             </label>
             <input
               type="number"
-              value={form.value.completions}
-              onInput={(e) =>
-                updateField("completions", (e.target as HTMLInputElement).value)
+              value={form.completions}
+              onChange={(e) =>
+                updateField("completions", e.currentTarget.value)
               }
               placeholder="1"
               min={0}
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
-            {errors.value.completions && (
-              <p class="text-sm text-danger">{errors.value.completions}</p>
+            {errors.completions && (
+              <p className="text-sm text-danger">{errors.completions}</p>
             )}
-            <p class="text-xs text-text-muted">
+            <p className="text-xs text-text-muted">
               Number of successful completions required.
             </p>
           </div>
 
           {/* Parallelism */}
-          <div class="space-y-1">
-            <label class="block text-sm font-medium text-text-secondary">
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-text-secondary">
               Parallelism
             </label>
             <input
               type="number"
-              value={form.value.parallelism}
-              onInput={(e) =>
-                updateField("parallelism", (e.target as HTMLInputElement).value)
+              value={form.parallelism}
+              onChange={(e) =>
+                updateField("parallelism", e.currentTarget.value)
               }
               placeholder="1"
               min={0}
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
-            {errors.value.parallelism && (
-              <p class="text-sm text-danger">{errors.value.parallelism}</p>
+            {errors.parallelism && (
+              <p className="text-sm text-danger">{errors.parallelism}</p>
             )}
-            <p class="text-xs text-text-muted">
+            <p className="text-xs text-text-muted">
               Maximum number of pods running in parallel.
             </p>
           </div>
 
           {/* Backoff Limit */}
-          <div class="space-y-1">
-            <label class="block text-sm font-medium text-text-secondary">
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-text-secondary">
               Backoff Limit
             </label>
             <input
               type="number"
-              value={form.value.backoffLimit}
-              onInput={(e) =>
-                updateField(
-                  "backoffLimit",
-                  (e.target as HTMLInputElement).value,
-                )
+              value={form.backoffLimit}
+              onChange={(e) =>
+                updateField("backoffLimit", e.currentTarget.value)
               }
               placeholder="6"
               min={0}
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             />
-            {errors.value.backoffLimit && (
-              <p class="text-sm text-danger">{errors.value.backoffLimit}</p>
+            {errors.backoffLimit && (
+              <p className="text-sm text-danger">{errors.backoffLimit}</p>
             )}
-            <p class="text-xs text-text-muted">
+            <p className="text-xs text-text-muted">
               Number of retries before marking the job as failed.
             </p>
           </div>
@@ -390,42 +392,37 @@ export default function JobWizard({ onClose }: { onClose?: () => void }) {
           {/* Restart Policy */}
           <Select
             label="Restart Policy"
-            value={form.value.restartPolicy}
+            value={form.restartPolicy}
             onChange={(e) =>
-              updateField(
-                "restartPolicy",
-                (e.target as HTMLSelectElement).value,
-              )
+              updateField("restartPolicy", e.currentTarget.value)
             }
             options={RESTART_POLICY_OPTIONS}
           />
         </div>
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <ContainerForm
-          image={form.value.image}
-          command={form.value.command}
-          args={form.value.args}
-          ports={form.value.ports}
-          envVars={form.value.envVars}
-          requestCpu={form.value.requestCpu}
-          requestMemory={form.value.requestMemory}
-          limitCpu={form.value.limitCpu}
-          limitMemory={form.value.limitMemory}
-          errors={errors.value}
+          image={form.image}
+          command={form.command}
+          args={form.args}
+          ports={form.ports}
+          envVars={form.envVars}
+          requestCpu={form.requestCpu}
+          requestMemory={form.requestMemory}
+          limitCpu={form.limitCpu}
+          limitMemory={form.limitMemory}
+          errors={errors}
           onChange={updateField}
         />
       )}
 
-      {currentStep.value === 2 && (
+      {currentStep === 2 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/workloads/jobs"
           dirty={dirty}
         />

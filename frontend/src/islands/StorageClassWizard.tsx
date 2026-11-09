@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import Field from "@/components/ui/form/Field.tsx";
 import Select from "@/components/ui/form/Select.tsx";
 import TextField from "@/components/ui/form/TextField.tsx";
@@ -7,6 +7,8 @@ import Toggle from "@/components/ui/form/Toggle.tsx";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
 
 interface PresetParam {
   default: string;
@@ -84,43 +86,44 @@ export default function StorageClassWizard({
   // serialize a function prop across the route→island boundary). Fall back to
   // browser history so the wizard chrome's Cancel/Done still work.
   const close = onClose ?? (() => globalThis.history.back());
-  const step = useSignal(0);
-  const form = useSignal<FormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
-  const presets = useSignal<Record<string, PresetInfo>>({});
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState<FormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [presets, setPresets] = useState<Record<string, PresetInfo>>({});
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+  const formRef = useLatest(form);
 
   useEffect(() => {
     apiGet<Record<string, PresetInfo>>("/v1/storage/presets")
       .then((resp) => {
-        if (resp.data) presets.value = resp.data;
+        if (resp.data) setPresets(resp.data);
       })
       .catch(() => {});
   }, []);
 
   const updateField = (field: string, value: unknown) => {
-    form.value = { ...form.value, [field]: value };
+    setForm((prev) => ({ ...prev, [field]: value }));
   };
 
   const applyPreset = (driverName: string) => {
-    const preset = presets.value[driverName];
+    const preset = presets[driverName];
     if (!preset) return;
-    form.value = {
-      ...form.value,
+    setForm((prev) => ({
+      ...prev,
       provisioner: driverName,
       parameters: Object.entries(preset.parameters).map(([key, p]) => ({
         key,
         value: p.default,
       })),
-    };
+    }));
   };
 
   const validateStep = (s: number): boolean => {
-    const f = form.value;
+    const f = formRef.current;
     const errs: Record<string, string> = {};
     if (s === 0) {
       if (!f.name || !/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(f.name)) {
@@ -129,15 +132,15 @@ export default function StorageClassWizard({
       }
       if (!f.provisioner) errs.provisioner = "Required";
     }
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
-    const f = form.value;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const f = formRef.current;
     const payload: Record<string, unknown> = {
       name: f.name,
       provisioner: f.provisioner,
@@ -160,35 +163,36 @@ export default function StorageClassWizard({
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const handleNext = async () => {
-    if (!validateStep(step.value)) return;
-    if (step.value === 1) {
-      step.value = 2;
+    if (!validateStep(step)) return;
+    if (step === 1) {
+      setStep(2);
       await fetchPreview();
-    } else if (step.value < 2) {
-      step.value += 1;
+    } else if (step < 2) {
+      setStep(step + 1);
     } else {
       close();
     }
   };
 
-  const presetNames = Object.keys(presets.value);
-  const f = form.value;
+  const presetNames = Object.keys(presets);
+  const f = form;
 
   return (
     <WizardShell
       title="Create StorageClass"
-      subtitle={`Step ${step.value + 1} of 3`}
+      subtitle={`Step ${step + 1} of 3`}
       icon={
         <svg
           width="21"
@@ -196,9 +200,9 @@ export default function StorageClassWizard({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <ellipse cx="10" cy="6" rx="7" ry="3" />
           <path d="M3 6v4c0 1.66 3.13 3 7 3s7-1.34 7-3V6" />
@@ -206,17 +210,17 @@ export default function StorageClassWizard({
         </svg>
       }
       steps={STEPS}
-      current={step.value}
+      current={step}
       onStep={(i) => {
-        if (i < step.value) step.value = i;
+        if (i < step) setStep(i);
       }}
       onCancel={close}
-      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onBack={() => setStep((current) => Math.max(0, current - 1))}
       onNext={handleNext}
-      nextLabel={step.value === 2 ? "Done" : "Continue"}
-      yaml={step.value < 2 ? buildManifest(f) : undefined}
+      nextLabel={step === 2 ? "Done" : "Continue"}
+      yaml={step < 2 ? buildManifest(f) : undefined}
     >
-      {step.value === 0 && (
+      {step === 0 && (
         <div
           style={{
             display: "flex",
@@ -269,7 +273,7 @@ export default function StorageClassWizard({
                       transition: "all 0.15s",
                     }}
                   >
-                    {presets.value[driver].displayName}
+                    {presets[driver].displayName}
                   </button>
                 ))}
               </div>
@@ -282,7 +286,7 @@ export default function StorageClassWizard({
               onInput={(v) => updateField("name", v)}
               placeholder="e.g. fast-storage"
             />
-            {errors.value.name && (
+            {errors.name && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -290,7 +294,7 @@ export default function StorageClassWizard({
                   marginTop: "5px",
                 }}
               >
-                {errors.value.name}
+                {errors.name}
               </p>
             )}
           </Field>
@@ -302,7 +306,7 @@ export default function StorageClassWizard({
               mono
               placeholder="e.g. ebs.csi.aws.com"
             />
-            {errors.value.provisioner && (
+            {errors.provisioner && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -310,7 +314,7 @@ export default function StorageClassWizard({
                   marginTop: "5px",
                 }}
               >
-                {errors.value.provisioner}
+                {errors.provisioner}
               </p>
             )}
           </Field>
@@ -413,22 +417,16 @@ export default function StorageClassWizard({
         </div>
       )}
 
-      {step.value === 1 && (
-        <ParametersStep
-          form={f}
-          presets={presets.value}
-          onChange={updateField}
-        />
+      {step === 1 && (
+        <ParametersStep form={f} presets={presets} onChange={updateField} />
       )}
 
-      {step.value === 2 && (
+      {step === 2 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/storage/overview"
         />
       )}
@@ -446,12 +444,15 @@ function ParametersStep({
   onChange: (field: string, value: unknown) => void;
 }) {
   const preset = presets[form.provisioner];
+  const parameterKeys = useRowKeys(form.parameters.length);
+  const mountOptionKeys = useRowKeys(form.mountOptions.length);
 
   const addParameter = () => {
     onChange("parameters", [...form.parameters, { key: "", value: "" }]);
   };
 
   const removeParameter = (idx: number) => {
+    parameterKeys.removeAt(idx);
     onChange(
       "parameters",
       form.parameters.filter((_, i) => i !== idx),
@@ -473,6 +474,7 @@ function ParametersStep({
   };
 
   const removeMountOption = (idx: number) => {
+    mountOptionKeys.removeAt(idx);
     onChange(
       "mountOptions",
       form.mountOptions.filter((_, i) => i !== idx),
@@ -577,7 +579,7 @@ function ParametersStep({
             const presetParam = preset?.parameters[p.key];
             return (
               <div
-                key={i}
+                key={parameterKeys.keyAt(i)}
                 style={{
                   display: "flex",
                   gap: "8px",
@@ -588,12 +590,8 @@ function ParametersStep({
                   <input
                     type="text"
                     value={p.key}
-                    onInput={(e) =>
-                      updateParameter(
-                        i,
-                        "key",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateParameter(i, "key", e.currentTarget.value)
                     }
                     placeholder="Key"
                     style={inputStyle}
@@ -615,11 +613,7 @@ function ParametersStep({
                     <select
                       value={p.value}
                       onChange={(e) =>
-                        updateParameter(
-                          i,
-                          "value",
-                          (e.target as HTMLSelectElement).value,
-                        )
+                        updateParameter(i, "value", e.currentTarget.value)
                       }
                       style={inputStyle}
                     >
@@ -633,12 +627,8 @@ function ParametersStep({
                     <input
                       type="text"
                       value={p.value}
-                      onInput={(e) =>
-                        updateParameter(
-                          i,
-                          "value",
-                          (e.target as HTMLInputElement).value,
-                        )
+                      onChange={(e) =>
+                        updateParameter(i, "value", e.currentTarget.value)
                       }
                       placeholder="Value"
                       style={inputStyle}
@@ -712,13 +702,14 @@ function ParametersStep({
 
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           {form.mountOptions.map((o, i) => (
-            <div key={i} style={{ display: "flex", gap: "8px" }}>
+            <div
+              key={mountOptionKeys.keyAt(i)}
+              style={{ display: "flex", gap: "8px" }}
+            >
               <input
                 type="text"
                 value={o.value}
-                onInput={(e) =>
-                  updateMountOption(i, (e.target as HTMLInputElement).value)
-                }
+                onChange={(e) => updateMountOption(i, e.currentTarget.value)}
                 placeholder="e.g. debug, noatime"
                 style={{ ...inputStyle, flex: 1 }}
               />

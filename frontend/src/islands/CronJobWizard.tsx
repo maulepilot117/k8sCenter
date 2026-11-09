@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
@@ -12,6 +12,9 @@ import {
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface ContainerState {
   image: string;
@@ -105,9 +108,9 @@ const CRONJOB_ICON = (
     viewBox="0 0 20 20"
     fill="none"
     stroke="currentColor"
-    stroke-width="1.6"
-    stroke-linecap="round"
-    stroke-linejoin="round"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <rect x="2.5" y="4" width="15" height="13.5" rx="2" />
     <path d="M2.5 8.5h15M6.5 2.5v3M13.5 2.5v3" />
@@ -117,35 +120,43 @@ const CRONJOB_ICON = (
 
 export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<CronJobFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<CronJobFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const dirty = useSignal(false);
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+  const formRef = useLatest(form);
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
-  }, []);
+  const updateField = useCallback(
+    (field: string, value: unknown) => {
+      dirty.value = true;
+      setForm((prev) => ({ ...prev, [field]: value }));
+    },
+    [dirty],
+  );
 
-  const updateContainerField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      container: { ...form.value.container, [field]: value },
-    };
-  }, []);
+  const updateContainerField = useCallback(
+    (field: string, value: unknown) => {
+      dirty.value = true;
+      setForm((prev) => ({
+        ...prev,
+        container: { ...prev.container, [field]: value },
+      }));
+    },
+    [dirty],
+  );
 
   const validateStep0 = (): boolean => {
-    const f = form.value;
+    const f = formRef.current;
     const errs: Record<string, string> = {};
 
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
@@ -155,37 +166,37 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
     if (!f.namespace) errs.namespace = "Required";
     if (!f.schedule.trim()) errs.schedule = "Required";
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const validateStep1 = (): boolean => {
-    const f = form.value;
+    const f = formRef.current;
     const errs: Record<string, string> = {};
 
     if (!f.container.image) errs.image = "Required";
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const goNext = async () => {
-    if (currentStep.value === 0) {
+    if (currentStep === 0) {
       if (!validateStep0()) return;
-      currentStep.value = 1;
-    } else if (currentStep.value === 1) {
+      setCurrentStep(1);
+    } else if (currentStep === 1) {
       if (!validateStep1()) return;
-      currentStep.value = 2;
+      setCurrentStep(2);
       await fetchPreview();
     }
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = formRef.current;
 
     // Build container payload matching backend ContainerInput
     const container: Record<string, unknown> = {
@@ -262,18 +273,19 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const manifest = () => {
-    const f = form.value;
+    const f = form;
     const name = f.name || "<name>";
     const ns = f.namespace || "default";
     return `apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  schedule: "${
@@ -283,10 +295,10 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
     }`;
   };
 
-  const nextLabel = currentStep.value === 2 ? "Close" : "Continue";
+  const nextLabel = currentStep === 2 ? "Close" : "Continue";
 
   const handleNext = () => {
-    if (currentStep.value === 2) {
+    if (currentStep === 2) {
       close();
     } else {
       goNext();
@@ -299,51 +311,45 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
       icon={CRONJOB_ICON}
       subtitle="Schedule recurring jobs"
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
-      onBack={() => {
-        if (currentStep.value > 0) currentStep.value = currentStep.value - 1;
-      }}
+      onBack={() => setCurrentStep((step) => Math.max(0, step - 1))}
       onNext={handleNext}
       nextLabel={nextLabel}
-      yaml={currentStep.value === 2 ? undefined : manifest()}
+      yaml={currentStep === 2 ? undefined : manifest()}
     >
       {/* Step 0: Basics & Schedule */}
-      {currentStep.value === 0 && (
-        <div class="mx-auto max-w-lg space-y-4">
+      {currentStep === 0 && (
+        <div className="mx-auto max-w-lg space-y-4">
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Name <span class="text-error">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Name <span className="text-error">*</span>
             </label>
             <input
               type="text"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.name}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
               placeholder="e.g. data-cleanup"
             />
-            {errors.value.name && (
-              <p class="mt-1 text-xs text-error">{errors.value.name}</p>
+            {errors.name && (
+              <p className="mt-1 text-xs text-error">{errors.name}</p>
             )}
           </div>
 
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Namespace <span class="text-error">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Namespace <span className="text-error">*</span>
             </label>
             <select
-              value={form.value.namespace}
-              onChange={(e) =>
-                updateField("namespace", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              value={form.namespace}
+              onChange={(e) => updateField("namespace", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option key={ns} value={ns}>
                   {ns}
                 </option>
@@ -353,10 +359,10 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
 
           {/* Schedule with presets */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Schedule <span class="text-error">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Schedule <span className="text-error">*</span>
             </label>
-            <div class="mt-2 flex flex-wrap gap-2">
+            <div className="mt-2 flex flex-wrap gap-2">
               {SCHEDULE_PRESETS.map((preset) => (
                 <button
                   key={preset.label}
@@ -369,10 +375,9 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
                       updateField("schedulePreset", "");
                     }
                   }}
-                  class={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                    (
-                      preset.value && form.value.schedulePreset === preset.value
-                    ) || (!preset.value && form.value.schedulePreset === "")
+                  className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                    (preset.value && form.schedulePreset === preset.value) ||
+                    (!preset.value && form.schedulePreset === "")
                       ? "border-brand bg-brand/10 text-brand font-medium"
                       : "border-border-primary text-text-muted hover:border-border-primary"
                   }`}
@@ -381,41 +386,36 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
                 </button>
               ))}
             </div>
-            {form.value.schedulePreset === "" && (
+            {form.schedulePreset === "" && (
               <input
                 type="text"
-                value={form.value.schedule}
-                onInput={(e) =>
-                  updateField("schedule", (e.target as HTMLInputElement).value)
-                }
-                class={`${WIZARD_INPUT_CLASS} mt-2`}
+                value={form.schedule}
+                onChange={(e) => updateField("schedule", e.currentTarget.value)}
+                className={`${WIZARD_INPUT_CLASS} mt-2`}
                 placeholder="e.g. */5 * * * *"
               />
             )}
-            {form.value.schedule && (
-              <p class="mt-1 text-xs text-text-muted">
-                {cronToHuman(form.value.schedule)}
+            {form.schedule && (
+              <p className="mt-1 text-xs text-text-muted">
+                {cronToHuman(form.schedule)}
               </p>
             )}
-            {errors.value.schedule && (
-              <p class="mt-1 text-xs text-error">{errors.value.schedule}</p>
+            {errors.schedule && (
+              <p className="mt-1 text-xs text-error">{errors.schedule}</p>
             )}
           </div>
 
           {/* Concurrency Policy */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
+            <label className="block text-sm font-medium text-text-secondary">
               Concurrency Policy
             </label>
             <select
-              value={form.value.concurrencyPolicy}
+              value={form.concurrencyPolicy}
               onChange={(e) =>
-                updateField(
-                  "concurrencyPolicy",
-                  (e.target as HTMLSelectElement).value,
-                )
+                updateField("concurrencyPolicy", e.currentTarget.value)
               }
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             >
               {CONCURRENCY_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -423,30 +423,27 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
                 </option>
               ))}
             </select>
-            <p class="mt-1 text-xs text-text-muted">
-              {form.value.concurrencyPolicy === "Allow" &&
+            <p className="mt-1 text-xs text-text-muted">
+              {form.concurrencyPolicy === "Allow" &&
                 "Multiple jobs can run concurrently."}
-              {form.value.concurrencyPolicy === "Forbid" &&
+              {form.concurrencyPolicy === "Forbid" &&
                 "Skip new run if previous job is still running."}
-              {form.value.concurrencyPolicy === "Replace" &&
+              {form.concurrencyPolicy === "Replace" &&
                 "Cancel the running job and start a new one."}
             </p>
           </div>
 
           {/* Restart Policy */}
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
+            <label className="block text-sm font-medium text-text-secondary">
               Restart Policy
             </label>
             <select
-              value={form.value.restartPolicy}
+              value={form.restartPolicy}
               onChange={(e) =>
-                updateField(
-                  "restartPolicy",
-                  (e.target as HTMLSelectElement).value,
-                )
+                updateField("restartPolicy", e.currentTarget.value)
               }
-              class={WIZARD_INPUT_CLASS}
+              className={WIZARD_INPUT_CLASS}
             >
               {RESTART_POLICY_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -457,56 +454,51 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
           </div>
 
           {/* History limits */}
-          <div class="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <label class="block text-sm font-medium text-text-secondary">
+              <label className="block text-sm font-medium text-text-secondary">
                 Successful History
               </label>
               <input
                 type="number"
                 min={0}
                 max={100}
-                value={form.value.successfulJobsHistoryLimit}
-                onInput={(e) =>
+                value={form.successfulJobsHistoryLimit}
+                onChange={(e) =>
                   updateField(
                     "successfulJobsHistoryLimit",
-                    (e.target as HTMLInputElement).value,
+                    e.currentTarget.value,
                   )
                 }
-                class={WIZARD_INPUT_CLASS}
+                className={WIZARD_INPUT_CLASS}
               />
             </div>
             <div>
-              <label class="block text-sm font-medium text-text-secondary">
+              <label className="block text-sm font-medium text-text-secondary">
                 Failed History
               </label>
               <input
                 type="number"
                 min={0}
                 max={100}
-                value={form.value.failedJobsHistoryLimit}
-                onInput={(e) =>
-                  updateField(
-                    "failedJobsHistoryLimit",
-                    (e.target as HTMLInputElement).value,
-                  )
+                value={form.failedJobsHistoryLimit}
+                onChange={(e) =>
+                  updateField("failedJobsHistoryLimit", e.currentTarget.value)
                 }
-                class={WIZARD_INPUT_CLASS}
+                className={WIZARD_INPUT_CLASS}
               />
             </div>
           </div>
 
           {/* Suspend toggle */}
-          <div class="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <input
               type="checkbox"
-              checked={form.value.suspend}
-              onChange={(e) =>
-                updateField("suspend", (e.target as HTMLInputElement).checked)
-              }
-              class="rounded border-border-primary"
+              checked={form.suspend}
+              onChange={(e) => updateField("suspend", e.currentTarget.checked)}
+              className="rounded border-border-primary"
             />
-            <span class="text-sm text-text-secondary">
+            <span className="text-sm text-text-secondary">
               Create suspended (will not run until resumed)
             </span>
           </div>
@@ -514,31 +506,29 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
       )}
 
       {/* Step 1: Container */}
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <ContainerForm
-          image={form.value.container.image}
-          command={form.value.container.command}
-          args={form.value.container.args}
-          ports={form.value.container.ports}
-          envVars={form.value.container.envVars}
-          requestCpu={form.value.container.requestCpu}
-          requestMemory={form.value.container.requestMemory}
-          limitCpu={form.value.container.limitCpu}
-          limitMemory={form.value.container.limitMemory}
-          errors={errors.value}
+          image={form.container.image}
+          command={form.container.command}
+          args={form.container.args}
+          ports={form.container.ports}
+          envVars={form.container.envVars}
+          requestCpu={form.container.requestCpu}
+          requestMemory={form.container.requestMemory}
+          limitCpu={form.container.limitCpu}
+          limitMemory={form.container.limitMemory}
+          errors={errors}
           onChange={updateContainerField}
         />
       )}
 
       {/* Step 2: Review */}
-      {currentStep.value === 2 && (
+      {currentStep === 2 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/workloads/cronjobs"
           dirty={dirty}
         />

@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -8,6 +8,9 @@ import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 type SecretType =
   | "Opaque"
@@ -161,54 +164,68 @@ function buildManifest(f: SecretFormState): string {
 
 export default function SecretWizard({ onClose }: { onClose?: () => void }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<SecretFormState>(initialState());
-  const errors = useSignal<Record<string, string>>({});
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<SecretFormState>(initialState);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const dirty = useSignal(false);
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+  const rowKeys = useRowKeys(form.opaqueEntries.length);
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
-  }, []);
+  const updateField = useCallback(
+    (field: string, value: unknown) => {
+      dirty.value = true;
+      setForm((prev) => ({ ...prev, [field]: value }));
+    },
+    [dirty],
+  );
 
   const updateOpaqueEntry = useCallback(
     (index: number, field: "key" | "value", value: string) => {
       dirty.value = true;
-      const entries = [...form.value.opaqueEntries];
-      entries[index] = { ...entries[index], [field]: value };
-      form.value = { ...form.value, opaqueEntries: entries };
+      setForm((prev) => {
+        const entries = [...prev.opaqueEntries];
+        entries[index] = { ...entries[index], [field]: value };
+        return { ...prev, opaqueEntries: entries };
+      });
     },
-    [],
+    [dirty],
   );
 
   const addOpaqueEntry = useCallback(() => {
     dirty.value = true;
-    form.value = {
-      ...form.value,
-      opaqueEntries: [...form.value.opaqueEntries, { key: "", value: "" }],
-    };
-  }, []);
+    setForm((prev) => ({
+      ...prev,
+      opaqueEntries: [...prev.opaqueEntries, { key: "", value: "" }],
+    }));
+  }, [dirty]);
 
-  const removeOpaqueEntry = useCallback((index: number) => {
-    dirty.value = true;
-    const entries = form.value.opaqueEntries.filter((_, i) => i !== index);
-    form.value = {
-      ...form.value,
-      opaqueEntries: entries.length > 0 ? entries : [{ key: "", value: "" }],
-    };
-  }, []);
+  const removeOpaqueEntry = useCallback(
+    (index: number) => {
+      dirty.value = true;
+      rowKeys.removeAt(index);
+      setForm((prev) => {
+        const entries = prev.opaqueEntries.filter((_, i) => i !== index);
+        return {
+          ...prev,
+          opaqueEntries:
+            entries.length > 0 ? entries : [{ key: "", value: "" }],
+        };
+      });
+    },
+    [dirty, rowKeys],
+  );
 
   const validateStep = (): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
@@ -244,26 +261,26 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
         break;
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const goNext = async () => {
     if (!validateStep()) return;
-    currentStep.value = 1;
+    setCurrentStep(1);
     await fetchPreview();
   };
 
   const goBack = () => {
-    if (currentStep.value > 0) currentStep.value = 0;
+    if (currentStep > 0) setCurrentStep(0);
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = form;
     const payload = {
       name: f.name,
       namespace: f.namespace,
@@ -277,22 +294,23 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
-  const f = form.value;
+  const f = form;
 
   return (
     <WizardShell
       title="Create Secret"
-      subtitle={`Step ${currentStep.value + 1} of 2 · namespace ${f.namespace}`}
+      subtitle={`Step ${currentStep + 1} of 2 · namespace ${f.namespace}`}
       icon={
         <svg
           width="21"
@@ -300,9 +318,9 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <path d="M8 11a3 3 0 1 0 6 0 3 3 0 0 0-6 0z" />
           <path d="M11 14v3M9 16h4" />
@@ -310,17 +328,17 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
-      onNext={currentStep.value === 0 ? goNext : close}
-      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
-      yaml={currentStep.value === 0 ? buildManifest(f) : undefined}
+      onNext={currentStep === 0 ? goNext : close}
+      nextLabel={currentStep === 0 ? "Continue" : "Close"}
+      yaml={currentStep === 0 ? buildManifest(f) : undefined}
     >
-      {currentStep.value === 0 && (
+      {currentStep === 0 && (
         <div
           style={{
             display: "flex",
@@ -345,13 +363,11 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
             <input
               type="text"
               value={f.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
               placeholder="e.g. my-secret"
             />
-            {errors.value.name && (
+            {errors.name && (
               <p
                 style={{
                   marginTop: "4px",
@@ -359,7 +375,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   color: "var(--error)",
                 }}
               >
-                {errors.value.name}
+                {errors.name}
               </p>
             )}
           </div>
@@ -379,12 +395,10 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
             </label>
             <select
               value={f.namespace}
-              onChange={(e) =>
-                updateField("namespace", (e.target as HTMLSelectElement).value)
-              }
-              class={WIZARD_INPUT_CLASS}
+              onChange={(e) => updateField("namespace", e.currentTarget.value)}
+              className={WIZARD_INPUT_CLASS}
             >
-              {namespaces.value.map((ns) => (
+              {namespaceList.map((ns) => (
                 <option key={ns} value={ns}>
                   {ns}
                 </option>
@@ -486,7 +500,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
               >
                 {f.opaqueEntries.map((entry, i) => (
                   <div
-                    key={i}
+                    key={rowKeys.keyAt(i)}
                     style={{
                       display: "flex",
                       alignItems: "flex-start",
@@ -496,28 +510,20 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                     <input
                       type="text"
                       value={entry.key}
-                      onInput={(e) =>
-                        updateOpaqueEntry(
-                          i,
-                          "key",
-                          (e.target as HTMLInputElement).value,
-                        )
+                      onChange={(e) =>
+                        updateOpaqueEntry(i, "key", e.currentTarget.value)
                       }
-                      class={WIZARD_INPUT_CLASS}
+                      className={WIZARD_INPUT_CLASS}
                       placeholder="Key"
                       style={{ flex: 1 }}
                     />
                     <input
                       type="password"
                       value={entry.value}
-                      onInput={(e) =>
-                        updateOpaqueEntry(
-                          i,
-                          "value",
-                          (e.target as HTMLInputElement).value,
-                        )
+                      onChange={(e) =>
+                        updateOpaqueEntry(i, "value", e.currentTarget.value)
                       }
-                      class={WIZARD_INPUT_CLASS}
+                      className={WIZARD_INPUT_CLASS}
                       placeholder="Value"
                       style={{ flex: 1 }}
                     />
@@ -542,8 +548,8 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                         fill="none"
                         viewBox="0 0 20 20"
                         stroke="currentColor"
-                        stroke-width="1.8"
-                        stroke-linecap="round"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
                       >
                         <path d="M5 5l10 10M15 5L5 15" />
                       </svg>
@@ -567,14 +573,14 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                 >
                   + Add Entry
                 </button>
-                {errors.value.opaqueEntries && (
+                {errors.opaqueEntries && (
                   <p
                     style={{
                       fontSize: "11px",
                       color: "var(--error)",
                     }}
                   >
-                    {errors.value.opaqueEntries}
+                    {errors.opaqueEntries}
                   </p>
                 )}
               </div>
@@ -604,18 +610,15 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   </label>
                   <textarea
                     value={f.tlsCrt}
-                    onInput={(e) =>
-                      updateField(
-                        "tlsCrt",
-                        (e.target as HTMLTextAreaElement).value,
-                      )
+                    onChange={(e) =>
+                      updateField("tlsCrt", e.currentTarget.value)
                     }
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     rows={6}
                     placeholder="-----BEGIN CERTIFICATE-----&#10;..."
                     style={{ fontFamily: "var(--font-mono)", fontSize: "11px" }}
                   />
-                  {errors.value.tlsCrt && (
+                  {errors.tlsCrt && (
                     <p
                       style={{
                         marginTop: "4px",
@@ -623,7 +626,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                         color: "var(--error)",
                       }}
                     >
-                      {errors.value.tlsCrt}
+                      {errors.tlsCrt}
                     </p>
                   )}
                 </div>
@@ -642,18 +645,15 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   </label>
                   <textarea
                     value={f.tlsKey}
-                    onInput={(e) =>
-                      updateField(
-                        "tlsKey",
-                        (e.target as HTMLTextAreaElement).value,
-                      )
+                    onChange={(e) =>
+                      updateField("tlsKey", e.currentTarget.value)
                     }
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     rows={6}
                     placeholder="-----BEGIN PRIVATE KEY-----&#10;..."
                     style={{ fontFamily: "var(--font-mono)", fontSize: "11px" }}
                   />
-                  {errors.value.tlsKey && (
+                  {errors.tlsKey && (
                     <p
                       style={{
                         marginTop: "4px",
@@ -661,7 +661,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                         color: "var(--error)",
                       }}
                     >
-                      {errors.value.tlsKey}
+                      {errors.tlsKey}
                     </p>
                   )}
                 </div>
@@ -692,16 +692,13 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   <input
                     type="text"
                     value={f.basicUsername}
-                    onInput={(e) =>
-                      updateField(
-                        "basicUsername",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateField("basicUsername", e.currentTarget.value)
                     }
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     placeholder="Username"
                   />
-                  {errors.value.basicUsername && (
+                  {errors.basicUsername && (
                     <p
                       style={{
                         marginTop: "4px",
@@ -709,7 +706,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                         color: "var(--error)",
                       }}
                     >
-                      {errors.value.basicUsername}
+                      {errors.basicUsername}
                     </p>
                   )}
                 </div>
@@ -728,13 +725,10 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   <input
                     type="password"
                     value={f.basicPassword}
-                    onInput={(e) =>
-                      updateField(
-                        "basicPassword",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateField("basicPassword", e.currentTarget.value)
                     }
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     placeholder="Password"
                   />
                 </div>
@@ -765,13 +759,10 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   <input
                     type="text"
                     value={f.dockerRegistry}
-                    onInput={(e) =>
-                      updateField(
-                        "dockerRegistry",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateField("dockerRegistry", e.currentTarget.value)
                     }
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     placeholder="https://index.docker.io/v1/"
                   />
                 </div>
@@ -790,16 +781,13 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   <input
                     type="text"
                     value={f.dockerUsername}
-                    onInput={(e) =>
-                      updateField(
-                        "dockerUsername",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateField("dockerUsername", e.currentTarget.value)
                     }
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     placeholder="Username"
                   />
-                  {errors.value.dockerUsername && (
+                  {errors.dockerUsername && (
                     <p
                       style={{
                         marginTop: "4px",
@@ -807,7 +795,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                         color: "var(--error)",
                       }}
                     >
-                      {errors.value.dockerUsername}
+                      {errors.dockerUsername}
                     </p>
                   )}
                 </div>
@@ -826,16 +814,13 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   <input
                     type="password"
                     value={f.dockerPassword}
-                    onInput={(e) =>
-                      updateField(
-                        "dockerPassword",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateField("dockerPassword", e.currentTarget.value)
                     }
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     placeholder="Password"
                   />
-                  {errors.value.dockerPassword && (
+                  {errors.dockerPassword && (
                     <p
                       style={{
                         marginTop: "4px",
@@ -843,7 +828,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                         color: "var(--error)",
                       }}
                     >
-                      {errors.value.dockerPassword}
+                      {errors.dockerPassword}
                     </p>
                   )}
                 </div>
@@ -862,13 +847,10 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   <input
                     type="email"
                     value={f.dockerEmail}
-                    onInput={(e) =>
-                      updateField(
-                        "dockerEmail",
-                        (e.target as HTMLInputElement).value,
-                      )
+                    onChange={(e) =>
+                      updateField("dockerEmail", e.currentTarget.value)
                     }
-                    class={WIZARD_INPUT_CLASS}
+                    className={WIZARD_INPUT_CLASS}
                     placeholder="user@example.com"
                   />
                 </div>
@@ -878,14 +860,12 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
         </div>
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/config/secrets"
           dirty={dirty}
           maskValues={maskSecretYaml}

@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useEffect, useRef, useState } from "react";
 import Field from "@/components/ui/form/Field.tsx";
 import Segmented from "@/components/ui/form/Segmented.tsx";
 import Select from "@/components/ui/form/Select.tsx";
@@ -11,6 +11,7 @@ import { ACCESS_MODES, DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface RestoreFormState {
   name: string;
@@ -111,42 +112,45 @@ export default function RestoreSnapshotWizard({
   const minSizeValue = parsedRestore?.value || "10";
   const minSizeUnit = parsedRestore?.unit || "Gi";
 
-  const step = useSignal(0);
-  const form = useSignal<RestoreFormState>({
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState<RestoreFormState>(() => ({
     name: snapshotParams ? `${snapshotParams.name}-restore` : "",
     namespace: snapshotParams?.ns || "default",
     storageClassName: "",
     sizeValue: minSizeValue,
     sizeUnit: minSizeUnit,
     accessMode: "ReadWriteOnce",
-  });
-  const errors = useSignal<Record<string, string>>({});
+  }));
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const namespaces = useNamespaces();
+  const namespaceList = useSignalValue(namespaces);
   const storageClasses = useStorageClasses();
-  const snapshotsAvailable = useSignal(true);
+  const [snapshotsAvailable, setSnapshotsAvailable] = useState(true);
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
+  const formRef = useRef(form);
+  formRef.current = form;
 
   useEffect(() => {
     apiGet<{ metadata: { available: boolean } }>("/v1/storage/snapshot-classes")
       .then((resp) => {
         if (resp.data?.metadata?.available === false) {
-          snapshotsAvailable.value = false;
+          setSnapshotsAvailable(false);
         }
       })
       .catch(() => {});
   }, []);
 
   const updateField = (field: string, value: unknown) => {
-    form.value = { ...form.value, [field]: value };
+    setForm((prev) => ({ ...prev, [field]: value }));
   };
 
   const validateStep = (): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
       errs.name =
@@ -164,16 +168,16 @@ export default function RestoreSnapshotWizard({
         errs.sizeValue = `Must be at least ${minSizeValue}${minSizeUnit} (snapshot restore size)`;
       }
     }
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const fetchPreview = async () => {
     if (!snapshotParams) return;
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
-    const f = form.value;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const f = formRef.current;
     try {
       const resp = await apiPost<{ yaml: string }>("/v1/wizards/pvc/preview", {
         name: f.name,
@@ -188,33 +192,34 @@ export default function RestoreSnapshotWizard({
         },
       });
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const handleNext = async () => {
-    if (step.value === 0) {
+    if (step === 0) {
       if (!validateStep()) return;
-      step.value = 1;
+      setStep(1);
       await fetchPreview();
     } else {
       close();
     }
   };
 
-  const scNames = storageClasses.value.map(
+  const scNames = storageClasses.map(
     (sc: StorageClassItem) => sc.metadata.name,
   );
-  const f = form.value;
+  const f = form;
 
   // CRD unavailable
-  if (!snapshotsAvailable.value) {
+  if (!snapshotsAvailable) {
     return (
       <WizardShell
         title="Restore from Snapshot"
@@ -305,28 +310,26 @@ export default function RestoreSnapshotWizard({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <path d="M4 10a6 6 0 1 0 6-6" />
           <path d="M4 6v4h4" />
         </svg>
       }
       steps={STEPS}
-      current={step.value}
+      current={step}
       onStep={(i) => {
-        if (i < step.value) step.value = i;
+        if (i < step) setStep(i);
       }}
       onCancel={close}
-      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onBack={() => setStep((prev) => Math.max(0, prev - 1))}
       onNext={handleNext}
-      nextLabel={step.value === 0 ? "Continue" : "Done"}
-      yaml={
-        step.value === 0 ? buildManifest(f, snapshotParams.name) : undefined
-      }
+      nextLabel={step === 0 ? "Continue" : "Done"}
+      yaml={step === 0 ? buildManifest(f, snapshotParams.name) : undefined}
     >
-      {step.value === 0 && (
+      {step === 0 && (
         <div
           style={{
             display: "flex",
@@ -341,7 +344,7 @@ export default function RestoreSnapshotWizard({
               onInput={(v) => updateField("name", v)}
               placeholder="e.g. my-data-restore"
             />
-            {errors.value.name && (
+            {errors.name && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -349,7 +352,7 @@ export default function RestoreSnapshotWizard({
                   marginTop: "5px",
                 }}
               >
-                {errors.value.name}
+                {errors.name}
               </p>
             )}
           </Field>
@@ -357,10 +360,10 @@ export default function RestoreSnapshotWizard({
           <Field label="Namespace">
             <Select
               value={f.namespace}
-              options={namespaces.value}
+              options={namespaceList}
               onChange={(v) => updateField("namespace", v)}
             />
-            {errors.value.namespace && (
+            {errors.namespace && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -368,7 +371,7 @@ export default function RestoreSnapshotWizard({
                   marginTop: "5px",
                 }}
               >
-                {errors.value.namespace}
+                {errors.namespace}
               </p>
             )}
           </Field>
@@ -379,7 +382,7 @@ export default function RestoreSnapshotWizard({
               options={["", ...scNames]}
               onChange={(v) => updateField("storageClassName", v)}
             />
-            {errors.value.storageClassName && (
+            {errors.storageClassName && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -387,7 +390,7 @@ export default function RestoreSnapshotWizard({
                   marginTop: "5px",
                 }}
               >
-                {errors.value.storageClassName}
+                {errors.storageClassName}
               </p>
             )}
           </Field>
@@ -410,7 +413,7 @@ export default function RestoreSnapshotWizard({
                 onChange={(v) => updateField("sizeUnit", v)}
               />
             </div>
-            {errors.value.sizeValue && (
+            {errors.sizeValue && (
               <p
                 style={{
                   fontSize: "11.5px",
@@ -418,7 +421,7 @@ export default function RestoreSnapshotWizard({
                   marginTop: "5px",
                 }}
               >
-                {errors.value.sizeValue}
+                {errors.sizeValue}
               </p>
             )}
           </Field>
@@ -433,14 +436,12 @@ export default function RestoreSnapshotWizard({
         </div>
       )}
 
-      {step.value === 1 && (
+      {step === 1 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/storage/pvcs"
         />
       )}
