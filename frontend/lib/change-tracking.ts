@@ -44,6 +44,7 @@ export function useTrackingAvailability(
     const controller = new AbortController();
     listReceipts({ pageSize: 1 }, controller.signal)
       .then(() => {
+        if (controller.signal.aborted) return;
         setAvailability({ status: "available" });
         setTrackedRef.current(true);
       })

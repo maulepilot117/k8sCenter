@@ -1077,3 +1077,115 @@ test("after Stop repairing the next tracked apply carries no repairOf", async ()
     history.replaceState(null, "", "/tools/yaml-apply");
   }
 });
+
+// --- Editor edits and file upload ---------------------------------------------
+
+function editor(root: HTMLElement): HTMLTextAreaElement {
+  const found = root.querySelector<HTMLTextAreaElement>("[data-testid=yaml]");
+  if (!found) throw new Error("editor stub not rendered");
+  return found;
+}
+
+test("an editor echo of the current text keeps the pin", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked();
+  const root = await mount();
+  await type(root, CM_YAML);
+  await click(button(root, "Validate"));
+  expect(root.textContent).toContain("Applies to");
+
+  await type(root, CM_YAML);
+
+  expect(root.textContent).toContain("Applies to");
+  expect(button(root, "Apply").disabled).toBe(false);
+});
+
+test("two edits before a render keep the text the editor ends on", async () => {
+  // A -> B -> A inside one task: the second change returns to the text the
+  // page last rendered. It must still count as an edit of the live text, or
+  // the pending B would be rendered back over the editor's A.
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked();
+  const root = await mount();
+  await type(root, CM_YAML);
+  await click(button(root, "Validate"));
+
+  const box = editor(root);
+  await act(async () => {
+    box.value = "kind: Secret";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    box.value = CM_YAML;
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  expect(editor(root).value).toBe(CM_YAML);
+  // The edit in between still invalidated the preview.
+  expect(root.textContent).toContain("Validate to choose the cluster");
+});
+
+/** A picked file, as the upload handler reads it. */
+interface PickedFile {
+  size: number;
+  text: () => Promise<string>;
+}
+
+/** Presses Upload File and picks `file` in the dialog it opens. */
+async function upload(root: HTMLElement, file: PickedFile) {
+  const realClick = HTMLInputElement.prototype.click;
+  let picker: HTMLInputElement | undefined;
+  HTMLInputElement.prototype.click = function (this: HTMLInputElement) {
+    if (this.type === "file") {
+      picker = this;
+      return;
+    }
+    realClick.call(this);
+  };
+  try {
+    await click(button(root, "Upload File"));
+  } finally {
+    HTMLInputElement.prototype.click = realClick;
+  }
+  const opened = picker;
+  if (!opened) throw new Error("Upload File opened no file picker");
+  Object.defineProperty(opened, "files", { value: [file] });
+  await act(async () => {
+    await opened.onchange?.call(opened, new Event("change"));
+  });
+  await flush();
+}
+
+test("a file over 2 MB is refused, and a later good file clears the refusal", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked();
+  const root = await mount();
+
+  await upload(root, {
+    size: 3 * 1024 * 1024,
+    text: () => Promise.reject(new Error("an oversize file is never read")),
+  });
+  expect(root.textContent).toContain(
+    "File is too large (3.0 MB). Maximum size is 2 MB.",
+  );
+  expect(editor(root).value.startsWith("# Paste or type")).toBe(true);
+
+  await upload(root, { size: 20, text: () => Promise.resolve(CM_YAML) });
+  expect(root.textContent).not.toContain("File is too large");
+  expect(editor(root).value).toBe(CM_YAML);
+});
+
+test("an uploaded file replaces the text and clears the last result and pin", async () => {
+  switchCluster(LOCAL_CLUSTER_ID, "local");
+  stubTracked({ apply: applied() });
+  const root = await mount();
+  await validateAndApply(root);
+  expect(root.textContent).toContain("1 resource processed");
+  expect(root.textContent).toContain("Applies to");
+
+  const next = "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\n";
+  await upload(root, { size: next.length, text: () => Promise.resolve(next) });
+
+  expect(editor(root).value).toBe(next);
+  expect(root.textContent).not.toContain("resource processed");
+  expect(root.textContent).toContain("Validate to choose the cluster");
+  expect(button(root, "Apply").disabled).toBe(true);
+});

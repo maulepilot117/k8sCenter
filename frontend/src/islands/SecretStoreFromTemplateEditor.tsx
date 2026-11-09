@@ -32,6 +32,7 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
   const {
     yamlContent: yamlText,
     setYamlContent,
+    yamlContentRef,
     applying: applyingNow,
     validating: validatingNow,
     error: errorText,
@@ -142,7 +143,7 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
         <YamlEditor
           value={yamlText}
           onChange={(v) => {
-            if (v === yamlText) return;
+            if (v === yamlContentRef.current) return;
             setYamlContent(v);
             // The last verdict described the text before this edit.
             clearPin();

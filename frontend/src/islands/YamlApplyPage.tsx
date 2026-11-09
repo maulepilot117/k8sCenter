@@ -74,6 +74,7 @@ export default function YamlApplyPage() {
   const {
     yamlContent: yamlText,
     setYamlContent,
+    yamlContentRef,
     applying: applyingNow,
     validating: validatingNow,
     error: errorText,
@@ -463,7 +464,7 @@ export default function YamlApplyPage() {
             // the same value); ignore those so a valid pin isn't dropped for
             // content that never actually changed. A real edit invalidates
             // the previous verdict, so clear the pin until re-validated.
-            if (v === yamlText) return;
+            if (v === yamlContentRef.current) return;
             setYamlContent(v);
             clearPin();
           }}

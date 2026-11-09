@@ -165,6 +165,13 @@ export interface UseYamlApplyReturn {
   yamlContent: string;
   /** Replaces the editor text. It does not clear the pin; see `clearPin`. */
   setYamlContent: (yaml: string) => void;
+  /**
+   * The editor text as of the last `setYamlContent`, which can be ahead of
+   * `yamlContent` until the next render. An editor change handler compares
+   * against this: two changes can arrive before a render, and the second may
+   * return to the rendered text while the live text differs.
+   */
+  yamlContentRef: { readonly current: string };
   applying: boolean;
   validating: boolean;
   error: string | null;
@@ -637,6 +644,7 @@ export function useYamlApply(
   return {
     yamlContent,
     setYamlContent,
+    yamlContentRef: yamlRef,
     applying,
     validating,
     error,
