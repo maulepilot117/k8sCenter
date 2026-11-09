@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { RemoteRefreshHint } from "@/components/ui/LiveBadge.tsx";
 import {
@@ -16,6 +16,8 @@ import type { NormalizedViolation } from "@/lib/policy-types.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const PAGE_SIZE = 100;
 
@@ -25,28 +27,30 @@ function getUrlParam(name: string): string {
 }
 
 export default function ViolationBrowser() {
-  const violations = useSignal<NormalizedViolation[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const search = useSignal(
+  const [violations, setViolations] = useState<NormalizedViolation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState(() =>
     getUrlParam("policy") !== "all" ? getUrlParam("policy") : "",
   );
-  const filterSeverity = useSignal<string>("all");
-  const filterEngine = useSignal<string>("all");
-  const page = useSignal(1);
-  const refreshing = useSignal(false);
+  const [filterSeverity, setFilterSeverity] = useState<string>("all");
+  const [filterEngine, setFilterEngine] = useState<string>("all");
+  const [page, setPage] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
+  const isClient = useIsClient();
+  const globalNs = useSignalValue(selectedNamespace);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       const res = await apiGet<NormalizedViolation[]>(
         "/v1/policies/violations",
       );
-      violations.value = Array.isArray(res.data) ? res.data : [];
-      error.value = null;
+      setViolations(Array.isArray(res.data) ? res.data : []);
+      setError(null);
     } catch {
-      error.value = "Failed to load violations";
+      setError("Failed to load violations");
     }
-  }
+  }, []);
 
   // The namespace filter is the global picker, so it reads the same here as
   // in the top bar. A link such as the compliance page's ?namespace= selects
@@ -60,9 +64,9 @@ export default function ViolationBrowser() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
-  }, []);
+  }, [fetchData]);
 
   useWsRefetch(
     fetchData,
@@ -74,42 +78,36 @@ export default function ViolationBrowser() {
   );
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
-  if (!IS_BROWSER) return null;
-
-  // Read the global namespace picker in the synchronous render path so the
-  // signal subscription triggers a re-render when the picker changes.
-  const globalNs = selectedNamespace.value;
+  if (!isClient) return null;
 
   // The selected namespace stays an option even with no violations in it, so
   // the select never renders blank.
   const namespaces = [
     ...new Set([
-      ...violations.value
-        .map((v) => v.namespace)
-        .filter((ns): ns is string => !!ns),
+      ...violations.map((v) => v.namespace).filter((ns): ns is string => !!ns),
       ...(globalNs !== "all" ? [globalNs] : []),
     ]),
   ].sort();
 
-  const filtered = violations.value.filter((v) => {
+  const filtered = violations.filter((v) => {
     // Global namespace picker — cluster-scoped violations (no namespace) pass
     // through regardless so they remain visible for any namespace selection.
     if (globalNs !== "all" && v.namespace && v.namespace !== globalNs) {
       return false;
     }
-    if (filterSeverity.value !== "all" && v.severity !== filterSeverity.value) {
+    if (filterSeverity !== "all" && v.severity !== filterSeverity) {
       return false;
     }
-    if (filterEngine.value !== "all" && v.engine !== filterEngine.value) {
+    if (filterEngine !== "all" && v.engine !== filterEngine) {
       return false;
     }
-    if (search.value) {
-      const q = search.value.toLowerCase();
+    if (search) {
+      const q = search.toLowerCase();
       return (
         v.policy.toLowerCase().includes(q) ||
         v.name.toLowerCase().includes(q) ||
@@ -121,10 +119,13 @@ export default function ViolationBrowser() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (page.value > totalPages) page.value = totalPages;
+  const currentPage = Math.min(page, totalPages);
+  // Keep the stored page in range as well, so a list that shrinks and grows
+  // back stays on the clamped page instead of returning to the old one.
+  if (page > totalPages) setPage(totalPages);
   const displayed = filtered.slice(
-    (page.value - 1) * PAGE_SIZE,
-    page.value * PAGE_SIZE,
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
   );
 
   const selectStyle = {
@@ -179,16 +180,16 @@ export default function ViolationBrowser() {
             resources.
           </p>
         </div>
-        <div class="flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <RemoteRefreshHint />
-          {!loading.value && (
+          {!loading && (
             <Button
               type="button"
               variant="ghost"
               onClick={handleRefresh}
-              disabled={refreshing.value}
+              disabled={refreshing}
             >
-              {refreshing.value ? "Refreshing..." : "Refresh"}
+              {refreshing ? "Refreshing..." : "Refresh"}
             </Button>
           )}
         </div>
@@ -205,10 +206,10 @@ export default function ViolationBrowser() {
       >
         <div style={{ flex: 1, maxWidth: "320px" }}>
           <SearchBar
-            value={search.value}
+            value={search}
             onInput={(v) => {
-              search.value = v;
-              page.value = 1;
+              setSearch(v);
+              setPage(1);
             }}
             placeholder="Filter by policy, resource, message..."
           />
@@ -217,8 +218,8 @@ export default function ViolationBrowser() {
           style={selectStyle}
           value={globalNs}
           onChange={(e) => {
-            selectedNamespace.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
+            selectedNamespace.value = e.currentTarget.value;
+            setPage(1);
           }}
         >
           <option value="all">All Namespaces</option>
@@ -230,10 +231,10 @@ export default function ViolationBrowser() {
         </select>
         <select
           style={selectStyle}
-          value={filterSeverity.value}
+          value={filterSeverity}
           onChange={(e) => {
-            filterSeverity.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
+            setFilterSeverity(e.currentTarget.value);
+            setPage(1);
           }}
         >
           <option value="all">All Severities</option>
@@ -244,10 +245,10 @@ export default function ViolationBrowser() {
         </select>
         <select
           style={selectStyle}
-          value={filterEngine.value}
+          value={filterEngine}
           onChange={(e) => {
-            filterEngine.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
+            setFilterEngine(e.currentTarget.value);
+            setPage(1);
           }}
         >
           <option value="all">All Engines</option>
@@ -255,11 +256,11 @@ export default function ViolationBrowser() {
           <option value="gatekeeper">Gatekeeper</option>
         </select>
         <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-          {filtered.length} of {violations.value.length} violations
+          {filtered.length} of {violations.length} violations
         </span>
       </div>
 
-      {loading.value && (
+      {loading && (
         <div
           style={{
             display: "flex",
@@ -271,86 +272,87 @@ export default function ViolationBrowser() {
         </div>
       )}
 
-      {error.value && (
+      {error && (
         <p
           style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
         >
-          {error.value}
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
+      {!loading && !error && filtered.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border border-border-primary">
+          <table className="w-full text-sm">
             <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+              <tr className="border-b border-border-primary bg-surface">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Policy
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Severity
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Resource
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Namespace
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Message
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Action
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Engine
                 </th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-border-subtle">
+            <tbody className="divide-y divide-border-subtle">
               {displayed.map((v, i) => {
                 const href = resourceHref(v.kind, v.namespace, v.name);
                 return (
                   <tr
+                    // biome-ignore lint/suspicious/noArrayIndexKey: a violation has no unique id, and the same policy can hit one resource name twice
                     key={`${v.policy}-${v.name}-${i}`}
-                    class="hover:bg-hover/30"
+                    className="hover:bg-hover/30"
                   >
-                    <td class="px-3 py-2">
-                      <div class="font-medium text-text-primary">
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-text-primary">
                         {v.policy}
                       </div>
                       {v.rule && (
-                        <div class="text-xs text-text-muted">{v.rule}</div>
+                        <div className="text-xs text-text-muted">{v.rule}</div>
                       )}
                     </td>
-                    <td class="px-3 py-2">
+                    <td className="px-3 py-2">
                       <SeverityBadge severity={v.severity} />
                     </td>
-                    <td class="px-3 py-2">
+                    <td className="px-3 py-2">
                       {href ? (
                         <a
                           href={href}
                           style={{ color: "var(--accent)" }}
-                          class="hover:underline"
+                          className="hover:underline"
                         >
                           {v.kind}/{v.name}
                         </a>
                       ) : (
-                        <span class="text-text-secondary">
+                        <span className="text-text-secondary">
                           {v.kind}/{v.name}
                         </span>
                       )}
                     </td>
-                    <td class="px-3 py-2 text-text-secondary">
+                    <td className="px-3 py-2 text-text-secondary">
                       {v.namespace ?? "(cluster)"}
                     </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs max-w-xs truncate">
+                    <td className="px-3 py-2 text-text-secondary text-xs max-w-xs truncate">
                       {v.message}
                     </td>
-                    <td class="px-3 py-2">
+                    <td className="px-3 py-2">
                       <ActionBadge action={v.action} />
                     </td>
-                    <td class="px-3 py-2">
+                    <td className="px-3 py-2">
                       <EngineBadge engine={v.engine} />
                     </td>
                   </tr>
@@ -362,7 +364,7 @@ export default function ViolationBrowser() {
       )}
 
       {/* Pagination */}
-      {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
+      {!loading && !error && filtered.length > PAGE_SIZE && (
         <div
           style={{
             display: "flex",
@@ -371,7 +373,7 @@ export default function ViolationBrowser() {
           }}
         >
           <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-            {filtered.length} violations &middot; Page {page.value} of{" "}
+            {filtered.length} violations &middot; Page {currentPage} of{" "}
             {totalPages}
           </p>
           <div style={{ display: "flex", gap: "8px" }}>
@@ -379,9 +381,9 @@ export default function ViolationBrowser() {
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value--;
+                setPage(currentPage - 1);
               }}
-              disabled={page.value <= 1}
+              disabled={currentPage <= 1}
             >
               Previous
             </Button>
@@ -389,9 +391,9 @@ export default function ViolationBrowser() {
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value++;
+                setPage(currentPage + 1);
               }}
-              disabled={page.value >= totalPages}
+              disabled={currentPage >= totalPages}
             >
               Next
             </Button>
@@ -400,7 +402,7 @@ export default function ViolationBrowser() {
       )}
 
       {/* Empty state — glass card */}
-      {!loading.value && !error.value && filtered.length === 0 && (
+      {!loading && !error && filtered.length === 0 && (
         <WidgetShell>
           <div style={{ textAlign: "center", padding: "48px 24px" }}>
             <p
@@ -410,7 +412,7 @@ export default function ViolationBrowser() {
                 fontSize: "14px",
               }}
             >
-              {violations.value.length === 0
+              {violations.length === 0
                 ? "No violations found. Your cluster is compliant!"
                 : "No violations match your filters."}
             </p>

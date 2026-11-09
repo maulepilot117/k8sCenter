@@ -1,8 +1,6 @@
-/** @jsxImportSource preact */
-import { afterAll, afterEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
+/** @jsxImportSource react */
+import { afterAll, afterEach, expect, test } from "bun:test";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
 /**
  * The violations list had two namespace filters: the global picker, applied
@@ -11,28 +9,33 @@ import { act } from "preact/test-utils";
  * violations" under a select that claimed everything was shown. There is now
  * one filter: the select shows and sets the global namespace.
  *
- * fetch answers with three violations; WebSocket is inert. IS_BROWSER is
- * stubbed to true and put back afterwards.
+ * fetch answers with violations; WebSocket is inert.
  */
-GlobalRegistrator.register({ url: "http://localhost/security/violations" });
-mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: true }));
+setupDom({ browser: true });
 
-const violation = (namespace: string | undefined, name: string) => ({
+const violation = (
+  namespace: string | undefined,
+  name: string,
+  severity = "medium",
+  engine = "kyverno",
+) => ({
   policy: "require-labels",
-  severity: "medium",
+  severity,
   action: "audit",
   message: "label missing",
   namespace,
   kind: "Pod",
   name,
-  engine: "kyverno",
+  engine,
   blocking: false,
 });
-const VIOLATIONS = [
+const DEFAULT_VIOLATIONS = [
   violation("team-a", "a-1"),
   violation("team-b", "b-1"),
   violation(undefined, "cluster-1"),
 ];
+
+let VIOLATIONS: ReturnType<typeof violation>[] = DEFAULT_VIOLATIONS;
 
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async () =>
@@ -60,35 +63,25 @@ afterAll(() => {
   globalThis.fetch = realFetch;
   globalThis.WebSocket = realWebSocket;
   selectedNamespace.value = "all";
-  mock.module("@/src/lib/is-browser.ts", () => ({ IS_BROWSER: false }));
-  GlobalRegistrator.unregister();
 });
 
-let host: HTMLElement | null = null;
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  selectedNamespace.value = "all";
+  VIOLATIONS = DEFAULT_VIOLATIONS;
   globalThis.history.replaceState({}, "", "/security/violations");
 });
 
-async function mount(): Promise<HTMLElement> {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  await act(async () => {
-    render(<ViolationBrowser />, host as HTMLElement);
-  });
+async function mount(): Promise<Element> {
+  const view = render(<ViolationBrowser />);
   for (let i = 0; i < 5; i++) {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
   }
-  return host;
+  return view.container;
 }
 
-const namespaceSelect = (el: HTMLElement) =>
+const namespaceSelect = (el: Element) =>
   [...el.querySelectorAll("select")].find((s) =>
     s.textContent?.includes("All Namespaces"),
   ) as HTMLSelectElement;
@@ -106,8 +99,7 @@ test("choosing All Namespaces in the select clears the global filter", async () 
   const el = await mount();
   const select = namespaceSelect(el);
   await act(async () => {
-    select.value = "all";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    fireEvent.change(select, { target: { value: "all" } });
   });
   expect(selectedNamespace.value).toBe("all");
   expect(el.textContent).toContain("3 of 3 violations");
@@ -124,4 +116,62 @@ test("a ?namespace= link selects that namespace", async () => {
   expect(selectedNamespace.value).toBe("team-b");
   expect(namespaceSelect(el).value).toBe("team-b");
   expect(el.textContent).toContain("2 of 3 violations");
+});
+
+test("severity and engine filters narrow the list together and widen when one is cleared", async () => {
+  VIOLATIONS = [
+    violation("team-a", "crit-kyverno", "critical", "kyverno"),
+    violation("team-a", "crit-gatekeeper", "critical", "gatekeeper"),
+    violation("team-a", "low-kyverno", "low", "kyverno"),
+    violation("team-a", "low-gatekeeper", "low", "gatekeeper"),
+  ];
+  const el = await mount();
+  const [, severity, engine] = [...el.querySelectorAll("select")];
+  const change = async (select: HTMLSelectElement, value: string) => {
+    await act(async () => {
+      fireEvent.change(select, { target: { value } });
+    });
+  };
+  expect(el.textContent).toContain("4 of 4 violations");
+
+  await change(severity as HTMLSelectElement, "critical");
+  expect(el.textContent).toContain("2 of 4 violations");
+
+  await change(engine as HTMLSelectElement, "gatekeeper");
+  expect(el.textContent).toContain("1 of 4 violations");
+  expect(el.textContent).toContain("Pod/crit-gatekeeper");
+  expect(el.textContent).not.toContain("Pod/crit-kyverno");
+  expect(el.textContent).not.toContain("Pod/low-gatekeeper");
+
+  await change(severity as HTMLSelectElement, "all");
+  expect(el.textContent).toContain("2 of 4 violations");
+  expect(el.textContent).toContain("Pod/low-gatekeeper");
+  expect(el.textContent).not.toContain("Pod/low-kyverno");
+});
+
+test("a list that shrinks under the reader's page and grows back stays on the clamped page", async () => {
+  VIOLATIONS = [
+    ...Array.from({ length: 150 }, (_, i) => violation("team-a", `a-${i}`)),
+    violation("team-b", "b-1"),
+  ];
+  const el = await mount();
+  const next = [...el.querySelectorAll("button")].find(
+    (b) => b.textContent === "Next",
+  ) as HTMLButtonElement;
+  await act(async () => {
+    fireEvent.click(next);
+  });
+  expect(el.textContent).toContain("Page 2 of 2");
+
+  // The top bar narrows the namespace, so one page is left.
+  await act(async () => {
+    selectedNamespace.value = "team-b";
+  });
+  expect(el.textContent).toContain("1 of 151 violations");
+  expect(el.textContent).toContain("Pod/b-1");
+
+  await act(async () => {
+    selectedNamespace.value = "all";
+  });
+  expect(el.textContent).toContain("Page 1 of 2");
 });

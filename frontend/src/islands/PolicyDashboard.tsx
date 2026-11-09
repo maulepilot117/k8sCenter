@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { LiveBadge } from "@/components/ui/LiveBadge.tsx";
 import {
@@ -14,41 +14,43 @@ import { apiGet } from "@/lib/api.ts";
 import type { EngineStatus, NormalizedPolicy } from "@/lib/policy-types.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 const PAGE_SIZE = 100;
 
 export default function PolicyDashboard() {
-  const status = useSignal<EngineStatus | null>(null);
-  const policies = useSignal<NormalizedPolicy[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const search = useSignal("");
-  const filterEngine = useSignal<string>("all");
-  const filterSeverity = useSignal<string>("all");
-  const filterBlocking = useSignal<string>("all");
-  const page = useSignal(1);
-  const refreshing = useSignal(false);
+  const [status, setStatus] = useState<EngineStatus | null>(null);
+  const [policies, setPolicies] = useState<NormalizedPolicy[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filterEngine, setFilterEngine] = useState<string>("all");
+  const [filterSeverity, setFilterSeverity] = useState<string>("all");
+  const [filterBlocking, setFilterBlocking] = useState<string>("all");
+  const [page, setPage] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
+  const isClient = useIsClient();
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       const [statusRes, policiesRes] = await Promise.all([
         apiGet<EngineStatus>("/v1/policies/status"),
         apiGet<NormalizedPolicy[]>("/v1/policies"),
       ]);
-      status.value = statusRes.data;
-      policies.value = Array.isArray(policiesRes.data) ? policiesRes.data : [];
-      error.value = null;
+      setStatus(statusRes.data);
+      setPolicies(Array.isArray(policiesRes.data) ? policiesRes.data : []);
+      setError(null);
     } catch {
-      error.value = "Failed to load policy data";
+      setError("Failed to load policy data");
     }
-  }
+  }, []);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
-  }, []);
+  }, [fetchData]);
 
   useWsRefetch(
     fetchData,
@@ -60,28 +62,28 @@ export default function PolicyDashboard() {
   );
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await fetchData();
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
-  const noEngine = status.value && !status.value.detected;
+  const noEngine = status && !status.detected;
 
-  const filtered = policies.value.filter((p) => {
-    if (filterEngine.value !== "all" && p.engine !== filterEngine.value) {
+  const filtered = policies.filter((p) => {
+    if (filterEngine !== "all" && p.engine !== filterEngine) {
       return false;
     }
-    if (filterSeverity.value !== "all" && p.severity !== filterSeverity.value) {
+    if (filterSeverity !== "all" && p.severity !== filterSeverity) {
       return false;
     }
-    if (filterBlocking.value !== "all") {
-      const wantBlocking = filterBlocking.value === "blocking";
+    if (filterBlocking !== "all") {
+      const wantBlocking = filterBlocking === "blocking";
       if (p.blocking !== wantBlocking) return false;
     }
-    if (search.value) {
-      const q = search.value.toLowerCase();
+    if (search) {
+      const q = search.toLowerCase();
       return (
         p.name.toLowerCase().includes(q) ||
         p.kind.toLowerCase().includes(q) ||
@@ -93,10 +95,13 @@ export default function PolicyDashboard() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (page.value > totalPages) page.value = totalPages;
+  const currentPage = Math.min(page, totalPages);
+  // Keep the stored page in range as well, so a list that shrinks and grows
+  // back stays on the clamped page instead of returning to the old one.
+  if (page > totalPages) setPage(totalPages);
   const displayed = filtered.slice(
-    (page.value - 1) * PAGE_SIZE,
-    page.value * PAGE_SIZE,
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
   );
 
   return (
@@ -149,7 +154,7 @@ export default function PolicyDashboard() {
           }}
         >
           <LiveBadge />
-          {!loading.value && (
+          {!loading && (
             <>
               {!noEngine && (
                 <a href="/security/create-policy">
@@ -162,9 +167,9 @@ export default function PolicyDashboard() {
                 type="button"
                 variant="ghost"
                 onClick={handleRefresh}
-                disabled={refreshing.value}
+                disabled={refreshing}
               >
-                {refreshing.value ? "Refreshing..." : "Refresh"}
+                {refreshing ? "Refreshing..." : "Refresh"}
               </Button>
             </>
           )}
@@ -172,7 +177,7 @@ export default function PolicyDashboard() {
       </div>
 
       {/* Engine status banner */}
-      {status.value && !noEngine && (
+      {status && !noEngine && (
         <WidgetShell title="Policy Engines">
           <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -185,12 +190,10 @@ export default function PolicyDashboard() {
               >
                 Engines detected:
               </span>
-              {(status.value.detected === "kyverno" ||
-                status.value.detected === "both") && (
-                <EngineBadge engine="kyverno" />
-              )}
-              {(status.value.detected === "gatekeeper" ||
-                status.value.detected === "both") && (
+              {(status.detected === "kyverno" ||
+                status.detected === "both") && <EngineBadge engine="kyverno" />}
+              {(status.detected === "gatekeeper" ||
+                status.detected === "both") && (
                 <EngineBadge engine="gatekeeper" />
               )}
             </div>
@@ -201,15 +204,14 @@ export default function PolicyDashboard() {
                 marginLeft: "auto",
               }}
             >
-              Last checked:{" "}
-              {new Date(status.value.lastChecked).toLocaleString()}
+              Last checked: {new Date(status.lastChecked).toLocaleString()}
             </span>
           </div>
         </WidgetShell>
       )}
 
       {/* No engine state */}
-      {noEngine && !loading.value && (
+      {noEngine && !loading && (
         <WidgetShell title="Policy Engines">
           <div style={{ textAlign: "center", padding: "16px 0" }}>
             <p
@@ -243,7 +245,7 @@ export default function PolicyDashboard() {
                   color: "var(--accent)",
                   textDecoration: "none",
                 }}
-                class="hover:underline"
+                className="hover:underline"
               >
                 Install Kyverno &rarr;
               </a>
@@ -256,7 +258,7 @@ export default function PolicyDashboard() {
                   color: "var(--accent)",
                   textDecoration: "none",
                 }}
-                class="hover:underline"
+                className="hover:underline"
               >
                 Install Gatekeeper &rarr;
               </a>
@@ -276,10 +278,10 @@ export default function PolicyDashboard() {
       >
         <div style={{ flex: 1, maxWidth: "320px" }}>
           <SearchBar
-            value={search.value}
+            value={search}
             onInput={(v) => {
-              search.value = v;
-              page.value = 1;
+              setSearch(v);
+              setPage(1);
             }}
             placeholder="Filter by name, kind, category..."
           />
@@ -294,10 +296,10 @@ export default function PolicyDashboard() {
             color: "var(--text-primary)",
             cursor: "pointer",
           }}
-          value={filterEngine.value}
+          value={filterEngine}
           onChange={(e) => {
-            filterEngine.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
+            setFilterEngine(e.currentTarget.value);
+            setPage(1);
           }}
         >
           <option value="all">All Engines</option>
@@ -314,10 +316,10 @@ export default function PolicyDashboard() {
             color: "var(--text-primary)",
             cursor: "pointer",
           }}
-          value={filterSeverity.value}
+          value={filterSeverity}
           onChange={(e) => {
-            filterSeverity.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
+            setFilterSeverity(e.currentTarget.value);
+            setPage(1);
           }}
         >
           <option value="all">All Severities</option>
@@ -336,10 +338,10 @@ export default function PolicyDashboard() {
             color: "var(--text-primary)",
             cursor: "pointer",
           }}
-          value={filterBlocking.value}
+          value={filterBlocking}
           onChange={(e) => {
-            filterBlocking.value = (e.target as HTMLSelectElement).value;
-            page.value = 1;
+            setFilterBlocking(e.currentTarget.value);
+            setPage(1);
           }}
         >
           <option value="all">All Modes</option>
@@ -347,100 +349,104 @@ export default function PolicyDashboard() {
           <option value="audit">Audit</option>
         </select>
         <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-          {filtered.length} of {policies.value.length} policies
+          {filtered.length} of {policies.length} policies
         </span>
       </div>
 
-      {loading.value && (
-        <div class="flex justify-center py-12">
+      {loading && (
+        <div className="flex justify-center py-12">
           <Spinner className="text-brand" />
         </div>
       )}
 
-      {error.value && (
+      {error && (
         <p
           style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
         >
-          {error.value}
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
+      {!loading && !error && filtered.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border border-border-primary">
+          <table className="w-full text-sm">
             <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+              <tr className="border-b border-border-primary bg-surface">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Name
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Engine
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Mode
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Severity
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Violations
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Targets
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th className="px-3 py-2 text-left text-xs font-medium text-text-muted">
                   Status
                 </th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-border-subtle">
+            <tbody className="divide-y divide-border-subtle">
               {displayed.map((p) => (
-                <tr key={p.id} class="hover:bg-hover/30">
-                  <td class="px-3 py-2">
-                    <div class="font-medium text-text-primary">{p.name}</div>
+                <tr key={p.id} className="hover:bg-hover/30">
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-text-primary">
+                      {p.name}
+                    </div>
                     {p.namespace && (
-                      <div class="text-xs text-text-muted">{p.namespace}</div>
+                      <div className="text-xs text-text-muted">
+                        {p.namespace}
+                      </div>
                     )}
                     {p.description && (
-                      <div class="text-xs text-text-muted truncate max-w-xs">
+                      <div className="text-xs text-text-muted truncate max-w-xs">
                         {p.description}
                       </div>
                     )}
                   </td>
-                  <td class="px-3 py-2">
+                  <td className="px-3 py-2">
                     <EngineBadge engine={p.engine} />
                   </td>
-                  <td class="px-3 py-2">
+                  <td className="px-3 py-2">
                     <BlockingBadge blocking={p.blocking} />
                   </td>
-                  <td class="px-3 py-2">
+                  <td className="px-3 py-2">
                     <SeverityBadge severity={p.severity} />
                   </td>
-                  <td class="px-3 py-2">
+                  <td className="px-3 py-2">
                     {p.violationCount > 0 ? (
                       <a
                         href={`/security/violations?policy=${encodeURIComponent(
                           p.name,
                         )}`}
                         style={{ color: "var(--error)", fontWeight: 500 }}
-                        class="hover:underline"
+                        className="hover:underline"
                       >
                         {p.violationCount}
                       </a>
                     ) : (
-                      <span class="text-text-muted">0</span>
+                      <span className="text-text-muted">0</span>
                     )}
                   </td>
-                  <td class="px-3 py-2 text-text-secondary text-xs">
+                  <td className="px-3 py-2 text-text-secondary text-xs">
                     {(p.targetKinds ?? []).join(", ") || "-"}
                   </td>
-                  <td class="px-3 py-2">
+                  <td className="px-3 py-2">
                     {p.ready ? (
-                      <span class="text-xs text-success font-medium">
+                      <span className="text-xs text-success font-medium">
                         Ready
                       </span>
                     ) : (
-                      <span class="text-xs text-warning font-medium">
+                      <span className="text-xs text-warning font-medium">
                         Not Ready
                       </span>
                     )}
@@ -453,7 +459,7 @@ export default function PolicyDashboard() {
       )}
 
       {/* Pagination */}
-      {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
+      {!loading && !error && filtered.length > PAGE_SIZE && (
         <div
           style={{
             display: "flex",
@@ -461,18 +467,18 @@ export default function PolicyDashboard() {
             justifyContent: "space-between",
           }}
         >
-          <p class="text-sm text-text-muted">
-            {filtered.length} policies &middot; Page {page.value} of{" "}
+          <p className="text-sm text-text-muted">
+            {filtered.length} policies &middot; Page {currentPage} of{" "}
             {totalPages}
           </p>
-          <div class="flex gap-2">
+          <div className="flex gap-2">
             <Button
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value--;
+                setPage(currentPage - 1);
               }}
-              disabled={page.value <= 1}
+              disabled={currentPage <= 1}
             >
               Previous
             </Button>
@@ -480,9 +486,9 @@ export default function PolicyDashboard() {
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value++;
+                setPage(currentPage + 1);
               }}
-              disabled={page.value >= totalPages}
+              disabled={currentPage >= totalPages}
             >
               Next
             </Button>
@@ -491,7 +497,7 @@ export default function PolicyDashboard() {
       )}
 
       {/* Empty state */}
-      {!loading.value && !error.value && filtered.length === 0 && !noEngine && (
+      {!loading && !error && filtered.length === 0 && !noEngine && (
         <WidgetShell>
           <p
             style={{
@@ -501,7 +507,7 @@ export default function PolicyDashboard() {
               margin: 0,
             }}
           >
-            {policies.value.length === 0
+            {policies.length === 0
               ? "No policies found. Policies will appear here once defined in your cluster."
               : "No policies match your filters."}
           </p>

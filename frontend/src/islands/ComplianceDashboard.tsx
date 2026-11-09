@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
 import { RemoteRefreshHint } from "@/components/ui/LiveBadge.tsx";
@@ -28,6 +28,8 @@ import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import ComplianceTrendChart from "@/src/islands/ComplianceTrendChart.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { selectedNamespace } from "@/src/lib/namespace.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 const TOP_POLICIES = 5;
 const TOP_RESOURCES = 8;
@@ -42,13 +44,13 @@ function SeverityBar({
   const pct = counts.total > 0 ? (counts.pass / counts.total) * 100 : 100;
   const color = SEVERITY_COLORS[label] ?? "var(--text-muted)";
   return (
-    <div class="flex items-center gap-3">
-      <span class="text-xs font-medium w-16 text-right" style={{ color }}>
+    <div className="flex items-center gap-3">
+      <span className="text-xs font-medium w-16 text-right" style={{ color }}>
         {label}
       </span>
-      <div class="flex-1 h-3 rounded-full overflow-hidden bg-elevated">
+      <div className="flex-1 h-3 rounded-full overflow-hidden bg-elevated">
         <div
-          class="h-full rounded-full"
+          className="h-full rounded-full"
           style={{
             width: "100%",
             backgroundColor: color,
@@ -59,7 +61,7 @@ function SeverityBar({
           }}
         />
       </div>
-      <span class="text-xs text-text-muted w-20">
+      <span className="text-xs text-text-muted w-20">
         {counts.pass}/{counts.total} pass
       </span>
     </div>
@@ -67,18 +69,17 @@ function SeverityBar({
 }
 
 export default function ComplianceDashboard() {
-  const scores = useSignal<ComplianceScore[]>([]);
-  const violations = useSignal<NormalizedViolation[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const refreshing = useSignal(false);
+  const [scores, setScores] = useState<ComplianceScore[]>([]);
+  const [violations, setViolations] = useState<NormalizedViolation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const isClient = useIsClient();
 
-  // Read the global namespace picker in the synchronous render path so the
-  // island re-renders (and the effect below re-runs) when the picker changes.
   // "all" = cluster-wide; a specific namespace scopes the score server-side.
-  const ns = selectedNamespace.value;
+  const ns = useSignalValue(selectedNamespace);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       // Peek the live value (not the render-time closure) so WS-triggered
       // refetches also pick up the currently selected namespace.
@@ -91,45 +92,44 @@ export default function ComplianceDashboard() {
         `/v1/policies/compliance${qs}`,
       );
       // Backend returns a single scoped object (cluster-wide or namespace).
-      scores.value = Array.isArray(res.data)
-        ? res.data
-        : res.data
-          ? [res.data]
-          : [];
-      error.value = null;
+      setScores(
+        Array.isArray(res.data) ? res.data : res.data ? [res.data] : [],
+      );
+      setError(null);
     } catch {
-      error.value = "Failed to load compliance data";
+      setError("Failed to load compliance data");
     }
-  }
+  }, []);
 
   // Violations power the "what's in violation" preview. Fetched once (the
   // full RBAC-filtered list) and filtered client-side by the picker, so a
   // namespace change needs no refetch. Failures here are non-fatal — the
   // score is the primary content; the preview just stays empty.
-  async function fetchViolations() {
+  const fetchViolations = useCallback(async () => {
     try {
       const res = await apiGet<NormalizedViolation[]>(
         "/v1/policies/violations",
       );
-      violations.value = Array.isArray(res.data) ? res.data : [];
+      setViolations(Array.isArray(res.data) ? res.data : []);
     } catch {
       // keep the page usable even if the violations list is unavailable
     }
-  }
+  }, []);
 
   // Refetch the score on mount and whenever the namespace picker changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fetchData reads the picker itself; ns is here so a change refetches
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
-      loading.value = false;
+      setLoading(false);
     });
-  }, [ns]);
+  }, [fetchData, ns]);
 
   // Load the violations list once on mount (filtered client-side by scope).
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchViolations();
-  }, []);
+  }, [fetchViolations]);
 
   useWsRefetch(
     () => Promise.all([fetchData(), fetchViolations()]).then(() => {}),
@@ -141,27 +141,27 @@ export default function ComplianceDashboard() {
   );
 
   async function handleRefresh() {
-    refreshing.value = true;
+    setRefreshing(true);
     await Promise.all([fetchData(), fetchViolations()]);
-    refreshing.value = false;
+    setRefreshing(false);
   }
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   // Backend echoes the requested scope ("" for cluster-wide, else the
   // namespace). Match it back, falling back to the first row for robustness.
   const activeScope = ns === "all" ? "" : ns;
   const primaryScore =
-    scores.value.find(
+    scores.find(
       (s) =>
         s.scope === activeScope ||
         (activeScope === "" && s.scope === "cluster"),
-    ) ?? scores.value[0];
+    ) ?? scores[0];
   const scoped = ns !== "all";
 
   // Derive the "what's in violation" preview from the full list, scoped the
   // same way the score is (namespace-strict), so the two always agree.
-  const scopedViolations = scopeViolations(violations.value, ns);
+  const scopedViolations = scopeViolations(violations, ns);
   const topPolicies = failingPolicies(scopedViolations, TOP_POLICIES);
   const topResources = worstResources(scopedViolations, TOP_RESOURCES);
   const violationsHref = scoped
@@ -211,34 +211,34 @@ export default function ComplianceDashboard() {
               : "Weighted cluster-wide compliance based on policy pass/fail rates."}
           </p>
         </div>
-        <div class="flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <RemoteRefreshHint />
-          {!loading.value && (
+          {!loading && (
             <Button
               type="button"
               variant="ghost"
               onClick={handleRefresh}
-              disabled={refreshing.value}
+              disabled={refreshing}
             >
-              {refreshing.value ? "Refreshing..." : "Refresh"}
+              {refreshing ? "Refreshing..." : "Refresh"}
             </Button>
           )}
         </div>
       </div>
 
-      {loading.value && (
-        <div class="flex justify-center py-12">
+      {loading && (
+        <div className="flex justify-center py-12">
           <Spinner className="text-brand" />
         </div>
       )}
 
-      {error.value && (
-        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
-          {error.value}
+      {error && (
+        <p className="text-sm py-4" style={{ color: "var(--error)" }}>
+          {error}
         </p>
       )}
 
-      {!loading.value && !error.value && !primaryScore && (
+      {!loading && !error && !primaryScore && (
         <WidgetShell>
           <div style={{ textAlign: "center", padding: "32px 0" }}>
             <p style={{ color: "var(--text-muted)" }}>
@@ -249,7 +249,7 @@ export default function ComplianceDashboard() {
         </WidgetShell>
       )}
 
-      {!loading.value && !error.value && primaryScore && (
+      {!loading && !error && primaryScore && (
         <>
           {/* Cluster overview */}
           <div style={{ display: "flex", flexWrap: "wrap", gap: "20px" }}>
@@ -258,7 +258,7 @@ export default function ComplianceDashboard() {
               <WidgetShell
                 title={scoped ? `Namespace: ${ns}` : "Cluster Score"}
               >
-                <div class="flex flex-col items-center justify-center">
+                <div className="flex flex-col items-center justify-center">
                   <GaugeRing
                     value={primaryScore.score}
                     size={140}
@@ -267,10 +267,10 @@ export default function ComplianceDashboard() {
                     label={scoped ? "Namespace" : "Cluster"}
                     valueSize="28px"
                   />
-                  <p class="mt-3 text-sm text-text-secondary">
+                  <p className="mt-3 text-sm text-text-secondary">
                     {primaryScore.pass}/{primaryScore.total} passing
                     {primaryScore.warn > 0 && (
-                      <span class="text-warning ml-2">
+                      <span className="text-warning ml-2">
                         ({primaryScore.warn} warnings)
                       </span>
                     )}
@@ -282,7 +282,7 @@ export default function ComplianceDashboard() {
             {/* Severity breakdown */}
             <div style={{ flex: "2 1 340px", minWidth: "300px" }}>
               <WidgetShell title="Severity Breakdown">
-                <div class="space-y-3">
+                <div className="space-y-3">
                   {SEVERITY_ORDER.map((sev) => {
                     const counts = primaryScore.bySeverity?.[sev] ?? {
                       pass: 0,
@@ -295,7 +295,7 @@ export default function ComplianceDashboard() {
                     );
                   })}
                   {!primaryScore.bySeverity && (
-                    <p class="text-xs text-text-muted">
+                    <p className="text-xs text-text-muted">
                       No severity breakdown available.
                     </p>
                   )}
@@ -307,7 +307,7 @@ export default function ComplianceDashboard() {
           {/* What's in violation */}
           {scopedViolations.length === 0 ? (
             <WidgetShell title="Violations">
-              <p class="text-sm text-text-muted py-2">
+              <p className="text-sm text-text-muted py-2">
                 No active violations in{" "}
                 {scoped ? `namespace "${ns}"` : "the cluster"}.
               </p>
@@ -324,9 +324,9 @@ export default function ComplianceDashboard() {
                 {/* Failing policies — grouped by impact */}
                 <div style={{ flex: "1 1 320px", minWidth: "300px" }}>
                   <WidgetShell title="Failing Policies">
-                    <div class="space-y-2">
+                    <div className="space-y-2">
                       {topPolicies.map((g) => (
-                        <div key={g.policy} class="flex items-center gap-3">
+                        <div key={g.policy} className="flex items-center gap-3">
                           <span
                             style={{
                               width: "6px",
@@ -339,7 +339,7 @@ export default function ComplianceDashboard() {
                             }}
                           />
                           <span
-                            class="text-sm font-medium flex-1 truncate"
+                            className="text-sm font-medium flex-1 truncate"
                             style={{ color: "var(--text-primary)" }}
                             title={g.policy}
                           >
@@ -347,7 +347,7 @@ export default function ComplianceDashboard() {
                           </span>
                           <SeverityBadge severity={g.severity} />
                           <EngineBadge engine={g.engine} />
-                          <span class="text-xs text-text-muted w-24 text-right tabular-nums">
+                          <span className="text-xs text-text-muted w-24 text-right tabular-nums">
                             {g.count} {g.count === 1 ? "resource" : "resources"}
                           </span>
                         </div>
@@ -359,7 +359,7 @@ export default function ComplianceDashboard() {
                 {/* Worst individual violating resources */}
                 <div style={{ flex: "2 1 360px", minWidth: "320px" }}>
                   <WidgetShell title="Worst Resources">
-                    <div class="space-y-2">
+                    <div className="space-y-2">
                       {topResources.map((vio, i) => {
                         const href = resourceHref(
                           vio.kind,
@@ -368,7 +368,7 @@ export default function ComplianceDashboard() {
                         );
                         const label = (
                           <span
-                            class="font-mono text-xs font-medium"
+                            className="font-mono text-xs font-medium"
                             style={{
                               color: href
                                 ? "var(--accent)"
@@ -380,27 +380,28 @@ export default function ComplianceDashboard() {
                         );
                         return (
                           <div
+                            // biome-ignore lint/suspicious/noArrayIndexKey: the same policy can hit one resource twice, so no field set is unique
                             key={`${vio.kind}-${vio.namespace}-${vio.name}-${vio.policy}-${i}`}
-                            class="flex items-start gap-3"
+                            className="flex items-start gap-3"
                           >
-                            <div class="flex-1 min-w-0">
-                              <div class="flex items-center gap-2 flex-wrap">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 {href ? (
-                                  <a href={href} class="hover:underline">
+                                  <a href={href} className="hover:underline">
                                     {label}
                                   </a>
                                 ) : (
                                   label
                                 )}
                                 {vio.namespace && (
-                                  <span class="text-xs text-text-muted">
+                                  <span className="text-xs text-text-muted">
                                     {vio.namespace}
                                   </span>
                                 )}
                                 <SeverityBadge severity={vio.severity} />
                               </div>
                               <p
-                                class="text-xs text-text-muted truncate"
+                                className="text-xs text-text-muted truncate"
                                 title={vio.message}
                               >
                                 {vio.policy}
@@ -417,7 +418,7 @@ export default function ComplianceDashboard() {
 
               <a
                 href={violationsHref}
-                class="text-sm hover:underline self-start"
+                className="text-sm hover:underline self-start"
                 style={{ color: "var(--accent)" }}
               >
                 View all violations →

@@ -1,5 +1,11 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import {
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Button } from "@/components/ui/Button.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ApiError, apiGet } from "@/lib/api.ts";
@@ -7,6 +13,7 @@ import { trendStartIndex } from "@/lib/dashboard/severity.ts";
 import { scoreColor } from "@/lib/score-color.ts";
 import { selectedCluster } from "@/src/lib/cluster.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface TrendPoint {
   date: string;
@@ -198,8 +205,8 @@ function TrendChart({
       ? chartH - (hoveredPoint.score / 100) * chartH
       : null;
 
-  function handleMouseMove(e: MouseEvent) {
-    const svg = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
+  function handleMouseMove(e: MouseEvent<SVGSVGElement>) {
+    const svg = e.currentTarget.getBoundingClientRect();
     const relX = e.clientX - svg.left - (PAD.left / W) * svg.width;
     const pct = relX / ((chartW / W) * svg.width);
     const idx = Math.round(pct * (points.length - 1));
@@ -213,15 +220,15 @@ function TrendChart({
   return (
     <svg
       viewBox={`0 0 ${W} ${H}`}
-      class="w-full"
+      className="w-full"
       style={{ maxHeight: "250px" }}
       onMouseMove={handleMouseMove}
       onMouseLeave={() => onHover(null)}
     >
       <defs>
         <linearGradient id="trend-grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--brand)" stop-opacity="0.3" />
-          <stop offset="100%" stop-color="var(--brand)" stop-opacity="0" />
+          <stop offset="0%" stopColor="var(--brand)" stopOpacity="0.3" />
+          <stop offset="100%" stopColor="var(--brand)" stopOpacity="0" />
         </linearGradient>
       </defs>
       <g transform={`translate(${PAD.left},${PAD.top})`}>
@@ -235,15 +242,15 @@ function TrendChart({
                 x2={chartW}
                 y2={y}
                 stroke="var(--border-primary)"
-                stroke-width="1"
-                stroke-dasharray="4,4"
+                strokeWidth="1"
+                strokeDasharray="4,4"
               />
               <text
                 x={-8}
                 y={y + 4}
                 fill="var(--text-muted)"
-                font-size="10"
-                text-anchor="end"
+                fontSize="10"
+                textAnchor="end"
               >
                 {v}%
               </text>
@@ -251,7 +258,7 @@ function TrendChart({
           );
         })}
 
-        {segments.map((seg, si) => {
+        {segments.map((seg) => {
           if (seg.length < 2) return null;
           const linePath = seg
             .map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`)
@@ -260,14 +267,14 @@ function TrendChart({
             linePath +
             ` L${seg[seg.length - 1].x},${chartH} L${seg[0].x},${chartH} Z`;
           return (
-            <g key={si}>
+            <g key={seg[0].x}>
               <path d={areaPath} fill="url(#trend-grad)" />
               <polyline
                 points={seg.map((p) => `${p.x},${p.y}`).join(" ")}
                 fill="none"
                 stroke="var(--brand)"
-                stroke-width="2"
-                stroke-linejoin="round"
+                strokeWidth="2"
+                strokeLinejoin="round"
               />
             </g>
           );
@@ -283,8 +290,8 @@ function TrendChart({
                 x2={xAt(i)}
                 y2={chartH}
                 stroke="var(--warning)"
-                stroke-width="1"
-                stroke-dasharray="2,3"
+                strokeWidth="1"
+                strokeDasharray="2,3"
               />
               <title>{`${formatDate(p.date)}: the background identity changed here, so the view may differ from earlier points`}</title>
             </g>
@@ -301,7 +308,7 @@ function TrendChart({
               r={4}
               fill="var(--surface)"
               stroke="var(--warning)"
-              stroke-width="2"
+              strokeWidth="2"
             >
               <title>{`${formatDate(p.date)}: ${p.score.toFixed(1)}% (${partialNote(p)})`}</title>
             </circle>
@@ -320,7 +327,7 @@ function TrendChart({
                 x2={xAt(i) + 3}
                 y2={chartH}
                 stroke="var(--error)"
-                stroke-width="2"
+                strokeWidth="2"
               />
               <line
                 x1={xAt(i) + 3}
@@ -328,7 +335,7 @@ function TrendChart({
                 x2={xAt(i) - 3}
                 y2={chartH}
                 stroke="var(--error)"
-                stroke-width="2"
+                strokeWidth="2"
               />
               <title>{`${formatDate(p.date)}: ${gapMessage(p.gapReason)}`}</title>
             </g>
@@ -343,8 +350,8 @@ function TrendChart({
               x2={hoveredX}
               y2={chartH}
               stroke="var(--text-muted)"
-              stroke-width="1"
-              stroke-dasharray="3,3"
+              strokeWidth="1"
+              strokeDasharray="3,3"
             />
             <circle
               cx={hoveredX}
@@ -352,7 +359,7 @@ function TrendChart({
               r={4}
               fill="var(--brand)"
               stroke="var(--surface)"
-              stroke-width="2"
+              strokeWidth="2"
             />
             <rect
               x={hoveredX - 50}
@@ -362,14 +369,14 @@ function TrendChart({
               rx={4}
               fill="var(--elevated)"
               stroke="var(--border-primary)"
-              stroke-width="1"
+              strokeWidth="1"
             />
             <text
               x={hoveredX}
               y={hoveredY - 16}
               fill="var(--text-primary)"
-              font-size="11"
-              text-anchor="middle"
+              fontSize="11"
+              textAnchor="middle"
             >
               {formatDate(hoveredPoint.date)} &mdash;{" "}
               {hoveredPoint.score?.toFixed(1)}%
@@ -384,8 +391,8 @@ function TrendChart({
             x={xAt(idx)}
             y={chartH + 20}
             fill="var(--text-muted)"
-            font-size="10"
-            text-anchor="middle"
+            fontSize="10"
+            textAnchor="middle"
           >
             {formatDate(points[idx].date)}
           </text>
@@ -422,13 +429,13 @@ function isNotConfigured(err: unknown): boolean {
 }
 
 export default function ComplianceTrendChart() {
-  const points = useSignal<FilledPoint[]>([]);
-  const loading = useSignal(true);
-  const error = useSignal<string | null>(null);
-  const unsupported = useSignal(false);
-  const notConfigured = useSignal(false);
-  const range = useSignal<TimeRange>(30);
-  const hoverIdx = useSignal<number | null>(null);
+  const [points, setPoints] = useState<FilledPoint[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [unsupported, setUnsupported] = useState(false);
+  const [notConfigured, setNotConfigured] = useState(false);
+  const [range, setRange] = useState<TimeRange>(30);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   // A late reply for a range or cluster the operator has left must not
   // overwrite the current one.
   const requestSeq = useRef(0);
@@ -436,52 +443,49 @@ export default function ComplianceTrendChart() {
   const fetchData = useCallback(async (days: TimeRange) => {
     if (!IS_BROWSER) return;
     const seq = ++requestSeq.current;
-    loading.value = true;
-    error.value = null;
-    unsupported.value = false;
-    notConfigured.value = false;
+    setLoading(true);
+    setError(null);
+    setUnsupported(false);
+    setNotConfigured(false);
     try {
       // apiGet returns the whole parsed body, so the top-level `gaps` key
-      // beside `data` is readable here (KTD6).
+      // beside `data` is readable here.
       const res = (await apiGet<TrendPoint[]>(
         `/v1/policies/compliance/history?days=${days}`,
       )) as { data: TrendPoint[]; gaps?: TrendGap[] };
       if (seq !== requestSeq.current) return;
       const raw = Array.isArray(res.data) ? res.data : [];
       const gaps = Array.isArray(res.gaps) ? res.gaps : [];
-      points.value = fillDateGaps(
-        raw,
-        gaps,
-        new Date().toISOString().slice(0, 10),
-      );
+      setPoints(fillDateGaps(raw, gaps, new Date().toISOString().slice(0, 10)));
     } catch (err) {
       if (seq !== requestSeq.current) return;
       if (isRemoteHistoryUnsupported(err)) {
-        unsupported.value = true;
+        setUnsupported(true);
       } else if (isNotConfigured(err)) {
-        notConfigured.value = true;
+        setNotConfigured(true);
       } else {
-        error.value = "Failed to load compliance trend data";
+        setError("Failed to load compliance trend data");
       }
-      points.value = [];
+      setPoints([]);
     } finally {
-      if (seq === requestSeq.current) loading.value = false;
+      if (seq === requestSeq.current) setLoading(false);
     }
   }, []);
 
-  // Reading selectedCluster.value subscribes the island; the refetch keys on
-  // it so a switch shows the new cluster's trend, never the previous one's.
-  const clusterId = selectedCluster.value;
+  // The refetch keys on the selected cluster so a switch shows the new
+  // cluster's trend, never the previous one's.
+  const clusterId = useSignalValue(selectedCluster);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clusterId is not read by the effect; a cluster switch is meant to refetch
   useEffect(() => {
-    fetchData(range.value);
-  }, [range.value, clusterId]);
+    fetchData(range);
+  }, [fetchData, range, clusterId]);
 
-  const realPoints = points.value.filter((p) => p.score !== null);
+  const realPoints = points.filter((p) => p.score !== null);
   // Trend figures count from the latest identity change (KTD9); earlier
   // points stay drawn.
   const trendPoints = realPoints.slice(trendStartIndex(realPoints));
   const identityChanged = trendPoints.length < realPoints.length;
-  const gapDays = points.value.filter((p) => p.gapReason !== undefined);
+  const gapDays = points.filter((p) => p.gapReason !== undefined);
   const current =
     realPoints.length > 0 ? realPoints[realPoints.length - 1].score! : null;
   const first = trendPoints.length > 0 ? trendPoints[0].score! : null;
@@ -498,23 +502,23 @@ export default function ComplianceTrendChart() {
   const ranges: TimeRange[] = [7, 30, 90];
 
   return (
-    <div class="rounded-lg border border-border-primary p-6 bg-elevated mb-8">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="text-lg font-semibold text-text-primary">
+    <div className="rounded-lg border border-border-primary p-6 bg-elevated mb-8">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold text-text-primary">
           Compliance Trend
         </h3>
-        <div class="flex gap-1">
+        <div className="flex gap-1">
           {ranges.map((r) => (
             <button
               type="button"
               key={r}
-              class={`px-3 py-1 text-xs font-medium rounded border transition-colors ${
-                range.value === r
+              className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${
+                range === r
                   ? "bg-brand/10 text-brand border-brand/30"
                   : "text-text-secondary border-border-primary hover:text-text-primary"
               }`}
               onClick={() => {
-                range.value = r;
+                setRange(r);
               }}
             >
               {r}d
@@ -523,40 +527,40 @@ export default function ComplianceTrendChart() {
         </div>
       </div>
 
-      {loading.value && (
-        <div class="flex items-center justify-center py-16">
+      {loading && (
+        <div className="flex items-center justify-center py-16">
           <Spinner />
         </div>
       )}
 
-      {!loading.value && error.value && (
-        <div class="flex flex-col items-center gap-3 py-12">
-          <p class="text-sm text-text-muted">{error.value}</p>
-          <Button variant="ghost" onClick={() => fetchData(range.value)}>
+      {!loading && error && (
+        <div className="flex flex-col items-center gap-3 py-12">
+          <p className="text-sm text-text-muted">{error}</p>
+          <Button variant="ghost" onClick={() => fetchData(range)}>
             Retry
           </Button>
         </div>
       )}
 
-      {!loading.value && unsupported.value && (
+      {!loading && unsupported && (
         <p
           data-testid="compliance-trend-remote-unsupported"
-          class="text-sm text-text-muted py-12 text-center"
+          className="text-sm text-text-muted py-12 text-center"
         >
           Compliance history is recorded for the local cluster only. Select the
           local cluster to see the trend.
         </p>
       )}
 
-      {!loading.value && notConfigured.value && (
+      {!loading && notConfigured && (
         <div
           data-testid="compliance-trend-not-configured"
-          class="text-sm text-text-muted py-12 text-center"
+          className="text-sm text-text-muted py-12 text-center"
         >
           <p>Compliance history is not configured for this cluster.</p>
-          <p class="mt-2">
+          <p className="mt-2">
             Name a background identity for it in the{" "}
-            <a href="/settings/clusters" class="text-brand hover:underline">
+            <a href="/settings/clusters" className="text-brand hover:underline">
               cluster manager
             </a>{" "}
             to start recording.
@@ -564,104 +568,102 @@ export default function ComplianceTrendChart() {
         </div>
       )}
 
-      {!loading.value &&
-        !error.value &&
-        !unsupported.value &&
-        !notConfigured.value &&
+      {!loading &&
+        !error &&
+        !unsupported &&
+        !notConfigured &&
         realPoints.length === 0 &&
         gapDays.length === 0 && (
-          <p class="text-sm text-text-muted py-12 text-center">
+          <p className="text-sm text-text-muted py-12 text-center">
             Compliance trend data will appear after the first snapshot.
           </p>
         )}
 
-      {!loading.value &&
-        !error.value &&
-        (realPoints.length > 0 || gapDays.length > 0) && (
-          <>
-            <div class="flex gap-6 mb-4 text-sm">
-              {current !== null && (
-                <div>
-                  <span class="text-text-muted">Current:</span>
-                  <span
-                    class="font-semibold"
-                    style={{ color: scoreColor(current) }}
-                  >
-                    {current.toFixed(1)}
-                  </span>
-                </div>
-              )}
-              {delta !== null && (
-                <div>
-                  <span class="text-text-muted">&#916;</span>
-                  <span
-                    data-testid="compliance-trend-delta"
-                    class="font-semibold"
-                    style={{
-                      color: delta >= 0 ? "var(--success)" : "var(--error)",
-                    }}
-                  >
-                    {delta >= 0 ? "+" : ""}
-                    {delta.toFixed(1)}
-                  </span>
-                </div>
-              )}
-              {best !== null && (
-                <div>
-                  <span class="text-text-muted">Best:</span>
-                  <span
-                    data-testid="compliance-trend-best"
-                    class="font-semibold text-text-primary"
-                  >
-                    {best.toFixed(1)}
-                  </span>
-                </div>
-              )}
-              {worst !== null && (
-                <div>
-                  <span class="text-text-muted">Worst:</span>
-                  <span
-                    data-testid="compliance-trend-worst"
-                    class="font-semibold text-text-primary"
-                  >
-                    {worst.toFixed(1)}
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {identityChanged && (
-              <p
-                data-testid="compliance-trend-identity-note"
-                class="text-xs text-text-muted mb-2"
-              >
-                The background identity changed, so the figures above count only
-                points since the latest change.
-              </p>
+      {!loading && !error && (realPoints.length > 0 || gapDays.length > 0) && (
+        <>
+          <div className="flex gap-6 mb-4 text-sm">
+            {current !== null && (
+              <div>
+                <span className="text-text-muted">Current:</span>
+                <span
+                  className="font-semibold"
+                  style={{ color: scoreColor(current) }}
+                >
+                  {current.toFixed(1)}
+                </span>
+              </div>
             )}
-
-            <TrendChart
-              points={points.value}
-              hoverIdx={hoverIdx.value}
-              onHover={(idx) => {
-                hoverIdx.value = idx;
-              }}
-            />
-
-            {gapDays.length > 0 && (
-              <ul
-                data-testid="compliance-trend-gaps"
-                class="mt-3 text-xs text-text-muted space-y-1"
-              >
-                {gapDays.map((g) => (
-                  <li key={g.date}>
-                    {formatDate(g.date)}: {gapMessage(g.gapReason as string)}
-                  </li>
-                ))}
-              </ul>
+            {delta !== null && (
+              <div>
+                <span className="text-text-muted">&#916;</span>
+                <span
+                  data-testid="compliance-trend-delta"
+                  className="font-semibold"
+                  style={{
+                    color: delta >= 0 ? "var(--success)" : "var(--error)",
+                  }}
+                >
+                  {delta >= 0 ? "+" : ""}
+                  {delta.toFixed(1)}
+                </span>
+              </div>
             )}
-          </>
-        )}
+            {best !== null && (
+              <div>
+                <span className="text-text-muted">Best:</span>
+                <span
+                  data-testid="compliance-trend-best"
+                  className="font-semibold text-text-primary"
+                >
+                  {best.toFixed(1)}
+                </span>
+              </div>
+            )}
+            {worst !== null && (
+              <div>
+                <span className="text-text-muted">Worst:</span>
+                <span
+                  data-testid="compliance-trend-worst"
+                  className="font-semibold text-text-primary"
+                >
+                  {worst.toFixed(1)}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {identityChanged && (
+            <p
+              data-testid="compliance-trend-identity-note"
+              className="text-xs text-text-muted mb-2"
+            >
+              The background identity changed, so the figures above count only
+              points since the latest change.
+            </p>
+          )}
+
+          <TrendChart
+            points={points}
+            hoverIdx={hoverIdx}
+            onHover={(idx) => {
+              setHoverIdx(idx);
+            }}
+          />
+
+          {gapDays.length > 0 && (
+            <ul
+              data-testid="compliance-trend-gaps"
+              className="mt-3 text-xs text-text-muted space-y-1"
+            >
+              {gapDays.map((g) => (
+                <li key={g.date}>
+                  {formatDate(g.date)}: {gapMessage(g.gapReason as string)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
     </div>
   );
 }

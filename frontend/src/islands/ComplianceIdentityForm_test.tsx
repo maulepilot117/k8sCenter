@@ -1,11 +1,9 @@
-/** @jsxImportSource preact */
+/** @jsxImportSource react */
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { render } from "preact";
-import { act } from "preact/test-utils";
 import { setAccessToken } from "@/lib/api.ts";
+import { act, fireEvent, render, setupDom } from "@/src/test-utils/render.tsx";
 
-GlobalRegistrator.register({ url: "http://localhost/" });
+setupDom();
 
 const toasts: Array<{ message: string; type: string }> = [];
 // bun shares modules across test files, so the real module is kept and put
@@ -26,7 +24,6 @@ const { default: ComplianceIdentityForm } = await import(
 
 afterAll(() => {
   mock.module("@/src/lib/toast-store.ts", () => realToastStore);
-  GlobalRegistrator.unregister();
 });
 
 interface Call {
@@ -40,7 +37,7 @@ type Reply = { status: number; body?: unknown };
 // while a save is in flight.
 let putGate: Promise<void> | null = null;
 
-let host: HTMLElement | null = null;
+let view: ReturnType<typeof render> | null = null;
 let originalFetch: typeof globalThis.fetch | undefined;
 let calls: Call[] = [];
 let replies: Record<string, Reply> = {};
@@ -78,11 +75,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (host) {
-    act(() => render(null, host as HTMLElement));
-    host.remove();
-    host = null;
-  }
+  view = null;
   if (originalFetch) globalThis.fetch = originalFetch;
   setAccessToken(null);
 });
@@ -96,19 +89,14 @@ async function settle() {
 }
 
 async function mount() {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  act(() =>
-    render(
-      <ComplianceIdentityForm
-        clusterId="c1"
-        onIdentity={(id, state) => badges.push([id, state])}
-      />,
-      host as HTMLElement,
-    ),
+  view = render(
+    <ComplianceIdentityForm
+      clusterId="c1"
+      onIdentity={(id, state) => badges.push([id, state])}
+    />,
   );
   await settle();
-  return host;
+  return view.container;
 }
 
 /** The control a visible label names, through the label's `for`. */
@@ -117,7 +105,9 @@ function byLabel(root: HTMLElement, text: string): HTMLInputElement {
     (l) => l.textContent?.trim() === text,
   );
   const id = label?.getAttribute("for");
-  const el = id ? root.querySelector(`#${id}`) : label?.querySelector("input");
+  const el = id
+    ? root.querySelector(`[id="${id}"]`)
+    : label?.querySelector("input");
   if (!el) throw new Error(`no control labelled ${text}`);
   return el as HTMLInputElement;
 }
@@ -139,8 +129,7 @@ async function click(el: HTMLElement) {
 
 async function type(el: HTMLInputElement, value: string) {
   await act(async () => {
-    el.value = value;
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    fireEvent.change(el, { target: { value } });
   });
   await settle();
 }
@@ -256,9 +245,8 @@ test("declining the clear confirmation sends nothing", async () => {
 
 /** Unmounts the current form, as closing it on the cluster manager does. */
 async function unmount() {
-  act(() => render(null, host as HTMLElement));
-  host?.remove();
-  host = null;
+  view?.unmount();
+  view = null;
   await settle();
 }
 
