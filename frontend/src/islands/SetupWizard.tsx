@@ -1,4 +1,5 @@
-import { useSignal } from "@preact/signals";
+/** @jsxImportSource react */
+import { useRef, useState } from "react";
 import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
 import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
 import { settingsInputClass } from "@/components/settings/shared.ts";
@@ -7,7 +8,8 @@ import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import StepRail from "@/components/wizard/StepRail.tsx";
 import { apiPut, setAccessToken } from "@/lib/api.ts";
 import { Logo } from "@/src/components/ui/Logo.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
 
 const STEPS = [
   { label: "Welcome" },
@@ -18,16 +20,20 @@ const STEPS = [
 ];
 
 export default function SetupWizard() {
-  const step = useSignal(0);
-  const loading = useSignal(false);
-  const error = useSignal("");
+  const isClient = useIsClient();
+  const [step, setStep] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  // Set synchronously so a second click before the next render is ignored.
+  const submitting = useRef(false);
 
   // Form state
-  const username = useSignal("");
-  const password = useSignal("");
-  const confirmPassword = useSignal("");
-  const setupToken = useSignal("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [setupToken, setSetupToken] = useState("");
 
+  // The monitoring and alerting field components take signals.
   const promUrl = useSignal("");
   const grafUrl = useSignal("");
   const grafToken = useSignal("");
@@ -39,26 +45,27 @@ export default function SetupWizard() {
   const smtpPass = useSignal("");
 
   // Track what was configured
-  const adminCreated = useSignal(false);
-  const monitoringConfigured = useSignal(false);
-  const alertingConfigured = useSignal(false);
+  const [adminCreated, setAdminCreated] = useState(false);
+  const [monitoringConfigured, setMonitoringConfigured] = useState(false);
+  const [alertingConfigured, setAlertingConfigured] = useState(false);
 
   // Alerting needs an enabled signal even though wizard doesn't show toggle
   const alertEnabled = useSignal(true);
 
   const createAdmin = async () => {
-    if (loading.value) return; // guard against double-click
-    if (password.value !== confirmPassword.value) {
-      error.value = "Passwords do not match";
+    if (submitting.current) return; // guard against double-click
+    if (password !== confirmPassword) {
+      setError("Passwords do not match");
       return;
     }
-    if (password.value.length < 8) {
-      error.value = "Password must be at least 8 characters";
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters");
       return;
     }
 
-    loading.value = true;
-    error.value = "";
+    submitting.current = true;
+    setLoading(true);
+    setError("");
 
     try {
       // Create admin
@@ -69,9 +76,9 @@ export default function SetupWizard() {
           "X-Requested-With": "XMLHttpRequest",
         },
         body: JSON.stringify({
-          username: username.value,
-          password: password.value,
-          setupToken: setupToken.value,
+          username,
+          password,
+          setupToken,
         }),
       });
 
@@ -89,8 +96,8 @@ export default function SetupWizard() {
         },
         credentials: "include",
         body: JSON.stringify({
-          username: username.value,
-          password: password.value,
+          username,
+          password,
         }),
       });
 
@@ -105,24 +112,25 @@ export default function SetupWizard() {
         setAccessToken(loginBody.data.accessToken);
       }
 
-      adminCreated.value = true;
-      step.value = 2;
+      setAdminCreated(true);
+      setStep(2);
     } catch (err) {
-      error.value = err instanceof Error ? err.message : "Setup failed";
+      setError(err instanceof Error ? err.message : "Setup failed");
     } finally {
-      loading.value = false;
+      submitting.current = false;
+      setLoading(false);
     }
   };
 
   const saveMonitoring = async () => {
     if (!promUrl.value && !grafUrl.value) {
       // Skip — nothing to save
-      step.value = 3;
+      setStep(3);
       return;
     }
 
-    loading.value = true;
-    error.value = "";
+    setLoading(true);
+    setError("");
 
     try {
       await apiPut("/v1/settings", {
@@ -131,23 +139,23 @@ export default function SetupWizard() {
         monitoringGrafanaToken: grafToken.value || null,
       });
 
-      monitoringConfigured.value = true;
-      step.value = 3;
+      setMonitoringConfigured(true);
+      setStep(3);
     } catch (err) {
-      error.value = err instanceof Error ? err.message : "Save failed";
+      setError(err instanceof Error ? err.message : "Save failed");
     } finally {
-      loading.value = false;
+      setLoading(false);
     }
   };
 
   const saveAlerting = async () => {
     if (!smtpHost.value) {
-      step.value = 4;
+      setStep(4);
       return;
     }
 
-    loading.value = true;
-    error.value = "";
+    setLoading(true);
+    setError("");
 
     try {
       await apiPut("/v1/settings", {
@@ -159,55 +167,50 @@ export default function SetupWizard() {
         alertingSmtpPassword: smtpPass.value || null,
       });
 
-      alertingConfigured.value = true;
-      step.value = 4;
+      setAlertingConfigured(true);
+      setStep(4);
     } catch (err) {
-      error.value = err instanceof Error ? err.message : "Save failed";
+      setError(err instanceof Error ? err.message : "Save failed");
     } finally {
-      loading.value = false;
+      setLoading(false);
     }
   };
 
-  if (!IS_BROWSER) return null;
+  if (!isClient) return null;
 
   return (
-    <div class="mx-auto max-w-2xl px-4 py-12">
+    <div className="mx-auto max-w-2xl px-4 py-12">
       <StepRail
         steps={STEPS}
-        current={step.value}
+        current={step}
         onStep={(s) => {
-          if (s < step.value) step.value = s;
+          if (s < step) setStep(s);
         }}
         orientation="horizontal"
       />
 
-      {error.value && (
-        <div class="mb-4">
-          <ErrorBanner message={error.value} />
+      {error && (
+        <div className="mb-4">
+          <ErrorBanner message={error} />
         </div>
       )}
 
       {/* Step 0: Welcome */}
-      {step.value === 0 && (
-        <div class="text-center">
-          <div class="mx-auto mb-6 w-16 h-16">
+      {step === 0 && (
+        <div className="text-center">
+          <div className="mx-auto mb-6 w-16 h-16">
             <Logo />
           </div>
-          <h1 class="text-2xl font-bold text-text-primary">
+          <h1 className="text-2xl font-bold text-text-primary">
             Welcome to k8sCenter
           </h1>
-          <p class="mt-3 text-text-secondary">
+          <p className="mt-3 text-text-secondary">
             Let's set up your Kubernetes management platform. This wizard will
             create your admin account and configure optional monitoring and
             alerting integrations.
           </p>
-          <div class="mt-8">
-            <Button
-              variant="primary"
-              onClick={() => {
-                step.value = 1;
-              }}
-            >
+          <div className="mt-8">
+            <Button variant="primary" onClick={() => setStep(1)}>
               Get Started
             </Button>
           </div>
@@ -215,71 +218,65 @@ export default function SetupWizard() {
       )}
 
       {/* Step 1: Admin Account */}
-      {step.value === 1 && (
-        <div class="space-y-4">
-          <h2 class="text-lg font-semibold text-text-primary">
+      {step === 1 && (
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-text-primary">
             Create Admin Account
           </h2>
           <div>
-            <label class="mb-1 block text-sm font-medium text-text-secondary">
+            <label className="mb-1 block text-sm font-medium text-text-secondary">
               Username
             </label>
             <input
               type="text"
-              value={username.value}
-              onInput={(e) => {
-                username.value = (e.target as HTMLInputElement).value;
-              }}
-              class={settingsInputClass}
+              value={username}
+              onChange={(e) => setUsername(e.currentTarget.value)}
+              className={settingsInputClass}
             />
           </div>
           <div>
-            <label class="mb-1 block text-sm font-medium text-text-secondary">
+            <label className="mb-1 block text-sm font-medium text-text-secondary">
               Password
             </label>
             <input
               type="password"
-              value={password.value}
-              onInput={(e) => {
-                password.value = (e.target as HTMLInputElement).value;
-              }}
-              class={settingsInputClass}
+              value={password}
+              onChange={(e) => setPassword(e.currentTarget.value)}
+              className={settingsInputClass}
             />
           </div>
           <div>
-            <label class="mb-1 block text-sm font-medium text-text-secondary">
+            <label className="mb-1 block text-sm font-medium text-text-secondary">
               Confirm Password
             </label>
             <input
               type="password"
-              value={confirmPassword.value}
-              onInput={(e) => {
-                confirmPassword.value = (e.target as HTMLInputElement).value;
-              }}
-              class={settingsInputClass}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.currentTarget.value)}
+              className={settingsInputClass}
             />
           </div>
           <div>
-            <label class="mb-1 block text-sm font-medium text-text-secondary">
+            <label className="mb-1 block text-sm font-medium text-text-secondary">
               Setup Token
-              <span class="ml-1 text-xs text-text-muted">(if configured)</span>
+              <span className="ml-1 text-xs text-text-muted">
+                (if configured)
+              </span>
             </label>
             <input
               type="password"
-              value={setupToken.value}
-              onInput={(e) => {
-                setupToken.value = (e.target as HTMLInputElement).value;
-              }}
+              value={setupToken}
+              onChange={(e) => setSetupToken(e.currentTarget.value)}
               placeholder="Leave empty if not required"
-              class={settingsInputClass}
+              className={settingsInputClass}
             />
           </div>
-          <div class="flex justify-end pt-2">
+          <div className="flex justify-end pt-2">
             <Button
               variant="primary"
               onClick={createAdmin}
-              loading={loading.value}
-              disabled={!username.value || !password.value}
+              loading={loading}
+              disabled={!username || !password}
             >
               Create Account
             </Button>
@@ -288,12 +285,12 @@ export default function SetupWizard() {
       )}
 
       {/* Step 2: Monitoring */}
-      {step.value === 2 && (
-        <div class="space-y-4">
-          <h2 class="text-lg font-semibold text-text-primary">
+      {step === 2 && (
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-text-primary">
             Monitoring (Optional)
           </h2>
-          <p class="text-sm text-text-muted">
+          <p className="text-sm text-text-muted">
             Connect to your Prometheus and Grafana instances. You can configure
             this later from Settings.
           </p>
@@ -302,19 +299,14 @@ export default function SetupWizard() {
             grafUrl={grafUrl}
             grafToken={grafToken}
           />
-          <div class="flex justify-end gap-3 pt-2">
-            <Button
-              variant="ghost"
-              onClick={() => {
-                step.value = 3;
-              }}
-            >
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="ghost" onClick={() => setStep(3)}>
               Skip
             </Button>
             <Button
               variant="primary"
               onClick={saveMonitoring}
-              loading={loading.value}
+              loading={loading}
             >
               Save & Continue
             </Button>
@@ -323,12 +315,12 @@ export default function SetupWizard() {
       )}
 
       {/* Step 3: Alerting */}
-      {step.value === 3 && (
-        <div class="space-y-4">
-          <h2 class="text-lg font-semibold text-text-primary">
+      {step === 3 && (
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-text-primary">
             Alerting (Optional)
           </h2>
-          <p class="text-sm text-text-muted">
+          <p className="text-sm text-text-muted">
             Configure SMTP for email alerts. You can configure this later from
             Settings.
           </p>
@@ -340,20 +332,11 @@ export default function SetupWizard() {
             smtpPass={smtpPass}
             smtpFrom={smtpFrom}
           />
-          <div class="flex justify-end gap-3 pt-2">
-            <Button
-              variant="ghost"
-              onClick={() => {
-                step.value = 4;
-              }}
-            >
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="ghost" onClick={() => setStep(4)}>
               Skip
             </Button>
-            <Button
-              variant="primary"
-              onClick={saveAlerting}
-              loading={loading.value}
-            >
+            <Button variant="primary" onClick={saveAlerting} loading={loading}>
               Save & Continue
             </Button>
           </div>
@@ -361,49 +344,45 @@ export default function SetupWizard() {
       )}
 
       {/* Step 4: Review */}
-      {step.value === 4 && (
-        <div class="space-y-4">
-          <h2 class="text-lg font-semibold text-text-primary">
+      {step === 4 && (
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-text-primary">
             Setup Complete
           </h2>
-          <div class="rounded-lg border border-border-primary bg-surface p-4 bg-surface">
-            <dl class="space-y-3 text-sm">
-              <div class="flex justify-between">
-                <dt class="text-text-muted">Admin Account</dt>
-                <dd class="font-medium text-success">
-                  {adminCreated.value ? `Created (${username.value})` : "—"}
+          <div className="rounded-lg border border-border-primary bg-surface p-4 bg-surface">
+            <dl className="space-y-3 text-sm">
+              <div className="flex justify-between">
+                <dt className="text-text-muted">Admin Account</dt>
+                <dd className="font-medium text-success">
+                  {adminCreated ? `Created (${username})` : "—"}
                 </dd>
               </div>
-              <div class="flex justify-between">
-                <dt class="text-text-muted">Monitoring</dt>
+              <div className="flex justify-between">
+                <dt className="text-text-muted">Monitoring</dt>
                 <dd
-                  class={`font-medium ${
-                    monitoringConfigured.value
-                      ? "text-success"
-                      : "text-text-muted"
+                  className={`font-medium ${
+                    monitoringConfigured ? "text-success" : "text-text-muted"
                   }`}
                 >
-                  {monitoringConfigured.value ? "Configured" : "Skipped"}
+                  {monitoringConfigured ? "Configured" : "Skipped"}
                 </dd>
               </div>
-              <div class="flex justify-between">
-                <dt class="text-text-muted">Alerting</dt>
+              <div className="flex justify-between">
+                <dt className="text-text-muted">Alerting</dt>
                 <dd
-                  class={`font-medium ${
-                    alertingConfigured.value
-                      ? "text-success"
-                      : "text-text-muted"
+                  className={`font-medium ${
+                    alertingConfigured ? "text-success" : "text-text-muted"
                   }`}
                 >
-                  {alertingConfigured.value ? "Configured" : "Skipped"}
+                  {alertingConfigured ? "Configured" : "Skipped"}
                 </dd>
               </div>
             </dl>
           </div>
-          <p class="text-sm text-text-muted">
+          <p className="text-sm text-text-muted">
             You can change any of these settings later from the Settings page.
           </p>
-          <div class="flex justify-end pt-2">
+          <div className="flex justify-end pt-2">
             <Button
               variant="primary"
               onClick={() => {

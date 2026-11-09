@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -7,8 +7,12 @@ import type { LocalUser } from "@/lib/user-types.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
+import { useIsClient } from "@/src/lib/use-is-client.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
+import { useRowKeys } from "@/src/lib/use-row-keys.ts";
+import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface SubjectRow {
   kind: "User" | "Group" | "ServiceAccount";
@@ -33,6 +37,8 @@ interface RoleBindingWizardProps {
   onClose?: () => void;
 }
 
+const MAX_SUBJECTS = 50;
+
 const STEPS: WizardStep[] = [
   { label: "Basics", sub: "Name & namespace" },
   { label: "Role", sub: "Role reference" },
@@ -56,71 +62,114 @@ export default function RoleBindingWizard({
   onClose,
 }: RoleBindingWizardProps) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<BindingFormState>(initialState(clusterScoped));
-  const errors = useSignal<Record<string, string>>({});
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<BindingFormState>(() =>
+    initialState(clusterScoped),
+  );
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const dirty = useSignal(false);
+  const formRef = useLatest(form);
+  const isClient = useIsClient();
 
   // Data for dropdowns
   const namespaces = useNamespaces();
-  const roles = useSignal<RoleItem[]>([]);
-  const clusterRoles = useSignal<RoleItem[]>([]);
-  const localUsers = useSignal<LocalUser[]>([]);
-  const localUsersFetched = useSignal(false);
-  const showUserPicker = useSignal<number | null>(null);
+  const namespaceList = useSignalValue(namespaces);
+  const [roles, setRoles] = useState<RoleItem[]>([]);
+  const [clusterRoles, setClusterRoles] = useState<RoleItem[]>([]);
+  const [localUsers, setLocalUsers] = useState<LocalUser[]>([]);
+  const localUsersFetched = useRef(false);
+  const [showUserPicker, setShowUserPicker] = useState<number | null>(null);
+  const subjectKeys = useRowKeys(form.subjects.length);
 
   // Review step state
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   // Fetch roles when namespace changes (for namespaced bindings)
+  const formNamespace = form.namespace;
   useEffect(() => {
-    if (!IS_BROWSER) return;
-    const ns = form.value.namespace;
-    if (!clusterScoped && ns) {
+    if (!isClient) return;
+    if (!clusterScoped && formNamespace) {
       let cancelled = false;
-      apiGet<RoleItem[]>(`/v1/resources/roles/${ns}?limit=500`)
+      apiGet<RoleItem[]>(`/v1/resources/roles/${formNamespace}?limit=500`)
         .then((resp) => {
           if (!cancelled) {
-            roles.value = Array.isArray(resp.data) ? resp.data : [];
+            setRoles(Array.isArray(resp.data) ? resp.data : []);
           }
         })
         .catch(() => {
-          if (!cancelled) roles.value = [];
+          if (!cancelled) setRoles([]);
         });
       return () => {
         cancelled = true;
       };
     }
-  }, [form.value.namespace]);
+  }, [isClient, clusterScoped, formNamespace]);
 
   // Fetch cluster roles
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    if (!isClient) return;
     apiGet<RoleItem[]>("/v1/resources/clusterroles?limit=500")
       .then((resp) => {
-        clusterRoles.value = Array.isArray(resp.data) ? resp.data : [];
+        setClusterRoles(Array.isArray(resp.data) ? resp.data : []);
       })
       .catch(() => {});
-  }, []);
+  }, [isClient]);
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = { ...form.value, [field]: value };
-  }, []);
+  const patchForm = useCallback(
+    (patch: Partial<BindingFormState>) => {
+      dirty.value = true;
+      setForm((prev) => ({ ...prev, ...patch }));
+    },
+    [dirty],
+  );
+
+  const updateField = useCallback(
+    (field: string, value: unknown) => {
+      patchForm({ [field]: value });
+    },
+    [patchForm],
+  );
 
   const updateSubject = (idx: number, patch: Partial<SubjectRow>) => {
-    const subs = [...form.value.subjects];
-    subs[idx] = { ...subs[idx], ...patch };
-    updateField("subjects", subs);
+    dirty.value = true;
+    setForm((prev) => {
+      const subjects = [...prev.subjects];
+      subjects[idx] = { ...subjects[idx], ...patch };
+      return { ...prev, subjects };
+    });
+  };
+
+  const addSubject = () => {
+    dirty.value = true;
+    setForm((prev) =>
+      prev.subjects.length >= MAX_SUBJECTS
+        ? prev
+        : {
+            ...prev,
+            subjects: [
+              ...prev.subjects,
+              { kind: "User", name: "", namespace: "" },
+            ],
+          },
+    );
+  };
+
+  const removeSubject = (idx: number) => {
+    dirty.value = true;
+    setShowUserPicker(null);
+    setForm((prev) => ({
+      ...prev,
+      subjects: prev.subjects.filter((_, i) => i !== idx),
+    }));
   };
 
   const validateStep = (step: number): boolean => {
-    const f = form.value;
+    const f = formRef.current;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -155,34 +204,34 @@ export default function RoleBindingWizard({
       });
     }
 
-    errors.value = errs;
+    setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
+    if (!validateStep(currentStep)) return;
 
-    if (currentStep.value === 2) {
+    if (currentStep === 2) {
       // Moving to Review — fetch preview
-      currentStep.value = 3;
+      setCurrentStep(3);
       await fetchPreview();
     } else {
-      currentStep.value = currentStep.value + 1;
+      setCurrentStep((prev) => prev + 1);
     }
   };
 
   const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
+    if (currentStep > 0) {
+      setCurrentStep((prev) => prev - 1);
     }
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = formRef.current;
     const payload = {
       name: f.name,
       namespace: clusterScoped ? undefined : f.namespace,
@@ -206,24 +255,25 @@ export default function RoleBindingWizard({
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
   const fetchLocalUsers = async () => {
-    if (localUsersFetched.value) return;
-    localUsersFetched.value = true;
+    if (localUsersFetched.current) return;
+    localUsersFetched.current = true;
     try {
       const resp = await apiGet<LocalUser[]>("/v1/users");
-      localUsers.value = Array.isArray(resp.data) ? resp.data : [];
+      setLocalUsers(Array.isArray(resp.data) ? resp.data : []);
     } catch {
-      localUsers.value = [];
+      setLocalUsers([]);
     }
   };
 
@@ -235,66 +285,61 @@ export default function RoleBindingWizard({
     <WizardShell
       title={`Create ${clusterScoped ? "ClusterRoleBinding" : "RoleBinding"}`}
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
       onNext={async () => {
-        if (currentStep.value === 3) {
+        if (currentStep === 3) {
           close();
         } else {
           await goNext();
         }
       }}
-      nextLabel={currentStep.value === 3 ? "Close" : "Continue"}
-      yaml={previewYaml.value || undefined}
+      nextLabel={currentStep === 3 ? "Close" : "Continue"}
+      yaml={previewYaml || undefined}
     >
       {/* Step 1: Basics */}
-      {currentStep.value === 0 && (
-        <div class="mx-auto max-w-lg space-y-4">
+      {currentStep === 0 && (
+        <div className="mx-auto max-w-lg space-y-4">
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              Name <span class="text-error">*</span>
+            <label className="block text-sm font-medium text-text-secondary">
+              Name <span className="text-error">*</span>
             </label>
             <input
               type="text"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)
-              }
-              class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+              value={form.name}
+              onChange={(e) => updateField("name", e.currentTarget.value)}
+              className="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
               placeholder="e.g. my-binding"
             />
-            {errors.value.name && (
-              <p class="mt-1 text-xs text-error">{errors.value.name}</p>
+            {errors.name && (
+              <p className="mt-1 text-xs text-error">{errors.name}</p>
             )}
           </div>
 
           {!clusterScoped && (
             <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-error">*</span>
+              <label className="block text-sm font-medium text-text-secondary">
+                Namespace <span className="text-error">*</span>
               </label>
               <select
-                value={form.value.namespace}
+                value={form.namespace}
                 onChange={(e) =>
-                  updateField(
-                    "namespace",
-                    (e.target as HTMLSelectElement).value,
-                  )
+                  updateField("namespace", e.currentTarget.value)
                 }
-                class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                className="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
               >
-                {namespaces.value.map((ns) => (
+                {namespaceList.map((ns) => (
                   <option key={ns} value={ns}>
                     {ns}
                   </option>
                 ))}
               </select>
-              {errors.value.namespace && (
-                <p class="mt-1 text-xs text-error">{errors.value.namespace}</p>
+              {errors.namespace && (
+                <p className="mt-1 text-xs text-error">{errors.namespace}</p>
               )}
             </div>
           )}
@@ -302,23 +347,23 @@ export default function RoleBindingWizard({
       )}
 
       {/* Step 2: Role Reference */}
-      {currentStep.value === 1 && (
-        <div class="mx-auto max-w-lg space-y-4">
+      {currentStep === 1 && (
+        <div className="mx-auto max-w-lg space-y-4">
           {!clusterScoped && (
             <div>
-              <label class="block text-sm font-medium text-text-secondary">
+              <label className="block text-sm font-medium text-text-secondary">
                 Role Type
               </label>
               <select
-                value={form.value.roleRefKind}
+                value={form.roleRefKind}
                 onChange={(e) => {
-                  updateField(
-                    "roleRefKind",
-                    (e.target as HTMLSelectElement).value,
-                  );
-                  updateField("roleRefName", "");
+                  patchForm({
+                    roleRefKind: e.currentTarget
+                      .value as BindingFormState["roleRefKind"],
+                    roleRefName: "",
+                  });
                 }}
-                class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                className="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
               >
                 <option value="ClusterRole">ClusterRole</option>
                 <option value="Role">Role (namespace-scoped)</option>
@@ -327,91 +372,84 @@ export default function RoleBindingWizard({
           )}
 
           <div>
-            <label class="block text-sm font-medium text-text-secondary">
-              {form.value.roleRefKind === "Role" ? "Role" : "ClusterRole"}
+            <label className="block text-sm font-medium text-text-secondary">
+              {form.roleRefKind === "Role" ? "Role" : "ClusterRole"}
               {""}
-              <span class="text-error">*</span>
+              <span className="text-error">*</span>
             </label>
             <select
-              value={form.value.roleRefName}
+              value={form.roleRefName}
               onChange={(e) =>
-                updateField(
-                  "roleRefName",
-                  (e.target as HTMLSelectElement).value,
-                )
+                updateField("roleRefName", e.currentTarget.value)
               }
-              class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+              className="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
             >
               <option value="">Select a role...</option>
-              {(form.value.roleRefKind === "Role"
-                ? roles.value
-                : clusterRoles.value
-              ).map((r) => (
+              {(form.roleRefKind === "Role" ? roles : clusterRoles).map((r) => (
                 <option key={r.metadata.name} value={r.metadata.name}>
                   {r.metadata.name}
                 </option>
               ))}
             </select>
-            {errors.value.roleRefName && (
-              <p class="mt-1 text-xs text-error">{errors.value.roleRefName}</p>
+            {errors.roleRefName && (
+              <p className="mt-1 text-xs text-error">{errors.roleRefName}</p>
             )}
           </div>
         </div>
       )}
 
       {/* Step 3: Subjects */}
-      {currentStep.value === 2 && (
-        <div class="space-y-4">
-          {errors.value.subjects && (
-            <p class="text-sm text-error">{errors.value.subjects}</p>
+      {currentStep === 2 && (
+        <div className="space-y-4">
+          {errors.subjects && (
+            <p className="text-sm text-error">{errors.subjects}</p>
           )}
 
-          <div class="rounded-lg border border-border-primary bg-surface">
-            <table class="w-full text-sm">
+          <div className="rounded-lg border border-border-primary bg-surface">
+            <table className="w-full text-sm">
               <thead>
-                <tr class="border-b border-border-primary">
-                  <th class="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
+                <tr className="border-b border-border-primary">
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
                     Kind
                   </th>
-                  <th class="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
                     Name
                   </th>
-                  <th class="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
+                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
                     Namespace
                   </th>
-                  <th class="px-4 py-2 w-20"></th>
+                  <th className="px-4 py-2 w-20"></th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-border-subtle">
-                {form.value.subjects.map((subject, idx) => (
-                  <tr key={idx}>
-                    <td class="px-4 py-2">
+              <tbody className="divide-y divide-border-subtle">
+                {form.subjects.map((subject, idx) => (
+                  <tr key={subjectKeys.keyAt(idx)}>
+                    <td className="px-4 py-2">
                       <select
                         value={subject.kind}
                         onChange={(e) =>
                           updateSubject(idx, {
-                            kind: (e.target as HTMLSelectElement)
-                              .value as SubjectRow["kind"],
+                            kind: e.currentTarget.value as SubjectRow["kind"],
                           })
                         }
-                        class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+                        className="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
                       >
                         <option value="User">User</option>
                         <option value="Group">Group</option>
                         <option value="ServiceAccount">ServiceAccount</option>
                       </select>
                     </td>
-                    <td class="px-4 py-2">
-                      <div class="flex gap-1">
+                    <td className="px-4 py-2">
+                      <div className="flex gap-1">
                         <input
                           type="text"
                           value={subject.name}
-                          onInput={(e) =>
+                          onChange={(e) =>
                             updateSubject(idx, {
-                              name: (e.target as HTMLInputElement).value,
+                              name: e.currentTarget.value,
                             })
                           }
-                          class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+                          className="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
                           placeholder="Subject name"
                         />
                         {subject.kind === "User" && (
@@ -419,93 +457,91 @@ export default function RoleBindingWizard({
                             type="button"
                             onClick={async () => {
                               await fetchLocalUsers();
-                              showUserPicker.value =
-                                showUserPicker.value === idx ? null : idx;
+                              setShowUserPicker((prev) =>
+                                prev === idx ? null : idx,
+                              );
                             }}
-                            class="shrink-0 rounded border border-border-primary px-2 py-1 text-xs text-text-secondary hover:bg-surface text-text-muted"
+                            className="shrink-0 rounded border border-border-primary px-2 py-1 text-xs text-text-secondary hover:bg-surface text-text-muted"
                             title="Select from local users"
                           >
                             Local
                           </button>
                         )}
                       </div>
-                      {showUserPicker.value === idx &&
-                        localUsers.value.length > 0 && (
-                          <div class="mt-1 rounded border border-border-primary bg-surface shadow-sm">
-                            {localUsers.value.map((u) => (
-                              <button
-                                key={u.id}
-                                type="button"
-                                onClick={() => {
-                                  updateSubject(idx, {
-                                    name: u.k8sUsername,
-                                  });
-                                  showUserPicker.value = null;
-                                }}
-                                class="block w-full px-3 py-1 text-left text-sm hover:bg-hover"
-                              >
-                                {u.k8sUsername}
-                                {""}
-                                <span class="text-xs text-text-muted">
-                                  ({u.username})
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      {errors.value[`subjects[${idx}].name`] && (
-                        <p class="mt-1 text-xs text-error">
-                          {errors.value[`subjects[${idx}].name`]}
+                      {showUserPicker === idx && localUsers.length > 0 && (
+                        <div className="mt-1 rounded border border-border-primary bg-surface shadow-sm">
+                          {localUsers.map((u) => (
+                            <button
+                              key={u.id}
+                              type="button"
+                              onClick={() => {
+                                updateSubject(idx, {
+                                  name: u.k8sUsername,
+                                });
+                                setShowUserPicker(null);
+                              }}
+                              className="block w-full px-3 py-1 text-left text-sm hover:bg-hover"
+                            >
+                              {u.k8sUsername}
+                              {""}
+                              <span className="text-xs text-text-muted">
+                                ({u.username})
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {errors[`subjects[${idx}].name`] && (
+                        <p className="mt-1 text-xs text-error">
+                          {errors[`subjects[${idx}].name`]}
                         </p>
                       )}
                     </td>
-                    <td class="px-4 py-2">
+                    <td className="px-4 py-2">
                       {subject.kind === "ServiceAccount" ? (
                         <div>
                           <input
                             type="text"
                             value={subject.namespace}
-                            onInput={(e) =>
+                            onChange={(e) =>
                               updateSubject(idx, {
-                                namespace: (e.target as HTMLInputElement).value,
+                                namespace: e.currentTarget.value,
                               })
                             }
-                            class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+                            className="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
                             placeholder="Namespace"
                           />
-                          {errors.value[`subjects[${idx}].namespace`] && (
-                            <p class="mt-1 text-xs text-error">
-                              {errors.value[`subjects[${idx}].namespace`]}
+                          {errors[`subjects[${idx}].namespace`] && (
+                            <p className="mt-1 text-xs text-error">
+                              {errors[`subjects[${idx}].namespace`]}
                             </p>
                           )}
                         </div>
                       ) : (
-                        <span class="text-xs text-text-muted">N/A</span>
+                        <span className="text-xs text-text-muted">N/A</span>
                       )}
                     </td>
-                    <td class="px-4 py-2 text-right">
-                      {form.value.subjects.length > 1 && (
+                    <td className="px-4 py-2 text-right">
+                      {form.subjects.length > 1 && (
                         <button
                           type="button"
                           onClick={() => {
-                            const subs = form.value.subjects.filter(
-                              (_, i) => i !== idx,
-                            );
-                            updateField("subjects", subs);
+                            subjectKeys.removeAt(idx);
+                            removeSubject(idx);
                           }}
-                          class="rounded p-1 text-error hover:bg-danger-dim"
+                          className="rounded p-1 text-error hover:bg-danger-dim"
                           title="Remove subject"
                         >
                           <svg
-                            class="h-4 w-4"
+                            className="h-4 w-4"
                             fill="none"
                             viewBox="0 0 24 24"
                             stroke="currentColor"
-                            stroke-width="2"
+                            strokeWidth="2"
                           >
                             <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
                               d="M6 18L18 6M6 6l12 12"
                             />
                           </svg>
@@ -520,26 +556,22 @@ export default function RoleBindingWizard({
 
           <button
             type="button"
-            disabled={form.value.subjects.length >= 50}
+            disabled={form.subjects.length >= MAX_SUBJECTS}
             onClick={() => {
-              if (form.value.subjects.length >= 50) return;
-              updateField("subjects", [
-                ...form.value.subjects,
-                { kind: "User", name: "", namespace: "" },
-              ]);
+              addSubject();
             }}
-            class="inline-flex items-center gap-1 rounded-md border border-border-primary px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40 text-text-muted"
+            className="inline-flex items-center gap-1 rounded-md border border-border-primary px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40 text-text-muted"
           >
             <svg
-              class="h-4 w-4"
+              className="h-4 w-4"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
-              stroke-width="2"
+              strokeWidth="2"
             >
               <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
+                strokeLinecap="round"
+                strokeLinejoin="round"
                 d="M12 4v16m8-8H4"
               />
             </svg>
@@ -549,14 +581,12 @@ export default function RoleBindingWizard({
       )}
 
       {/* Step 4: Review */}
-      {currentStep.value === 3 && (
+      {currentStep === 3 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath={basePath}
           dirty={dirty}
         />

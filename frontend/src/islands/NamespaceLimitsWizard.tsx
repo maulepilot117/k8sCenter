@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useRef } from "preact/hooks";
+/** @jsxImportSource react */
+import { useCallback, useRef, useState } from "react";
 import { LimitRangeValuesStep } from "@/components/wizard/LimitRangeValuesStep.tsx";
 import { NamespacePresetStep } from "@/components/wizard/NamespacePresetStep.tsx";
 import { QuotaValuesStep } from "@/components/wizard/QuotaValuesStep.tsx";
@@ -10,6 +10,7 @@ import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useSignal } from "@/src/lib/signal-hooks.ts";
 
 // ---------------------------------------------------------------------------
 // Shared types & constants — exported for step components
@@ -100,16 +101,17 @@ export default function NamespaceLimitsWizard({
   onClose?: () => void;
 }) {
   const close = onClose ?? (() => globalThis.history.back());
-  const currentStep = useSignal(0);
-  const form = useSignal<FormState>(initialState());
+  const [currentStep, setCurrentStep] = useState(0);
+  const [form, setForm] = useState<FormState>(initialState);
+  // The step components subscribe to these two signals, so they stay signals.
   const errors = useSignal<Record<string, string>>({});
   const dirty = useSignal(false);
 
   const namespaces = useNamespaces();
 
-  const previewYaml = useSignal("");
-  const previewLoading = useSignal(false);
-  const previewError = useSignal<string | null>(null);
+  const [previewYaml, setPreviewYaml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
 
   useDirtyGuard(dirty);
@@ -117,31 +119,31 @@ export default function NamespaceLimitsWizard({
   const updateField = useCallback(
     <K extends keyof FormState>(field: K, value: FormState[K]) => {
       dirty.value = true;
-      form.value = { ...form.value, [field]: value };
+      setForm((prev) => ({ ...prev, [field]: value }));
     },
-    [],
+    [dirty],
   );
 
   const updateQuota = useCallback(
     <K extends keyof QuotaConfig>(field: K, value: QuotaConfig[K]) => {
       dirty.value = true;
-      form.value = {
-        ...form.value,
-        quota: { ...form.value.quota, [field]: value },
-      };
+      setForm((prev) => ({
+        ...prev,
+        quota: { ...prev.quota, [field]: value },
+      }));
     },
-    [],
+    [dirty],
   );
 
   const updateLimits = useCallback(
     <K extends keyof LimitConfig>(field: K, value: LimitConfig[K]) => {
       dirty.value = true;
-      form.value = {
-        ...form.value,
-        limits: { ...form.value.limits, [field]: value },
-      };
+      setForm((prev) => ({
+        ...prev,
+        limits: { ...prev.limits, [field]: value },
+      }));
     },
-    [],
+    [dirty],
   );
 
   const updateResourcePair = useCallback(
@@ -151,37 +153,40 @@ export default function NamespaceLimitsWizard({
       value: string,
     ) => {
       dirty.value = true;
-      const currentPair = form.value.limits[configKey] as
-        | ResourcePair
-        | undefined;
-      const newPair = { ...(currentPair ?? { cpu: "", memory: "" }) };
-      newPair[resourceKey] = value;
-      form.value = {
-        ...form.value,
-        limits: { ...form.value.limits, [configKey]: newPair },
-      };
+      setForm((prev) => {
+        const currentPair = prev.limits[configKey] as ResourcePair | undefined;
+        const newPair = { ...(currentPair ?? { cpu: "", memory: "" }) };
+        newPair[resourceKey] = value;
+        return {
+          ...prev,
+          limits: { ...prev.limits, [configKey]: newPair },
+        };
+      });
     },
-    [],
+    [dirty],
   );
 
-  const applyPreset = useCallback((preset: PresetKey) => {
-    dirty.value = true;
-    const p = PRESETS[preset];
-    form.value = {
-      ...form.value,
-      preset,
-      quota: { ...p.quota },
-      limits: {
-        containerDefault: { ...p.limits.containerDefault },
-        containerDefaultRequest: { ...p.limits.containerDefaultRequest },
-        containerMax: { ...p.limits.containerMax },
-        containerMin: { ...p.limits.containerMin },
-      },
-    };
-  }, []);
+  const applyPreset = useCallback(
+    (preset: PresetKey) => {
+      dirty.value = true;
+      const p = PRESETS[preset];
+      setForm((prev) => ({
+        ...prev,
+        preset,
+        quota: { ...p.quota },
+        limits: {
+          containerDefault: { ...p.limits.containerDefault },
+          containerDefaultRequest: { ...p.limits.containerDefaultRequest },
+          containerMax: { ...p.limits.containerMax },
+          containerMin: { ...p.limits.containerMin },
+        },
+      }));
+    },
+    [dirty],
+  );
 
   const validateStep = (step: number): boolean => {
-    const f = form.value;
+    const f = form;
     const errs: Record<string, string> = {};
 
     if (step === 0) {
@@ -216,26 +221,26 @@ export default function NamespaceLimitsWizard({
   };
 
   const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
+    if (!validateStep(currentStep)) return;
 
-    if (currentStep.value === 2) {
-      currentStep.value = 3;
+    if (currentStep === 2) {
+      setCurrentStep(3);
       await fetchPreview();
     } else {
-      currentStep.value++;
+      setCurrentStep(currentStep + 1);
     }
   };
 
   const goBack = () => {
-    if (currentStep.value > 0) currentStep.value--;
+    if (currentStep > 0) setCurrentStep((step) => step - 1);
   };
 
   const fetchPreview = async () => {
     const gen = ++previewGen.current;
-    previewLoading.value = true;
-    previewError.value = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
 
-    const f = form.value;
+    const f = form;
     const payload = {
       namespace: f.namespace,
       quotaName: f.quotaName,
@@ -277,23 +282,24 @@ export default function NamespaceLimitsWizard({
         payload,
       );
       if (gen !== previewGen.current) return;
-      previewYaml.value = resp.data.yaml;
+      setPreviewYaml(resp.data.yaml);
     } catch (err) {
       if (gen !== previewGen.current) return;
-      previewError.value =
-        err instanceof Error ? err.message : "Failed to generate preview";
+      setPreviewError(
+        err instanceof Error ? err.message : "Failed to generate preview",
+      );
     } finally {
-      if (gen === previewGen.current) previewLoading.value = false;
+      if (gen === previewGen.current) setPreviewLoading(false);
     }
   };
 
-  const f = form.value;
-  const nextLabel = currentStep.value === 3 ? "Close" : "Continue";
+  const f = form;
+  const nextLabel = currentStep === 3 ? "Close" : "Continue";
 
   return (
     <WizardShell
       title="Create Namespace Limits"
-      subtitle={`Step ${currentStep.value + 1} of 4 · namespace ${f.namespace}`}
+      subtitle={`Step ${currentStep + 1} of 4 · namespace ${f.namespace}`}
       icon={
         <svg
           width="21"
@@ -301,25 +307,25 @@ export default function NamespaceLimitsWizard({
           viewBox="0 0 20 20"
           fill="none"
           stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
           <path d="M4 4h12v4H4zM4 10h5v6H4zM11 10h5v6h-5z" />
         </svg>
       }
       steps={STEPS}
-      current={currentStep.value}
+      current={currentStep}
       onStep={(i) => {
-        if (i < currentStep.value) currentStep.value = i;
+        if (i < currentStep) setCurrentStep(i);
       }}
       onCancel={close}
       onBack={goBack}
-      onNext={currentStep.value === 3 ? close : goNext}
+      onNext={currentStep === 3 ? close : goNext}
       nextLabel={nextLabel}
-      yaml={currentStep.value < 3 ? buildManifest(f) : undefined}
+      yaml={currentStep < 3 ? buildManifest(f) : undefined}
     >
-      {currentStep.value === 0 && (
+      {currentStep === 0 && (
         <NamespacePresetStep
           form={f}
           errors={errors}
@@ -329,7 +335,7 @@ export default function NamespaceLimitsWizard({
         />
       )}
 
-      {currentStep.value === 1 && (
+      {currentStep === 1 && (
         <QuotaValuesStep
           quota={f.quota}
           errors={errors}
@@ -337,7 +343,7 @@ export default function NamespaceLimitsWizard({
         />
       )}
 
-      {currentStep.value === 2 && (
+      {currentStep === 2 && (
         <LimitRangeValuesStep
           limits={f.limits}
           errors={errors}
@@ -346,14 +352,12 @@ export default function NamespaceLimitsWizard({
         />
       )}
 
-      {currentStep.value === 3 && (
+      {currentStep === 3 && (
         <WizardReviewStep
-          yaml={previewYaml.value}
-          onYamlChange={(v) => {
-            previewYaml.value = v;
-          }}
-          loading={previewLoading.value}
-          error={previewError.value}
+          yaml={previewYaml}
+          onYamlChange={setPreviewYaml}
+          loading={previewLoading}
+          error={previewError}
           detailBasePath="/config/namespace-limits"
           dirty={dirty}
         />
