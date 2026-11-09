@@ -2,6 +2,7 @@ import type { Signal } from "@preact/signals-core";
 import { useEffect, useRef } from "react";
 import { ApiError, apiGet } from "@/lib/api.ts";
 import { failureOf } from "@/lib/networking-state.ts";
+import { hasDom } from "@/src/lib/has-dom.ts";
 import { useSignal } from "@/src/lib/signal-hooks.ts";
 import { useLatest } from "@/src/lib/use-latest.ts";
 
@@ -63,10 +64,7 @@ export function usePoll<T>(
   const shouldContinueRef = useLatest(opts.shouldContinuePolling);
 
   useEffect(() => {
-    // Checked when the effect runs, not once at module load: a module first
-    // imported where there is no DOM (a server render, a test) would
-    // otherwise keep answering "no browser" for the rest of the process.
-    if (typeof document === "undefined") return;
+    if (!hasDom()) return;
     if (opts.enabled === false) return;
 
     // A new url starts from a clean slate: a refusal or failures recorded

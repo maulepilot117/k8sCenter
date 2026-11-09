@@ -1,4 +1,4 @@
-import { useComputed, useSignal } from "@preact/signals";
+import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
 import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
@@ -54,8 +54,7 @@ export default function SettingsPage() {
     fetchSettings();
   }, []);
 
-  const dirty = useComputed(() => dirtyMonitoring.value || dirtyAlerting.value);
-  useDirtyGuard(dirty.value);
+  useDirtyGuard(dirtyMonitoring.value || dirtyAlerting.value);
 
   async function fetchSettings() {
     try {

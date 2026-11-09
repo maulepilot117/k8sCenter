@@ -714,8 +714,6 @@ function ConfigureStep({
   );
 }
 
-// --- Rule card ---
-
 interface RuleCardProps {
   rule: IngressRuleState;
   ruleIdx: number;

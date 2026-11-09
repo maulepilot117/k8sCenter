@@ -12,6 +12,7 @@ import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
+import { useLatest } from "@/src/lib/use-latest.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface PVCFormState {
@@ -74,8 +75,7 @@ export default function PVCWizard({ onClose }: { onClose?: () => void }) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
-  const formRef = useRef(form);
-  formRef.current = form;
+  const formRef = useLatest(form);
 
   // Auto-select first storage class when loaded
   useEffect(() => {

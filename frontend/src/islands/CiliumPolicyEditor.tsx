@@ -1,4 +1,4 @@
-import { useComputed, useSignal } from "@preact/signals";
+import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { apiPost } from "@/lib/api.ts";
@@ -102,10 +102,7 @@ export default function CiliumPolicyEditor({
     showYaml.value,
   ]);
 
-  const dirty = useComputed(() =>
-    Boolean(name.value || rules.value.length > 1),
-  );
-  useDirtyGuard(dirty.value);
+  useDirtyGuard(Boolean(name.value || rules.value.length > 1));
 
   if (!IS_BROWSER) {
     // Must carry EDITOR_PAGE_CLASS, identical to the hydrated root below.

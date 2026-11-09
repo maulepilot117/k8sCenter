@@ -352,7 +352,6 @@ export default function ResourceDetail({
     [resource, showManagedFields],
   );
 
-  // Leaving the page with an unsaved YAML edit asks for confirmation.
   useDirtyGuard(yamlEditing && yamlEditContent !== yamlContent);
 
   // Periodic tick to refresh age displays (every 30s)

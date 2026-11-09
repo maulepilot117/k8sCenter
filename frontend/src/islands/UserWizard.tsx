@@ -136,7 +136,6 @@ export default function UserWizard({ onClose }: { onClose?: () => void }) {
 
     try {
       await apiPost("/v1/users", payload);
-      // The user exists now: leaving the page loses nothing.
       setDirty(false);
       setCreated(true);
     } catch (err) {

@@ -1,6 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
+import { hasDom } from "@/src/lib/has-dom.ts";
 
 /** The route caps a page here anyway; asking for more silently gets this. */
 const PAGE_LIMIT = 500;
@@ -29,10 +30,7 @@ export function useNamespacedServices(namespace: string) {
   const services = useSignal<string[]>([]);
 
   useEffect(() => {
-    // Checked when the effect runs, not once at module load: a module first
-    // imported where there is no DOM (a server render, a test) would
-    // otherwise keep answering "no browser" for the rest of the process.
-    if (typeof document === "undefined") return;
+    if (!hasDom()) return;
     // Cleared synchronously rather than left showing the previous namespace's
     // services while the new list is in flight: a dropdown that briefly offers
     // values from somewhere else is one a fast user can pick from.

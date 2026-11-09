@@ -11,6 +11,7 @@ import { ACCESS_MODES, DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
+import { useLatest } from "@/src/lib/use-latest.ts";
 import { useSignalValue } from "@/src/lib/use-signal-value.ts";
 
 interface RestoreFormState {
@@ -132,8 +133,7 @@ export default function RestoreSnapshotWizard({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewGen = useRef(0);
-  const formRef = useRef(form);
-  formRef.current = form;
+  const formRef = useLatest(form);
 
   useEffect(() => {
     apiGet<{ metadata: { available: boolean } }>("/v1/storage/snapshot-classes")
